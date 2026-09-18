@@ -2,12 +2,12 @@
   "schema": "stpd/local-policy-registry-v1",
   "runtime_package": {
     "package": "@rsgcsg/sts2-policy-runtime",
-    "version": "0.1.0-rc.5",
-    "release_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/releases/download/candidate/stage1a-live-repair-20260918/rsgcsg-sts2-policy-runtime-0.1.0-rc.5.tgz",
-    "source_revision": "bc98037a10a5c487c5ef7160a16fd59b2d15b518",
-    "component_tree_revision": "ef886a2fcf6cbfe653f45a0a1d8c176e156ae49f",
-    "release_asset_sha256": "028bfd53295142799d342bdb0ad31baf24f2ec4eb32e6242c1f3ee2d54976fed",
-    "package_content_sha256": "91e0026aedca98bed05a966f9aa133ded87e2c5d88d6624eb87ea61080b34d1b",
+    "version": "0.1.0-rc.6",
+    "release_url": "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/releases/download/candidate/stage1a-runtime-rc6-20260919/rsgcsg-sts2-policy-runtime-0.1.0-rc.6.tgz",
+    "source_revision": "9701b7530a94422fd8d7ae9296d3aee88fbdc4b3",
+    "component_tree_revision": "6049093fccf9b828d9b8ca3dbbb5cc9cc56e30a3",
+    "release_asset_sha256": "16e1caec78bfaefe5ab0635a8888c6d945325dfa3acb6f8d979a376ad05abdc8",
+    "package_content_sha256": "aab8ec8870d78b4568bf95acdc0bd2cdcb557108a961e5808bf6b81c8ddfd0fe",
     "dependency_content_sha256": {
       "zod": "5ef21d43720938cb893b5232d83fb47b5091053fd8ebbffd8cfb24eccb51a617"
     }
