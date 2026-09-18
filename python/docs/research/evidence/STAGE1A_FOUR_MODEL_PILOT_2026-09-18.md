@@ -275,3 +275,32 @@ Workbench also clears a prior run's startup/evaluation when creating a new
 Human-mode child, and does not mislabel a failed attestation as a running-session
 recovery problem. Its focused failure/recovery regressions pass; application and
 native integration still require the subsequent gates.
+
+### rc.6 installed reload acceptance (2026-09-19)
+
+The rc.6 candidate archive SHA-256 is
+`16e1caec78bfaefe5ab0635a8888c6d945325dfa3acb6f8d979a376ad05abdc8`,
+source `9701b7530a94422fd8d7ae9296d3aee88fbdc4b3`. The owning installer downloaded
+it from `candidate/stage1a-runtime-rc6-20260919` and verified the full package and
+dependency closure. Runtime code SHA-256 is
+`2b78f8bc6fc75fd2bef51af1d61d095be9c711d03509df6c81ffc96dfd6c7f6b`.
+Evidence remains rc.13. Workbench source for the reload is
+`c1c16cf` (full SHA retained in the private source/job records).
+
+Using the same B-S model artifact and the new explicit adapter/lock manifest:
+
+1. Load `run-90af8071-501b-4c99-9da5-0ed9eec15ab5`: Human mode, controller released,
+   rc.6 startup identity matched; no decision or Receipt.
+2. Explicit Stop: lifecycle stopped, finalized evidence verified, exactly one
+   stopped event. Evaluation
+   `18c9e0b51c38ceeb90d2587d4a496feeb4f55a94a6654922b7ca0e6f926ce295`.
+3. Load again `run-961524ff-89f3-4e6c-8eda-aadd71898784`: Human mode, released
+   controller, no errors or taint. No port-in-use or old-session recovery blockage.
+
+The unchanged installed Mod cold-load was verified through its owning lifecycle;
+no Mod rebuild or gameplay action was performed in this acceptance. All 113
+focused local-model/sharing/installer tests passed before the additional startup
+state cleanup; its eight focused failure/recovery tests and full mypy then passed.
+A final integration gate is required on the complete source and dependency pins.
+Continuous native actions and in-game one-click model selection/load remain pending;
+this reload evidence does not establish either.
