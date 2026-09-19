@@ -304,3 +304,10 @@ state cleanup; its eight focused failure/recovery tests and full mypy then passe
 A final integration gate is required on the complete source and dependency pins.
 Continuous native actions and in-game one-click model selection/load remain pending;
 this reload evidence does not establish either.
+
+
+### 2026-09-19 Integration gate test isolation repair
+
+At source `75e264637e9a2abdbc61665a5c9fc00fcf4229f0`, Platform portable passed (31.96 s). Python pytest reported 10 failed, 1120 passed and 3 skipped: installation and fake-process startup tests probed the operator Runtime on fixed port 15527. The live Human-mode Runtime exposed a test isolation defect.
+
+Installer tests now redirect the declared fixed-port probe to real ephemeral sockets; an occupied-listener regression still requires installation refusal before npm or package staging. The fake-process attestation test isolates its port prerequisite. Production guards, model artifacts and live Runtime were unchanged. The two affected files yielded 108 passing tests plus one new assertion failure about the lock directory; correcting that assertion to check package/staging preservation gave 16/16 focused passes. Python full validation is pending a fresh durable job; this is not continuous native gameplay evidence.

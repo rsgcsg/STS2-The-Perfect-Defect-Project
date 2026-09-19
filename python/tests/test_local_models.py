@@ -526,6 +526,7 @@ def test_shutdown_during_readiness_cannot_launch_a_late_runtime(service, monkeyp
 
 
 def test_start_uses_fixed_command_human_and_rejects_foreign_attestation(service, monkeypatch):
+    monkeypatch.setattr(local_models, "_check_runtime_port", lambda port: None)
     monkeypatch.setattr(service, "readiness", lambda _: {"status": "ready_to_load"})
     monkeypatch.setattr(
         service, "_runtime_package", lambda: {"version": "0.1.0-rc.1", "code_sha256": "b" * 64}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import Request
@@ -33,7 +34,25 @@ def package(root, name, *, runtime=False):
 
 
 @pytest.fixture
-def release(tmp_path, monkeypatch):
+def isolated_port(monkeypatch):
+    # Exercise a real bind without depending on the operator's live Runtime.
+    class Probe:
+        def __enter__(self):
+            self.socket = socket.socket()
+            return self
+
+        def bind(self, address):
+            assert address == ("127.0.0.1", 15527)
+            self.socket.bind(("127.0.0.1", 0))
+
+        def __exit__(self, *args):
+            self.socket.close()
+
+    monkeypatch.setattr(runtime_install, "socket", SimpleNamespace(socket=Probe))
+
+
+@pytest.fixture
+def release(tmp_path, monkeypatch, isolated_port):
     source = tmp_path / "source"
     pin = package(
         source / runtime_install.RUNTIME_PACKAGE, runtime_install.RUNTIME_PACKAGE, runtime=True
@@ -202,3 +221,32 @@ def test_download_rejects_unrelated_rename_lookalike(tmp_path, monkeypatch, rele
     monkeypatch.setattr(runtime_install, "build_opener", unexpected)
     with pytest.raises(BoundaryError, match="runtime_release_url_not_pinned"):
         runtime_install.install_runtime(tmp_path / "state", pin, connector)
+
+
+def test_install_rejects_occupied_port_before_touching_release(tmp_path, monkeypatch, release):
+    pin, connector, archive, _ = release
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        occupied = listener.getsockname()
+
+        class Probe:
+            def __enter__(self):
+                self.socket = socket.socket()
+                return self
+
+            def bind(self, address):
+                assert address == ("127.0.0.1", 15527)
+                self.socket.bind(occupied)
+
+            def __exit__(self, *args):
+                self.socket.close()
+
+        monkeypatch.setattr(runtime_install, "socket", SimpleNamespace(socket=Probe))
+        calls = []
+        monkeypatch.setattr(runtime_install.subprocess, "run", lambda *a, **k: calls.append(a))
+        with pytest.raises(BoundaryError, match="stop_runtime_before_install"):
+            runtime_install.install_runtime(tmp_path / "state", pin, connector, archive=archive)
+        assert calls == []
+        assert not (tmp_path / "state/runtime").exists()
+        assert not list((tmp_path / "state").glob(".runtime-install-*"))
