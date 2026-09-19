@@ -325,3 +325,10 @@ Live observation after the gate found Runtime rc.6, run `run-961524ff-89f3-4e6c-
 Run `run-36be6bda-ce5d-4f8b-a0b1-c7df154c73d2` sealed with 8 mode changes, 8 fail_closed events and Stop; no decisions or deliveries. Runtime rejected `environment_modset_fingerprint_drift` (manifest 36df5154..., observed 69d0c3e6...). A fresh read of Connector capabilities also reported `artifact_unqualified` and `execution_available=false`: the current process lacks the exact-source canary enablement. The fingerprint difference itself is not yet explained and must not be auto-accepted.
 
 Console now surfaces Runtime errors and absence of receipts, blocks blind repeated starts while retaining Human/Stop. Node console tests: 55 passed. Source change only; browser refresh and exact native relaunch/rebinding remain to be verified. Prior native interaction acceptance remains failed, not promoted by evidence verification.
+
+
+### 2026-09-19 Exact relaunch and explicit environment registration
+
+After owner-confirmed exit, the retained Game Mod lifecycle launched the installed artifact with exact-source canary enablement. `verify-loaded` passed, Connector reported `canary_exact` and `execution_available=true`. Artifact SHA/MVID remain unchanged. Modset fingerprint remains `69d0c3e6...`; the old `36df5154...` difference is not explained by process restart alone. No fingerprint check was removed.
+
+New private manifests explicitly bind the freshly verified environment, preserving originals and a registry backup. B-S loaded under `stage1a-b-s-verified-environment-20260919-1248`, Runtime rc.6, run `run-fdba509b-8ea3-4909-987f-23b00a89e907`, Human mode, controller released, zero errors, no decisions. Private proof folder: `stage1a-environment-rebind-20260919-1248`. Console regression rerun: 55 passed. Gameplay delivery remains pending; owner need only enter combat before the next bounded diagnostic. Normal Steam startup without candidate enablement remains an unresolved usability limitation.
