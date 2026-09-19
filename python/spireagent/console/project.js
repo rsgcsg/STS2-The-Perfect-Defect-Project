@@ -2035,6 +2035,16 @@ window.SpireProject = (() => {
           "banner error",
         ),
       );
+    const runtimeFailure = runtime?.errors?.at(-1);
+    if (runtimeFailure) {
+      const explanation = runtimeFailure === "environment_modset_fingerprint_drift"
+        ? "游戏环境与模型绑定不一致，模型尚未获准执行。请结束测试，核对游戏启动配置后重新加载；重复点击开始不会修复此问题。"
+        : `模型运行已报告阻塞：${runtimeFailure}。请先查看原因，再恢复测试。`;
+      box.append(el("p", explanation, "banner error"));
+    }
+    box.append(el("p", runtime?.last_receipt
+      ? "已收到动作回执，具体送达结果见下方记录。"
+      : "尚无游戏动作送达记录。模型已加载不代表正在操作游戏。", "small"));
     const actions = el("div", null, "project-actions");
     const recoverable = data.loaded === true || Boolean(data.previous_session) ||
       (operation?.status === "pending" && ["start", "prepare-and-load"].includes(operation.action));
@@ -2045,6 +2055,7 @@ window.SpireProject = (() => {
       !changing &&
       !data.observation_error &&
       !runtime?.tainted &&
+      !runtimeFailure &&
       ![
         "command_unknown",
         "recovery_required",

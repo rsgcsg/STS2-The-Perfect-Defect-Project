@@ -1301,3 +1301,18 @@ test("research archives preserve project scope and restore exact artifact identi
   await action(page,`research-visibility-${artifact}`).onclick();
   assert.deepEqual(body(post(env.calls).at(-1)),{ids:[artifact],archived:false});
 });
+
+
+test("runtime environment rejection is visible and cannot be blindly restarted", async () => {
+  const env = setup({ view: "local-models", handler: (url, options) =>
+    url === "/api/local-models/status" ? {
+      status: "loaded", loaded: true,
+      runtime: { lifecycle: "running", mode: "human", controller: "released",
+        errors: ["environment_modset_fingerprint_drift"], last_receipt: null }
+    } : modelHandler(url, options) });
+  const page = await env.render();
+  assert.match(text(page), /游戏环境与模型绑定不一致/);
+  assert.match(text(page), /尚无游戏动作送达记录/);
+  assert.equal(action(page, "model-command-auto").disabled, true);
+  assert.equal(action(page, "model-command-stop").disabled, false);
+});

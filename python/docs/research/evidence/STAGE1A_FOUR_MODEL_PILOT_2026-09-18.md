@@ -318,3 +318,10 @@ Installer tests now redirect the declared fixed-port probe to real ephemeral soc
 Durable job `stage1a-repair-python-20260919-122800` completed at exact source `6db42ef02d1a6d356a18a4720c47025d351fbcd9`: Python portable PASS in 126.06 s; pytest 1131 passed, 3 skipped, 21 subtests passed. Platform portable remains the earlier explicitly scoped result at `75e2646`, not a new execution.
 
 Live observation after the gate found Runtime rc.6, run `run-961524ff-89f3-4e6c-8eda-aadd71898784`, B-S packed-v2 loaded in Human mode, controller released, no errors or taint, and no decisions yet. The owner was handed the existing Workbench control path for continuous combat, Human pause and Stop acceptance. That native interaction remains pending; no continuous-run or in-game one-click completion is claimed.
+
+
+### Owner reports no actions: actual environment rejection
+
+Run `run-36be6bda-ce5d-4f8b-a0b1-c7df154c73d2` sealed with 8 mode changes, 8 fail_closed events and Stop; no decisions or deliveries. Runtime rejected `environment_modset_fingerprint_drift` (manifest 36df5154..., observed 69d0c3e6...). A fresh read of Connector capabilities also reported `artifact_unqualified` and `execution_available=false`: the current process lacks the exact-source canary enablement. The fingerprint difference itself is not yet explained and must not be auto-accepted.
+
+Console now surfaces Runtime errors and absence of receipts, blocks blind repeated starts while retaining Human/Stop. Node console tests: 55 passed. Source change only; browser refresh and exact native relaunch/rebinding remain to be verified. Prior native interaction acceptance remains failed, not promoted by evidence verification.
