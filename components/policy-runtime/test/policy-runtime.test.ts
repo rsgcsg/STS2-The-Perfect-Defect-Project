@@ -200,18 +200,36 @@ describe("decision-only process boundary", () => {
     const script = [
       `process.stdout.write(JSON.stringify({schema:'sts2.policy-runtime/policy-port-1',message_type:'ready',adapter:${JSON.stringify(manifest().adapter)}})+'\\n');`,
       "const readline=require('node:readline').createInterface({input:process.stdin});",
-      "readline.on('line',(line)=>{const request=JSON.parse(line);const delay=request.input.run_id==='run-cancelled'?40:0;setTimeout(()=>process.stdout.write(JSON.stringify({schema:request.schema,message_type:'decision',request_id:request.request_id,output:{candidate_digest:request.input.candidate_digest,scores:Array(request.input.candidate_count).fill(1),selected_index:0}})+'\\n'),delay);});"
+      "let cancelledRequest;",
+      "const emit=(request,scores,selected_index)=>process.stdout.write(JSON.stringify({schema:request.schema,message_type:'decision',request_id:request.request_id,output:{candidate_digest:request.input.candidate_digest,scores,selected_index}})+'\\n');",
+      "readline.on('line',(line)=>{const request=JSON.parse(line);if(!cancelledRequest){cancelledRequest=request;return;}emit(cancelledRequest,[11],0);setImmediate(()=>emit(request,[22,23],1));});"
     ].join("");
     const port = NdjsonPolicyPort.spawn(process.execPath, ["-e", script]);
     const current = bundle(["a"]);
+    const next = bundle(["a", "b"], "snapshot-next");
     const digest = candidateOrderDigest(current.observation.bound_actions.actions);
+    const nextDigest = candidateOrderDigest(next.observation.bound_actions.actions);
     try {
       await port.ready();
       const controller = new AbortController();
       const cancelled = port.decide({ run_id: "run-cancelled", manifest: manifest(), bundle: current, candidate_digest: digest, candidate_count: 1 }, controller.signal);
       controller.abort();
       await expect(cancelled).rejects.toThrow("cancelled");
-      await expect(port.decide({ run_id: "run-next", manifest: manifest(), bundle: current, candidate_digest: digest, candidate_count: 1 })).resolves.toEqual({ candidate_digest: digest, scores: [1], selected_index: 0 });
+      await expect(port.decide({ run_id: "run-next", manifest: manifest(), bundle: next, candidate_digest: nextDigest, candidate_count: 2 })).resolves.toEqual({ candidate_digest: nextDigest, scores: [22, 23], selected_index: 1 });
+    } finally { port.close(); }
+  });
+
+  it("fails closed on an unrelated NDJSON response id", async () => {
+    const script = [
+      `process.stdout.write(JSON.stringify({schema:'sts2.policy-runtime/policy-port-1',message_type:'ready',adapter:${JSON.stringify(manifest().adapter)}})+'\\n');`,
+      "const readline=require('node:readline').createInterface({input:process.stdin});",
+      "readline.once('line',(line)=>{const request=JSON.parse(line);process.stdout.write(JSON.stringify({schema:request.schema,message_type:'decision',request_id:'unrelated-request-id',output:{candidate_digest:request.input.candidate_digest,scores:[1],selected_index:0}})+'\\n');});"
+    ].join("");
+    const port = NdjsonPolicyPort.spawn(process.execPath, ["-e", script]);
+    try {
+      await port.ready();
+      const current = bundle(["a"]);
+      await expect(port.decide({ run_id: "run-unknown", manifest: manifest(), bundle: current, candidate_digest: candidateOrderDigest(current.observation.bound_actions.actions), candidate_count: 1 })).rejects.toThrow("unknown request id");
     } finally { port.close(); }
   });
 
@@ -1009,18 +1027,23 @@ describe("runtime integration fake", () => {
 
   it.each([false, true])("notifies stop cleanup exactly once after success, even when response aborts=%s", async (abortResponse) => {
     const root = await mkdtemp(join(tmpdir(), "sts2-stop-disconnect-"));
-    const evidence = await AgentRunEvidence.create({ root, policyManifest: manifest(), runtimeVersion: "0.1.0-rc.3", runtimeCodeSha256: "e".repeat(64), mode: "one_step" });
+    const evidence = await AgentRunEvidence.create({ root, policyManifest: manifest(), runtimeVersion: "0.1.0-rc.3", runtimeCodeSha256: "e".repeat(64), mode: "auto" });
     let finishScoring!: () => void;
     const scoring = new Promise<void>((resolve) => { finishScoring = resolve; });
     let scoringEntered = false;
+    let policyCalls = 0;
     const connector = new FakeConnector(bundle(["a"]));
-    const releaseGate = deferred<void>();
-    if (abortResponse) connector.releaseGate = releaseGate.promise;
-    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "one_step", evidence, runId: evidence.runId, runtimeIdentity: { version: "0.1.0-rc.3", code_sha256: "e".repeat(64) }, policy: async (input) => {
+    const releaseBarrier = deferred<void>();
+    const releaseEntered = deferred<void>();
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", evidence, runId: evidence.runId, runtimeIdentity: { version: "0.1.0-rc.3", code_sha256: "e".repeat(64) }, policy: async (input) => {
+      if (policyCalls++ === 0) return { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 };
       scoringEntered = true; await scoring;
       return { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 };
     } });
     await evidence.attestAdapter(manifest().adapter);
+    expect((await runtime.tick()).type).toBe("delivered");
+    expect(runtime.status()).toMatchObject({ mode: "auto", controller: "held" });
+    if (abortResponse) connector.releaseGate = (async () => { releaseEntered.resolve(); await releaseBarrier.promise; })();
     const stopSpy = vi.spyOn(runtime, "stop");
     let cleanupCount = 0;
     let cleanupFinished!: () => void;
@@ -1028,7 +1051,8 @@ describe("runtime integration fake", () => {
     const service = await startPolicyRuntimeHttpServer(runtime, { port: 0, onStopped: async () => { cleanupCount++; await service.close(); cleanupFinished(); } });
     let responseClosed!: () => void;
     const disconnected = new Promise<void>((resolve) => { responseClosed = resolve; });
-    service.server.on("request", (request, response) => { if (request.url === "/v2/stop") response.once("close", responseClosed); });
+    let responseFinished = false;
+    service.server.on("request", (request, response) => { if (request.url === "/v2/stop") { response.once("finish", () => { responseFinished = true; }); response.once("close", responseClosed); } });
     const tick = runtime.tick();
     try {
       await eventually(() => scoringEntered);
@@ -1042,24 +1066,34 @@ describe("runtime integration fake", () => {
       });
       await eventually(() => stopSpy.mock.calls.length === 1);
       if (abortResponse) {
-        // Hold the connector release so the fixture exercises a real response
-        // disconnect before stop can send its success response.
-        stopRequest.destroy(new Error("caller disconnected"));
-        await expect(stopped).rejects.toThrow("caller disconnected"); await disconnected;
-      }
-      if (abortResponse) {
-        await tick;
-        releaseGate.resolve();
-      } else {
+        // The first auto tick genuinely acquired and retained the controller.
+        // Stop must now reach the connector release barrier before the caller
+        // disconnects; a releaseGate alone is insufficient for a pre-acquire
+        // slow tick because releaseController would be a no-op.
+        await releaseEntered.promise;
+        expect(runtime.status().lifecycle).toBe("running");
+        expect(responseFinished).toBe(false);
         expect(cleanupCount).toBe(0);
-        finishScoring(); await tick;
-        const response = await stopped; expect(response.statusCode).toBe(200); expect(JSON.parse(response.body).status.lifecycle).toBe("stopped");
+        stopRequest.destroy(new Error("caller disconnected"));
+        await expect(stopped).rejects.toThrow("caller disconnected");
+        await disconnected;
+        expect(runtime.status().lifecycle).toBe("running");
+        expect(responseFinished).toBe(false);
+        expect(cleanupCount).toBe(0);
+        releaseBarrier.resolve();
+        await tick;
+      } else {
+        const response = await stopped;
+        expect(response.statusCode).toBe(200);
+        expect(JSON.parse(response.body).status.lifecycle).toBe("stopped");
+        expect(responseFinished).toBe(true);
+        await tick;
       }
       await cleanup;
       expect(cleanupCount).toBe(1);
       expect(service.server.listening).toBe(false);
       expect(JSON.parse(await readFile(join(evidence.directory, "evidence-manifest.json"), "utf8")).complete).toBe(true);
-    } finally { finishScoring(); releaseGate.resolve(); await tick; if (service.server.listening) await service.close(); }
+    } finally { finishScoring(); releaseBarrier.resolve(); await tick; if (service.server.listening) await service.close(); }
   });
 
   it("passes real non-null Runtime environment status through the Workbench consumer", async () => {
