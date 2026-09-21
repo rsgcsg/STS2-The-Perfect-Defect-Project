@@ -1034,7 +1034,6 @@ describe("runtime integration fake", () => {
     let policyCalls = 0;
     const connector = new FakeConnector(bundle(["a"]));
     const releaseBarrier = deferred<void>();
-    const releaseEntered = deferred<void>();
     const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", evidence, runId: evidence.runId, runtimeIdentity: { version: "0.1.0-rc.3", code_sha256: "e".repeat(64) }, policy: async (input) => {
       if (policyCalls++ === 0) return { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 };
       scoringEntered = true; await scoring;
@@ -1043,7 +1042,7 @@ describe("runtime integration fake", () => {
     await evidence.attestAdapter(manifest().adapter);
     expect((await runtime.tick()).type).toBe("delivered");
     expect(runtime.status()).toMatchObject({ mode: "auto", controller: "held" });
-    if (abortResponse) connector.releaseGate = (async () => { releaseEntered.resolve(); await releaseBarrier.promise; })();
+    if (abortResponse) connector.releaseGate = releaseBarrier.promise;
     const stopSpy = vi.spyOn(runtime, "stop");
     let cleanupCount = 0;
     let cleanupFinished!: () => void;
@@ -1070,7 +1069,7 @@ describe("runtime integration fake", () => {
         // Stop must now reach the connector release barrier before the caller
         // disconnects; a releaseGate alone is insufficient for a pre-acquire
         // slow tick because releaseController would be a no-op.
-        await releaseEntered.promise;
+        await eventually(() => connector.releaseCount === 1);
         expect(runtime.status().lifecycle).toBe("running");
         expect(responseFinished).toBe(false);
         expect(cleanupCount).toBe(0);
