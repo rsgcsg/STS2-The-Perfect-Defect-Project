@@ -33,6 +33,9 @@ game-mod bytes; it does not build another runtime package or publish to Steam.
 `npm run workshop:prepare -- --build` orchestrates existing checks/build into an
 unapproved proposal; its separate explicit approval phase verifies and stages the
 retained bytes without rebuilding. Neither phase publishes to Steam.
+`npm run workshop:publish` defaults to exact-candidate preflight only; the
+separately authorized publication executor is documented in the Workshop guide.
+Layer 4A stops at `READY_TO_PUBLISH_PRIVATE`, without contacting Steam.
 
 ## Developer setup
 
