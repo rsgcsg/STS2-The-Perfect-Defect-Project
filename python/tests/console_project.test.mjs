@@ -1452,6 +1452,96 @@ test("current owner blockers disable decisions one at a time while legal recover
   }
 });
 
+test("each owner blocker is independently effective against a complete healthy fixture", async () => {
+  const healthy = () => ({
+    status: "loaded",
+    loaded: true,
+    error_code: null,
+    observation_error: null,
+    operation: { id: "previous-command", action: "auto", status: "completed" },
+    runtime: {
+      lifecycle: "running",
+      mode: "human",
+      controller: "released",
+      tainted: false,
+      taint_reason: null,
+      errors: [],
+      invalidations: [],
+      last_receipt: null,
+    },
+  });
+  const normal = setup({
+    view: "local-models",
+    handler: (url, options) =>
+      url === "/api/local-models/status" ? healthy() : modelHandler(url, options),
+  });
+  const normalPage = await normal.render();
+  for (const action_name of ["auto", "one_step", "shadow"])
+    assert.equal(action(normalPage, `model-command-${action_name}`).disabled, false);
+  assert.equal(post(normal.calls).length, 0);
+
+  const cases = [
+    {
+      name: "pending operation",
+      change: (state) => {
+        state.operation = { id: "current-command", action: "auto", status: "pending" };
+      },
+    },
+    {
+      name: "shadow mode with released controller",
+      change: (state) => {
+        state.runtime.mode = "shadow";
+      },
+    },
+    {
+      name: "stopped Runtime while service remains loaded",
+      change: (state) => {
+        state.runtime.lifecycle = "stopped";
+      },
+    },
+    {
+      name: "recovery required while service and Runtime remain observed",
+      change: (state) => {
+        state.status = "recovery_required";
+      },
+    },
+  ];
+  for (const { name, change } of cases) {
+    const state = healthy();
+    change(state);
+    const env = setup({
+      view: "local-models",
+      handler: (url, options) =>
+        url === "/api/local-models/status" ? state : modelHandler(url, options),
+    });
+    const page = await env.render();
+    for (const action_name of ["auto", "one_step", "shadow"]) {
+      const button = action(page, `model-command-${action_name}`);
+      assert.equal(button.disabled, true, name);
+      await button.onclick();
+    }
+    assert.equal(post(env.calls).length, 0, name);
+
+    for (const recovery_action of ["human", "stop"]) {
+      const recoveryEnv = setup({
+        view: "local-models",
+        handler: (url, options) =>
+          url === "/api/local-models/status" ? state : modelHandler(url, options),
+      });
+      const recoveryPage = await recoveryEnv.render();
+      const button = action(recoveryPage, `model-command-${recovery_action}`);
+      assert.equal(button.disabled, false, `${name}: ${recovery_action}`);
+      await button.onclick();
+      assert.equal(post(recoveryEnv.calls).length, 1, `${name}: ${recovery_action}`);
+      assert.deepEqual(
+        body(post(recoveryEnv.calls)[0]),
+        { action: recovery_action },
+        `${name}: ${recovery_action}`,
+      );
+    }
+  }
+});
+
 test("retained runtime diagnostics are history after explicit recovery", async () => {
   const env = setup({ view: "local-models", handler: (url, options) =>
     url === "/api/local-models/status" ? {
