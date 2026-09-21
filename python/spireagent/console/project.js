@@ -2014,9 +2014,15 @@ window.SpireProject = (() => {
     const currentFailure = data.error_code;
     if (currentFailure) {
       const explanation = currentFailure === "environment_modset_fingerprint_drift"
-        ? "当前游戏环境与模型绑定不一致，模型尚未获准执行。请结束测试，核对游戏启动配置后重新加载；不会自动重发或自动重绑。"
+        ? "上次本机操作曾发现游戏环境与模型绑定不一致"
         : failure({ message: currentFailure });
-      box.append(el("p", explanation, "banner error"));
+      box.append(
+        el(
+          "p",
+          `上次本机操作诊断（历史记录）：${explanation}。它不单独决定当前操作资格；显式新操作仍会重新进行身份、epoch 和环境检查，不会自动重发或自动重绑。`,
+          "banner warning",
+        ),
+      );
     }
     if (data.observation_error)
       box.append(
@@ -2039,7 +2045,7 @@ window.SpireProject = (() => {
         ),
       );
     const runtimeFailure = runtime?.errors?.at(-1);
-    if (runtimeFailure && runtimeFailure !== currentFailure) {
+    if (runtimeFailure) {
       const explanation = runtimeFailure === "environment_modset_fingerprint_drift"
         ? "最近一次 Runtime 环境检查曾拒绝当时的环境（历史诊断）：游戏环境与模型绑定不一致。它不单独决定当前操作资格；你明确点击开始后，Runtime 会重新核对当前环境，仍不兼容会安全返回人工模式。"
         : `最近一次 Runtime 诊断（历史记录）：${runtimeFailure}。它不单独决定当前操作资格；需要恢复时请明确点击操作，不会自动重发。`;
@@ -2057,7 +2063,6 @@ window.SpireProject = (() => {
       runtime?.lifecycle === "running" &&
       !changing &&
       !data.observation_error &&
-      !currentFailure &&
       !runtime?.tainted &&
       runtime?.mode === "human" &&
       runtime?.controller === "released" &&

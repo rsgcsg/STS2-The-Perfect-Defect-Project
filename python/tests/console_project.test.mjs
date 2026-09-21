@@ -1303,19 +1303,153 @@ test("research archives preserve project scope and restore exact artifact identi
 });
 
 
-test("runtime environment rejection is visible and cannot be blindly restarted", async () => {
+test("runtime environment rejection remains historical until an explicit fresh start", async () => {
   const env = setup({ view: "local-models", handler: (url, options) =>
     url === "/api/local-models/status" ? {
       status: "loaded", loaded: true,
-      error_code: "environment_modset_fingerprint_drift",
       runtime: { lifecycle: "running", mode: "human", controller: "released",
         errors: ["environment_modset_fingerprint_drift"], last_receipt: null }
     } : modelHandler(url, options) });
-  const page = await env.render();
+  let page = await env.render();
   assert.match(text(page), /游戏环境与模型绑定不一致/);
+  assert.match(text(page), /历史诊断/);
   assert.match(text(page), /尚无游戏动作送达记录/);
-  assert.equal(action(page, "model-command-auto").disabled, true);
+  assert.equal(action(page, "model-command-auto").disabled, false);
   assert.equal(action(page, "model-command-stop").disabled, false);
+  assert.equal(post(env.calls).length, 0);
+  page = await env.render();
+  assert.equal(post(env.calls).length, 0);
+  await action(page, "model-command-auto").onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.deepEqual(body(post(env.calls)[0]), { action: "auto" });
+});
+
+test("retained local precondition diagnostics do not block an explicit fresh start", async () => {
+  for (const error_code of [
+    "connector_identity_unavailable",
+    "runtime_recovery_epoch_mismatch",
+  ]) {
+    const env = setup({ view: "local-models", handler: (url, options) =>
+      url === "/api/local-models/status" ? {
+        status: "loaded", loaded: true, error_code,
+        runtime: {
+          lifecycle: "running", mode: "human", controller: "released",
+          tainted: false, errors: [error_code], last_receipt: null,
+        },
+      } : modelHandler(url, options) });
+    const page = await env.render();
+    assert.equal(action(page, "model-command-auto").disabled, false, error_code);
+    assert.equal(post(env.calls).length, 0);
+    await action(page, "model-command-auto").onclick();
+    assert.equal(post(env.calls).length, 1, error_code);
+    assert.deepEqual(body(post(env.calls)[0]), { action: "auto" });
+  }
+});
+
+test("each explicit decision mode sends exactly one request and redraw never retries", async () => {
+  for (const action_name of ["auto", "one_step", "shadow"]) {
+    const env = setup({ view: "local-models", handler: (url, options) =>
+      url === "/api/local-models/status" ? {
+        status: "loaded", loaded: true, error_code: "runtime_recovery_epoch_mismatch",
+        runtime: {
+          lifecycle: "running", mode: "human", controller: "released",
+          tainted: false, errors: ["runtime_recovery_epoch_mismatch"], last_receipt: null,
+        },
+      } : modelHandler(url, options) });
+    let page = await env.render();
+    assert.equal(action(page, `model-command-${action_name}`).disabled, false);
+    page = await env.render();
+    assert.equal(post(env.calls).length, 0);
+    await action(page, `model-command-${action_name}`).onclick();
+    assert.equal(post(env.calls).length, 1, action_name);
+    assert.deepEqual(body(post(env.calls)[0]), { action: action_name });
+  }
+});
+
+test("current owner blockers disable decisions one at a time while legal recovery remains available", async () => {
+  const runtime = (overrides = {}) => ({
+    lifecycle: "running", mode: "human", controller: "released",
+    tainted: false, errors: ["historical_runtime_failure"], last_receipt: null,
+    ...overrides,
+  });
+  const cases = [
+    {
+      name: "command_unknown",
+      state: { status: "command_unknown", loaded: true, runtime: runtime() },
+      recoverable: true,
+    },
+    {
+      name: "recovery_required",
+      state: {
+        status: "recovery_required", loaded: false,
+        previous_session: { run_id: "previous" }, runtime: runtime(),
+      },
+      recoverable: true,
+    },
+    {
+      name: "observation_error",
+      state: {
+        status: "loaded", loaded: true,
+        observation_error: "runtime_status_unavailable_or_identity_drift",
+        runtime: runtime(),
+      },
+      recoverable: true,
+    },
+    {
+      name: "taint",
+      state: { status: "loaded", loaded: true, runtime: runtime({ tainted: true }) },
+      recoverable: true,
+    },
+    {
+      name: "pending",
+      state: {
+        status: "loading", loaded: false,
+        operation: { status: "pending", action: "prepare-and-load" }, runtime: runtime(),
+      },
+      recoverable: true,
+    },
+    {
+      name: "stopped",
+      state: {
+        status: "stopped", loaded: false,
+        runtime: runtime({ lifecycle: "stopped" }),
+      },
+      recoverable: false,
+    },
+    {
+      name: "non_human",
+      state: {
+        status: "loaded", loaded: true,
+        runtime: runtime({ mode: "shadow", controller: "held" }),
+      },
+      recoverable: true,
+    },
+    {
+      name: "controller_held",
+      state: {
+        status: "loaded", loaded: true,
+        runtime: runtime({ controller: "held" }),
+      },
+      recoverable: true,
+    },
+  ];
+  for (const { name, state, recoverable } of cases) {
+    const env = setup({
+      view: "local-models",
+      handler: (url, options) =>
+        url === "/api/local-models/status" ? state : modelHandler(url, options),
+    });
+    const page = await env.render();
+    for (const action_name of ["auto", "one_step", "shadow"])
+      assert.equal(action(page, `model-command-${action_name}`).disabled, true, name);
+    assert.equal(post(env.calls).length, 0, name);
+    for (const action_name of ["human", "stop"])
+      assert.equal(
+        action(page, `model-command-${action_name}`).disabled,
+        !recoverable,
+        name,
+      );
+  }
 });
 
 test("retained runtime diagnostics are history after explicit recovery", async () => {
