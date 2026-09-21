@@ -2011,10 +2011,13 @@ window.SpireProject = (() => {
         ],
       ]),
     );
-    if (data.error_code)
-      box.append(
-        el("p", failure({ message: data.error_code }), "banner error"),
-      );
+    const currentFailure = data.error_code;
+    if (currentFailure) {
+      const explanation = currentFailure === "environment_modset_fingerprint_drift"
+        ? "当前游戏环境与模型绑定不一致，模型尚未获准执行。请结束测试，核对游戏启动配置后重新加载；不会自动重发或自动重绑。"
+        : failure({ message: currentFailure });
+      box.append(el("p", explanation, "banner error"));
+    }
     if (data.observation_error)
       box.append(
         el(
@@ -2036,11 +2039,11 @@ window.SpireProject = (() => {
         ),
       );
     const runtimeFailure = runtime?.errors?.at(-1);
-    if (runtimeFailure) {
+    if (runtimeFailure && runtimeFailure !== currentFailure) {
       const explanation = runtimeFailure === "environment_modset_fingerprint_drift"
-        ? "游戏环境与模型绑定不一致，模型尚未获准执行。请结束测试，核对游戏启动配置后重新加载；重复点击开始不会修复此问题。"
-        : `模型运行已报告阻塞：${runtimeFailure}。请先查看原因，再恢复测试。`;
-      box.append(el("p", explanation, "banner error"));
+        ? "最近一次 Runtime 环境检查曾拒绝当时的环境（历史诊断）：游戏环境与模型绑定不一致。它不单独决定当前操作资格；你明确点击开始后，Runtime 会重新核对当前环境，仍不兼容会安全返回人工模式。"
+        : `最近一次 Runtime 诊断（历史记录）：${runtimeFailure}。它不单独决定当前操作资格；需要恢复时请明确点击操作，不会自动重发。`;
+      box.append(el("p", explanation, "banner warning"));
     }
     box.append(el("p", runtime?.last_receipt
       ? "已收到动作回执，具体送达结果见下方记录。"
@@ -2054,8 +2057,10 @@ window.SpireProject = (() => {
       runtime?.lifecycle === "running" &&
       !changing &&
       !data.observation_error &&
+      !currentFailure &&
       !runtime?.tainted &&
-      !runtimeFailure &&
+      runtime?.mode === "human" &&
+      runtime?.controller === "released" &&
       ![
         "command_unknown",
         "recovery_required",

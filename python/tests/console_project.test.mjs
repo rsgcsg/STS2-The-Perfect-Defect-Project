@@ -596,7 +596,7 @@ test("explicit game command needs no repeated confirmation and network ambiguity
           return {
             status: "loaded",
             loaded: true,
-            runtime: { mode: "human", lifecycle: "running" },
+            runtime: { mode: "human", lifecycle: "running", controller: "released" },
           };
         if (options.method === "POST") throw new Error("network lost");
         return modelHandler(url, options);
@@ -1307,6 +1307,7 @@ test("runtime environment rejection is visible and cannot be blindly restarted",
   const env = setup({ view: "local-models", handler: (url, options) =>
     url === "/api/local-models/status" ? {
       status: "loaded", loaded: true,
+      error_code: "environment_modset_fingerprint_drift",
       runtime: { lifecycle: "running", mode: "human", controller: "released",
         errors: ["environment_modset_fingerprint_drift"], last_receipt: null }
     } : modelHandler(url, options) });
@@ -1315,4 +1316,61 @@ test("runtime environment rejection is visible and cannot be blindly restarted",
   assert.match(text(page), /尚无游戏动作送达记录/);
   assert.equal(action(page, "model-command-auto").disabled, true);
   assert.equal(action(page, "model-command-stop").disabled, false);
+});
+
+test("retained runtime diagnostics are history after explicit recovery", async () => {
+  const env = setup({ view: "local-models", handler: (url, options) =>
+    url === "/api/local-models/status" ? {
+      status: "loaded", loaded: true, error_code: null,
+      runtime: {
+        lifecycle: "running", mode: "human", controller: "released",
+        errors: ["temporary_runtime_failure"],
+        last_snapshot_id: "snapshot-recovered",
+        last_receipt: { delivery: "delivered" },
+      }
+    } : modelHandler(url, options) });
+  let page = await env.render();
+  assert.match(text(page), /历史记录/);
+  assert.match(text(page), /temporary_runtime_failure/);
+  assert.equal(action(page, "model-command-auto").disabled, false);
+  assert.equal(action(page, "model-command-human").disabled, false);
+  assert.equal(action(page, "model-command-stop").disabled, false);
+  page = await env.render();
+  assert.equal(post(env.calls).length, 0);
+  await action(page, "model-command-human").onclick();
+  assert.deepEqual(body(post(env.calls)[0]), { action: "human" });
+});
+
+test("a Runtime already in Auto remains protected from duplicate start despite old errors", async () => {
+  const env = setup({ view: "local-models", handler: (url, options) =>
+    url === "/api/local-models/status" ? {
+      status: "loaded", loaded: true, error_code: null,
+      runtime: {
+        lifecycle: "running", mode: "auto", controller: "held",
+        errors: ["environment_modset_fingerprint_drift"],
+        last_snapshot_id: "snapshot-current",
+        last_receipt: null,
+      }
+    } : modelHandler(url, options) });
+  const page = await env.render();
+  assert.equal(action(page, "model-command-auto").disabled, true);
+  assert.equal(action(page, "model-command-human").disabled, false);
+  assert.equal(action(page, "model-command-stop").disabled, false);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("taint remains a current execution blocker while history does not trigger commands on redraw", async () => {
+  const env = setup({ view: "local-models", handler: (url, options) =>
+    url === "/api/local-models/status" ? {
+      status: "loaded", loaded: true, error_code: null,
+      runtime: {
+        lifecycle: "running", mode: "human", controller: "released",
+        tainted: true, taint_reason: "receipt_correlation_failed",
+        errors: ["temporary_runtime_failure"], last_receipt: null,
+      }
+    } : modelHandler(url, options) });
+  await env.render();
+  await env.render();
+  assert.equal(action(await env.render(), "model-command-auto").disabled, true);
+  assert.equal(post(env.calls).length, 0);
 });
