@@ -1,10 +1,29 @@
 # AI collaboration and long-task handoff
 
-Status: owner-requested working agreement, 2026-09-19. Source integration and
+Status: owner-requested working agreement, 2026-09-19; clarified 2026-09-21. Source integration and
 execution evidence remain separate. This document owns AI task delegation and
 waiting behavior; it supplements [Engineering Governance](ENGINEERING_GOVERNANCE.md),
 [Development Workflow](DEVELOPMENT_WORKFLOW.md) and [Testing](TESTING.md), not game,
 data, authorization or research authority.
+
+## Current owner direction and conversation workflow
+
+Read [single-team authorization and coordinated distribution](STAGE1A_TEAM_OPERATIONS.zh-CN.md)
+for the latest product refinement of Stage 1a. One configuration/consent experience reuses
+existing identity, membership, consent and use authorities; it is not one universal secret.
+The cloud product serves the existing single invited team, not a new multi-tenant service.
+Workshop/client updates and Hub promotion share compatibility/release coordination, not
+an authority allowing every client to deploy the server. Product installation consent
+is not permission for an AI assistant to launch training, paid compute or deployment.
+
+In this conversation the architect plans and gives a narrow prompt; the human relays it
+to local Codex-Luna; Luna implements/tests and returns redacted exact evidence; the
+architect re-reads source/diffs/checks and accepts, returns a targeted fix, or marks
+blocked before giving the next prompt. A human native gate remains separate. The architect
+may directly maintain its own reviewed documentation/issue/PR work through GitHub, but
+never shares Luna's writable branch or direct-pushes develop/main. Prepared tasks are not
+reported as dispatched or running without an actual execution receipt. Issue #28 is the
+initial read-only reconciliation packet; do not issue a duplicate broad implementation.
 
 ## Roles and actual access
 
