@@ -75,6 +75,9 @@ def test_token_artifact_roundtrip_revalidates_membership_and_ids(tmp_path):
         load_token_inputs(owner.store, forged.artifact_id)
     with pytest.raises(BoundaryError, match="snapshot_only_for_pf"):
         publish_token_inputs(owner.store, view.artifact_id, "s", owner.producer, snapshot=tmp_path)
-    (tmp_path / "tokenizer.json").write_text(loaded.tokenizer.to_str())
+    tokenizer_text = loaded.tokenizer.to_str()
+    tokenizer_path = tmp_path / "tokenizer.json"
+    tokenizer_path.write_text(tokenizer_text, encoding="utf-8")
+    assert tokenizer_path.read_bytes() == tokenizer_text.encode("utf-8")
     with pytest.raises(BoundaryError, match="pin_mismatch"):
         publish_token_inputs(owner.store, view.artifact_id, "pf", owner.producer, snapshot=tmp_path)
