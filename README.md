@@ -6,6 +6,7 @@ applications and models consume declared interfaces.
 
 ## Start here
 
+- [Current work and next gate](docs/memory/CURRENT.md); [Stage 1a product delivery](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md).
 - [New member and Agent handoff (中文)](docs/NEW_MEMBER_HANDOFF.zh-CN.md): accounts,
   first installation, collection, development/PRs, operations and incident reporting.
 - [Default release and migration acceptance](docs/MONOREPO_MIGRATION.md): native recording,
