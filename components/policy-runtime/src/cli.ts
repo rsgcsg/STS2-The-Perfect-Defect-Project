@@ -77,7 +77,7 @@ async function main(): Promise<void> {
     runtime = new PolicyRuntime({
       manifest,
       connector,
-      policy: (input) => port!.decide(input),
+      policy: (input, signal) => port!.decide(input, signal),
       mode: options.mode,
       runId: evidence.runId,
       evidence,

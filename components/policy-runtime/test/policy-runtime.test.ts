@@ -196,6 +196,44 @@ describe("decision-only process boundary", () => {
     } finally { port.close(); }
   });
 
+  it("isolates a cancelled NDJSON decision from a later request", async () => {
+    const script = [
+      `process.stdout.write(JSON.stringify({schema:'sts2.policy-runtime/policy-port-1',message_type:'ready',adapter:${JSON.stringify(manifest().adapter)}})+'\\n');`,
+      "const readline=require('node:readline').createInterface({input:process.stdin});",
+      "readline.on('line',(line)=>{const request=JSON.parse(line);const delay=request.input.run_id==='run-cancelled'?40:0;setTimeout(()=>process.stdout.write(JSON.stringify({schema:request.schema,message_type:'decision',request_id:request.request_id,output:{candidate_digest:request.input.candidate_digest,scores:Array(request.input.candidate_count).fill(1),selected_index:0}})+'\\n'),delay);});"
+    ].join("");
+    const port = NdjsonPolicyPort.spawn(process.execPath, ["-e", script]);
+    const current = bundle(["a"]);
+    const digest = candidateOrderDigest(current.observation.bound_actions.actions);
+    try {
+      await port.ready();
+      const controller = new AbortController();
+      const cancelled = port.decide({ run_id: "run-cancelled", manifest: manifest(), bundle: current, candidate_digest: digest, candidate_count: 1 }, controller.signal);
+      controller.abort();
+      await expect(cancelled).rejects.toThrow("cancelled");
+      await expect(port.decide({ run_id: "run-next", manifest: manifest(), bundle: current, candidate_digest: digest, candidate_count: 1 })).resolves.toEqual({ candidate_digest: digest, scores: [1], selected_index: 0 });
+    } finally { port.close(); }
+  });
+
+  it("fails closed when the policy child exits during an active decision", async () => {
+    const script = [
+      `process.stdout.write(JSON.stringify({schema:'sts2.policy-runtime/policy-port-1',message_type:'ready',adapter:${JSON.stringify(manifest().adapter)}})+'\\n');`,
+      "const readline=require('node:readline').createInterface({input:process.stdin});",
+      "readline.once('line',()=>setTimeout(()=>process.exit(17),5));"
+    ].join("");
+    const port = NdjsonPolicyPort.spawn(process.execPath, ["-e", script]);
+    try {
+      await port.ready();
+      const connector = new FakeConnector(bundle(["a"]));
+      const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-child-exit", policy: (input, signal) => port.decide(input, signal) });
+      const result = await runtime.tick();
+      expect(result.type).toBe("not_admitted");
+      expect(runtime.status().mode).toBe("human");
+      expect(runtime.status().errors.at(-1)).toContain("policy child port closed");
+      expect(connector.submitCount).toBe(0);
+    } finally { port.close(); }
+  });
+
   it("rejects adapter startup identity drift before any decision", async () => {
     const drifted = { ...manifest().adapter, code_sha256: "d".repeat(64) };
     const script = `process.stdout.write(JSON.stringify({schema:'sts2.policy-runtime/policy-port-1',message_type:'ready',adapter:${JSON.stringify(drifted)}})+'\\n');setInterval(()=>{},1000);`;
@@ -217,7 +255,7 @@ class FakeConnector implements PolicyConnector {
   requiredReadRequests: string[][] = [];
   receiptRequestIdOverride?: string;
   receiptBoundActionIdOverride?: string;
-  constructor(public current: DecisionBundle, private readonly delivery: PlayerEnvironmentReceipt["delivery"] = "delivered", private readonly submitFailure?: Error) {}
+  constructor(public current: DecisionBundle, private readonly delivery: PlayerEnvironmentReceipt["delivery"] = "delivered", private readonly submitFailure?: Error, private readonly releaseFailure?: Error) {}
   async capabilities() {
     return {
       protocol_version: "1.0.0", snapshot_schema: "sts2.player-environment/snapshot-1", action_schema: "sts2.player-environment/action-1", receipt_schema: "sts2.player-environment/receipt-1", control_schema: "sts2.player-environment/control-1", status: "ready",
@@ -228,7 +266,7 @@ class FakeConnector implements PolicyConnector {
   }
   async observeBundle(requiredReadKinds: readonly string[]) { this.observeCount += 1; this.requiredReadRequests.push([...requiredReadKinds]); if (this.stale) { this.stale = false; throw Object.assign(new Error("stale_state"), { code: "stale_state" }); } return this.observationQueue.shift() ?? this.current; }
   async acquireController() { this.acquireCount += 1; }
-  async releaseController() { this.releaseCount += 1; }
+  async releaseController() { this.releaseCount += 1; if (this.releaseFailure) throw this.releaseFailure; }
   async submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }) {
     this.submitCount += 1;
     if (this.submitFailure) throw this.submitFailure;
@@ -238,10 +276,14 @@ class FakeConnector implements PolicyConnector {
   }
 }
 
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>(done => { resolve = done; });
-  return { promise, resolve };
+function deferred<T = void>() {
+  let resolve!: (value?: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = value => done(value as T);
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("cross-interface Runtime control preconditions", () => {
@@ -620,10 +662,188 @@ describe("runtime integration fake", () => {
     await human;
 
     expect(result.type).toBe("not_admitted");
-    if (result.type === "not_admitted") expect(result.reason).toBe("mode_changed_before_submit");
+    if (result.type === "not_admitted") expect(result.reason).toBe("runtime_recovery_epoch_mismatch");
     expect(runtime.status().mode).toBe("human");
     expect(connector.acquireCount).toBe(0);
     expect(connector.submitCount).toBe(0);
+  });
+
+  it("releases a held controller while the next policy decision is still pending", async () => {
+    const connector = new FakeConnector(bundle(["a"]));
+    const entered = deferred<void>();
+    const finish = deferred<{ candidate_digest: string; scores: number[]; selected_index: number | null }>();
+    let calls = 0;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-slow-human", sleep: async () => {}, policy: async input => {
+      if (calls++ === 0) return { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 };
+      entered.resolve();
+      return finish.promise;
+    } });
+
+    expect((await runtime.tick()).type).toBe("delivered");
+    const slowTick = runtime.tick();
+    await entered.promise;
+    const human = runtime.setMode("human");
+    try {
+      const outcome = await Promise.race([
+        human.then(() => "recovered" as const),
+        new Promise<"timeout">(resolve => setTimeout(() => resolve("timeout"), 100))
+      ]);
+      expect(outcome).toBe("recovered");
+      expect(connector.releaseCount).toBe(1);
+      expect(runtime.status()).toMatchObject({ mode: "human", controller: "released" });
+    } finally {
+      finish.resolve({ candidate_digest: candidateOrderDigest(["a"]), scores: [1], selected_index: 0 });
+      await slowTick;
+      await human;
+    }
+    expect(connector.submitCount).toBe(1);
+  });
+
+  it("stops and releases a held controller during unresolved policy without reviving a late rejection", async () => {
+    const connector = new FakeConnector(bundle(["a"]));
+    const entered = deferred<void>();
+    const finish = deferred<{ candidate_digest: string; scores: number[]; selected_index: number | null }>();
+    let calls = 0;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-slow-stop", sleep: async () => {}, policy: async input => {
+      if (calls++ === 0) return { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 };
+      entered.resolve();
+      return finish.promise;
+    } });
+
+    expect((await runtime.tick()).type).toBe("delivered");
+    const slowTick = runtime.tick();
+    await entered.promise;
+    const stopped = runtime.stop();
+    try {
+      const outcome = await Promise.race([
+        stopped.then(() => "stopped" as const),
+        new Promise<"timeout">(resolve => setTimeout(() => resolve("timeout"), 100))
+      ]);
+      expect(outcome).toBe("stopped");
+      expect(connector.releaseCount).toBe(1);
+      expect(runtime.status()).toMatchObject({ lifecycle: "stopped", mode: "human", controller: "released" });
+    } finally {
+      finish.reject(new Error("late model failure"));
+      await slowTick;
+      await stopped;
+    }
+    expect(connector.submitCount).toBe(1);
+  });
+
+  it("does not claim a release before a slow policy has acquired a controller", async () => {
+    const connector = new FakeConnector(bundle(["a"]));
+    const entered = deferred<void>();
+    const finish = deferred<{ candidate_digest: string; scores: number[]; selected_index: number | null }>();
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-slow-preacquire", sleep: async () => {}, policy: async input => {
+      entered.resolve();
+      return finish.promise;
+    } });
+    const slowTick = runtime.tick();
+    await entered.promise;
+    const human = runtime.setMode("human");
+    try {
+      const outcome = await Promise.race([
+        human.then(() => "recovered" as const),
+        new Promise<"timeout">(resolve => setTimeout(() => resolve("timeout"), 100))
+      ]);
+      expect(outcome).toBe("recovered");
+      expect(connector.acquireCount).toBe(0);
+      expect(connector.releaseCount).toBe(0);
+      expect(runtime.status()).toMatchObject({ mode: "human", controller: "released" });
+    } finally {
+      finish.resolve({ candidate_digest: candidateOrderDigest(["a"]), scores: [1], selected_index: 0 });
+      await slowTick;
+      await human;
+    }
+  });
+
+  it("recovers a slow tick through two loopback HTTP clients", async () => {
+    const connector = new FakeConnector(bundle(["a"]));
+    const entered = deferred<void>();
+    const finish = deferred<{ candidate_digest: string; scores: number[]; selected_index: number | null }>();
+    let calls = 0;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "human", runId: "run-http-recovery", sleep: async () => {}, policy: async input => {
+      if (calls++ === 0) return { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 };
+      entered.resolve();
+      return finish.promise;
+    } });
+    const service = await startPolicyRuntimeHttpServer(runtime, { port: 0, deferAutoDrive: true });
+    const post = async (route: string, body: unknown) => {
+      const response = await fetch(`${service.address}/v2/${route}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-sts2-policy-run-id": runtime.status().run_id },
+        body: JSON.stringify(body)
+      });
+      return { status: response.status, value: await response.json() as Record<string, unknown> };
+    };
+    try {
+      expect((await post("mode", { mode: "auto" })).status).toBe(200);
+      expect((await post("tick", { max_ticks: 1 })).status).toBe(200);
+
+      const slowTick = post("tick", { max_ticks: 1 });
+      await entered.promise;
+      const recovery = post("mode", { mode: "human" });
+      const recovered = await Promise.race([
+        recovery,
+        new Promise<"timeout">(resolve => setTimeout(() => resolve("timeout"), 100))
+      ]);
+      expect(recovered).not.toBe("timeout");
+      if (recovered !== "timeout") expect(recovered.status).toBe(200);
+      expect(runtime.status()).toMatchObject({ mode: "human", controller: "released" });
+
+      finish.resolve({ candidate_digest: candidateOrderDigest(["a"]), scores: [1], selected_index: 0 });
+      const result = await slowTick;
+      expect(result.status).toBe(200);
+      const results = result.value.results as Array<{ type: string; reason?: string }>;
+      expect(results[0]?.type).toBe("not_admitted");
+      expect(results[0]?.reason).toBe("runtime_recovery_epoch_mismatch");
+      expect(connector.submitCount).toBe(1);
+    } finally {
+      finish.resolve({ candidate_digest: candidateOrderDigest(["a"]), scores: [1], selected_index: 0 });
+      await service.close();
+    }
+  });
+
+  it("keeps the controller held when a recovery release fails", async () => {
+    const connector = new FakeConnector(bundle(["a"]), "delivered", undefined, new Error("release unavailable"));
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-release-failure", policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    expect((await runtime.tick()).type).toBe("delivered");
+    await expect(runtime.setMode("human")).rejects.toThrow("release unavailable");
+    expect(runtime.status()).toMatchObject({ mode: "auto", controller: "held" });
+    expect(runtime.status().errors.at(-1)).toContain("controller_release_failed");
+    expect(connector.releaseCount).toBe(1);
+  });
+
+  it("waits for an in-flight submit and preserves delivered receipt when recovery follows it", async () => {
+    const connector = new FakeConnector(bundle(["a"]));
+    connector.stale = false;
+    const submitEntered = deferred<void>();
+    const submitFinish = deferred<PlayerEnvironmentReceipt>();
+    connector.submit = async input => {
+      connector.submitCount += 1;
+      submitEntered.resolve();
+      return submitFinish.promise.then(receipt => ({ ...receipt, request_id: input.requestId }));
+    };
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-submit-recovery", policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    const tick = runtime.tick();
+    await submitEntered.promise;
+    const human = runtime.setMode("human");
+    const blocked = await Promise.race([
+      human.then(() => "released" as const),
+      new Promise<"waiting">(resolve => setTimeout(() => resolve("waiting"), 50))
+    ]);
+    expect(blocked).toBe("waiting");
+    const successor = snapshot(["next"], "snapshot-submit-successor", "interactive", 2);
+    connector.current = { observation: successor, reads: [] };
+    submitFinish.resolve({ protocol_version: "1.0.0", schema: "sts2.player-environment/receipt-1", request_id: "placeholder", delivery: "delivered", action: { bound_action_id: "a", verb: "end_turn", arguments: [] }, retry: { allowed: false, reason: "test" }, successor });
+    const result = await tick;
+    await human;
+    expect(result.type).toBe("not_admitted");
+    if (result.type === "not_admitted") expect(result.reason).toBe("recovery_requested_after_delivery");
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "released" });
+    expect(runtime.status().last_receipt).toMatchObject({ delivery: "delivered", successor_snapshot_id: "snapshot-submit-successor" });
+    expect(connector.submitCount).toBe(1);
+    expect(connector.releaseCount).toBe(1);
   });
 
   it("fails closed and returns Human when a policy process does not answer", async () => {
