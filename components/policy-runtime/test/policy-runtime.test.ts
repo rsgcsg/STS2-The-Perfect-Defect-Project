@@ -255,6 +255,7 @@ class FakeConnector implements PolicyConnector {
   requiredReadRequests: string[][] = [];
   receiptRequestIdOverride?: string;
   receiptBoundActionIdOverride?: string;
+  releaseGate?: Promise<void>;
   constructor(public current: DecisionBundle, private readonly delivery: PlayerEnvironmentReceipt["delivery"] = "delivered", private readonly submitFailure?: Error, private readonly releaseFailure?: Error) {}
   async capabilities() {
     return {
@@ -266,7 +267,7 @@ class FakeConnector implements PolicyConnector {
   }
   async observeBundle(requiredReadKinds: readonly string[]) { this.observeCount += 1; this.requiredReadRequests.push([...requiredReadKinds]); if (this.stale) { this.stale = false; throw Object.assign(new Error("stale_state"), { code: "stale_state" }); } return this.observationQueue.shift() ?? this.current; }
   async acquireController() { this.acquireCount += 1; }
-  async releaseController() { this.releaseCount += 1; if (this.releaseFailure) throw this.releaseFailure; }
+  async releaseController() { this.releaseCount += 1; if (this.releaseGate) await this.releaseGate; if (this.releaseFailure) throw this.releaseFailure; }
   async submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }) {
     this.submitCount += 1;
     if (this.submitFailure) throw this.submitFailure;
@@ -1012,7 +1013,10 @@ describe("runtime integration fake", () => {
     let finishScoring!: () => void;
     const scoring = new Promise<void>((resolve) => { finishScoring = resolve; });
     let scoringEntered = false;
-    const runtime = new PolicyRuntime({ manifest: manifest(), connector: new FakeConnector(bundle(["a"])), mode: "one_step", evidence, runId: evidence.runId, runtimeIdentity: { version: "0.1.0-rc.3", code_sha256: "e".repeat(64) }, policy: async (input) => {
+    const connector = new FakeConnector(bundle(["a"]));
+    const releaseGate = deferred<void>();
+    if (abortResponse) connector.releaseGate = releaseGate.promise;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "one_step", evidence, runId: evidence.runId, runtimeIdentity: { version: "0.1.0-rc.3", code_sha256: "e".repeat(64) }, policy: async (input) => {
       scoringEntered = true; await scoring;
       return { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 };
     } });
@@ -1037,12 +1041,15 @@ describe("runtime integration fake", () => {
         stopRequest.once("error", reject); stopRequest.end("{}");
       });
       await eventually(() => stopSpy.mock.calls.length === 1);
-      if (abortResponse) { stopRequest.destroy(new Error("caller disconnected")); await expect(stopped).rejects.toThrow("caller disconnected"); await disconnected; }
       if (abortResponse) {
-        // Recovery cancellation may complete stop before the caller's
-        // disconnect is observed.  The contract is exactly-once cleanup after
-        // stop succeeds, not a platform-dependent callback delay.
+        // Hold the connector release so the fixture exercises a real response
+        // disconnect before stop can send its success response.
+        stopRequest.destroy(new Error("caller disconnected"));
+        await expect(stopped).rejects.toThrow("caller disconnected"); await disconnected;
+      }
+      if (abortResponse) {
         await tick;
+        releaseGate.resolve();
       } else {
         expect(cleanupCount).toBe(0);
         finishScoring(); await tick;
@@ -1052,7 +1059,7 @@ describe("runtime integration fake", () => {
       expect(cleanupCount).toBe(1);
       expect(service.server.listening).toBe(false);
       expect(JSON.parse(await readFile(join(evidence.directory, "evidence-manifest.json"), "utf8")).complete).toBe(true);
-    } finally { finishScoring(); await tick; if (service.server.listening) await service.close(); }
+    } finally { finishScoring(); releaseGate.resolve(); await tick; if (service.server.listening) await service.close(); }
   });
 
   it("passes real non-null Runtime environment status through the Workbench consumer", async () => {
