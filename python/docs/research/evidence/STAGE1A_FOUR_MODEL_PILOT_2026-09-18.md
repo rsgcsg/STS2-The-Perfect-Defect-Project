@@ -275,3 +275,67 @@ Workbench also clears a prior run's startup/evaluation when creating a new
 Human-mode child, and does not mislabel a failed attestation as a running-session
 recovery problem. Its focused failure/recovery regressions pass; application and
 native integration still require the subsequent gates.
+
+### rc.6 installed reload acceptance (2026-09-19)
+
+The rc.6 candidate archive SHA-256 is
+`16e1caec78bfaefe5ab0635a8888c6d945325dfa3acb6f8d979a376ad05abdc8`,
+source `9701b7530a94422fd8d7ae9296d3aee88fbdc4b3`. The owning installer downloaded
+it from `candidate/stage1a-runtime-rc6-20260919` and verified the full package and
+dependency closure. Runtime code SHA-256 is
+`2b78f8bc6fc75fd2bef51af1d61d095be9c711d03509df6c81ffc96dfd6c7f6b`.
+Evidence remains rc.13. Workbench source for the reload is
+`c1c16cf` (full SHA retained in the private source/job records).
+
+Using the same B-S model artifact and the new explicit adapter/lock manifest:
+
+1. Load `run-90af8071-501b-4c99-9da5-0ed9eec15ab5`: Human mode, controller released,
+   rc.6 startup identity matched; no decision or Receipt.
+2. Explicit Stop: lifecycle stopped, finalized evidence verified, exactly one
+   stopped event. Evaluation
+   `18c9e0b51c38ceeb90d2587d4a496feeb4f55a94a6654922b7ca0e6f926ce295`.
+3. Load again `run-961524ff-89f3-4e6c-8eda-aadd71898784`: Human mode, released
+   controller, no errors or taint. No port-in-use or old-session recovery blockage.
+
+The unchanged installed Mod cold-load was verified through its owning lifecycle;
+no Mod rebuild or gameplay action was performed in this acceptance. All 113
+focused local-model/sharing/installer tests passed before the additional startup
+state cleanup; its eight focused failure/recovery tests and full mypy then passed.
+A final integration gate is required on the complete source and dependency pins.
+Continuous native actions and in-game one-click model selection/load remain pending;
+this reload evidence does not establish either.
+
+
+### 2026-09-19 Integration gate test isolation repair
+
+At source `75e264637e9a2abdbc61665a5c9fc00fcf4229f0`, Platform portable passed (31.96 s). Python pytest reported 10 failed, 1120 passed and 3 skipped: installation and fake-process startup tests probed the operator Runtime on fixed port 15527. The live Human-mode Runtime exposed a test isolation defect.
+
+Installer tests now redirect the declared fixed-port probe to real ephemeral sockets; an occupied-listener regression still requires installation refusal before npm or package staging. The fake-process attestation test isolates its port prerequisite. Production guards, model artifacts and live Runtime were unchanged. The two affected files yielded 108 passing tests plus one new assertion failure about the lock directory; correcting that assertion to check package/staging preservation gave 16/16 focused passes. Python full validation is pending a fresh durable job; this is not continuous native gameplay evidence.
+
+
+### 2026-09-19 Python gate completion and live handoff
+
+Durable job `stage1a-repair-python-20260919-122800` completed at exact source `6db42ef02d1a6d356a18a4720c47025d351fbcd9`: Python portable PASS in 126.06 s; pytest 1131 passed, 3 skipped, 21 subtests passed. Platform portable remains the earlier explicitly scoped result at `75e2646`, not a new execution.
+
+Live observation after the gate found Runtime rc.6, run `run-961524ff-89f3-4e6c-8eda-aadd71898784`, B-S packed-v2 loaded in Human mode, controller released, no errors or taint, and no decisions yet. The owner was handed the existing Workbench control path for continuous combat, Human pause and Stop acceptance. That native interaction remains pending; no continuous-run or in-game one-click completion is claimed.
+
+
+### Owner reports no actions: actual environment rejection
+
+Run `run-36be6bda-ce5d-4f8b-a0b1-c7df154c73d2` sealed with 8 mode changes, 8 fail_closed events and Stop; no decisions or deliveries. Runtime rejected `environment_modset_fingerprint_drift` (manifest 36df5154..., observed 69d0c3e6...). A fresh read of Connector capabilities also reported `artifact_unqualified` and `execution_available=false`: the current process lacks the exact-source canary enablement. The fingerprint difference itself is not yet explained and must not be auto-accepted.
+
+Console now surfaces Runtime errors and absence of receipts, blocks blind repeated starts while retaining Human/Stop. Node console tests: 55 passed. Source change only; browser refresh and exact native relaunch/rebinding remain to be verified. Prior native interaction acceptance remains failed, not promoted by evidence verification.
+
+
+### 2026-09-19 Exact relaunch and explicit environment registration
+
+After owner-confirmed exit, the retained Game Mod lifecycle launched the installed artifact with exact-source canary enablement. `verify-loaded` passed, Connector reported `canary_exact` and `execution_available=true`. Artifact SHA/MVID remain unchanged. Modset fingerprint remains `69d0c3e6...`; the old `36df5154...` difference is not explained by process restart alone. No fingerprint check was removed.
+
+New private manifests explicitly bind the freshly verified environment, preserving originals and a registry backup. B-S loaded under `stage1a-b-s-verified-environment-20260919-1248`, Runtime rc.6, run `run-fdba509b-8ea3-4909-987f-23b00a89e907`, Human mode, controller released, zero errors, no decisions. Private proof folder: `stage1a-environment-rebind-20260919-1248`. Console regression rerun: 55 passed. Gameplay delivery remains pending; owner need only enter combat before the next bounded diagnostic. Normal Steam startup without candidate enablement remains an unresolved usability limitation.
+
+
+### 2026-09-19 B-S native combat bounded exercise
+
+Owner entered combat, then the existing Workbench command API requested one_step followed by a bounded ~20-second Auto observation and explicit Human/Stop. Run `run-fdba509b-8ea3-4909-987f-23b00a89e907` sealed 96 events, 25 decisions/receipts: 15 delivered (10 play, 3 use, 2 end_turn), 10 explicitly not_delivered/stale_snapshot. Fresh-observation recovery continued; no unknown receipt, taint or Runtime error was reported. Auto eventually handed off with `auto_surface_not_admitted`; this is not full-surface autonomy or uninterrupted full-run acceptance. Subsequent Human/Stop completed and released control.
+
+Installed Evidence verification passed with no findings, content ID `c505607332d1d055dfd770a05c0fbbf4685efca4997a49c38230650e9ffa2fbb`, evaluation `4677e27de7151577f543bb9f75581de8f5be3c613e9b7c467263ecacb73561b4`. Delivered proves native input delivery, not every resulting effect or strategic quality. These are Agent evaluation records, not Human training data. Remaining issues: stale-snapshot churn, unsupported-surface handoff explanation, ordinary launch enablement and in-game model preparation/takeover entry.

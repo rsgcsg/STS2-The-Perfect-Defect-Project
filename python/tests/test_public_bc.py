@@ -5,6 +5,7 @@ import json
 from dataclasses import replace
 
 import pytest
+import torch
 from platform_bundle3_fixture import bundle3
 from test_decision_training import prepared
 from test_public_inputs import snapshot
@@ -117,8 +118,40 @@ def test_public_view_reprojects_sources_and_scores_same_text_after_export(tmp_pa
     observation = snapshot()
     public = project_public_snapshot(observation, compact=True)
     expected = scorer.score_texts(public.state_text, public.action_texts)
-    assert tuple(scorer.score_snapshot(observation).values()) == expected
+    original_scores = scorer.score_snapshot(observation)
+    assert tuple(original_scores.values()) == expected
+    original_keys = tuple(original_scores)
+    assert len(original_keys) == len(set(original_keys)) == len(public.actions)
+
+    def assert_reordered_scores(expected_by_key, actual_by_key):
+        expected_keys = tuple(expected_by_key)
+        actual_keys = tuple(actual_by_key)
+        assert len(actual_keys) == len(expected_keys)
+        assert set(actual_keys) == set(expected_keys)
+        assert actual_keys == expected_keys[::-1]
+        expected_fp32 = torch.tensor(
+            [expected_by_key[key] for key in expected_keys], dtype=torch.float32,
+        )
+        actual_fp32 = torch.tensor(
+            [actual_by_key[key] for key in expected_keys], dtype=torch.float32,
+        )
+        assert bool(torch.isfinite(expected_fp32).all())
+        assert bool(torch.isfinite(actual_fp32).all())
+        torch.testing.assert_close(actual_fp32, expected_fp32, rtol=1.3e-6, atol=1e-5)
+
     observation["bound_actions"]["actions"].reverse()
-    assert tuple(scorer.score_snapshot(observation).values()) == expected[::-1]
+    reordered_scores = scorer.score_snapshot(observation)
+    assert_reordered_scores(original_scores, reordered_scores)
+    # A distinct, deliberately cross-bound score must fail the same key-aware check.
+    with pytest.raises(AssertionError):
+        assert_reordered_scores(
+            {"key-a": 0.0, "key-b": 1.0},
+            {"key-b": 0.0, "key-a": 1.0},
+        )
+    with pytest.raises(AssertionError):
+        assert_reordered_scores(
+            {"key-a": 0.0, "key-b": 1.0},
+            {"key-b": float("nan"), "key-a": 0.0},
+        )
     with pytest.raises(BoundaryError, match="requires_snapshot"):
         scorer.score(None, ())
