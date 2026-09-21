@@ -77,6 +77,81 @@ single instruction to implement all Stage 1a or scatter coupled lifecycle state 
 uncoordinated workers. The lead re-reads the resulting diff, tests and actual receipts.
 A worker summary or green ancestor CI alone is not review evidence.
 
+## Mandatory independent review before acceptance
+
+Owner clarification, 2026-09-21: EVERY Luna return starts as submitted but unverified.
+This includes explanations, diagnosis, suggested plans, code, tests, claimed commands,
+installations, deployments and measured results. Confidence, a polished summary, a
+screenshot saying PASS, or the worker's own review is not acceptance. The same standard
+applies to the architect's earlier claims and its own GitHub documentation changes.
+Independent review means a new examination of authoritative material, not asking the
+same worker to restate that it is correct. It does not imply access to a second machine.
+
+### Review the work actually done
+
+| Review question | Required examination |
+|---|---|
+| Did it solve the approved task? | Re-read the exact task and current approved design, list its acceptance conditions, and map each to implementation and evidence. Do not lower the target or rewrite the design merely to pass a completed patch. |
+| What actually changed? | Refresh base/head and inspect the complete changed-file list and diff, relevant full functions, callers and affected consumers, including tests, fixtures, locks, CI and configuration. Explain the before/after behavior and why the owning cause is repaired. |
+| What happened outside Git? | Reconcile reported builds, installs, package publications, service restarts, data/use-ledger mutations, training and spending separately. A clean worktree proves none of these; compare actual authorized effects with the task's non-goals. |
+| Are the tests meaningful? | Read assertions and fixtures, check that the failure can be caught on the real path, and inspect mocks, skips, weakened checks and changed tolerances. A regression should expose the old defect where reproducible; state when a before/after run is unavailable. |
+| Were the checks really executed? | Inspect the actual command, source/dirty-tree identity, selected scope, run/job/attempt, terminal status and useful log or report. Preserve failures, cancellations, skips and retries. A green aggregate does not prove skipped suites ran. |
+| Does the result match the running system? | When the claim requires it, reconcile source, build, package digest, installed identity, loaded Mod/runtime, model and input IDs, service observations and native receipts. Old bytes or another run cannot qualify new code. |
+| Did it preserve the product and research boundaries? | Check complete candidates, B/C input semantics, safe Human/Stop, unknown delivery, Human/Agent separation, data lineage and Gold/use protection, as relevant. Training completion, a small dev score, or a single delivered action cannot prove quality or full-scene coverage. |
+
+Trace each load-bearing claim to a concrete source or receipt. An executable command in
+a prompt is not evidence that it ran. Review provided private receipts within authorized
+scope and identify them as provided evidence, not a direct local observation. If the
+architect cannot inspect a necessary artifact or runtime, mark that claim unverified and
+request one bounded diagnostic or human gate. Do not invent access or publish raw secrets,
+recordings or model weights to make review easier.
+
+Use risk-based reproduction and the cheapest faithful tests, not an automatic full-suite
+rerun for every handoff. New diagnostics and long runs require their own bounded task.
+The five-minute handoff rule still applies. Native Human steps follow technical checks;
+never ask a person to repeat gameplay blindly or treat their 'done' as verified success.
+
+### Acceptance is a separate, scoped decision
+
+The architect returns a review receipt with:
+
+- task and reviewed base/head; the original acceptance conditions;
+- actual changes and external effects, with relevant file/function or receipt references;
+- independently inspected evidence versus worker-reported, missing or inaccessible evidence;
+- findings and their consequences, remaining required gates and an explicit verdict;
+- the accepted scope and the one next authorized task, or the blocking question.
+
+Use the plain verdicts: accepted for the stated scope, changes required, blocked by
+missing evidence/access, or still running. These are review labels, not new runtime
+schemas. A verified source/test gate may be accepted while installation or native/product
+acceptance is explicitly pending. Do not call the whole task or Stage 1a complete until
+all of its required conditions pass; optional follow-up polish must be distinguished from
+missing required work. Acceptance is not automatic permission to merge, publish, deploy,
+spend, change production data, or start the next training batch.
+
+New commits or changed inputs, configuration, dependencies or installed artifacts require
+an impact review of the previous verdict. Reuse only what remains valid under TESTING.md;
+never copy an ancestor's green result or extend an approval to unreviewed changes. The
+architect must understand and explain what the implementation does, not merely relay Luna's
+conclusion. If it cannot explain a critical path, that path is not accepted yet.
+
+### Design availability and branch discipline
+
+Before implementation, pin the design reference as well as the code reference. The
+product-delivery document owns the overall journey, the single-team operations document
+owns its newer authorization/distribution/stage-scheduling refinement, and the owning UI
+specification/contracts define the relevant interface. Name conflicts or missing detail
+explicitly; neither the worker nor reviewer may silently select an easier requirement.
+A chat attachment or PDF is not automatically a tracked repository file or an accessible
+Luna input. Any required page, state, data-flow or acceptance detail available only there
+must be supplied or captured in a reviewable text specification before that implementation
+packet is accepted. Requirements remain distinct from current implementation evidence.
+
+A documentation PR being present on GitHub does not put its files into develop, main or
+the worker's checkout. State the actual branch/commit and integration status in handoffs.
+Do not force-reset or merge another writer's branch just to read a design. Documentation
+changes by the architect remain reviewable candidates, not self-certified project gates.
+
 ## Mandatory five-minute waiting rule
 
 If any training, encoding, testing/CI, build, download, deployment, profile or other
