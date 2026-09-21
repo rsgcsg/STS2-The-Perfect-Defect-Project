@@ -15,8 +15,10 @@ One repository and workflow do not merge game, evidence, operational or research
 For current product work, Stage 1a is the mainline: read
 [Stage 1a product delivery](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md) and its narrow task plan.
 All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md): the architect plans
-and reviews, Luna/humans execute within actual access. Expected waits over five minutes
-require an explicit human handoff with real monitoring and recovery instructions; no
+and independently reviews; Luna executes a bounded end-to-end packet, including its
+explicitly permitted prerequisites and checks, rather than asking at every substep.
+Five minutes remains the waiting checkpoint; the documented bounded extension may reach
+ten minutes, otherwise hand off with real monitoring and recovery instructions. No
 polling loop, invented dispatch/background work, or automatic next major batch.
 
 Before ordinary development, also read `docs/DEVELOPMENT_WORKFLOW.md` and

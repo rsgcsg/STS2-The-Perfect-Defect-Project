@@ -1,8 +1,9 @@
 # AI collaboration and long-task handoff
 
-Status: owner-requested working agreement, 2026-09-19; clarified 2026-09-21. Source integration and
-execution evidence remain separate. This document owns AI task delegation and
-waiting behavior; it supplements [Engineering Governance](ENGINEERING_GOVERNANCE.md),
+Status: owner-requested working agreement, 2026-09-19; clarified 2026-09-21, including bounded
+work packets and waiting checkpoints. Source integration and execution evidence remain separate.
+This document owns AI task delegation and waiting behavior; it supplements
+[Engineering Governance](ENGINEERING_GOVERNANCE.md),
 [Development Workflow](DEVELOPMENT_WORKFLOW.md) and [Testing](TESTING.md), not game,
 data, authorization or research authority.
 
@@ -76,6 +77,70 @@ packet is acceptable when dependencies and ownership are explicit. Do not issue 
 single instruction to implement all Stage 1a or scatter coupled lifecycle state across
 uncoordinated workers. The lead re-reads the resulting diff, tests and actual receipts.
 A worker summary or green ancestor CI alone is not review evidence.
+
+## Bounded end-to-end packets and fewer round trips
+
+Owner refinement, 2026-09-21: narrow means one coherent outcome, not one shell command,
+one file, or one permission question per substep. A packet should normally include its
+bounded prerequisite preparation, implementation, faithful regression, local diagnosis
+and correction, light closeout, and one candidate publication when explicitly allowed.
+Small directly related fixes inside the declared paths/contracts may be completed before
+returning; do not ask the human to relay every local assertion failure. Do not expand into
+another product feature, layer redesign, dependency upgrade, or unapproved operation.
+
+Each packet defines an authority envelope and a completion boundary:
+
+- distinguish read-only inspection, private locked developer-environment preparation,
+  permitted source edits, commit/push/PR creation, and any explicitly allowed integration;
+- name a reusable isolated worktree/environment, exact baseline and allowed refs/paths;
+- state expected success and negative cases before coding, including meaningful fixtures;
+- allow routine defaults and already authorized prerequisites without another permission
+  question; record what was actually installed or executed, not just code changes;
+- predeclare the response to missing tools, changed refs, failed checks and long waits;
+- stop for a real authority/access conflict, a new owning-layer problem, an unexplained
+  identity change, contradictory acceptance conditions or an unresolved unknown outcome.
+
+The default is no merge, production installation/restart/deployment, Steam mutation,
+real-data training, new budget or destructive data operation unless the packet explicitly
+names and authorizes it. A conditional integration packet may include a previously
+independently accepted exact PR merge and preparation of the next Draft PR; it must not
+merge the new unreviewed work. No admin bypass, force push or unbounded repair-until-green.
+When a failure is within the declared repair scope, diagnose and repair it locally rather
+than returning immediately; if it remains unexplained after a bounded diagnostic pass,
+return the evidence and smallest blocking question, not a wider speculative rewrite.
+
+### Check economy without lowering required gates
+
+TESTING.md remains the sole owner of executable check selection and valid receipt reuse.
+A prompt is not a CI trigger or a reason to run full tests. During implementation, use the
+cheapest faithful targeted checks. Group directly related stable changes before one normal
+push to the existing PR; do not push every one-line intermediate edit. Separate unrelated
+work and do not hide failures to minimize the number of pushes.
+
+At candidate closeout, inspect actual diff, run closeout/hygiene and the existing planner.
+Normal topic PRs still execute every selected leaf gate on their current candidate and
+require portable. If full is selected, full is required; this policy never authorizes
+editing workflow/filters, reducing coverage, adding skips, copying another branch's green
+result or marking unfinished jobs successful. Green CI does not replace independent review.
+Use the existing exact-tree execution-receipt mechanism only in the integration/release
+contexts already permitted by TESTING.md, with its current-identity revalidation.
+
+Do not run an identical long local full suite concurrently with hosted full CI just to
+produce a second PASS. Retain specifically required local OS/native/install checks and
+state what hosted checks cannot prove. If a published candidate fails, repair only an
+already authorized, understood cause, then batch one new candidate; new head requires
+fresh applicable checks. Old successful evidence remains limited to its original identity.
+No waiting for CI between every file edit, and no acceptance/merge of a failing candidate.
+
+### One evidence return
+
+The normal return is task/precise head, actual changes and side effects, checks with their
+source and terminal state, real PR/run links, and remaining unknowns. The architect reads
+accessible GitHub material directly; do not require screenshots or a ZIP of the same remote
+source. Attach only necessary local-only redacted evidence. A /Users/... path is not an
+uploaded attachment. Routine success needs no human reinterpretation or repeated restatement.
+Within the envelope, finish the packet before returning; cross the next unreviewed or
+unauthorized boundary only after architect review and explicit task authorization.
 
 ## Mandatory independent review before acceptance
 
@@ -152,20 +217,37 @@ the worker's checkout. State the actual branch/commit and integration status in 
 Do not force-reset or merge another writer's branch just to read a design. Documentation
 changes by the architect remain reviewable candidates, not self-certified project gates.
 
-## Mandatory five-minute waiting rule
+## Five-minute waiting checkpoint and bounded extension
 
-If any training, encoding, testing/CI, build, download, deployment, profile or other
-operation is expected to require MORE THAN FIVE MINUTES of waiting, the AI ends the
-current round with an explicit human handoff instead of staying in a polling loop.
-The rule applies to an already-running operation when its remaining wait becomes
-likely to exceed five minutes. Uncertain long duration is a reason to hand off, not a
-reason to promise a completion time. Shorter jobs may also be handed off.
+Owner refinement, 2026-09-21: retain five minutes as the default waiting/handoff checkpoint,
+not an unconditional interruption of every short finishing step. This section supersedes
+the stricter timing wording in earlier task templates and narrative handoffs; their other
+authority, data, evidence and scope restrictions remain. A packet may set a stricter limit.
+Waiting means passively awaiting a process, CI, download, build, profile or training result;
+it is not a five-minute cap on active source review, design, coding or reasoning.
 
-Five minutes is a handoff threshold, not permission to launch, a process timeout or
-an instruction to kill a job. It replaces the earlier approximate two-minute waiting
-threshold in the Stage 1a topic's narrative workflow; all identity, evidence and
-non-automatic-next-batch requirements remain. Do not split one long workload into many
-polling calls, start a replacement run, or silently weaken a gate to avoid handoff.
+- Normally complete work that is reliably expected within five minutes. A known five-to-ten
+  minute short verification may stay in the round only within its existing authorization,
+  with observable progress, bounded resources and no pending human decision. At five minutes,
+  check once whether it can reasonably finish by ten minutes total passive waiting. Record
+  the reason for using this extension; uncertainty, lack of progress or a new risk means handoff.
+- The default extension ends at ten minutes total passive waiting for that operation or
+  dependent waiting chain. Do not reset the clock by splitting commands, polling repeatedly
+  or starting another round. A larger wait budget needs an explicit task-specific grant,
+  not the worker's own inference from "continue".
+- For known longer or uncertain jobs, normally including full dual-OS CI, substantial
+  downloads and real-model training, establish the authorized durable job and hand off
+  immediately after verifying its real identity/monitor. Do not first spend five or ten
+  minutes polling a job already known to be long. A missing execution capability, approval,
+  safe continuation mechanism or trustworthy state requires an unstarted/blocked handoff.
+
+The checkpoint and extension are not a process timeout, permission to launch or an
+instruction to kill work. An explicitly authorized, bounded independent pipeline may
+finish its declared stages after the conversational round ends; its steps, failure stops
+and effects must be named in the packet. Ending a round does not cancel the job, and
+finishing a job does not authorize new model configurations, production mutations, another
+training batch, blind retry or automatic acceptance. Never keep a conversation alive just
+for continuous monitoring; supported automation requires its own user request and tool.
 
 There are two legitimate handoff states:
 
