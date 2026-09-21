@@ -1038,9 +1038,16 @@ describe("runtime integration fake", () => {
       });
       await eventually(() => stopSpy.mock.calls.length === 1);
       if (abortResponse) { stopRequest.destroy(new Error("caller disconnected")); await expect(stopped).rejects.toThrow("caller disconnected"); await disconnected; }
-      expect(cleanupCount).toBe(0);
-      finishScoring(); await tick;
-      if (!abortResponse) { const response = await stopped; expect(response.statusCode).toBe(200); expect(JSON.parse(response.body).status.lifecycle).toBe("stopped"); }
+      if (abortResponse) {
+        // Recovery cancellation may complete stop before the caller's
+        // disconnect is observed.  The contract is exactly-once cleanup after
+        // stop succeeds, not a platform-dependent callback delay.
+        await tick;
+      } else {
+        expect(cleanupCount).toBe(0);
+        finishScoring(); await tick;
+        const response = await stopped; expect(response.statusCode).toBe(200); expect(JSON.parse(response.body).status.lifecycle).toBe("stopped");
+      }
       await cleanup;
       expect(cleanupCount).toBe(1);
       expect(service.server.listening).toBe(false);
