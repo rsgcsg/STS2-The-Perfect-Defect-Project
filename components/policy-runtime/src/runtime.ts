@@ -82,6 +82,7 @@ export class PolicyRuntime {
   private stopRequested = false;
   private recoveryEpoch = 0;
   private recoveryEpochExhausted = false;
+  private activePolicy: { controller: AbortController } | null = null;
   private readonly runId: string;
   private readonly now: () => string;
   private readonly staleRefresh: { maxAttempts: number; baseBackoffMs: number };
@@ -163,7 +164,10 @@ export class PolicyRuntime {
   async setMode(mode: RuntimeMode, expected?: RuntimeControlPreconditions): Promise<RuntimeStatus> {
     // Human/Stop invalidate preparation in every client as soon as they enter
     // this owner, even when an existing operation still holds the mutation queue.
-    if (mode === "human") this.advanceRecoveryEpoch();
+    if (mode === "human") {
+      this.advanceRecoveryEpoch();
+      this.cancelActivePolicy();
+    }
     if (mode === "human" || expected === undefined) this.requestedMode = mode;
     return this.serialize(async () => {
       try {
@@ -262,17 +266,26 @@ export class PolicyRuntime {
     }
     const input: PolicyDecisionInput = { run_id: this.runId, manifest: this.options.manifest, bundle, candidate_digest: admission.candidateDigest, candidate_count: admission.candidateCount };
     let adapterDecision: AdapterDecision;
+    const policyRecoveryEpoch = this.recoveryEpoch;
+    const policyController = new AbortController();
+    this.activePolicy = { controller: policyController };
     try {
       adapterDecision = await withTimeout(
-        Promise.resolve(this.options.policy(input)),
+        Promise.resolve(this.options.policy(input, policyController.signal)),
         this.policyTimeoutMs,
-        "policy decision timed out"
+        "policy decision timed out",
+        policyController.signal
       );
       assertAdapterDecision(adapterDecision);
       validateAdapterDecision(adapterDecision, admission.candidateDigest, admission.candidateCount);
     } catch (error) {
+      if (this.policyRecoveryCancelled(policyRecoveryEpoch, error)) {
+        return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
+      }
       await this.failClosed(`policy_failed:${message(error)}`);
       return { type: "not_admitted", reason: "policy_failed", status: this.status() };
+    } finally {
+      if (this.activePolicy?.controller === policyController) this.activePolicy = null;
     }
     const decision = makeDecision(this.options.manifest, this.runId, bundle, adapterDecision, admission, this.now());
     this.lastPolicySnapshotId = bundle.observation.snapshot_id;
@@ -365,6 +378,7 @@ export class PolicyRuntime {
   async stop(): Promise<RuntimeStatus> {
     this.advanceRecoveryEpoch();
     this.stopRequested = true;
+    this.cancelActivePolicy();
     return this.serialize(async () => {
       if (this.stopped) return this.status();
       await this.releaseController();
@@ -382,12 +396,25 @@ export class PolicyRuntime {
   }
 
   private async acquireController(): Promise<void> { if (this.held) return; await this.options.connector.acquireController(); this.held = true; if (!(await this.appendEvidence("controller_acquired", {}))) throw new Error("Agent evidence failed after controller acquisition"); }
-  private async releaseController(): Promise<void> { if (!this.held) return; try { await this.options.connector.releaseController(); } finally { this.held = false; } await this.appendEvidence("controller_released", {}); }
+  private async releaseController(): Promise<void> {
+    if (!this.held) return;
+    try {
+      await this.options.connector.releaseController();
+    } catch (error) {
+      const reason = `controller_release_failed:${message(error)}`;
+      this.errors = [...this.errors, reason].slice(-20);
+      this.invalidations = [...this.invalidations, reason].slice(-20);
+      await this.appendEvidence("controller_release_failed", { reason });
+      throw error;
+    }
+    this.held = false;
+    await this.appendEvidence("controller_released", {});
+  }
   private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { await this.releaseController(); this.mode = "human"; await this.appendEvidence("handoff_to_human", { reason }); }
   private async completeOneStep(): Promise<void> { await this.releaseController(); this.mode = "human"; await this.appendEvidence("one_step_completed", {}); }
   private async failClosed(reason: string): Promise<void> { this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; await this.releaseController(); await this.appendEvidence("fail_closed", { reason }); }
   private async taint(reason: string): Promise<void> { await this.taintWithoutEvidence(reason); await this.appendEvidence("runtime_tainted", { reason, retry: false }); }
-  private async taintWithoutEvidence(reason: string): Promise<void> { this.tainted = true; this.taintReason = reason; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; try { await this.releaseController(); } catch { this.held = false; } }
+  private async taintWithoutEvidence(reason: string): Promise<void> { this.tainted = true; this.taintReason = reason; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; try { await this.releaseController(); } catch { /* retain held state; a failed release is not confirmation */ } }
   private async appendEvidence(kind: string, payload: Record<string, unknown>): Promise<boolean> { try { await this.options.evidence?.append(kind, payload, this.now()); return true; } catch (error) { const reason = `agent_evidence_write_failed:${message(error)}`; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); return false; } }
   private async stableSuccessor(previous: PlayerEnvironmentSnapshot): Promise<PlayerEnvironmentSnapshot | null> {
     for (let attempt = 1; attempt <= this.successorPoll.maxAttempts; attempt += 1) {
@@ -418,6 +445,16 @@ export class PolicyRuntime {
     return this.stopRequested
       || this.requestedMode === "human"
       || this.requestedMode === "shadow";
+  }
+  private cancelActivePolicy(): void {
+    if (this.activePolicy && !this.activePolicy.controller.signal.aborted) this.activePolicy.controller.abort();
+  }
+  private policyRecoveryCancelled(expectedEpoch: number, error: unknown): boolean {
+    return this.recoveryEpoch !== expectedEpoch
+      || this.stopRequested
+      || this.requestedMode === "human"
+      || this.requestedMode === "shadow"
+      || error instanceof PolicyRecoveryCancelledError;
   }
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
     const current = this.operation.then(operation, operation);
@@ -483,12 +520,27 @@ function sameStringArray(left: readonly string[], right: readonly string[]): boo
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function assertNever(value: never): never { throw new Error(`unknown runtime command: ${JSON.stringify(value)}`); }
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, detail: string): Promise<T> {
+class PolicyRecoveryCancelledError extends Error {
+  constructor() { super("policy decision cancelled for recovery"); }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, detail: string, signal?: AbortSignal): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error(detail)), timeoutMs);
   });
-  return Promise.race([promise, timeout]).finally(() => {
+  const cancellation = signal === undefined
+    ? null
+    : new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(new PolicyRecoveryCancelledError());
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
+  const races: Promise<T | never>[] = [promise, timeout];
+  if (cancellation) races.push(cancellation);
+  return Promise.race(races).finally(() => {
     if (timer !== undefined) clearTimeout(timer);
+    if (onAbort !== undefined && signal !== undefined) signal.removeEventListener("abort", onAbort);
   });
 }

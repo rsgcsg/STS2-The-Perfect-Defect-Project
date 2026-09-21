@@ -18,7 +18,7 @@ field drift fails closed before Snapshot observation or policy scoring.
 
 ## Standalone consumer package
 
-Version `0.1.0-rc.6` provides a candidate package for external consumers. Build
+Version `0.1.0-rc.7` provides a candidate package for external consumers. Build
 from a committed component checkout with the checked-in lockfile:
 
 ```bash
@@ -27,7 +27,7 @@ npm --prefix components/policy-runtime run check
 npm --prefix components/policy-runtime run package -- --output /absolute/package-output
 ```
 
-The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.6.tgz`,
+The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.7.tgz`,
 `policy-runtime-package.json` and `checksums.sha256`. It requires committed
 component source and does not publish anything. The package contains compiled
 JavaScript/declarations, CLI entries, license, a component identity record and
@@ -148,6 +148,18 @@ returns the normal HTTP 200 tick envelope with those results and a final
 unapplied or retry already executed actions. Existing unknown-delivery handling
 is unchanged. This fence coordinates control intent; it is not authentication,
 new game legality, or proof of scientific model quality.
+
+While a policy decision is pending, Human and Stop signal that decision's
+recovery scope and invalidate its epoch before entering the serialized control
+operation. The Runtime returns the old tick as `not_admitted` and never lets a
+late policy result acquire a controller, submit an action, or overwrite the
+new Human/Stopped state. The NDJSON child port removes an aborted request from
+its pending table and ignores its late response, so it cannot be consumed by a
+later request. A native `submit` already in flight is not cancelled: recovery
+waits for its bounded Receipt path and preserves `delivered`, `not_delivered`,
+or `unknown` evidence. Controller release is confirmed only after the
+Connector acknowledges it; a release error leaves the controller conservatively
+held and records the failure.
 
 The service is loopback-only. Every POST requires `Content-Type: application/json`
 (optional UTF-8 charset), a literal supported loopback Host with the bound port,

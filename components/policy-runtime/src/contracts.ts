@@ -12,7 +12,7 @@ export const POLICY_DECISION_SCHEMA = "sts2.policy-runtime/decision-1" as const;
 export const AGENT_RUN_SCHEMA = "sts2.policy-runtime/agent-run-1" as const;
 export const POLICY_PORT_SCHEMA = "sts2.policy-runtime/policy-port-1" as const;
 export const EVIDENCE_MANIFEST_SCHEMA = "sts2.policy-runtime/immutable-evidence-manifest-1" as const;
-export const POLICY_RUNTIME_VERSION = "0.1.0-rc.6" as const;
+export const POLICY_RUNTIME_VERSION = "0.1.0-rc.7" as const;
 export const RUNTIME_ENVIRONMENT_SCHEMA = "sts2.policy-runtime/environment-1" as const;
 
 /** Read-only observation used by control clients before preparing a command. */
@@ -110,7 +110,12 @@ export interface PolicyDecisionInput {
   candidate_count: number;
 }
 
-export type Policy = (input: PolicyDecisionInput) => Promise<AdapterDecision> | AdapterDecision;
+/**
+ * A policy receives a recovery signal for the current decision attempt. Policy
+ * implementations should stop work when it is aborted; the Runtime also
+ * fences and ignores the result when a policy cannot cancel in-process.
+ */
+export type Policy = (input: PolicyDecisionInput, signal?: AbortSignal) => Promise<AdapterDecision> | AdapterDecision;
 
 export interface PolicyPortDecisionRequest { schema: typeof POLICY_PORT_SCHEMA; message_type: "decide"; request_id: string; input: PolicyDecisionInput }
 export interface PolicyPortReadyResponse { schema: typeof POLICY_PORT_SCHEMA; message_type: "ready"; adapter: PolicyManifest["adapter"] }
