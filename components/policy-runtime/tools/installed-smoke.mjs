@@ -20,6 +20,11 @@ const manifest = {
 let sequence = 1;
 let submits = 0;
 let held = false;
+let slowNext = false;
+let resolveSlowEntered;
+const slowEntered = new Promise((resolve) => { resolveSlowEntered = resolve; });
+let resolveSlowDecision;
+const slowDecision = new Promise((resolve) => { resolveSlowDecision = resolve; });
 const snapshot = () => ({ snapshot_id: `snapshot-${sequence}`, sequence, status: "interactive", session: { runtime_instance_id: "fixture-runtime", environment_fingerprint: "fixture-env" }, completeness: { status: "complete" }, interaction: { kind: "test" }, bound_actions: { status: "complete", total_count: 1, materialized_count: 1, actions: [{ bound_action_id: `action-${sequence}`, verb: "end_turn", label: "End turn" }] } });
 const connector = {
   async capabilities() { return { protocol_version: "1.0.0", host: { host_kind: "test", version: "fixture", runtime_instance_id: "fixture-runtime", implementation: { source_revision: "source", artifact_sha256: "b".repeat(64), module_version_id: "mvid" } }, game: { version: "fixture", commit: "fixture", modset: { status: "exact", fingerprint: "modset", loaded_mod_ids: [] } }, environment_fingerprint: "fixture-env", execution_available: true, single_controller: true }; },
@@ -27,7 +32,14 @@ const connector = {
   async acquireController() { held = true; }, async releaseController() { held = false; },
   async submit(input) { assert.ok(held); submits++; sequence++; return { request_id: input.requestId, action: { bound_action_id: input.boundActionId }, delivery: "delivered", successor: snapshot() }; }
 };
-const runtime = new PolicyRuntime({ manifest, connector, policy: (input) => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+const runtime = new PolicyRuntime({ manifest, connector, policy: (input) => {
+  if (slowNext) {
+    slowNext = false;
+    resolveSlowEntered();
+    return slowDecision;
+  }
+  return { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 };
+} });
 const server = await startPolicyRuntimeHttpServer(runtime);
 async function post(address, route, body, runId = runtime.status().run_id) { const response = await fetch(`${address}/v2/${route}`, { method: "POST", headers: { "content-type": "application/json", "x-sts2-policy-run-id": runId }, body: JSON.stringify(body) }); assert.equal(response.status, 200); return response.json(); }
 try {
@@ -54,8 +66,18 @@ try {
   await post(server.address, "mode", { mode: "auto" });
   await post(server.address, "tick", { max_ticks: 2 });
   assert.equal(submits, 3);
+  slowNext = true;
+  const slowTick = post(server.address, "tick", { max_ticks: 1 });
+  await slowEntered;
+  const recoveryStarted = Date.now();
+  await post(server.address, "mode", { mode: "human" });
+  assert.ok(Date.now() - recoveryStarted < 1000, "Human recovery waited for the policy timeout");
+  resolveSlowDecision({ candidate_digest: "", scores: [1], selected_index: 0 });
+  const slowResult = await slowTick;
+  assert.equal(slowResult.results[0].reason, "runtime_recovery_epoch_mismatch");
+  assert.equal(runtime.status().controller, "released");
   await post(server.address, "stop", {}); assert.equal(held, false);
-} finally { await server.close(); }
+} finally { resolveSlowDecision({ candidate_digest: "", scores: [1], selected_index: 0 }); await server.close(); }
 
 // Launch the actual installed CLI in Human mode. It never contacts a game.
 await writeFile("artifact.bin", "synthetic");
@@ -92,4 +114,4 @@ try {
     child.kill("SIGTERM"); await childExit;
   }
 }
-console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));
+console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));
