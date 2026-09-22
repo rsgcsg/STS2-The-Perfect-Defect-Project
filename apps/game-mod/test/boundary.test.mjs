@@ -544,7 +544,13 @@ test("non-combat native owners are observed by explicit read-only seams", () => 
   assert.match(patches, /typeof\(NTreasureRoom\),[\s\S]*nameof\(NTreasureRoom\.Create\)/u);
   assert.match(patches, /typeof\(NTreasureRoom\),[\s\S]*"OnChestButtonReleased"/u);
   assert.equal((patches.match(/harmony\.Patch\(original, postfix:/gu) ?? []).length, 1);
-  assert.doesNotMatch(patches, /PatchAll|prefix:|finalizer:|transpiler:|static\s+bool\s+Prefix/u);
+  assert.match(patches, /AccessTools\.Method\(typeof\(CardReward\), "OnSelect", Type\.EmptyTypes\)/u);
+  assert.match(patches, /harmony\.Patch\(\s*cardRewardOnSelect,\s*prefix: new HarmonyMethod\(cardRewardPrefix\),\s*finalizer: new HarmonyMethod\(cardRewardFinalizer\)\)/u);
+  assert.match(patches, /BeginSynchronousOnSelect\(__instance\)/u);
+  assert.match(patches, /__state\?\.Dispose\(\)/u);
+  assert.equal((patches.match(/prefix:/gu) ?? []).length, 1);
+  assert.equal((patches.match(/finalizer:/gu) ?? []).length, 1);
+  assert.doesNotMatch(patches, /PatchAll|transpiler:|static\s+bool\s+Prefix/u);
 });
 
 test("non-combat Human witnesses use public bindings and exact native completion operands", () => {
