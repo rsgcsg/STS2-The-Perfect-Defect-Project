@@ -1021,6 +1021,94 @@ describe("runtime integration fake", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("hands Auto back to Human after a successful tick expires during the worker idle gap", async () => {
+    vi.useFakeTimers();
+    let clock = 0;
+    const connector = new FakeConnector(bundle(["a"]));
+    connector.stale = false;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-budget-worker-deadline", autoBudget: { maxSubmissions: 6, maxPolicyCalls: 6, deadlineMs: 10 }, monotonicNow: () => clock, sleep: async () => {}, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    const service = await startPolicyRuntimeHttpServer(runtime, { port: 0, autoDrive: true, deferAutoDrive: true, autoIdleMs: 100 });
+    try {
+      service.startDriving();
+      await drainMicrotasks();
+      expect(connector.submitCount).toBe(1);
+      expect(runtime.status()).toMatchObject({ mode: "auto", controller: "held" });
+
+      clock = 11;
+      vi.advanceTimersByTime(10);
+      await drainMicrotasks();
+
+      expect(connector.submitCount).toBe(1);
+      expect(connector.releaseCount).toBe(1);
+      expect(runtime.status()).toMatchObject({ mode: "human", controller: "released", autonomy_budget: { state: "exhausted", exhausted_reason: "deadline" } });
+    } finally {
+      vi.advanceTimersByTime(100);
+      await drainMicrotasks();
+      await service.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes an HTTP-only Auto authorization after one successful tick without a follow-up request", async () => {
+    vi.useFakeTimers();
+    let clock = 0;
+    const connector = new FakeConnector(bundle(["a"]));
+    connector.stale = false;
+    const evidenceEvents: string[] = [];
+    const evidence = { append: async (kind: string) => { evidenceEvents.push(kind); } } as unknown as AgentRunEvidence;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "human", runId: "run-budget-http-deadline", evidence, runtimeIdentity: { version: "0.1.0-rc.8", code_sha256: "e".repeat(64) }, autoBudget: { maxSubmissions: 6, maxPolicyCalls: 6, deadlineMs: 10 }, monotonicNow: () => clock, sleep: async () => {}, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    const service = await startPolicyRuntimeHttpServer(runtime, { port: 0, autoDrive: false });
+    const post = (route: string, body: unknown) => fetch(`${service.address}/v2/${route}`, { method: "POST", headers: { "content-type": "application/json", "x-sts2-policy-run-id": runtime.status().run_id }, body: JSON.stringify(body) });
+    const tickSpy = vi.spyOn(runtime, "tick");
+    try {
+      expect((await post("mode", { mode: "auto" })).status).toBe(200);
+      const tick = await post("tick", { max_ticks: 1 });
+      expect(tick.status).toBe(200);
+      expect(connector.submitCount).toBe(1);
+      expect(runtime.status()).toMatchObject({ mode: "auto", controller: "held" });
+
+      clock = 11;
+      vi.advanceTimersByTime(10);
+      await drainMicrotasks();
+
+      expect(tickSpy).toHaveBeenCalledTimes(1);
+      expect(connector.releaseCount).toBe(1);
+      expect(evidenceEvents.filter(kind => kind === "autonomy_budget_exhausted")).toHaveLength(1);
+      expect(runtime.status()).toMatchObject({ mode: "human", controller: "released", autonomy_budget: { state: "exhausted", exhausted_reason: "deadline" } });
+    } finally {
+      await service.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("classifies an in-flight submit before deadline handoff and releases only after its Receipt", async () => {
+    vi.useFakeTimers();
+    let clock = 0;
+    const connector = new FakeConnector(bundle(["a"]));
+    connector.stale = false;
+    const submitEntered = deferred<void>();
+    const submitFinish = deferred<PlayerEnvironmentReceipt>();
+    connector.submit = async input => {
+      connector.submitCount += 1;
+      submitEntered.resolve();
+      return submitFinish.promise.then(receipt => ({ ...receipt, request_id: input.requestId }));
+    };
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-budget-inflight-submit", autoBudget: { maxSubmissions: 2, maxPolicyCalls: 2, deadlineMs: 10 }, monotonicNow: () => clock, sleep: async () => {}, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    const tick = runtime.tick();
+    await submitEntered.promise;
+    clock = 11;
+    vi.advanceTimersByTime(10);
+    await drainMicrotasks();
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "held", autonomy_budget: { state: "exhausted", exhausted_reason: "deadline" } });
+    submitFinish.resolve({ protocol_version: "1.0.0", schema: "sts2.player-environment/receipt-1", request_id: "placeholder", delivery: "delivered", action: { bound_action_id: "a", verb: "end_turn", arguments: [] }, retry: { allowed: false, reason: "test" }, successor: snapshot(["next"], "snapshot-submit-deadline-successor", "interactive", 2) });
+    const result = await tick;
+    expect(result).toMatchObject({ type: "not_admitted", reason: "autonomy_budget_exhausted" });
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "released", last_receipt: { delivery: "delivered" } });
+    expect(connector.submitCount).toBe(1);
+    expect(connector.releaseCount).toBe(1);
+    vi.useRealTimers();
+  });
+
   it("shares the wallet between the background worker and concurrent HTTP ticks", async () => {
     const connector = new FakeConnector(bundle(["a"]));
     connector.stale = false;
@@ -1324,6 +1412,10 @@ async function eventually(predicate: () => boolean): Promise<void> {
     if (Date.now() >= deadline) throw new Error("condition was not reached before timeout");
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+}
+
+async function drainMicrotasks(rounds = 20): Promise<void> {
+  for (let index = 0; index < rounds; index += 1) await Promise.resolve();
 }
 
 describe("continuous native decision recovery", () => {

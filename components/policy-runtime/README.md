@@ -82,8 +82,12 @@ unlimited operation. The wallet is shared by background Auto and HTTP ticks,
 is consumed before each real submission and before each policy call, and is not
 renewed by polling, reconnects or new snapshots. At a limit the Runtime
 cancels pending policy work, records `autonomy_budget_exhausted`, hands back to
-Human and stops the background worker; a new explicit Auto/Shadow/One-Step mode
-from Human starts a new authorization. A submit already in flight is still
+Human and stops the background worker. The total-deadline handoff is armed for
+the whole authorization, not only for a policy call, so a successful tick
+followed by an Auto idle/successor gap still releases the controller without a
+follow-up tick or status request; an in-flight native submit is still classified
+by its Receipt before release. A new explicit Auto/Shadow/One-Step mode from
+Human starts a new authorization. A submit already in flight is still
 classified by its Receipt, including `unknown`, and a release failure remains
 held. The CLI publishes its exact
 startup identity before enabling Shadow/Auto drive. `unknown` delivery taints the

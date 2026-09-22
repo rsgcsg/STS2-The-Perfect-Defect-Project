@@ -86,6 +86,11 @@ export class PolicyRuntime {
   private recoveryEpoch = 0;
   private recoveryEpochExhausted = false;
   private activePolicy: { controller: AbortController } | null = null;
+  private autonomyBudgetTimer: ReturnType<typeof setTimeout> | undefined;
+  private autonomyBudgetGeneration = 0;
+  private autonomyBudgetHandoffQueued = false;
+  private autonomyBudgetRecoveryFenced = false;
+  private autonomyBudgetHandoffFinished = false;
   private readonly runId: string;
   private readonly now: () => string;
   private readonly staleRefresh: { maxAttempts: number; baseBackoffMs: number };
@@ -134,6 +139,7 @@ export class PolicyRuntime {
       exhaustedReason: null,
       endedReason: null
     };
+    if (started) this.scheduleAutonomyBudgetDeadline();
   }
 
   status(): RuntimeStatus {
@@ -308,7 +314,6 @@ export class PolicyRuntime {
     const policyRecoveryEpoch = this.recoveryEpoch;
     const policyController = new AbortController();
     this.activePolicy = { controller: policyController };
-    const policyBudgetTimer = this.armPolicyBudgetDeadline(policyController);
     try {
       adapterDecision = await withTimeout(
         Promise.resolve(this.options.policy(input, policyController.signal)),
@@ -329,7 +334,6 @@ export class PolicyRuntime {
       await this.failClosed(`policy_failed:${message(error)}`);
       return { type: "not_admitted", reason: "policy_failed", status: this.status() };
     } finally {
-      if (policyBudgetTimer !== undefined) clearTimeout(policyBudgetTimer);
       if (this.activePolicy?.controller === policyController) this.activePolicy = null;
     }
     const decision = makeDecision(this.options.manifest, this.runId, bundle, adapterDecision, admission, this.now());
@@ -353,6 +357,8 @@ export class PolicyRuntime {
       return { type: "not_executed", decision, status: this.status() };
     }
     if (this.mutationCancellationRequested()) {
+      if (await this.finishAutonomyBudgetHandoffIfRequested())
+        return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
       return { type: "not_admitted", reason: "mode_changed_before_submit", status: this.status() };
     }
     try {
@@ -362,6 +368,8 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "controller_acquire_failed", status: this.status() };
     }
     if (this.mutationCancellationRequested()) {
+      if (await this.finishAutonomyBudgetHandoffIfRequested())
+        return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
       await this.releaseController();
       return { type: "not_admitted", reason: "mode_changed_before_submit", status: this.status() };
     }
@@ -411,8 +419,11 @@ export class PolicyRuntime {
     this.consecutiveStaleSubmissions = 0;
     try {
       const successor = await this.stableSuccessor(bundle.observation);
-      if (this.mutationCancellationRequested())
+      if (this.mutationCancellationRequested()) {
+        if (await this.finishAutonomyBudgetHandoffIfRequested())
+          return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
         return { type: "not_admitted", reason: "recovery_requested_after_delivery", status: this.status() };
+      }
       if (!successor) { await this.taint("successor_not_stable"); return { type: "unknown", decision, receipt, error: "delivered action did not yield a stable distinct successor", status: this.status() }; }
       this.lastReceipt = { ...this.lastReceipt!, successor_snapshot_id: successor.snapshot_id };
       if (!(await this.appendEvidence("successor", { decision_id: decision.decision_id, successor }))) await this.taintWithoutEvidence("agent_evidence_write_failed_after_successor");
@@ -468,6 +479,11 @@ export class PolicyRuntime {
   private async appendEvidence(kind: string, payload: Record<string, unknown>): Promise<boolean> { try { await this.options.evidence?.append(kind, payload, this.now()); return true; } catch (error) { const reason = `agent_evidence_write_failed:${message(error)}`; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); return false; } }
 
   private beginAutonomyBudget(): void {
+    this.clearAutonomyBudgetDeadline();
+    this.autonomyBudgetGeneration += 1;
+    this.autonomyBudgetHandoffQueued = false;
+    this.autonomyBudgetRecoveryFenced = false;
+    this.autonomyBudgetHandoffFinished = false;
     this.autonomyBudgetState = {
       state: "active",
       submissionsUsed: 0,
@@ -477,6 +493,7 @@ export class PolicyRuntime {
       exhaustedReason: null,
       endedReason: null
     };
+    this.scheduleAutonomyBudgetDeadline();
   }
 
   private endAutonomyBudget(reason: AutonomyBudgetEndReason): void {
@@ -486,6 +503,7 @@ export class PolicyRuntime {
       this.autonomyBudgetState.state = "inactive";
       this.autonomyBudgetState.endedReason = reason;
     }
+    this.clearAutonomyBudgetDeadline();
   }
 
   private budgetElapsedMs(): number {
@@ -501,6 +519,7 @@ export class PolicyRuntime {
     const elapsedMs = this.budgetElapsedMs();
     if (state.state === "active" && state.exhaustedReason === null && elapsedMs >= this.autoBudget.deadlineMs) {
       this.markBudgetExhausted("deadline");
+      this.requestAutonomyBudgetHandoff();
     }
     const effectiveElapsed = state.state === "active" ? Math.min(elapsedMs, this.autoBudget.deadlineMs) : Math.min(state.elapsedMs, this.autoBudget.deadlineMs);
     return {
@@ -519,6 +538,7 @@ export class PolicyRuntime {
 
   private markBudgetExhausted(reason: AutonomyBudgetExhaustionReason): void {
     if (this.autonomyBudgetState.state === "active") {
+      this.clearAutonomyBudgetDeadline();
       this.autonomyBudgetState.state = "exhausted";
       this.autonomyBudgetState.exhaustedReason = reason;
       this.autonomyBudgetState.elapsedMs = Math.min(this.budgetElapsedMs(), this.autoBudget.deadlineMs);
@@ -548,26 +568,60 @@ export class PolicyRuntime {
     return true;
   }
 
-  private armPolicyBudgetDeadline(controller: AbortController): ReturnType<typeof setTimeout> | undefined {
+  private clearAutonomyBudgetDeadline(): void {
+    if (this.autonomyBudgetTimer !== undefined) clearTimeout(this.autonomyBudgetTimer);
+    this.autonomyBudgetTimer = undefined;
+  }
+
+  private scheduleAutonomyBudgetDeadline(): void {
+    if (this.autonomyBudgetState.state !== "active") return;
+    const generation = this.autonomyBudgetGeneration;
     const remaining = this.autoBudget.deadlineMs - this.budgetElapsedMs();
     if (remaining <= 0) {
-      this.markBudgetExhausted("deadline");
-      controller.abort();
-      return undefined;
+      this.requestAutonomyBudgetHandoff();
+      return;
     }
-    return setTimeout(() => {
+    const timer = setTimeout(() => {
+      if (generation !== this.autonomyBudgetGeneration || this.autonomyBudgetState.state !== "active") return;
       this.markBudgetExhausted("deadline");
-      controller.abort();
+      this.requestAutonomyBudgetHandoff();
     }, remaining);
+    this.autonomyBudgetTimer = timer;
+    if (typeof timer === "object" && timer !== null && "unref" in timer && typeof timer.unref === "function") timer.unref();
+  }
+
+  private requestAutonomyBudgetHandoff(): void {
+    if (this.autonomyBudgetState.state === "active") this.markBudgetExhausted("deadline");
+    if (!this.autonomyBudgetRecoveryFenced) {
+      this.autonomyBudgetRecoveryFenced = true;
+      this.advanceRecoveryEpoch();
+      this.cancelActivePolicy();
+      this.mode = "human";
+    }
+    if (this.autonomyBudgetHandoffQueued || this.autonomyBudgetHandoffFinished) return;
+    this.autonomyBudgetHandoffQueued = true;
+    void this.serialize(() => this.handoffAutonomyBudget()).catch((error: unknown) => {
+      const reason = `autonomy_budget_handoff_failed:${message(error)}`;
+      this.errors = [...this.errors, reason].slice(-20);
+      this.invalidations = [...this.invalidations, reason].slice(-20);
+    });
   }
 
   private async handoffAutonomyBudget(): Promise<void> {
+    if (this.autonomyBudgetHandoffFinished) return;
+    this.autonomyBudgetHandoffQueued = false;
     const reason = this.autonomyBudgetState.exhaustedReason ?? "deadline";
-    this.advanceRecoveryEpoch();
-    this.cancelActivePolicy();
-    this.mode = "human";
+    if (this.autonomyBudgetState.state === "active") this.markBudgetExhausted(reason);
+    this.requestAutonomyBudgetHandoff();
     try { await this.releaseController(); } catch { /* held is retained; release was not confirmed */ }
     await this.appendEvidence("autonomy_budget_exhausted", { reason, budget: this.autonomyBudgetStatus(), controller: this.held ? "held" : "released" });
+    this.autonomyBudgetHandoffFinished = true;
+  }
+
+  private async finishAutonomyBudgetHandoffIfRequested(): Promise<boolean> {
+    if (!this.autonomyBudgetRecoveryFenced) return false;
+    await this.handoffAutonomyBudget();
+    return true;
   }
   private async stableSuccessor(previous: PlayerEnvironmentSnapshot): Promise<PlayerEnvironmentSnapshot | null> {
     for (let attempt = 1; attempt <= this.successorPoll.maxAttempts; attempt += 1) {
@@ -597,7 +651,8 @@ export class PolicyRuntime {
   private mutationCancellationRequested(): boolean {
     return this.stopRequested
       || this.requestedMode === "human"
-      || this.requestedMode === "shadow";
+      || this.requestedMode === "shadow"
+      || this.autonomyBudgetRecoveryFenced;
   }
   private cancelActivePolicy(): void {
     if (this.activePolicy && !this.activePolicy.controller.signal.aborted) this.activePolicy.controller.abort();

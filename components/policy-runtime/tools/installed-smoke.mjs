@@ -84,6 +84,33 @@ try {
   await post(server.address, "stop", {}); assert.equal(held, false);
 } finally { resolveSlowDecision({ candidate_digest: "", scores: [1], selected_index: 0 }); await server.close(); }
 
+// The installed public HTTP path also owns an idle Auto expiry: one successful
+// tick must not require another tick or GET /status to return the controller.
+let expirySequence = 1;
+let expiryHeld = false;
+let expiryReleaseResolve;
+const expiryReleased = new Promise((resolve) => { expiryReleaseResolve = resolve; });
+const expirySnapshot = () => ({ snapshot_id: `expiry-${expirySequence}`, sequence: expirySequence, status: "interactive", session: { runtime_instance_id: "fixture-runtime", environment_fingerprint: "fixture-env" }, completeness: { status: "complete" }, interaction: { kind: "test" }, bound_actions: { status: "complete", total_count: 1, materialized_count: 1, actions: [{ bound_action_id: `expiry-action-${expirySequence}`, verb: "end_turn", label: "End turn" }] } });
+const expiryConnector = {
+  async capabilities() { return connector.capabilities(); },
+  async observeBundle() { return { observation: expirySnapshot(), reads: [] }; },
+  async acquireController() { expiryHeld = true; },
+  async releaseController() { expiryHeld = false; expiryReleaseResolve(); },
+  async submit(input) { assert.ok(expiryHeld); expirySequence++; return { request_id: input.requestId, action: { bound_action_id: input.boundActionId }, delivery: "delivered", successor: expirySnapshot() }; }
+};
+const expiryRuntime = new PolicyRuntime({ manifest, connector: expiryConnector, mode: "human", autoBudget: { maxSubmissions: 4, maxPolicyCalls: 4, deadlineMs: 25 }, policy: (input) => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+const expiryServer = await startPolicyRuntimeHttpServer(expiryRuntime, { autoDrive: false });
+try {
+  await post(expiryServer.address, "mode", { mode: "auto" }, expiryRuntime.status().run_id);
+  const expiryTick = await post(expiryServer.address, "tick", { max_ticks: 1 }, expiryRuntime.status().run_id);
+  assert.equal(expiryTick.results[0].type, "delivered");
+  assert.equal(expiryHeld, true);
+  await Promise.race([expiryReleased, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("installed idle expiry did not release")), 1000); timer.unref(); })]);
+  assert.equal(expiryHeld, false);
+  assert.equal(expiryRuntime.status().mode, "human");
+  assert.equal(expiryRuntime.status().autonomy_budget.exhausted_reason, "deadline");
+} finally { await expiryServer.close(); }
+
 // Launch the actual installed CLI in Human mode. It never contacts a game.
 await writeFile("artifact.bin", "synthetic");
 await writeFile("manifest.json", JSON.stringify(manifest));
@@ -120,4 +147,4 @@ try {
     child.kill("SIGTERM"); await childExit;
   }
 }
-console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));
+console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));
