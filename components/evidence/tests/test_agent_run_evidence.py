@@ -366,6 +366,30 @@ class AgentRunEvidenceTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertEqual(result.findings[0].code, "request_association")
 
+    def test_snapshot_read_optional_target_matches_public_sdk(self) -> None:
+        for target, passed in [("absent", True), (None, True), ("missing", False), (12, False)]:
+            with self.subTest(target=target):
+                directory = self._delivered_evidence("run-read-" + str(target))
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+                read = {"read_id": "read:piles", "kind": "combat_piles",
+                        "content_schema": "sts2.player-environment/read/combat_piles-1",
+                        "visibility_basis": "player_visible", "snapshot_bound": True,
+                        "ordering_semantics": "unordered_multiset", "hidden_by_policy": []}
+                if target != "absent":
+                    read["target_referent_id"] = target
+                for event in events:
+                    if event["kind"] == "receipt":
+                        event["payload"]["receipt"]["successor"]["reads"] = [read]
+                    elif event["kind"] == "successor":
+                        event["payload"]["successor"]["reads"] = [read]
+                self._rewrite_events(directory, events)
+                result = AgentRunEvidenceVerifier().verify(directory)
+                self.assertEqual(result.passed, passed, result.findings)
+                if passed:
+                    read["unknown"] = True
+                    self._rewrite_events(directory, events)
+                    self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
     def test_tamper_is_rejected_before_receiver_promotion(self) -> None:
         directory = self._evidence("run-tampered")
         (directory / "events.jsonl").write_text(

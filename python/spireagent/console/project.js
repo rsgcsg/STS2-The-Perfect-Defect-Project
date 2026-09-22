@@ -2011,10 +2011,19 @@ window.SpireProject = (() => {
         ],
       ]),
     );
-    if (data.error_code)
+    const currentFailure = data.error_code;
+    if (currentFailure) {
+      const explanation = currentFailure === "environment_modset_fingerprint_drift"
+        ? "上次本机操作曾发现游戏环境与模型绑定不一致"
+        : failure({ message: currentFailure });
       box.append(
-        el("p", failure({ message: data.error_code }), "banner error"),
+        el(
+          "p",
+          `上次本机操作诊断（历史记录）：${explanation}。它不单独决定当前操作资格；显式新操作仍会重新进行身份、epoch 和环境检查，不会自动重发或自动重绑。`,
+          "banner warning",
+        ),
       );
+    }
     if (data.observation_error)
       box.append(
         el(
@@ -2035,6 +2044,16 @@ window.SpireProject = (() => {
           "banner error",
         ),
       );
+    const runtimeFailure = runtime?.errors?.at(-1);
+    if (runtimeFailure) {
+      const explanation = runtimeFailure === "environment_modset_fingerprint_drift"
+        ? "最近一次 Runtime 环境检查曾拒绝当时的环境（历史诊断）：游戏环境与模型绑定不一致。它不单独决定当前操作资格；你明确点击开始后，Runtime 会重新核对当前环境，仍不兼容会安全返回人工模式。"
+        : `最近一次 Runtime 诊断（历史记录）：${runtimeFailure}。它不单独决定当前操作资格；需要恢复时请明确点击操作，不会自动重发。`;
+      box.append(el("p", explanation, "banner warning"));
+    }
+    box.append(el("p", runtime?.last_receipt
+      ? "已收到动作回执，具体送达结果见下方记录。"
+      : "尚无游戏动作送达记录。模型已加载不代表正在操作游戏。", "small"));
     const actions = el("div", null, "project-actions");
     const recoverable = data.loaded === true || Boolean(data.previous_session) ||
       (operation?.status === "pending" && ["start", "prepare-and-load"].includes(operation.action));
@@ -2045,6 +2064,8 @@ window.SpireProject = (() => {
       !changing &&
       !data.observation_error &&
       !runtime?.tainted &&
+      runtime?.mode === "human" &&
+      runtime?.controller === "released" &&
       ![
         "command_unknown",
         "recovery_required",

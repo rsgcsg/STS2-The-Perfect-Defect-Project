@@ -25,6 +25,10 @@ Use the smallest route that answers the task.
 
 ## Finding technical truth
 
+- [Native logical observation, actions and memory (ADR-0015, Proposed)](adr/0015-native-logical-interaction.md):
+  WEB-01 definitions, single-selector versus multi-reward examples, logical-list
+  scope, old-mode compatibility and local refinement boundaries; not runtime proof.
+
 - Current claims and evidence pointers: [Status](STATUS.md).
 - [Dataset library and run boundaries](evidence/DATASET_LIBRARY_2026-09-16.md):
   generated lists, personal preview cleanup, Windows integration and application/cloud evidence.

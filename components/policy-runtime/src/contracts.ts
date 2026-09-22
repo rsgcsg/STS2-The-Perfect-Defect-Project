@@ -12,7 +12,7 @@ export const POLICY_DECISION_SCHEMA = "sts2.policy-runtime/decision-1" as const;
 export const AGENT_RUN_SCHEMA = "sts2.policy-runtime/agent-run-1" as const;
 export const POLICY_PORT_SCHEMA = "sts2.policy-runtime/policy-port-1" as const;
 export const EVIDENCE_MANIFEST_SCHEMA = "sts2.policy-runtime/immutable-evidence-manifest-1" as const;
-export const POLICY_RUNTIME_VERSION = "0.1.0-rc.4" as const;
+export const POLICY_RUNTIME_VERSION = "0.1.0-rc.8" as const;
 export const RUNTIME_ENVIRONMENT_SCHEMA = "sts2.policy-runtime/environment-1" as const;
 
 /** Read-only observation used by control clients before preparing a command. */
@@ -31,6 +31,26 @@ export interface RuntimeControlPreconditions {
 
 export type RuntimeMode = "human" | "shadow" | "one_step" | "auto";
 export type DecisionDisposition = "admit" | "abstain";
+
+/**
+ * A finite wallet for one Shadow/Auto authorization.  The limits are owned by
+ * the Runtime, not by an HTTP request or a background worker.
+ */
+export interface AutonomyBudgetConfig {
+  maxSubmissions: number;
+  maxPolicyCalls: number;
+  deadlineMs: number;
+}
+
+export const DEFAULT_AUTONOMY_BUDGET: AutonomyBudgetConfig = Object.freeze({
+  maxSubmissions: 16,
+  maxPolicyCalls: 32,
+  deadlineMs: 60_000
+});
+
+export type AutonomyBudgetExhaustionReason = "submission_attempt_limit" | "policy_call_limit" | "deadline";
+export type AutonomyBudgetEndReason = "human_recovery" | "mode_changed" | "stopped";
+export type AutonomyBudgetState = "inactive" | "active" | "exhausted";
 
 /** Identity only. A Manifest never carries a per-decision catalog or Agent Run mode. */
 export interface PolicyManifest {
@@ -110,7 +130,12 @@ export interface PolicyDecisionInput {
   candidate_count: number;
 }
 
-export type Policy = (input: PolicyDecisionInput) => Promise<AdapterDecision> | AdapterDecision;
+/**
+ * A policy receives a recovery signal for the current decision attempt. Policy
+ * implementations should stop work when it is aborted; the Runtime also
+ * fences and ignores the result when a policy cannot cancel in-process.
+ */
+export type Policy = (input: PolicyDecisionInput, signal?: AbortSignal) => Promise<AdapterDecision> | AdapterDecision;
 
 export interface PolicyPortDecisionRequest { schema: typeof POLICY_PORT_SCHEMA; message_type: "decide"; request_id: string; input: PolicyDecisionInput }
 export interface PolicyPortReadyResponse { schema: typeof POLICY_PORT_SCHEMA; message_type: "ready"; adapter: PolicyManifest["adapter"] }
@@ -139,6 +164,18 @@ export interface RuntimeStatus {
   lifecycle: "running" | "stopped";
   mode: RuntimeMode;
   controller: "held" | "released";
+  autonomy_budget: {
+    state: AutonomyBudgetState;
+    max_submissions: number;
+    submissions_used: number;
+    max_policy_calls: number;
+    policy_calls_used: number;
+    deadline_ms: number;
+    elapsed_ms: number;
+    remaining_ms: number;
+    exhausted_reason: AutonomyBudgetExhaustionReason | null;
+    ended_reason: AutonomyBudgetEndReason | null;
+  };
   tainted: boolean;
   taint_reason: string | null;
   refreshing: boolean;

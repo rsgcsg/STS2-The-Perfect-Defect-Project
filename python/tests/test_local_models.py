@@ -526,6 +526,7 @@ def test_shutdown_during_readiness_cannot_launch_a_late_runtime(service, monkeyp
 
 
 def test_start_uses_fixed_command_human_and_rejects_foreign_attestation(service, monkeypatch):
+    monkeypatch.setattr(local_models, "_check_runtime_port", lambda port: None)
     monkeypatch.setattr(service, "readiness", lambda _: {"status": "ready_to_load"})
     monkeypatch.setattr(
         service, "_runtime_package", lambda: {"version": "0.1.0-rc.1", "code_sha256": "b" * 64}
@@ -550,9 +551,13 @@ def test_start_uses_fixed_command_human_and_rejects_foreign_attestation(service,
 
     monkeypatch.setattr(local_models.subprocess, "Popen", Process)
     monkeypatch.setenv("STPD_HUB_TOKEN", "must-not-reach-inference-child")
+    service.state.update(startup=startup(), evaluation={"old": True}, status="stopped")
     service.start("s1-human-combat-v4")
     result = finished(service)
     assert result["error_code"] == "runtime_load_or_attestation_failed"
+    assert result["status"] == "failed"
+    assert "startup" not in result and "evaluation" not in result
+    assert LocalModelService(service.config).state["status"] == "idle"
     command, options = calls[0]
     assert command[-2:] == ["--mode", "human"]
     assert "--adapter-arg=tools/policy_adapter.py" in command
@@ -1069,3 +1074,120 @@ def test_only_recognized_owner_precondition_rejection_is_known_not_dispatched(
     with pytest.raises(BoundaryError, match=expected):
         client.request("/mode", {"mode": "auto"}, binding=RuntimeControlBinding("game-1", 0))
     assert len(calls) == 1
+
+
+def test_local_token_registry_adds_models_without_commands_or_runtime_override(service, tmp_path):
+    root = tmp_path / "registered"
+    registry = root / "configs/developer/local-policies-v1.json"
+    registry.parent.mkdir(parents=True)
+    shipped = json.loads((service.root / "configs/developer/local-policies-v1.json").read_text())
+    registry.write_text(json.dumps(shipped))
+    private = root / ".local/token-policies-v1.json"
+    private.parent.mkdir()
+    entry = {"id": "stage1a-b-s", "label": "B-S", "adapter": "token-v1",
+             "config": ".local/b-s/config.json", "manifest": ".local/b-s/manifest.json"}
+    local = {"schema": "stpd/local-token-policies-v1", "policies": [entry]}
+    private.write_text(json.dumps(local))
+    service.root = root
+    assert service.selection("stage1a-b-s") == entry
+    assert service.registry()["runtime_package"] == shipped["runtime_package"]
+    local["policies"][0]["command"] = "sh"
+    private.write_text(json.dumps(local))
+    with pytest.raises(BoundaryError):
+        service.registry()
+    del entry["command"]
+    entry["id"] = shipped["policies"][0]["id"]
+    private.write_text(json.dumps(local))
+    with pytest.raises(BoundaryError, match="duplicate"):
+        service.registry()
+    entry["id"] = "stage1a-b-s"
+    entry["adapter"] = "downloaded-code"
+    private.write_text(json.dumps(local))
+    with pytest.raises(BoundaryError, match="invalid_local_token_registry"):
+        service.registry()
+
+
+def test_runtime_port_check_rejects_listener_but_accepts_closed_connections():
+    import os
+    import socket
+
+    with socket.socket() as listener:
+        if os.name != "nt":
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.listen()
+        with pytest.raises(BoundaryError, match="runtime_port_already_in_use"):
+            local_models._check_runtime_port(port)
+        if os.name != "nt":
+            with socket.create_connection(("127.0.0.1", port)) as client:
+                connection, _ = listener.accept()
+                connection.close()  # POSIX server TIME_WAIT is reusable by Node
+                assert client.recv(1) == b""
+    local_models._check_runtime_port(port)
+
+
+@pytest.mark.parametrize("tainted", [False, True])
+def test_explicit_stop_recovers_sealed_previous_version_without_replaying(
+    service, monkeypatch, tainted,
+):
+    from agent_evaluation_fixture import evidence
+
+    directory, expected = evidence(service.directory / "agent-runs", tainted=tainted)
+    before = {p.name: p.read_bytes() for p in directory.iterdir()}
+    previous = {"startup": {**expected, "address": "http://127.0.0.1:15527"},
+                "selection_id": "removed-old-model", "status": "runtime_exited"}
+    service.state.update(status="recovery_required", previous_session=previous)
+    probes = []
+    monkeypatch.setattr(local_models, "_check_runtime_port", lambda port: probes.append(port))
+    monkeypatch.setattr(service, "selection", lambda _: pytest.fail("must use sealed identity"))
+    monkeypatch.setattr(service, "_runtime_package", lambda: pytest.fail("old package not needed"))
+    service.command("stop")
+    result = finished(service)
+    assert result["status"] == "stopped" and not result["loaded"]
+    assert result["previous_session"] is None
+    assert result["recovery_evidence"]["tainted"] is tainted
+    assert result["evaluation"]["evidence_verification"] == "pass"
+    assert probes == [15527] and service.client is None
+    archive = service.directory / "session-archives" / (
+        result["recovery_evidence"]["session_archive_id"] + ".json"
+    )
+    assert json.loads(archive.read_bytes()) == previous
+    assert {p.name: p.read_bytes() for p in directory.iterdir()} == before
+    assert LocalModelService(service.config).state["status"] == "idle"
+
+
+@pytest.mark.parametrize("fault", ["missing", "tampered", "identity", "no_stop", "occupied"])
+def test_finalized_stop_recovery_requires_exact_evidence_and_free_port(
+    service, monkeypatch, fault,
+):
+    from agent_evaluation_fixture import evidence
+
+    directory, expected = evidence(
+        service.directory / "agent-runs",
+        terminal_event="mode_changed" if fault == "no_stop" else "stopped",
+    )
+    previous = {"startup": {**expected, "address": "http://127.0.0.1:15527"},
+                "selection_id": "old-model", "status": "command_unknown"}
+    if fault == "missing":
+        (directory / "checksums.sha256").unlink()
+    elif fault == "tampered":
+        (directory / "events.jsonl").write_text("{}\n")
+    elif fault == "identity":
+        previous["startup"]["runtime_code_sha256"] = "f" * 64
+    service.state.update(status="recovery_required", previous_session=previous)
+
+    def probe(_):
+        if fault == "occupied":
+            raise BoundaryError("local_model", "runtime_port_already_in_use")
+        pytest.fail("unverified evidence must not reach port probe")
+
+    monkeypatch.setattr(local_models, "_check_runtime_port", probe)
+    if fault == "occupied":
+        with pytest.raises(BoundaryError, match="runtime_port_already_in_use"):
+            service._recover_finalized_stop(previous, service.intent_generation)
+    else:
+        assert not service._recover_finalized_stop(previous, service.intent_generation)
+    assert service.state["previous_session"] == previous
+    assert service.state["status"] == "recovery_required"
+    assert not (service.directory / "session-archives").exists()

@@ -76,7 +76,7 @@ def seal(bundle: Path) -> None:
     _refresh_checksums(bundle)
 
 
-def bundle3(tmp_path: Path, *, runs: int = 3) -> Path:
+def bundle3(tmp_path: Path, *, runs: int = 3, public_bindings: bool = False) -> Path:
     bundle = _v2_bundle(tmp_path)
     raw = bundle / "raw"
     old = load(raw / "run-0001.jsonl")
@@ -155,6 +155,12 @@ def bundle3(tmp_path: Path, *, runs: int = 3) -> Path:
                     "game_over" if step == 1 and phase == "successor" else "combat_turn"
                 )
                 frame["catalog_count"] = 1
+                if public_bindings:
+                    snapshot["schema"] = "sts2.player-environment/snapshot-1"
+                    snapshot["information_policy"]["includes_hidden_information"] = False
+                    snapshot["interaction"]["interaction_id"] = "interaction-fixture"
+                    for candidate in snapshot["bound_actions"]["actions"]:
+                        candidate["interaction_id"] = "interaction-fixture"
                 for read in frame["reads"]:
                     read["snapshot_id"] = snapshot_id
                 refs.append({**object_ref(frame, "semantic-frames"), "snapshot_id": snapshot_id})
@@ -186,6 +192,11 @@ def bundle3(tmp_path: Path, *, runs: int = 3) -> Path:
                 "action": action,
                 "observed_at": f"2026-09-01T{hour}:02:0{step}Z",
             }
+            if public_bindings:
+                action["human_observation_snapshot_id"] = refs[0]["snapshot_id"]
+                action["mapping"] = {"status": "exact_unique", "match_count": 1,
+                                     "basis": "reference_equality_to_frozen_host_binding"}
+                common["human_observation_ref"] = refs[0]
             trace.append({**common, "sequence": len(trace) + 1, "kind": "action_accepted"})
             trace.append({**common, "sequence": len(trace) + 1, "kind": "action_finished"})
             trace.append(

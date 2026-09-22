@@ -24,5 +24,7 @@ try {
   const smoke = spawnSync(process.execPath, ["smoke.mjs"], { cwd: root, encoding: "utf8", timeout: 20000 });
   if (smoke.error) throw smoke.error;
   assert.equal(smoke.status, 0, smoke.stderr || smoke.stdout);
+  assert.equal(JSON.parse(smoke.stdout).version, first.version,
+    "installed CLI runtime version must match the published package version");
   console.log(JSON.stringify({ status: "policy_runtime_package_clean", sha256: first.sha256, deterministic: true, connector_sdk: first.identity.connector_sdk, installed_cpu_smoke: JSON.parse(smoke.stdout) }, null, 2));
 } finally { rmSync(root, { recursive: true, force: true }); }

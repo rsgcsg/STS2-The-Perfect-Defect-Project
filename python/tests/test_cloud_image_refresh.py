@@ -57,8 +57,16 @@ class Refresh:
 
 @pytest.fixture(params=["Pefect", "Perfect"])
 def refresh(tmp_path: Path, request) -> Refresh:
+    return _make_refresh(tmp_path, request.param, dict(os.environ))
+
+
+def _make_refresh(tmp_path: Path, repository_spelling: str, inherited: dict[str, str]) -> Refresh:
     assert shutil.which("uv"), "the repository's supported uv bootstrap is required"
-    env = {**os.environ, "UV_PYTHON": sys.executable, "UV_PYTHON_DOWNLOADS": "never"}
+    env = {**inherited, "UV_PYTHON": sys.executable, "UV_PYTHON_DOWNLOADS": "never"}
+    # These subprocesses install synthetic wheels into a temporary checkout. Never
+    # inherit an absolute target that redirects uv sync into the caller's environment.
+    env.pop("UV_PROJECT_ENVIRONMENT", None)
+    env.pop("VIRTUAL_ENV", None)
     origin_repo = tmp_path / "origin"
     origin_repo.mkdir()
     origin = origin_repo / "python"
@@ -86,7 +94,7 @@ def refresh(tmp_path: Path, request) -> Refresh:
     old_head, old_lock = version("1.0")
     clone = tmp_path / "cached-clone"
     _run(tmp_path, "git", "clone", str(origin_repo), str(clone))
-    repository = f"https://github.com/rsgcsg/STS2-The-{request.param}-Defect-Project.git"
+    repository = f"https://github.com/rsgcsg/STS2-The-{repository_spelling}-Defect-Project.git"
     _run(clone, "git", "remote", "set-url", "origin", repository)
     for spelling in ("Pefect", "Perfect"):
         _run(
@@ -206,3 +214,20 @@ def test_dirty_parent_does_not_admit_the_new_source(refresh: Refresh) -> None:
     (clone / "untracked").write_text("unreviewed")
     assert _execute(refresh).returncode != 0
     assert _installed(refresh) == "1.0"
+
+
+def test_fixture_refresh_does_not_modify_callers_environment(tmp_path):
+    foreign = tmp_path / "caller-environment"
+    foreign.mkdir()
+    marker = foreign / "keep.txt"
+    marker.write_bytes(b"caller-owned environment")
+    inherited = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(foreign),
+                 "VIRTUAL_ENV": str(foreign)}
+    fixture = _make_refresh(tmp_path, "Perfect", inherited)
+    assert _installed(fixture) == "1.0"
+    result = _execute(fixture)
+    assert result.returncode == 0, result.stderr
+    assert _installed(fixture) == "2.0"
+    assert list(foreign.iterdir()) == [marker]
+    assert marker.read_bytes() == b"caller-owned environment"
+    assert inherited["UV_PROJECT_ENVIRONMENT"] == str(foreign)

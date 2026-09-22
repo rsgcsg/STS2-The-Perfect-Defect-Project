@@ -55,6 +55,11 @@ ledger.
 - [ADR-0010: Dataset curation and continuous per-run recording](0010-dataset-curation-and-continuous-recording.md)
 
 - [ADR-0011: Fixed decision allocation and portable S01](0011-fixed-decision-allocation-and-portable-s01.md)
+- [ADR-0012: Stage 1a token inputs and frozen-query execution](0012-stage1a-token-input-and-query-execution.md)
+- [ADR-0013: Public Human-observation BC](0013-public-human-observation-bc.md)
+- [ADR-0014: One observation, all B/C action readouts](0014-packed-bc-readouts.md)
+
+- [ADR-0015: Native logical observation, actions, and memory (Proposed)](0015-native-logical-interaction.md)
 
 ## New ADR template
 

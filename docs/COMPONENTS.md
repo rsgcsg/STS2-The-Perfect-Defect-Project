@@ -3,6 +3,18 @@
 
 # Components
 
+> Proposed extension: [ADR-0015](adr/0015-native-logical-interaction.md) owns the
+> native logical-page/action/memory target and the two contrasting selection
+> examples. It is a revisable design proposal, not an implemented interface.
+> Connector/Native Foundation will define page and operation mappings;
+> Annotator/Evidence will define faithful interaction records and compatibility;
+> STPD will own current-input/history projections and learned memory;
+> Policy Runtime will own bounded execution and confirmed feedback.
+> Shared capability scope must be coherent across catalogs, UI, execution and
+> capture eligibility, without adding a second legality or causal authority.
+> Exact schemas and native seams are follow-up owner work; current boundaries
+> and old evidence below are not silently changed by the proposal.
+
 | Component | Path | Owns | Must not own |
 |---|---|---|---|
 | Native Foundation | `components/native-foundation` | STS2-owned semantic decisions, native lifecycle, process-local owner lineage | transport, evidence, public action authority, input execution |

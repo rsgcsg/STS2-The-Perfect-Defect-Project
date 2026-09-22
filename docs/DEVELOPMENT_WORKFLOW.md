@@ -189,3 +189,18 @@ callers/tests. Retain schema adapters, package pins, wire/database names and rol
 with actual current or archival consumers. Do not rename stpd-prefixed persistent state to
 make the tree look new. Keep raw recordings, credentials, models and installed artifacts
 outside Git. New work and incident reports belong in this repository only.
+
+## 长任务与用户交接
+
+主要训练、完整 CI、长编码／构建启动后，确认任务可脱离当前对话持续运行并且日志可查，
+就结束当前回复并交接，不持续轮询。预计超过约两分钟的等待默认采用此方式；短回归可当场完成。
+若进程不能可靠存活，给出精确的人类启动命令，不能只留下会随会话消失的进程。
+
+交接必须包含：任务名称/ID、源码或数据/配置身份、当前状态、日志路径或页面、
+最少人工步骤（例如保持电脑唤醒）、成功/失败/需要操作的识别方式，以及下次恢复的动作。
+用户可回复“完成，继续”或“失败，检查”，Agent 再自行核对结果，无需用户抄长日志。
+不自动启动下一批主要训练；阶段预算和原有授权仍有效，不重复索要已授予权限。
+等待期间没有审查、合并或运行成功声明；正常检查、精确身份、Human 与部署 gate 不因交接减少。
+后续 Agent 先核对相同任务的终态，保留失败/取消/unknown，不能以重新启动替代恢复。
+本机一次性任务必须明确禁用退出后自动重启；macOS 使用显式 RunAtLoad/KeepAlive 配置，
+不要把 launchctl submit 当作一次性任务保证。原结果防覆盖仍需保留，但不能用它代替正确的进程生命周期。

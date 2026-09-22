@@ -20,6 +20,11 @@ const manifest = {
 let sequence = 1;
 let submits = 0;
 let held = false;
+let slowNext = false;
+let resolveSlowEntered;
+const slowEntered = new Promise((resolve) => { resolveSlowEntered = resolve; });
+let resolveSlowDecision;
+const slowDecision = new Promise((resolve) => { resolveSlowDecision = resolve; });
 const snapshot = () => ({ snapshot_id: `snapshot-${sequence}`, sequence, status: "interactive", session: { runtime_instance_id: "fixture-runtime", environment_fingerprint: "fixture-env" }, completeness: { status: "complete" }, interaction: { kind: "test" }, bound_actions: { status: "complete", total_count: 1, materialized_count: 1, actions: [{ bound_action_id: `action-${sequence}`, verb: "end_turn", label: "End turn" }] } });
 const connector = {
   async capabilities() { return { protocol_version: "1.0.0", host: { host_kind: "test", version: "fixture", runtime_instance_id: "fixture-runtime", implementation: { source_revision: "source", artifact_sha256: "b".repeat(64), module_version_id: "mvid" } }, game: { version: "fixture", commit: "fixture", modset: { status: "exact", fingerprint: "modset", loaded_mod_ids: [] } }, environment_fingerprint: "fixture-env", execution_available: true, single_controller: true }; },
@@ -27,7 +32,14 @@ const connector = {
   async acquireController() { held = true; }, async releaseController() { held = false; },
   async submit(input) { assert.ok(held); submits++; sequence++; return { request_id: input.requestId, action: { bound_action_id: input.boundActionId }, delivery: "delivered", successor: snapshot() }; }
 };
-const runtime = new PolicyRuntime({ manifest, connector, policy: (input) => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+const runtime = new PolicyRuntime({ manifest, connector, autoBudget: { maxSubmissions: 4, maxPolicyCalls: 8, deadlineMs: 10_000 }, policy: (input) => {
+  if (slowNext) {
+    slowNext = false;
+    resolveSlowEntered();
+    return slowDecision;
+  }
+  return { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 };
+} });
 const server = await startPolicyRuntimeHttpServer(runtime);
 async function post(address, route, body, runId = runtime.status().run_id) { const response = await fetch(`${address}/v2/${route}`, { method: "POST", headers: { "content-type": "application/json", "x-sts2-policy-run-id": runId }, body: JSON.stringify(body) }); assert.equal(response.status, 200); return response.json(); }
 try {
@@ -52,16 +64,60 @@ try {
   assert.equal((await post(server.address, "tick", { max_ticks: 1 })).results[0].type, "delivered");
   assert.equal(runtime.status().mode, "human"); assert.equal(held, false);
   await post(server.address, "mode", { mode: "auto" });
-  await post(server.address, "tick", { max_ticks: 2 });
-  assert.equal(submits, 3);
+  const budgetRun = await post(server.address, "tick", { max_ticks: 10 });
+  assert.equal(submits, 5);
+  assert.equal(runtime.status().autonomy_budget.submissions_used, 4);
+  assert.equal(runtime.status().autonomy_budget.exhausted_reason, "submission_attempt_limit");
+  assert.equal(runtime.status().mode, "human");
+  assert.ok(budgetRun.results.some((result) => result.reason === "autonomy_budget_exhausted"));
+  await post(server.address, "mode", { mode: "auto" });
+  slowNext = true;
+  const slowTick = post(server.address, "tick", { max_ticks: 1 });
+  await slowEntered;
+  const recoveryStarted = Date.now();
+  await post(server.address, "mode", { mode: "human" });
+  assert.ok(Date.now() - recoveryStarted < 1000, "Human recovery waited for the policy timeout");
+  resolveSlowDecision({ candidate_digest: "", scores: [1], selected_index: 0 });
+  const slowResult = await slowTick;
+  assert.equal(slowResult.results[0].reason, "runtime_recovery_epoch_mismatch");
+  assert.equal(runtime.status().controller, "released");
   await post(server.address, "stop", {}); assert.equal(held, false);
-} finally { await server.close(); }
+} finally { resolveSlowDecision({ candidate_digest: "", scores: [1], selected_index: 0 }); await server.close(); }
+
+// The installed public HTTP path also owns an idle Auto expiry: one successful
+// tick must not require another tick or GET /status to return the controller.
+let expirySequence = 1;
+let expiryHeld = false;
+let expiryReleaseResolve;
+const expiryReleased = new Promise((resolve) => { expiryReleaseResolve = resolve; });
+const expirySnapshot = () => ({ snapshot_id: `expiry-${expirySequence}`, sequence: expirySequence, status: "interactive", session: { runtime_instance_id: "fixture-runtime", environment_fingerprint: "fixture-env" }, completeness: { status: "complete" }, interaction: { kind: "test" }, bound_actions: { status: "complete", total_count: 1, materialized_count: 1, actions: [{ bound_action_id: `expiry-action-${expirySequence}`, verb: "end_turn", label: "End turn" }] } });
+const expiryConnector = {
+  async capabilities() { return connector.capabilities(); },
+  async observeBundle() { return { observation: expirySnapshot(), reads: [] }; },
+  async acquireController() { expiryHeld = true; },
+  async releaseController() { expiryHeld = false; expiryReleaseResolve(); },
+  async submit(input) { assert.ok(expiryHeld); expirySequence++; return { request_id: input.requestId, action: { bound_action_id: input.boundActionId }, delivery: "delivered", successor: expirySnapshot() }; }
+};
+const expiryRuntime = new PolicyRuntime({ manifest, connector: expiryConnector, mode: "human", autoBudget: { maxSubmissions: 4, maxPolicyCalls: 4, deadlineMs: 25 }, policy: (input) => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+const expiryServer = await startPolicyRuntimeHttpServer(expiryRuntime, { autoDrive: false });
+try {
+  await post(expiryServer.address, "mode", { mode: "auto" }, expiryRuntime.status().run_id);
+  const expiryTick = await post(expiryServer.address, "tick", { max_ticks: 1 }, expiryRuntime.status().run_id);
+  assert.equal(expiryTick.results[0].type, "delivered");
+  assert.equal(expiryHeld, true);
+  await Promise.race([expiryReleased, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("installed idle expiry did not release")), 1000); timer.unref(); })]);
+  assert.equal(expiryHeld, false);
+  assert.equal(expiryRuntime.status().mode, "human");
+  assert.equal(expiryRuntime.status().autonomy_budget.exhausted_reason, "deadline");
+} finally { await expiryServer.close(); }
 
 // Launch the actual installed CLI in Human mode. It never contacts a game.
 await writeFile("artifact.bin", "synthetic");
 await writeFile("manifest.json", JSON.stringify(manifest));
 await writeFile("adapter.mjs", `process.stdout.write(JSON.stringify({schema:'sts2.policy-runtime/policy-port-1',message_type:'ready',adapter:${JSON.stringify(manifest.adapter)}})+'\\n'); process.stdin.resume();`);
 const installedEntry = fileURLToPath(import.meta.resolve("@rsgcsg/sts2-policy-runtime"));
+const installedPackage = JSON.parse(await readFile(new URL("../package.json", import.meta.resolve("@rsgcsg/sts2-policy-runtime")), "utf8"));
+assert.equal(POLICY_RUNTIME_VERSION, installedPackage.version, "runtime and package versions differ");
 const cli = new URL("../bin/policy-runtime.mjs", import.meta.resolve("@rsgcsg/sts2-policy-runtime"));
 const reservation = createServer();
 await new Promise((resolve) => reservation.listen(0, "127.0.0.1", resolve));
@@ -78,6 +134,7 @@ try {
   ]);
   assert.equal(startup.schema, "sts2.policy-runtime/startup-1");
   assert.equal(startup.runtime_version, POLICY_RUNTIME_VERSION);
+  assert.deepEqual(startup.autonomy_budget, { maxSubmissions: 16, maxPolicyCalls: 32, deadlineMs: 60000 });
   assert.equal((await (await fetch(`${startup.address}/status`)).json()).status.mode, "human");
   await post(startup.address, "stop", {}, startup.run_id);
   const exitResult = await Promise.race([childExit, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("CLI did not exit after POST /v2/stop")), 5000); timer.unref(); })]);
@@ -90,4 +147,4 @@ try {
     child.kill("SIGTERM"); await childExit;
   }
 }
-console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));
+console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));

@@ -170,3 +170,65 @@ model prerequisites, explicit sharing, member/device revocation including during
 verification, invalid bytes/paths/limits, account changes, double clicks, lost
 responses and idempotent manual recovery. Portable synthetic tests do not replace
 native load, real Human Close or genuine supported-model game operation evidence.
+
+
+## Stage 1a token models (source implementation, native qualification pending)
+
+The shipped S1 catalog and its CUDA checks retain their original meaning. The
+additive trusted adapter `token-v1` runs `python -m stpd.policy.token_port` with a
+pinned configuration and public Policy Manifest. It supports the existing public
+snapshot exports, CPU/MPS according to the saved model configuration, and a local
+pinned Qwen snapshot only for PF. Preparation never downloads a model implicitly.
+
+The optional operator-owned `python/.local/token-policies-v1.json` has schema
+`stpd/local-token-policies-v1` and a `policies` array. Entries have exactly `id`,
+`label`, `adapter` (`token-v1` only), `manifest`, and `config`; the last two are paths
+inside the Python root. They merge into the existing catalog, reject duplicate IDs,
+and cannot override a command or the pinned Runtime package. Merely adding an entry
+does not load it or authorize gameplay. Raw models and machine paths stay private.
+
+`stpd/token-policy-config-v1` pins the absolute `export_path`, `export_manifest_sha256`,
+`model_id` and nullable `qwen_snapshot`. Its own file digest/path/schema are pinned by
+`adapter_config.stage1a.config`. The public artifact references the export envelope;
+that immutable envelope binds model/weights/tokenizer identities, verified at loading.
+`representation` must match the saved public serializer. Semantic-execution exports
+are rejected. No extra Reads, filtered catalogs or native operands are introduced.
+
+The adapter code scope `python-owner-source-and-lock-v1` conservatively hashes all
+Python sources under `stpd/` and `spireagent/`, `uv.lock` and the existing Qwen pin.
+This is a broad reproducibility pin, not a minimal import closure or a new component
+semantic identity. Code changes require explicit manifest regeneration; documentation,
+private exports and registry edits do not. S1's existing code digest remains unchanged.
+
+Before live registration, use the current qualified environment identity and explicitly
+review supported interactions/verbs; never copy an old environment pin just to load.
+Runtime remains responsible for exact environment compatibility, complete public
+schema admission, timeouts, controller acquisition and delivery. The token process
+checks action-ID order/count and manifest equality, then returns finite scores and an
+index. Unexpected requests fail without a partial decision. Workbench continues to
+load in Human mode and use the existing Recorder handoff and Stop lifecycle.
+
+## Unified workbench target and restart repair
+
+The [root UI specification](../../docs/UI_INTERACTION_SPEC.md) owns the accepted
+unified local/cloud/in-game workbench target: all functions and login accessible
+from the Mod by default, optional external presentations, independent background
+services, and one account/task/data system. The current Mod is not yet this full
+workbench. Cloud-backed tasks remain in the same user workflow.
+
+Runtime port readiness now distinguishes a live listener from closed-connection
+TIME_WAIT using platform-appropriate bind semantics, without REUSEPORT or killing
+unrelated processes. Runtime startup/attestation remains authoritative if another
+process races the check. Operator-local model catalogs must not leak into test
+fixtures; tests read the shipped registry explicitly before adding synthetic entries.
+
+After an application/package upgrade, explicit **结束测试** can retire an older
+session using its sealed Agent-run evidence even when its model registration or
+Runtime package is no longer current. This requires exact persisted startup
+identity, a successful owning Evidence verification, a terminal `stopped` event,
+and a free Runtime port. The old session is archived by content hash and its
+original taint retained; a new evaluation is separate from prior reports. Missing,
+unsealed, mismatched or tampered evidence and an occupied port cannot use this
+path. It sends no gameplay request, performs no automatic action retry, and does
+not turn port absence into proof of past delivery. Normal live recovery retains
+its exact-runtime checks. Successful retirement permits a new explicit load.

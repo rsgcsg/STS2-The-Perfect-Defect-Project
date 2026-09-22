@@ -930,15 +930,13 @@ def _verify_snapshot(value: Mapping[str, Any], environment: Mapping[str, Any], l
         raise AgentRunEvidenceError("snapshot_schema", f"{label} reads must be an array", _EVENTS_FILE)
     for read in reads:
         item = _object(read, f"{label} read")
-        _exact_keys(
-            item,
-            {"read_id", "kind", "target_referent_id", "content_schema", "visibility_basis", "snapshot_bound", "ordering_semantics", "hidden_by_policy"},
-            f"{label} read",
-        )
+        required = {"read_id", "kind", "content_schema", "visibility_basis", "snapshot_bound", "ordering_semantics", "hidden_by_policy"}
+        if not required.issubset(item) or set(item) - (required | {"target_referent_id"}):
+            raise AgentRunEvidenceError("schema_keys", f"{label} read contains unknown or missing fields")
         _text(item, "read_id", _EVENTS_FILE)
         _text(item, "kind", _EVENTS_FILE)
         _nullable_text(item, "target_referent_id", _EVENTS_FILE)
-        if item["target_referent_id"] is not None and item["target_referent_id"] not in referent_ids:
+        if item.get("target_referent_id") is not None and item["target_referent_id"] not in referent_ids:
             raise AgentRunEvidenceError("snapshot_schema", f"{label} read target is not a referent", _EVENTS_FILE)
         _text(item, "content_schema", _EVENTS_FILE)
         if not re.fullmatch(r"^sts2\.player-environment/read/[a-z0-9_]+-1$", item["content_schema"]):

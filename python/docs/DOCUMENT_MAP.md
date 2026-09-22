@@ -22,12 +22,12 @@ classes are defined in [Engineering Governance](ENGINEERING_GOVERNANCE.md).
 | [Architecture](ARCHITECTURE.md) | research/environment dependency direction |
 | [Interfaces](INTERFACES.md) | versioned environment, data, model and artifact contracts |
 
-## 当前研究设计与第一阶段计划
+## 当前研究设计与阶段计划
 
 以下是设计／实施计划，不是已训练或已部署状态；现行合同与 owner 源码继续有效。
 
 - [研究路线与历史维护](research/RESEARCH_ROADMAP.zh-CN.md)：阶段问题、交互作用、条件结论和重新验证。
-- [S0 第一阶段：数据基础与 S01 最小闭环](research/S0_STAGE1.zh-CN.md)：三个阶段交付、目标机器验收和后续十二配置。
+- [S0 第一阶段：数据基础与 S01 最小闭环](research/S0_STAGE1.zh-CN.md)：历史小样独立评分验收和后续十二配置地图，不代替 1a 真实游戏验收。
 - [统一数据管理设计](research/DATA_MANAGEMENT.zh-CN.md)：逐决策索引、固定数据集、可调整普通隔离、Gold与统一归档。
 - [STPD 四家族四横轴模型设计](research/MODEL_DESIGN.zh-CN.md)：完整研究路线，B/C单主干与后续22配置。
 
@@ -127,3 +127,7 @@ records the predecessor incident separately from later candidate qualification.
   decision selection, immutable versions, run/fragment classification and exact compatibility.
 
 - [S01 operator workflow](research/S01_WORKFLOW.md): fixed allocation, portable encoding, resume, export and archival.
+
+- [1a/1b approved execution plan](research/STAGE1A.zh-CN.md): four local configurations, actual game entry, later 10k/Modal training.
+- [1a local token workflow](research/STAGE1A_WORKFLOW.md): shared inputs, bounded training, checkpoint resume and standalone export/scoring.
+- [Stage 1a token input and query execution ADR](../../docs/adr/0012-stage1a-token-input-and-query-execution.md): train-only tokenization, shared input lineage and frozen-prefix execution.

@@ -12,6 +12,14 @@ uv run --locked python tools/project.py check
 uv run --locked python tools/project.py closeout --base <exact-base-sha>
 ```
 
+Each worktree uses its own `python/.venv`, installed from that worktree's locked
+project. For background jobs, put that environment's `bin` directory on `PATH` and
+verify isolated imports (`python -I`) resolve `stpd` and `spireagent` to the intended
+checkout. `PYTHONPATH` does not repair a foreign editable installation. Do not export
+`UV_PROJECT_ENVIRONMENT` across the whole test job: nested temporary-project syncs
+must not target the caller's environment. The image-refresh fixture strips both
+that override and `VIRTUAL_ENV`, with a real offline installation regression.
+
 Python >=3.11,<3.12 is required. Dependencies may need network on a cold cache. Tests do not
 require STS2, proprietary binaries, real Human evidence, Qwen weights, GPU or production
 credentials. Installed versioned Platform consumer packages are checked; they are not a

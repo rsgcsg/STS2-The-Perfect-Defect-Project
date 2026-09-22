@@ -1,6 +1,8 @@
 # Full-Run Training and Disposable Workers
 
 This is an engineering implementation, not a Full-Run dataset, cloud or scientific result.
+The pooled path below retains its historical contract. The additive [Stage 1a token workflow](research/STAGE1A_WORKFLOW.md)
+supports B/D scratch and frozen-Qwen graphs, reusing storage, reporting and metrics with separate versioned schemas.
 A pinned Platform bundle3 adapter and a separately scoped synthetic adapter are installed.
 Real corpus sufficiency and scientific admission remain separate. Historical combat-v0 and
 its scientific protocol are retained unchanged.

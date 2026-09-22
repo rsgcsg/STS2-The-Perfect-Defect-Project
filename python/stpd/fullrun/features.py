@@ -120,7 +120,11 @@ def _load_model_view(
     parameters = manifest.parameters.value()
     from .decision_training import VIEW_SCHEMA as DECISION_VIEW_SCHEMA
     from .decision_training import load_decision_view
+    from .public_bc import LEGACY_VIEW_SCHEMA, load_public_bc_view
+    from .public_bc import VIEW_SCHEMA as PUBLIC_BC_SCHEMA
 
+    if parameters.get("schema") in {PUBLIC_BC_SCHEMA, LEGACY_VIEW_SCHEMA}:
+        return load_public_bc_view(store, manifest)
     if parameters.get("schema") == DECISION_VIEW_SCHEMA:
         return load_decision_view(store, manifest)
     if manifest.kind != "model_view" or parameters.get("schema") != VIEW_SCHEMA:
@@ -227,6 +231,8 @@ def compile_features(
     if batch_size == 0:
         raise BoundaryError("features", "empty_batch")
     view, samples = load_model_view(store, view_id)
+    if view.parameters.value()["schema"] not in {VIEW_SCHEMA, "stpd/decision-model-view-v1"}:
+        raise BoundaryError("features", "unsupported_pooled_view")
     identity_value = to_json_value(backend.identity)
     if not isinstance(identity_value, dict):
         raise BoundaryError("features", "invalid_backend_identity")

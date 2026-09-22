@@ -9,7 +9,9 @@ from spireagent.encoding import canonical_json
 from spireagent.live_evaluation import EXPECTED, FILES
 
 
-def evidence(root: Path) -> tuple[Path, dict]:
+def evidence(
+    root: Path, *, tainted: bool = False, terminal_event: str = "stopped"
+) -> tuple[Path, dict]:
     run_id = "run-00000000-0000-0000-0000-000000000001"
     directory = root / run_id
     directory.mkdir(parents=True)
@@ -38,9 +40,9 @@ def evidence(root: Path) -> tuple[Path, dict]:
         "runtime_code_sha256": "c" * 64,
         "started_at": "2026-09-16T00:00:00.000Z",
         "ended_at": "2026-09-16T00:01:00.000Z",
-        "status": "stopped",
+        "status": "tainted" if tainted else "stopped",
         "mode": "human",
-        "tainted": False,
+        "tainted": tainted,
         "append_only": True,
     }
     attestation = {
@@ -63,8 +65,8 @@ def evidence(root: Path) -> tuple[Path, dict]:
         "schema": "sts2.policy-runtime/agent-run-event-1",
         "sequence": 1,
         "recorded_at": "2026-09-16T00:01:00.000Z",
-        "kind": "stopped",
-        "payload": {},
+        "kind": terminal_event,
+        "payload": {"mode": "human"} if terminal_event == "mode_changed" else {},
     }
     (directory / "events.jsonl").write_text(canonical_json(event) + "\n")
     files = [

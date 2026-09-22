@@ -8,6 +8,7 @@ export const DEFAULT_POLICY_ADAPTER_STARTUP_TIMEOUT_MS = 30_000;
 
 export class NdjsonPolicyPort {
   private readonly pending = new Map<string, { expectedDigest: string; expectedCount: number; resolve: (choice: AdapterDecision) => void; reject: (error: Error) => void }>();
+  private readonly cancelled = new Set<string>();
   private closed = false;
   private stderrTail = "";
   private readyAdapter?: PolicyManifest["adapter"];
@@ -37,16 +38,42 @@ export class NdjsonPolicyPort {
     return new NdjsonPolicyPort(spawn(command, args, { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"] }));
   }
 
-  decide(input: PolicyDecisionInput): Promise<AdapterDecision> {
+  decide(input: PolicyDecisionInput, signal?: AbortSignal): Promise<AdapterDecision> {
     if (this.closed) return Promise.reject(new Error("policy child port is closed"));
+    if (signal?.aborted) return Promise.reject(new Error("policy decision cancelled"));
     const requestId = randomUUID();
     const request: PolicyPortDecisionRequest = { schema: POLICY_PORT_SCHEMA, message_type: "decide", request_id: requestId, input };
     return new Promise<AdapterDecision>((resolve, reject) => {
-      this.pending.set(requestId, { expectedDigest: input.candidate_digest, expectedCount: input.candidate_count, resolve, reject });
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        if (this.pending.delete(requestId)) this.rememberCancelled(requestId);
+        signal?.removeEventListener("abort", onAbort);
+        reject(new Error("policy decision cancelled"));
+      };
+      const settle = <T>(callback: (value: T) => void) => (value: T) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener("abort", onAbort);
+        callback(value);
+      };
+      this.pending.set(requestId, {
+        expectedDigest: input.candidate_digest,
+        expectedCount: input.candidate_count,
+        resolve: settle(resolve),
+        reject: settle(reject)
+      });
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) { onAbort(); return; }
       this.child.stdin.write(`${JSON.stringify(request)}\n`, (error) => {
         if (error) {
-          this.pending.delete(requestId);
-          reject(error);
+          if (this.pending.delete(requestId)) {
+            this.rememberCancelled(requestId);
+            settled = true;
+            signal?.removeEventListener("abort", onAbort);
+            reject(error);
+          }
         }
       });
     });
@@ -106,7 +133,11 @@ export class NdjsonPolicyPort {
     }
     if (response.schema !== POLICY_PORT_SCHEMA || typeof response.request_id !== "string" || (response.message_type !== "decision" && response.message_type !== "error")) { this.failAll(new Error("policy child port emitted an invalid response contract")); return; }
     const pending = this.pending.get(response.request_id);
-    if (!pending) { this.failAll(new Error("policy child port response has an unknown request id")); return; }
+    if (!pending) {
+      if (this.cancelled.delete(response.request_id)) return;
+      this.failAll(new Error("policy child port response has an unknown request id"));
+      return;
+    }
     this.pending.delete(response.request_id);
     if (response.message_type === "error") {
       pending.reject(new Error(typeof response.error?.message === "string" ? response.error.message : "policy child returned an error"));
@@ -120,6 +151,11 @@ export class NdjsonPolicyPort {
     if (!this.readyAdapter) this.rejectReady(error);
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
+  }
+
+  private rememberCancelled(requestId: string): void {
+    this.cancelled.add(requestId);
+    if (this.cancelled.size > 256) this.cancelled.delete(this.cancelled.values().next().value!);
   }
 }
 
