@@ -12,6 +12,16 @@ One repository and workflow do not merge game, evidence, operational or research
 3. `docs/ARCHITECTURE.md` and `docs/COMPONENTS.md`
 4. the relevant component `AGENTS.md` or guide and exact code/tests
 
+For current product work, Stage 1a is the mainline: read
+[Stage 1a product delivery](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md) and its narrow task plan.
+All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md). The local
+supervisor owns planning, delegation and integration coordination; implementation and
+the supervisor's own changes receive independent review. Authorized bounded packets
+include their prerequisites, checks and understood local repairs without a human relay
+at every substep. Five minutes is a passive-wait checkpoint, not a limit on active work.
+Use a real, bounded observer when available and continue independent authorized work;
+stop for a genuine human/access/authority boundary, never invent background monitoring.
+
 Before ordinary development, also read `docs/DEVELOPMENT_WORKFLOW.md` and
 `docs/TESTING.md`. Read `docs/ENGINEERING_GOVERNANCE.md` when the task changes
 architecture, authority, a public contract, evidence/identity, cross-layer
