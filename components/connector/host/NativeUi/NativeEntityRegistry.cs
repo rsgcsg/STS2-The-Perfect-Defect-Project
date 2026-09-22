@@ -37,6 +37,19 @@ internal sealed class NativeEntityRegistry : INativeReferentIdentity
         return identity.Value;
     }
 
+    // Diagnostic observation only: never allocate a referent or advance the
+    // public identity sequence. An existing ID does not prove a prior Snapshot.
+    internal bool TryGetExistingId(object entity, out string? id)
+    {
+        if (_identities.TryGetValue(entity, out Identity? identity))
+        {
+            id = identity.Value;
+            return true;
+        }
+        id = null;
+        return false;
+    }
+
     internal int TrackedReferenceCount => _entities.Count;
 
     internal int PruneDeadEntries()

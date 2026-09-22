@@ -116,6 +116,10 @@ internal static class CardRewardAlternativePresentationBindings
     [ThreadStatic]
     private static RefreshScope? CurrentRefresh;
 
+    // The optional diagnostic observes the same synchronous scope; it does
+    // not create or change a native presentation binding.
+    internal static RefreshScope? CurrentScope => CurrentRefresh;
+
     private static readonly object Gate = new();
     private static readonly ConditionalWeakTable<NCardRewardSelectionScreen, Generation>
         Generations = new();

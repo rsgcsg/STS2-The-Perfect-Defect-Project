@@ -86,6 +86,18 @@ Reads while the Connector owns one authoritative frame. It returns the same
 Snapshot plus materialized read-only payloads and never publishes a second wire,
 binding or executor.
 
+For an exact local card-reward canary, the process-only
+`STS2_CONNECTOR_CARD_REWARD_CANARY_DIAGNOSTICS=1` setting enables bounded private
+Godot-log observations of native refresh/button creation and the current screen's
+parent/binding status. It is off by default, limited to eight observed screen
+generations with an explicit exhaustion marker, and never changes Snapshot,
+BoundAction, legality or delivery. A parent ID is reported only if the existing
+registry already assigned it; that alone does not prove anyone received an outer
+Snapshot. Logs are local diagnostic evidence, not Human origin or loaded
+qualification by themselves. `binding_facts_captured` covers the parent and
+alternative-button observation only; it does not prove card-holder completeness,
+Snapshot readiness, enabled input, native acceptance or a causal successor.
+
 The REST surface is documented in
 [Player Environment Protocol](docs/player-environment/PROTOCOL.md). MCP is an
 optional adapter over the same endpoints, not another authority.

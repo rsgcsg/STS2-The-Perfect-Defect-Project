@@ -54,6 +54,16 @@ Mod builds do not generate those callbacks.
 `installed`, `loaded`, `launcher-visible`, Human action evidence and Policy evidence
 are separate claims.
 
+The Connector's optional card-reward canary diagnostic is enabled only for a
+deliberate local launch with `STS2_CONNECTOR_CARD_REWARD_CANARY_DIAGNOSTICS=1`.
+Its bounded private `[STS2 Platform] card-reward-canary` log lines join actual
+refresh begin/Create/finish observations to one current-page parent/binding
+result. Preserve those lines with the exact launch and `verify-loaded` identity;
+absence of lines, an incomplete result or budget exhaustion is not a successful
+hook canary. `binding_facts_captured` is limited to the private parent/button
+binding facts, not a complete actionable Snapshot or Human decision. The setting
+does not enable input or recording.
+
 ## Installed collection setup
 
 The fixed Collection Tool can include this component's bounded `collection-setup`

@@ -69,6 +69,14 @@ internal static class ConnectorCardRewardRefreshObservation
         {
             __state = CardRewardAlternativePresentationBindings.BeginRefresh(
                 __instance, extraOptions);
+            // Diagnostics are isolated from the binding owner. A broken log
+            // sink cannot invalidate an otherwise valid native refresh.
+            try
+            {
+                CardRewardCanaryDiagnostics.Process.Begin(
+                    __instance, __state, extraOptions.Count);
+            }
+            catch { }
         }
         catch (Exception exception)
         {
@@ -81,14 +89,25 @@ internal static class ConnectorCardRewardRefreshObservation
         CardRewardAlternativePresentationBindings.RefreshScope? __state,
         Exception? __exception)
     {
+        bool bindingFinishReturned = false;
         try
         {
             __state?.Finish(__exception == null);
+            bindingFinishReturned = true;
         }
         catch (Exception exception)
         {
             CardRewardAlternativePresentationBindings.InvalidateCurrent();
             GD.PrintErr($"[STS2 Platform] card-reward presentation cleanup failed: {exception}");
+        }
+        finally
+        {
+            try
+            {
+                CardRewardCanaryDiagnostics.Process.Finish(
+                    __state, __exception == null, bindingFinishReturned);
+            }
+            catch { }
         }
         return __exception;
     }
@@ -107,5 +126,12 @@ internal static class ConnectorCardRewardButtonCreatedObservation
             CardRewardAlternativePresentationBindings.InvalidateCurrent();
             GD.PrintErr($"[STS2 Platform] card-reward button observation failed: {exception}");
         }
+        try
+        {
+            CardRewardCanaryDiagnostics.Process.Created(
+                CardRewardAlternativePresentationBindings.CurrentScope,
+                __result != null);
+        }
+        catch { }
     }
 }
