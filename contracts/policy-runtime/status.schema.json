@@ -4,7 +4,7 @@
   "title": "STS2 Policy Runtime status",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "runtime", "policy", "run_id", "lifecycle", "mode", "controller", "tainted", "taint_reason", "refreshing", "last_snapshot_id", "last_snapshot", "last_decision", "last_receipt", "reads", "invalidations", "errors", "environment"],
+  "required": ["schema", "runtime", "policy", "run_id", "lifecycle", "mode", "controller", "autonomy_budget", "tainted", "taint_reason", "refreshing", "last_snapshot_id", "last_snapshot", "last_decision", "last_receipt", "reads", "invalidations", "errors", "environment"],
   "properties": {
     "schema": { "const": "sts2.policy-runtime/status-1" },
     "runtime": { "type": "object", "additionalProperties": false, "required": ["version", "code_sha256"], "properties": { "version": { "type": "string", "minLength": 1 }, "code_sha256": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[a-f0-9]{64}$" }] } } },
@@ -13,6 +13,18 @@
     "lifecycle": { "enum": ["running", "stopped"] },
     "mode": { "enum": ["human", "shadow", "one_step", "auto"] },
     "controller": { "enum": ["held", "released"] },
+    "autonomy_budget": { "type": "object", "additionalProperties": false, "required": ["state", "max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms", "exhausted_reason", "ended_reason"], "properties": {
+      "state": { "enum": ["inactive", "active", "exhausted"] },
+      "max_submissions": { "type": "integer", "minimum": 1 },
+      "submissions_used": { "type": "integer", "minimum": 0 },
+      "max_policy_calls": { "type": "integer", "minimum": 1 },
+      "policy_calls_used": { "type": "integer", "minimum": 0 },
+      "deadline_ms": { "type": "integer", "minimum": 1 },
+      "elapsed_ms": { "type": "integer", "minimum": 0 },
+      "remaining_ms": { "type": "integer", "minimum": 0 },
+      "exhausted_reason": { "enum": ["submission_attempt_limit", "policy_call_limit", "deadline", null] },
+      "ended_reason": { "enum": ["human_recovery", "mode_changed", "stopped", null] }
+    } },
     "tainted": { "type": "boolean" },
     "taint_reason": { "type": ["string", "null"] },
     "refreshing": { "type": "boolean" },
