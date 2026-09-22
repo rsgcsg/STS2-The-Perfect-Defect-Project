@@ -91,6 +91,7 @@ export class PolicyRuntime {
   private autonomyBudgetHandoffQueued = false;
   private autonomyBudgetRecoveryFenced = false;
   private autonomyBudgetHandoffFinished = false;
+  private controllerReleaseUnconfirmed = false;
   private readonly runId: string;
   private readonly now: () => string;
   private readonly staleRefresh: { maxAttempts: number; baseBackoffMs: number };
@@ -210,8 +211,26 @@ export class PolicyRuntime {
         }
         if (this.stopped) throw new Error("runtime is stopped");
         if (this.tainted && mode !== "human") throw new Error(`runtime is tainted: ${this.taintReason}`);
-        if (mode !== "auto") await this.releaseController();
+        if (mode === "human") {
+          this.mode = "human";
+          if (this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
+        }
+        if (mode !== "auto") {
+          try { await this.releaseController(); }
+          catch (error) {
+            if (mode !== "human") {
+              this.mode = "human";
+              this.endAutonomyBudget("mode_changed");
+            }
+            throw error;
+          }
+        }
         if (mode !== "human") this.checkRecoveryEpoch(expected?.recoveryEpoch);
+        if (isAutonomyMode(mode) && !isAutonomyMode(this.mode)
+            && this.autonomyBudgetState.state === "exhausted" && !this.autonomyBudgetHandoffFinished) {
+          await this.handoffAutonomyBudget();
+          if (this.tainted) throw new Error(`runtime is tainted: ${this.taintReason}`);
+        }
         if (isAutonomyMode(mode) && !isAutonomyMode(this.mode)) this.beginAutonomyBudget();
         else if (!isAutonomyMode(mode) && mode !== "human" && this.autonomyBudgetState.state === "active") this.endAutonomyBudget("mode_changed");
         else if (mode === "human" && this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
@@ -456,26 +475,43 @@ export class PolicyRuntime {
     });
   }
 
-  private async acquireController(): Promise<void> { if (this.held) return; await this.options.connector.acquireController(); this.held = true; if (!(await this.appendEvidence("controller_acquired", {}))) throw new Error("Agent evidence failed after controller acquisition"); }
+  private async acquireController(): Promise<void> { if (this.controllerReleaseUnconfirmed) throw new Error("controller_release_unconfirmed"); if (this.held) return; await this.options.connector.acquireController(); this.held = true; if (!(await this.appendEvidence("controller_acquired", {}))) throw new Error("Agent evidence failed after controller acquisition"); }
   private async releaseController(): Promise<void> {
     if (!this.held) return;
+    if (this.controllerReleaseUnconfirmed) throw new Error("controller_release_unconfirmed");
     try {
       await this.options.connector.releaseController();
     } catch (error) {
       const reason = `controller_release_failed:${message(error)}`;
-      this.errors = [...this.errors, reason].slice(-20);
-      this.invalidations = [...this.invalidations, reason].slice(-20);
+      this.controllerReleaseUnconfirmed = true;
+      if (this.tainted) {
+        this.errors = [...this.errors, reason].slice(-20);
+        this.invalidations = [...this.invalidations, reason].slice(-20);
+      } else {
+        await this.taintWithoutEvidence(reason, false);
+      }
       await this.appendEvidence("controller_release_failed", { reason });
+      await this.appendEvidence("runtime_tainted", { reason, retry: false });
       throw error;
     }
     this.held = false;
-    await this.appendEvidence("controller_released", {});
+    if (!(await this.appendEvidence("controller_released", {}))) {
+      const reason = "agent_evidence_controller_release_write_failed";
+      if (this.tainted) {
+        this.errors = [...this.errors, reason].slice(-20);
+        this.invalidations = [...this.invalidations, reason].slice(-20);
+      } else {
+        await this.taintWithoutEvidence(reason, false);
+      }
+      await this.appendEvidence("runtime_tainted", { reason, retry: false });
+      throw new Error(reason);
+    }
   }
-  private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { await this.releaseController(); this.mode = "human"; await this.appendEvidence("handoff_to_human", { reason }); }
-  private async completeOneStep(): Promise<void> { await this.releaseController(); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.appendEvidence("one_step_completed", { autonomy_budget: this.autonomyBudgetStatus() }); }
-  private async failClosed(reason: string): Promise<void> { this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; await this.releaseController(); await this.appendEvidence("fail_closed", { reason }); }
+  private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("handoff_to_human", { reason }); }
+  private async completeOneStep(): Promise<void> { this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("one_step_completed", { autonomy_budget: this.autonomyBudgetStatus() }); }
+  private async failClosed(reason: string): Promise<void> { this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("fail_closed", { reason }); }
   private async taint(reason: string): Promise<void> { await this.taintWithoutEvidence(reason); await this.appendEvidence("runtime_tainted", { reason, retry: false }); }
-  private async taintWithoutEvidence(reason: string): Promise<void> { this.tainted = true; this.taintReason = reason; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; try { await this.releaseController(); } catch { /* retain held state; a failed release is not confirmation */ } }
+  private async taintWithoutEvidence(reason: string, release = true): Promise<void> { this.tainted = true; this.taintReason = reason; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); if (release) try { await this.releaseController(); } catch { /* retain held state; a failed release is not confirmation */ } }
   private async appendEvidence(kind: string, payload: Record<string, unknown>): Promise<boolean> { try { await this.options.evidence?.append(kind, payload, this.now()); return true; } catch (error) { const reason = `agent_evidence_write_failed:${message(error)}`; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); return false; } }
 
   private beginAutonomyBudget(): void {
@@ -600,21 +636,26 @@ export class PolicyRuntime {
     }
     if (this.autonomyBudgetHandoffQueued || this.autonomyBudgetHandoffFinished) return;
     this.autonomyBudgetHandoffQueued = true;
-    void this.serialize(() => this.handoffAutonomyBudget()).catch((error: unknown) => {
+    const generation = this.autonomyBudgetGeneration;
+    void this.serialize(() => this.handoffAutonomyBudget(generation)).catch((error: unknown) => {
       const reason = `autonomy_budget_handoff_failed:${message(error)}`;
       this.errors = [...this.errors, reason].slice(-20);
       this.invalidations = [...this.invalidations, reason].slice(-20);
     });
   }
 
-  private async handoffAutonomyBudget(): Promise<void> {
-    if (this.autonomyBudgetHandoffFinished) return;
-    this.autonomyBudgetHandoffQueued = false;
+  private async handoffAutonomyBudget(expectedGeneration = this.autonomyBudgetGeneration): Promise<void> {
+    if (expectedGeneration !== this.autonomyBudgetGeneration || this.autonomyBudgetHandoffFinished) return;
     const reason = this.autonomyBudgetState.exhaustedReason ?? "deadline";
     if (this.autonomyBudgetState.state === "active") this.markBudgetExhausted(reason);
     this.requestAutonomyBudgetHandoff();
-    try { await this.releaseController(); } catch { /* held is retained; release was not confirmed */ }
-    await this.appendEvidence("autonomy_budget_exhausted", { reason, budget: this.autonomyBudgetStatus(), controller: this.held ? "held" : "released" });
+    try { await this.releaseController(); } catch { /* releaseController records and taints its exact failure */ }
+    const recorded = await this.appendEvidence("autonomy_budget_exhausted", { reason, budget: this.autonomyBudgetStatus(), controller: this.held ? "held" : "released" });
+    if (!recorded && !this.tainted) {
+      const failure = "autonomy_budget_exhaustion_evidence_write_failed";
+      await this.taintWithoutEvidence(failure, false);
+      await this.appendEvidence("runtime_tainted", { reason: failure, retry: false });
+    }
     this.autonomyBudgetHandoffFinished = true;
   }
 

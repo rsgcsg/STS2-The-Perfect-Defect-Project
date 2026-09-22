@@ -150,7 +150,7 @@ describe("Connector Read materialization", () => {
       } }),
       acquireController: async () => ({ raw: {}, data: lease() }),
       renewController: async () => { generation += 1; return { raw: {}, data: lease() }; },
-      releaseController: async () => ({ raw: {}, data: { runtime_instance_id: "runtime", controller: null } }),
+      releaseController: async () => ({ raw: {}, data: { runtime_instance_id: "runtime", status: "controller_released", client: { client_session_id: "client-session", client_instance_id: "client-instance" }, controller: null } }),
       submit: async (input: { controllerGeneration: number; requestId: string; boundActionId: string }) => {
         submittedGeneration = input.controllerGeneration;
         return { raw: {}, data: {
@@ -164,7 +164,7 @@ describe("Connector Read materialization", () => {
         } };
       }
     } as unknown as ConnectorAdapterClient;
-    const connector = new ConnectorPolicyClient(client);
+    const connector = new ConnectorPolicyClient(client, { clientInstanceId: "client-instance" });
 
     await connector.acquireController();
     await connector.submit({ requestId: "request", expectedSnapshotId: "snapshot", boundActionId: "a" });
@@ -172,6 +172,112 @@ describe("Connector Read materialization", () => {
     expect(generation).toBe(2);
     expect(submittedGeneration).toBe(2);
     await connector.releaseController();
+  });
+
+  it("does not treat a swallowed SDK close failure or later no-op as a confirmed release", async () => {
+    const capabilities = await new FakeConnector(bundle(["a"])).capabilities();
+    const lease = { controller_lease_id: "lease", controller_generation: 1, client_session_id: "client-session", expires_at: new Date(Date.now() + 60_000).toISOString() };
+    const wire = {
+      capabilities: async () => ({ raw: {}, data: capabilities }),
+      registerClient: async () => ({ raw: {}, data: { runtime_instance_id: "runtime", client: { client_session_id: "client-session", client_instance_id: "client-instance" } } }),
+      acquireController: vi.fn(async () => ({ raw: {}, data: { runtime_instance_id: "runtime", controller: lease } })),
+      renewController: vi.fn(async () => ({ raw: {}, data: { runtime_instance_id: "runtime", controller: lease } })),
+      releaseController: vi.fn(async () => { throw new Error("release transport lost"); }),
+      submit: vi.fn()
+    } as unknown as ConnectorAdapterClient;
+    const connector = new ConnectorPolicyClient(wire, { clientInstanceId: "client-instance" });
+    await connector.acquireController();
+    await expect(connector.releaseController()).rejects.toThrow(/release/);
+    await expect(connector.releaseController()).rejects.toThrow(/release|unconfirmed/);
+    await expect(connector.acquireController()).rejects.toThrow(/release|unconfirmed/);
+    await expect(connector.submit({ requestId: "request", expectedSnapshotId: "snapshot", boundActionId: "a" })).rejects.toThrow(/release|unconfirmed/);
+    expect(wire.releaseController).toHaveBeenCalledTimes(1);
+    expect(wire.acquireController).toHaveBeenCalledTimes(1);
+    expect(wire.submit).not.toHaveBeenCalled();
+  });
+
+  it.each(["status", "runtime", "client", "controller", "missing"] as const)("rejects a %s release acknowledgement without another Host release", async mismatch => {
+    const capabilities = await new FakeConnector(bundle(["a"])).capabilities();
+    const lease = { controller_lease_id: "lease", controller_generation: 1, client_session_id: "client-session", expires_at: new Date(Date.now() + 60_000).toISOString() };
+    const correct = { runtime_instance_id: "runtime", status: "controller_released", client: { client_session_id: "client-session", client_instance_id: "client-instance" }, controller: null };
+    const bad = mismatch === "status" ? { ...correct, status: "controller_lease_stale" }
+      : mismatch === "runtime" ? { ...correct, runtime_instance_id: "other" }
+      : mismatch === "client" ? { ...correct, client: { ...correct.client, client_session_id: "other" } }
+      : mismatch === "controller" ? { ...correct, controller: lease } : undefined;
+    const wire = {
+      capabilities: async () => ({ raw: {}, data: capabilities }),
+      registerClient: async () => ({ raw: {}, data: { runtime_instance_id: "runtime", client: { client_session_id: "client-session", client_instance_id: "client-instance" } } }),
+      acquireController: async () => ({ raw: {}, data: { runtime_instance_id: "runtime", controller: lease } }),
+      renewController: async () => ({ raw: {}, data: { runtime_instance_id: "runtime", controller: lease } }),
+      releaseController: vi.fn(async () => bad === undefined ? undefined : { raw: {}, data: bad })
+    } as unknown as ConnectorAdapterClient;
+    const connector = new ConnectorPolicyClient(wire, { clientInstanceId: "client-instance" });
+    await connector.acquireController();
+    await expect(connector.releaseController()).rejects.toThrow(/release|unconfirmed/);
+    await expect(connector.releaseController()).rejects.toThrow(/release|unconfirmed/);
+    expect(wire.releaseController).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for an in-flight renewal and releases its latest generation once", async () => {
+    vi.useFakeTimers();
+    const renewal = deferred<unknown>();
+    try {
+      const capabilities = await new FakeConnector(bundle(["a"])).capabilities();
+      const initial = { controller_lease_id: "lease", controller_generation: 1, client_session_id: "client-session", expires_at: new Date(Date.now() + 1_000).toISOString() };
+      const next = { ...initial, controller_generation: 2, expires_at: new Date(Date.now() + 60_000).toISOString() };
+      const entered = deferred<void>();
+      const wire = {
+        capabilities: async () => ({ raw: {}, data: { ...capabilities, control: { recommended_renewal_ms: 900 } } }),
+        registerClient: async () => ({ raw: {}, data: { runtime_instance_id: "runtime", client: { client_session_id: "client-session", client_instance_id: "client-instance" } } }),
+        acquireController: vi.fn(async () => ({ raw: {}, data: { runtime_instance_id: "runtime", controller: initial } })),
+        renewController: vi.fn(() => { entered.resolve(); return renewal.promise; }),
+        releaseController: vi.fn(async (_input: { controllerGeneration: number }) => ({ raw: {}, data: { runtime_instance_id: "runtime", status: "controller_released", client: { client_session_id: "client-session", client_instance_id: "client-instance" }, controller: null } }))
+      } as unknown as ConnectorAdapterClient;
+      const connector = new ConnectorPolicyClient(wire, { clientInstanceId: "client-instance" });
+      await connector.acquireController();
+      vi.advanceTimersByTime(100);
+      await entered.promise;
+      const release = connector.releaseController();
+      try {
+        await drainMicrotasks();
+        expect(wire.releaseController).not.toHaveBeenCalled();
+        expect(wire.acquireController).toHaveBeenCalledTimes(1);
+      } finally { renewal.resolve({ raw: {}, data: { runtime_instance_id: "runtime", controller: next } }); }
+      await release;
+      expect(wire.releaseController).toHaveBeenCalledExactlyOnceWith({ clientSessionId: "client-session", controllerLeaseId: "lease", controllerGeneration: 2 });
+      expect(wire.acquireController).toHaveBeenCalledTimes(1);
+      await expect(connector.submit({ requestId: "request", expectedSnapshotId: "snapshot", boundActionId: "a" })).rejects.toThrow(/controller/);
+    } finally { renewal.resolve(); vi.useRealTimers(); }
+  });
+
+  it("keeps an unconfirmed release when a pending renewal fails and fallback acquire is fenced", async () => {
+    vi.useFakeTimers();
+    const renewal = deferred<unknown>();
+    try {
+      const capabilities = await new FakeConnector(bundle(["a"])).capabilities();
+      const initial = { controller_lease_id: "lease", controller_generation: 1, client_session_id: "client-session", expires_at: new Date(Date.now() + 1_000).toISOString() };
+      const entered = deferred<void>();
+      const wire = {
+        capabilities: async () => ({ raw: {}, data: { ...capabilities, control: { recommended_renewal_ms: 900 } } }),
+        registerClient: async () => ({ raw: {}, data: { runtime_instance_id: "runtime", client: { client_session_id: "client-session", client_instance_id: "client-instance" } } }),
+        acquireController: vi.fn(async () => ({ raw: {}, data: { runtime_instance_id: "runtime", controller: initial } })),
+        renewController: vi.fn(() => { entered.resolve(); return renewal.promise; }),
+        releaseController: vi.fn(async () => ({ raw: {}, data: { runtime_instance_id: "runtime", status: "controller_released", client: { client_session_id: "client-session", client_instance_id: "client-instance" }, controller: null } }))
+      } as unknown as ConnectorAdapterClient;
+      const connector = new ConnectorPolicyClient(wire, { clientInstanceId: "client-instance" });
+      await connector.acquireController();
+      vi.advanceTimersByTime(100);
+      await entered.promise;
+      const release = connector.releaseController();
+      try {
+        await drainMicrotasks();
+        expect(wire.releaseController).not.toHaveBeenCalled();
+      } finally { renewal.reject(new Error("renew transport lost")); }
+      await expect(release).rejects.toThrow(/release|unconfirmed/);
+      expect(wire.acquireController).toHaveBeenCalledTimes(1);
+      expect(wire.releaseController).not.toHaveBeenCalled();
+      await expect(connector.releaseController()).rejects.toThrow(/release|unconfirmed/);
+    } finally { renewal.reject(new Error("renew transport lost")); vi.useRealTimers(); }
   });
 });
 
@@ -366,7 +472,10 @@ describe("cross-interface Runtime control preconditions", () => {
     vi.spyOn(connector, "capabilities").mockResolvedValue({ ...caps, host: { ...caps.host, runtime_instance_id: "replacement" } });
     await expect(runtime.readEnvironment()).rejects.toMatchObject({ code: "runtime_game_mismatch" });
     await expect(runtime.setMode("auto", { ...binding, gameInstanceId: "replacement" })).rejects.toMatchObject({ code: "runtime_game_mismatch" });
-    expect(runtime.status()).toEqual(admitted);
+    expect(runtime.status()).toEqual({
+      ...admitted,
+      autonomy_budget: { ...admitted.autonomy_budget, elapsed_ms: expect.any(Number), remaining_ms: expect.any(Number) }
+    });
     expect(connector.acquireCount + connector.submitCount).toBe(0);
   });
 
@@ -623,6 +732,36 @@ describe("runtime integration fake", () => {
     await expect(runtime.setMode("auto")).rejects.toThrow(/tainted/);
   });
 
+  it("preserves unknown delivery as the taint cause when controller release also fails", async () => {
+    const connector = new FakeConnector(bundle(["a"]), "unknown", undefined, new Error("Host release unavailable"));
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-unknown-release-failure", policy: (input) => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+
+    expect((await runtime.tick()).type).toBe("unknown");
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "held", tainted: true, autonomy_budget: { state: "inactive" } });
+    expect(runtime.status().taint_reason).toMatch(/^unknown_delivery:/);
+    expect(runtime.status().errors).toContain("controller_release_failed:Host release unavailable");
+    expect((await runtime.tick()).type).toBe("not_admitted");
+    expect(connector.submitCount).toBe(1);
+    expect(connector.releaseCount).toBe(1);
+  });
+
+  it("preserves unknown delivery as the taint cause when confirmed release evidence fails", async () => {
+    const connector = new FakeConnector(bundle(["a"]), "unknown");
+    let failReleaseEventOnce = true;
+    const evidence = { append: async (kind: string) => {
+      if (kind === "controller_released" && failReleaseEventOnce) { failReleaseEventOnce = false; throw new Error("one-shot release evidence failure"); }
+    } } as unknown as AgentRunEvidence;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-unknown-release-evidence-failure", evidence, runtimeIdentity: { version: "0.1.0-rc.8", code_sha256: "e".repeat(64) }, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+
+    expect((await runtime.tick()).type).toBe("unknown");
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "released", tainted: true, autonomy_budget: { state: "inactive" } });
+    expect(runtime.status().taint_reason).toMatch(/^unknown_delivery:/);
+    expect(runtime.status().errors).toContain("agent_evidence_controller_release_write_failed");
+    expect((await runtime.tick()).type).toBe("not_admitted");
+    expect(connector.submitCount).toBe(1);
+    expect(connector.releaseCount).toBe(1);
+  });
+
   it("treats a mismatched Receipt as unknown and never retries", async () => {
     const connector = new FakeConnector(bundle(["a"]));
     connector.receiptRequestIdOverride = "different-request";
@@ -826,12 +965,65 @@ describe("runtime integration fake", () => {
 
   it("keeps the controller held when a recovery release fails", async () => {
     const connector = new FakeConnector(bundle(["a"]), "delivered", undefined, new Error("release unavailable"));
-    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-release-failure", policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    const policy = vi.fn((input: { candidate_digest: string }) => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }));
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-release-failure", policy });
     expect((await runtime.tick()).type).toBe("delivered");
     await expect(runtime.setMode("human")).rejects.toThrow("release unavailable");
-    expect(runtime.status()).toMatchObject({ mode: "auto", controller: "held" });
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "held", autonomy_budget: { state: "inactive", ended_reason: "human_recovery" } });
     expect(runtime.status().errors.at(-1)).toContain("controller_release_failed");
     expect(connector.releaseCount).toBe(1);
+    const observed = connector.observeCount;
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "runtime_tainted" });
+    expect(connector.observeCount).toBe(observed);
+    expect(connector.submitCount).toBe(1);
+    expect(policy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry an unconfirmed release or seal Stop after a one-shot failure", async () => {
+    const connector = new FakeConnector(bundle(["a"]));
+    connector.stale = false;
+    connector.releaseController = vi.fn(async () => {
+      connector.releaseCount += 1;
+      if (connector.releaseCount === 1) throw new Error("release transport lost");
+    });
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-unconfirmed-release", policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    expect((await runtime.tick()).type).toBe("delivered");
+    await expect(runtime.setMode("human")).rejects.toThrow("release transport lost");
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "held", tainted: true, autonomy_budget: { state: "inactive" } });
+    await expect(runtime.stop()).rejects.toThrow(/release|unconfirmed/);
+    expect(runtime.status()).toMatchObject({ lifecycle: "running", controller: "held", tainted: true });
+    expect(connector.releaseCount).toBe(1);
+    await expect(runtime.setMode("auto")).rejects.toThrow(/tainted/);
+  });
+
+  it("does not start new Auto when confirmed release evidence fails once", async () => {
+    const connector = new FakeConnector(bundle(["a"]));
+    connector.stale = false;
+    let failReleaseEventOnce = true;
+    const events: { kind: string; payload: Record<string, unknown> }[] = [];
+    const evidence = { append: async (kind: string, payload: Record<string, unknown>) => {
+      if (kind === "controller_released" && failReleaseEventOnce) { failReleaseEventOnce = false; throw new Error("one-shot release evidence failure"); }
+      events.push({ kind, payload });
+    } } as unknown as AgentRunEvidence;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-release-evidence-failure", evidence, runtimeIdentity: { version: "0.1.0-rc.8", code_sha256: "e".repeat(64) }, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    expect((await runtime.tick()).type).toBe("delivered");
+    await expect(runtime.setMode("human")).rejects.toThrow(/evidence/);
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "released", tainted: true, autonomy_budget: { state: "inactive", ended_reason: "human_recovery" } });
+    expect(connector.releaseCount).toBe(1);
+    expect(events.some(event => event.kind === "mode_changed" && event.payload.mode === "human")).toBe(false);
+    await expect(runtime.setMode("auto")).rejects.toThrow(/tainted/);
+    expect(connector.submitCount).toBe(1);
+  });
+
+  it.each(["shadow", "one_step"] as const)("does not resume Auto when switching to %s fails to release control", async mode => {
+    const connector = new FakeConnector(bundle(["a"]), "delivered", undefined, new Error("release unavailable"));
+    connector.stale = false;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: `run-switch-release-${mode}`, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    expect((await runtime.tick()).type).toBe("delivered");
+    await expect(runtime.setMode(mode)).rejects.toThrow("release unavailable");
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "held", autonomy_budget: { state: "inactive", ended_reason: "mode_changed" } });
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "runtime_tainted" });
+    expect(connector.submitCount).toBe(1);
   });
 
   it("waits for an in-flight submit and preserves delivered receipt when recovery follows it", async () => {
@@ -1047,6 +1239,190 @@ describe("runtime integration fake", () => {
       await service.close();
       vi.useRealTimers();
     }
+  });
+
+  it.each(["before", "after"] as const)("does not let an old queued deadline handoff end a fresh Auto authorization when reauthorized %s the deadline", async (reauthorize) => {
+    vi.useFakeTimers();
+    let capabilityFinish: ReturnType<typeof deferred<void>> | undefined;
+    let runtime: PolicyRuntime | undefined;
+    try {
+      let clock = 0;
+      const connector = new FakeConnector(bundle(["a"]));
+      connector.stale = false;
+      const events: { kind: string; payload: Record<string, unknown> }[] = [];
+      const evidence = { append: async (kind: string, payload: Record<string, unknown>) => { events.push({ kind, payload }); } } as unknown as AgentRunEvidence;
+      runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-budget-old-handoff", evidence, runtimeIdentity: { version: "0.1.0-rc.8", code_sha256: "e".repeat(64) }, autoBudget: { maxSubmissions: 6, maxPolicyCalls: 6, deadlineMs: 10 }, monotonicNow: () => clock, sleep: async () => {}, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+      expect((await runtime.tick()).type).toBe("delivered");
+      const oldBinding = await runtime.readEnvironment();
+      const capabilities = await connector.capabilities();
+      const capabilityEntered = deferred<void>();
+      capabilityFinish = deferred<void>();
+      vi.spyOn(connector, "capabilities").mockImplementationOnce(async () => { capabilityEntered.resolve(); await capabilityFinish!.promise; return capabilities; });
+      const blocking = expect(runtime.setMode("auto", { gameInstanceId: oldBinding.runtime_instance_id, recoveryEpoch: oldBinding.recovery_epoch })).rejects.toMatchObject({ code: "runtime_recovery_epoch_mismatch" });
+      await capabilityEntered.promise;
+      const earlyAuto = reauthorize === "before" ? runtime.setMode("auto") : null;
+      clock = 11;
+      vi.advanceTimersByTime(10);
+      const freshBinding = await runtime.readEnvironment();
+      expect(freshBinding.recovery_epoch).toBeGreaterThan(oldBinding.recovery_epoch);
+      const newAuto = earlyAuto ?? runtime.setMode("auto", { gameInstanceId: freshBinding.runtime_instance_id, recoveryEpoch: freshBinding.recovery_epoch });
+      capabilityFinish.resolve();
+      await blocking;
+      await newAuto;
+      await drainMicrotasks();
+
+      const exhausted = events.filter(event => event.kind === "autonomy_budget_exhausted");
+      expect(exhausted).toHaveLength(1);
+      expect(exhausted[0]?.payload).toMatchObject({ reason: "deadline", controller: "released", budget: { state: "exhausted", submissions_used: 1, policy_calls_used: 1 } });
+      expect(events.indexOf(exhausted[0]!)).toBeLessThan(events.findIndex(event => event.kind === "mode_changed" && event.payload.mode === "auto"));
+      expect(runtime.status()).toMatchObject({ mode: "auto", autonomy_budget: { state: "active", exhausted_reason: null } });
+      await expect(runtime.setMode("auto", { gameInstanceId: oldBinding.runtime_instance_id, recoveryEpoch: oldBinding.recovery_epoch })).rejects.toMatchObject({ code: "runtime_recovery_epoch_mismatch" });
+    } finally {
+      capabilityFinish?.resolve();
+      try { if (runtime) await runtime.setMode("human"); }
+      finally { vi.useRealTimers(); }
+    }
+  });
+
+  it("does not start a fresh Auto authorization when the old exhaustion evidence write fails once", async () => {
+    vi.useFakeTimers();
+    let capabilityFinish: ReturnType<typeof deferred<void>> | undefined;
+    let runtime: PolicyRuntime | undefined;
+    try {
+      let clock = 0;
+      const connector = new FakeConnector(bundle(["a"]));
+      connector.stale = false;
+      let failExhaustionOnce = true;
+      const events: { kind: string; payload: Record<string, unknown> }[] = [];
+      const evidence = { append: async (kind: string, payload: Record<string, unknown>) => {
+        if (kind === "autonomy_budget_exhausted" && failExhaustionOnce) { failExhaustionOnce = false; throw new Error("one-shot evidence failure"); }
+        events.push({ kind, payload });
+      } } as unknown as AgentRunEvidence;
+      runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-budget-exhaustion-write-fails", evidence, runtimeIdentity: { version: "0.1.0-rc.8", code_sha256: "e".repeat(64) }, autoBudget: { deadlineMs: 10 }, monotonicNow: () => clock, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+      expect((await runtime.tick()).type).toBe("delivered");
+      const oldBinding = await runtime.readEnvironment();
+      const capabilities = await connector.capabilities();
+      const capabilityEntered = deferred<void>();
+      capabilityFinish = deferred<void>();
+      vi.spyOn(connector, "capabilities").mockImplementationOnce(async () => { capabilityEntered.resolve(); await capabilityFinish!.promise; return capabilities; });
+      const blocking = expect(runtime.setMode("auto", { gameInstanceId: oldBinding.runtime_instance_id, recoveryEpoch: oldBinding.recovery_epoch })).rejects.toMatchObject({ code: "runtime_recovery_epoch_mismatch" });
+      await capabilityEntered.promise;
+      const newAuto = runtime.setMode("auto");
+      clock = 11;
+      vi.advanceTimersByTime(10);
+      capabilityFinish.resolve();
+      await blocking;
+      await expect(newAuto).rejects.toThrow(/tainted|evidence/);
+      await drainMicrotasks();
+      expect(runtime.status()).toMatchObject({ mode: "human", tainted: true, autonomy_budget: { state: "exhausted", exhausted_reason: "deadline" } });
+      expect(events.some(event => event.kind === "autonomy_budget_exhausted")).toBe(false);
+      expect(events.some(event => event.kind === "mode_changed" && event.payload.mode === "auto")).toBe(false);
+    } finally {
+      capabilityFinish?.resolve();
+      try { if (runtime) await runtime.setMode("human"); }
+      finally { vi.useRealTimers(); }
+    }
+  });
+
+  it("keeps a failed budget handoff release held and blocks a new authorization", async () => {
+    const connector = new FakeConnector(bundle(["a"]), "delivered", undefined, new Error("release unavailable"));
+    connector.stale = false;
+    const events: { kind: string; payload: Record<string, unknown> }[] = [];
+    const evidence = { append: async (kind: string, payload: Record<string, unknown>) => { events.push({ kind, payload }); } } as unknown as AgentRunEvidence;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-budget-held-handoff", evidence, runtimeIdentity: { version: "0.1.0-rc.8", code_sha256: "e".repeat(64) }, autoBudget: { maxSubmissions: 1, deadlineMs: 10_000 }, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    expect((await runtime.tick()).type).toBe("delivered");
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "autonomy_budget_exhausted" });
+    await drainMicrotasks();
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "held", tainted: true, autonomy_budget: { state: "exhausted", exhausted_reason: "submission_attempt_limit" } });
+    expect(connector.releaseCount).toBe(1);
+    expect(events.filter(event => event.kind === "autonomy_budget_exhausted")).toMatchObject([{ payload: { controller: "held" } }]);
+    await expect(runtime.setMode("auto")).rejects.toThrow(/tainted/);
+    expect(connector.releaseCount).toBe(1);
+  });
+
+  it.each(["unsupported", "abstain", "not_delivered", "fail_closed", "tainted"] as const)("ends an active budget when Auto returns to Human through %s", async outcome => {
+    vi.useFakeTimers();
+    let runtime: PolicyRuntime | undefined;
+    try {
+      let clock = 0;
+      const connector = new FakeConnector(bundle(["a"]), outcome === "not_delivered" ? "not_delivered" : outcome === "tainted" ? "unknown" : "delivered");
+      connector.stale = false;
+      if (outcome === "unsupported") connector.current = { observation: { ...connector.current.observation, interaction: { ...connector.current.observation.interaction, kind: "unsupported" } }, reads: [] };
+      if (outcome === "fail_closed") {
+        const capabilities = await connector.capabilities();
+        vi.spyOn(connector, "capabilities").mockResolvedValue({ ...capabilities, host: { ...capabilities.host, host_kind: "replay" } });
+      }
+      const events: string[] = [];
+      const evidence = { append: async (kind: string) => { events.push(kind); } } as unknown as AgentRunEvidence;
+      runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: `run-budget-exit-${outcome}`, evidence, runtimeIdentity: { version: "0.1.0-rc.8", code_sha256: "e".repeat(64) }, autoBudget: { maxSubmissions: 6, maxPolicyCalls: 6, deadlineMs: 10 }, monotonicNow: () => clock, sleep: async () => {}, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: outcome === "abstain" ? null : 0 }) });
+
+      await runtime.tick();
+      expect(runtime.status()).toMatchObject({ mode: "human", autonomy_budget: { state: "inactive", ended_reason: "mode_changed", exhausted_reason: null } });
+      const epoch = (await runtime.readEnvironment()).recovery_epoch;
+      clock = 11;
+      vi.advanceTimersByTime(10);
+      await drainMicrotasks();
+      expect((await runtime.readEnvironment()).recovery_epoch).toBe(epoch);
+      expect(runtime.status()).toMatchObject({ mode: "human", autonomy_budget: { state: "inactive", exhausted_reason: null } });
+      expect(events.filter(kind => kind === "autonomy_budget_exhausted")).toHaveLength(0);
+    } finally {
+      try { if (runtime) await runtime.setMode("human"); }
+      finally { vi.useRealTimers(); }
+    }
+  });
+
+  it("ends a tainted authorization without claiming a failed controller release", async () => {
+    const connector = new FakeConnector(bundle(["a"]), "unknown", undefined, new Error("release unavailable"));
+    connector.stale = false;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-budget-tainted-held", autoBudget: { deadlineMs: 10_000 }, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    expect((await runtime.tick()).type).toBe("unknown");
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "held", tainted: true, autonomy_budget: { state: "inactive", ended_reason: "mode_changed" } });
+    expect(connector.releaseCount).toBe(1);
+  });
+
+  it.each(["unsupported", "abstain", "not_delivered"] as const)("does not keep Auto alive after %s handoff release fails", async outcome => {
+    const connector = new FakeConnector(bundle(["a"]), "delivered", undefined, new Error("release unavailable"));
+    connector.stale = false;
+    let decisions = 0;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: `run-budget-release-${outcome}`, autoBudget: { deadlineMs: 10_000 }, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: outcome === "abstain" && ++decisions === 2 ? null : 0 }) });
+    expect((await runtime.tick()).type).toBe("delivered");
+    if (outcome === "unsupported") connector.current = { observation: { ...connector.current.observation, interaction: { ...connector.current.observation.interaction, kind: "unsupported" } }, reads: [] };
+    if (outcome === "not_delivered") connector.submit = async input => {
+      connector.submitCount += 1;
+      return { protocol_version: "1.0.0", schema: "sts2.player-environment/receipt-1", request_id: input.requestId, delivery: "not_delivered", action: { bound_action_id: input.boundActionId, verb: "end_turn", arguments: [] }, retry: { allowed: false, reason: "test" }, successor: null };
+    };
+
+    await expect(runtime.tick()).rejects.toThrow("release unavailable");
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "held", autonomy_budget: { state: "inactive", ended_reason: "mode_changed" } });
+    expect(runtime.status().errors.at(-1)).toContain("controller_release_failed");
+    const submissions = connector.submitCount;
+    const observations = connector.observeCount;
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "runtime_tainted" });
+    expect(connector.submitCount).toBe(submissions);
+    expect(connector.observeCount).toBe(observations);
+  });
+
+  it("does not submit a second One-Step action after completion release fails", async () => {
+    const connector = new FakeConnector(bundle(["a"]), "delivered", undefined, new Error("release unavailable"));
+    connector.stale = false;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "one_step", runId: "run-budget-one-step-release", autoBudget: { deadlineMs: 10_000 }, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    expect(await runtime.tick()).toMatchObject({ type: "unknown" });
+    expect(connector.submitCount).toBe(1);
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "held", tainted: true, autonomy_budget: { state: "inactive", ended_reason: "mode_changed" } });
+    expect(runtime.status().errors).toContain("controller_release_failed:release unavailable");
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "runtime_tainted" });
+    expect(connector.submitCount).toBe(1);
+  });
+
+  it("does not resubmit a One-Step action after known non-delivery release fails", async () => {
+    const connector = new FakeConnector(bundle(["a"]), "not_delivered", undefined, new Error("release unavailable"));
+    connector.stale = false;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "one_step", runId: "run-budget-one-step-known-unapplied", autoBudget: { deadlineMs: 10_000 }, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    await expect(runtime.tick()).rejects.toThrow("release unavailable");
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "held", autonomy_budget: { state: "inactive", ended_reason: "mode_changed" } });
+    expect(connector.submitCount).toBe(1);
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "runtime_tainted" });
+    expect(connector.submitCount).toBe(1);
   });
 
   it("closes an HTTP-only Auto authorization after one successful tick without a follow-up request", async () => {
@@ -1389,7 +1765,7 @@ describe("runtime integration fake", () => {
     await verifyEvidenceDirectory(evidence.directory);
   });
 
-  it("releases an already-held controller when mode evidence fails", async () => {
+  it("fails closed when controller release evidence is unavailable", async () => {
     const root = await mkdtemp(join(tmpdir(), "sts2-agent-mode-failure-"));
     const evidence = await AgentRunEvidence.create({ root, runId: "run-mode-failure", policyManifest: manifest(), runtimeVersion: "0.1.0-rc.1", runtimeCodeSha256: "e".repeat(64), mode: "auto" });
     await evidence.attestAdapter(manifest().adapter);
@@ -1399,10 +1775,13 @@ describe("runtime integration fake", () => {
     expect(runtime.status().controller).toBe("held");
     await evidence.finalize({ status: "stopped", tainted: false, mode: "auto" });
 
-    await expect(runtime.setMode("auto")).rejects.toThrow(/evidence is unavailable/);
+    await expect(runtime.setMode("auto")).rejects.toThrow(/agent_evidence_controller_release_write_failed/);
     expect(runtime.status().mode).toBe("human");
     expect(runtime.status().controller).toBe("released");
+    expect(runtime.status().tainted).toBe(true);
     expect(connector.releaseCount).toBe(1);
+    await runtime.tick();
+    expect(connector.submitCount).toBe(1);
   });
 });
 

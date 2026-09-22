@@ -87,9 +87,16 @@ the whole authorization, not only for a policy call, so a successful tick
 followed by an Auto idle/successor gap still releases the controller without a
 follow-up tick or status request; an in-flight native submit is still classified
 by its Receipt before release. A new explicit Auto/Shadow/One-Step mode from
-Human starts a new authorization. A submit already in flight is still
+Human starts a new authorization. Returning to Human on an unsupported surface,
+abstention, known non-delivery, fail-closed condition or taint ends the active
+budget without a later deadline exhaustion. A submit already in flight is still
 classified by its Receipt, including `unknown`, and a release failure remains
-held. The CLI publishes its exact
+held. Release requires an exact Host acknowledgement; an unconfirmed release
+taints the run and cannot be made confirmed by a second local close or lease
+expiry. It remains reported as held, blocks new non-Human authorization and
+prevents Stop from sealing success. Recover against the exact Host instance or
+replace the Runtime run.
+The CLI publishes its exact
 startup identity before enabling Shadow/Auto drive. `unknown` delivery taints the
 run and is never retried. `POST /v2/stop` or process termination releases the
 controller and seals an Agent evidence directory bound to Runtime code, Manifest,
