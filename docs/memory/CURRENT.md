@@ -1,44 +1,45 @@
 # Current project context
 
 Use rsgcsg/STS2-The-Perfect-Defect-Project for all new development.
-Snapshot: 2026-09-22. This is routing, not deployment or execution authority.
+Snapshot: 2026-09-23. Routing and exact-source observations, not deployment authority.
 
 ## Active mainline and next gate
 
-Stage 1a is the product mainline. Read [product delivery](../STAGE1A_PRODUCT_DELIVERY.zh-CN.md),
+The local supervisor has taken over unfinished B0 and subsequent work. The web architect
+is no longer a daily relay. Read [product delivery](../STAGE1A_PRODUCT_DELIVERY.zh-CN.md),
 [the single-team refinement](../STAGE1A_TEAM_OPERATIONS.zh-CN.md),
-[the original task IDs](../plans/STAGE1A_TASKS.zh-CN.md), and
-[AI collaboration](../AI_COLLABORATION.md). These requirements are candidates in
-[PR #27](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/27), not yet
-integrated into develop at this snapshot. Read the exact design ref assigned by
-an approved packet; a documentation branch is not installed functionality.
+[the current sequence with original task IDs](../plans/STAGE1A_TASKS.zh-CN.md), and
+[AI collaboration](../AI_COLLABORATION.md). Implementation, independent review and integration
+remain separate. Major decisions are stated, native mechanisms precede native abstraction,
+and existing writers/running collection trees are protected.
 
-Observed develop is `d5785d215087719189a3a6bada9addb34b7d95c5`.
-[PR #29](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/29) integrated
-the accepted rc.6 consumer/UI increment into Stage 1a, not develop.
-[PR #31](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/31) is the
-remaining cumulative source review; its acceptance is not implied by PR #29.
+This snapshot was re-read from GitHub/Git objects on 2026-09-23; refresh before mutation:
 
-[PR #32](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/32) is the
-active Luna runtime-recovery candidate: `1e35e1d54554e9b00685aca709b1f39644fc5688`.
-Its exact CI succeeded; F2's late-response ordering is represented. The remaining
-F1 fixture signal fires during setup rather than actual controller release.
-The next packet fixes only that observation, synchronizes BOM and publishes one
-candidate to the same PR. It does not reopen Runtime design or accepted UI work.
-No new packet is considered acknowledged or running without a real receipt.
+| Object | Exact observation and boundary |
+|---|---|
+| develop | `d4c00a66291ba22864b3230a07dd741dfedaf64a`; #27 accepted documentation merged; its old task snapshots are not current execution status |
+| #31 Stage1a | `101a9cc0f89f9fdcd9d8320279a48b2595e2fccc`, tree `d8eb00196973ed2468ce5c4d6fe7e95095f47f46`; open Draft, cumulative source/test scope; [run35752111380](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35752111380) success |
+| #29 / #32 / #34 | Already integrated into Stage1a; do not repeat merges or reopen unchanged accepted UI/fixture repairs |
+| #35 budget | `388ae10104c5d6704390a5e65cc2652ecad17333`; open Draft; [run35761852114](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35761852114) success; lifecycle review remains separate from CI |
+| #36 new01 | `d478e70255f9e68b56df3741a781fc03a3ceba14`; open Draft design, [run35756547093](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35756547093) success; native assumptions/implementation not established by document CI |
 
-[CI/governance follow-through](../evidence/CI_GOVERNANCE_FOLLOWTHROUGH_2026-09-22.md)
-records the fixed evidence, PR ownership and integration sequence.
-[Issue #33](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/33)
-tracks bounded CI improvement; it is prepared, not executing or a product gate.
-Architect documentation and a genuinely disjoint assigned writer may proceed
-alongside product work. With one implementation worker, do not launch competing
-packets. Workshop's existing stack remains separate and unchanged.
+#35's old idle-deadline defect has a submitted repair. A separate controlled-barrier
+synthetic regression against 388ae101 reproduced a queued old handoff ending a later
+explicit Auto authorization. The isolated repair and related budget-termination cases
+are being independently checked before candidate publication. This is not an observed
+native failure or a claim that the current remote head includes the repair.
+The original writer's submitted candidate/worktree is retained. Existing green checks
+remain valid only for their exact tested source; future combinations need their own gate.
 
-After scoped review and provenance-correct integration, prioritize the exact
-candidate package/consumer and authorized native recovery gate, then 1a-03/04/05
-and the 1a-06 in-game model journey. Preserve the original task IDs; do not redo
-local reconciliation or the old four-model pilot without a demonstrated gap.
+The active bounded work is budget lifecycle closeout in an isolated copy, native grounding of
+three new01 examples, workbench-entry design, and this coordination-document alignment.
+Actual agent/process receipts own execution state; this file does not invent job IDs.
+B0 is still pending final scoped review/integration and its final combination checks.
+No installation, new model training, game session or qualified B0 product is claimed.
+
+[Issue #33](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/33) remains the
+bounded CI-improvement owner; accepted fixture work is not a workflow-topology change.
+Workshop #24/#25/#26/#30 and main are unchanged. Do not duplicate or auto-integrate them.
 
 ## Running combinations and protected history
 
@@ -53,7 +54,7 @@ not repeated in this handoff. A documentation merge changes no running producer.
 Preserve member/device identity, consent, pending outboxes, failed evidence and
 immutable data/model lineage. Gold reservations prohibit affected access through
 an unenforcing rollback image; multi-runtime datasets and persisted unions need
-compatible readers. Compute budget remains zero. Keep raw data, credentials,
+compatible readers. No new paid-compute or real-data training budget has been authorized. Keep raw data, credentials,
 weights, old tools and installed artifacts outside Git.
 
 Resolve live GitHub refs, CI, source and deployed identity; current source/runtime

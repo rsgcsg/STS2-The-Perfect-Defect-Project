@@ -1,7 +1,7 @@
 # AI collaboration and long-task handoff
 
-Status: owner-requested working agreement, 2026-09-19; clarified 2026-09-21, including bounded
-work packets and waiting checkpoints. Source integration and execution evidence remain separate.
+Status: owner-requested working agreement, 2026-09-19; refined 2026-09-21 and
+2026-09-23 for local supervision, independent review and bounded task observation. Source integration and execution evidence remain separate.
 This document owns AI task delegation and waiting behavior; it supplements
 [Engineering Governance](ENGINEERING_GOVERNANCE.md),
 [Development Workflow](DEVELOPMENT_WORKFLOW.md) and [Testing](TESTING.md), not game,
@@ -17,35 +17,38 @@ Workshop/client updates and Hub promotion share compatibility/release coordinati
 an authority allowing every client to deploy the server. Product installation consent
 is not permission for an AI assistant to launch training, paid compute or deployment.
 
-In this conversation the architect plans and gives a narrow prompt; the human relays it
-to local Codex-Luna; Luna implements/tests and returns redacted exact evidence; the
-architect re-reads source/diffs/checks and accepts, returns a targeted fix, or marks
-blocked before giving the next prompt. A human native gate remains separate. The architect
-may directly maintain its own reviewed documentation/issue/PR work through GitHub, but
-never shares Luna's writable branch or direct-pushes develop/main. Prepared tasks are not
-reported as dispatched or running without an actual execution receipt. Issue #28 is the
-initial read-only reconciliation packet; do not issue a duplicate broad implementation.
+Owner update, 2026-09-23: the local supervisor has taken over current implementation,
+planning and acceptance coordination, including unfinished B0. The web architect is no
+longer the daily relay and completing B0 is not a prerequisite for this role transfer.
+This supersedes the earlier human-relayed architect/Luna conversation arrangement.
+The supervisor states material decisions, their evidence and consequences before acting;
+broad autonomy does not permit silent changes of product goals or evidence claims.
 
 ## Roles and actual access
 
-The cloud architect/planner/product-manager assistant owns requirements, architecture,
-acceptance criteria, narrow task packets, dependency order and review. Codex-Luna is
-the implementation/verification worker selected by the owner, not an assumed GitHub
-username, model version or automatically connected execution service. A human owns
-account/host access, explicit compute/publication approvals and native Human steps.
+One local supervisor owns the work queue, architecture decisions, final evidence review
+and integration coordination. Use Sol for bounded complex implementation/native research
+and Luna for bounded reading, independent review or observing an actual task when useful.
+The current owner excludes Astra subagents. Model/tool availability must be observed,
+not inferred from these names. Do not delegate merely to fill slots or hide chains of
+workers. The lead may implement, but its own implementation and documentation require a
+separate review just as worker changes do. The author cannot self-accept a candidate.
 
-The architect reads current source and evidence, writes plans/governance and prepares
-reviewable work. Application/native changes, local inspection, tests, installation and
-runtime probes are assigned to Luna or a human with the required access. The architect
-must not claim to have run a local command merely because a packet contains it.
+Each worker has one task, an exact baseline, bounded files, its own writable worktree and
+mutable environment, explicit checks and stop conditions. Reconcile existing A/B/C work
+before assigning an overlapping writer; do not replace their branch, worktree or process.
+Parallel read-only work and disjoint implementation are allowed under the supervisor's
+coordination. Shared contracts, BOM fields and the integration ref each have one writer.
+Use one heavy local build/training/profile slot unless resources are explicitly checked;
+never stop another worker's process to obtain it.
 
-A repository issue is a durable task packet, NOT proof of dispatch or execution.
-Mark delivery separately as prepared, handed_to_operator, submitted, acknowledged,
-running or terminal, using an actual tool/task receipt for the latter states. Never
-invent a Luna task ID, worker assignment, local terminal, desktop session, or background
-monitor. Without an authorized worker interface, hand the exact packet to the human
-for delivery. Do not install another integration or expose local credentials to bypass
-missing access.
+A repository issue is a durable packet, not proof of dispatch or execution. Record real
+prepared/acknowledged/running/terminal states and actual agent or job IDs. No tool receipt
+means not started. Never invent a task, terminal, worker, installation or persistent
+observer. A human owns required account access and native Human actions. Production
+installation, restart, deployment, game control, real-data training/use changes, paid
+compute and publication require their scoped authorization; supervisor status alone
+provides none. Previously authorized actions do not require repeated permission.
 
 Local Codex history is private workstation state. Inspect only the relevant authorized
 project thread, changes and logs. A pasted conversation is user-provided context, not a
@@ -72,10 +75,10 @@ must use an explicitly approved dependent branch or wait for reviewed integratio
 Do not write into another worker's topic or a running collector checkout. Existing
 component-source provenance still requires normal merges.
 
-Prefer one active implementation packet. A second read-only or genuinely disjoint
-packet is acceptable when dependencies and ownership are explicit. Do not issue a
-single instruction to implement all Stage 1a or scatter coupled lifecycle state across
-uncoordinated workers. The lead re-reads the resulting diff, tests and actual receipts.
+Prefer a small number of genuinely independent packets. Assign implementation only
+after its owning facts and shared dependencies are clear; native changes first need the
+relevant game mechanism checked. Do not scatter coupled lifecycle state across
+uncoordinated workers or claim the whole Stage 1a is one indivisible repair. The lead re-reads the resulting diff, tests and actual receipts.
 A worker summary or green ancestor CI alone is not review evidence.
 
 ## Bounded end-to-end packets and fewer round trips
@@ -219,45 +222,32 @@ changes by the architect remain reviewable candidates, not self-certified projec
 
 ## Five-minute waiting checkpoint and bounded extension
 
-Owner refinement, 2026-09-21: retain five minutes as the default waiting/handoff checkpoint,
-not an unconditional interruption of every short finishing step. This section supersedes
-the stricter timing wording in earlier task templates and narrative handoffs; their other
-authority, data, evidence and scope restrictions remain. A packet may set a stricter limit.
-Waiting means passively awaiting a process, CI, download, build, profile or training result;
-it is not a five-minute cap on active source review, design, coding or reasoning.
+Owner update, 2026-09-23: five minutes remains a passive-wait checkpoint, with a
+bounded extension to ten minutes when progress is credible and completion is near.
+Active reading, implementation and review are not subject to this elapsed-work limit.
+Ordinary authorized repairs should finish locally; the human is not a relay for each
+assertion failure or each completed substep.
 
-- Normally complete work that is reliably expected within five minutes. A known five-to-ten
-  minute short verification may stay in the round only within its existing authorization,
-  with observable progress, bounded resources and no pending human decision. At five minutes,
-  check once whether it can reasonably finish by ten minutes total passive waiting. Record
-  the reason for using this extension; uncertainty, lack of progress or a new risk means handoff.
-- The default extension ends at ten minutes total passive waiting for that operation or
-  dependent waiting chain. Do not reset the clock by splitting commands, polling repeatedly
-  or starting another round. A larger wait budget needs an explicit task-specific grant,
-  not the worker's own inference from "continue".
-- For known longer or uncertain jobs, normally including full dual-OS CI, substantial
-  downloads and real-model training, establish the authorized durable job and hand off
-  immediately after verifying its real identity/monitor. Do not first spend five or ten
-  minutes polling a job already known to be long. A missing execution capability, approval,
-  safe continuation mechanism or trustworthy state requires an unstarted/blocked handoff.
+For an already authorized long CI/test/training job, prefer one real read-only observer
+bound to its exact run/head/attempt or local task identity. Declare a finite total window
+(for example 45 minutes), use actual terminal notifications or low-frequency bounded
+reads, report once at completion/deadline and exit. It must not rerun jobs, mutate code,
+launch a new configuration or renew itself through replacement agents. The supervisor
+continues independent authorized work rather than passively polling. An observer's
+report is verified against the source service before acceptance.
 
-The checkpoint and extension are not a process timeout, permission to launch or an
-instruction to kill work. An explicitly authorized, bounded independent pipeline may
-finish its declared stages after the conversational round ends; its steps, failure stops
-and effects must be named in the packet. Ending a round does not cancel the job, and
-finishing a job does not authorize new model configurations, production mutations, another
-training batch, blind retry or automatic acceptance. Never keep a conversation alive just
-for continuous monitoring; supported automation requires its own user request and tool.
+If no persistent observation mechanism is available, say so and provide the real monitor;
+do not promise notification after the session ends. A monitoring deadline is not a job
+cancellation, a failed CI result or automatic authorization for the next training batch.
+Do not kill a job because the conversational round ends. At an actual human/access/
+authority boundary, deliver a concrete reviewable handoff and stop dependent actions;
+continue independent work when possible instead of ending all work prematurely.
 
-There are two legitimate handoff states:
-
-1. NOT STARTED: execution is unavailable, unauthorized, or cannot be shown to survive
-   this interaction. Give the human/Luna the bounded command or task and where its
-   actual monitor will be produced. Do not claim a process or monitor already exists.
-2. STARTED AND VERIFIED: an authorized independent runner has returned a real job/run
-   identity and an accessible status/log location. Verify those once, then hand off.
-   No cloud budget, game start, installation or release permission follows from this
-   rule. An assistant without a supported execution/delegation capability uses state 1.
+There are two legitimate task states at handoff: NOT STARTED when no verified executor
+exists; STARTED AND VERIFIED only after a real job identity and monitor have been read.
+A previously authorized bounded pipeline may complete its declared stages; new data,
+spending, production effects or unreviewed scope require a separate decision. Long
+waiting never creates those permissions.
 
 The handoff includes:
 
@@ -301,8 +291,11 @@ Suggested Chinese handoff form:
 
 ## Human and native gates
 
-Do not use a person as the first debugger. Luna first completes source review,
-faithful regressions, required exact build/install/load checks and rollback readiness.
+Do not use a person as the first debugger. The assigned implementation worker first
+completes source review, faithful regressions and rollback readiness. Exact
+build/install/load checks follow their owner and the granted environment permissions;
+production installation is not implied by this preparation. The local supervisor
+verifies the evidence and obtains independent review before the human packet.
 The human packet names the exact candidate, minimum actions, expected observations,
 monitor, safe stop and which claim the canary can establish. A model-driven action is
 Agent evidence, never native Human training data. Pauses, cancellations, unknowns and
