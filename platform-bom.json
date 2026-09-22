@@ -3,16 +3,16 @@
   "version": "0.2.0-rc.1",
   "components": {
     "native_foundation": {
-      "version": "0.1.0-rc.2",
-      "source_revision": "7f5257034a02615c61d928052960dfb1ebe646ae",
-      "component_tree_revision": "44e5074ff8237f30ae4633b35cd7201bcd0b73a6",
-      "component_source_digest_sha256": "6928824e049c2b24c31e78183e7761663e001de36f3b3612885e7df2b054bb62"
+      "version": "0.1.0-rc.3",
+      "source_revision": "fc8a25097f0e0c5b4cbf7bc0727a7bcc895f78c3",
+      "component_tree_revision": "b6b073ed3eb019a9f7a848487b0a81058e53e476",
+      "component_source_digest_sha256": "b87abb60d1aae819f83032872369f9f2b31469bfe159aba3d5dc2a99b548f5e9"
     },
     "connector": {
       "version": "1.2.0-rc.6",
-      "source_revision": "c2002f7524ab9f50db9240b6e5b18df18e44de7a",
-      "component_tree_revision": "9960277d14f90034877435c1e61cb237d9828545",
-      "component_source_digest_sha256": "759edfd87cb49229b0c2a47dce1a6db610e52a53ec6660d3607c5787a60a9957"
+      "source_revision": "fc8a25097f0e0c5b4cbf7bc0727a7bcc895f78c3",
+      "component_tree_revision": "52b332b164a680bf049cae116418b5e2e13ca220",
+      "component_source_digest_sha256": "0c98dea4bf99d7532da2665d46b9197e1897ad384d096616197044b27f4484db"
     },
     "host_runtime": {
       "version": "1.1.0-rc.8",
@@ -51,10 +51,10 @@
       "component_source_digest_sha256": "6708fe8fb86fa892e4a8e7c14daaa816cdcd2af84f43248e8253b2e4c3ae029f"
     },
     "game_mod": {
-      "version": "0.2.0-rc.8",
-      "source_revision": "712886fcefdd5e26722e12e048127da80b0e2f9b",
-      "component_tree_revision": "c002e840c01c9e9f20413a31a738dee62df978bf",
-      "component_source_digest_sha256": "faabf2c8b462102f9c4223cbef0ae28b8fc285c075f8a1f4e01d09933f9d3bf0"
+      "version": "0.2.0-rc.9",
+      "source_revision": "fc8a25097f0e0c5b4cbf7bc0727a7bcc895f78c3",
+      "component_tree_revision": "d070a042332bc121866b97b8722165b03276942f",
+      "component_source_digest_sha256": "9335dd7dc847b5ab5934013ae0a94083e0145ed88457922b478e928ebe10f90d"
     },
     "player_environment_protocol": "1.0.0",
     "typescript_sdk": "1.1.0-rc.1"
@@ -157,8 +157,8 @@
     },
     "connector": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
-      "current_component_source_revision": "c2002f7524ab9f50db9240b6e5b18df18e44de7a",
-      "current_component_source_digest_sha256": "759edfd87cb49229b0c2a47dce1a6db610e52a53ec6660d3607c5787a60a9957",
+      "current_component_source_revision": "fc8a25097f0e0c5b4cbf7bc0727a7bcc895f78c3",
+      "current_component_source_digest_sha256": "0c98dea4bf99d7532da2665d46b9197e1897ad384d096616197044b27f4484db",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "6c66cbf06757dca3e7d910467fb56b89376f109c6d7d0ba47d2bc0260ab4a3d2",
       "artifact_mvid": "11f1da35-558f-4346-8ec9-a493fea95cb8",
@@ -258,8 +258,8 @@
     "connector": {
       "source_revision": "4de52cfd72c6bf5b0d2312538152e81c616dabfb",
       "source_digest_sha256": "8651b47e2fec8e0c77689a8e8774377795d79c188f2d69910a116e72db8f78c1",
-      "current_component_source_revision": "c2002f7524ab9f50db9240b6e5b18df18e44de7a",
-      "current_component_source_digest_sha256": "759edfd87cb49229b0c2a47dce1a6db610e52a53ec6660d3607c5787a60a9957",
+      "current_component_source_revision": "fc8a25097f0e0c5b4cbf7bc0727a7bcc895f78c3",
+      "current_component_source_digest_sha256": "0c98dea4bf99d7532da2665d46b9197e1897ad384d096616197044b27f4484db",
       "source_relation": "loaded_native_source_precedes_current_discriminator_source",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b",
@@ -910,15 +910,15 @@
       "version": "0.2.0-rc.1",
       "platform_source_revision": "b5389a0b4a1bbed37e6a9718776fdf38f06f50c9",
       "platform_source_digest_sha256": "dbcd6ec1df10cad5ad011eb61a2f2ca533d7a110cd3f1296efa9c154b98d0cea",
-      "current_component_source_revision": "712886fcefdd5e26722e12e048127da80b0e2f9b",
-      "current_component_source_digest_sha256": "faabf2c8b462102f9c4223cbef0ae28b8fc285c075f8a1f4e01d09933f9d3bf0",
+      "current_component_source_revision": "fc8a25097f0e0c5b4cbf7bc0727a7bcc895f78c3",
+      "current_component_source_digest_sha256": "9335dd7dc847b5ab5934013ae0a94083e0145ed88457922b478e928ebe10f90d",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b",
       "installed": "pass",
       "loaded": "pass",
       "rollback_available": true,
       "rollback": "apps/game-mod/.local/deployments/2026-08-26T14-37-45.145Z",
-      "current_component_version": "0.2.0-rc.8"
+      "current_component_version": "0.2.0-rc.9"
     },
     "runtime": {
       "runtime_instance_id": "2388aba057ab4ff5a37588d235a28fab",
