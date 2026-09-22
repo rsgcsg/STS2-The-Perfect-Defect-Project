@@ -212,7 +212,7 @@ export class PolicyRuntime {
         if (mode === "shadow" && this.mode !== "shadow") this.lastPolicySnapshotId = null;
         this.mode = mode;
         if (mode === "auto") this.consecutiveStaleSubmissions = 0;
-        if (!(await this.appendEvidence("mode_changed", { mode }))) {
+        if (!(await this.appendEvidence("mode_changed", { mode, autonomy_budget: this.autonomyBudgetStatus() }))) {
           this.mode = "human";
           if (this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
           await this.releaseController();
@@ -432,7 +432,7 @@ export class PolicyRuntime {
       if (this.stopped) return this.status();
       if (this.autonomyBudgetState.state === "active") this.endAutonomyBudget("stopped");
       await this.releaseController();
-      if (!(await this.appendEvidence("stopped", {}))) {
+      if (!(await this.appendEvidence("stopped", { autonomy_budget: this.autonomyBudgetStatus(), controller: this.held ? "held" : "released" }))) {
         await this.taintWithoutEvidence("agent_evidence_write_failed_on_stop");
       }
       this.mode = "human";
@@ -461,7 +461,7 @@ export class PolicyRuntime {
     await this.appendEvidence("controller_released", {});
   }
   private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { await this.releaseController(); this.mode = "human"; await this.appendEvidence("handoff_to_human", { reason }); }
-  private async completeOneStep(): Promise<void> { await this.releaseController(); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.appendEvidence("one_step_completed", {}); }
+  private async completeOneStep(): Promise<void> { await this.releaseController(); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.appendEvidence("one_step_completed", { autonomy_budget: this.autonomyBudgetStatus() }); }
   private async failClosed(reason: string): Promise<void> { this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; await this.releaseController(); await this.appendEvidence("fail_closed", { reason }); }
   private async taint(reason: string): Promise<void> { await this.taintWithoutEvidence(reason); await this.appendEvidence("runtime_tainted", { reason, retry: false }); }
   private async taintWithoutEvidence(reason: string): Promise<void> { this.tainted = true; this.taintReason = reason; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; try { await this.releaseController(); } catch { /* retain held state; a failed release is not confirmation */ } }
@@ -567,7 +567,7 @@ export class PolicyRuntime {
     this.cancelActivePolicy();
     this.mode = "human";
     try { await this.releaseController(); } catch { /* held is retained; release was not confirmed */ }
-    await this.appendEvidence("autonomy_budget_exhausted", { reason, budget: this.autonomyBudgetStatus() });
+    await this.appendEvidence("autonomy_budget_exhausted", { reason, budget: this.autonomyBudgetStatus(), controller: this.held ? "held" : "released" });
   }
   private async stableSuccessor(previous: PlayerEnvironmentSnapshot): Promise<PlayerEnvironmentSnapshot | null> {
     for (let attempt = 1; attempt <= this.successorPoll.maxAttempts; attempt += 1) {
