@@ -13,33 +13,34 @@ is no longer a daily relay. Read [product delivery](../STAGE1A_PRODUCT_DELIVERY.
 remain separate. Major decisions are stated, native mechanisms precede native abstraction,
 and existing writers/running collection trees are protected.
 
-This snapshot was re-read from GitHub/Git objects on 2026-09-23; refresh before mutation:
+The authoritative B0 source anchor and review map are in the
+[2026-09-23 handoff](../evidence/STAGE1A_B0_HANDOFF_2026-09-23.md).
+Snapshot below was checked against actual Git objects and GitHub; refresh before mutation:
 
 | Object | Exact observation and boundary |
 |---|---|
-| develop | `d4c00a66291ba22864b3230a07dd741dfedaf64a`; #27 accepted documentation merged; its old task snapshots are not current execution status |
-| #31 Stage1a | `101a9cc0f89f9fdcd9d8320279a48b2595e2fccc`, tree `d8eb00196973ed2468ce5c4d6fe7e95095f47f46`; open Draft, cumulative source/test scope; [run35752111380](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35752111380) success |
-| #29 / #32 / #34 | Already integrated into Stage1a; do not repeat merges or reopen unchanged accepted UI/fixture repairs |
-| #35 budget | `388ae10104c5d6704390a5e65cc2652ecad17333`; open Draft; [run35761852114](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35761852114) success; lifecycle review remains separate from CI |
-| #36 new01 | `d478e70255f9e68b56df3741a781fc03a3ceba14`; open Draft design, [run35756547093](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35756547093) success; native assumptions/implementation not established by document CI |
+| B0 source anchor | `5b148f22f02d9dbebfb1c50dd1e9501d9aef7bd9`, tree `be30e2f267b2ee1b0427f6edaacd142c120137ff`; deterministic union of reviewed Stage1a and develop0051aaf |
+| #31 integration | Normal merge to develop `3e983857a24fabece0173d133665db652b047f73`, same tree as anchor; [own full35780464198](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35780464198) success and limited source acceptance; develop35782151978 success with verified same-tree receipt reuse |
+| #29/#32/#34/#35 | Accepted source/test increments integrated into Stage1a; #35 merge `182a4a4bdb3b7da626e7259b87a3ab022d54bf92`, exact-head full run35777828163 success; old failures are retained, not current blockers |
+| #27/#36/#37 | Accepted documentation; new01 acceptance is upper-level/conditional only. #36 merge d3d53b5; #37 develop merge0051aaf; their CI and scope links are in the handoff |
+| Runtime source versus consumer | Unpublished source rc.8, component revision99c75d66; current consumer remains rc.6. No production install/load qualification was performed |
+| B1 native reward fact candidate | Separate, unmerged work; scoped source/test/exact-build review exists but it is not part of the B0 anchor or installed gameplay |
 
-#35's old idle-deadline defect has a submitted repair. A separate controlled-barrier
-synthetic regression against 388ae101 reproduced a queued old handoff ending a later
-explicit Auto authorization. The isolated repair and related budget-termination cases
-are being independently checked before candidate publication. This is not an observed
-native failure or a claim that the current remote head includes the repair.
-The original writer's submitted candidate/worktree is retained. Existing green checks
-remain valid only for their exact tested source; future combinations need their own gate.
+Ordinary new work uses the current reviewed develop, one short topic per bounded packet;
+Stage1a is not a permanent second develop. Protected running/collection trees, models,
+queues and environments remain untouched. Future integration or installation must preserve
+their exact producer and independent checks.
 
-The active bounded work is budget lifecycle closeout in an isolated copy, native grounding of
-three new01 examples, workbench-entry design, and this coordination-document alignment.
-Actual agent/process receipts own execution state; this file does not invent job IDs.
-B0 is still pending final scoped review/integration and its final combination checks.
-No installation, new model training, game session or qualified B0 product is claimed.
+Next: independently review and seal this B0 handoff, then the native reward-group vertical slice and small-B feedback/memory engineering.
+Native grounding found that ordinary reward parent/return semantics are a smaller first
+slice than virtualized large-pile selection; the two new01 examples remain distinct.
+The corrected [surface matrix](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/31#issuecomment-5783319535)
+uses the actual four-model token port, not the legacy S1 admission path.
 
-[Issue #33](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/33) remains the
-bounded CI-improvement owner; accepted fixture work is not a workflow-topology change.
-Workshop #24/#25/#26/#30 and main are unchanged. Do not duplicate or auto-integrate them.
+[Issue #33](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/33) remains open:
+accepted fixture work did not change CI workflow topology. Main and Workshop #24/#25/#26/#30
+are unchanged. No new model training, production install, game, paid compute or publication
+is implied by this source handoff. Actual task/run receipts, not this snapshot, own live status.
 
 ## Running combinations and protected history
 
