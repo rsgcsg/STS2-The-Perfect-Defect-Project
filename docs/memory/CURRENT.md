@@ -1,82 +1,66 @@
 # Current project context
 
 Use rsgcsg/STS2-The-Perfect-Defect-Project for all new development.
-Platform components, `python/spireagent` applications and `python/stpd` research
-share root governance, one local/cloud console and one Hub membership authority.
+Snapshot: 2026-09-22. This is routing, not deployment or execution authority.
 
-The current qualified Workbench/Hub candidate is
+## Active mainline and next gate
+
+Stage 1a is the product mainline. Read [product delivery](../STAGE1A_PRODUCT_DELIVERY.zh-CN.md),
+[the single-team refinement](../STAGE1A_TEAM_OPERATIONS.zh-CN.md),
+[the original task IDs](../plans/STAGE1A_TASKS.zh-CN.md), and
+[AI collaboration](../AI_COLLABORATION.md). These requirements are candidates in
+[PR #27](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/27), not yet
+integrated into develop at this snapshot. Read the exact design ref assigned by
+an approved packet; a documentation branch is not installed functionality.
+
+Observed develop is `d5785d215087719189a3a6bada9addb34b7d95c5`.
+[PR #29](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/29) integrated
+the accepted rc.6 consumer/UI increment into Stage 1a, not develop.
+[PR #31](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/31) is the
+remaining cumulative source review; its acceptance is not implied by PR #29.
+
+[PR #32](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/32) is the
+active Luna runtime-recovery candidate: `1e35e1d54554e9b00685aca709b1f39644fc5688`.
+Its exact CI succeeded; F2's late-response ordering is represented. The remaining
+F1 fixture signal fires during setup rather than actual controller release.
+The next packet fixes only that observation, synchronizes BOM and publishes one
+candidate to the same PR. It does not reopen Runtime design or accepted UI work.
+No new packet is considered acknowledged or running without a real receipt.
+
+[CI/governance follow-through](../evidence/CI_GOVERNANCE_FOLLOWTHROUGH_2026-09-22.md)
+records the fixed evidence, PR ownership and integration sequence.
+[Issue #33](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/33)
+tracks bounded CI improvement; it is prepared, not executing or a product gate.
+Architect documentation and a genuinely disjoint assigned writer may proceed
+alongside product work. With one implementation worker, do not launch competing
+packets. Workshop's existing stack remains separate and unchanged.
+
+After scoped review and provenance-correct integration, prioritize the exact
+candidate package/consumer and authorized native recovery gate, then 1a-03/04/05
+and the 1a-06 in-game model journey. Preserve the original task IDs; do not redo
+local reconciliation or the old four-model pilot without a demonstrated gap.
+
+## Running combinations and protected history
+
+The last qualified Workbench/Hub candidate recorded here remains
 `bafef714a767c3d1d2bf9a4d04281595996f8a5c`.
-[Dataset curation and continuous recording acceptance](../evidence/CURATION_CONTINUOUS_ACCEPTANCE_2026-09-17.md)
-records the exact kit/Mod/tool/image, 37-source capacity test, successful retry of
-the user's 35-source preview, and owner-operated abandonment/partial-exit segments:
-27 accepted, 25 proved/canonical, two cancellations, six diagnostics, zero real
-failures and zero unresolved. Both segments automatically sealed/uploaded and passed
-member download verification. The partial exit remains incomplete. ADR-0010 owns
-purpose-bound datasets, durable Gold isolation and quality annotations. PR21 and
-its release integration receipt own formal promotion; runtime bytes remain pinned.
-Gold reservations prohibit rolling affected access back to an unenforcing old image.
+[Acceptance](../evidence/CURATION_CONTINUOUS_ACCEPTANCE_2026-09-17.md) and its release
+receipt own the exact bytes, compatibility and rollback; this snapshot does not
+re-observe deployment. Earlier operating, task-flow and migration evidence stays
+in [Status](../STATUS.md), [migration](../MONOREPO_MIGRATION.md) and dated reports,
+not repeated in this handoff. A documentation merge changes no running producer.
 
-The previous Workbench source was `fedbed097e30fb78bf0e86efff560fd8b1263c99`. The accepted
-20-source dataset baseline used Hub source
-`3a4b8997d06011952a2248902c67f64f531dbcff`; the subsequent
-[export follow-up](../evidence/DATASET_EXPORT_2026-09-17.md) records the download correction.
-The release integration receipt pins the active deployed source and image. Dataset selection has recording-date
-filters, whole-result selection, responsive navigation and direct accepted-project-data
-access. Runtime process provenance is merged without weakening game/artifact identity;
-batch workers have a separate bounded budget, one-pass coverage and incremental hash/file processing. See [selection evidence](../evidence/DATASET_SELECTION_2026-09-16.md).
-PR17 and the release receipt own final integration, real batch and publication facts.
-New multi-runtime datasets require the corrected reader for rollback; the fedbed
-fallback retains it but can reproduce batch timeout. Native/tool bytes and original
-Human evidence remain. Windows PR9 is integrated through Evidence rc.11; defeat is
-a native terminal, separate from strict research sequence conditions.
-
-The previously accepted unified task flow used Workbench/Hub source
-`f4a21a2d67392b557c593cd396b894d1c3439779`; the native/tool bytes retain their
-separate `08d9a37c45362a3421e6f52be851541202a5fc8e` build provenance.
-[Exact acceptance](../evidence/UNIFIED_TASK_FLOW_2026-09-16.md) records 44 accepted,
-43 canonical and one explicit Close-tail unresolved action (still one real failure
-in the owner accounting), two pauses/resumes, durable Close, verified upload and
-byte-identical member download. This is bounded workflow acceptance, not a
-zero-failure Human or complete-run qualification. PR #10 and release receipts own
-formal integration/publication; documentation HEAD is not the running producer.
-
-The [user flow](../../python/docs/UNIFIED_TASK_FLOW.zh-CN.md) covers daily collection,
-local model preparation/control and separate Agent-report sharing. Dataset unions
-preserve only parent-selected decisions. Existing profiles, consent, tools, raw data
-and queues retain their identities. S1 remains CUDA-only; native model outcomes are
-not measured. The compatible Hub fallback is the retained `08d9a37` image in the
-acceptance report; the older `25777cb` image cannot read persisted union requests.
-
-The previously qualified operating combination uses Workbench source
-`6fcd735e4618c29967528e9d3457d898d2e8283d` and Hub source
-`25777cbce106ec9d64ceeef9e55b889abdbc3d3a`, reusing the existing qualified
-Mod/tool bytes. [Operating acceptance](../evidence/OPERATING_FLOW_2026-09-16.md)
-records the actual installation, cold load, Human Close/upload, compatibility,
-backup/restore and rollback. Follow its PR and GitHub Releases for formal
-integration/publication; branch HEAD is not a deployment pointer.
-
-The preceding monorepo release was sealed at `45ef463e3c13cd82db55601c122a292c37aaae2e`.
-[Acceptance](../MONOREPO_MIGRATION.md) links source, kit, OCI, rollback and
-[Human evidence](../evidence/MONOREPO_HUMAN_GATE_2026-09-15.md): 580 accepted,
-580 proved/canonical, 81 nested decisions, zero real failures; automatic Close
-upload and member download passed. Later documentation/integration commits do
-not silently change that deployed producer. Historical evidence is unchanged.
-
-[One workflow](../DEVELOPMENT_WORKFLOW.md) owns branches, intentional releases, compatible
-pinned deployments and maintenance. A documentation merge does not update running clients.
-[Member/Agent handoff](../NEW_MEMBER_HANDOFF.zh-CN.md) is the entry for new people.
-
-Root `npm run check` covers both systems; `npm run check:plan -- --base origin/develop --run`
-selects editorial, Python-owner or full checks; verified integration receipts avoid
-re-executing identical content while current identity checks still run. Work from current origin/develop by PR;
-main/develop are the only long-lived branches. Resolve live merge refs and CI
-from GitHub. Keep existing credentials, raw data, old tools and outboxes private.
-Compute budget remains zero. No GPU-worker, scientific or model-quality claim.
+Preserve member/device identity, consent, pending outboxes, failed evidence and
+immutable data/model lineage. Gold reservations prohibit affected access through
+an unenforcing rollback image; multi-runtime datasets and persisted unions need
+compatible readers. Compute budget remains zero. Keep raw data, credentials,
+weights, old tools and installed artifacts outside Git.
 
 Resolve live GitHub refs, CI, source and deployed identity; current source/runtime
 authorities override this file.
 
 ## Remaining Platform non-claims
 
-This bounded acceptance does not qualify unseen native surfaces, arbitrary game
-versions, the incomplete second run as complete, or scientific/model quality.
+CI is source/test evidence, not installed/loaded Runtime, native/Human, full-scene
+product or scientific qualification. Unobserved surfaces and arbitrary game
+versions are not qualified; an incomplete run remains incomplete.

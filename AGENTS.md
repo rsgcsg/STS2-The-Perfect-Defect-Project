@@ -12,6 +12,15 @@ One repository and workflow do not merge game, evidence, operational or research
 3. `docs/ARCHITECTURE.md` and `docs/COMPONENTS.md`
 4. the relevant component `AGENTS.md` or guide and exact code/tests
 
+For current product work, Stage 1a is the mainline: read
+[Stage 1a product delivery](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md) and its narrow task plan.
+All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md): the architect plans
+and independently reviews; Luna executes a bounded end-to-end packet, including its
+explicitly permitted prerequisites and checks, rather than asking at every substep.
+Five minutes remains the waiting checkpoint; the documented bounded extension may reach
+ten minutes, otherwise hand off with real monitoring and recovery instructions. No
+polling loop, invented dispatch/background work, or automatic next major batch.
+
 Before ordinary development, also read `docs/DEVELOPMENT_WORKFLOW.md` and
 `docs/TESTING.md`. Read `docs/ENGINEERING_GOVERNANCE.md` when the task changes
 architecture, authority, a public contract, evidence/identity, cross-layer
