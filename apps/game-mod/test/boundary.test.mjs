@@ -553,6 +553,32 @@ test("non-combat native owners are observed by explicit read-only seams", () => 
   assert.doesNotMatch(patches, /PatchAll|transpiler:|static\s+bool\s+Prefix/u);
 });
 
+test("card reward alternatives cannot use visual position as the native callback index", () => {
+  const reader = read("components/connector/host/LiveHost/CardRewardSurfaceReader.cs");
+  const alternatives = sourceBetween(
+    reader,
+    "private static NCardRewardAlternativeButton[] AlternativeButtons",
+    "private static bool IsHolderClickable"
+  );
+
+  // Equal labels and counts still permit opposite visual positions. The native
+  // callback carries its creation index, so position cannot identify its model.
+  assert.doesNotMatch(alternatives, /OrderBy\(button => button\.Position\.X\)/u);
+  assert.match(reader, /CardRewardAlternativePresentationBindings\.TryCapture/u);
+  assert.match(reader, /CardRewardAlternativePresentationBindings\.TryResolveButton/u);
+  assert.doesNotMatch(reader, /buttons\[index\]/u);
+  assert.match(reader, /expectedButton\.IsQueuedForDeletion\(\)/u);
+  assert.match(reader, /AlternativeButtons\(currentContainer\)/u);
+
+  const initializer = read("apps/game-mod/UnifiedPlatformMod.cs");
+  const hooks = read("apps/game-mod/ConnectorCardRewardPresentationPatches.cs");
+  assert.match(initializer, /ConnectorCardRewardPresentationPatches\.Initialize\(\)/u);
+  assert.match(hooks, /nameof\(NCardRewardSelectionScreen\.RefreshOptions\)/u);
+  assert.match(hooks, /nameof\(NCardRewardAlternativeButton\.Create\)[\s\S]*typeof\(string\[\]\)/u);
+  assert.match(hooks, /BeginRefresh\([\s\S]*ObserveCreated\(/u);
+  assert.doesNotMatch(hooks, /PatchAll|transpiler:|\[HarmonyPatch\]/u);
+});
+
 test("non-combat Human witnesses use public bindings and exact native completion operands", () => {
   const patches = read("components/annotator/src/STS2HumanAnnotator.Mod/NativeUiPatches.cs");
 
