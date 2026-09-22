@@ -579,6 +579,24 @@ test("card reward alternatives cannot use visual position as the native callback
   assert.doesNotMatch(hooks, /PatchAll|transpiler:|\[HarmonyPatch\]/u);
 });
 
+test("reward canary observations stay opt-in, private and separate from authority", () => {
+  const reader = read("components/connector/host/LiveHost/CardRewardSurfaceReader.cs");
+  const hooks = read("apps/game-mod/ConnectorCardRewardPresentationPatches.cs");
+  const probe = read("components/connector/host/NativeUi/CardRewardCanaryDiagnostics.cs");
+  const registry = read("components/connector/host/NativeUi/NativeEntityRegistry.cs");
+  const snapshot = read("components/connector/host/PlayerEnvironment/Observation/SnapshotBuilder.cs");
+
+  assert.match(reader, /if \(CardRewardCanaryDiagnostics\.Process\.Enabled\)\s+ReportCardRewardCanary/u);
+  assert.match(reader, /NativeCardRewardDecisionProvider\.CaptureParentFacts\(screen\)/u);
+  assert.match(hooks, /CardRewardCanaryDiagnostics\.Process\.Begin\(/u);
+  assert.match(hooks, /CardRewardCanaryDiagnostics\.Process\.Created\(/u);
+  assert.match(hooks, /CardRewardCanaryDiagnostics\.Process\.Finish\(/u);
+  assert.match(probe, /STS2_CONNECTOR_CARD_REWARD_CANARY_DIAGNOSTICS/u);
+  assert.match(probe, /budget_exhausted/u);
+  assert.match(registry, /TryGetExistingId[\s\S]*_identities\.TryGetValue/u);
+  assert.doesNotMatch(snapshot, /CardRewardCanaryDiagnostics|CaptureParentFacts/u);
+});
+
 test("non-combat Human witnesses use public bindings and exact native completion operands", () => {
   const patches = read("components/annotator/src/STS2HumanAnnotator.Mod/NativeUiPatches.cs");
 

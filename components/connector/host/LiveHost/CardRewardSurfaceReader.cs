@@ -75,10 +75,15 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
         var semanticCardSet = new HashSet<CardModel>(
             semanticCards,
             ReferenceEqualityComparer.Instance);
-        bool alternativesBoundExactly =
+        bool exactButtonReferences =
             CardRewardAlternativePresentationBindings.TryCapture(
-                screen, semanticAlternatives, currentButtons, out var exactAlternatives)
+                screen, semanticAlternatives, currentButtons, out var exactAlternatives);
+        bool buttonsReady = exactButtonReferences
             && AllCurrentAlternativeButtons(exactAlternatives);
+        bool alternativesBoundExactly = exactButtonReferences && buttonsReady;
+        if (CardRewardCanaryDiagnostics.Process.Enabled)
+            ReportCardRewardCanary(screen, entities, semanticAlternatives,
+                currentButtons.Length, exactButtonReferences, buttonsReady);
         bool catalogBoundExactly = NativeDecisionProjection.HasExactReferenceBijection(
                                        semanticCards,
                                        holders.Select(holder => holder.CardModel))
@@ -408,6 +413,41 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
             && GodotObject.IsInstanceValid(button)
             && !button.IsQueuedForDeletion()
             && ConnectorMod.IsNodeVisible(button));
+
+    private static void ReportCardRewardCanary(
+        NCardRewardSelectionScreen screen,
+        NativeEntityRegistry entities,
+        IReadOnlyList<CardRewardAlternative> semanticAlternatives,
+        int currentButtons,
+        bool exactButtonReferences,
+        bool buttonsReady)
+    {
+        // This diagnostic is private and read-only. An existing registry ID
+        // does not itself prove that any outer Snapshot reached a consumer.
+        try
+        {
+            NativeCardRewardParentFacts facts =
+                NativeCardRewardDecisionProvider.CaptureParentFacts(screen);
+            bool typedAlternativesMatch = facts.Status == "captured"
+                && facts.Alternatives.Count == semanticAlternatives.Count
+                && facts.Alternatives.Select((fact, index) =>
+                    ReferenceEquals(fact.Alternative, semanticAlternatives[index])).All(match => match);
+            string? parentId = null;
+            if (facts.ParentReward != null)
+                entities.TryGetExistingId(facts.ParentReward, out parentId);
+            CardRewardCanaryDiagnostics.Process.Page(
+                screen, facts.Status, parentId, typedAlternativesMatch,
+                semanticAlternatives.Count, currentButtons,
+                exactButtonReferences, buttonsReady);
+        }
+        catch
+        {
+            CardRewardCanaryDiagnostics.Process.Page(
+                screen, "diagnostic_capture_failed", null, false,
+                semanticAlternatives.Count, currentButtons,
+                exactButtonReferences, buttonsReady);
+        }
+    }
 
     private static bool IsHolderClickable(NCardHolder holder) =>
         ClickableField?.GetValue(holder) is true;
