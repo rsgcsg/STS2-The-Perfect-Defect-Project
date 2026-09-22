@@ -274,6 +274,7 @@ class FakeConnector implements PolicyConnector {
   receiptRequestIdOverride?: string;
   receiptBoundActionIdOverride?: string;
   releaseGate?: Promise<void>;
+  successorActionIds?: string[];
   constructor(public current: DecisionBundle, private readonly delivery: PlayerEnvironmentReceipt["delivery"] = "delivered", private readonly submitFailure?: Error, private readonly releaseFailure?: Error) {}
   async capabilities() {
     return {
@@ -289,7 +290,7 @@ class FakeConnector implements PolicyConnector {
   async submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }) {
     this.submitCount += 1;
     if (this.submitFailure) throw this.submitFailure;
-    const successor = this.delivery === "delivered" ? snapshot([`next-${this.nextSequence}`], `snapshot-${this.nextSequence}`, "interactive", this.nextSequence) : null;
+    const successor = this.delivery === "delivered" ? snapshot(this.successorActionIds ?? [`next-${this.nextSequence}`], `snapshot-${this.nextSequence}`, "interactive", this.nextSequence) : null;
     if (successor) { this.current = { observation: successor, reads: [] }; this.nextSequence += 1; }
     return { protocol_version: "1.0.0", schema: "sts2.player-environment/receipt-1", request_id: this.receiptRequestIdOverride ?? input.requestId, delivery: this.delivery, action: { bound_action_id: this.receiptBoundActionIdOverride ?? input.boundActionId, verb: "end_turn", arguments: [] }, retry: { allowed: false, reason: "test" }, successor } as PlayerEnvironmentReceipt;
   }
@@ -937,6 +938,102 @@ describe("runtime integration fake", () => {
       const result = await tickResponse.json() as { results: unknown[] };
       expect(result.results.length).toBe(2);
       expect(connector.submitCount).toBe(2);
+    } finally { await service.close(); }
+  });
+
+  it("shares one finite submission wallet across changing loop snapshots", async () => {
+    const connector = new FakeConnector(bundle(["loop", "return"]));
+    connector.stale = false;
+    connector.successorActionIds = ["loop", "return"];
+    const seenCatalogs: string[][] = [];
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-budget-submit", autoBudget: { maxSubmissions: 6, maxPolicyCalls: 6, deadlineMs: 10_000 }, successorPoll: { maxAttempts: 2, baseBackoffMs: 0 }, sleep: async () => {}, policy: (input) => {
+      seenCatalogs.push(input.bundle.observation.bound_actions.actions.map(action => action.bound_action_id));
+      return { candidate_digest: input.candidate_digest, scores: Array(input.candidate_count).fill(1), selected_index: 0 };
+    } });
+    for (let index = 0; index < 6; index += 1) expect((await runtime.tick()).type).toBe("delivered");
+    const blocked = await runtime.tick();
+    expect(blocked).toMatchObject({ type: "not_admitted", reason: "autonomy_budget_exhausted" });
+    expect(connector.submitCount).toBe(6);
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "released", autonomy_budget: { state: "exhausted", submissions_used: 6, exhausted_reason: "submission_attempt_limit" } });
+    expect(seenCatalogs).toHaveLength(6);
+    expect(seenCatalogs.every(ids => ids.includes("return") && ids.length === 2)).toBe(true);
+    expect(runtime.status().autonomy_budget.submissions_used).not.toBeGreaterThan(6);
+  });
+
+  it("bounds policy calls even when every decision abstains", async () => {
+    const connector = new FakeConnector(bundle(["loop", "return"]));
+    connector.stale = false;
+    const scorer = vi.fn((input: { candidate_digest: string; candidate_count: number }) => ({ candidate_digest: input.candidate_digest, scores: Array(input.candidate_count).fill(1), selected_index: null }));
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "shadow", runId: "run-budget-policy", autoBudget: { maxSubmissions: 6, maxPolicyCalls: 2, deadlineMs: 10_000 }, sleep: async () => {}, policy: scorer });
+    expect((await runtime.tick()).type).toBe("shadow");
+    connector.current = bundle(["b"], "snapshot-b");
+    expect((await runtime.tick()).type).toBe("shadow");
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "autonomy_budget_exhausted" });
+    expect(scorer).toHaveBeenCalledTimes(2);
+    expect(connector.submitCount).toBe(0);
+    expect(runtime.status().autonomy_budget).toMatchObject({ state: "exhausted", policy_calls_used: 2, exhausted_reason: "policy_call_limit" });
+  });
+
+  it("does not reset the shared wallet for duplicate Auto requests or new snapshots", async () => {
+    const connector = new FakeConnector(bundle(["a"]));
+    connector.stale = false;
+    const entered = deferred<void>();
+    const finish = deferred<{ candidate_digest: string; scores: number[]; selected_index: number | null }>();
+    let calls = 0;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "human", runId: "run-budget-shared", autoBudget: { maxSubmissions: 3, maxPolicyCalls: 6, deadlineMs: 10_000 }, sleep: async () => {}, policy: async input => {
+      if (calls++ === 0) { entered.resolve(); return finish.promise; }
+      return { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 };
+    } });
+    await runtime.setMode("auto");
+    const firstTick = runtime.tick();
+    await entered.promise;
+    const duplicateAuto = runtime.setMode("auto");
+    expect(runtime.status().autonomy_budget.submissions_used).toBe(0);
+    finish.resolve({ candidate_digest: candidateOrderDigest(["a"]), scores: [1], selected_index: 0 });
+    expect((await firstTick).type).toBe("delivered");
+    await duplicateAuto;
+    const used = runtime.status().autonomy_budget;
+    connector.current = bundle(["b"], "snapshot-new");
+    await runtime.tick();
+    expect(runtime.status().autonomy_budget.submissions_used).toBe(used.submissions_used + 1);
+    expect(runtime.status().autonomy_budget.policy_calls_used).toBe(used.policy_calls_used + 1);
+    expect(connector.submitCount).toBe(2);
+  });
+
+  it("cancels an unresolved policy at the monotonic deadline without reviving its late result", async () => {
+    vi.useFakeTimers();
+    try {
+      let clock = 0;
+      const connector = new FakeConnector(bundle(["a"]));
+      connector.stale = false;
+      const entered = deferred<void>();
+      const finish = deferred<{ candidate_digest: string; scores: number[]; selected_index: number | null }>();
+      const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-budget-deadline", autoBudget: { maxSubmissions: 6, maxPolicyCalls: 6, deadlineMs: 10 }, monotonicNow: () => clock, sleep: async () => {}, policy: async () => { entered.resolve(); return finish.promise; } });
+      const tick = runtime.tick();
+      await entered.promise;
+      clock = 11;
+      vi.advanceTimersByTime(10);
+      expect(await tick).toMatchObject({ type: "not_admitted", reason: "autonomy_budget_exhausted" });
+      expect(runtime.status()).toMatchObject({ mode: "human", controller: "released", autonomy_budget: { state: "exhausted", exhausted_reason: "deadline" } });
+      finish.resolve({ candidate_digest: candidateOrderDigest(["a"]), scores: [1], selected_index: 0 });
+      await Promise.resolve();
+      expect(connector.submitCount).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("shares the wallet between the background worker and concurrent HTTP ticks", async () => {
+    const connector = new FakeConnector(bundle(["a"]));
+    connector.stale = false;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "human", runId: "run-budget-http", autoBudget: { maxSubmissions: 3, maxPolicyCalls: 6, deadlineMs: 10_000 }, successorPoll: { maxAttempts: 2, baseBackoffMs: 0 }, sleep: async () => {}, policy: (input) => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    const service = await startPolicyRuntimeHttpServer(runtime, { port: 0, autoDrive: true, autoIdleMs: 0 });
+    const post = (route: string, body: unknown) => fetch(`${service.address}/v2/${route}`, { method: "POST", headers: { "content-type": "application/json", "x-sts2-policy-run-id": runtime.status().run_id }, body: JSON.stringify(body) });
+    try {
+      expect((await post("mode", { mode: "auto" })).status).toBe(200);
+      await Promise.all(Array.from({ length: 4 }, () => post("tick", { max_ticks: 2 })));
+      await eventually(() => runtime.status().autonomy_budget.state === "exhausted");
+      expect(connector.submitCount).toBe(3);
+      expect(runtime.status().autonomy_budget.submissions_used).toBe(3);
+      expect(runtime.status().mode).toBe("human");
     } finally { await service.close(); }
   });
 

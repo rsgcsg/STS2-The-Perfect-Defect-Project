@@ -32,7 +32,7 @@ const connector = {
   async acquireController() { held = true; }, async releaseController() { held = false; },
   async submit(input) { assert.ok(held); submits++; sequence++; return { request_id: input.requestId, action: { bound_action_id: input.boundActionId }, delivery: "delivered", successor: snapshot() }; }
 };
-const runtime = new PolicyRuntime({ manifest, connector, policy: (input) => {
+const runtime = new PolicyRuntime({ manifest, connector, autoBudget: { maxSubmissions: 4, maxPolicyCalls: 8, deadlineMs: 10_000 }, policy: (input) => {
   if (slowNext) {
     slowNext = false;
     resolveSlowEntered();
@@ -64,8 +64,13 @@ try {
   assert.equal((await post(server.address, "tick", { max_ticks: 1 })).results[0].type, "delivered");
   assert.equal(runtime.status().mode, "human"); assert.equal(held, false);
   await post(server.address, "mode", { mode: "auto" });
-  await post(server.address, "tick", { max_ticks: 2 });
-  assert.equal(submits, 3);
+  const budgetRun = await post(server.address, "tick", { max_ticks: 10 });
+  assert.equal(submits, 5);
+  assert.equal(runtime.status().autonomy_budget.submissions_used, 4);
+  assert.equal(runtime.status().autonomy_budget.exhausted_reason, "submission_attempt_limit");
+  assert.equal(runtime.status().mode, "human");
+  assert.ok(budgetRun.results.some((result) => result.reason === "autonomy_budget_exhausted"));
+  await post(server.address, "mode", { mode: "auto" });
   slowNext = true;
   const slowTick = post(server.address, "tick", { max_ticks: 1 });
   await slowEntered;
@@ -102,6 +107,7 @@ try {
   ]);
   assert.equal(startup.schema, "sts2.policy-runtime/startup-1");
   assert.equal(startup.runtime_version, POLICY_RUNTIME_VERSION);
+  assert.deepEqual(startup.autonomy_budget, { maxSubmissions: 16, maxPolicyCalls: 32, deadlineMs: 60000 });
   assert.equal((await (await fetch(`${startup.address}/status`)).json()).status.mode, "human");
   await post(startup.address, "stop", {}, startup.run_id);
   const exitResult = await Promise.race([childExit, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("CLI did not exit after POST /v2/stop")), 5000); timer.unref(); })]);
