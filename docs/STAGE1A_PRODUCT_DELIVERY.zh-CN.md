@@ -11,10 +11,13 @@ Workshop 是并行分发工作，不代替 1a，也不作为未提出的 1a 完�
 [架构](ARCHITECTURE.md)、[组件](COMPONENTS.md)和
 [开发流程](DEVELOPMENT_WORKFLOW.md)的权威边界不变。
 [窄任务清单](plans/STAGE1A_TASKS.zh-CN.md)拥有实施顺序，
-[AI 协作规范](AI_COLLABORATION.md)拥有 Luna/真人交接和五分钟等待规则。
+[AI 协作规范](AI_COLLABORATION.md)拥有本地主管、多 writer、独立审查与有界观察规则。
 本文中的新界面、合同字段、验收目标都是设计要求，未出现精确验收前不得称已实现。
 
-## 1. 起点：保留已有成果，不重新发明项目
+## 1. 历史起点：保留已有成果，不重新发明项目
+
+以下是首次设计核读快照，不是当前版本台账。当前 refs/PR/执行状态见
+[CURRENT](memory/CURRENT.md)，最新排程见[任务表](plans/STAGE1A_TASKS.zh-CN.md)。
 
 本次读取的 develop 为 `d5785d215087719189a3a6bada9addb34b7d95c5`；
 1a 工作分支为 `feat/stage1a-local-models@3e804e5e67b02b2b93b5d81c1033c2dc567f62b1`。

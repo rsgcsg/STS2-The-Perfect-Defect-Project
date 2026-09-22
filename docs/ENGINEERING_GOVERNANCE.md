@@ -263,10 +263,12 @@ commit-provenance contract remains; governance-only PRs may be squashed.
 
 ## 9. Human and Agent collaboration
 
-One lead owns final architecture, authority, evidence claims, and merge
-recommendation. Use zero to two workers for bounded call-path inventory,
-log/test analysis, read-only research, mechanical fixtures, or narrow
-implementation after architecture selection.
+One local supervisor owns architecture, evidence claims and integration coordination.
+Use a small number of independent workers for bounded call-path inventory, log/test
+analysis, native research, fixtures or implementation after architecture selection.
+The current delegation/observer policy is owned by [AI collaboration](AI_COLLABORATION.md).
+No worker is required merely for parallelism; native fidelity and available local resources
+limit useful concurrency. The supervisor's own changes also receive independent review.
 
 Workers receive an exact repo/ref, bounded files, one task, non-goals, and
 deterministic checks. They return facts/changes, files, checks, and uncertainty.
