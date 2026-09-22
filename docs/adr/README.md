@@ -59,6 +59,8 @@ ledger.
 - [ADR-0013: Public Human-observation BC](0013-public-human-observation-bc.md)
 - [ADR-0014: One observation, all B/C action readouts](0014-packed-bc-readouts.md)
 
+- [ADR-0015: Native logical observation, actions, and memory (Proposed)](0015-native-logical-interaction.md)
+
 ## New ADR template
 
 ```markdown

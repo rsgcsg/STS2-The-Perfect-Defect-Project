@@ -10,6 +10,35 @@ native-human evidence recording, model-neutral policy execution lifecycle and
 strategy-free integration tools. It does not own policy inference, reward,
 models, training or research authority.
 
+## Proposed native logical interaction direction
+
+[ADR-0015](adr/0015-native-logical-interaction.md) records WEB-01's revisable
+upper-level proposal. It changes the target observation/action abstraction, not
+any current wire schema, installed artifact, or historical Human proof below.
+Its status must be read before treating the proposal as an accepted contract.
+
+The target policy input is the current entered native logical page/mode's
+authorized content and selection state, its complete applicable action menu,
+and model-owned memory of actual history. A page's complete logical list is not
+split by scrolling, pixels or virtualized holders; other unopened pages and
+hidden outcomes are not automatically aggregated into that input. One semantic
+native interaction is an action, not every mouse event or software read.
+
+The ADR's primary contrast is a fully informed single selector with sequential
+picks versus multiple reward groups with inspect/defer/re-enter opportunities.
+Cancelling a tentative selection, temporarily leaving a reward group, claiming,
+and final abandonment are distinct. Their exact native realization remains for
+local validation and scoped implementation; the examples are not runtime proof.
+
+Connector still owns observation/delivery, Annotator immutable Human evidence,
+STPD research and learned memory, and Policy Runtime bounded execution and
+recovery. A future shared capability profile must not become consumer-side
+catalog filtering. Receipt observations and UI acceptance do not become causal
+successors by renaming. Existing H, execution S, A_public, canonical evidence,
+Read-rich inputs and M0 results retain their exact meanings until explicit
+versioned migration. Detailed refinements and justified engineering tradeoffs
+follow the ADR's review boundary, not an implicit rewrite of history.
+
 ## Planes
 
 ```text
