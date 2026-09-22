@@ -18,7 +18,7 @@ field drift fails closed before Snapshot observation or policy scoring.
 
 ## Standalone consumer package
 
-Version `0.1.0-rc.7` provides a candidate package for external consumers. Build
+Version `0.1.0-rc.8` provides a candidate package for external consumers. Build
 from a committed component checkout with the checked-in lockfile:
 
 ```bash
@@ -27,7 +27,7 @@ npm --prefix components/policy-runtime run check
 npm --prefix components/policy-runtime run package -- --output /absolute/package-output
 ```
 
-The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.7.tgz`,
+The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.8.tgz`,
 `policy-runtime-package.json` and `checksums.sha256`. It requires committed
 component source and does not publish anything. The package contains compiled
 JavaScript/declarations, CLI entries, license, a component identity record and
@@ -73,7 +73,30 @@ drifts. The child must first attest that exact adapter identity; the loopback
 service is not published until the parent verifies it. At runtime, any pinned
 environment field drift fails before observation,
 scoring or controller acquisition. Adapter decisions time out after 30 seconds
-and return to Human before controller acquisition. The CLI publishes its exact
+and return to Human before controller acquisition. Each Shadow/Auto/One-Step
+authorization also receives one finite Runtime-owned budget: by default 16
+submission attempts, 32 policy calls and 60 seconds of monotonic time. The CLI
+accepts `--max-auto-submissions`, `--max-policy-calls` and
+`--auto-deadline-ms`; omitted values use those finite defaults and never mean
+unlimited operation. The wallet is shared by background Auto and HTTP ticks,
+is consumed before each real submission and before each policy call, and is not
+renewed by polling, reconnects or new snapshots. At a limit the Runtime
+cancels pending policy work, records `autonomy_budget_exhausted`, hands back to
+Human and stops the background worker. The total-deadline handoff is armed for
+the whole authorization, not only for a policy call, so a successful tick
+followed by an Auto idle/successor gap still releases the controller without a
+follow-up tick or status request; an in-flight native submit is still classified
+by its Receipt before release. A new explicit Auto/Shadow/One-Step mode from
+Human starts a new authorization. Returning to Human on an unsupported surface,
+abstention, known non-delivery, fail-closed condition or taint ends the active
+budget without a later deadline exhaustion. A submit already in flight is still
+classified by its Receipt, including `unknown`, and a release failure remains
+held. Release requires an exact Host acknowledgement; an unconfirmed release
+taints the run and cannot be made confirmed by a second local close or lease
+expiry. It remains reported as held, blocks new non-Human authorization and
+prevents Stop from sealing success. Recover against the exact Host instance or
+replace the Runtime run.
+The CLI publishes its exact
 startup identity before enabling Shadow/Auto drive. `unknown` delivery taints the
 run and is never retried. `POST /v2/stop` or process termination releases the
 controller and seals an Agent evidence directory bound to Runtime code, Manifest,
@@ -90,6 +113,11 @@ verification rejects any digest, identity or event-association drift.
 - `POST /v2/mode` with `{"mode":"human|shadow|one_step|auto"}`
 - `POST /v2/tick` with `{"max_ticks":1}`
 - `POST /v2/stop` with `{}`
+
+`GET /status` and every command response include `autonomy_budget` with the
+configured limits, consumed submission/policy-call counts, monotonic elapsed and
+remaining time, and the exhaustion/end reason. Budget exhaustion is a safety
+handoff, not a completed task or a gameplay-success claim.
 
 HTTP envelopes use `sts2.policy-runtime/http-2` (ticks append `/tick-1`). Every
 mutation requires exactly one nonempty `X-STS2-Policy-Run-ID` header containing

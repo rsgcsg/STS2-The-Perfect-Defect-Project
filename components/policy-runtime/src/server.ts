@@ -39,16 +39,16 @@ export async function startPolicyRuntimeHttpServer(runtime: PolicyRuntime, optio
     if (!options.autoDrive || autoWorker || closing || !isDrivenMode(runtime.status().mode)) return;
     autoWorker = (async () => {
       try {
-        while (!closing && isDrivenMode(runtime.status().mode) && !runtime.status().tainted) {
+        while (!closing && isDrivenMode(runtime.status().mode) && runtime.status().autonomy_budget.state === "active" && !runtime.status().tainted) {
           const result = await runtime.tick();
-          if (result.type === "unknown" || !isDrivenMode(runtime.status().mode)) return;
+          if (result.type === "unknown" || !isDrivenMode(runtime.status().mode) || runtime.status().autonomy_budget.state !== "active") return;
           if (autoIdleMs > 0) await new Promise((resolve) => setTimeout(resolve, autoIdleMs));
           else await new Promise((resolve) => setImmediate(resolve));
         }
       } catch {
         try { await runtime.setMode("human"); } catch { /* Runtime already failed closed. */ }
       }
-    })().finally(() => { autoWorker = null; if (!closing) ensureAutoWorker(); });
+    })().finally(() => { autoWorker = null; if (!closing && runtime.status().autonomy_budget.state === "active") ensureAutoWorker(); });
   };
   const onStopped = options.onStopped ? (): void => {
     if (stoppedNotified) return;
@@ -125,7 +125,7 @@ async function dispatch(runtime: PolicyRuntime, request: IncomingMessage, respon
       try {
         const result = await runtime.tick(expected);
         results.push(result);
-        if (result.type === "unknown" || runtime.status().mode === "human" || runtime.status().tainted) break;
+        if (result.type === "unknown" || runtime.status().mode === "human" || runtime.status().autonomy_budget.state !== "active" || runtime.status().tainted) break;
       } catch (error) {
         // A later fence failure cannot erase already executed ticks or advertise
         // the entire POST as known-unapplied. Preserve the completed prefix.

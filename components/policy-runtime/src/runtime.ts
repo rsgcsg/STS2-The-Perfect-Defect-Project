@@ -3,7 +3,7 @@ import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvi
 import { admitWholeDecision } from "./admission.js";
 import { AgentRunEvidence } from "./evidence.js";
 import { candidateOrderDigest } from "./digest.js";
-import { POLICY_RUNTIME_VERSION, assertAdapterDecision, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type DecisionBundle, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type TickResult } from "./contracts.js";
+import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type DecisionBundle, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type TickResult } from "./contracts.js";
 import { StaleWholeBundleError } from "./connector.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 
@@ -23,6 +23,9 @@ export interface RuntimeOptions {
   successorPoll?: { maxAttempts: number; baseBackoffMs: number };
   policyTimeoutMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
+  /** Monotonic clock used for the finite Shadow/Auto authorization. */
+  monotonicNow?: () => number;
+  autoBudget?: Partial<AutonomyBudgetConfig>;
   now?: () => string;
   runtimeIdentity?: { version: string; code_sha256: string | null };
 }
@@ -83,12 +86,29 @@ export class PolicyRuntime {
   private recoveryEpoch = 0;
   private recoveryEpochExhausted = false;
   private activePolicy: { controller: AbortController } | null = null;
+  private autonomyBudgetTimer: ReturnType<typeof setTimeout> | undefined;
+  private autonomyBudgetGeneration = 0;
+  private autonomyBudgetHandoffQueued = false;
+  private autonomyBudgetRecoveryFenced = false;
+  private autonomyBudgetHandoffFinished = false;
+  private controllerReleaseUnconfirmed = false;
   private readonly runId: string;
   private readonly now: () => string;
   private readonly staleRefresh: { maxAttempts: number; baseBackoffMs: number };
   private readonly successorPoll: { maxAttempts: number; baseBackoffMs: number };
   private readonly policyTimeoutMs: number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly monotonicNow: () => number;
+  private readonly autoBudget: AutonomyBudgetConfig;
+  private autonomyBudgetState: {
+    state: RuntimeStatus["autonomy_budget"]["state"];
+    submissionsUsed: number;
+    policyCallsUsed: number;
+    startedAt: number | null;
+    elapsedMs: number;
+    exhaustedReason: AutonomyBudgetExhaustionReason | null;
+    endedReason: AutonomyBudgetEndReason | null;
+  };
 
   constructor(private readonly options: RuntimeOptions) {
     validatePolicyManifest(options.manifest);
@@ -108,10 +128,24 @@ export class PolicyRuntime {
       throw new Error("policyTimeoutMs must be a positive integer");
     }
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    this.monotonicNow = options.monotonicNow ?? (() => performance.now());
+    this.autoBudget = normalizeAutonomyBudget(options.autoBudget);
+    const started = isAutonomyMode(this.mode);
+    this.autonomyBudgetState = {
+      state: started ? "active" : "inactive",
+      submissionsUsed: 0,
+      policyCallsUsed: 0,
+      startedAt: started ? this.monotonicNow() : null,
+      elapsedMs: 0,
+      exhaustedReason: null,
+      endedReason: null
+    };
+    if (started) this.scheduleAutonomyBudgetDeadline();
   }
 
   status(): RuntimeStatus {
-    return { schema: "sts2.policy-runtime/status-1", runtime: this.options.runtimeIdentity ?? { version: POLICY_RUNTIME_VERSION, code_sha256: null }, policy: { manifest_id: this.options.manifest.manifest_id, policy_id: this.options.manifest.policy.id, policy_version: this.options.manifest.policy.version, provider: this.options.manifest.policy.provider, architecture: this.options.manifest.policy.architecture, artifact_sha256: this.options.manifest.artifact.sha256 }, run_id: this.runId, lifecycle: this.stopped ? "stopped" : "running", mode: this.mode, controller: this.held ? "held" : "released", tainted: this.tainted, taint_reason: this.taintReason, refreshing: this.refreshing, last_snapshot_id: this.lastSnapshotId, last_snapshot: this.lastSnapshot, last_decision: this.lastDecision, last_receipt: this.lastReceipt, reads: [...this.lastReads], invalidations: [...this.invalidations], errors: [...this.errors] , environment: this.environment };
+    const budget = this.autonomyBudgetStatus();
+    return { schema: "sts2.policy-runtime/status-1", runtime: this.options.runtimeIdentity ?? { version: POLICY_RUNTIME_VERSION, code_sha256: null }, policy: { manifest_id: this.options.manifest.manifest_id, policy_id: this.options.manifest.policy.id, policy_version: this.options.manifest.policy.version, provider: this.options.manifest.policy.provider, architecture: this.options.manifest.policy.architecture, artifact_sha256: this.options.manifest.artifact.sha256 }, run_id: this.runId, lifecycle: this.stopped ? "stopped" : "running", mode: this.mode, controller: this.held ? "held" : "released", autonomy_budget: budget, tainted: this.tainted, taint_reason: this.taintReason, refreshing: this.refreshing, last_snapshot_id: this.lastSnapshotId, last_snapshot: this.lastSnapshot, last_decision: this.lastDecision, last_receipt: this.lastReceipt, reads: [...this.lastReads], invalidations: [...this.invalidations], errors: [...this.errors] , environment: this.environment };
   }
 
   async readEnvironment(): Promise<RuntimeEnvironmentBinding> {
@@ -177,13 +211,35 @@ export class PolicyRuntime {
         }
         if (this.stopped) throw new Error("runtime is stopped");
         if (this.tainted && mode !== "human") throw new Error(`runtime is tainted: ${this.taintReason}`);
-        if (mode !== "auto") await this.releaseController();
+        if (mode === "human") {
+          this.mode = "human";
+          if (this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
+        }
+        if (mode !== "auto") {
+          try { await this.releaseController(); }
+          catch (error) {
+            if (mode !== "human") {
+              this.mode = "human";
+              this.endAutonomyBudget("mode_changed");
+            }
+            throw error;
+          }
+        }
         if (mode !== "human") this.checkRecoveryEpoch(expected?.recoveryEpoch);
+        if (isAutonomyMode(mode) && !isAutonomyMode(this.mode)
+            && this.autonomyBudgetState.state === "exhausted" && !this.autonomyBudgetHandoffFinished) {
+          await this.handoffAutonomyBudget();
+          if (this.tainted) throw new Error(`runtime is tainted: ${this.taintReason}`);
+        }
+        if (isAutonomyMode(mode) && !isAutonomyMode(this.mode)) this.beginAutonomyBudget();
+        else if (!isAutonomyMode(mode) && mode !== "human" && this.autonomyBudgetState.state === "active") this.endAutonomyBudget("mode_changed");
+        else if (mode === "human" && this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
         if (mode === "shadow" && this.mode !== "shadow") this.lastPolicySnapshotId = null;
         this.mode = mode;
         if (mode === "auto") this.consecutiveStaleSubmissions = 0;
-        if (!(await this.appendEvidence("mode_changed", { mode }))) {
+        if (!(await this.appendEvidence("mode_changed", { mode, autonomy_budget: this.autonomyBudgetStatus() }))) {
           this.mode = "human";
+          if (this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
           await this.releaseController();
           throw new Error("Agent evidence is unavailable; mode change failed closed");
         }
@@ -212,6 +268,10 @@ export class PolicyRuntime {
     if (this.stopped) return { type: "not_admitted", reason: "runtime_stopped", status: this.status() };
     if (this.tainted) return { type: "not_admitted", reason: "runtime_tainted", status: this.status() };
     if (this.mode === "human") return { type: "human", status: this.status() };
+    if (!this.autonomyBudgetAvailable()) {
+      await this.handoffAutonomyBudget();
+      return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
+    }
     let capabilities: Awaited<ReturnType<PolicyConnector["capabilities"]>>;
     try {
       capabilities = await this.options.connector.capabilities();
@@ -265,6 +325,10 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "snapshot_already_scored", status: this.status() };
     }
     const input: PolicyDecisionInput = { run_id: this.runId, manifest: this.options.manifest, bundle, candidate_digest: admission.candidateDigest, candidate_count: admission.candidateCount };
+    if (!this.consumePolicyCall()) {
+      await this.handoffAutonomyBudget();
+      return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
+    }
     let adapterDecision: AdapterDecision;
     const policyRecoveryEpoch = this.recoveryEpoch;
     const policyController = new AbortController();
@@ -279,6 +343,10 @@ export class PolicyRuntime {
       assertAdapterDecision(adapterDecision);
       validateAdapterDecision(adapterDecision, admission.candidateDigest, admission.candidateCount);
     } catch (error) {
+      if (this.autonomyBudgetState.exhaustedReason === "deadline") {
+        await this.handoffAutonomyBudget();
+        return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
+      }
       if (this.policyRecoveryCancelled(policyRecoveryEpoch, error)) {
         return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
       }
@@ -308,6 +376,8 @@ export class PolicyRuntime {
       return { type: "not_executed", decision, status: this.status() };
     }
     if (this.mutationCancellationRequested()) {
+      if (await this.finishAutonomyBudgetHandoffIfRequested())
+        return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
       return { type: "not_admitted", reason: "mode_changed_before_submit", status: this.status() };
     }
     try {
@@ -317,11 +387,17 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "controller_acquire_failed", status: this.status() };
     }
     if (this.mutationCancellationRequested()) {
+      if (await this.finishAutonomyBudgetHandoffIfRequested())
+        return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
       await this.releaseController();
       return { type: "not_admitted", reason: "mode_changed_before_submit", status: this.status() };
     }
     const requestId = `request-${this.runId}-${decision.decision_id}`;
     if (this.submittedRequestIds.has(requestId)) { await this.failClosed("duplicate_request_id"); return { type: "not_admitted", reason: "duplicate_request_id", status: this.status() }; }
+    if (!this.consumeSubmissionAttempt()) {
+      await this.handoffAutonomyBudget();
+      return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
+    }
     this.submittedRequestIds.add(requestId);
     let receipt: PlayerEnvironmentReceipt;
     try {
@@ -362,8 +438,11 @@ export class PolicyRuntime {
     this.consecutiveStaleSubmissions = 0;
     try {
       const successor = await this.stableSuccessor(bundle.observation);
-      if (this.mutationCancellationRequested())
+      if (this.mutationCancellationRequested()) {
+        if (await this.finishAutonomyBudgetHandoffIfRequested())
+          return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
         return { type: "not_admitted", reason: "recovery_requested_after_delivery", status: this.status() };
+      }
       if (!successor) { await this.taint("successor_not_stable"); return { type: "unknown", decision, receipt, error: "delivered action did not yield a stable distinct successor", status: this.status() }; }
       this.lastReceipt = { ...this.lastReceipt!, successor_snapshot_id: successor.snapshot_id };
       if (!(await this.appendEvidence("successor", { decision_id: decision.decision_id, successor }))) await this.taintWithoutEvidence("agent_evidence_write_failed_after_successor");
@@ -381,8 +460,9 @@ export class PolicyRuntime {
     this.cancelActivePolicy();
     return this.serialize(async () => {
       if (this.stopped) return this.status();
+      if (this.autonomyBudgetState.state === "active") this.endAutonomyBudget("stopped");
       await this.releaseController();
-      if (!(await this.appendEvidence("stopped", {}))) {
+      if (!(await this.appendEvidence("stopped", { autonomy_budget: this.autonomyBudgetStatus(), controller: this.held ? "held" : "released" }))) {
         await this.taintWithoutEvidence("agent_evidence_write_failed_on_stop");
       }
       this.mode = "human";
@@ -395,27 +475,195 @@ export class PolicyRuntime {
     });
   }
 
-  private async acquireController(): Promise<void> { if (this.held) return; await this.options.connector.acquireController(); this.held = true; if (!(await this.appendEvidence("controller_acquired", {}))) throw new Error("Agent evidence failed after controller acquisition"); }
+  private async acquireController(): Promise<void> { if (this.controllerReleaseUnconfirmed) throw new Error("controller_release_unconfirmed"); if (this.held) return; await this.options.connector.acquireController(); this.held = true; if (!(await this.appendEvidence("controller_acquired", {}))) throw new Error("Agent evidence failed after controller acquisition"); }
   private async releaseController(): Promise<void> {
     if (!this.held) return;
+    if (this.controllerReleaseUnconfirmed) throw new Error("controller_release_unconfirmed");
     try {
       await this.options.connector.releaseController();
     } catch (error) {
       const reason = `controller_release_failed:${message(error)}`;
-      this.errors = [...this.errors, reason].slice(-20);
-      this.invalidations = [...this.invalidations, reason].slice(-20);
+      this.controllerReleaseUnconfirmed = true;
+      if (this.tainted) {
+        this.errors = [...this.errors, reason].slice(-20);
+        this.invalidations = [...this.invalidations, reason].slice(-20);
+      } else {
+        await this.taintWithoutEvidence(reason, false);
+      }
       await this.appendEvidence("controller_release_failed", { reason });
+      await this.appendEvidence("runtime_tainted", { reason, retry: false });
       throw error;
     }
     this.held = false;
-    await this.appendEvidence("controller_released", {});
+    if (!(await this.appendEvidence("controller_released", {}))) {
+      const reason = "agent_evidence_controller_release_write_failed";
+      if (this.tainted) {
+        this.errors = [...this.errors, reason].slice(-20);
+        this.invalidations = [...this.invalidations, reason].slice(-20);
+      } else {
+        await this.taintWithoutEvidence(reason, false);
+      }
+      await this.appendEvidence("runtime_tainted", { reason, retry: false });
+      throw new Error(reason);
+    }
   }
-  private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { await this.releaseController(); this.mode = "human"; await this.appendEvidence("handoff_to_human", { reason }); }
-  private async completeOneStep(): Promise<void> { await this.releaseController(); this.mode = "human"; await this.appendEvidence("one_step_completed", {}); }
-  private async failClosed(reason: string): Promise<void> { this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; await this.releaseController(); await this.appendEvidence("fail_closed", { reason }); }
+  private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("handoff_to_human", { reason }); }
+  private async completeOneStep(): Promise<void> { this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("one_step_completed", { autonomy_budget: this.autonomyBudgetStatus() }); }
+  private async failClosed(reason: string): Promise<void> { this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("fail_closed", { reason }); }
   private async taint(reason: string): Promise<void> { await this.taintWithoutEvidence(reason); await this.appendEvidence("runtime_tainted", { reason, retry: false }); }
-  private async taintWithoutEvidence(reason: string): Promise<void> { this.tainted = true; this.taintReason = reason; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; try { await this.releaseController(); } catch { /* retain held state; a failed release is not confirmation */ } }
+  private async taintWithoutEvidence(reason: string, release = true): Promise<void> { this.tainted = true; this.taintReason = reason; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); if (release) try { await this.releaseController(); } catch { /* retain held state; a failed release is not confirmation */ } }
   private async appendEvidence(kind: string, payload: Record<string, unknown>): Promise<boolean> { try { await this.options.evidence?.append(kind, payload, this.now()); return true; } catch (error) { const reason = `agent_evidence_write_failed:${message(error)}`; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); return false; } }
+
+  private beginAutonomyBudget(): void {
+    this.clearAutonomyBudgetDeadline();
+    this.autonomyBudgetGeneration += 1;
+    this.autonomyBudgetHandoffQueued = false;
+    this.autonomyBudgetRecoveryFenced = false;
+    this.autonomyBudgetHandoffFinished = false;
+    this.autonomyBudgetState = {
+      state: "active",
+      submissionsUsed: 0,
+      policyCallsUsed: 0,
+      startedAt: this.monotonicNow(),
+      elapsedMs: 0,
+      exhaustedReason: null,
+      endedReason: null
+    };
+    this.scheduleAutonomyBudgetDeadline();
+  }
+
+  private endAutonomyBudget(reason: AutonomyBudgetEndReason): void {
+    if (this.autonomyBudgetState.state === "active") {
+      this.autonomyBudgetState.elapsedMs = this.budgetElapsedMs();
+      this.autonomyBudgetState.startedAt = null;
+      this.autonomyBudgetState.state = "inactive";
+      this.autonomyBudgetState.endedReason = reason;
+    }
+    this.clearAutonomyBudgetDeadline();
+  }
+
+  private budgetElapsedMs(): number {
+    const state = this.autonomyBudgetState;
+    if (state.startedAt === null) return state.elapsedMs;
+    const current = this.monotonicNow();
+    const elapsed = Number.isFinite(current) ? Math.max(0, current - state.startedAt) : state.elapsedMs;
+    return Math.max(state.elapsedMs, elapsed);
+  }
+
+  private autonomyBudgetStatus(): RuntimeStatus["autonomy_budget"] {
+    const state = this.autonomyBudgetState;
+    const elapsedMs = this.budgetElapsedMs();
+    if (state.state === "active" && state.exhaustedReason === null && elapsedMs >= this.autoBudget.deadlineMs) {
+      this.markBudgetExhausted("deadline");
+      this.requestAutonomyBudgetHandoff();
+    }
+    const effectiveElapsed = state.state === "active" ? Math.min(elapsedMs, this.autoBudget.deadlineMs) : Math.min(state.elapsedMs, this.autoBudget.deadlineMs);
+    return {
+      state: state.state,
+      max_submissions: this.autoBudget.maxSubmissions,
+      submissions_used: state.submissionsUsed,
+      max_policy_calls: this.autoBudget.maxPolicyCalls,
+      policy_calls_used: state.policyCallsUsed,
+      deadline_ms: this.autoBudget.deadlineMs,
+      elapsed_ms: Math.max(0, Math.round(effectiveElapsed)),
+      remaining_ms: Math.max(0, this.autoBudget.deadlineMs - Math.round(effectiveElapsed)),
+      exhausted_reason: state.exhaustedReason,
+      ended_reason: state.endedReason
+    };
+  }
+
+  private markBudgetExhausted(reason: AutonomyBudgetExhaustionReason): void {
+    if (this.autonomyBudgetState.state === "active") {
+      this.clearAutonomyBudgetDeadline();
+      this.autonomyBudgetState.state = "exhausted";
+      this.autonomyBudgetState.exhaustedReason = reason;
+      this.autonomyBudgetState.elapsedMs = Math.min(this.budgetElapsedMs(), this.autoBudget.deadlineMs);
+      this.autonomyBudgetState.startedAt = null;
+    }
+  }
+
+  private autonomyBudgetAvailable(): boolean {
+    if (this.autonomyBudgetState.state !== "active") return false;
+    if (this.budgetElapsedMs() >= this.autoBudget.deadlineMs) { this.markBudgetExhausted("deadline"); return false; }
+    if (this.autonomyBudgetState.submissionsUsed >= this.autoBudget.maxSubmissions) { this.markBudgetExhausted("submission_attempt_limit"); return false; }
+    if (this.autonomyBudgetState.policyCallsUsed >= this.autoBudget.maxPolicyCalls) { this.markBudgetExhausted("policy_call_limit"); return false; }
+    return true;
+  }
+
+  private consumePolicyCall(): boolean {
+    if (!this.autonomyBudgetAvailable()) return false;
+    this.autonomyBudgetState.policyCallsUsed += 1;
+    return true;
+  }
+
+  private consumeSubmissionAttempt(): boolean {
+    if (this.autonomyBudgetState.state !== "active") return false;
+    if (this.budgetElapsedMs() >= this.autoBudget.deadlineMs) { this.markBudgetExhausted("deadline"); return false; }
+    if (this.autonomyBudgetState.submissionsUsed >= this.autoBudget.maxSubmissions) { this.markBudgetExhausted("submission_attempt_limit"); return false; }
+    this.autonomyBudgetState.submissionsUsed += 1;
+    return true;
+  }
+
+  private clearAutonomyBudgetDeadline(): void {
+    if (this.autonomyBudgetTimer !== undefined) clearTimeout(this.autonomyBudgetTimer);
+    this.autonomyBudgetTimer = undefined;
+  }
+
+  private scheduleAutonomyBudgetDeadline(): void {
+    if (this.autonomyBudgetState.state !== "active") return;
+    const generation = this.autonomyBudgetGeneration;
+    const remaining = this.autoBudget.deadlineMs - this.budgetElapsedMs();
+    if (remaining <= 0) {
+      this.requestAutonomyBudgetHandoff();
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (generation !== this.autonomyBudgetGeneration || this.autonomyBudgetState.state !== "active") return;
+      this.markBudgetExhausted("deadline");
+      this.requestAutonomyBudgetHandoff();
+    }, remaining);
+    this.autonomyBudgetTimer = timer;
+    if (typeof timer === "object" && timer !== null && "unref" in timer && typeof timer.unref === "function") timer.unref();
+  }
+
+  private requestAutonomyBudgetHandoff(): void {
+    if (this.autonomyBudgetState.state === "active") this.markBudgetExhausted("deadline");
+    if (!this.autonomyBudgetRecoveryFenced) {
+      this.autonomyBudgetRecoveryFenced = true;
+      this.advanceRecoveryEpoch();
+      this.cancelActivePolicy();
+      this.mode = "human";
+    }
+    if (this.autonomyBudgetHandoffQueued || this.autonomyBudgetHandoffFinished) return;
+    this.autonomyBudgetHandoffQueued = true;
+    const generation = this.autonomyBudgetGeneration;
+    void this.serialize(() => this.handoffAutonomyBudget(generation)).catch((error: unknown) => {
+      const reason = `autonomy_budget_handoff_failed:${message(error)}`;
+      this.errors = [...this.errors, reason].slice(-20);
+      this.invalidations = [...this.invalidations, reason].slice(-20);
+    });
+  }
+
+  private async handoffAutonomyBudget(expectedGeneration = this.autonomyBudgetGeneration): Promise<void> {
+    if (expectedGeneration !== this.autonomyBudgetGeneration || this.autonomyBudgetHandoffFinished) return;
+    const reason = this.autonomyBudgetState.exhaustedReason ?? "deadline";
+    if (this.autonomyBudgetState.state === "active") this.markBudgetExhausted(reason);
+    this.requestAutonomyBudgetHandoff();
+    try { await this.releaseController(); } catch { /* releaseController records and taints its exact failure */ }
+    const recorded = await this.appendEvidence("autonomy_budget_exhausted", { reason, budget: this.autonomyBudgetStatus(), controller: this.held ? "held" : "released" });
+    if (!recorded && !this.tainted) {
+      const failure = "autonomy_budget_exhaustion_evidence_write_failed";
+      await this.taintWithoutEvidence(failure, false);
+      await this.appendEvidence("runtime_tainted", { reason: failure, retry: false });
+    }
+    this.autonomyBudgetHandoffFinished = true;
+  }
+
+  private async finishAutonomyBudgetHandoffIfRequested(): Promise<boolean> {
+    if (!this.autonomyBudgetRecoveryFenced) return false;
+    await this.handoffAutonomyBudget();
+    return true;
+  }
   private async stableSuccessor(previous: PlayerEnvironmentSnapshot): Promise<PlayerEnvironmentSnapshot | null> {
     for (let attempt = 1; attempt <= this.successorPoll.maxAttempts; attempt += 1) {
       if (this.mutationCancellationRequested()) return null;
@@ -444,7 +692,8 @@ export class PolicyRuntime {
   private mutationCancellationRequested(): boolean {
     return this.stopRequested
       || this.requestedMode === "human"
-      || this.requestedMode === "shadow";
+      || this.requestedMode === "shadow"
+      || this.autonomyBudgetRecoveryFenced;
   }
   private cancelActivePolicy(): void {
     if (this.activePolicy && !this.activePolicy.controller.signal.aborted) this.activePolicy.controller.abort();
@@ -520,6 +769,21 @@ function sameStringArray(left: readonly string[], right: readonly string[]): boo
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function assertNever(value: never): never { throw new Error(`unknown runtime command: ${JSON.stringify(value)}`); }
+function isAutonomyMode(mode: RuntimeMode): boolean { return mode === "auto" || mode === "shadow" || mode === "one_step"; }
+function isDrivenMode(mode: RuntimeMode): boolean { return mode === "auto" || mode === "shadow"; }
+function normalizeAutonomyBudget(value: Partial<AutonomyBudgetConfig> | undefined): AutonomyBudgetConfig {
+  const budget = {
+    maxSubmissions: value?.maxSubmissions ?? DEFAULT_AUTONOMY_BUDGET.maxSubmissions,
+    maxPolicyCalls: value?.maxPolicyCalls ?? DEFAULT_AUTONOMY_BUDGET.maxPolicyCalls,
+    deadlineMs: value?.deadlineMs ?? DEFAULT_AUTONOMY_BUDGET.deadlineMs
+  };
+  if (!Number.isSafeInteger(budget.maxSubmissions) || budget.maxSubmissions < 1
+      || !Number.isSafeInteger(budget.maxPolicyCalls) || budget.maxPolicyCalls < 1
+      || !Number.isSafeInteger(budget.deadlineMs) || budget.deadlineMs < 1) {
+    throw new Error("autoBudget requires positive safe integer maxSubmissions, maxPolicyCalls and deadlineMs");
+  }
+  return budget;
+}
 class PolicyRecoveryCancelledError extends Error {
   constructor() { super("policy decision cancelled for recovery"); }
 }

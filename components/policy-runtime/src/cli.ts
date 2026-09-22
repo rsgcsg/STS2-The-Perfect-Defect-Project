@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, resolve } from "node:path";
 import process from "node:process";
 import { PlayerEnvironmentRestClient } from "@rsgcsg/sts2-connector-client";
-import { POLICY_RUNTIME_VERSION, validatePolicyManifest, type RuntimeMode } from "./contracts.js";
+import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, validatePolicyManifest, type AutonomyBudgetConfig, type RuntimeMode } from "./contracts.js";
 import { ConnectorPolicyClient } from "./connector.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { NdjsonPolicyPort } from "./policy-port.js";
@@ -22,6 +22,7 @@ interface CliOptions {
   listenPort: number;
   evidenceRoot: string;
   mode: RuntimeMode;
+  autoBudget: AutonomyBudgetConfig;
 }
 
 async function main(): Promise<void> {
@@ -79,6 +80,7 @@ async function main(): Promise<void> {
       connector,
       policy: (input, signal) => port!.decide(input, signal),
       mode: options.mode,
+      autoBudget: options.autoBudget,
       runId: evidence.runId,
       evidence,
       runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: runtimeCodeSha256 }
@@ -108,7 +110,8 @@ async function main(): Promise<void> {
     policy_manifest_sha256: policyManifestSha256,
     runtime_version: POLICY_RUNTIME_VERSION,
     runtime_code_sha256: runtimeCodeSha256,
-    mode: options.mode
+    mode: options.mode,
+    autonomy_budget: options.autoBudget
   })}\n`);
   service.startDriving();
 
@@ -133,7 +136,7 @@ function parseArgs(args: string[]): CliOptions {
     if (!value) throw new Error(`${key} requires a value`);
     index += 1;
     if (key === "--adapter-arg") adapterArgs.push(value);
-    else if (["--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode"].includes(key)) values.set(key, value);
+    else if (["--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms"].includes(key)) values.set(key, value);
     else throw new Error(`unknown argument: ${key}`);
   }
   const manifestPath = required(values, "--manifest");
@@ -145,6 +148,11 @@ function parseArgs(args: string[]): CliOptions {
   if (!Number.isSafeInteger(listenPort) || listenPort < 1 || listenPort > 65535) throw new Error("--listen-port must be a valid TCP port");
   const mode = values.get("--mode") ?? "human";
   if (mode !== "human" && mode !== "shadow" && mode !== "one_step" && mode !== "auto") throw new Error("--mode is invalid");
+  const autoBudget = {
+    maxSubmissions: positiveOption(values, "--max-auto-submissions", DEFAULT_AUTONOMY_BUDGET.maxSubmissions),
+    maxPolicyCalls: positiveOption(values, "--max-policy-calls", DEFAULT_AUTONOMY_BUDGET.maxPolicyCalls),
+    deadlineMs: positiveOption(values, "--auto-deadline-ms", DEFAULT_AUTONOMY_BUDGET.deadlineMs)
+  };
   return {
     manifestPath,
     adapterCommand,
@@ -153,8 +161,15 @@ function parseArgs(args: string[]): CliOptions {
     connectorEndpoint,
     listenPort,
     evidenceRoot: values.get("--evidence-root") ?? ".local/evidence/agent-runs",
-    mode
+    mode,
+    autoBudget
   };
+}
+
+function positiveOption(values: Map<string, string>, key: string, fallback: number): number {
+  const value = Number(values.get(key) ?? fallback);
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${key} must be a positive integer`);
+  return value;
 }
 
 function required(values: Map<string, string>, key: string): string {

@@ -27,11 +27,13 @@ export function validatePolicyRuntimeBaseUrl(value) {
 
 export function decodePolicyRuntimeStatus(value) {
   const status = object(value, "Policy Runtime status");
-  exactKeys(status, [
+  const keys = [
     "schema", "runtime", "policy", "run_id", "lifecycle", "mode", "controller", "tainted",
     "taint_reason", "refreshing", "last_snapshot_id", "last_snapshot", "last_decision",
     "last_receipt", "reads", "invalidations", "errors", "environment"
-  ], "Policy Runtime status");
+  ];
+  if (Object.hasOwn(status, "autonomy_budget")) keys.push("autonomy_budget");
+  exactKeys(status, keys, "Policy Runtime status");
   if (status.schema !== POLICY_RUNTIME_STATUS_SCHEMA) invalid("Policy Runtime status schema is unsupported");
   const runtime = object(status.runtime, "Policy Runtime runtime");
   exactKeys(runtime, ["version", "code_sha256"], "Policy Runtime runtime");
@@ -41,6 +43,7 @@ export function decodePolicyRuntimeStatus(value) {
   if (!new Set(["held", "released"]).has(status.controller)) invalid("Policy Runtime controller is unsupported");
   if (!new Set(["running", "stopped"]).has(status.lifecycle)) invalid("Policy Runtime lifecycle is unsupported");
   if (typeof status.tainted !== "boolean" || typeof status.refreshing !== "boolean") invalid("Policy Runtime status flags are invalid");
+  if (status.autonomy_budget !== undefined) validateAutonomyBudget(status.autonomy_budget);
   stringOrNull(status.taint_reason, "taint_reason");
   stringOrNull(status.last_snapshot_id, "last_snapshot_id");
   const policy = object(status.policy, "Policy Runtime policy");
@@ -95,6 +98,18 @@ export function decodePolicyRuntimeStatus(value) {
     if (environment.connector_artifact_sha256 !== null && (typeof environment.connector_artifact_sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(environment.connector_artifact_sha256))) invalid("environment.connector_artifact_sha256 is invalid");
   }
   return status;
+}
+
+function validateAutonomyBudget(value) {
+  const budget = object(value, "Policy Runtime autonomy_budget");
+  exactKeys(budget, ["state", "max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms", "exhausted_reason", "ended_reason"], "Policy Runtime autonomy_budget");
+  if (!new Set(["inactive", "active", "exhausted"]).has(budget.state)) invalid("autonomy_budget.state is unsupported");
+  for (const key of ["max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms"]) {
+    if (!Number.isSafeInteger(budget[key]) || budget[key] < 0 || (["max_submissions", "max_policy_calls", "deadline_ms"].includes(key) && budget[key] < 1)) invalid(`autonomy_budget.${key} is invalid`);
+  }
+  if (budget.submissions_used > budget.max_submissions || budget.policy_calls_used > budget.max_policy_calls || budget.remaining_ms > budget.deadline_ms) invalid("autonomy_budget counters are invalid");
+  if (!["submission_attempt_limit", "policy_call_limit", "deadline", null].includes(budget.exhausted_reason)) invalid("autonomy_budget.exhausted_reason is unsupported");
+  if (!["human_recovery", "mode_changed", "stopped", null].includes(budget.ended_reason)) invalid("autonomy_budget.ended_reason is unsupported");
 }
 
 export function validatePolicyMode(value) {
