@@ -15,6 +15,10 @@
   （已接受#27/#37的develop）。tree与预先计算、独立核对的确定性并集相同。
 - [PR #31](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/31)
   对上述develop为68提交、91文件、+8011/-168；包含旧Stage1a累计工作，不能只称预算修复。
+- #31 已正常合入 develop：`3e983857a24fabece0173d133665db652b047f73`；
+  parents 为 `0051aaf5498ee13f5ce61430b653eb96c0589c27` 和上述 source anchor，tree保持相同。
+  [最终组合受限接受](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/31#issuecomment-5783844864)
+  仅覆盖源码/工程范围。
 - 新01的01.0设计来源：`d478e70255f9e68b56df3741a781fc03a3ceba14`、
   [ADR-0015](../adr/0015-native-logical-interaction.md)。它是限定范围内接受的上层方向，
   不是已实现的新wire、新数据或全场景规范。
@@ -38,12 +42,14 @@ SDK close吞掉传输错误不等于Host确认释放。确认失败保留held/ta
 | #35当前head | [35777828163](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35777828163)，attempt1，full：plan/Linux/Windows/portable success，docs按路由skipped |
 | #37当前head | [35775225089](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35775225089)，attempt1，full success |
 | develop #37合并 | [35778177416](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35778177416)，success；router核验同tree执行回执并做当前identity，不能写成新full |
-| B0最终组合 | [35780464198](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35780464198)，attempt1，head `5b148f22...`；撰写时运行中，未接受最终组合门禁 |
+| B0最终组合 | [35780464198](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35780464198)，attempt1，head `5b148f22...`；full：plan/Linux/Windows/portable success，docs按路由skipped |
+| develop #31合并 | [35782151978](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35782151978)，head `3e983857...`，success；router实际选reuse，核验原full run35780464198并执行当前检查，不是第二次full |
 | 本机组合短检查 | 干净anchor上 `check:identity`、`check:bom`、`git diff --check 0051aaf..HEAD`、`project:closeout`、`check:plan -- --base 0051aaf...` 均exit0；planner full；未重复本机长full |
 | #35组件与临时包 | 干净a32151be上115/115测试、typecheck/build、确定性包及隔离CPU installed smoke；无游戏接触。旧失败保留 |
 
-上一组合或单个topic绿色只证明原对象。#31最终组合自己的门禁和受限接受完成前，不称B0代码基线
-已收口。最终合并记录在PR；普通任务随后从接手时明确的develop开短topic，不保留Stage1a为第二develop。
+上一组合或单个topic绿色只证明原对象。本次最终组合自己的full与受限接受已完成，且合并tree保持一致，
+B0代码起点已归并；本交接文档仍需自己的审查与门禁后封存。普通任务从接手时明确的develop开短topic，
+不保留Stage1a为第二develop。
 
 ## 组件源码、包与运行环境分开
 

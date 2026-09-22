@@ -20,7 +20,7 @@ Snapshot below was checked against actual Git objects and GitHub; refresh before
 | Object | Exact observation and boundary |
 |---|---|
 | B0 source anchor | `5b148f22f02d9dbebfb1c50dd1e9501d9aef7bd9`, tree `be30e2f267b2ee1b0427f6edaacd142c120137ff`; deterministic union of reviewed Stage1a and develop0051aaf |
-| #31 integration | Current anchor against `develop@0051aaf5498ee13f5ce61430b653eb96c0589c27`; [run35780464198](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35780464198) still running when this draft was written; final combination is not yet accepted |
+| #31 integration | Normal merge to develop `3e983857a24fabece0173d133665db652b047f73`, same tree as anchor; [own full35780464198](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35780464198) success and limited source acceptance; develop35782151978 success with verified same-tree receipt reuse |
 | #29/#32/#34/#35 | Accepted source/test increments integrated into Stage1a; #35 merge `182a4a4bdb3b7da626e7259b87a3ab022d54bf92`, exact-head full run35777828163 success; old failures are retained, not current blockers |
 | #27/#36/#37 | Accepted documentation; new01 acceptance is upper-level/conditional only. #36 merge d3d53b5; #37 develop merge0051aaf; their CI and scope links are in the handoff |
 | Runtime source versus consumer | Unpublished source rc.8, component revision99c75d66; current consumer remains rc.6. No production install/load qualification was performed |
@@ -31,8 +31,7 @@ Stage1a is not a permanent second develop. Protected running/collection trees, m
 queues and environments remain untouched. Future integration or installation must preserve
 their exact producer and independent checks.
 
-Next: complete #31's exact-combination gate and controlled merge, seal one B0 handoff,
-then the native reward-group vertical slice and small-B feedback/memory engineering.
+Next: independently review and seal this B0 handoff, then the native reward-group vertical slice and small-B feedback/memory engineering.
 Native grounding found that ordinary reward parent/return semantics are a smaller first
 slice than virtualized large-pile selection; the two new01 examples remain distinct.
 The corrected [surface matrix](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/31#issuecomment-5783319535)
