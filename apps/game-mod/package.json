@@ -1,6 +1,6 @@
 {
   "name": "@rsgcsg/sts2-platform-game-mod",
-  "version": "0.2.0-rc.9",
+  "version": "0.2.0-rc.10",
   "private": true,
   "description": "Single production STS2 Mod packaging the Platform Connector, Annotator and Live UI",
   "license": "MIT",
