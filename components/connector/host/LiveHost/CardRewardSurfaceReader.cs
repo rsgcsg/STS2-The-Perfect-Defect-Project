@@ -63,7 +63,9 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
                 new[] { "card_row", "reward_alternatives", "card_selectability", "legal_actions" });
 
         NGridCardHolder[] holders = VisibleCardHolders(cardRow);
-        NCardRewardAlternativeButton[] buttons = VisibleAlternativeButtons(alternativesContainer);
+        NCardRewardAlternativeButton[] currentButtons = AlternativeButtons(alternativesContainer);
+        NCardRewardAlternativeButton[] visibleButtons = currentButtons
+            .Where(ConnectorMod.IsNodeVisible).ToArray();
         IReadOnlyList<CardModel> semanticCards =
             NativeSemanticActionCatalog.Subjects<CardModel>(nativeDecision.Actions, "select");
         IReadOnlyList<CardRewardAlternative> semanticAlternatives =
@@ -73,10 +75,22 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
         var semanticCardSet = new HashSet<CardModel>(
             semanticCards,
             ReferenceEqualityComparer.Instance);
+        bool exactButtonReferences =
+            CardRewardAlternativePresentationBindings.TryCapture(
+                screen, semanticAlternatives, currentButtons, out var exactAlternatives);
+        bool buttonsReady = exactButtonReferences
+            && AllCurrentAlternativeButtons(exactAlternatives);
+        bool alternativesBoundExactly = exactButtonReferences && buttonsReady;
+        if (CardRewardCanaryDiagnostics.Process.Enabled)
+            ReportCardRewardCanary(screen, entities, semanticAlternatives,
+                currentButtons.Length, exactButtonReferences, buttonsReady);
         bool catalogBoundExactly = NativeDecisionProjection.HasExactReferenceBijection(
                                        semanticCards,
                                        holders.Select(holder => holder.CardModel))
-                                   && semanticAlternatives.Count == buttons.Length;
+                                   && alternativesBoundExactly;
+        NCardRewardAlternativeButton[] buttons = alternativesBoundExactly
+            ? exactAlternatives.Select(pair => (NCardRewardAlternativeButton)pair.Button).ToArray()
+            : visibleButtons;
         string?[] alternativeLabels = buttons.Select(ReadAlternativeLabel).ToArray();
         if (alternativeLabels.Any(string.IsNullOrWhiteSpace))
         {
@@ -95,14 +109,14 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
             .Select((button, index) => new VisibleCardRewardAlternative(
                 catalogBoundExactly
                     ? entities.GetId(
-                        semanticAlternatives[index],
+                        exactAlternatives[index].Alternative,
                         "card_reward_alternative")
                     : entities.GetId(
                         button,
                         "card_reward_alternative_binding"),
                 index,
                 alternativeLabels[index]!,
-                catalogBoundExactly && button.IsEnabled))
+                catalogBoundExactly && button.IsEnabled && !button.IsQueuedForDeletion()))
             .ToArray();
 
         var surface = new CardRewardSelectionSurface(
@@ -148,6 +162,7 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
             {
                 "NCardRewardSelectionScreen.ShowScreen/RefreshOptions native option owner",
                 "CardCreationResult.Card+CardRewardAlternative native membership",
+                "NCardRewardSelectionScreen.RefreshOptions/Create exact alternative-button identity",
                 "NCardRewardSelectionScreen.UI.CardRow presentation binding",
                 "NGridCardHolder.CardModel presentation binding",
                 "NCardRewardSelectionScreen.UI.RewardAlternatives presentation binding",
@@ -300,6 +315,9 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
     {
         NativeCardRewardDecision decision =
             NativeCardRewardDecisionProvider.Capture(expectedScreen, entities);
+        CardRewardAlternative[] semanticAlternatives =
+            NativeSemanticActionCatalog.Subjects<CardRewardAlternative>(
+                decision.Actions, "activate").ToArray();
         if (!IsCurrent(expectedScreen)
             || !NativeSemanticActionCatalog.ContainsExactlyOnce(
                 decision.Actions,
@@ -307,8 +325,16 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
                 expectedAlternative)
             || expectedScreen.GetNodeOrNull<Control>("UI/RewardAlternatives") is not { } currentContainer
             || !ReferenceEquals(currentContainer, expectedContainer)
-            || !currentContainer.GetChildren().OfType<NCardRewardAlternativeButton>()
-                .Any(button => ReferenceEquals(button, expectedButton))
+            || !CardRewardAlternativePresentationBindings.TryResolveButton(
+                expectedScreen, expectedAlternative, semanticAlternatives,
+                AlternativeButtons(currentContainer), out var currentButton)
+            || !ReferenceEquals(currentButton, expectedButton)
+            || !CardRewardAlternativePresentationBindings.TryCapture(
+                expectedScreen, semanticAlternatives,
+                AlternativeButtons(currentContainer), out var currentPairs)
+            || !AllCurrentAlternativeButtons(currentPairs)
+            || !GodotObject.IsInstanceValid(expectedButton)
+            || expectedButton.IsQueuedForDeletion()
             || !ConnectorMod.IsNodeVisible(expectedButton)
             || !expectedButton.IsEnabled
             || !string.Equals(ReadAlternativeLabel(expectedButton), expectedLabel, StringComparison.Ordinal))
@@ -348,22 +374,21 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
             .Select(action => action.NativeSubject)
             .OfType<CardRewardAlternative>()
             .ToArray();
-        int index = Array.FindIndex(
-            semanticAlternatives,
-            candidate => ReferenceEquals(candidate, alternative));
-        NCardRewardAlternativeButton[] buttons = VisibleAlternativeButtons(alternatives);
-        if (index < 0 || buttons.Length != semanticAlternatives.Length)
+        if (!CardRewardAlternativePresentationBindings.TryResolveButton(
+                screen, alternative, semanticAlternatives,
+                AlternativeButtons(alternatives), out var button)
+            || button is not NCardRewardAlternativeButton typedButton)
         {
             return NativeInputResult.Rejected(
                 "card_reward_alternative_changed",
-                "The exact advertised alternative no longer has one visible control.");
+                "The exact advertised alternative no longer has one native-created control.");
         }
 
         return StartAlternative(
             entities,
             screen,
             alternatives,
-            buttons[index],
+            typedButton,
             alternative,
             expectedLabel);
     }
@@ -376,13 +401,53 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
             .ThenBy(holder => holder.Position.Y)
             .ToArray();
 
-    private static NCardRewardAlternativeButton[] VisibleAlternativeButtons(Control container) =>
+    private static NCardRewardAlternativeButton[] AlternativeButtons(Control container) =>
         container.GetChildren()
             .OfType<NCardRewardAlternativeButton>()
-            .Where(ConnectorMod.IsNodeVisible)
-            .OrderBy(button => button.Position.X)
-            .ThenBy(button => button.Position.Y)
             .ToArray();
+
+    private static bool AllCurrentAlternativeButtons(
+        IReadOnlyList<CardRewardAlternativePresentationBindings.Pair> pairs) =>
+        pairs.All(pair =>
+            pair.Button is NCardRewardAlternativeButton button
+            && GodotObject.IsInstanceValid(button)
+            && !button.IsQueuedForDeletion()
+            && ConnectorMod.IsNodeVisible(button));
+
+    private static void ReportCardRewardCanary(
+        NCardRewardSelectionScreen screen,
+        NativeEntityRegistry entities,
+        IReadOnlyList<CardRewardAlternative> semanticAlternatives,
+        int currentButtons,
+        bool exactButtonReferences,
+        bool buttonsReady)
+    {
+        // This diagnostic is private and read-only. An existing registry ID
+        // does not itself prove that any outer Snapshot reached a consumer.
+        try
+        {
+            NativeCardRewardParentFacts facts =
+                NativeCardRewardDecisionProvider.CaptureParentFacts(screen);
+            bool typedAlternativesMatch = facts.Status == "captured"
+                && facts.Alternatives.Count == semanticAlternatives.Count
+                && facts.Alternatives.Select((fact, index) =>
+                    ReferenceEquals(fact.Alternative, semanticAlternatives[index])).All(match => match);
+            string? parentId = null;
+            if (facts.ParentReward != null)
+                entities.TryGetExistingId(facts.ParentReward, out parentId);
+            CardRewardCanaryDiagnostics.Process.Page(
+                screen, facts.Status, parentId, typedAlternativesMatch,
+                semanticAlternatives.Count, currentButtons,
+                exactButtonReferences, buttonsReady);
+        }
+        catch
+        {
+            CardRewardCanaryDiagnostics.Process.Page(
+                screen, "diagnostic_capture_failed", null, false,
+                semanticAlternatives.Count, currentButtons,
+                exactButtonReferences, buttonsReady);
+        }
+    }
 
     private static bool IsHolderClickable(NCardHolder holder) =>
         ClickableField?.GetValue(holder) is true;

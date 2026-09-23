@@ -41,6 +41,19 @@ internal static class NativeFoundationOwnerPatches
             harmony,
             AccessTools.Method(typeof(NRewardsScreen), nameof(NRewardsScreen.ShowScreen)),
             AccessTools.Method(typeof(NativeRewardOwnerPatch), nameof(NativeRewardOwnerPatch.Postfix)));
+        var cardRewardOnSelect = AccessTools.Method(typeof(CardReward), "OnSelect", Type.EmptyTypes);
+        var cardRewardPrefix = AccessTools.Method(
+            typeof(NativeCardRewardSelectionScopePatch),
+            nameof(NativeCardRewardSelectionScopePatch.Prefix));
+        var cardRewardFinalizer = AccessTools.Method(
+            typeof(NativeCardRewardSelectionScopePatch),
+            nameof(NativeCardRewardSelectionScopePatch.Finalizer));
+        if (cardRewardOnSelect == null || cardRewardPrefix == null || cardRewardFinalizer == null)
+            throw new MissingMethodException("The exact CardReward.OnSelect owner scope is unavailable.");
+        harmony.Patch(
+            cardRewardOnSelect,
+            prefix: new HarmonyMethod(cardRewardPrefix),
+            finalizer: new HarmonyMethod(cardRewardFinalizer));
         PatchPostfix(
             harmony,
             AccessTools.Method(
@@ -131,6 +144,35 @@ internal static class NativeFoundationOwnerPatches
         if (original == null || before == null)
             throw new MissingMethodException("A Native Foundation input seam is unavailable.");
         harmony.Patch(original, new HarmonyMethod(before));
+    }
+}
+
+internal static class NativeCardRewardSelectionScopePatch
+{
+    internal static void Prefix(CardReward __instance, out IDisposable? __state)
+    {
+        __state = null;
+        try
+        {
+            __state = NativeCardRewardDecisionProvider.BeginSynchronousOnSelect(__instance);
+        }
+        catch (Exception exception)
+        {
+            GD.PrintErr($"[STS2 Platform] native card reward parent scope failed: {exception}");
+        }
+    }
+
+    internal static Exception? Finalizer(IDisposable? __state, Exception? __exception)
+    {
+        try
+        {
+            __state?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            GD.PrintErr($"[STS2 Platform] native card reward parent scope cleanup failed: {exception}");
+        }
+        return __exception;
     }
 }
 
@@ -248,17 +290,21 @@ internal static class NativeCardRewardOwnerPatch
         NCardRewardSelectionScreen? __result)
     {
         if (__result != null)
-            TryRegister(__result, options, extraOptions);
+            TryRegister(__result, options, extraOptions, fromShowScreen: true);
     }
 
     internal static void TryRegister(
         NCardRewardSelectionScreen screen,
         IReadOnlyList<CardCreationResult> options,
-        IReadOnlyList<CardRewardAlternative> alternatives)
+        IReadOnlyList<CardRewardAlternative> alternatives,
+        bool fromShowScreen)
     {
         try
         {
-            NativeCardRewardDecisionProvider.Register(screen, options, alternatives);
+            if (fromShowScreen)
+                NativeCardRewardDecisionProvider.RegisterFromShowScreen(screen, options, alternatives);
+            else
+                NativeCardRewardDecisionProvider.Refresh(screen, options, alternatives);
         }
         catch (Exception exception)
         {
@@ -274,7 +320,7 @@ internal static class NativeCardRewardRefreshPatch
         IReadOnlyList<CardCreationResult> options,
         IReadOnlyList<CardRewardAlternative> extraOptions)
     {
-        NativeCardRewardOwnerPatch.TryRegister(__instance, options, extraOptions);
+        NativeCardRewardOwnerPatch.TryRegister(__instance, options, extraOptions, fromShowScreen: false);
     }
 }
 

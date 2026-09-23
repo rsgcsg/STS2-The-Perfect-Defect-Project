@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.Entities.CardRewardAlternatives;
+using MegaCrit.Sts2.Core.Entities.Rewards;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Rewards;
 
@@ -83,6 +85,22 @@ public sealed record NativeCardRewardDecision(
     bool IsDecisionOpen,
     IReadOnlyList<NativeSemanticAction> Actions,
     IReadOnlyList<string> Evidence,
+    string? Detail);
+
+/// <summary>
+/// Exact process-local parent and alternative outcome facts for the native
+/// card-reward screen. This neither publishes a public action nor proves
+/// membership in an outer RewardsSet.
+/// </summary>
+public sealed record NativeCardRewardAlternativeFact(
+    CardRewardAlternative Alternative,
+    string OptionId,
+    PostAlternateCardRewardAction AfterSelected);
+
+public sealed record NativeCardRewardParentFacts(
+    string Status,
+    CardReward? ParentReward,
+    IReadOnlyList<NativeCardRewardAlternativeFact> Alternatives,
     string? Detail);
 
 public sealed record NativeTreasureDecision(

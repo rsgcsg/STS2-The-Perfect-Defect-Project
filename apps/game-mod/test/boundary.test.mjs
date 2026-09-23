@@ -544,7 +544,57 @@ test("non-combat native owners are observed by explicit read-only seams", () => 
   assert.match(patches, /typeof\(NTreasureRoom\),[\s\S]*nameof\(NTreasureRoom\.Create\)/u);
   assert.match(patches, /typeof\(NTreasureRoom\),[\s\S]*"OnChestButtonReleased"/u);
   assert.equal((patches.match(/harmony\.Patch\(original, postfix:/gu) ?? []).length, 1);
-  assert.doesNotMatch(patches, /PatchAll|prefix:|finalizer:|transpiler:|static\s+bool\s+Prefix/u);
+  assert.match(patches, /AccessTools\.Method\(typeof\(CardReward\), "OnSelect", Type\.EmptyTypes\)/u);
+  assert.match(patches, /harmony\.Patch\(\s*cardRewardOnSelect,\s*prefix: new HarmonyMethod\(cardRewardPrefix\),\s*finalizer: new HarmonyMethod\(cardRewardFinalizer\)\)/u);
+  assert.match(patches, /BeginSynchronousOnSelect\(__instance\)/u);
+  assert.match(patches, /__state\?\.Dispose\(\)/u);
+  assert.equal((patches.match(/prefix:/gu) ?? []).length, 1);
+  assert.equal((patches.match(/finalizer:/gu) ?? []).length, 1);
+  assert.doesNotMatch(patches, /PatchAll|transpiler:|static\s+bool\s+Prefix/u);
+});
+
+test("card reward alternatives cannot use visual position as the native callback index", () => {
+  const reader = read("components/connector/host/LiveHost/CardRewardSurfaceReader.cs");
+  const alternatives = sourceBetween(
+    reader,
+    "private static NCardRewardAlternativeButton[] AlternativeButtons",
+    "private static bool IsHolderClickable"
+  );
+
+  // Equal labels and counts still permit opposite visual positions. The native
+  // callback carries its creation index, so position cannot identify its model.
+  assert.doesNotMatch(alternatives, /OrderBy\(button => button\.Position\.X\)/u);
+  assert.match(reader, /CardRewardAlternativePresentationBindings\.TryCapture/u);
+  assert.match(reader, /CardRewardAlternativePresentationBindings\.TryResolveButton/u);
+  assert.doesNotMatch(reader, /buttons\[index\]/u);
+  assert.match(reader, /expectedButton\.IsQueuedForDeletion\(\)/u);
+  assert.match(reader, /AlternativeButtons\(currentContainer\)/u);
+
+  const initializer = read("apps/game-mod/UnifiedPlatformMod.cs");
+  const hooks = read("apps/game-mod/ConnectorCardRewardPresentationPatches.cs");
+  assert.match(initializer, /ConnectorCardRewardPresentationPatches\.Initialize\(\)/u);
+  assert.match(hooks, /nameof\(NCardRewardSelectionScreen\.RefreshOptions\)/u);
+  assert.match(hooks, /nameof\(NCardRewardAlternativeButton\.Create\)[\s\S]*typeof\(string\[\]\)/u);
+  assert.match(hooks, /BeginRefresh\([\s\S]*ObserveCreated\(/u);
+  assert.doesNotMatch(hooks, /PatchAll|transpiler:|\[HarmonyPatch\]/u);
+});
+
+test("reward canary observations stay opt-in, private and separate from authority", () => {
+  const reader = read("components/connector/host/LiveHost/CardRewardSurfaceReader.cs");
+  const hooks = read("apps/game-mod/ConnectorCardRewardPresentationPatches.cs");
+  const probe = read("components/connector/host/NativeUi/CardRewardCanaryDiagnostics.cs");
+  const registry = read("components/connector/host/NativeUi/NativeEntityRegistry.cs");
+  const snapshot = read("components/connector/host/PlayerEnvironment/Observation/SnapshotBuilder.cs");
+
+  assert.match(reader, /if \(CardRewardCanaryDiagnostics\.Process\.Enabled\)\s+ReportCardRewardCanary/u);
+  assert.match(reader, /NativeCardRewardDecisionProvider\.CaptureParentFacts\(screen\)/u);
+  assert.match(hooks, /CardRewardCanaryDiagnostics\.Process\.Begin\(/u);
+  assert.match(hooks, /CardRewardCanaryDiagnostics\.Process\.Created\(/u);
+  assert.match(hooks, /CardRewardCanaryDiagnostics\.Process\.Finish\(/u);
+  assert.match(probe, /STS2_CONNECTOR_CARD_REWARD_CANARY_DIAGNOSTICS/u);
+  assert.match(probe, /budget_exhausted/u);
+  assert.match(registry, /TryGetExistingId[\s\S]*_identities\.TryGetValue/u);
+  assert.doesNotMatch(snapshot, /CardRewardCanaryDiagnostics|CaptureParentFacts/u);
 });
 
 test("non-combat Human witnesses use public bindings and exact native completion operands", () => {

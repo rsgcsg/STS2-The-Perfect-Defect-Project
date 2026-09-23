@@ -22,6 +22,14 @@ Current bounded ownership:
 - `NativeRewardDecisionProvider`: exact `RewardsSet` membership, potion-belt
   alternatives and native proceed policy;
 - `NativeCardRewardDecisionProvider`: exact card and alternative option lists;
+  an additional process-local fact binds the specific `CardReward.OnSelect`
+  invocation to the `NCardRewardSelectionScreen.ShowScreen` result before the
+  first native await, using the exact `_cards` list identity. The scope is
+  synchronous and thread-local, and a missing, changed, or ambiguous binding
+  stays unavailable. It also reports each exact alternative's native `OptionId`
+  and `PostAlternateCardRewardAction` without interpreting the label as Skip.
+  Outer `RewardsSet` membership, a public action/profile, loaded-game behavior,
+  and Human evidence are outside this source package;
 - `NativeTreasureDecisionProvider`: exact treasure room lifecycle, relic
   collection membership and local vote;
 - `NativeBossRelicDecisionProvider`: exact `NChooseARelicSelection` options,
