@@ -27,8 +27,12 @@ internal static class PotionPopupSurfaceReader
         if (popups.Length > 1) throw new InvalidOperationException("Ambiguous visible potion popup ownership.");
         return popups.SingleOrDefault();
     }
-    internal static PotionModel? Potion(NPotionPopup popup) => (Holder?.GetValue(popup) as NPotionHolder)?.Potion?.Model;
-    internal static LiveObservation? Capture(NativeEntityRegistry entities, GameBuildIdentity game)
+    internal static NPotionHolder? HolderOf(NPotionPopup popup) =>
+        Holder?.GetValue(popup) as NPotionHolder;
+    internal static PotionModel? Potion(NPotionPopup popup) => HolderOf(popup)?.Potion?.Model;
+    internal static LiveObservation? Capture(
+        NativeEntityRegistry entities, GameBuildIdentity game,
+        ActiveSurfaceSnapshot? active = null)
     {
         NPotionPopup? popup = Current();
         if (popup == null) return null;
@@ -51,9 +55,17 @@ internal static class PotionPopupSurfaceReader
         return new LiveObservation(StableIdentityHash.Object(new { surface, context }), "ready", context, surface,
             new StateCompleteness("contract_complete_for_native_potion_popup", "native_enabled_controls",
                 new[] { "NPotionPopup.UseButton", "NPotionPopup.DiscardButton", "NPotionPopup.Remove", "Player.PotionSlots" }, Array.Empty<string>()),
-            game, Array.Empty<string>());
+            game, Array.Empty<string>())
+        {
+            PopupUnderlyingRewardOwner = active?.TopOverlay is
+                MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen or
+                MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardRewardSelectionScreen
+                ? active.TopOverlay : null
+        };
     }
-    internal static NativeInputResult Start(NativeEntityRegistry entities, PotionPopupSurface expected, string operation, string? targetId = null)
+    internal static NativeInputResult Start(
+        NativeEntityRegistry entities, PotionPopupSurface expected, string operation,
+        string? targetId = null, string? expectedControlId = null)
     {
         NPotionPopup? popup = Current();
         if (popup == null || entities.GetId(popup, "screen") != expected.ScreenEntityId
@@ -88,7 +100,9 @@ internal static class PotionPopupSurfaceReader
         }
         string? path = operation switch { "discard_potion" => "%DiscardButton", "choose_potion_use" => "%UseButton", _ => null };
         var button = path == null ? null : popup.GetNodeOrNull<NPotionPopupButton>(path);
-        if (button == null || !button.IsEnabled || !ConnectorMod.IsNodeVisible(button))
+        if (button == null || !button.IsEnabled || !ConnectorMod.IsNodeVisible(button)
+            || expectedControlId != null
+                && entities.GetId(button, "control") != expectedControlId)
             return NativeInputResult.Rejected("potion_popup_control_unavailable", "Native control is no longer enabled.");
         button.ForceClick();
         return NativeInputResult.Delivered("native_potion_popup_input_delivered");

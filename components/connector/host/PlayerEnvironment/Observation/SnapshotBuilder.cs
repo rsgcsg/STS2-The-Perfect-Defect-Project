@@ -44,19 +44,27 @@ internal static partial class PlayerEnvironmentService
         LiveObservation nativeDraft = draft;
         if (suppressNativePageEvidence)
             draft = NativePageEvidence.SuppressMutation(draft);
-        if (inputProfile != null && !IsOrdinaryRewardPage(draft))
+        bool rewardPotionProfile = inputProfile == PlayerEnvironmentContract.RewardPotionPageProfile;
+        if (rewardPotionProfile)
+            draft = draft with { RewardPotionFacts = RewardPotionProfileReader.Capture(draft, Entities) };
+        if (inputProfile != null && (rewardPotionProfile
+                ? !IsRewardPotionPage(draft)
+                : !IsOrdinaryRewardPage(draft)))
         {
             draft = draft with
             {
                 Surface = new UnsupportedSurface(
                     draft.Surface.Kind,
-                    "ordinary_reward_page_profile",
-                    "This current page is outside the ordinary reward input profile."),
+                    rewardPotionProfile ? "reward_potion_page_profile" : "ordinary_reward_page_profile",
+                    rewardPotionProfile
+                        ? $"This current page is outside the exact reward/potion input profile: {draft.RewardPotionFacts?.Reason}."
+                        : "This current page is outside the ordinary reward input profile."),
                 Readiness = "degraded",
                 Completeness = new StateCompleteness(
                     "degraded", "empty_fail_closed",
                     new[] { "ordinary reward current-page native owner" },
-                    new[] { "ordinary_reward_page_profile_unsupported" })
+                    new[] { rewardPotionProfile ? "reward_potion_page_profile_unsupported"
+                        : "ordinary_reward_page_profile_unsupported" })
             };
         }
         draft = draft with
@@ -122,10 +130,15 @@ internal static partial class PlayerEnvironmentService
             && draft.RewardPageFacts is { Qualified: true } profileFacts
             && surfaceContent.Surface is JsonObject page)
             ProjectRewardPageFacts(page, profileFacts);
+        if (rewardPotionProfile && draft.RewardPotionFacts is { Qualified: true } potionFacts
+            && surfaceContent.Surface is JsonObject potionPage)
+            ProjectRewardPotionFacts(potionPage, draft.Surface, potionFacts);
         IReadOnlyList<NativeUiBoundAction> nativeBindings = Measure(
             "native_binding_catalog",
             () => CanPublishMutationAuthority(draft.Readiness)
-                ? BuildPlayerEnvironmentBindings(draft)
+                ? rewardPotionProfile
+                    ? NativeUiActionRuntime.BuildRewardPotionBindings(draft)
+                    : BuildPlayerEnvironmentBindings(draft)
                 : Array.Empty<NativeUiBoundAction>());
         string interactionId = ReadFirstString(
             rawSurface,
@@ -184,9 +197,13 @@ internal static partial class PlayerEnvironmentService
             reads,
             visibility.HiddenByPolicy
         }));
+        if (rewardPotionProfile && draft.RewardPotionFacts is { } exact)
+            signature = RewardPotionViewSignature(signature, exact);
         (string snapshotId, long sequence) = inputProfile == null
             ? RewardPageIdentity.ObserveLegacy(nativeSequence, signature)
-            : RewardPageIdentity.ObserveReward(nativeSequence, signature);
+            : rewardPotionProfile
+                ? RewardPageIdentity.ObserveRewardPotion(nativeSequence, signature)
+                : RewardPageIdentity.ObserveReward(nativeSequence, signature);
         bool visibleUnsupported = draft.Surface is UnsupportedSurface
             || profileCatalogIncomplete;
         bool actionsPublished = projected.Projection.Status == "complete"
@@ -213,7 +230,9 @@ internal static partial class PlayerEnvironmentService
             PlayerEnvironmentContract.ProtocolVersion,
             inputProfile == null
                 ? PlayerEnvironmentContract.SnapshotSchema
-                : PlayerEnvironmentContract.OrdinaryRewardSnapshotSchema,
+                : rewardPotionProfile
+                    ? PlayerEnvironmentContract.RewardPotionSnapshotSchema
+                    : PlayerEnvironmentContract.OrdinaryRewardSnapshotSchema,
             snapshotId,
             sequence,
             DateTimeOffset.UtcNow,
@@ -230,7 +249,7 @@ internal static partial class PlayerEnvironmentService
                 prompt,
                 inputProfile == null
                     ? SurfaceContentSchema(draft.Surface.Kind)
-                    : $"sts2.player-environment/surface/{draft.Surface.Kind}-2",
+                    : $"sts2.player-environment/surface/{draft.Surface.Kind}-{(rewardPotionProfile ? 3 : 2)}",
                 surfaceContent,
                 capabilities),
             referents.Values.OrderBy(item => item.ReferentId, StringComparer.Ordinal).ToArray(),
@@ -257,6 +276,68 @@ internal static partial class PlayerEnvironmentService
             RewardClaimSurface outer => outer.DiscardablePotions.Count == 0,
             CardRewardSelectionSurface => draft.RewardPageFacts is { Qualified: true },
             _ => false
+        });
+
+    internal static bool IsRewardPotionPage(LiveObservation draft) =>
+        draft.RewardPotionFacts is { Qualified: true }
+        && draft.Readiness == "ready"
+        && (draft.Surface switch
+        {
+            RewardClaimSurface => draft.Completeness.PlayerVisibleSemantics
+                == "contract_complete_for_reward_claim",
+            CardRewardSelectionSurface => draft.Completeness.PlayerVisibleSemantics
+                == "contract_complete_for_card_reward_selection"
+                && draft.RewardPageFacts is { Qualified: true },
+            PotionPopupSurface => draft.Completeness.PlayerVisibleSemantics
+                == "contract_complete_for_native_potion_popup",
+            _ => false
+        });
+
+    internal static void ProjectRewardPotionFacts(
+        JsonObject page, ILiveSurface surface, RewardPotionProfileFacts facts)
+    {
+        if (surface is PotionPopupSurface)
+        {
+            // Future targeting is a separate native page, not an operand of
+            // today's popup Use button.
+            page.Remove("direct_combat_use");
+            page.Remove("use_target_entity_ids");
+            page["controls"] = new JsonArray(facts.PopupControls.Select(option =>
+                (JsonNode)new JsonObject
+                {
+                    ["entity_id"] = option.ControlEntityId,
+                    ["kind"] = option.Kind,
+                    ["enabled"] = option.Enabled,
+                    ["label"] = option.Label
+                }).ToArray());
+            return;
+        }
+        if (surface is RewardClaimSurface)
+            page.Remove("discardable_potions"); // Legacy direct discard is not a v2 page action.
+        page["openable_potions"] = new JsonArray(facts.Openers.Select(option =>
+            (JsonNode)new JsonObject
+            {
+                ["potion_entity_id"] = option.PotionEntityId,
+                ["slot"] = option.Slot,
+                ["name"] = option.Name
+            }).ToArray());
+    }
+
+    internal static string RewardPotionViewSignature(
+        string baseSignature, RewardPotionProfileFacts exact) =>
+        StableIdentityHash.Object(new
+        {
+            baseSignature,
+            holderBinding = exact.Openers.Select(option => new
+            {
+                option.HolderEntityId, option.PotionEntityId, option.Slot
+            }).ToArray(),
+            controls = exact.PopupControls.Select(option => new
+            {
+                option.Kind, option.ControlEntityId, option.Enabled
+            }).ToArray(),
+            exact.RewardOwnerKind,
+            exact.RewardOwnerEntityId
         });
 
     internal static string CommonNativeSignature(

@@ -3,7 +3,7 @@
   "name": "STS2 Player Environment Host",
   "author": "kunology",
   "description": "Fair-player environment Host for Slay the Spire 2 agents",
-  "version": "1.2.0-rc.6",
+  "version": "1.2.0-rc.7",
   "has_pck": false,
   "has_dll": true,
   "affects_gameplay": false,

@@ -25,6 +25,9 @@ public static class PlayerEnvironmentContract
     public const string OrdinaryRewardPageProfile = "ordinary-reward-page-v1";
     public const string OrdinaryRewardSnapshotSchema =
         "sts2.player-environment/ordinary-reward-page-snapshot-1";
+    public const string RewardPotionPageProfile = "ordinary-reward-potion-page-v2";
+    public const string RewardPotionSnapshotSchema =
+        "sts2.player-environment/ordinary-reward-potion-page-snapshot-2";
 
     public static string ReadContentSchema(string kind) =>
         $"sts2.player-environment/read/{kind}-1";

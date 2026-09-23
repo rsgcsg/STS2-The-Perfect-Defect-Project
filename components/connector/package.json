@@ -1,6 +1,6 @@
 {
   "name": "sts2-connector-workspace",
-  "version": "1.2.0-rc.6",
+  "version": "1.2.0-rc.7",
   "private": true,
   "description": "Development workspace for the STS2 Player Environment Host, client SDK and transports",
   "license": "MIT",

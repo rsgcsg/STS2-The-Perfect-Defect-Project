@@ -18,6 +18,10 @@ internal sealed record LiveObservation(
     // may turn a checked current-page effect into a public fact.
     [JsonIgnore]
     public RewardPageProfileFacts? RewardPageFacts { get; init; }
+    [JsonIgnore]
+    public RewardPotionProfileFacts? RewardPotionFacts { get; init; }
+    [JsonIgnore]
+    public object? PopupUnderlyingRewardOwner { get; init; }
     public InputOwnership InputOwnership { get; init; } = new(
         "current_ui_owned",
         Surface.Kind,

@@ -13,6 +13,7 @@ internal sealed class RewardPageSnapshotIdentity
     private readonly SnapshotIdentityTracker _native = new();
     private readonly SnapshotIdentityTracker _legacy = new();
     private readonly SnapshotIdentityTracker _reward = new();
+    private readonly SnapshotIdentityTracker _rewardPotion = new();
 
     internal long ObserveNative(string nativeSignature) =>
         _native.Observe(nativeSignature).Sequence;
@@ -24,4 +25,8 @@ internal sealed class RewardPageSnapshotIdentity
     internal (string StateId, long Sequence) ObserveReward(
         long nativeSequence, string rewardSignature) =>
         _reward.Observe(StableIdentityHash.Object(new { nativeSequence, rewardSignature }));
+
+    internal (string StateId, long Sequence) ObserveRewardPotion(
+        long nativeSequence, string rewardPotionSignature) =>
+        _rewardPotion.Observe(StableIdentityHash.Object(new { nativeSequence, rewardPotionSignature }));
 }

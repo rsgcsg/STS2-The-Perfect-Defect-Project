@@ -23,6 +23,69 @@ internal static partial class NativeUiActionRuntime
     private static IReadOnlyList<NativeUiBoundAction> BuildPotionPopupBindings(LiveObservation draft, PotionPopupSurface surface) =>
         DescribePotionPopupCommands(surface).Select(action => BindActionToCurrentObservation(draft, action)!).ToArray();
 
+    internal static IReadOnlyList<NativeUiBoundAction> BuildRewardPotionBindings(
+        LiveObservation draft)
+    {
+        if (draft.RewardPotionFacts is not { Qualified: true } facts)
+            return Array.Empty<NativeUiBoundAction>();
+        if (draft.Surface is PotionPopupSurface popup)
+            return DescribeRewardPotionPopupCommands(popup, facts.PopupControls)
+                .Select(action => BindActionToCurrentObservation(draft, action)!)
+                .ToArray();
+        if (draft.Surface is not RewardClaimSurface and not CardRewardSelectionSurface)
+            return Array.Empty<NativeUiBoundAction>();
+        var actions = BuildBindings(draft)
+            .Where(action => action.Candidate.Operation != "discard_potion_for_reward")
+            .ToList();
+        string screenId = draft.Surface is RewardClaimSurface outer
+            ? outer.ScreenEntityId : ((CardRewardSelectionSurface)draft.Surface).ScreenEntityId;
+        foreach (RewardPotionOpenOption option in facts.Openers)
+        {
+            NativeUiActionDescriptor descriptor = NativeDescriptor(
+                $"reward:open-potion:{screenId}:{option.PotionEntityId}:{option.Slot}",
+                "open_potion_popup", "potion", $"Open {option.Name} potion popup",
+                "NPotionHolder.OnRelease+exact-current-holder",
+                new[] {
+                    new ActionEntityBinding("screen", screenId),
+                    new ActionEntityBinding("potion", option.PotionEntityId)
+                });
+            if (BindActionToCurrentObservation(draft, descriptor) is { } binding)
+                actions.Add(binding);
+        }
+        return actions;
+    }
+
+    internal static IReadOnlyList<NativeUiActionDescriptor> DescribeRewardPotionPopupCommands(
+        PotionPopupSurface surface, IReadOnlyList<RewardPotionControlOption> controls)
+    {
+        var result = new List<NativeUiActionDescriptor>();
+        foreach (RewardPotionControlOption option in controls.Where(value => value.Enabled))
+        {
+            string operation = option.Kind switch
+            {
+                "use" => "choose_potion_use",
+                "discard" => "discard_potion",
+                "close" => "cancel_potion_popup",
+                _ => throw new InvalidOperationException("Unknown current potion popup control.")
+            };
+            var bindings = new List<ActionEntityBinding> {
+                new("screen", surface.ScreenEntityId),
+                new("option", option.ControlEntityId)
+            };
+            if (option.Kind != "close")
+                bindings.Add(new ActionEntityBinding("potion", surface.PotionEntityId));
+            result.Add(NativeDescriptor(
+                $"popup:{option.Kind}:{surface.ScreenEntityId}:{option.ControlEntityId}",
+                operation, option.Kind, option.Label,
+                option.Kind switch {
+                    "use" => "NPotionPopup.UseButton",
+                    "discard" => "NPotionPopup.DiscardButton",
+                    _ => "NPotionPopup.Remove"
+                }, bindings));
+        }
+        return result;
+    }
+
     internal static IReadOnlyList<NativeUiActionDescriptor> DescribePotionPopupCommands(PotionPopupSurface surface)
     {
         var bindings = new[] { new ActionEntityBinding("screen", surface.ScreenEntityId), new ActionEntityBinding("potion", surface.PotionEntityId) };
@@ -44,8 +107,37 @@ internal static partial class NativeUiActionRuntime
     }
     private static NativeInputResult StartPotionPopupCommand(LiveObservation draft, NativeUiInput request, NativeUiBoundAction binding) =>
         draft.Surface is PotionPopupSurface surface && HasExactOperand(request, "screen_id", surface.ScreenEntityId)
-            ? PotionPopupSurfaceReader.Start(Entities, surface, binding.Candidate.Operation, request.Operands?.GetValueOrDefault("target_id"))
+            ? StartExactPotionPopupCommand(draft, surface, request, binding)
             : NativeInputResult.Rejected("potion_popup_changed", "Exact potion popup changed.");
+
+    private static NativeInputResult StartExactPotionPopupCommand(
+        LiveObservation draft, PotionPopupSurface surface, NativeUiInput request,
+        NativeUiBoundAction binding)
+    {
+        string? controlId = request.Operands?.GetValueOrDefault("choice_id");
+        if (draft.RewardPotionFacts is { Qualified: true } facts)
+        {
+            string kind = binding.Candidate.Operation switch
+            {
+                "choose_potion_use" => "use",
+                "discard_potion" => "discard",
+                "cancel_potion_popup" => "close",
+                _ => "unsupported"
+            };
+            RewardPotionProfileFacts current = RewardPotionProfileReader.Capture(draft, Entities);
+            if (!current.Qualified || current.RewardOwnerKind != facts.RewardOwnerKind
+                || facts.PopupControls.SingleOrDefault(option => option.Kind == kind
+                    && option.Enabled && option.ControlEntityId == controlId) == null
+                || current.PopupControls.SingleOrDefault(option => option.Kind == kind
+                    && option.Enabled && option.ControlEntityId == controlId) == null)
+                return NativeInputResult.Rejected("potion_popup_control_changed",
+                    "Exact current popup control changed.");
+            return PotionPopupSurfaceReader.Start(Entities, surface,
+                binding.Candidate.Operation, expectedControlId: controlId);
+        }
+        return PotionPopupSurfaceReader.Start(Entities, surface,
+            binding.Candidate.Operation, request.Operands?.GetValueOrDefault("target_id"));
+    }
 
     private static IReadOnlyList<NativeUiBoundAction> BuildCombatBindings(
         LiveObservation draft,
@@ -1722,6 +1814,11 @@ internal static partial class NativeUiActionRuntime
                     Entities,
                     screenId,
                     potionId),
+            "open_potion_popup"
+                when operands.TryGetValue("potion_id", out string? openPotionId)
+                     && operands.TryGetValue("control_id", out string? openControl)
+                     && openControl == "open_potion_popup" =>
+                RewardPotionProfileReader.StartOpen(draft, Entities, screenId, openPotionId),
             "proceed_rewards"
                 when operands.TryGetValue(
                          "control_id",
@@ -1769,6 +1866,11 @@ internal static partial class NativeUiActionRuntime
                 screenId,
                 cardId);
         }
+        if (binding.Candidate.Operation == "open_potion_popup"
+            && operands.TryGetValue("potion_id", out string? potionId)
+            && operands.TryGetValue("control_id", out string? controlId)
+            && controlId == "open_potion_popup")
+            return RewardPotionProfileReader.StartOpen(draft, Entities, screenId, potionId);
         if (binding.Candidate.Operation == "choose_card_reward_alternative"
             && operands.TryGetValue("choice_id", out string? alternativeId)
             && surface.Alternatives.SingleOrDefault(alternative =>

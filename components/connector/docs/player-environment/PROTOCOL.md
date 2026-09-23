@@ -127,6 +127,49 @@ keeps its own projection identity. This detects observed A→B→A transitions;
 it does not assert unobserved causal history. This source candidate has no
 Policy Runtime adapter, STPD input, installed game artifact or trained model.
 
+## Opt-in ordinary reward and potion navigation profile (source candidate)
+
+`ordinary-reward-potion-page-v2` is a separate default-off profile with top-level
+Snapshot schema `sts2.player-environment/ordinary-reward-potion-page-snapshot-2`
+and current surface schema ending in `-3`. It uses the same REST selector on
+capabilities, Snapshot GET, Submit and Receipt poll. Its Receipt and immediate
+successor must match that selector. Legacy and v1 requests retain their existing
+schemas and meanings. The TypeScript SDK has explicit v2 methods and validator;
+the optional MCP adapter currently sends no selector and remains legacy-only.
+
+The v2 action scope is the **ordinary current reward page, its entered ordinary
+card-reward page, and an exact potion popup opened over that reward owner**.
+Within this scope the Host publishes the complete finite current reward and
+Proceed choices, currently selectable cards and alternatives, every exactly
+clickable potion-holder opener, and every enabled native popup Use, Discard and
+Close button. Other top-bar navigation is outside this versioned action scope;
+it is not declared illegal in STS2. Any page or button set that cannot be proved
+complete is `visible_unsupported` with no action authority. There are no Reads.
+The first holder qualification is conservative: a transitioning TopBar, an
+unreadable exact holder state, or any occupied potion holder that cannot open
+its native popup makes the whole reward page unsupported. This does not imply
+the other reward controls are illegal, and this candidate does not yet prove a
+fully automated loop through such temporary states.
+
+Opening the popup is a separate native holder click; v2 never uses the legacy
+outer-page direct-discard enqueue. Popup Use clicks its current native Use
+button once. The game may use the potion immediately or enter native targeting;
+target selection is a later page and currently unsupported by this profile.
+The `controls` on a popup distinguish Use and Discard even though both project
+to public `activate` actions. The public potion slot and control identities
+bind the current menu; exact holder/button references remain Host-private.
+Submit rechecks the same native owner, holder, potion, slot and control before
+input. A failed precheck is `not_delivered`; uncertainty after a native click
+uses the existing `unknown` delivery semantics, never an automatic retry.
+
+Only the current native logical page enters a model input. Opaque Snapshot,
+request, catalog and native IDs are execution-envelope data; a consumer must
+not feed them to a memory model or reconstruct earlier reward groups as current
+facts. Popup closing or reward re-entry supplies a fresh current observation,
+not a causal `S'` or manually provided history. This source candidate does not
+claim a published SDK, upgraded Policy Runtime pin, installed Mod, live v2
+delivery, Human coverage, or trained small B.
+
 ## Action And Receipt
 
 An action request contains request ID, expected snapshot ID, opaque bound-action
