@@ -18,6 +18,12 @@ internal static partial class PlayerEnvironmentService
         PlayerEnvironmentActionRequest request)
     {
         string requestId = request.RequestId ?? string.Empty;
+        if (!IsSupportedInputProfile(request.InputProfile))
+            return BuildReceipt(
+                requestId, request.BoundActionId ?? "invalid", "activate", null,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(),
+                "not_delivered", "not_delivered", "unsupported_input_profile",
+                "The requested input profile is not supported.", null, null);
         IReadOnlyDictionary<string, string> parameters =
             new Dictionary<string, string>(StringComparer.Ordinal);
         if (string.IsNullOrWhiteSpace(requestId))
@@ -33,16 +39,10 @@ internal static partial class PlayerEnvironmentService
                 "invalid_request_id",
                 "A bounded non-empty request_id is required.",
                 null,
-                null);
+                null,
+                request.InputProfile);
         }
-        string fingerprint = StableIdentityHash.Object(new
-        {
-            request.ExpectedSnapshotId,
-            request.BoundActionId,
-            request.ClientSessionId,
-            request.ControllerLeaseId,
-            request.ControllerGeneration
-        });
+        string fingerprint = ActionRequestFingerprint(request);
 
         lock (SubmissionGate)
         {
@@ -62,10 +62,11 @@ internal static partial class PlayerEnvironmentService
                     "request_id_conflict",
                     "request_id was already used with a different exact action.",
                     null,
-                    null);
+                    null,
+                    request.InputProfile);
             }
 
-            SnapshotBuildResult snapshot = BuildSnapshot();
+            SnapshotBuildResult snapshot = BuildSnapshot(inputProfile: request.InputProfile);
             string boundActionId = request.BoundActionId ?? string.Empty;
             PlayerEnvironmentBoundAction? boundAction = snapshot.Snapshot.BoundActions.Actions
                 .SingleOrDefault(candidate => string.Equals(
@@ -97,12 +98,13 @@ internal static partial class PlayerEnvironmentService
                     code,
                     detail,
                     snapshot.Snapshot,
-                    null);
+                    null,
+                    request.InputProfile);
                 Receipts[requestId] = failed;
                 return failed;
             }
 
-            if (!string.Equals(snapshot.Snapshot.SnapshotId, request.ExpectedSnapshotId, StringComparison.Ordinal))
+            if (!IsCurrentRequestSnapshot(snapshot.Snapshot, request))
             {
                 return Fail(
                     "stale_snapshot",
@@ -141,7 +143,8 @@ internal static partial class PlayerEnvironmentService
                     "input_delivery_unknown",
                     $"Native input may have been delivered before {exception.GetType().Name}; do not retry.",
                     null,
-                    admission.Attribution);
+                    admission.Attribution,
+                    request.InputProfile);
                 Receipts[requestId] = unknown;
                 return unknown;
             }
@@ -157,7 +160,7 @@ internal static partial class PlayerEnvironmentService
             string detail = $"Native UI input was delivered ({evidence}); the attached successor is an immediate post-delivery observation, not causal settlement.";
             try
             {
-                postDeliveryObservation = Observe();
+                postDeliveryObservation = Observe(request.InputProfile);
             }
             catch (Exception exception)
             {
@@ -176,7 +179,8 @@ internal static partial class PlayerEnvironmentService
                 postDeliveryObservation == null ? "successor_observation_unavailable" : null,
                 detail,
                 postDeliveryObservation,
-                admission.Attribution);
+                admission.Attribution,
+                request.InputProfile);
             Receipts[requestId] = applied;
             return applied;
         }
@@ -186,6 +190,32 @@ internal static partial class PlayerEnvironmentService
         Receipts.TryGetValue(requestId, out PlayerEnvironmentActionReceipt? receipt)
             ? receipt
             : null;
+
+    internal static string ActionRequestFingerprint(PlayerEnvironmentActionRequest request)
+    {
+        string fingerprint = StableIdentityHash.Object(new
+        {
+            request.ExpectedSnapshotId,
+            request.BoundActionId,
+            request.ClientSessionId,
+            request.ControllerLeaseId,
+            request.ControllerGeneration
+        });
+        return request.InputProfile == null
+            ? fingerprint
+            : StableIdentityHash.Object(new { request.InputProfile, fingerprint });
+    }
+
+    internal static bool IsCurrentRequestSnapshot(
+        PlayerEnvironmentSnapshot snapshot,
+        PlayerEnvironmentActionRequest request) =>
+        string.Equals(snapshot.InputProfile, request.InputProfile, StringComparison.Ordinal)
+        && string.Equals(snapshot.SnapshotId, request.ExpectedSnapshotId, StringComparison.Ordinal);
+
+    internal static bool ReceiptMatchesInputProfile(
+        PlayerEnvironmentActionReceipt receipt,
+        string? inputProfile) =>
+        string.Equals(receipt.InputProfile, inputProfile, StringComparison.Ordinal);
 
     private static NativeInputResult StartPlayerEnvironmentInput(
         SnapshotBuildResult snapshot,
@@ -268,7 +298,8 @@ internal static partial class PlayerEnvironmentService
         string? reasonCode,
         string? detail,
         PlayerEnvironmentSnapshot? successor,
-        MutationAttribution? attribution) =>
+        MutationAttribution? attribution,
+        string? inputProfile = null) =>
         new(
             PlayerEnvironmentContract.ProtocolVersion,
             PlayerEnvironmentContract.ReceiptSchema,
@@ -282,7 +313,8 @@ internal static partial class PlayerEnvironmentService
                 status == "unknown" ? "unknown_delivery_never_retry" : "fresh_snapshot_required"),
             successor)
         {
-            Attribution = attribution == null ? null : ToAttribution(attribution)
+            Attribution = attribution == null ? null : ToAttribution(attribution),
+            InputProfile = inputProfile
         };
 
 }

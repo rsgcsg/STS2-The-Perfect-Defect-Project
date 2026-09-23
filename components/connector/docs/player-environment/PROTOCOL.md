@@ -81,6 +81,52 @@ aggregate selected advertised reads, but every result must retain the same
 snapshot, runtime and environment identity; that aggregation is a downstream
 projection, not a different C ontology.
 
+## Opt-in ordinary reward input profile (source candidate)
+
+`ordinary-reward-page-v1` is a separate, default-off input profile for ready,
+complete ordinary `reward_claim` and `card_reward_selection` pages only. A client
+requests it with `input_profile=ordinary-reward-page-v1` on capabilities and
+Snapshot GET, includes `input_profile` in Submit, and supplies the same query on
+Receipt poll. Default requests and responses remain the legacy `snapshot-1`
+contract. Profiled capabilities declare
+`sts2.player-environment/ordinary-reward-page-snapshot-1`; profiled Snapshots
+carry that top-level schema, `input_profile`, and the current reward surface
+schema ending in `-2`. The action and Receipt schemas keep their existing names,
+but profiled Receipts carry `input_profile`; their optional immediate successor
+must carry the same profiled Snapshot identity. Missing, unknown, changed or
+cross-profile selectors fail closed before input or before a polled Receipt is
+returned. The SDK exposes separate opt-in methods and strict validators. The
+old SDK rejects the new payload, and the distinct top-level Snapshot schema
+also makes the current legacy Python input projector reject it.
+
+This first profile advertises and materializes **no Reads**. Its outer page
+contains only pending currently visible ordinary reward entries plus current
+Proceed state; it does not disclose cards inside an unopened reward. Its entered
+inner page contains the current complete visible card list (including card
+name, displayed cost and description), current alternatives, and a typed effect for an
+exactly bound `return_to_rewards_without_claim` alternative. The effect names
+the native alternative's declared behavior, not a delivered action, observed
+return or causal successor. The inner page publishes no private native parent
+object, cross-page history key, unseen reward group or other group's card list.
+Snapshot IDs, request IDs and native safety bindings belong to the delivery
+envelope, not semantic model history: a consumer's model input for an unchanged
+current logical page must not change merely because that envelope is refreshed.
+Profile card description and cost come from the already-rendered current
+native card nodes; a hidden energy icon yields an empty displayed cost. Missing
+or mismatched card nodes make the whole page unsupported.
+An outer Proceed/Skip has separate native semantics and is never inferred to be
+reopenable from this inner return category.
+
+Only an exact, complete whole finite menu receives action authority. Linked
+reward sets, partial/settling pages, unsupported alternative effects, extra
+potion-discard menus and all other page families are `visible_unsupported` with
+empty action authority in this profile. There is no consumer-side action
+filtering. Legacy and profile views share one observed native-state generation
+for stale-token invalidation across interleaved observations, while each view
+keeps its own projection identity. This detects observed A→B→A transitions;
+it does not assert unobserved causal history. This source candidate has no
+Policy Runtime adapter, STPD input, installed game artifact or trained model.
+
 ## Action And Receipt
 
 An action request contains request ID, expected snapshot ID, opaque bound-action

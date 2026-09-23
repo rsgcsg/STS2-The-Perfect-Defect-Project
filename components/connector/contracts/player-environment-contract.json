@@ -96,5 +96,20 @@
     "enters_action_ledger": false,
     "snapshot_bound": true,
     "runtime_bound": true
+  }],
+  "input_profiles": [{
+    "id": "ordinary-reward-page-v1",
+    "status": "source_candidate",
+    "default_in_consumer_flow": false,
+    "snapshot_schema": "sts2.player-environment/ordinary-reward-page-snapshot-1",
+    "surface_schemas": [
+      "sts2.player-environment/surface/reward_claim-2",
+      "sts2.player-environment/surface/card_reward_selection-2"
+    ],
+    "read_opportunities": "none",
+    "scope": "current_ready_complete_ordinary_reward_claim_and_card_reward_selection_only",
+    "selector": "input_profile_on_capabilities_snapshot_submit_and_receipt_poll",
+    "unsupported": "visible_unsupported_without_action_authority",
+    "receipt_semantics": "input_delivery_not_causal_settlement"
   }]
 }

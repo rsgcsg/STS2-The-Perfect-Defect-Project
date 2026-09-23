@@ -16,7 +16,8 @@
         "contracts",
         "sdk/typescript/src/protocol.ts",
         "sdk/typescript/src/decisionBundle.ts",
-        "sdk/typescript/src/controllerSession.ts"
+        "sdk/typescript/src/controllerSession.ts",
+        "sdk/typescript/src/rewardPage.ts"
       ]
     },
     "host-runtime": {

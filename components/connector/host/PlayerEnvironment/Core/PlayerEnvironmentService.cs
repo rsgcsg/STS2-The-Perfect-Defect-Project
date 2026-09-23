@@ -44,7 +44,7 @@ internal static partial class PlayerEnvironmentService
 {
     private const int MaxBoundActions = 512;
     private static NativeEntityRegistry Entities => NativeUiRuntime.Entities;
-    private static readonly SnapshotIdentityTracker SnapshotIdentity = new();
+    private static readonly RewardPageSnapshotIdentity RewardPageIdentity = new();
     private static readonly ConcurrentDictionary<string, string> RequestFingerprints =
         new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, PlayerEnvironmentActionReceipt> Receipts =
@@ -60,13 +60,20 @@ internal static partial class PlayerEnvironmentService
     private static PlayerEnvironmentNativePageSession NativePageEvidence =>
         NativePageEvidenceLazy.Value;
 
-    public static PlayerEnvironmentCapabilitiesResponse GetCapabilities()
+    public static PlayerEnvironmentCapabilitiesResponse GetCapabilities() =>
+        GetCapabilities(null);
+
+    public static PlayerEnvironmentCapabilitiesResponse GetCapabilities(string? inputProfile)
     {
+        if (!IsSupportedInputProfile(inputProfile))
+            throw new ArgumentException("Unsupported Player Environment input profile.", nameof(inputProfile));
         GameBuildIdentity game = EnvironmentIdentityRuntime.ReadGame();
         LiveHostIdentity host = EnvironmentIdentityRuntime.HostIdentity();
         return new PlayerEnvironmentCapabilitiesResponse(
             PlayerEnvironmentContract.ProtocolVersion,
-            PlayerEnvironmentContract.SnapshotSchema,
+            inputProfile == null
+                ? PlayerEnvironmentContract.SnapshotSchema
+                : PlayerEnvironmentContract.OrdinaryRewardSnapshotSchema,
             PlayerEnvironmentContract.ActionSchema,
             PlayerEnvironmentContract.ReceiptSchema,
             PlayerEnvironmentContract.ControlSchema,
@@ -90,10 +97,15 @@ internal static partial class PlayerEnvironmentService
                 "Delivered means native UI input was delivered, not that a business transaction settled.",
                 "D annotations are outside the C observation and never authorize bound actions.",
                 "Build or install does not prove this artifact is loaded or Live-exercised."
-            });
+            }) { InputProfile = inputProfile };
     }
 
-    public static PlayerEnvironmentSnapshot Observe() =>
-        BuildSnapshot().Snapshot;
+    internal static bool IsSupportedInputProfile(string? inputProfile) =>
+        inputProfile == null
+        || string.Equals(inputProfile, PlayerEnvironmentContract.OrdinaryRewardPageProfile,
+            StringComparison.Ordinal);
+
+    public static PlayerEnvironmentSnapshot Observe(string? inputProfile = null) =>
+        BuildSnapshot(inputProfile: inputProfile).Snapshot;
 
 }
