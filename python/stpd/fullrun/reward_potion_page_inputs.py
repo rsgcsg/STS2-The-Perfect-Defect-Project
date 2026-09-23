@@ -2,7 +2,7 @@
 
 The Connector owns the complete native-profile menu and delivery. This projector
 keeps current reward/card order, current potion slot and popup-control order.
-The readable version is the new research input: indented JSON separates shared
+The readable version is the new research input: structured JSON separates shared
 facts from current persistent/page facts, retaining exact repeated-value refs.
 Its short candidate labels supplement ordinal bindings; they do not replace
 the full current-page semantics. The compact version remains for compatibility.
@@ -248,7 +248,7 @@ def _project_reward_potion_snapshot(
         # FACTS are shared only within this observation. A reference is an
         # exact repeated public value, not memory of another page or decision.
         readable_state = {"SHARED_FACTS": compact["FACTS"], "STATE": compact["STATE"]}
-        state_body = (json.dumps(readable_state, ensure_ascii=False, indent=2)
+        state_body = (json.dumps(readable_state, ensure_ascii=False, separators=(",", ":"))
                       if readable else canonical_json(compact))
         state_text = (f"[STPD_STATE version={version} profile=ordinary_reward_potion_page]\n"
                       + state_body + "\n[/STPD_STATE]")
