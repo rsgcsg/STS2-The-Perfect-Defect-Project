@@ -73,7 +73,9 @@ internal static partial class PlayerEnvironmentService
             PlayerEnvironmentContract.ProtocolVersion,
             inputProfile == null
                 ? PlayerEnvironmentContract.SnapshotSchema
-                : PlayerEnvironmentContract.OrdinaryRewardSnapshotSchema,
+                : inputProfile == PlayerEnvironmentContract.RewardPotionPageProfile
+                    ? PlayerEnvironmentContract.RewardPotionSnapshotSchema
+                    : PlayerEnvironmentContract.OrdinaryRewardSnapshotSchema,
             PlayerEnvironmentContract.ActionSchema,
             PlayerEnvironmentContract.ReceiptSchema,
             PlayerEnvironmentContract.ControlSchema,
@@ -97,12 +99,18 @@ internal static partial class PlayerEnvironmentService
                 "Delivered means native UI input was delivered, not that a business transaction settled.",
                 "D annotations are outside the C observation and never authorize bound actions.",
                 "Build or install does not prove this artifact is loaded or Live-exercised."
-            }) { InputProfile = inputProfile };
+            }.Concat(inputProfile == PlayerEnvironmentContract.RewardPotionPageProfile
+                ? new[] {
+                    "This profile covers ordinary reward controls and exact potion navigation only; other top-bar controls and later targeting pages are outside its action scope."
+                }
+                : Array.Empty<string>()).ToArray()) { InputProfile = inputProfile };
     }
 
     internal static bool IsSupportedInputProfile(string? inputProfile) =>
         inputProfile == null
         || string.Equals(inputProfile, PlayerEnvironmentContract.OrdinaryRewardPageProfile,
+            StringComparison.Ordinal)
+        || string.Equals(inputProfile, PlayerEnvironmentContract.RewardPotionPageProfile,
             StringComparison.Ordinal);
 
     public static PlayerEnvironmentSnapshot Observe(string? inputProfile = null) =>

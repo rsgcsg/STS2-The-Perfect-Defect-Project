@@ -110,7 +110,7 @@ internal static class ActiveInputResolver
     {
         ActiveSurfaceResolution? preferred = ResolvePreferredSurface(
             snapshot.OpenModal != null,
-            () => PotionPopupSurfaceReader.Capture(entities, game),
+            () => PotionPopupSurfaceReader.Capture(entities, game, snapshot),
             specializedSurface);
         if (preferred != null) return preferred;
         var matches = new List<(string Kind, LiveObservation Draft)>();

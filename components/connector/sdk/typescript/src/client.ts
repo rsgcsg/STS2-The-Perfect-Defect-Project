@@ -9,6 +9,15 @@ import {
   type RewardPageReceipt
 } from "./rewardPage.js";
 import {
+  REWARD_POTION_PAGE_PROFILE,
+  decodeRewardPotionCapabilities,
+  decodeRewardPotionSnapshot,
+  decodeRewardPotionReceipt,
+  type RewardPotionCapabilities,
+  type RewardPotionSnapshot,
+  type RewardPotionReceipt
+} from "./rewardPotionPage.js";
+import {
   decodePlayerClientRegistration,
   decodePlayerCapabilities,
   decodePlayerControllerLeaseResponse,
@@ -47,6 +56,11 @@ export class PlayerEnvironmentRestClient {
       `/api/player-environment/capabilities?input_profile=${ORDINARY_REWARD_PAGE_PROFILE}`));
   }
 
+  async rewardPotionCapabilities(): Promise<DecodedPlayerPayload<RewardPotionCapabilities>> {
+    return decodeRewardPotionCapabilities(await this.get(
+      `/api/player-environment/capabilities?input_profile=${REWARD_POTION_PAGE_PROFILE}`));
+  }
+
   async observe(): Promise<DecodedPlayerPayload<PlayerEnvironmentSnapshot>> {
     return decodePlayerSnapshot(await this.get("/api/player-environment/snapshot"));
   }
@@ -54,6 +68,11 @@ export class PlayerEnvironmentRestClient {
   async observeRewardPage(): Promise<DecodedPlayerPayload<RewardPageSnapshot>> {
     return decodeRewardPageSnapshot(await this.get(
       `/api/player-environment/snapshot?input_profile=${ORDINARY_REWARD_PAGE_PROFILE}`));
+  }
+
+  async observeRewardPotionPage(): Promise<DecodedPlayerPayload<RewardPotionSnapshot>> {
+    return decodeRewardPotionSnapshot(await this.get(
+      `/api/player-environment/snapshot?input_profile=${REWARD_POTION_PAGE_PROFILE}`));
   }
 
   async read(readId: string, expectedSnapshotId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReadResponse>> {
@@ -99,6 +118,25 @@ export class PlayerEnvironmentRestClient {
     }, true));
   }
 
+  async submitRewardPotionPage(input: {
+    requestId: string;
+    expectedSnapshotId: string;
+    boundActionId: string;
+    clientSessionId: string;
+    controllerLeaseId: string;
+    controllerGeneration: number;
+  }): Promise<DecodedPlayerPayload<RewardPotionReceipt>> {
+    return decodeRewardPotionReceipt(await this.post("/api/player-environment/actions", {
+      request_id: input.requestId,
+      expected_snapshot_id: input.expectedSnapshotId,
+      bound_action_id: input.boundActionId,
+      client_session_id: input.clientSessionId,
+      controller_lease_id: input.controllerLeaseId,
+      controller_generation: input.controllerGeneration,
+      input_profile: REWARD_POTION_PAGE_PROFILE
+    }, true));
+  }
+
   async poll(requestId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReceipt>> {
     return decodePlayerReceipt(await this.get(`/api/player-environment/actions/${encodeURIComponent(requestId)}`));
   }
@@ -106,6 +144,11 @@ export class PlayerEnvironmentRestClient {
   async pollRewardPage(requestId: string): Promise<DecodedPlayerPayload<RewardPageReceipt>> {
     return decodeRewardPageReceipt(await this.get(
       `/api/player-environment/actions/${encodeURIComponent(requestId)}?input_profile=${ORDINARY_REWARD_PAGE_PROFILE}`));
+  }
+
+  async pollRewardPotionPage(requestId: string): Promise<DecodedPlayerPayload<RewardPotionReceipt>> {
+    return decodeRewardPotionReceipt(await this.get(
+      `/api/player-environment/actions/${encodeURIComponent(requestId)}?input_profile=${REWARD_POTION_PAGE_PROFILE}`));
   }
 
   async registerClient(input: {

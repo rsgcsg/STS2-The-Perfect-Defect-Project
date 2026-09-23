@@ -8,7 +8,9 @@ import {
   decodePlayerReceipt,
   decodeRewardPageCapabilities,
   decodeRewardPageSnapshot,
-  decodeRewardPageReceipt
+  decodeRewardPageReceipt,
+  REWARD_POTION_PAGE_PROFILE, REWARD_POTION_SNAPSHOT_SCHEMA,
+  decodeRewardPotionCapabilities, decodeRewardPotionSnapshot, decodeRewardPotionReceipt
 } from "../src/index.js";
 
 function currentCardPage() {
@@ -185,5 +187,159 @@ describe("ordinary reward page profile", () => {
     }), { status: 409 }));
     const client = new PlayerEnvironmentRestClient("http://test", 1000, fetchImpl as typeof fetch);
     await expect(client.pollRewardPage("request-legacy")).rejects.toThrow(/409/u);
+  });
+});
+
+function popupV2() {
+  const page: any = currentCardPage();
+  page.schema = REWARD_POTION_SNAPSHOT_SCHEMA;
+  page.input_profile = REWARD_POTION_PAGE_PROFILE;
+  page.interaction.kind = "potion_popup";
+  page.interaction.interaction_id = "popup-screen";
+  page.interaction.content_schema = "sts2.player-environment/surface/potion_popup-3";
+  page.interaction.content.surface = {
+    kind: "potion_popup", potion_entity_id: "potion-1", name: "Test potion", slot: 0,
+    can_use: true, can_discard: true,
+    controls: [
+      { entity_id: "use-control", kind: "use", enabled: true, label: "Use" },
+      { entity_id: "discard-control", kind: "discard", enabled: true, label: "Discard" },
+      { entity_id: "popup-screen:close", kind: "close", enabled: true, label: "Close" }
+    ]
+  };
+  page.referents = [
+    { referent_id: "potion-1", role: "potion", kind: "entity",
+      label: "Test potion", properties_schema: "sts2.player-environment/referent/potion-1",
+      state: { visible: true, enabled: true, observation_basis: "native_visible_fact" },
+      properties: { potion_entity_id: "potion-1", name: "Test potion" } },
+    ...page.interaction.content.surface.controls.map((control: any) => ({
+      referent_id: control.entity_id, role: "control", kind: "entity", label: control.label,
+      state: { visible: true, enabled: control.enabled,
+        observation_basis: "native_visible_fact" },
+      properties_schema: "sts2.player-environment/referent/control-1", properties: control
+    }))
+  ];
+  page.bound_actions.actions = [
+    { bound_action_id: "use", verb: "activate", interaction_id: "popup-screen",
+      subject_referent_id: "use-control",
+      arguments: [{ role: "potion", referent_id: "potion-1" }], label: "Use" },
+    { bound_action_id: "discard", verb: "activate", interaction_id: "popup-screen",
+      subject_referent_id: "discard-control",
+      arguments: [{ role: "potion", referent_id: "potion-1" }], label: "Discard" },
+    { bound_action_id: "close", verb: "cancel", interaction_id: "popup-screen",
+      subject_referent_id: "popup-screen:close", arguments: [], label: "Close" }
+  ];
+  page.bound_actions.total_count = 3;
+  page.bound_actions.materialized_count = 3;
+  return page;
+}
+
+describe("reward/potion v2 current page", () => {
+  it("accepts the complete Use, Discard and Close menu while rejecting old decoders", () => {
+    const page = popupV2();
+    expect(decodeRewardPotionSnapshot(page).data.bound_actions.actions).toHaveLength(3);
+    expect(() => decodeRewardPageSnapshot(page)).toThrow();
+    expect(() => decodePlayerSnapshot(page)).toThrow();
+    const cap: any = capabilities();
+    cap.input_profile = REWARD_POTION_PAGE_PROFILE;
+    cap.snapshot_schema = REWARD_POTION_SNAPSHOT_SCHEMA;
+    expect(decodeRewardPotionCapabilities(cap).data.snapshot_schema)
+      .toBe(REWARD_POTION_SNAPSHOT_SCHEMA);
+    const receipt: any = deliveredReceipt(page);
+    receipt.input_profile = REWARD_POTION_PAGE_PROFILE;
+    expect(decodeRewardPotionReceipt(receipt).data.successor?.schema)
+      .toBe(REWARD_POTION_SNAPSHOT_SCHEMA);
+    expect(() => decodeRewardPotionReceipt({ ...receipt, input_profile: ORDINARY_REWARD_PAGE_PROFILE }))
+      .toThrow();
+  });
+
+  it("rejects missing booleans, false referents, wrong potion operands and omitted controls", () => {
+    const missingUse = popupV2();
+    delete missingUse.interaction.content.surface.can_use;
+    expect(() => decodeRewardPotionSnapshot(missingUse)).toThrow();
+    const stringDiscard = popupV2();
+    stringDiscard.interaction.content.surface.can_discard = "true";
+    expect(() => decodeRewardPotionSnapshot(stringDiscard)).toThrow();
+    const wrongRole = popupV2();
+    wrongRole.referents[0].role = "card";
+    expect(() => decodeRewardPotionSnapshot(wrongRole)).toThrow(/potion argument/u);
+    const missingPotion = popupV2();
+    missingPotion.referents.shift();
+    expect(() => decodeRewardPotionSnapshot(missingPotion)).toThrow(/potion argument/u);
+    const wrongOperand = popupV2();
+    wrongOperand.bound_actions.actions[0].arguments[0].referent_id = "other-potion";
+    expect(() => decodeRewardPotionSnapshot(wrongOperand)).toThrow(/exact current potion/u);
+    const futureTarget = popupV2();
+    futureTarget.bound_actions.actions[0].arguments.push({ role: "target", referent_id: "enemy" });
+    expect(() => decodeRewardPotionSnapshot(futureTarget)).toThrow(/exact current potion/u);
+    const omitted = popupV2();
+    omitted.bound_actions.actions.splice(1, 1);
+    omitted.bound_actions.total_count = 2;
+    omitted.bound_actions.materialized_count = 2;
+    expect(() => decodeRewardPotionSnapshot(omitted)).toThrow(/omits/u);
+    const disabledDuplicate = popupV2();
+    disabledDuplicate.interaction.content.surface.can_use = false;
+    disabledDuplicate.interaction.content.surface.controls[0].enabled = false;
+    disabledDuplicate.interaction.content.surface.controls[0].entity_id = "discard-control";
+    disabledDuplicate.bound_actions.actions.shift();
+    disabledDuplicate.bound_actions.total_count = 2;
+    disabledDuplicate.bound_actions.materialized_count = 2;
+    expect(() => decodeRewardPotionSnapshot(disabledDuplicate)).toThrow(/duplicated/u);
+    const disabledMissing = popupV2();
+    disabledMissing.interaction.content.surface.can_use = false;
+    disabledMissing.interaction.content.surface.controls[0].enabled = false;
+    delete disabledMissing.interaction.content.surface.controls[0].entity_id;
+    disabledMissing.bound_actions.actions.shift();
+    disabledMissing.bound_actions.total_count = 2;
+    disabledMissing.bound_actions.materialized_count = 2;
+    expect(() => decodeRewardPotionSnapshot(disabledMissing)).toThrow(/missing/u);
+    const outer: any = popupV2();
+    outer.interaction.kind = "reward_claim";
+    outer.interaction.content_schema = "sts2.player-environment/surface/reward_claim-3";
+    outer.interaction.content.surface = {
+      kind: "reward_claim", rewards: [], can_proceed: false,
+      openable_potions: [{ potion_entity_id: "potion-1", slot: 0, name: "Test potion" },
+        { potion_entity_id: "potion-2", slot: 0, name: "Second potion" }]
+    };
+    expect(() => decodeRewardPotionSnapshot(outer)).toThrow(/unique current slot/u);
+    outer.interaction.content.surface.openable_potions.pop();
+    expect(() => decodeRewardPotionSnapshot(outer)).toThrow(/incomplete or legacy proceed/u);
+    outer.interaction.content.surface.proceed_skips_remaining_rewards = false;
+    outer.interaction.content.surface.cards = [{ name: "Unopened card" }];
+    expect(() => decodeRewardPotionSnapshot(outer)).toThrow(/incomplete or legacy proceed/u);
+    const inner: any = currentCardPage();
+    inner.schema = REWARD_POTION_SNAPSHOT_SCHEMA;
+    inner.input_profile = REWARD_POTION_PAGE_PROFILE;
+    inner.interaction.content_schema = "sts2.player-environment/surface/card_reward_selection-3";
+    inner.interaction.content.surface.openable_potions = [];
+    inner.interaction.content.surface.rewards = [{ name: "Another reward group" }];
+    expect(() => decodeRewardPotionSnapshot(inner)).toThrow(/another page/u);
+    const mixedPopup = popupV2();
+    mixedPopup.interaction.content.surface.cards = [{ name: "Unopened card" }];
+    expect(() => decodeRewardPotionSnapshot(mixedPopup)).toThrow(/another page/u);
+  });
+
+  it("routes explicit v2 Observe, Submit and poll through the same profile", async () => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(url);
+      if (path.includes("/snapshot?")) return new Response(JSON.stringify(popupV2()));
+      if (init?.method === "POST") return new Response(JSON.stringify({
+        ...deliveredReceipt(null), input_profile: REWARD_POTION_PAGE_PROFILE
+      }));
+      return new Response(JSON.stringify({
+        ...deliveredReceipt(popupV2()), input_profile: REWARD_POTION_PAGE_PROFILE
+      }));
+    });
+    const client = new PlayerEnvironmentRestClient("http://test", 1000, fetchImpl as typeof fetch);
+    await client.observeRewardPotionPage();
+    await client.submitRewardPotionPage({ requestId: "request-1", expectedSnapshotId: "reward-state-1",
+      boundActionId: "use", clientSessionId: "client", controllerLeaseId: "lease",
+      controllerGeneration: 1 });
+    await client.pollRewardPotionPage("request-1");
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain(
+      `input_profile=${REWARD_POTION_PAGE_PROFILE}`);
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body)).input_profile)
+      .toBe(REWARD_POTION_PAGE_PROFILE);
+    expect(String(fetchImpl.mock.calls[2]?.[0])).toContain(
+      `input_profile=${REWARD_POTION_PAGE_PROFILE}`);
   });
 });
