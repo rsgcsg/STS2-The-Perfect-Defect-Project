@@ -799,6 +799,13 @@ public sealed class PlayerEnvironmentContractTests
         Assert.Equal(512, projection.Projection.MaterializedCount);
         Assert.Equal(576, projection.Projection.TotalCount);
         Assert.Equal(512, projection.Bindings.Count);
+        BoundActionProjectionResult rewardProfile =
+            PlayerEnvironmentService.CloseIncompleteRewardCatalog(projection);
+        Assert.Equal("unavailable", rewardProfile.Projection.Status);
+        Assert.Equal(576, rewardProfile.Projection.TotalCount);
+        Assert.Equal(0, rewardProfile.Projection.MaterializedCount);
+        Assert.Empty(rewardProfile.Projection.Actions);
+        Assert.Empty(rewardProfile.Bindings);
     }
 
     [Fact]
@@ -824,6 +831,11 @@ public sealed class PlayerEnvironmentContractTests
         Assert.Equal(0, projection.Projection.MaterializedCount);
         Assert.Equal(1, projection.Projection.TotalCount);
         Assert.Empty(projection.Bindings);
+        BoundActionProjectionResult rewardProfile =
+            PlayerEnvironmentService.CloseIncompleteRewardCatalog(projection);
+        Assert.Equal("unavailable", rewardProfile.Projection.Status);
+        Assert.Equal(1, rewardProfile.Projection.TotalCount);
+        Assert.Empty(rewardProfile.Projection.Actions);
     }
 
     [Fact]

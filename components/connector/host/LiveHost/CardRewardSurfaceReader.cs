@@ -6,8 +6,12 @@ using System.Reflection;
 using Godot;
 using MegaCrit.Sts2.Core.Entities.CardRewardAlternatives;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.UI;
+using MegaCrit.Sts2.Core.Entities.Rewards;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
+using MegaCrit.Sts2.addons.mega_text;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using STS2Connector.LiveHost.Contracts;
@@ -17,6 +21,10 @@ namespace STS2Connector.LiveHost;
 
 internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
 {
+    private readonly bool _captureProfileFacts;
+
+    internal CardRewardSurfaceReader(bool captureProfileFacts = false) =>
+        _captureProfileFacts = captureProfileFacts;
     private const string SurfaceKind = "card_reward_selection";
     internal const string SelectCardDeliveryEvidence = "native_card_reward_holder_pressed";
     internal const string AlternativeDeliveryEvidence = "native_card_reward_alternative_clicked";
@@ -38,7 +46,7 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
         return Build(screen, entities, game);
     }
 
-    private static LiveObservation Build(
+    private LiveObservation Build(
         NCardRewardSelectionScreen screen,
         NativeEntityRegistry entities,
         GameBuildIdentity game)
@@ -176,6 +184,28 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
             surface
         });
 
+        if (!_captureProfileFacts)
+            return new LiveObservation(
+                signature, readiness,
+                new RewardFlowLiveContext("reward_flow", "card_reward"),
+                surface, completeness, game, Array.Empty<string>());
+
+        NativeCardRewardParentFacts parentFacts =
+            NativeCardRewardDecisionProvider.CaptureParentFacts(screen);
+        RewardPageProfileFacts profileFacts = QualifyProfileFacts(
+            catalogBoundExactly, parentFacts, semanticAlternatives, alternatives);
+        if (profileFacts.Qualified
+            && TryCaptureRenderedProfileCards(holders, cards, out VisibleCard[] currentCards))
+        {
+            profileFacts = profileFacts with
+            {
+                CurrentCards = currentCards
+            };
+        }
+        else
+            profileFacts = new RewardPageProfileFacts(false,
+                Array.Empty<RewardPageAlternativeEffect>());
+
         return new LiveObservation(
             signature,
             readiness,
@@ -183,7 +213,89 @@ internal sealed class CardRewardSurfaceReader : ILiveSurfaceReader
             surface,
             completeness,
             game,
-            Array.Empty<string>());
+            Array.Empty<string>()) { RewardPageFacts = profileFacts };
+    }
+
+    private static bool TryCaptureRenderedProfileCards(
+        IReadOnlyList<NGridCardHolder> holders,
+        IReadOnlyList<VisibleCard> legacyCards,
+        out VisibleCard[] currentCards)
+    {
+        currentCards = Array.Empty<VisibleCard>();
+        if (holders.Count != legacyCards.Count)
+            return false;
+        var captured = new VisibleCard[holders.Count];
+        for (int index = 0; index < holders.Count; index++)
+        {
+            NGridCardHolder holder = holders[index];
+            var cardNode = holder.CardNode;
+            if (!ConnectorMod.IsNodeVisible(holder)
+                || holder.IsShowingUpgradedCard
+                || cardNode == null
+                || !ConnectorMod.IsNodeVisible(cardNode)
+                || !cardNode.IsNodeReady()
+                || !ReferenceEquals(cardNode.Model, holder.CardModel)
+                || cardNode.DisplayingPile != PileType.None
+                || cardNode.Visibility != ModelVisibility.Visible)
+                return false;
+            MegaRichTextLabel? description =
+                cardNode.GetNodeOrNull<MegaRichTextLabel>("%DescriptionLabel");
+            MegaLabel? cost = cardNode.GetNodeOrNull<MegaLabel>("%EnergyLabel");
+            TextureRect? costIcon = cardNode.GetNodeOrNull<TextureRect>("%EnergyIcon");
+            if (description == null || !ConnectorMod.IsNodeVisible(description)
+                || cost == null || !ConnectorMod.IsLiveNode(cost)
+                || costIcon == null || !ConnectorMod.IsLiveNode(costIcon)
+                || !TryProjectRenderedCard(legacyCards[index], description.Text,
+                    cost.Text, costIcon.Visible, out captured[index]))
+                return false;
+        }
+        currentCards = captured;
+        return true;
+    }
+
+    internal static bool TryProjectRenderedCard(
+        VisibleCard legacyCard,
+        string? renderedDescription,
+        string? renderedCost,
+        bool costIconVisible,
+        out VisibleCard card)
+    {
+        card = legacyCard;
+        if (string.IsNullOrWhiteSpace(renderedDescription)
+            || (costIconVisible && string.IsNullOrWhiteSpace(renderedCost)))
+            return false;
+        card = legacyCard with
+        {
+            Description = ConnectorMod.StripRichTextTags(renderedDescription)
+                .Replace("\n", " ").Trim(),
+            Cost = costIconVisible ? renderedCost!.Trim() : string.Empty
+        };
+        return !string.IsNullOrWhiteSpace(card.Description);
+    }
+
+    internal static RewardPageProfileFacts QualifyProfileFacts(
+        bool catalogBoundExactly,
+        NativeCardRewardParentFacts parentFacts,
+        IReadOnlyList<CardRewardAlternative> semanticAlternatives,
+        IReadOnlyList<VisibleCardRewardAlternative> alternatives)
+    {
+        bool profileQualified = catalogBoundExactly
+            && parentFacts.Status == "captured"
+            && parentFacts.ParentReward != null
+            && parentFacts.Alternatives.Count == semanticAlternatives.Count
+            && alternatives.Count == semanticAlternatives.Count
+            && parentFacts.Alternatives.Select((fact, index) =>
+                ReferenceEquals(fact.Alternative, semanticAlternatives[index])
+                && fact.AfterSelected ==
+                    PostAlternateCardRewardAction.EndSelectionAndDoNotCompleteReward)
+                .All(match => match);
+        return new RewardPageProfileFacts(
+            profileQualified,
+            profileQualified
+                ? alternatives.Select(alternative => new RewardPageAlternativeEffect(
+                    alternative.EntityId,
+                    "return_to_rewards_without_claim")).ToArray()
+                : Array.Empty<RewardPageAlternativeEffect>());
     }
 
     internal static string ClassifyReadiness(

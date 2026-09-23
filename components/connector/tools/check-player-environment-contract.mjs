@@ -13,6 +13,7 @@ const submission = read("host/PlayerEnvironment/Execution/ActionSubmission.cs");
 const reads = read("host/PlayerEnvironment/Reads/ReadService.cs")
   + read("host/LiveHost/PlayerVisibleReadBuilder.cs");
 const typescript = read("sdk/typescript/src/protocol.ts");
+const rewardPage = read("sdk/typescript/src/rewardPage.ts");
 const client = read("sdk/typescript/src/client.ts");
 const transport = read("host/ConnectorMod.cs")
   + read("host/PlayerEnvironment/Transport/ConnectorMod.PlayerEnvironment.cs");
@@ -67,6 +68,16 @@ requireIn(typescript, 'value.delivery === "unknown" && value.retry.allowed', "un
 for (const profile of contract.evidence_profiles) {
   requireIn(csharp, `NativePageEvidenceProfile = "${profile.id}"`, "native-page profile");
   requireIn(typescript, "creates_mutation_authority: z.literal(false)", "non-authorizing evidence profile");
+}
+
+for (const profile of contract.input_profiles ?? []) {
+  requireIn(csharp, `OrdinaryRewardPageProfile = "${profile.id}"`, "C# input profile");
+  requireIn(csharp, profile.snapshot_schema, "C# profiled Snapshot schema");
+  requireIn(rewardPage, profile.id, "TypeScript input profile");
+  requireIn(rewardPage, profile.snapshot_schema, "TypeScript profiled Snapshot schema");
+  requireIn(client, "observeRewardPage", "opt-in SDK observation");
+  requireIn(client, "submitRewardPage", "opt-in SDK submission");
+  requireIn(client, "pollRewardPage", "opt-in SDK receipt poll");
 }
 
 requireIn(python, '_environment_get("snapshot")', "Python snapshot route");

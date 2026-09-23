@@ -10,11 +10,19 @@ public static partial class ConnectorMod
     private const int MaxPlayerEnvironmentActionBodyBytes = 16 * 1024;
     private const int MaxPlayerEnvironmentNativePageEvidenceBodyBytes = 4 * 1024;
 
-    private static void HandleGetCapabilities(HttpListenerResponse response)
+    private static void HandleGetCapabilities(
+        HttpListenerRequest request,
+        HttpListenerResponse response)
     {
+        string? inputProfile = request.QueryString["input_profile"];
+        if (!PlayerEnvironmentService.IsSupportedInputProfile(inputProfile))
+        {
+            SendApiError(response, 400, "unsupported_input_profile", "Unsupported input profile.");
+            return;
+        }
         try
         {
-            var task = RunOnMainThread(PlayerEnvironmentService.GetCapabilities);
+            var task = RunOnMainThread(() => PlayerEnvironmentService.GetCapabilities(inputProfile));
             SendJson(response, task.GetAwaiter().GetResult());
         }
         catch (Exception exception)
@@ -27,9 +35,15 @@ public static partial class ConnectorMod
         HttpListenerRequest request,
         HttpListenerResponse response)
     {
+        string? inputProfile = request.QueryString["input_profile"];
+        if (!PlayerEnvironmentService.IsSupportedInputProfile(inputProfile))
+        {
+            SendApiError(response, 400, "unsupported_input_profile", "Unsupported input profile.");
+            return;
+        }
         try
         {
-            var task = RunOnMainThread(PlayerEnvironmentService.Observe);
+            var task = RunOnMainThread(() => PlayerEnvironmentService.Observe(inputProfile));
             SendJson(response, task.GetAwaiter().GetResult());
         }
         catch (Exception exception)
@@ -119,6 +133,11 @@ public static partial class ConnectorMod
                 400,
                 "invalid_player_environment_action",
                 "Exact request, snapshot and advertised bound-action identifiers are required.");
+            return;
+        }
+        if (!PlayerEnvironmentService.IsSupportedInputProfile(action.InputProfile))
+        {
+            SendApiError(response, 400, "unsupported_input_profile", "Unsupported input profile.");
             return;
         }
         try
@@ -243,8 +262,15 @@ public static partial class ConnectorMod
 
     private static void HandleGetPlayerEnvironmentAction(
         string encodedRequestId,
+        HttpListenerRequest request,
         HttpListenerResponse response)
     {
+        string? inputProfile = request.QueryString["input_profile"];
+        if (!PlayerEnvironmentService.IsSupportedInputProfile(inputProfile))
+        {
+            SendApiError(response, 400, "unsupported_input_profile", "Unsupported input profile.");
+            return;
+        }
         string requestId;
         try
         {
@@ -264,6 +290,11 @@ public static partial class ConnectorMod
         if (receipt == null)
         {
             SendApiError(response, 404, "request_not_found", "No Player Environment receipt exists for request_id.");
+            return;
+        }
+        if (!PlayerEnvironmentService.ReceiptMatchesInputProfile(receipt, inputProfile))
+        {
+            SendApiError(response, 409, "input_profile_mismatch", "The receipt belongs to a different input profile.");
             return;
         }
         SendJson(response, receipt);

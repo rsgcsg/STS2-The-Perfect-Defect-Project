@@ -19,8 +19,11 @@ internal static partial class PlayerEnvironmentService
         bool suppressNativePageEvidence = true,
         IReadOnlyCollection<string>? requiredReadKinds = null,
         Func<string, IReadOnlyCollection<string>>? requiredReadKindsForInteraction = null,
-        ProcessLocalCaptureProfiler? captureProfiler = null)
+        ProcessLocalCaptureProfiler? captureProfiler = null,
+        string? inputProfile = null)
     {
+        if (!IsSupportedInputProfile(inputProfile))
+            throw new ArgumentException("Unsupported Player Environment input profile.", nameof(inputProfile));
         T Measure<T>(string phase, Func<T> operation) =>
             captureProfiler == null ? operation() : captureProfiler.Measure(phase, operation);
 
@@ -36,9 +39,26 @@ internal static partial class PlayerEnvironmentService
                 ?? NativeDeckTransformSelection.TryBuild(Entities, game)
                 ?? NativeCombatPileSelection.TryBuild(Entities, game)
                 ?? NativeDeckCardSelection.TryBuild(Entities, game)
-                ?? NativeRestSite.TryBuild(Entities, game)));
+                ?? NativeRestSite.TryBuild(Entities, game),
+                rewardPageProfile: inputProfile != null));
+        LiveObservation nativeDraft = draft;
         if (suppressNativePageEvidence)
             draft = NativePageEvidence.SuppressMutation(draft);
+        if (inputProfile != null && !IsOrdinaryRewardPage(draft))
+        {
+            draft = draft with
+            {
+                Surface = new UnsupportedSurface(
+                    draft.Surface.Kind,
+                    "ordinary_reward_page_profile",
+                    "This current page is outside the ordinary reward input profile."),
+                Readiness = "degraded",
+                Completeness = new StateCompleteness(
+                    "degraded", "empty_fail_closed",
+                    new[] { "ordinary reward current-page native owner" },
+                    new[] { "ordinary_reward_page_profile_unsupported" })
+            };
+        }
         draft = draft with
         {
             InputOwnership = draft.Surface is UnsupportedSurface
@@ -57,9 +77,12 @@ internal static partial class PlayerEnvironmentService
             () => game.Compatibility.StateObservationAllowed
                 ? PersistentVisibleStateReader.Build(Entities)
                 : new PersistentVisibleStateBuildResult(false, null, null));
+        long nativeSequence = RewardPageIdentity.ObserveNative(
+            CommonNativeSignature(game, nativeDraft, shared.State));
         draft = LiveObservationReader.ApplyMissingPersistentStatePolicy(draft, shared);
-        IReadOnlyCollection<string>? selectedReadKinds = requiredReadKinds
-            ?? requiredReadKindsForInteraction?.Invoke(draft.Surface.Kind);
+        IReadOnlyCollection<string>? selectedReadKinds = inputProfile == null
+            ? requiredReadKinds ?? requiredReadKindsForInteraction?.Invoke(draft.Surface.Kind)
+            : null;
         IReadOnlyDictionary<string, PlayerReadBuildResult> readBuilds = Measure(
             "required_read_builds",
             () => BuildRequiredReads(selectedReadKinds, draft.Context));
@@ -68,9 +91,13 @@ internal static partial class PlayerEnvironmentService
             bool shopCatalogAvailable = ShopSurfaceFacts.TryGetCurrent(out _, out _, out _);
             return PlayerVisibilityCatalog.Build(draft, shared.State != null, shopCatalogAvailable);
         });
-        IReadOnlyList<PlayerReadCatalogEntry> readCatalog = information.ReadCatalog;
+        IReadOnlyList<PlayerReadCatalogEntry> readCatalog = inputProfile == null
+            ? information.ReadCatalog
+            : Array.Empty<PlayerReadCatalogEntry>();
         IReadOnlyList<PlayerEnvironmentLinkedDetailCatalogEntry> linkedDetails =
-            BuildLinkedDetailCatalog(draft.Surface);
+            inputProfile == null
+                ? BuildLinkedDetailCatalog(draft.Surface)
+                : Array.Empty<PlayerEnvironmentLinkedDetailCatalogEntry>();
         PlayerVisibilityState visibility = information.Visibility with
         {
             AvailableReads = readCatalog.Select(entry => entry.Kind).ToArray(),
@@ -91,6 +118,10 @@ internal static partial class PlayerEnvironmentService
         PlayerEnvironmentInteractionContent surfaceContent = Measure(
             "visible_surface_projection",
             () => ProjectVisibleFacts(draft.Surface, draft.Context));
+        if (inputProfile != null && draft.Surface is CardRewardSelectionSurface
+            && draft.RewardPageFacts is { Qualified: true } profileFacts
+            && surfaceContent.Surface is JsonObject page)
+            ProjectRewardPageFacts(page, profileFacts);
         IReadOnlyList<NativeUiBoundAction> nativeBindings = Measure(
             "native_binding_catalog",
             () => CanPublishMutationAuthority(draft.Readiness)
@@ -111,6 +142,10 @@ internal static partial class PlayerEnvironmentService
         BoundActionProjectionResult projected = Measure(
             "bound_action_projection",
             () => ProjectBoundActions(nativeBindings, interactionId, referents));
+        bool profileCatalogIncomplete = inputProfile != null
+            && projected.Projection.Status != "complete";
+        if (profileCatalogIncomplete)
+            projected = CloseIncompleteRewardCatalog(projected);
         IReadOnlyList<PlayerEnvironmentInteractionCapability> capabilities =
             ProjectInteractionCapabilities(projected.Projection, referents);
         string stage = ReadFirstString(rawSurface, "stage") ?? draft.Readiness;
@@ -149,8 +184,11 @@ internal static partial class PlayerEnvironmentService
             reads,
             visibility.HiddenByPolicy
         }));
-        (string snapshotId, long sequence) = SnapshotIdentity.Observe(signature);
-        bool visibleUnsupported = draft.Surface is UnsupportedSurface;
+        (string snapshotId, long sequence) = inputProfile == null
+            ? RewardPageIdentity.ObserveLegacy(nativeSequence, signature)
+            : RewardPageIdentity.ObserveReward(nativeSequence, signature);
+        bool visibleUnsupported = draft.Surface is UnsupportedSurface
+            || profileCatalogIncomplete;
         bool actionsPublished = projected.Projection.Status == "complete"
             && projected.Projection.MaterializedCount > 0;
         string status = actionsPublished
@@ -173,7 +211,9 @@ internal static partial class PlayerEnvironmentService
         }
         var snapshot = new PlayerEnvironmentSnapshot(
             PlayerEnvironmentContract.ProtocolVersion,
-            PlayerEnvironmentContract.SnapshotSchema,
+            inputProfile == null
+                ? PlayerEnvironmentContract.SnapshotSchema
+                : PlayerEnvironmentContract.OrdinaryRewardSnapshotSchema,
             snapshotId,
             sequence,
             DateTimeOffset.UtcNow,
@@ -188,7 +228,9 @@ internal static partial class PlayerEnvironmentService
                 draft.Surface.Kind,
                 stage,
                 prompt,
-                SurfaceContentSchema(draft.Surface.Kind),
+                inputProfile == null
+                    ? SurfaceContentSchema(draft.Surface.Kind)
+                    : $"sts2.player-environment/surface/{draft.Surface.Kind}-2",
                 surfaceContent,
                 capabilities),
             referents.Values.OrderBy(item => item.ReferentId, StringComparer.Ordinal).ToArray(),
@@ -196,12 +238,62 @@ internal static partial class PlayerEnvironmentService
             reads,
             completeness,
             ToSessionReference(EnvironmentIdentityRuntime.HostIdentity(), game),
-            ToInformationPolicy(EnvironmentIdentityRuntime.InformationPolicy()));
+            ToInformationPolicy(EnvironmentIdentityRuntime.InformationPolicy()))
+        { InputProfile = inputProfile };
         return new SnapshotBuildResult(
             snapshot,
             draft,
             projected.Bindings,
             readBuilds);
+    }
+
+    internal static bool IsOrdinaryRewardPage(LiveObservation draft) =>
+        draft.Readiness == "ready"
+        && draft.Completeness.PlayerVisibleSemantics is
+            "contract_complete_for_reward_claim" or
+            "contract_complete_for_card_reward_selection"
+        && (draft.Surface switch
+        {
+            RewardClaimSurface outer => outer.DiscardablePotions.Count == 0,
+            CardRewardSelectionSurface => draft.RewardPageFacts is { Qualified: true },
+            _ => false
+        });
+
+    internal static string CommonNativeSignature(
+        GameBuildIdentity game,
+        LiveObservation nativeDraft,
+        PersistentVisibleState? sharedState) =>
+        StableIdentityHash.Object(new
+        {
+            game.Version,
+            game.Commit,
+            sharedState,
+            nativeDraft.Signature,
+            nativeDraft.Readiness,
+            nativeDraft.Surface,
+            nativeDraft.Context,
+            nativeDraft.Completeness
+        });
+
+    internal static BoundActionProjectionResult CloseIncompleteRewardCatalog(
+        BoundActionProjectionResult projected) =>
+        projected.Projection.Status == "complete"
+            ? projected
+            : new BoundActionProjectionResult(
+                projected.Projection with
+                {
+                    Status = "unavailable",
+                    MaterializedCount = 0,
+                    Actions = Array.Empty<PlayerEnvironmentBoundAction>()
+                },
+                new Dictionary<string, PlayerEnvironmentNativeBinding>(StringComparer.Ordinal));
+
+    internal static void ProjectRewardPageFacts(JsonObject page, RewardPageProfileFacts facts)
+    {
+        page["cards"] = JsonSerializer.SerializeToNode(
+            facts.CurrentCards, ConnectorMod._jsonOptions);
+        page["alternative_effects"] = JsonSerializer.SerializeToNode(
+            facts.AlternativeEffects, ConnectorMod._jsonOptions);
     }
 
     private static IReadOnlyDictionary<string, PlayerReadBuildResult> BuildRequiredReads(

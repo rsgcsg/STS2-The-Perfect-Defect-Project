@@ -298,7 +298,7 @@ public static partial class ConnectorMod
             else if (path == "/api/player-environment/capabilities")
             {
                 if (request.HttpMethod == "GET")
-                    HandleGetCapabilities(response);
+                    HandleGetCapabilities(request, response);
                 else
                     SendError(response, 405, "Method not allowed");
             }
@@ -353,7 +353,7 @@ public static partial class ConnectorMod
             else if (path.StartsWith("/api/player-environment/actions/", StringComparison.Ordinal))
             {
                 if (request.HttpMethod == "GET")
-                    HandleGetPlayerEnvironmentAction(path["/api/player-environment/actions/".Length..], response);
+                    HandleGetPlayerEnvironmentAction(path["/api/player-environment/actions/".Length..], request, response);
                 else
                     SendError(response, 405, "Method not allowed");
             }

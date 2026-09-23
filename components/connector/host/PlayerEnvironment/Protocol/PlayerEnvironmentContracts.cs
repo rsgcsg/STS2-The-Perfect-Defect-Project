@@ -22,6 +22,9 @@ public static class PlayerEnvironmentContract
     public const string NativePageEvidenceSchema =
         "sts2.player-environment/native-page-evidence-1";
     public const string NativePageEvidenceProfile = "native_pages.v1";
+    public const string OrdinaryRewardPageProfile = "ordinary-reward-page-v1";
+    public const string OrdinaryRewardSnapshotSchema =
+        "sts2.player-environment/ordinary-reward-page-snapshot-1";
 
     public static string ReadContentSchema(string kind) =>
         $"sts2.player-environment/read/{kind}-1";
@@ -89,7 +92,10 @@ public sealed record PlayerEnvironmentCapabilitiesResponse(
     bool ExecutionAvailable,
     PlayerEnvironmentControlPolicy Control,
     IReadOnlyList<PlayerEnvironmentEvidenceProfile> EvidenceProfiles,
-    IReadOnlyList<string> NonClaims);
+    IReadOnlyList<string> NonClaims)
+{
+    public string? InputProfile { get; init; }
+}
 
 public sealed record PlayerEnvironmentEvidenceProfile(
     string Id,
@@ -319,7 +325,10 @@ public sealed record PlayerEnvironmentSnapshot(
     IReadOnlyList<PlayerEnvironmentReadOpportunity> Reads,
     PlayerEnvironmentCompleteness Completeness,
     PlayerEnvironmentSessionReference Session,
-    PlayerEnvironmentInformationPolicy InformationPolicy);
+    PlayerEnvironmentInformationPolicy InformationPolicy)
+{
+    public string? InputProfile { get; init; }
+}
 
 public sealed record PlayerEnvironmentReadResponse(
     string ProtocolVersion,
@@ -344,7 +353,8 @@ public sealed record PlayerEnvironmentActionRequest(
     string? BoundActionId,
     string? ClientSessionId,
     string? ControllerLeaseId,
-    long? ControllerGeneration);
+    long? ControllerGeneration,
+    string? InputProfile = null);
 
 public sealed record PlayerEnvironmentActionSummary(
     string BoundActionId,
@@ -383,4 +393,5 @@ public sealed record PlayerEnvironmentActionReceipt(
     PlayerEnvironmentSnapshot? Successor)
 {
     public PlayerEnvironmentAttribution? Attribution { get; init; }
+    public string? InputProfile { get; init; }
 }

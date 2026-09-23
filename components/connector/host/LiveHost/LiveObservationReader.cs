@@ -62,8 +62,11 @@ internal static class LiveObservationReader
     internal static IReadOnlyList<string> DeclaredReaderKinds =>
         ReaderRegistrations.Select(provider => provider.Kind).ToArray();
 
-    private static IReadOnlyList<ILiveSurfaceReader> CreateReaders() =>
-        ReaderRegistrations.Select(registration => registration.Create()).ToArray();
+    private static IReadOnlyList<ILiveSurfaceReader> CreateReaders(bool rewardPageProfile = false) =>
+        ReaderRegistrations.Select(registration =>
+            rewardPageProfile && registration.Kind == "card_reward_selection"
+                ? (ILiveSurfaceReader)new CardRewardSurfaceReader(captureProfileFacts: true)
+                : registration.Create()).ToArray();
 
     public static LiveObservation Build(NativeEntityRegistry entities)
     {
@@ -73,9 +76,10 @@ internal static class LiveObservationReader
     public static LiveObservation Build(
         NativeEntityRegistry entities,
         GameBuildIdentity game,
-        Func<LiveObservation?>? specializedSurface = null)
+        Func<LiveObservation?>? specializedSurface = null,
+        bool rewardPageProfile = false)
     {
-        IReadOnlyList<ILiveSurfaceReader> providers = CreateReaders();
+        IReadOnlyList<ILiveSurfaceReader> providers = CreateReaders(rewardPageProfile);
         ActiveSurfaceSnapshot snapshot;
         try
         {

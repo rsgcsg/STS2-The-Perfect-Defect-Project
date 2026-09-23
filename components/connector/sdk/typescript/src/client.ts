@@ -1,5 +1,14 @@
 import { isJsonObject, type JsonObject } from "./json.js";
 import {
+  ORDINARY_REWARD_PAGE_PROFILE,
+  decodeRewardPageCapabilities,
+  decodeRewardPageSnapshot,
+  decodeRewardPageReceipt,
+  type RewardPageCapabilities,
+  type RewardPageSnapshot,
+  type RewardPageReceipt
+} from "./rewardPage.js";
+import {
   decodePlayerClientRegistration,
   decodePlayerCapabilities,
   decodePlayerControllerLeaseResponse,
@@ -33,8 +42,18 @@ export class PlayerEnvironmentRestClient {
     return decodePlayerCapabilities(await this.get("/api/player-environment/capabilities"));
   }
 
+  async rewardPageCapabilities(): Promise<DecodedPlayerPayload<RewardPageCapabilities>> {
+    return decodeRewardPageCapabilities(await this.get(
+      `/api/player-environment/capabilities?input_profile=${ORDINARY_REWARD_PAGE_PROFILE}`));
+  }
+
   async observe(): Promise<DecodedPlayerPayload<PlayerEnvironmentSnapshot>> {
     return decodePlayerSnapshot(await this.get("/api/player-environment/snapshot"));
+  }
+
+  async observeRewardPage(): Promise<DecodedPlayerPayload<RewardPageSnapshot>> {
+    return decodeRewardPageSnapshot(await this.get(
+      `/api/player-environment/snapshot?input_profile=${ORDINARY_REWARD_PAGE_PROFILE}`));
   }
 
   async read(readId: string, expectedSnapshotId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReadResponse>> {
@@ -61,8 +80,32 @@ export class PlayerEnvironmentRestClient {
     }, true));
   }
 
+  async submitRewardPage(input: {
+    requestId: string;
+    expectedSnapshotId: string;
+    boundActionId: string;
+    clientSessionId: string;
+    controllerLeaseId: string;
+    controllerGeneration: number;
+  }): Promise<DecodedPlayerPayload<RewardPageReceipt>> {
+    return decodeRewardPageReceipt(await this.post("/api/player-environment/actions", {
+      request_id: input.requestId,
+      expected_snapshot_id: input.expectedSnapshotId,
+      bound_action_id: input.boundActionId,
+      client_session_id: input.clientSessionId,
+      controller_lease_id: input.controllerLeaseId,
+      controller_generation: input.controllerGeneration,
+      input_profile: ORDINARY_REWARD_PAGE_PROFILE
+    }, true));
+  }
+
   async poll(requestId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReceipt>> {
     return decodePlayerReceipt(await this.get(`/api/player-environment/actions/${encodeURIComponent(requestId)}`));
+  }
+
+  async pollRewardPage(requestId: string): Promise<DecodedPlayerPayload<RewardPageReceipt>> {
+    return decodeRewardPageReceipt(await this.get(
+      `/api/player-environment/actions/${encodeURIComponent(requestId)}?input_profile=${ORDINARY_REWARD_PAGE_PROFILE}`));
   }
 
   async registerClient(input: {
