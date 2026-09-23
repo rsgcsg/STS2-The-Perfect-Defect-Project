@@ -25,7 +25,7 @@
     "check:identity": "node --test tools/component-identity.test.mjs tools/repository-eol.test.mjs && node tools/component-identity.mjs --quiet",
     "check:entrypoints": "node --test tools/root-entrypoints.test.mjs",
     "check:bom": "node --test tools/check-platform-bom.test.mjs && node tools/check-platform-bom.mjs",
-    "check:boundaries": "node --test tools/check-boundaries.test.mjs && node tools/check-boundaries.mjs",
+    "check:boundaries": "node --test tools/check-boundaries.test.mjs tools/workshop-boundary.test.mjs && node tools/check-boundaries.mjs",
     "check:history": "node tools/check-migration-history.mjs && node tools/check-project-import.mjs",
     "check:components": "npm --prefix components/connector run check && npm --prefix components/host-runtime run check && npm --prefix components/annotator run test && npm --prefix components/evidence run check && npm --prefix components/policy-runtime run check && npm --prefix apps/workbench run test && npm --prefix apps/ingame-ui run check && npm --prefix apps/game-mod run check",
     "project:context": "node tools/project-system.mjs context",

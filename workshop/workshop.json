@@ -1,0 +1,9 @@
+{
+  "title": "SpireAgent Platform",
+  "description": "Game-side Platform integration: Connector, Human Recorder and in-game UI. Workbench, cloud account/device setup and models are separate. Development release boundary only; no Workshop installation qualification is claimed.",
+  "visibility": "private",
+  "changeNote": "Unpublished Layer 1 release workspace; content staging is not implemented.",
+  "tags": ["Tools & APIs"],
+  "dependencies": [],
+  "contentDescriptors": []
+}

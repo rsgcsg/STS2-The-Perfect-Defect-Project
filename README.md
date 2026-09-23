@@ -28,6 +28,10 @@ Policy Runtime. `apps/game-mod` builds one game Mod; `apps/ingame-ui` is its UI.
 `apps/workbench` retains typed diagnostic APIs for existing consumers; its duplicate
 HTML console is retired. The project Workbench is the only user console.
 
+[`workshop/`](workshop/README.md) is the unpublished Steam Workshop release
+projection boundary. It contains listing metadata, not another runtime package;
+generated content, staging and publication are not implemented by this scaffold.
+
 ## Developer setup
 
 Install Node 20+, uv, and the .NET SDK required by Platform checks. From this root:
