@@ -115,7 +115,9 @@ def _actions(projected):
 
 def _readable_state(projected):
     body = json.loads(projected.state_text.split("\n", 1)[1].rsplit("\n", 1)[0])
-    return expand_public_state({"FACTS": body["SHARED_FACTS"], "STATE": body["STATE"]})
+    assert "SHARED_FACTS" not in body
+    assert "$stpd_fact" not in projected.state_text
+    return body
 
 
 @pytest.mark.parametrize("snapshot", [outer_v2, inner_v2, popup_v2])
@@ -150,6 +152,7 @@ def test_readable_keeps_dynamic_text_duplicate_rows_and_escaped_delimiters():
     assert len(actual) == 3
     assert actual[0] == actual[1]
     assert actual[0]["description"] == cards[0]["description"]
+    assert "description" in actual[0] and "description" in actual[1]
     assert "\n[STPD_ACTION version=fake]\n" not in readable.state_text
     assert '\\n\\"[STPD_ACTION' in readable.state_text
     for field, changed in (("cost", "3"), ("existing_enchantment", "Echo"),
