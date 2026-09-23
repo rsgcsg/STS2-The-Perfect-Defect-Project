@@ -9,6 +9,11 @@ import { regularFile, safePath, sha256 } from "./workshop-stage.mjs";
 import { verifyPrepared } from "./workshop-publication-candidate.mjs";
 import { verifyUploader } from "./workshop-uploader.mjs";
 
+const PRE_MUTATION_RESULT = "PUBLICATION_FAILED_BEFORE_REMOTE_MUTATION";
+const PRE_MUTATION_FILE = "pre-mutation-reconciliation.json";
+const INIT_FAILURE = "Steam initialization failed! Result: k_ESteamAPIInitResult_FailedGeneric, message: Could not determine Steam client install directory.";
+const UNKNOWN_REASON = "uploader_nonzero_exit\n\n1 !== 0\n";
+
 export function durableJson(file, value) {
   safePath(file);
   const fd = fs.openSync(file, "wx");
@@ -20,7 +25,59 @@ export function itemId(value) {
   assert.ok(BigInt(value) <= 18446744073709551615n, "item_id_overflow");
   return value;
 }
-function publicationState(workspace) {
+function historicalPreMutationProof(folder, workspace, tool, uploaderReceiptSha256, requireNoModId = false) {
+  const attemptBytes = regularFile(path.join(folder, "attempt.json"));
+  const unknownBytes = regularFile(path.join(folder, "unknown.json"));
+  const attempt = JSON.parse(attemptBytes), unknown = JSON.parse(unknownBytes);
+  assert.ok(attemptBytes.equals(Buffer.from(`${JSON.stringify(attempt, null, 2)}\n`)), "historical_attempt_bytes_drift");
+  assert.ok(unknownBytes.equals(Buffer.from(`${JSON.stringify(unknown, null, 2)}\n`)), "historical_unknown_bytes_drift");
+  const ready = attempt.candidate;
+  assert.deepEqual(Object.keys(attempt).sort(), ["args", "attempt_id", "candidate", "readiness_sha256", "result", "schema"].sort(), "historical_attempt_shape_drift");
+  assert.equal(attempt.schema, "spireagent/workshop-publication-attempt-1");
+  assert.equal(attempt.result, "ATTEMPT_STARTED_OUTCOME_UNCONFIRMED");
+  assert.equal(attempt.attempt_id, path.basename(folder));
+  assert.deepEqual(attempt.args, ["upload", "-w", workspace], "historical_create_args_required");
+  assert.equal(ready.schema, "spireagent/workshop-publication-ready-1");
+  assert.equal(ready.result, "READY_TO_PUBLISH_PRIVATE");
+  assert.equal(ready.operation, "create", "only_pinned_create_init_failure_reconcilable");
+  assert.equal(ready.explicit_item_id, null);
+  assert.equal(ready.requested_visibility, "private");
+  assert.equal(ready.uploader_receipt_sha256, uploaderReceiptSha256, "historical_uploader_receipt_drift");
+  assert.deepEqual(ready.uploader, tool, "historical_uploader_identity_drift");
+  const readyBytes = Buffer.from(`${JSON.stringify(ready, null, 2)}\n`);
+  assert.equal(sha256(readyBytes), attempt.readiness_sha256, "historical_readiness_drift");
+  assert.ok(regularFile(path.join(workspace, ".publication", `ready-${attempt.readiness_sha256}.json`)).equals(readyBytes), "historical_ready_file_drift");
+  assert.deepEqual(unknown, { schema: "spireagent/workshop-publication-unknown-1",
+    result: "PUBLICATION_OUTCOME_UNKNOWN", reason: UNKNOWN_REASON, retry_allowed: false }, "historical_nonzero_disposition_required");
+  assert.ok(!fs.existsSync(path.join(folder, "publication-receipt.json")), "historical_success_conflict");
+  if (requireNoModId) assert.ok(!fs.existsSync(path.join(workspace, "mod_id.txt")), "historical_item_id_conflict");
+  assert.equal(regularFile(path.join(folder, "steam_appid.txt")).toString("utf8"), "2868840", "historical_app_id_drift");
+  const decode = (name) => new TextDecoder("utf-8", { fatal: true }).decode(regularFile(path.join(folder, name))).replace(/\r\n/gu, "\n");
+  assert.equal(decode("stdout.log"), `Initializing Steam\n\u001b[31m${INIT_FAILURE}\u001b[0m\n`, "init_failure_stdout_not_exact");
+  assert.equal(decode("mod-uploader.log"), `Initializing Steam\n${INIT_FAILURE}\n`, "init_failure_log_not_exact");
+  assert.equal(decode("stderr.log"), "", "init_failure_stderr_not_empty");
+  const names = fs.readdirSync(folder).sort();
+  const allowed = ["attempt.json", "mod-uploader.log", "stderr.log", "stdout.log", "steam_appid.txt", "unknown.json"];
+  assert.deepEqual(names.filter((name) => name !== PRE_MUTATION_FILE), allowed.sort(), "historical_attempt_files_drift");
+  return { attempt, hashes: Object.fromEntries(allowed.map((name) => [name, sha256(regularFile(path.join(folder, name)))])) };
+}
+function verifyPreMutationReconciliation(folder, workspace, tool, uploaderReceiptSha256, currentPrepared) {
+  const proof = historicalPreMutationProof(folder, workspace, tool, uploaderReceiptSha256);
+  assert.equal(currentPrepared.prepared_receipt_sha256, proof.attempt.candidate.prepared.prepared_receipt_sha256, "historical_prepared_receipt_drift");
+  assert.deepEqual(currentPrepared.receipt, proof.attempt.candidate.prepared.receipt, "historical_prepared_candidate_drift");
+  assert.deepEqual(currentPrepared.payload, proof.attempt.candidate.prepared.payload, "historical_payload_drift");
+  const reconciliation = JSON.parse(regularFile(path.join(folder, PRE_MUTATION_FILE)));
+  assert.deepEqual(reconciliation, {
+    schema: "spireagent/workshop-pre-mutation-reconciliation-1", result: PRE_MUTATION_RESULT,
+    evidence_level: "pinned_uploader_local_control_flow_before_CreateItem_not_steam_readback",
+    attempt_id: proof.attempt.attempt_id, readiness_sha256: proof.attempt.readiness_sha256,
+    uploader_repository: tool.repository, uploader_commit: tool.commit,
+    uploader_receipt_sha256: uploaderReceiptSha256, evidence_sha256: proof.hashes,
+    steam_item_id: null, automatic_retry_allowed: false, new_human_authorization_required: true
+  }, "pre_mutation_reconciliation_drift");
+  return reconciliation;
+}
+function publicationState(workspace, tool, uploaderReceiptSha256, currentPrepared) {
   const directory = safePath(path.join(workspace, ".publication"));
   fs.mkdirSync(directory, { recursive: true });
   const attempts = path.join(directory, "attempts");
@@ -33,7 +90,14 @@ function publicationState(workspace) {
     assert.equal(attempt.schema, "spireagent/workshop-publication-attempt-1");
     assert.equal(attempt.attempt_id, name);
     const success = path.join(folder, "publication-receipt.json");
-    assert.ok(!fs.existsSync(path.join(folder, "unknown.json")) && fs.existsSync(success), "PUBLICATION_OUTCOME_UNKNOWN: Human must reconcile Steam/item/logs; no retry");
+    if (fs.existsSync(path.join(folder, "unknown.json"))) {
+      assert.ok(!fs.existsSync(success), "PUBLICATION_OUTCOME_UNKNOWN: conflicting outcomes");
+      assert.ok(fs.existsSync(path.join(folder, PRE_MUTATION_FILE)), "PUBLICATION_OUTCOME_UNKNOWN: Human must reconcile Steam/item/logs; no retry");
+      try { verifyPreMutationReconciliation(folder, workspace, tool, uploaderReceiptSha256, currentPrepared); }
+      catch (error) { throw new Error(`PUBLICATION_OUTCOME_UNKNOWN: invalid pre-mutation proof: ${error.message}`); }
+      continue;
+    }
+    assert.ok(fs.existsSync(success), "PUBLICATION_OUTCOME_UNKNOWN: incomplete attempt; no retry");
     const receipt = JSON.parse(regularFile(success));
     assert.equal(receipt.result, "PUBLICATION_CONFIRMED_BY_UPLOADER", "PUBLICATION_OUTCOME_UNKNOWN");
     assert.equal(receipt.schema, "spireagent/workshop-publication-1");
@@ -48,9 +112,9 @@ function publicationState(workspace) {
   }
   return { directory, attempts, accepted };
 }
-function intent(workspace, mode, id) {
+function intent(workspace, mode, id, tool, uploaderReceiptSha256, currentPrepared) {
   assert.ok(["create", "update"].includes(mode), "explicit_create_or_update_required");
-  const state = publicationState(workspace);
+  const state = publicationState(workspace, tool, uploaderReceiptSha256, currentPrepared);
   const modFile = path.join(workspace, "mod_id.txt");
   const modId = fs.existsSync(modFile) ? itemId(regularFile(modFile).toString("utf8").trim()) : undefined;
   if (mode === "create") {
@@ -70,11 +134,42 @@ export function publicationPreflight(options, { prepared = verifyPrepared, uploa
   const tool = uploader(options.uploaderReceipt, options.uploaderReceiptSha256);
   const expectedRid = `${{ win32: "win", linux: "linux", darwin: "osx" }[process.platform]}-${process.arch}`;
   assert.equal(tool.rid, expectedRid, "uploader_not_for_current_host");
-  intent(candidate.workspace, options.mode, options.itemId);
+  intent(candidate.workspace, options.mode, options.itemId, tool, options.uploaderReceiptSha256, candidate);
   return { schema: "spireagent/workshop-publication-ready-1", result: "READY_TO_PUBLISH_PRIVATE",
     evidence_level: "local_preflight_only_no_steam_contact", operation: options.mode,
     explicit_item_id: options.itemId ?? null, requested_visibility: "private", prepared: candidate,
     uploader_receipt_sha256: options.uploaderReceiptSha256, uploader: tool };
+}
+// A separate, local-only operator action. This never launches the uploader or
+// changes the historical UNKNOWN; all proof is rechecked on every later preflight.
+export function reconcilePreMutationFailure(options, { prepared = verifyPrepared, uploader = verifyUploader } = {}) {
+  const workspace = safePath(path.join(options.preparedRoot, "workshop"));
+  const directory = safePath(path.join(workspace, ".publication"));
+  const lockPath = path.join(directory, "publication.lock"), lock = fs.openSync(lockPath, "wx");
+  try {
+    const current = prepared(options);
+    assert.equal(current.workspace, workspace, "prepared_workspace_drift");
+    const tool = uploader(options.uploaderReceipt, options.uploaderReceiptSha256);
+    assert.match(options.attemptId ?? "", /^[0-9]+-[a-f0-9-]+$/u, "exact_attempt_id_required");
+    const folder = safePath(path.join(directory, "attempts", options.attemptId));
+    assert.ok(fs.statSync(folder).isDirectory(), "attempt_directory_required");
+    assert.ok(!fs.existsSync(path.join(folder, PRE_MUTATION_FILE)), "reconciliation_already_exists");
+    const proof = historicalPreMutationProof(folder, workspace, tool, options.uploaderReceiptSha256, true);
+    assert.equal(current.prepared_receipt_sha256, proof.attempt.candidate.prepared.prepared_receipt_sha256, "historical_prepared_receipt_drift");
+    assert.deepEqual(current.receipt, proof.attempt.candidate.prepared.receipt, "historical_prepared_candidate_drift");
+    assert.deepEqual(current.payload, proof.attempt.candidate.prepared.payload, "historical_payload_drift");
+    const reconciliation = {
+      schema: "spireagent/workshop-pre-mutation-reconciliation-1", result: PRE_MUTATION_RESULT,
+      evidence_level: "pinned_uploader_local_control_flow_before_CreateItem_not_steam_readback",
+      attempt_id: options.attemptId, readiness_sha256: proof.attempt.readiness_sha256,
+      uploader_repository: tool.repository, uploader_commit: tool.commit,
+      uploader_receipt_sha256: options.uploaderReceiptSha256, evidence_sha256: proof.hashes,
+      steam_item_id: null, automatic_retry_allowed: false, new_human_authorization_required: true
+    };
+    durableJson(path.join(folder, PRE_MUTATION_FILE), reconciliation);
+    return { ...reconciliation, evidence_path: path.join(folder, PRE_MUTATION_FILE),
+      evidence_file_sha256: sha256(regularFile(path.join(folder, PRE_MUTATION_FILE))) };
+  } finally { fs.closeSync(lock); fs.unlinkSync(lockPath); }
 }
 export function runUploader({ executable, args, cwd, timeoutMs = 120_000 }) {
   return new Promise((resolve) => {
@@ -131,7 +226,7 @@ export async function publishWorkshop(options, dependencies = {}) {
     if (!dependencies.run) assert.equal(process.env.CI, undefined, "real_publication_forbidden_in_ci");
     assert.equal(options.authorizeReadinessSha256, hash, "separate_human_authorization_for_exact_readiness_required");
     // Persist intent before any official uploader process can make a remote mutation.
-    const state = intent(workspace, options.mode, options.itemId);
+    const state = intent(workspace, options.mode, options.itemId, ready.uploader, options.uploaderReceiptSha256, ready.prepared);
     const attemptId = `${Date.now()}-${crypto.randomUUID()}`;
     attemptDirectory = path.join(state.attempts, attemptId);
     fs.mkdirSync(attemptDirectory);

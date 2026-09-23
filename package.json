@@ -28,6 +28,7 @@
     "check:boundaries": "node --test tools/check-boundaries.test.mjs tools/workshop-boundary.test.mjs tools/workshop-stage.test.mjs tools/workshop-prepare.test.mjs tools/workshop-publish.test.mjs tools/workshop-uploader.test.mjs && node tools/check-boundaries.mjs",
     "workshop:uploader": "node tools/workshop-uploader.mjs",
     "workshop:publish": "node tools/workshop-publish.mjs",
+    "workshop:reconcile": "node tools/workshop-reconcile.mjs",
     "workshop:stage": "node tools/workshop-stage.mjs",
     "workshop:prepare": "node tools/workshop-prepare.mjs",
     "check:history": "node tools/check-migration-history.mjs && node tools/check-project-import.mjs",

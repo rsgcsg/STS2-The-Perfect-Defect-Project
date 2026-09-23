@@ -312,8 +312,34 @@ inject fake readers/processes through module APIs, never CLI bypass flags.
   later invocation as unknown. No auto retry, compensation or item deletion.
 - Timeout, crash, nonzero, invalid/missing item ID, undecodable output, missing
   final confirmation, input drift or warnings enter `PUBLICATION_OUTCOME_UNKNOWN`.
-  Human must inspect Steam, item ID, mod_id and logs; this version has no automated
-  reconciliation/unlock command. Preserve all evidence.
+  Human must inspect Steam, item ID, mod_id and logs. Preserve all evidence.
+
+One narrowly pinned local recovery exists for the exact upstream
+`d7b7e6b16c413d5a124f474f9e5104ef01f76ab1` create attempt that exited at
+`SteamAPI.InitEx()` with `Could not determine Steam client install directory`.
+At that commit, `UploadWorkspace` returns immediately when `InitializeSteam()`
+fails, before the logged-in path or `SteamUGC.CreateItem`. After reviewing the
+historical attempt and independently confirming the pinned uploader source,
+an operator may run the separate **local-only** command:
+
+```sh
+npm run workshop:reconcile -- --prepared-root /PRIVATE/retained-layer3-checkout --prepared-receipt-sha256 PREPARED_RECEIPT_SHA --provenance-sha256 APPROVED_PROVENANCE_SHA --uploader-receipt /PRIVATE/uploader-receipt.json --uploader-receipt-sha256 UPLOADER_RECEIPT_SHA --attempt-id EXACT_ATTEMPT_ID
+```
+
+It revalidates the prepared candidate, uploader source and complete inventory,
+the original ready/attempt/UNKNOWN bytes and the **entire exact** stdout,
+stderr and official log. Missing or additional output, an item ID, conflicting
+success, different source or any byte drift keeps UNKNOWN. It never contacts
+Steam, launches the uploader, rewrites the original files or retries. A proven
+case appends `pre-mutation-reconciliation.json` with
+`PUBLICATION_FAILED_BEFORE_REMOTE_MUTATION`, the original evidence hashes and
+an explicit local-control-flow-only evidence level. Every subsequent preflight
+rechecks that proof; a later change to historical evidence blocks again.
+The historical attempt remains visible, and a new publication attempt still
+requires a **new** exact readiness SHA and separate Human authorization.
+All other ambiguous or possibly post-`CreateItem` outcomes remain UNKNOWN and
+retry-forbidden. This is not independent Steam remote readback or a claim that
+the Steam account/item was examined.
 
 Upstream can create an item before failing later. Setters may warn yet return a
 successful final exit. Therefore confirmation requires exit 0, no warning/error

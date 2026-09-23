@@ -50,6 +50,7 @@ test("real Git ignore policy excludes generated/private/state paths but admits m
     "build-proposal.json", "staging-receipt.json", "prepare-receipt.json", ".prepare.lock", ".stage.lock",
     "mod_id.txt", "mod-uploader.log", ".publication/publication.lock", ".publication/attempts/1-a/attempt.json",
     ".publication/attempts/1-a/publication-receipt.json", ".publication/attempts/1-a/unknown.json",
+    ".publication/attempts/1-a/pre-mutation-reconciliation.json",
     ".publication/ready-abc.json", "uploader/ModUploader.exe", "uploader/source/Program.cs", "logs/upload.txt", ".env", ".env.production",
     "credentials.json", "secrets/token", "config/login.json", "steam_appid.txt",
     "steam/ssfn123", "config/loginusers.vdf", "game/sts2.dll", "sts2.pck",

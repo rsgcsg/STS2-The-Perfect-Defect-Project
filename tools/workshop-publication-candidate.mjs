@@ -8,6 +8,7 @@ import { fileInventory, git } from "./workshop-uploader.mjs";
 
 const TOOL_FILES = new Set(["tools/workshop-uploader.mjs", "tools/workshop-publication-candidate.mjs",
   "tools/workshop-publish.mjs", "tools/workshop-publish.test.mjs", "tools/workshop-uploader.test.mjs",
+  "tools/workshop-reconcile.mjs",
   "tools/workshop-boundary.test.mjs", "README.md", "workshop/README.md", "package.json"]);
 export function verifyPublicationEvolution(repo, preparedHead, currentHead) {
   git(repo, ["merge-base", "--is-ancestor", preparedHead, currentHead]);
@@ -18,7 +19,9 @@ export function verifyPublicationEvolution(repo, preparedHead, currentHead) {
     const after = JSON.parse(regularFile(path.join(repo, "package.json")));
     assert.equal(after.scripts["workshop:uploader"], "node tools/workshop-uploader.mjs");
     assert.equal(after.scripts["workshop:publish"], "node tools/workshop-publish.mjs");
+    assert.equal(after.scripts["workshop:reconcile"], "node tools/workshop-reconcile.mjs");
     delete after.scripts["workshop:uploader"]; delete after.scripts["workshop:publish"];
+    delete after.scripts["workshop:reconcile"];
     after.scripts["check:boundaries"] = after.scripts["check:boundaries"].replace(" tools/workshop-publish.test.mjs tools/workshop-uploader.test.mjs", "");
     assert.deepEqual(after, before, "unapproved_package_evolution");
   }

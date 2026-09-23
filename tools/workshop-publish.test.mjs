@@ -8,7 +8,7 @@ import { proposeWorkshopBuild } from "./workshop-prepare.mjs";
 import { finalizeWorkshop } from "./workshop-finalize.mjs";
 import { inspectWorkshopBuild, sha256, stageWorkshop } from "./workshop-stage.mjs";
 import { verifyPrepared, verifyPublicationEvolution } from "./workshop-publication-candidate.mjs";
-import { publicationPreflight, publishWorkshop, runUploader, itemId } from "./workshop-publish.mjs";
+import { publicationPreflight, publishWorkshop, reconcilePreMutationFailure, runUploader, itemId } from "./workshop-publish.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 async function fixture(t) {
@@ -134,6 +134,85 @@ test("missing authorization and concurrent lock block uploader; abrupt attempt b
   fs.writeFileSync(path.join(folder, "attempt.json"), JSON.stringify({ schema: "spireagent/workshop-publication-attempt-1", attempt_id: "1-abcd" }));
   await assert.rejects(publishWorkshop(f.options, f.dependencies), /PUBLICATION_OUTCOME_UNKNOWN/);
   assert.equal(f.calls.length, 0);
+});
+async function failedBeforeSteamMutation(t) {
+  const f = await fixture(t), ready = await f.authorize();
+  const originalPrepared = fs.readFileSync(path.join(f.w, "prepare-receipt.json"));
+  f.dependencies.run = async (call) => {
+    f.calls.push(call);
+    const message = "Steam initialization failed! Result: k_ESteamAPIInitResult_FailedGeneric, message: Could not determine Steam client install directory.";
+    fs.writeFileSync(path.join(call.cwd, "stdout.log"), `Initializing Steam\r\n\x1b[31m${message}\x1b[0m\r\n`);
+    fs.writeFileSync(path.join(call.cwd, "mod-uploader.log"), `Initializing Steam\r\n${message}\r\n`);
+    fs.writeFileSync(path.join(call.cwd, "stderr.log"), "");
+    return { code: 1 };
+  };
+  await assert.rejects(publishWorkshop(f.options, f.dependencies), /PUBLICATION_OUTCOME_UNKNOWN/);
+  const folder = f.calls[0].cwd;
+  const attemptId = path.basename(folder);
+  const original = Object.fromEntries(["attempt.json", "unknown.json", "stdout.log", "stderr.log", "mod-uploader.log"]
+    .map((name) => [name, fs.readFileSync(path.join(folder, name))]));
+  assert.equal(f.calls.length, 1);
+  return { ...f, ready, folder, attemptId, original, originalPrepared };
+}
+const reconcile = (f) => reconcilePreMutationFailure({ ...f.options, attemptId: f.attemptId }, f.dependencies);
+test("exact pinned initialization failure is separately reconcilable; original UNKNOWN and candidate stay immutable", async (t) => {
+  const f = await failedBeforeSteamMutation(t);
+  await assert.rejects(publishWorkshop({ ...f.options, execute: false }, f.dependencies), /PUBLICATION_OUTCOME_UNKNOWN/);
+  const result = reconcile(f);
+  assert.equal(result.result, "PUBLICATION_FAILED_BEFORE_REMOTE_MUTATION");
+  assert.equal(result.new_human_authorization_required, true);
+  assert.equal(result.automatic_retry_allowed, false);
+  for (const [name, bytes] of Object.entries(f.original)) assert.deepEqual(fs.readFileSync(path.join(f.folder, name)), bytes);
+  assert.deepEqual(fs.readFileSync(path.join(f.w, "prepare-receipt.json")), f.originalPrepared);
+  assert.equal(f.calls.length, 1, "reconciliation never invokes uploader");
+  f.options.execute = false;
+  const ready = await publishWorkshop(f.options, f.dependencies);
+  assert.equal(ready.result, "READY_TO_PUBLISH_PRIVATE");
+  assert.equal(f.calls.length, 1, "later preflight does not retry");
+  await assert.rejects(async () => reconcile(f), /reconciliation_already_exists/);
+});
+for (const fault of ["missing-log", "ambiguous-log", "create-marker", "item-marker", "uploader-commit", "uploader-inventory", "attempt-changed", "missing-unknown", "mod-id"]) {
+  test(`pre-mutation reconciliation rejects ${fault} and leaves UNKNOWN`, async (t) => {
+    const f = await failedBeforeSteamMutation(t);
+    if (fault === "missing-log") fs.unlinkSync(path.join(f.folder, "mod-uploader.log"));
+    if (fault === "ambiguous-log") fs.writeFileSync(path.join(f.folder, "mod-uploader.log"), "Initializing Steam\nError\n");
+    if (fault === "create-marker") fs.appendFileSync(path.join(f.folder, "mod-uploader.log"), "Creating new workshop item...\n");
+    if (fault === "item-marker") fs.appendFileSync(path.join(f.folder, "stdout.log"), "Uploading with item ID 123\n");
+    if (fault === "uploader-commit") f.dependencies.uploader = () => ({ ...f.tool, commit: "0".repeat(40) });
+    if (fault === "uploader-inventory") f.dependencies.uploader = () => ({ ...f.tool, inventory: [] });
+    if (fault === "attempt-changed") fs.appendFileSync(path.join(f.folder, "attempt.json"), " ");
+    if (fault === "missing-unknown") fs.unlinkSync(path.join(f.folder, "unknown.json"));
+    if (fault === "mod-id") fs.writeFileSync(path.join(f.w, "mod_id.txt"), "123\n");
+    await assert.rejects(async () => reconcile(f));
+    assert.ok(!fs.existsSync(path.join(f.folder, "pre-mutation-reconciliation.json")));
+    assert.equal(f.calls.length, 1);
+  });
+}
+test("a reconciled historical log or attempt modification re-blocks preflight", async (t) => {
+  const f = await failedBeforeSteamMutation(t); reconcile(f);
+  fs.appendFileSync(path.join(f.folder, "stdout.log"), "altered");
+  await assert.rejects(publishWorkshop({ ...f.options, execute: false }, f.dependencies), /PUBLICATION_OUTCOME_UNKNOWN/);
+  assert.equal(f.calls.length, 1);
+});
+test("reconciled history remains valid after a separately authorized later create succeeds", async (t) => {
+  const f = await failedBeforeSteamMutation(t); reconcile(f);
+  f.options.execute = false;
+  const ready = await publishWorkshop(f.options, f.dependencies);
+  f.options.execute = true; f.options.authorizeReadinessSha256 = ready.readiness_sha256;
+  f.dependencies.run = async (call) => {
+    f.calls.push(call);
+    fs.writeFileSync(path.join(f.w, "mod_id.txt"), "123456789\n");
+    const line = "Successfully uploaded 'SpireAgent Platform' to the workshop with id 123456789! Browsing to the item in Steam.\n";
+    fs.writeFileSync(path.join(call.cwd, "stdout.log"), line);
+    fs.writeFileSync(path.join(call.cwd, "stderr.log"), "");
+    fs.writeFileSync(path.join(call.cwd, "mod-uploader.log"), line);
+    return { code: 0 };
+  };
+  const published = await publishWorkshop(f.options, f.dependencies);
+  assert.equal(published.result, "PUBLICATION_CONFIRMED_BY_UPLOADER");
+  assert.equal(f.calls.length, 2, "only the separately authorized call invokes uploader again");
+  f.options.mode = "update"; f.options.itemId = "123456789"; f.options.execute = false;
+  assert.equal((await publishWorkshop(f.options, f.dependencies)).result, "READY_TO_PUBLISH_PRIVATE");
 });
 test("path separators/spaces preserve preflight; ulong item validation", async (t) => {
   const f = await fixture(t), a = await publishWorkshop(f.options, f.dependencies);
