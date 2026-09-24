@@ -315,7 +315,7 @@ test("append-only success accepts item; original UNKNOWN stays; only exact expli
   fs.writeFileSync(path.join(unresolved, "attempt.json"), JSON.stringify({ schema: "spireagent/workshop-publication-attempt-1", attempt_id: "3-abcd" }));
   assert.throws(() => publicationPreflight({ ...f.options, mode: "update", itemId: "123456789" }, f.dependencies), /UNKNOWN/);
 });
-for (const fault of ["stdout.log", "stderr.log", "mod-uploader.log", "attempt.json", "unknown.json", "reconciliation", "human", "commit", "inventory", "pin"]) {
+for (const fault of ["stdout.log", "stderr.log", "mod-uploader.log", "attempt.json", "unknown.json", "reconciliation", "reconciliation-bytes", "human", "commit", "inventory", "pin"]) {
   test(`success reconciliation fails closed on ${fault}`, async (t) => {
     const f = await historicalFalseUnknown(t);
     if (["human", "commit", "inventory", "pin"].includes(fault)) {
@@ -326,7 +326,7 @@ for (const fault of ["stdout.log", "stderr.log", "mod-uploader.log", "attempt.js
       assert.throws(() => reconcileUploaderSuccess(f.reconcileOptions, f.dependencies));
     } else {
       reconcileUploaderSuccess(f.reconcileOptions, f.dependencies);
-      const name = fault === "reconciliation" ? "successful-publication-reconciliation.json" : fault;
+      const name = fault.startsWith("reconciliation") ? "successful-publication-reconciliation.json" : fault;
       if (fault === "reconciliation") {
         const file = path.join(f.folder, name), r = JSON.parse(fs.readFileSync(file)); r.steam.item_id = "999"; fs.writeFileSync(file, JSON.stringify(r));
       } else fs.appendFileSync(path.join(f.folder, name), " ");

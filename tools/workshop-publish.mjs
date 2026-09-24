@@ -114,7 +114,9 @@ function publicationState(workspace, tool, uploaderReceiptSha256, currentPrepare
       assert.ok(!fs.existsSync(success), "PUBLICATION_OUTCOME_UNKNOWN: conflicting outcomes");
       if (fs.existsSync(path.join(folder, SUCCESS_RECONCILIATION_FILE))) {
         assert.ok(!fs.existsSync(path.join(folder, PRE_MUTATION_FILE)), "conflicting_reconciliations");
-        const r = JSON.parse(regularFile(path.join(folder, SUCCESS_RECONCILIATION_FILE)));
+        const bytes = regularFile(path.join(folder, SUCCESS_RECONCILIATION_FILE));
+        const r = JSON.parse(bytes);
+        assert.ok(bytes.equals(Buffer.from(`${JSON.stringify(r, null, 2)}\n`)), "success_reconciliation_bytes_drift");
         const verified = successReconciliationProof(folder, workspace, tool, uploaderReceiptSha256, currentPrepared, r.human_observation);
         assert.deepEqual(r, verified, "success_reconciliation_drift");
         if (accepted) assert.equal(accepted, r.steam.item_id, "conflicting_accepted_item_identity");
