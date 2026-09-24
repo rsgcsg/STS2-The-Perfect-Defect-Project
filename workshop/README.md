@@ -337,8 +337,9 @@ an explicit local-control-flow-only evidence level. Every subsequent preflight
 rechecks that proof; a later change to historical evidence blocks again.
 The historical attempt remains visible, and a new publication attempt still
 requires a **new** exact readiness SHA and separate Human authorization.
-All other ambiguous or possibly post-`CreateItem` outcomes remain UNKNOWN and
-retry-forbidden. This is not independent Steam remote readback or a claim that
+Other ambiguous or possibly post-`CreateItem` outcomes remain UNKNOWN and
+retry-forbidden unless the separately audited success proof below applies.
+This is not independent Steam remote readback or a claim that
 the Steam account/item was examined.
 
 Upstream can create an item before failing later. Setters may warn yet return a
@@ -348,6 +349,57 @@ matching valid mod_id, and unchanged immutable inputs. Any warning (including a
 legal-agreement warning) requires Human review. The wrapper never accepts legal
 terms or automatically opens/login Steam itself; upstream upload can open Steam's
 item overlay only in separately authorized 4B.
+
+#### Narrow native stderr classification and historical success reconciliation
+
+Empty stderr is accepted. For the pinned uploader and native Windows library
+SHA `eb17909a76668cf9ae0b92a618a34a50f6c73d3a6787cb4dd8ce36a8b10bfb75`
+(317080 bytes), the only additional accepted stderr is exactly two CRLF lines:
+`Setting breakpad minidump AppID = 2868840`, then
+`SteamInternal_SetMinidumpSteamID:  Caching Steam ID:  <17-digit-ID> [API loaded no]`.
+Both format strings were verified in that DLL; the variable is decimal Steam ID
+diagnostic data, not an item ID or authorization. No whitespace trimming, extra
+line, alternate app ID, undecodable byte, warning/error/fatal/crash text or unknown
+output is accepted. This classifier does not prove upload: exit 0, no signal/error,
+no upstream ANSI warning/error, matching exact final success lines in stdout and
+the official log, matching mod_id and immutable candidate checks remain required.
+The unconditional upstream terms-of-service `Info` notice is not its separate
+yellow legal-agreement warning. No terms acceptance is automated.
+
+The earlier wrapper at `5a26e77014e264f9d946026e73b8abb4b00524ed` rejected all
+nonempty stderr. A **local-only** recovery can append
+`successful-publication-reconciliation.json` without changing its original
+UNKNOWN or creating a fake historical publication receipt:
+
+```sh
+npm run workshop:reconcile -- --kind uploader-success --prepared-root /PRIVATE/retained-layer3-checkout --prepared-receipt-sha256 PREPARED_RECEIPT_SHA --provenance-sha256 APPROVED_PROVENANCE_SHA --uploader-receipt /PRIVATE/uploader-receipt.json --uploader-receipt-sha256 UPLOADER_RECEIPT_SHA --attempt-id EXACT_ATTEMPT_ID --evidence-sha256 AUDITED_EVIDENCE_INVENTORY_SHA --human-observed-item-id EXACT_ITEM_ID
+```
+
+Use the Human flag only after the operator reports that exact item's title,
+matching preview and Private visibility on Steam. It records a separate
+`human_reported_steam_page_not_api_readback` observation, never machine readback.
+Neither the report nor mod_id alone establishes accepted identity.
+
+The audit pin is SHA256 of UTF-8 `JSON.stringify` of the filename-to-SHA256 object
+in this order: `attempt.json`, `unknown.json`, `stdout.log`, `stderr.log`,
+`mod-uploader.log`, `steam_appid.txt`. Audit those original bytes before approving
+the pin; it is not a newly manufactured publication approval. Recovery verifies
+the exact old wrapper source hash, its original readiness, current unchanged
+prepared/uploader identity and complete success contract. Since the legacy
+wrapper did not persist a separate process-result file, exit zero is explicitly
+proved by its pinned assertion ordering and exact original stderr failure, not
+presented as a contemporaneous process receipt. Unknowns from another failure or
+wrapper version are not admitted. This intentionally narrow historical recovery
+is not a generic override for failed uploads.
+
+`PUBLICATION_RECONCILED_AS_UPLOADER_SUCCESS` binds the original candidate,
+readiness, all historical file hashes, stderr classification, exit-proof basis,
+item ID and separate Human observation. Every later preflight recomputes the
+proof and rejects tampering. It establishes accepted local item identity, rejects
+another create and permits only explicit matching update intent. Update still
+requires a new readiness SHA and separate Human execution authorization.
+Reconciliation itself has no uploader/network call and never retries. Original
+UNKNOWN evidence remains visible; unrelated unresolved UNKNOWN still blocks.
 
 Success evidence is explicitly `PUBLICATION_CONFIRMED_BY_UPLOADER`: it binds the
 attempt, all prepared/uploader identities, item ID, operation, requested private

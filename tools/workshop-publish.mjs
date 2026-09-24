@@ -7,12 +7,32 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { regularFile, safePath, sha256 } from "./workshop-stage.mjs";
 import { verifyPrepared } from "./workshop-publication-candidate.mjs";
-import { verifyUploader } from "./workshop-uploader.mjs";
+import { verifyUploader, git } from "./workshop-uploader.mjs";
 
 const PRE_MUTATION_RESULT = "PUBLICATION_FAILED_BEFORE_REMOTE_MUTATION";
 const PRE_MUTATION_FILE = "pre-mutation-reconciliation.json";
 const INIT_FAILURE = "Steam initialization failed! Result: k_ESteamAPIInitResult_FailedGeneric, message: Could not determine Steam client install directory.";
 const UNKNOWN_REASON = "uploader_nonzero_exit\n\n1 !== 0\n";
+const SUCCESS_RECONCILIATION_FILE = "successful-publication-reconciliation.json";
+const LEGACY_WRAPPER = "5a26e77014e264f9d946026e73b8abb4b00524ed";
+const LEGACY_WRAPPER_SHA = "f874f74871045674896f3d4f323db79d9fcdbf7228fa04e8212e0af60d11231f";
+
+// These two format strings are present in the pinned steam_api64.dll. This is
+// diagnostic classification only, never proof of upload or account authority.
+export function classifyUploaderStderr(bytes, tool) {
+  const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  if (text === "") return "EMPTY";
+  assert.equal(tool.repository, "megacrit/sts2-mod-uploader");
+  assert.equal(tool.commit, "d7b7e6b16c413d5a124f474f9e5104ef01f76ab1");
+  const native = tool.inventory.filter((file) => file.name === "steam_api64.dll");
+  assert.equal(native.length, 1, "unqualified_stderr_runtime");
+  assert.equal(native[0].sha256, "eb17909a76668cf9ae0b92a618a34a50f6c73d3a6787cb4dd8ce36a8b10bfb75");
+  assert.equal(native[0].size_bytes, 317080);
+  const match = /^Setting breakpad minidump AppID = 2868840\r\nSteamInternal_SetMinidumpSteamID:  Caching Steam ID:  ([1-9][0-9]{16}) \[API loaded no\]\r\n$/u.exec(text);
+  assert.ok(match && match[0] === text, "uploader_stderr_requires_review");
+  itemId(match[1]);
+  return "PINNED_STEAM_BREAKPAD_MINIDUMP_DIAGNOSTIC_1";
+}
 
 export function durableJson(file, value) {
   safePath(file);
@@ -92,6 +112,15 @@ function publicationState(workspace, tool, uploaderReceiptSha256, currentPrepare
     const success = path.join(folder, "publication-receipt.json");
     if (fs.existsSync(path.join(folder, "unknown.json"))) {
       assert.ok(!fs.existsSync(success), "PUBLICATION_OUTCOME_UNKNOWN: conflicting outcomes");
+      if (fs.existsSync(path.join(folder, SUCCESS_RECONCILIATION_FILE))) {
+        assert.ok(!fs.existsSync(path.join(folder, PRE_MUTATION_FILE)), "conflicting_reconciliations");
+        const r = JSON.parse(regularFile(path.join(folder, SUCCESS_RECONCILIATION_FILE)));
+        const verified = successReconciliationProof(folder, workspace, tool, uploaderReceiptSha256, currentPrepared, r.human_observation);
+        assert.deepEqual(r, verified, "success_reconciliation_drift");
+        if (accepted) assert.equal(accepted, r.steam.item_id, "conflicting_accepted_item_identity");
+        accepted = r.steam.item_id;
+        continue;
+      }
       assert.ok(fs.existsSync(path.join(folder, PRE_MUTATION_FILE)), "PUBLICATION_OUTCOME_UNKNOWN: Human must reconcile Steam/item/logs; no retry");
       try { verifyPreMutationReconciliation(folder, workspace, tool, uploaderReceiptSha256, currentPrepared); }
       catch (error) { throw new Error(`PUBLICATION_OUTCOME_UNKNOWN: invalid pre-mutation proof: ${error.message}`); }
@@ -196,9 +225,8 @@ function confirmUploader(attemptDirectory, workspace, ready, result) {
   assert.equal(result.code, 0, "uploader_nonzero_exit");
   const decode = (file) => new TextDecoder("utf-8", { fatal: true }).decode(regularFile(file));
   const stdout = decode(path.join(attemptDirectory, "stdout.log"));
-  const stderr = decode(path.join(attemptDirectory, "stderr.log"));
+  classifyUploaderStderr(regularFile(path.join(attemptDirectory, "stderr.log")), ready.uploader);
   const log = decode(path.join(attemptDirectory, "mod-uploader.log"));
-  assert.equal(stderr.trim(), "", "uploader_stderr_requires_review");
   // Exact upstream Warn/Error uses these ANSI colors; even successful SubmitItemUpdate
   // may follow a rejected visibility/content setter. Do not promote that to success.
   assert.ok(!/\u001b\[(?:31|33)m/u.test(stdout), "uploader_warning_requires_human_review");
@@ -206,8 +234,80 @@ function confirmUploader(attemptDirectory, workspace, ready, result) {
   if (ready.operation === "update") assert.equal(id, ready.explicit_item_id);
   const title = JSON.parse(regularFile(path.join(workspace, "workshop.json"))).title;
   const expected = `Successfully uploaded '${title}' to the workshop with id ${id}! Browsing to the item in Steam.`;
-  for (const text of [stdout, log]) assert.equal(text.split(/\r?\n/u).filter((line) => line === expected).length, 1, "missing_unambiguous_uploader_confirmation");
+  for (const text of [stdout, log]) assert.deepEqual(text.split(/\r?\n/u).filter((line) => line.startsWith("Successfully uploaded '")), [expected], "missing_unambiguous_uploader_confirmation");
   return id;
+}
+
+function successReconciliationProof(folder, workspace, tool, uploaderSha, current, human) {
+  const names = ["attempt.json", "unknown.json", "stdout.log", "stderr.log", "mod-uploader.log", "steam_appid.txt"];
+  assert.deepEqual(fs.readdirSync(folder).filter((n) => n !== SUCCESS_RECONCILIATION_FILE).sort(), [...names].sort(), "historical_success_files_drift");
+  const hashes = Object.fromEntries(names.map((n) => [n, sha256(regularFile(path.join(folder, n)))]));
+  const attempt = JSON.parse(regularFile(path.join(folder, "attempt.json")));
+  assert.deepEqual(Object.keys(attempt).sort(), ["args", "attempt_id", "candidate", "readiness_sha256", "result", "schema"].sort());
+  assert.equal(attempt.schema, "spireagent/workshop-publication-attempt-1");
+  assert.equal(attempt.result, "ATTEMPT_STARTED_OUTCOME_UNCONFIRMED");
+  assert.equal(attempt.attempt_id, path.basename(folder));
+  const ready = attempt.candidate;
+  assert.equal(ready.schema, "spireagent/workshop-publication-ready-1");
+  assert.equal(ready.result, "READY_TO_PUBLISH_PRIVATE");
+  assert.equal(ready.operation, "create");
+  assert.equal(ready.explicit_item_id, null);
+  assert.equal(ready.requested_visibility, "private");
+  assert.deepEqual(attempt.args, ["upload", "-w", workspace]);
+  assert.equal(ready.prepared.workspace, workspace);
+  assert.equal(ready.prepared.publication_workspace_revision, LEGACY_WRAPPER, "unsupported_historical_classifier");
+  assert.equal(ready.uploader_receipt_sha256, uploaderSha);
+  assert.deepEqual(ready.uploader, tool, "historical_uploader_identity_drift");
+  assert.equal(current.prepared_receipt_sha256, ready.prepared.prepared_receipt_sha256);
+  assert.deepEqual(current.receipt, ready.prepared.receipt);
+  assert.deepEqual(current.payload, ready.prepared.payload);
+  const readyBytes = Buffer.from(`${JSON.stringify(ready, null, 2)}\n`);
+  assert.equal(sha256(readyBytes), attempt.readiness_sha256);
+  assert.ok(regularFile(path.join(workspace, ".publication", `ready-${attempt.readiness_sha256}.json`)).equals(readyBytes));
+  assert.equal(regularFile(path.join(folder, "steam_appid.txt")).toString("utf8"), "2868840");
+  const stderrBytes = regularFile(path.join(folder, "stderr.log"));
+  const classification = classifyUploaderStderr(stderrBytes, tool);
+  assert.equal(classification, "PINNED_STEAM_BREAKPAD_MINIDUMP_DIAGNOSTIC_1");
+  // The audited legacy wrapper checks no error, no signal and code===0 BEFORE
+  // asserting empty stderr. Reproduce that exact assertion, not an operator-
+  // supplied exit code. A different old failure cannot acquire this proof.
+  let reason;
+  try { assert.equal(new TextDecoder("utf-8", { fatal: true }).decode(stderrBytes).trim(), "", "uploader_stderr_requires_review"); }
+  catch (error) { reason = error.message; }
+  assert.deepEqual(JSON.parse(regularFile(path.join(folder, "unknown.json"))), {
+    schema: "spireagent/workshop-publication-unknown-1", result: "PUBLICATION_OUTCOME_UNKNOWN", reason, retry_allowed: false
+  }, "historical_exit_zero_proof_missing");
+  const id = confirmUploader(folder, workspace, ready, { code: 0 });
+  assert.deepEqual(human, { evidence_level: "human_reported_steam_page_not_api_readback", item_id: id,
+    visibility: "private", title: JSON.parse(regularFile(path.join(workspace, "workshop.json"))).title,
+    preview_matches_candidate: true }, "human_observation_does_not_match_local_proof");
+  return { schema: "spireagent/workshop-success-reconciliation-1", result: "PUBLICATION_RECONCILED_AS_UPLOADER_SUCCESS",
+    evidence_level: "pinned_uploader_local_success_plus_separate_human_observation_not_api_readback",
+    attempt_id: attempt.attempt_id, readiness_sha256: attempt.readiness_sha256, candidate: ready,
+    evidence_sha256: hashes, evidence_inventory_sha256: sha256(Buffer.from(JSON.stringify(hashes))),
+    uploader_exit_code: 0, exit_code_proof: { kind: "legacy_assertion_control_flow", revision: LEGACY_WRAPPER, source_sha256: LEGACY_WRAPPER_SHA },
+    stderr_classification: classification, steam: { item_id: id, operation: "create", requested_visibility: "private" },
+    human_observation: human, automatic_retry_allowed: false, new_human_authorization_required: true };
+}
+
+// Local-only; never invokes the uploader or rewrites the original UNKNOWN.
+export function reconcileUploaderSuccess(options, { prepared = verifyPrepared, uploader = verifyUploader } = {}) {
+  const workspace = safePath(path.join(options.preparedRoot, "workshop"));
+  const directory = safePath(path.join(workspace, ".publication"));
+  const lockPath = path.join(directory, "publication.lock"), lock = fs.openSync(lockPath, "wx");
+  try {
+    // git() trims terminal whitespace; restore the canonical LF for the hash.
+    assert.equal(sha256(Buffer.from(`${git(path.resolve(import.meta.dirname, ".."), ["show", `${LEGACY_WRAPPER}:tools/workshop-publish.mjs`])}\n`)), LEGACY_WRAPPER_SHA, "legacy_wrapper_source_drift");
+    const current = prepared(options), tool = uploader(options.uploaderReceipt, options.uploaderReceiptSha256);
+    assert.match(options.attemptId ?? "", /^[0-9]+-[a-f0-9-]+$/u);
+    const folder = safePath(path.join(directory, "attempts", options.attemptId));
+    const file = path.join(folder, SUCCESS_RECONCILIATION_FILE);
+    assert.ok(!fs.existsSync(file), "reconciliation_already_exists");
+    const result = successReconciliationProof(folder, workspace, tool, options.uploaderReceiptSha256, current, options.humanObservation);
+    assert.equal(result.evidence_inventory_sha256, options.evidenceSha256, "audited_historical_evidence_pin_mismatch");
+    durableJson(file, result);
+    return { ...result, evidence_path: file, evidence_file_sha256: sha256(regularFile(file)) };
+  } finally { fs.closeSync(lock); fs.unlinkSync(lockPath); }
 }
 export async function publishWorkshop(options, dependencies = {}) {
   const workspace = safePath(path.join(options.preparedRoot, "workshop"));

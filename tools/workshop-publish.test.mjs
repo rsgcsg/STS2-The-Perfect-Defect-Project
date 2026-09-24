@@ -8,9 +8,11 @@ import { proposeWorkshopBuild } from "./workshop-prepare.mjs";
 import { finalizeWorkshop } from "./workshop-finalize.mjs";
 import { inspectWorkshopBuild, sha256, stageWorkshop } from "./workshop-stage.mjs";
 import { verifyPrepared, verifyPublicationEvolution } from "./workshop-publication-candidate.mjs";
-import { publicationPreflight, publishWorkshop, reconcilePreMutationFailure, runUploader, itemId } from "./workshop-publish.mjs";
+import { publicationPreflight, publishWorkshop, reconcilePreMutationFailure, reconcileUploaderSuccess, classifyUploaderStderr, runUploader, itemId } from "./workshop-publish.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
+const diagnostic = "Setting breakpad minidump AppID = 2868840\r\nSteamInternal_SetMinidumpSteamID:  Caching Steam ID:  76561198000000001 [API loaded no]\r\n";
+const nativeInventory = { name: "steam_api64.dll", size_bytes: 317080, sha256: "eb17909a76668cf9ae0b92a618a34a50f6c73d3a6787cb4dd8ce36a8b10bfb75" };
 async function fixture(t) {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "publish space-"));
   t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
@@ -238,3 +240,98 @@ test("real Git publication evolution rejects runtime/unknown paths", (t) => {
   fs.writeFileSync(path.join(dir, "runtime.cs"), "bad"); git("add", "."); git("commit", "-qm", "bad");
   assert.throws(() => verifyPublicationEvolution(dir, base, git("rev-parse", "HEAD")), /source_drift/);
 });
+
+test("stderr classifier accepts only empty or the pinned two-line native diagnostic", () => {
+  const tool = { repository: "megacrit/sts2-mod-uploader", commit: "d7b7e6b16c413d5a124f474f9e5104ef01f76ab1", inventory: [nativeInventory] };
+  assert.equal(classifyUploaderStderr(Buffer.alloc(0), tool), "EMPTY");
+  assert.equal(classifyUploaderStderr(Buffer.from(diagnostic), tool), "PINNED_STEAM_BREAKPAD_MINIDUMP_DIAGNOSTIC_1");
+  for (const bad of ["unknown", diagnostic + "error", diagnostic + "warning", diagnostic + "fatal", diagnostic + "crash", diagnostic + "assertion", " ", diagnostic + "\n", diagnostic.replace("2868840", "123"), diagnostic.replace("loaded no", "loaded yes")]) {
+    assert.throws(() => classifyUploaderStderr(Buffer.from(bad), tool));
+  }
+  assert.throws(() => classifyUploaderStderr(Buffer.from([255]), tool));
+  assert.throws(() => classifyUploaderStderr(Buffer.from(`\uFEFF${diagnostic}`), tool));
+  assert.throws(() => classifyUploaderStderr(Buffer.from(diagnostic), { ...tool, commit: "0".repeat(40) }));
+  assert.throws(() => classifyUploaderStderr(Buffer.from(diagnostic), { ...tool, inventory: [] }));
+});
+
+for (const fault of ["none", "extra-stderr", "stderr-decode", "missing-success", "log-id", "mod-id", "nonzero", "ansi-warning"]) {
+  test(`pinned diagnostic still requires full success contract: ${fault}`, async (t) => {
+    const f = await fixture(t); f.tool.inventory.push(nativeInventory); await f.authorize();
+    const run = f.dependencies.run;
+    f.dependencies.run = async (call) => {
+      const r = await run(call);
+      fs.writeFileSync(path.join(call.cwd, "stderr.log"), diagnostic);
+      if (fault === "extra-stderr") fs.appendFileSync(path.join(call.cwd, "stderr.log"), "error");
+      if (fault === "stderr-decode") fs.appendFileSync(path.join(call.cwd, "stderr.log"), Buffer.from([255]));
+      if (fault === "missing-success") fs.writeFileSync(path.join(call.cwd, "stdout.log"), "started");
+      if (fault === "log-id") fs.writeFileSync(path.join(call.cwd, "mod-uploader.log"), "Successfully uploaded 'SpireAgent Platform' to the workshop with id 999! Browsing to the item in Steam.\n");
+      if (fault === "mod-id") fs.writeFileSync(path.join(f.w, "mod_id.txt"), "999");
+      if (fault === "nonzero") return { code: 1 };
+      if (fault === "ansi-warning") fs.appendFileSync(path.join(call.cwd, "stdout.log"), "\x1b[33mlegal agreement required\x1b[0m");
+      return r;
+    };
+    if (fault === "none") assert.equal((await publishWorkshop(f.options, f.dependencies)).result, "PUBLICATION_CONFIRMED_BY_UPLOADER");
+    else await assert.rejects(publishWorkshop(f.options, f.dependencies), /PUBLICATION_OUTCOME_UNKNOWN/);
+    assert.equal(f.calls.length, 1);
+  });
+}
+
+async function historicalFalseUnknown(t) {
+  const f = await fixture(t); f.tool.inventory.push(nativeInventory);
+  const prepared = f.dependencies.prepared;
+  f.dependencies.prepared = (o) => ({ ...prepared(o), publication_workspace_revision: "5a26e77014e264f9d946026e73b8abb4b00524ed" });
+  const ready = await publishWorkshop(f.options, f.dependencies);
+  const candidate = { ...ready }; delete candidate.readiness_path; delete candidate.readiness_sha256;
+  const folder = path.join(f.w, ".publication/attempts/2-abcd"); fs.mkdirSync(folder);
+  const write = (name, data) => fs.writeFileSync(path.join(folder, name), data);
+  write("attempt.json", `${JSON.stringify({ schema: "spireagent/workshop-publication-attempt-1", result: "ATTEMPT_STARTED_OUTCOME_UNCONFIRMED", attempt_id: "2-abcd", candidate, readiness_sha256: ready.readiness_sha256, args: ["upload", "-w", f.w] }, null, 2)}\n`);
+  const line = "Successfully uploaded 'SpireAgent Platform' to the workshop with id 123456789! Browsing to the item in Steam.\n";
+  write("stdout.log", line); write("mod-uploader.log", line); write("stderr.log", diagnostic); write("steam_appid.txt", "2868840");
+  let reason; try { assert.equal(diagnostic.trim(), "", "uploader_stderr_requires_review"); } catch (error) { reason = error.message; }
+  write("unknown.json", `${JSON.stringify({ schema: "spireagent/workshop-publication-unknown-1", result: "PUBLICATION_OUTCOME_UNKNOWN", reason, retry_allowed: false }, null, 2)}\n`);
+  fs.writeFileSync(path.join(f.w, "mod_id.txt"), "123456789\n");
+  const names = ["attempt.json", "unknown.json", "stdout.log", "stderr.log", "mod-uploader.log", "steam_appid.txt"];
+  const original = Object.fromEntries(names.map((n) => [n, fs.readFileSync(path.join(folder, n))]));
+  const evidenceSha256 = sha256(Buffer.from(JSON.stringify(Object.fromEntries(names.map((n) => [n, sha256(original[n])])))));
+  const options = { ...f.options, attemptId: "2-abcd", evidenceSha256, humanObservation: {
+    evidence_level: "human_reported_steam_page_not_api_readback", item_id: "123456789", visibility: "private", title: "SpireAgent Platform", preview_matches_candidate: true } };
+  return { ...f, folder, original, reconcileOptions: options };
+}
+test("append-only success accepts item; original UNKNOWN stays; only exact explicit update is admitted without invocation", async (t) => {
+  const f = await historicalFalseUnknown(t);
+  assert.throws(() => publicationPreflight(f.options, f.dependencies), /UNKNOWN/);
+  const r = reconcileUploaderSuccess(f.reconcileOptions, f.dependencies);
+  assert.equal(r.result, "PUBLICATION_RECONCILED_AS_UPLOADER_SUCCESS");
+  assert.equal(r.uploader_exit_code, 0);
+  for (const [n, b] of Object.entries(f.original)) assert.deepEqual(fs.readFileSync(path.join(f.folder, n)), b);
+  assert.ok(!fs.existsSync(path.join(f.folder, "publication-receipt.json")));
+  assert.throws(() => publicationPreflight(f.options, f.dependencies), /existing_accepted_item/);
+  assert.throws(() => publicationPreflight({ ...f.options, mode: "update", itemId: "999" }, f.dependencies));
+  const ready = await publishWorkshop({ ...f.options, mode: "update", itemId: "123456789" }, f.dependencies);
+  assert.equal(ready.explicit_item_id, "123456789"); assert.equal(ready.operation, "update");
+  assert.equal(f.calls.length, 0);
+  assert.throws(() => reconcileUploaderSuccess(f.reconcileOptions, f.dependencies), /already_exists/);
+  const unresolved = path.join(f.w, ".publication/attempts/3-abcd"); fs.mkdirSync(unresolved);
+  fs.writeFileSync(path.join(unresolved, "attempt.json"), JSON.stringify({ schema: "spireagent/workshop-publication-attempt-1", attempt_id: "3-abcd" }));
+  assert.throws(() => publicationPreflight({ ...f.options, mode: "update", itemId: "123456789" }, f.dependencies), /UNKNOWN/);
+});
+for (const fault of ["stdout.log", "stderr.log", "mod-uploader.log", "attempt.json", "unknown.json", "reconciliation", "human", "commit", "inventory", "pin"]) {
+  test(`success reconciliation fails closed on ${fault}`, async (t) => {
+    const f = await historicalFalseUnknown(t);
+    if (["human", "commit", "inventory", "pin"].includes(fault)) {
+      if (fault === "human") f.reconcileOptions.humanObservation.item_id = "999";
+      if (fault === "commit") f.tool.commit = "0".repeat(40);
+      if (fault === "inventory") f.tool.inventory = [];
+      if (fault === "pin") f.reconcileOptions.evidenceSha256 = "0".repeat(64);
+      assert.throws(() => reconcileUploaderSuccess(f.reconcileOptions, f.dependencies));
+    } else {
+      reconcileUploaderSuccess(f.reconcileOptions, f.dependencies);
+      const name = fault === "reconciliation" ? "successful-publication-reconciliation.json" : fault;
+      if (fault === "reconciliation") {
+        const file = path.join(f.folder, name), r = JSON.parse(fs.readFileSync(file)); r.steam.item_id = "999"; fs.writeFileSync(file, JSON.stringify(r));
+      } else fs.appendFileSync(path.join(f.folder, name), " ");
+      assert.throws(() => publicationPreflight({ ...f.options, mode: "update", itemId: "123456789" }, f.dependencies));
+    }
+    assert.equal(f.calls.length, 0);
+  });
+}
