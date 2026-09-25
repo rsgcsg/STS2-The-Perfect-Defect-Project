@@ -10,6 +10,7 @@ import { sourceSetIdentity, sourceSetMatches } from "../../../apps/game-mod/sour
 
 export const setupFiles = [
   "apps/game-mod/collection-setup.mjs",
+  "apps/game-mod/platform-installation.mjs",
   "apps/game-mod/annotator-configuration.mjs",
   "apps/game-mod/loaded-evidence.mjs",
   "components/host-runtime/src/game-installation.mjs",

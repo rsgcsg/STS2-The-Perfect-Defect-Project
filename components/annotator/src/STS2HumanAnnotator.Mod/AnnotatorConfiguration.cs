@@ -14,11 +14,18 @@ internal sealed record AnnotatorConfiguration(
 
     internal static AnnotatorConfiguration Load(string modDirectory)
     {
-        string defaultRoot = Path.Combine(modDirectory, "recordings");
-        string defaultStatus = Path.Combine(modDirectory, "STS2_HUMAN_ANNOTATOR.runtime.json");
+        // The Mod assembly can live in Steam's managed Workshop cache. Raw Human
+        // evidence and process status belong in per-user writable storage.
+        string stateDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "spireagent", "annotator");
+        string defaultRoot = Path.Combine(stateDirectory, "recordings");
+        string defaultStatus = Path.Combine(stateDirectory, "STS2_HUMAN_ANNOTATOR.runtime.json");
         string root = defaultRoot;
         string status = defaultStatus;
-        string configPath = Path.Combine(modDirectory, FileName);
+        string operatorConfig = Path.Combine(stateDirectory, FileName);
+        string legacyConfig = Path.Combine(modDirectory, FileName);
+        string configPath = File.Exists(operatorConfig) ? operatorConfig : legacyConfig;
         if (File.Exists(configPath))
         {
             using JsonDocument document = JsonDocument.Parse(File.ReadAllText(configPath));

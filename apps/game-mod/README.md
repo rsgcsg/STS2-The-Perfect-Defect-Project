@@ -66,6 +66,23 @@ does not enable input or recording.
 
 ## Installed collection setup
 
+Collection setup resolves the one installed Platform Mod from the game's Steam
+library metadata or the manual `mods` directory. Steam item `3806646116` must
+appear in `WorkshopItemsInstalled`; a folder or subscription alone is not an
+installed claim. Concurrent manual and Workshop copies fail closed. The fixed
+Collection Tool's pinned build provenance must match the selected DLL SHA and
+MVID; an older manual-tool pin cannot qualify newer Workshop bytes. Current
+process status, loaded log identities and Connector capabilities are separate
+checks. Passive connection does not require gameplay execution admission.
+
+New Annotator defaults put recordings and runtime status under per-user
+`LocalApplicationData/spireagent/annotator`, outside the Steam-managed payload.
+An explicit user configuration can select another safe root. Existing files in a
+Workshop item are reported as legacy mutable state and must be preserved for
+review; setup never silently migrates or removes them. A changed Mod requires a
+new exact artifact, fixed Collection Tool and fresh runtime validation before
+these source changes describe the installed process.
+
 The fixed Collection Tool can include this component's bounded `collection-setup`
 CLI, its Host process/discovery dependencies and exact native build provenance.
 The Evidence `CollectionTool.setup_status` and `bind_recording_root` methods
