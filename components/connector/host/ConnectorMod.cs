@@ -90,24 +90,16 @@ public static partial class ConnectorMod
                     HostControlToken: null,
                     RunSeed: null);
 
-            string configPath = Path.Combine(modDir, ConfigFileName);
+            string operatorConfig = Path.Combine(
+                System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                "spireagent", "connector", ConfigFileName);
+            string configPath = File.Exists(operatorConfig)
+                ? operatorConfig : Path.Combine(modDir, ConfigFileName);
             if (!File.Exists(configPath))
             {
-                try
-                {
-                    var defaultConfig = new Dictionary<string, object>
-                    {
-                        ["port"] = DefaultPort,
-                        ["player_environment_native_page_evidence_enabled"] = false
-                    };
-                    string json = JsonSerializer.Serialize(defaultConfig, _jsonOptions);
-                    File.WriteAllText(configPath, json);
-                    GD.Print($"[STS2 Connector] Created default config at {configPath}");
-                }
-                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
-                {
-                    GD.Print($"[STS2 Connector] No config found at {configPath}; using default port {DefaultPort}");
-                }
+                // A Workshop directory is release-managed. Defaults are in memory;
+                // installing or launching a Mod must not create mutable files there.
+                GD.Print($"[STS2 Connector] No config found at {configPath}; using default port {DefaultPort}");
                 return new RuntimeConfig(
                     DefaultPort,
                     NativePageEvidenceEnabled: false,

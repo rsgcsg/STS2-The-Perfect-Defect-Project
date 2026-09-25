@@ -10,9 +10,9 @@
     },
     "connector": {
       "version": "1.2.0-rc.7",
-      "source_revision": "57423a1f849ef5d06b335d3b273a552e5bd8724c",
-      "component_tree_revision": "681ca6528185139d5ef21dff290461dc2be296db",
-      "component_source_digest_sha256": "e450c435dd8f11ed6a0caa140b2bdf4eb99bdf0abb72740644e0a7937ed3437a"
+      "source_revision": "88404ac6d4b3590fd1d8661bcf41f2c77c56c597",
+      "component_tree_revision": "eedac980cc1358f21b5bedae261aff0e9e9d6e27",
+      "component_source_digest_sha256": "6d1eb97949e2fc5d39e12132d7390ca64167687c794550cd615ed5261cea0df5"
     },
     "host_runtime": {
       "version": "1.1.0-rc.8",
@@ -22,9 +22,9 @@
     },
     "annotator": {
       "version": "0.3.0-rc.8",
-      "source_revision": "04afb4422b2bd61aa9f2be90d0ae64f9cd69a99d",
-      "component_tree_revision": "b65dd99a036631a1f48cf82566d924fa62aad169",
-      "component_source_digest_sha256": "159b57bc0b8cf80078826fe7149c7f5ca645cfaf78701f6c899a54f9d30a327d"
+      "source_revision": "7086a3f189dfc92b538a03ac982ac39d2c974c29",
+      "component_tree_revision": "6409d76d235238d5ac23f2d7f44cff112c10d474",
+      "component_source_digest_sha256": "761acc282ddbf707a95636554f01b7477618b563163984c71bd6ef5ef1a6496c"
     },
     "evidence": {
       "version": "0.1.0-rc.13",
@@ -52,9 +52,9 @@
     },
     "game_mod": {
       "version": "0.2.0-rc.11",
-      "source_revision": "04afb4422b2bd61aa9f2be90d0ae64f9cd69a99d",
-      "component_tree_revision": "ba566c83be96adfb19325ef8d634b95508105f34",
-      "component_source_digest_sha256": "8321472750478ed2d4f5d9ec82e774e41161670bc5b4661ef5dcdb5e30d859f3"
+      "source_revision": "88404ac6d4b3590fd1d8661bcf41f2c77c56c597",
+      "component_tree_revision": "bc4542b3ed9244054d0c8213afbb026673d0c515",
+      "component_source_digest_sha256": "a2caa05beb9f7acb9dd702f0dad543f47e13444caea6b70710405f26d5319dc3"
     },
     "player_environment_protocol": "1.0.0",
     "typescript_sdk": "1.2.0-rc.2"
@@ -157,8 +157,8 @@
     },
     "connector": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
-      "current_component_source_revision": "57423a1f849ef5d06b335d3b273a552e5bd8724c",
-      "current_component_source_digest_sha256": "e450c435dd8f11ed6a0caa140b2bdf4eb99bdf0abb72740644e0a7937ed3437a",
+      "current_component_source_revision": "88404ac6d4b3590fd1d8661bcf41f2c77c56c597",
+      "current_component_source_digest_sha256": "6d1eb97949e2fc5d39e12132d7390ca64167687c794550cd615ed5261cea0df5",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "6c66cbf06757dca3e7d910467fb56b89376f109c6d7d0ba47d2bc0260ab4a3d2",
       "artifact_mvid": "11f1da35-558f-4346-8ec9-a493fea95cb8",
@@ -170,8 +170,8 @@
     "annotator": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
       "source_digest_sha256": "8d23f1015a7b0df800f78a7545da5c86bfee521131c4391b398c884ff917918f",
-      "current_component_source_revision": "04afb4422b2bd61aa9f2be90d0ae64f9cd69a99d",
-      "current_component_source_digest_sha256": "159b57bc0b8cf80078826fe7149c7f5ca645cfaf78701f6c899a54f9d30a327d",
+      "current_component_source_revision": "7086a3f189dfc92b538a03ac982ac39d2c974c29",
+      "current_component_source_digest_sha256": "761acc282ddbf707a95636554f01b7477618b563163984c71bd6ef5ef1a6496c",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "4e911dd616afa55753a5320a42c11ce0cebe9d4d10fefd66c8f8a431884cf105",
       "artifact_mvid": "692e9dd9-4bc7-4203-ae12-511ef95a5331",
@@ -258,8 +258,8 @@
     "connector": {
       "source_revision": "4de52cfd72c6bf5b0d2312538152e81c616dabfb",
       "source_digest_sha256": "8651b47e2fec8e0c77689a8e8774377795d79c188f2d69910a116e72db8f78c1",
-      "current_component_source_revision": "57423a1f849ef5d06b335d3b273a552e5bd8724c",
-      "current_component_source_digest_sha256": "e450c435dd8f11ed6a0caa140b2bdf4eb99bdf0abb72740644e0a7937ed3437a",
+      "current_component_source_revision": "88404ac6d4b3590fd1d8661bcf41f2c77c56c597",
+      "current_component_source_digest_sha256": "6d1eb97949e2fc5d39e12132d7390ca64167687c794550cd615ed5261cea0df5",
       "source_relation": "loaded_native_source_precedes_current_discriminator_source",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b",
@@ -277,8 +277,8 @@
     "annotator": {
       "source_revision": "cb20bfa6e4e0e64b3ee8fdf0e1d472e8a668450b",
       "source_digest_sha256": "3910bcbc71599610b125c91c62e9860541ce9edea9b2c0a9f41842eb53651071",
-      "current_component_source_revision": "04afb4422b2bd61aa9f2be90d0ae64f9cd69a99d",
-      "current_component_source_digest_sha256": "159b57bc0b8cf80078826fe7149c7f5ca645cfaf78701f6c899a54f9d30a327d",
+      "current_component_source_revision": "7086a3f189dfc92b538a03ac982ac39d2c974c29",
+      "current_component_source_digest_sha256": "761acc282ddbf707a95636554f01b7477618b563163984c71bd6ef5ef1a6496c",
       "source_relation": "loaded_native_source_precedes_current_audit_closeout_source",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b"
@@ -910,8 +910,8 @@
       "version": "0.2.0-rc.1",
       "platform_source_revision": "b5389a0b4a1bbed37e6a9718776fdf38f06f50c9",
       "platform_source_digest_sha256": "dbcd6ec1df10cad5ad011eb61a2f2ca533d7a110cd3f1296efa9c154b98d0cea",
-      "current_component_source_revision": "04afb4422b2bd61aa9f2be90d0ae64f9cd69a99d",
-      "current_component_source_digest_sha256": "8321472750478ed2d4f5d9ec82e774e41161670bc5b4661ef5dcdb5e30d859f3",
+      "current_component_source_revision": "88404ac6d4b3590fd1d8661bcf41f2c77c56c597",
+      "current_component_source_digest_sha256": "a2caa05beb9f7acb9dd702f0dad543f47e13444caea6b70710405f26d5319dc3",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b",
       "installed": "pass",

@@ -14,11 +14,21 @@ internal sealed record AnnotatorConfiguration(
 
     internal static AnnotatorConfiguration Load(string modDirectory)
     {
-        string defaultRoot = Path.Combine(modDirectory, "recordings");
-        string defaultStatus = Path.Combine(modDirectory, "STS2_HUMAN_ANNOTATOR.runtime.json");
+        // Only Steam-managed Workshop installs change the default destination.
+        // Manual development installs retain their existing paths and config.
+        bool workshop = Path.GetFullPath(modDirectory).Replace('\\', '/').Contains(
+            "/steamapps/workshop/content/2868840/", StringComparison.OrdinalIgnoreCase);
+        string stateDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "spireagent", "annotator");
+        string defaultDirectory = workshop ? stateDirectory : modDirectory;
+        string defaultRoot = Path.Combine(defaultDirectory, "recordings");
+        string defaultStatus = Path.Combine(defaultDirectory, "STS2_HUMAN_ANNOTATOR.runtime.json");
         string root = defaultRoot;
         string status = defaultStatus;
-        string configPath = Path.Combine(modDirectory, FileName);
+        string operatorConfig = Path.Combine(stateDirectory, FileName);
+        string legacyConfig = Path.Combine(modDirectory, FileName);
+        string configPath = workshop && File.Exists(operatorConfig) ? operatorConfig : legacyConfig;
         if (File.Exists(configPath))
         {
             using JsonDocument document = JsonDocument.Parse(File.ReadAllText(configPath));
@@ -33,8 +43,17 @@ internal sealed record AnnotatorConfiguration(
 
         root = Environment.GetEnvironmentVariable(RecordingRootEnvironmentVariable) ?? root;
         status = Environment.GetEnvironmentVariable(RuntimeStatusEnvironmentVariable) ?? status;
+        if (workshop && (InsideModDirectory(modDirectory, root) || InsideModDirectory(modDirectory, status)))
+            throw new InvalidOperationException("Workshop directory cannot own mutable recording state");
         return new AnnotatorConfiguration(
             Path.GetFullPath(root),
             Path.GetFullPath(status));
+    }
+
+    private static bool InsideModDirectory(string modDirectory, string candidate)
+    {
+        string relative = Path.GetRelativePath(modDirectory, Path.GetFullPath(candidate));
+        return relative == "." || (!relative.StartsWith("..", StringComparison.Ordinal)
+            && !Path.IsPathRooted(relative));
     }
 }

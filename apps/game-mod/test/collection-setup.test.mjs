@@ -25,7 +25,7 @@ function fixture(t) {
   json(configPath, configuration);
   fs.writeFileSync(path.join(game, "SlayTheSpire2"), "game");
   fs.writeFileSync(path.join(mods, "STS2_PLATFORM.dll"), "mod");
-  json(path.join(mods, "STS2_PLATFORM.json"), { id: "STS2_PLATFORM" });
+  json(path.join(mods, "STS2_PLATFORM.json"), { id: "STS2_PLATFORM", has_dll: true, has_pck: false });
   json(path.join(mods, "STS2_MCP.conf"), { port: 15526 });
   const artifact = { sha256: crypto.createHash("sha256").update("mod").digest("hex"), module_version_id: "mvid" };
   const provenance = { schema: "sts2.platform/game-mod-build-provenance-1", artifact,
@@ -51,7 +51,10 @@ function fixture(t) {
   const installation = { game_dir: game, mods_dir: mods, executable: path.join(game, "SlayTheSpire2"), log_file: log };
   const options = { recordings_root: root, mod_provenance: provenancePath };
   const dependencies = { installation, env: {}, platform: "linux", listProcesses: () => [],
-    readProcessStartedAt: () => "2026-09-14T23:59:59Z", fetchCapabilities: async () => capabilities };
+    readProcessStartedAt: () => "2026-09-14T23:59:59Z", fetchCapabilities: async () => capabilities,
+    resolvePlatform: () => ({ kind: "manual", item_id: null, directory: mods,
+      artifact: { sha256: crypto.createHash("sha256").update(fs.readFileSync(path.join(mods, "STS2_PLATFORM.dll"))).digest("hex"),
+        module_version_id: "mvid" } }) };
   return { base, options, dependencies, root, original, configPath, configuration, statusPath, status, json,
     provenance, platformIdentity, uiIdentity, capabilities };
 }

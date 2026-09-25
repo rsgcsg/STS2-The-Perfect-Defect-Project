@@ -3,16 +3,24 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { discoverGameDirectory, resolveInstallation } from "../../components/host-runtime/src/game-installation.mjs";
 import { listGameProcesses, readGameProcessStartedAt } from "../../components/host-runtime/src/game-processes.mjs";
 import { readAnnotatorConfiguration } from "./annotator-configuration.mjs";
 import { evaluateCollectionLoadedEvidence, extractGameProcessIds } from "./loaded-evidence.mjs";
+import { resolvePlatformInstallation } from "./platform-installation.mjs";
 
 const schema = "sts2.platform/collection-setup-1";
 const readJson = file => JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/u, ""));
 const hash = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
 const overrides = ["STS2_HUMAN_ANNOTATOR_RECORDING_ROOT", "STS2_HUMAN_ANNOTATOR_STATUS_PATH"];
+
+function localApplicationData(platform, env) {
+  if (platform === "win32") return env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local");
+  if (platform === "darwin") return path.join(os.homedir(), "Library", "Application Support");
+  return env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share");
+}
 
 function requireSafePath(value) {
   if (typeof value !== "string" || !path.isAbsolute(value) || value.includes("\0"))
@@ -31,9 +39,10 @@ function isInside(root, value) {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-function requireRecordingRoot(root, installation) {
+function requireRecordingRoot(root, installation, modDirectory) {
   requireSafePath(root);
-  if (root === path.parse(root).root || isInside(installation.game_dir, root)
+  if (root === path.parse(root).root || isInside(modDirectory, root) || isInside(root, modDirectory)
+      || isInside(installation.game_dir, root)
       || isInside(root, installation.game_dir)) throw new Error("unsafe_recordings_root");
   for (let current = root; ; current = path.dirname(current)) {
     if (fs.existsSync(path.join(current, "recording-manifest.json")))
@@ -86,7 +95,8 @@ export async function collectionSetup(command, options, dependencies = {}) {
     observed_at: new Date().toISOString(), game_running: null, configured: false, connected: false, bound: false,
     recordings_root: options.recordings_root ?? null, configured_recordings_root: null, actual_recordings_root: null,
     recording_directory: null, runtime_status_path: null, game_directory: installation?.game_dir ?? null,
-    installed_artifact: null, loaded_identity: null, execution_available: null, compatibility: null, errors: [],
+    installed_artifact: null, installation_kind: null, workshop_item_id: null,
+    legacy_workshop_state: false, loaded_identity: null, execution_available: null, compatibility: null, errors: [],
     non_claims: ["configuration_is_not_loaded", "loaded_is_not_human_evidence", "no_gameplay_operations"]
   };
   try {
@@ -94,13 +104,31 @@ export async function collectionSetup(command, options, dependencies = {}) {
     if (!installation) throw new Error("installation_unavailable");
     for (const file of [installation.game_dir, installation.executable, installation.mods_dir]) requireSafePath(file);
     if (!fs.existsSync(installation.executable) || !fs.existsSync(installation.mods_dir)) throw new Error("installation_unavailable");
+    const provenance = readJson(requireSafePath(options.mod_provenance));
+    if (!["sts2.platform/game-mod-build-provenance-1", "sts2.platform/game-mod-installed-provenance-1"].includes(provenance.schema)
+        || !/^[0-9a-f]{64}$/u.test(provenance.artifact?.sha256 ?? "")
+        || typeof provenance.artifact?.module_version_id !== "string"
+        || !provenance.source?.components?.live_ui || !provenance.source?.platform)
+      throw new Error("mod_provenance_invalid");
+    const tool = path.resolve(options.mod_provenance, "../../sts2-human-annotator.dll");
+    const mod = (dependencies.resolvePlatform ?? resolvePlatformInstallation)(installation, { identityTool: tool });
+    requireSafePath(mod.directory);
+    result.installation_kind = mod.kind;
+    result.workshop_item_id = mod.item_id;
+    result.legacy_workshop_state = mod.kind === "workshop" && [
+      "recordings", "STS2_HUMAN_ANNOTATOR.runtime.json", "STS2_HUMAN_ANNOTATOR.conf", "STS2_MCP.conf"
+    ].some(name => fs.existsSync(path.join(mod.directory, name)));
     const root = requireSafePath(options.recordings_root);
     result.recordings_root = root;
-    requireRecordingRoot(root, installation);
-    const configPath = requireSafePath(path.join(installation.mods_dir, "STS2_HUMAN_ANNOTATOR.conf"));
+    requireRecordingRoot(root, installation, mod.directory);
+    const userState = localApplicationData(platform, env);
+    const writable = mod.kind === "workshop"
+      ? requireSafePath(path.join(userState, "spireagent", "annotator"))
+      : installation.mods_dir;
+    const configPath = requireSafePath(path.join(writable, "STS2_HUMAN_ANNOTATOR.conf"));
     const configuration = readAnnotatorConfiguration(configPath, {
-      recording_root: path.join(installation.mods_dir, "recordings"),
-      runtime_status_path: path.join(installation.mods_dir, "STS2_HUMAN_ANNOTATOR.runtime.json")
+      recording_root: path.join(writable, "recordings"),
+      runtime_status_path: path.join(writable, "STS2_HUMAN_ANNOTATOR.runtime.json")
     });
     requireSafePath(configuration.recording_root);
     requireSafePath(configuration.runtime_status_path);
@@ -111,24 +139,17 @@ export async function collectionSetup(command, options, dependencies = {}) {
     result.game_running = processIds.length > 0;
     if (processIds.length > 1) throw new Error("ambiguous_game_processes");
     if (overrides.some(name => env[name] !== undefined)) throw new Error("annotator_environment_override");
-    const installedDll = requireSafePath(path.join(installation.mods_dir, "STS2_PLATFORM.dll"));
-    const manifest = readJson(requireSafePath(path.join(installation.mods_dir, "STS2_PLATFORM.json")));
-    if (manifest.id !== "STS2_PLATFORM") throw new Error("unified_mod_manifest_mismatch");
     for (const name of ["STS2_MCP.json", "STS2_HUMAN_ANNOTATOR.json", "STS2_PLATFORM_LIVE_UI.json"])
       if (fs.existsSync(path.join(installation.mods_dir, name))) throw new Error("ambiguous_mod_installation");
-    const provenance = readJson(requireSafePath(options.mod_provenance));
-    if (!["sts2.platform/game-mod-build-provenance-1", "sts2.platform/game-mod-installed-provenance-1"].includes(provenance.schema)
-        || !/^[0-9a-f]{64}$/u.test(provenance.artifact?.sha256 ?? "")
-        || typeof provenance.artifact?.module_version_id !== "string"
-        || !provenance.source?.components?.live_ui || !provenance.source?.platform)
-      throw new Error("mod_provenance_invalid");
-    const artifact = { sha256: hash(fs.readFileSync(installedDll)), module_version_id: provenance.artifact.module_version_id };
-    if (artifact.sha256 !== provenance.artifact.sha256) throw new Error("installed_artifact_mismatch");
-    result.installed_artifact = artifact;
+    if (mod.artifact.sha256 !== provenance.artifact.sha256
+        || mod.artifact.module_version_id !== provenance.artifact.module_version_id)
+      throw new Error("installed_artifact_mismatch");
+    result.installed_artifact = mod.artifact;
     if (command === "bind") {
       if (result.game_running) throw new Error("game_must_be_stopped");
       fs.mkdirSync(root, { recursive: true });
       if (!result.configured) {
+        fs.mkdirSync(writable, { recursive: true });
         const before = fs.existsSync(configPath) ? fs.readFileSync(configPath) : null;
         const backup = `${configPath}.collection-backup-${crypto.randomUUID()}`;
         const temporary = `${configPath}.tmp-${crypto.randomUUID()}`;
@@ -153,13 +174,19 @@ export async function collectionSetup(command, options, dependencies = {}) {
       result.next_action = result.configured ? "launch_game" : "bind_recording_root";
       return result;
     }
-    const status = readJson(configuration.runtime_status_path);
+    const legacyStatus = path.join(mod.directory, "STS2_HUMAN_ANNOTATOR.runtime.json");
+    const statusPath = mod.kind === "workshop" && !fs.existsSync(configuration.runtime_status_path)
+      && fs.existsSync(legacyStatus) ? legacyStatus : configuration.runtime_status_path;
+    result.legacy_workshop_state ||= statusPath === legacyStatus;
+    const status = readJson(statusPath);
     if (status.schema !== "sts2.human-annotator/runtime-status-2") throw new Error("runtime_status_schema_unsupported");
     const log = fs.readFileSync(installation.log_file, "utf8");
     const platformIdentity = latestIdentity(log, "[STS2 Platform] identity ");
     const liveUiIdentity = latestIdentity(log, "[STS2 Platform Live UI] identity ");
     const uiIndex = log.lastIndexOf("[STS2 Platform Live UI] identity ");
-    const connectorConfig = readJson(path.join(installation.mods_dir, "STS2_MCP.conf"));
+    const operatorConnector = path.join(userState, "spireagent", "connector", "STS2_MCP.conf");
+    const connectorPath = fs.existsSync(operatorConnector) ? operatorConnector : path.join(mod.directory, "STS2_MCP.conf");
+    const connectorConfig = fs.existsSync(connectorPath) ? readJson(connectorPath) : { port: 15526 };
     const port = connectorConfig.port ?? 15526;
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("connector_port_invalid");
     const capabilities = await (dependencies.fetchCapabilities ?? fetchCapabilities)(port);
