@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import tempfile
 from pathlib import Path
 
@@ -91,7 +90,12 @@ def test_synthetic_source_to_real_export_and_installed_adapter(tmp_path, monkeyp
             ROOT, destination, config_path, manifest_path, manifest_id="synthetic-text-menu-1",
             policy=policy, requirements=requirements, support=support,
         )
-        assert not os.path.isabs(manifest["artifact"]["path"])
+        artifact_target = (destination / "model.json").resolve()
+        manifest_directory = manifest_path.parent.resolve()
+        artifact_pin = Path(manifest["artifact"]["path"])
+        same_drive = artifact_target.drive.casefold() == manifest_directory.drive.casefold()
+        assert artifact_pin.is_absolute() is not same_drive
+        assert (manifest_directory / artifact_pin).resolve() == artifact_target
         validate(ROOT, config_path, manifest_path)
         adapter = TokenPolicyAdapter(config_path, manifest_path)
         keys = list(score_map)
