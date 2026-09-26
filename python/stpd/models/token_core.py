@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 from .packed_actions import pack_actions
 
@@ -150,3 +152,117 @@ class ScratchTokenCore(TokenCore):
         inputs = embeddings + encoding.to(embeddings.dtype)
         # The custom branch mask is not an ordinary triangular causal mask.
         return self.encoder(inputs.unsqueeze(0), mask=blocked, is_causal=False)[0]  # type: ignore[no-any-return]
+
+    def _project_attention(self, layer: nn.TransformerEncoderLayer,
+                           hidden: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        attention = layer.self_attn
+        projected = F.linear(layer.norm1(hidden), attention.in_proj_weight,
+                             attention.in_proj_bias)
+        head_width = self.width // attention.num_heads
+        return tuple(part.reshape(-1, attention.num_heads, head_width)
+                     .transpose(0, 1).unsqueeze(0)
+                     for part in projected.chunk(3, dim=-1))  # type: ignore[return-value]
+
+    @staticmethod
+    def _attention_output(layer: nn.TransformerEncoderLayer, query: Tensor,
+                          key: Tensor, value: Tensor, *, mask: Tensor | None = None,
+                          causal: bool = False) -> Tensor:
+        attention = layer.self_attn
+        result = F.scaled_dot_product_attention(
+            query, key, value, attn_mask=mask,
+            dropout_p=attention.dropout if layer.training else 0.0,
+            is_causal=causal,
+        )
+        width = attention.embed_dim
+        result = result.squeeze(0).transpose(0, 1).reshape(-1, width)
+        return F.linear(result, attention.out_proj.weight, attention.out_proj.bias)
+
+    def _branch_layer(self, hidden: Tensor, state_key: Tensor, state_value: Tensor,
+                      layer: nn.TransformerEncoderLayer, allowed: Tensor) -> Tensor:
+        query, key, value = self._project_attention(layer, hidden)
+        output = self._attention_output(
+            layer, query, torch.cat((state_key, key), dim=-2),
+            torch.cat((state_value, value), dim=-2), mask=allowed,
+        )
+        hidden = hidden + layer.dropout1(output)
+        return hidden + layer._ff_block(layer.norm2(hidden))
+
+    def read_action_queries(
+        self, state: Tensor, actions: tuple[Tensor, ...], query: Tensor,
+    ) -> Tensor:
+        """Execute the packed causal graph without its dense all-branch mask.
+
+        The observation is projected once at each layer. Its keys and values feed
+        every isolated branch at that layer; only branch outputs are read out.
+        Dropout training retains the historical packed call order for exact
+        checkpoint continuation; this path covers evaluation and zero-dropout
+        training. Checkpointing bounds training activation storage.
+        """
+        if self.training and self.shape.dropout > 0:
+            return super().read_action_queries(state, actions, query)
+        self.validate_tokens(state)
+        if not actions or query.shape != (self.width,):
+            raise ValueError("invalid candidate catalog or query shape")
+        for action in actions:
+            self.validate_tokens(action)
+            if action.device != state.device:
+                raise ValueError("state and action token devices differ")
+            if state.numel() + action.numel() + 1 > self.max_tokens:
+                raise ValueError("joint input token limit exceeded; truncation is forbidden")
+
+        state_length = state.numel()
+        frequency = torch.exp(
+            torch.arange(0, self.width, 2, device=state.device, dtype=torch.float32)
+            * (-math.log(10000.0) / self.width)
+        )
+
+        def positioned(embeddings: Tensor, offset: int) -> Tensor:
+            positions = torch.arange(offset, offset + embeddings.shape[0],
+                                     device=embeddings.device, dtype=torch.float32)
+            angles = positions[:, None] * frequency
+            encoding = torch.stack((angles.sin(), angles.cos()), dim=-1).flatten(1)
+            return embeddings + encoding.to(embeddings.dtype)
+
+        shared = positioned(self.embed_tokens(state), 0)
+        state_keys: list[tuple[Tensor, Tensor]] = []
+        for index, layer in enumerate(self.encoder.layers):
+            state_query, state_key, state_value = self._project_attention(layer, shared)
+            state_keys.append((state_key, state_value))
+            if index + 1 < len(self.encoder.layers):
+                output = self._attention_output(
+                    layer, state_query, state_key, state_value, causal=True,
+                )
+                shared = shared + layer.dropout1(output)
+                shared = shared + layer._ff_block(layer.norm2(shared))
+
+        masks: dict[int, Tensor] = {}
+        readouts = []
+        for action in actions:
+            hidden = positioned(torch.cat((self.embed_tokens(action), query.unsqueeze(0))),
+                                state_length)
+            branch_length = hidden.shape[0]
+            if branch_length not in masks:
+                masks[branch_length] = torch.cat((
+                    torch.ones(branch_length, state_length, device=state.device,
+                               dtype=torch.bool),
+                    torch.ones(branch_length, branch_length, device=state.device,
+                               dtype=torch.bool).tril(),
+                ), dim=1)
+            allowed = masks[branch_length]
+            for layer, (state_key, state_value) in zip(
+                self.encoder.layers, state_keys, strict=True,
+            ):
+                if self.training and torch.is_grad_enabled():
+                    # Each closure must bind its own layer and mask for backward.
+                    hidden = checkpoint(
+                        lambda h, k, v, block=layer, branch_mask=allowed:
+                            self._branch_layer(h, k, v, block, branch_mask),
+                        hidden, state_key, state_value, use_reentrant=False,
+                    )
+                else:
+                    hidden = self._branch_layer(hidden, state_key, state_value,
+                                                layer, allowed)
+            if self.encoder.norm is not None:
+                hidden = self.encoder.norm(hidden)
+            readouts.append(hidden[-1])
+        return torch.stack(readouts)
