@@ -89,6 +89,10 @@ internal static class NativeTextMenuInformation
         }
         if (_ownedScreen != null && !IsExactOwner(_ownedScreen, _ownedKind!))
             ClearOwner();
+        // A tooltip merely discovered in the native hover registry is not an
+        // input-owning page. Older captures may still hold that passive owner.
+        if (_ownedKind == "native_tip")
+            ClearOwner();
         if (_ownedScreen == null)
             RecognizeCurrentNativePage();
         if (_unresolvedTipSignal)
@@ -274,23 +278,6 @@ internal static class NativeTextMenuInformation
                 _ => null
             };
             if (_ownedKind == null) ClearOwner();
-        }
-        if (_ownedScreen == null && ActiveHoverTipsField?.GetValue(null) is
-                Dictionary<Control, NHoverTipSet> tips)
-        {
-            var shown = tips.Where(pair => ConnectorMod.IsNodeVisible(pair.Key)
-                && ConnectorMod.IsNodeVisible(pair.Value)
-                && ReferenceEquals(pair.Value.GetParent(),
-                    NGame.Instance?.HoverTipsContainer)).ToArray();
-            if (shown.Length > 1)
-                _unresolvedTipSignal = true;
-            else if (shown.Length == 1)
-            {
-                _ownedScreen = shown[0].Value;
-                _ownedKind = "native_tip";
-                _nativeTipOwner = shown[0].Key;
-                _tipContent = ReadRenderedTips(shown[0].Value);
-            }
         }
     }
 
@@ -677,10 +664,10 @@ internal static class NativeTextMenuInformation
                 Array.Empty<string>(), Array.Empty<string>()),
             Interaction = legacy.Snapshot.Interaction with
             {
-                Kind = _nativeTipGroup ?? "relic_tips",
+                Kind = _nativeTipGroup ?? _ownedKind ?? "native_tip",
                 Stage = "native_information_page",
                 Prompt = "Native tips",
-                ContentSchema = $"sts2.player-environment/surface/{_nativeTipGroup ?? "native_tip"}_text_menu-1",
+                ContentSchema = $"sts2.player-environment/surface/{_nativeTipGroup ?? _ownedKind ?? "native_tip"}_text_menu-1",
                 Content = new PlayerEnvironmentInteractionContent(
                     new JsonObject { ["kind"] = "native_tips",
                         ["tips"] = _tipContent.DeepClone() },
@@ -819,12 +806,16 @@ internal static class NativeTextMenuInformation
         var texts = new JsonArray();
         foreach (Node entry in textContainer.GetChildren())
         {
+            if (entry is not Control visibleText
+                || !ConnectorMod.IsNodeVisible(visibleText))
+                return null;
             var title = entry.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%Title");
             var description = entry.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%Description");
             if (description == null) return null;
             texts.Add(new JsonObject
             {
-                ["title"] = title?.Text,
+                ["title"] = title != null && ConnectorMod.IsNodeVisible(title)
+                    ? title.Text : null,
                 ["description"] = description.Text
             });
         }
@@ -852,6 +843,64 @@ internal static class NativeTextMenuInformation
         return texts.Count + cards.Count > 0
             ? new JsonObject { ["text_tips"] = texts, ["card_previews"] = cards }
             : null;
+    }
+
+    private static (IReadOnlyList<JsonNode> Rendered, int Unresolved) ReadPassiveHoverFacts()
+    {
+        if (ActiveHoverTipsField?.GetValue(null) is not
+                Dictionary<Control, NHoverTipSet> active
+            || NGame.Instance?.HoverTipsContainer is not { } container)
+            return (Array.Empty<JsonNode>(), 0);
+        var rendered = new List<JsonNode>();
+        int unresolved = 0;
+        foreach ((Control owner, NHoverTipSet set) in active)
+        {
+            if (!ConnectorMod.IsNodeVisible(owner)
+                || !ConnectorMod.IsNodeVisible(set)
+                || !ReferenceEquals(set.GetParent(), container))
+                continue;
+            JsonNode? facts = ReadRenderedTips(set);
+            if (facts == null) unresolved++;
+            else rendered.Add(facts);
+        }
+        return (rendered, unresolved);
+    }
+
+    internal static PlayerEnvironmentSnapshot AttachCurrentPassiveHoverFacts(
+        PlayerEnvironmentSnapshot page)
+    {
+        if (_ownedScreen is NHoverTipSet explicitTip)
+        {
+            if (_ownedKind != null && _ownedKind != "native_tip"
+                && IsExactOwner(explicitTip, _ownedKind))
+                return page;
+            ClearOwner();
+        }
+        return AttachPassiveHoverFacts(page, ReadPassiveHoverFacts());
+    }
+
+    internal static PlayerEnvironmentSnapshot AttachPassiveHoverFacts(
+        PlayerEnvironmentSnapshot page,
+        (IReadOnlyList<JsonNode> Rendered, int Unresolved) facts)
+    {
+        if (facts.Rendered.Count == 0 && facts.Unresolved == 0
+            || page.Interaction.Content.Surface is not JsonObject source)
+            return page;
+        var surface = (JsonObject)source.DeepClone();
+        // Tooltip nodes are nonmodal: retain the underlying native interaction
+        // and its exact action catalog while publishing only rendered text.
+        surface["visible_hover_tips"] = new JsonArray(facts.Rendered
+            .OrderBy(tip => tip.ToJsonString(), StringComparer.Ordinal)
+            .Select(tip => tip.DeepClone()).ToArray());
+        if (facts.Unresolved > 0)
+            surface["unresolved_visible_hover_tip_count"] = facts.Unresolved;
+        return page with
+        {
+            Interaction = page.Interaction with
+            {
+                Content = page.Interaction.Content with { Surface = surface }
+            }
+        };
     }
 
     private static NativeInputResult OpenRelic(

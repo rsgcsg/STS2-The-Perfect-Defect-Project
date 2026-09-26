@@ -28,6 +28,18 @@ internal static class NativeTextMenuFrameBuilder
         NativeEntityRegistry entities,
         Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy)
     {
+        TextMenuFrame frame = CaptureCore(legacy, entities, executeLegacy);
+        return frame with
+        {
+            Page = NativeTextMenuInformation.AttachCurrentPassiveHoverFacts(frame.Page)
+        };
+    }
+
+    private static TextMenuFrame CaptureCore(
+        SnapshotBuildResult legacy,
+        NativeEntityRegistry entities,
+        Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy)
+    {
         if (NativeTextMenuRewardPages.TryCapture(legacy, entities) is { } rewardPage)
             return rewardPage with
             {
