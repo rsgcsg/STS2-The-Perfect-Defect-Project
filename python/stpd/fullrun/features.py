@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import importlib
 import io
 import tempfile
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -123,6 +124,12 @@ def _load_model_view(
     from .public_bc import LEGACY_VIEW_SCHEMA, load_public_bc_view
     from .public_bc import VIEW_SCHEMA as PUBLIC_BC_SCHEMA
 
+    if parameters.get("schema") == "stpd/text-menu-bc-view-v1":
+        # The opt-in view is owned by text_menu_data; keep legacy load paths
+        # independent of the new evidence admission module.
+        module = importlib.import_module("stpd.fullrun.text_menu_data")
+        return cast(tuple[Manifest, tuple[ModelSample, ...]],
+                    module.load_text_menu_bc_view(store, manifest))
     if parameters.get("schema") in {PUBLIC_BC_SCHEMA, LEGACY_VIEW_SCHEMA}:
         return load_public_bc_view(store, manifest)
     if parameters.get("schema") == DECISION_VIEW_SCHEMA:
