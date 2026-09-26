@@ -391,7 +391,8 @@ internal static partial class RecorderRuntime
             CaptureProfile.SupportedActionFamilies,
             CaptureProfile.NonClaims.Append("not_human_validated").ToArray())
         { DecisionSchemaVersion = DecisionOccurrenceIdentity.CurrentSchemaVersion, DispositionSchemaVersion = 1,
-            CloseSchemaVersion = 1, RecoverySchemaVersion = 1, ContinuousSchemaVersion = 1 };
+            CloseSchemaVersion = 1, RecoverySchemaVersion = 1, ContinuousSchemaVersion = 1,
+            TextInputSchemaVersion = HumanTextInputObservationContract.SchemaVersion };
         RecordingSessionStore store = RecordingSessionStore.Create(
             _configuration.RecordingRoot,
             manifest,
@@ -406,6 +407,9 @@ internal static partial class RecorderRuntime
         _sequence = 0;
         _journalSequence = 0;
         _semanticBoundaryEventSequence = 0;
+        _humanTextInputSequence = 0;
+        _humanTextInputHealthy = true;
+        _humanTextInputPendingScopes = 0;
         _lastIdleStatusAt = DateTimeOffset.MinValue;
         _statusRefreshRequested = true;
         RunLifecycle.Reset();
@@ -524,9 +528,20 @@ internal static partial class RecorderRuntime
         IReadOnlyList<SemanticBoundaryTraceDraft> closeDrafts;
         lock (Gate)
         {
+            if (_lifecycle.State == RecordingLifecycleState.Closing
+                && !_humanTextInputHealthy)
+            {
+                _runtimeState = "human_text_input_persistence_failed";
+                _closeout = _closeout with
+                {
+                    State = "closing",
+                    Detail = "Human text input evidence failed; the session cannot be sealed."
+                };
+            }
             if (_lifecycle.State != RecordingLifecycleState.Closing
                 || _closeDispositionPersistenceFailed
-                || _closeProjectionPersistenceFailed)
+                || _closeProjectionPersistenceFailed
+                || _humanTextInputPendingScopes > 0)
                 return;
             if (!_semanticBoundaryTraceHealthy)
             {
@@ -722,7 +737,8 @@ internal static partial class RecorderRuntime
     }
 
     private static bool HasPendingRecordingWorkUnsafe() =>
-        HasNativePendingRecordingWorkUnsafe() || BoundaryTracker.HasUnresolvedActions;
+        HasNativePendingRecordingWorkUnsafe() || BoundaryTracker.HasUnresolvedActions
+        || _humanTextInputPendingScopes > 0;
 
     private static bool HasNativePendingRecordingWorkUnsafe() =>
         SemanticOnlyNativeActionIds.Count > 0
@@ -4079,9 +4095,12 @@ internal static partial class RecorderRuntime
     }
 
     private static RecorderEnvironmentIdentity BuildEnvironment(
-        ProcessLocalNativeWitnessFrame frame)
+        ProcessLocalNativeWitnessFrame frame) =>
+        BuildEnvironment(frame.Capabilities, frame.SourceDigest);
+
+    private static RecorderEnvironmentIdentity BuildEnvironment(
+        PlayerEnvironmentCapabilitiesResponse capabilities, string sourceDigest)
     {
-        PlayerEnvironmentCapabilitiesResponse capabilities = frame.Capabilities;
         Assembly gameAssembly = typeof(RunManager).Assembly;
         Assembly annotatorAssembly = typeof(RecorderMod).Assembly;
         return new RecorderEnvironmentIdentity(
@@ -4094,7 +4113,7 @@ internal static partial class RecorderRuntime
                 capabilities.Host.Name,
                 capabilities.Host.Version,
                 capabilities.Host.Implementation.SourceRevision ?? "unavailable",
-                frame.SourceDigest,
+                sourceDigest,
                 capabilities.Host.Implementation.ArtifactSha256 ?? "unavailable",
                 capabilities.Host.Implementation.ModuleVersionId ?? "unavailable"),
             new ExactArtifactIdentity(
