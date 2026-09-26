@@ -76,9 +76,13 @@ public sealed class HumanTextInputObservationTests
             Snapshot = snapshot,
             SnapshotSha256 = EvidenceIdentity.Sha256Json(snapshot),
             ChosenAction = chosen,
+            NativeOwnerWitnessId = row.NativeCarrierWitnessId,
             NativeMechanism = mechanism
         };
         Assert.Empty(HumanTextInputObservationValidator.Validate(row));
+        Assert.Contains("text_input_continuation_owner_mismatch",
+            HumanTextInputObservationValidator.Validate(row with
+            { NativeOwnerWitnessId = "different-owner" }));
         Assert.Contains("text_input_chosen_action_not_unique",
             HumanTextInputObservationValidator.Validate(row with
             { NativeMechanism = HumanTextInputObservationContract.NativeMechanism }));

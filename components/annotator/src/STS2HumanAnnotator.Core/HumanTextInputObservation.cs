@@ -98,6 +98,9 @@ public static class HumanTextInputObservationValidator
             || value.MappingBasis != HumanTextInputObservationContract.ExactMappingBasis
             || string.IsNullOrWhiteSpace(value.NativeCarrierWitnessId)))
             errors.Add("text_input_exact_mapping_missing");
+        if (accepted && expectedVerb != "begin_card_play"
+            && value.NativeOwnerWitnessId != value.NativeCarrierWitnessId)
+            errors.Add("text_input_continuation_owner_mismatch");
 
         if (value.Snapshot is null)
         {
