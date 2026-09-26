@@ -79,10 +79,11 @@ const resultSchema = z.object({
 export type TextMenuCursor = typeof cursors[number];
 export type TextMenuAction = z.infer<typeof actionSchema>;
 export type TextMenuArgument = PlayerEnvironmentBoundActionArgument;
-export type TextMenuCapabilities = Omit<PlayerEnvironmentCapabilities, "snapshot_schema" | "receipt_schema"> & {
+export type TextMenuCapabilities = Omit<PlayerEnvironmentCapabilities, "snapshot_schema" | "receipt_schema" | "verbs"> & {
   input_profile: typeof TEXT_MENU_PROFILE;
   snapshot_schema: typeof TEXT_MENU_SNAPSHOT_SCHEMA;
   receipt_schema: typeof TEXT_MENU_RESULT_SCHEMA;
+  verbs: string[];
 };
 export type TextMenuSnapshot = Omit<PlayerEnvironmentSnapshot, "schema" | "interaction" | "bound_actions" | "reads"> & {
   schema: typeof TEXT_MENU_SNAPSHOT_SCHEMA;
@@ -119,12 +120,14 @@ export function decodeTextMenuCapabilities(value: unknown): DecodedPlayerPayload
   const raw = asObject(value, "text menu capabilities");
   if (raw.input_profile !== TEXT_MENU_PROFILE || raw.snapshot_schema !== TEXT_MENU_SNAPSHOT_SCHEMA ||
       raw.receipt_schema !== TEXT_MENU_RESULT_SCHEMA) throw new Error("text menu capability profile or schema mismatch");
+  const verbs = parse(raw.verbs, z.array(z.string().min(1)), "text menu verbs");
+  if (new Set(verbs).size !== verbs.length) throw new Error("text menu capability verbs must be unique");
   const normalized: JsonObject = { ...raw, snapshot_schema: "sts2.player-environment/snapshot-1",
-    receipt_schema: "sts2.player-environment/receipt-1" };
+    receipt_schema: "sts2.player-environment/receipt-1", verbs: [] };
   delete normalized.input_profile;
   const decoded = decodePlayerCapabilities(normalized);
   return { raw, data: { ...decoded.data, input_profile: TEXT_MENU_PROFILE,
-    snapshot_schema: TEXT_MENU_SNAPSHOT_SCHEMA, receipt_schema: TEXT_MENU_RESULT_SCHEMA } };
+    snapshot_schema: TEXT_MENU_SNAPSHOT_SCHEMA, receipt_schema: TEXT_MENU_RESULT_SCHEMA, verbs } };
 }
 
 export function decodeTextMenuSnapshot(value: unknown): DecodedPlayerPayload<TextMenuSnapshot> {

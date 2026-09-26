@@ -18,7 +18,8 @@ const capabilities = () => ({
   game: { version: "v", commit: "commit", branch: null, main_assembly_hash: null,
     compatibility: { status: "test", observation_allowed: true, detail: "test" },
     modset: { status: "test", fingerprint: "modset", scope: "test", loaded_mod_ids: [], detail: "test" } },
-  environment_fingerprint: "environment-1", verbs: ["activate"], snapshot_bound: true,
+  environment_fingerprint: "environment-1", verbs: ["begin_card_play", "focus_target",
+    "confirm_target", "open_information"], snapshot_bound: true,
   single_controller: true, execution_available: true,
   control: { recommended_renewal_ms: 1000 }, evidence_profiles: [], non_claims: []
 });
@@ -26,6 +27,10 @@ const capabilities = () => ({
 describe("text-menu-v1", () => {
   it("decodes only its explicit profile and preserves legacy closure", () => {
     expect(decodeTextMenuCapabilities(capabilities()).data.receipt_schema).toBe(TEXT_MENU_RESULT_SCHEMA);
+    expect(decodeTextMenuCapabilities(capabilities()).data.verbs).toContain("begin_card_play");
+    expect(() => decodeTextMenuCapabilities({ ...capabilities(), verbs: ["begin_card_play", "begin_card_play"] }))
+      .toThrow(/unique/u);
+    expect(() => decodeTextMenuCapabilities({ ...capabilities(), verbs: [""] })).toThrow();
     expect(decodeTextMenuSnapshot(page()).data.menu.cursor).toBe("root");
     expect(() => decodePlayerSnapshot(page())).toThrow();
     expect(() => decodePlayerReceipt(result())).toThrow();
