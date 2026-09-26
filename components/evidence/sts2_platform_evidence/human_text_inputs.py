@@ -201,6 +201,10 @@ def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
            and isinstance(interaction, dict)
            and all(_nonempty(interaction.get(key)) for key in (
                "interaction_id", "kind", "content_schema"))
+           and isinstance(interaction.get("content"), dict)
+           and isinstance(interaction["content"].get("surface"), dict)
+           and _nonempty(interaction["content"]["surface"].get("kind"))
+           and isinstance(interaction["content"].get("context"), dict)
            and isinstance(snapshot.get("referents"), list)
            and isinstance(policy, dict) and _nonempty(policy.get("scope"))
            and policy.get("includes_hidden_information") is False
@@ -220,6 +224,7 @@ def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
     referents: dict[str, bool] = {}
     for referent in snapshot["referents"]:
         _check(isinstance(referent, dict) and _nonempty(referent.get("referent_id"))
+               and all(_nonempty(referent.get(key)) for key in ("kind", "role"))
                and isinstance(referent.get("state"), dict)
                and type(referent["state"].get("visible")) is bool
                and referent["referent_id"] not in referents,

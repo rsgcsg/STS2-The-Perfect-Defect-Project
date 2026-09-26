@@ -477,8 +477,10 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
                     "session": {"runtime_instance_id": "runtime-1",
                                 "environment_fingerprint": "environment-1"},
                     "interaction": {"interaction_id": "combat-1", "kind": "combat_turn",
-                                    "content_schema": "combat_turn-1"},
-                    "referents": [{"referent_id": "card-1", "state": {"visible": True}}],
+                                    "content_schema": "combat_turn-1",
+                                    "content": {"surface": {"kind": "combat_turn"}, "context": {}}},
+                    "referents": [{"referent_id": "card-1", "kind": "entity",
+                                   "role": "hand_card", "state": {"visible": True}}],
                     "information_policy": {"scope": "current_page",
                                            "includes_hidden_information": False},
                     "menu": {"cursor": "root", "revision": 0,
@@ -619,6 +621,15 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
              "label": "Other", "subject_referent_id": "hidden-card", "arguments": [],
              "effect_domain": "native_input"})
         row["snapshot"]["menu_actions"].update(total_count=2, materialized_count=2)
+        row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
+        self._declare_text(bundle, [row])
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_catalog_incomplete")
+
+    def test_resealed_input_requires_actual_current_page_content(self) -> None:
+        bundle = self._bundle()
+        row = self._text_row(bundle)
+        del row["snapshot"]["interaction"]["content"]
         row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
         self._declare_text(bundle, [row])
         self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
