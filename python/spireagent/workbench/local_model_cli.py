@@ -34,9 +34,10 @@ def model_command(
             service = LocalModelService(config)
             if service.state["status"] == "recovery_required":
                 raise BoundaryError("local_model", "previous_operation_requires_recovery")
+            directory, pin = service.runtime_profile(selection)
             return install_runtime(
-                service.directory,
-                service.registry()["runtime_package"],
+                directory,
+                pin,
                 service._connector_pin(),
                 archive=runtime_archive,
             )

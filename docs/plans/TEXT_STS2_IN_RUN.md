@@ -127,6 +127,38 @@ dependency, with source and byte identities. Temporary package installation must
 exercise both legacy and text routes. No unpublished release URL is fabricated;
 legacy installed consumer pins and old artifacts are retained.
 
+### Local Workbench candidate consumption
+
+A reviewed local token registration may explicitly select
+`"runtime_profile": "text-menu-v1"`. The default catalog and its rc.6 Runtime
+stay unchanged. Only this named profile reads the operator-created
+`python/.local/text-menu-runtime-v1.json` (`stpd/local-text-runtime-v1`, with a
+`runtime_package` pin); neither a downloaded model nor an HTTP request supplies
+commands, executable paths or new package pins.
+
+Its Runtime pin selects `dependency_layout: bundled_source_candidate` and pins
+the exact archive and installed package content, Runtime source/tree, and
+`bundled_connector_pin` copied from the verified package report's `connector_sdk`.
+The consumer checks the package identity, actual nested SDK/Zod content and
+bundled lock metadata. These are actual candidate bytes, not a fabricated public
+release URL or a version-only match.
+
+With that profile's Workbench closed, the existing offline command installs the
+explicit archive with `model --action install-runtime --selection <registered-id>
+--runtime-archive <verified-archive> --config <private-project-config>`. Its
+installation is under `models/text-menu-v1/runtime`; the old `models/runtime`
+slot is retained. The legacy command without a selection still verifies only
+the shipped legacy pin. Installation refuses an active Runtime on its fixed
+port, so the new profile cannot silently replace a running instance.
+
+After installation, the existing model catalog, readiness, prepare/load and
+Human/One-Step/Auto/Stop paths use the selection's exact Runtime. An absent or
+changed text bundle reports a local-install requirement; it never falls back
+to the legacy Runtime or downloads an unapproved replacement. Loading still
+starts in Human mode. The game Mod's controls operate the loaded Runtime; this
+profile does not add a game-embedded model browser or prove that UI path has
+been exercised on an installed Workbench.
+
 ## Verification boundaries
 
 Use deterministic session/executor/SDK regressions, exact-game Host build/tests,

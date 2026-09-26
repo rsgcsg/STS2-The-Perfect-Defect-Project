@@ -288,7 +288,7 @@ def test_recovered_runtime_shutdown_requires_confirmation(
         recovery.setattr(
             service,
             "_runtime_package",
-            lambda: {
+            lambda _identity=None: {
                 "version": exact["runtime_version"],
                 "code_sha256": exact["runtime_code_sha256"],
             },
@@ -333,7 +333,7 @@ def test_recovered_runtime_shutdown_requires_confirmation(
             recovery.setattr(
                 again,
                 "_runtime_package",
-                lambda: {
+                lambda _identity=None: {
                     "version": exact["runtime_version"],
                     "code_sha256": exact["runtime_code_sha256"],
                 },
@@ -514,7 +514,7 @@ def test_shutdown_during_readiness_cannot_launch_a_late_runtime(service, monkeyp
         return {"status": "ready_to_load"}
 
     monkeypatch.setattr(service, "readiness", readiness)
-    monkeypatch.setattr(service, "_runtime_package", lambda: {"version": "fixture"})
+    monkeypatch.setattr(service, "_runtime_package", lambda _identity=None: {"version": "fixture"})
     monkeypatch.setattr(local_models.subprocess, "Popen", lambda *a, **k: calls.append(a))
     service.start("s1-human-combat-v4")
     assert checking.wait(timeout=2)
@@ -529,7 +529,8 @@ def test_start_uses_fixed_command_human_and_rejects_foreign_attestation(service,
     monkeypatch.setattr(local_models, "_check_runtime_port", lambda port: None)
     monkeypatch.setattr(service, "readiness", lambda _: {"status": "ready_to_load"})
     monkeypatch.setattr(
-        service, "_runtime_package", lambda: {"version": "0.1.0-rc.1", "code_sha256": "b" * 64}
+        service, "_runtime_package",
+        lambda _identity=None: {"version": "0.1.0-rc.1", "code_sha256": "b" * 64}
     )
     calls = []
 
@@ -1105,6 +1106,121 @@ def test_local_token_registry_adds_models_without_commands_or_runtime_override(s
     private.write_text(json.dumps(local))
     with pytest.raises(BoundaryError, match="invalid_local_token_registry"):
         service.registry()
+
+
+@pytest.fixture
+def text_runtime_profile(service, tmp_path):
+    root = tmp_path / "text-owner"
+    registry = root / "configs/developer/local-policies-v1.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_bytes((service.root / "configs/developer/local-policies-v1.json").read_bytes())
+    private = root / ".local"
+    private.mkdir()
+    entry = {"id": "text-b", "label": "Text B", "adapter": "token-v1",
+             "config": ".local/config.json", "manifest": ".local/manifest.json",
+             "runtime_profile": "text-menu-v1"}
+    (private / "token-policies-v1.json").write_text(json.dumps({
+        "schema": "stpd/local-token-policies-v1", "policies": [entry],
+    }), encoding="utf-8")
+    (private / "manifest.json").write_text(json.dumps({
+        "representation": {"input_schema": "sts2.player-environment/text-menu-snapshot-1"},
+        "manifest_id": "text-b", "artifact": {"sha256": "a" * 64},
+    }), encoding="utf-8")
+    pin = {"package": local_models.RUNTIME_PACKAGE,
+           "dependency_layout": "bundled_source_candidate"}
+    (private / "text-menu-runtime-v1.json").write_text(json.dumps({
+        "schema": "stpd/local-text-runtime-v1", "runtime_package": pin,
+    }), encoding="utf-8")
+    service.root = root
+    return entry, pin
+
+
+def test_text_runtime_profile_is_explicit_and_never_falls_back_to_legacy(
+    service, text_runtime_profile, monkeypatch,
+):
+    entry, pin = text_runtime_profile
+    shipped = service.registry()["runtime_package"]
+    assert service.runtime_profile() == (service.directory, shipped)
+    assert service._node_modules() == service.root / "node_modules"
+    directory = service.directory / "text-menu-v1"
+    assert service.runtime_profile(entry["id"]) == (directory, pin)
+    assert service._node_modules(entry["id"]) == directory / "runtime/node_modules"
+    seen = []
+
+    def validate(path, actual_pin, legacy_pin):
+        seen.append((path, actual_pin, legacy_pin))
+        return {"version": "checked"}
+
+    monkeypatch.setattr(local_models, "validate_runtime_install", validate)
+    assert service._runtime_package(entry["id"]) == {"version": "checked"}
+    assert seen == [(directory / "runtime/node_modules", pin, service._connector_pin())]
+    assert service.registry()["runtime_package"] == shipped
+
+
+@pytest.mark.parametrize("profile", ["unreviewed", "../runtime", None])
+def test_local_registry_rejects_unrecognized_runtime_profile(
+    service, text_runtime_profile, profile,
+):
+    entry, _ = text_runtime_profile
+    entry["runtime_profile"] = profile
+    (service.root / ".local/token-policies-v1.json").write_text(json.dumps({
+        "schema": "stpd/local-token-policies-v1", "policies": [entry],
+    }), encoding="utf-8")
+    with pytest.raises(BoundaryError, match="unsupported_runtime_profile"):
+        service.registry()
+
+
+@pytest.mark.parametrize("representation", [
+    {"input_schema": "sts2.player-environment/snapshot-1"}, None, [], "text-menu-v1",
+])
+def test_text_runtime_cannot_be_selected_by_legacy_or_malformed_model(
+    service, text_runtime_profile, representation,
+):
+    entry, _ = text_runtime_profile
+    path = service.root / entry["manifest"]
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["representation"] = representation
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(BoundaryError, match="text_runtime_requires_text_model"):
+        service.runtime_profile(entry["id"])
+
+
+def test_prepare_text_runtime_requires_explicit_local_install_without_download(
+    service, text_runtime_profile, monkeypatch,
+):
+    entry, _ = text_runtime_profile
+    monkeypatch.setattr(service, "readiness", lambda _: {
+        "checks": {"runtime_package": {"status": "blocked"}}, "status": "blocked",
+    })
+    monkeypatch.setattr(local_models, "install_runtime", lambda *a, **k: pytest.fail("no download"))
+    monkeypatch.setattr(service, "_start", lambda *a: pytest.fail("no model start"))
+    service.prepare_and_load(entry["id"])
+    state = finished(service)
+    assert state["error_code"] == "text_runtime_local_install_required"
+    assert state["loaded"] is False
+
+
+def test_offline_runtime_install_binds_explicit_selection_to_separate_slot(
+    service, text_runtime_profile, monkeypatch, tmp_path,
+):
+    from spireagent.workbench import local_model_cli, runtime_install
+
+    entry, pin = text_runtime_profile
+    calls = []
+    monkeypatch.setattr(local_model_cli, "running", lambda _: None)
+    monkeypatch.setattr(local_models, "LocalModelService", lambda _: service)
+    monkeypatch.setattr(runtime_install, "install_runtime", lambda *a, **k: calls.append((a, k)))
+    archive = tmp_path / "candidate.tgz"
+    local_model_cli.model_command(service.config, "install-runtime",
+                                  selection=entry["id"], runtime_archive=archive)
+    assert calls == [((service.directory / "text-menu-v1", pin, service._connector_pin()),
+                      {"archive": archive})]
+    # The original offline CLI stays pinned to rc.6 when no selection was given.
+    # It cannot infer a new Runtime profile from archive contents.
+    calls.clear()
+    local_model_cli.model_command(service.config, "install-runtime", runtime_archive=archive)
+    assert calls == [((service.directory, service.registry()["runtime_package"],
+                       service._connector_pin()), {"archive": archive})]
 
 
 def test_runtime_port_check_rejects_listener_but_accepts_closed_connections():
