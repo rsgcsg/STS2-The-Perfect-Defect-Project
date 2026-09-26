@@ -58,6 +58,18 @@ def snapshot():
     }
 
 
+def test_native_null_referent_properties_preserve_menu_bindings():
+    source = snapshot()
+    source["referents"][0]["properties"] = None
+    projected = project_text_menu_snapshot(source)
+    assert projected.action_ids == ("opaque-nav", "opaque-play-1", "opaque-play-2")
+    assert '"properties":null' in projected.state_text
+    assert "Gain 5 Block." in projected.state_text  # Actual page content remains.
+    source["referents"][0]["properties"] = "malformed"
+    with pytest.raises(BoundaryError, match="malformed_snapshot"):
+        project_text_menu_snapshot(source)
+
+
 def test_current_page_full_text_and_exact_binding_order():
     source = snapshot()
     first = project_text_menu_snapshot(source)
