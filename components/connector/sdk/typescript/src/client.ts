@@ -18,7 +18,7 @@ import {
   type RewardPotionReceipt
 } from "./rewardPotionPage.js";
 import {
-  TEXT_MENU_PROFILE, decodeTextMenuCapabilities, decodeTextMenuSnapshot,
+  TEXT_MENU_PROFILE, TEXT_MENU_RESULT_SCHEMA, decodeTextMenuCapabilities, decodeTextMenuSnapshot,
   decodeTextMenuActionResult, type TextMenuCapabilities, type TextMenuSnapshot,
   type TextMenuActionResult
 } from "./textMenu.js";
@@ -255,7 +255,8 @@ export class PlayerEnvironmentRestClient {
     }
     const value: unknown = await response.json().catch(() => ({}));
     const isReceipt = isJsonObject(value)
-      && value.schema === "sts2.player-environment/receipt-1";
+      && (value.schema === "sts2.player-environment/receipt-1"
+        || value.schema === TEXT_MENU_RESULT_SCHEMA);
     if (!response.ok && !(acceptReceiptOnError && isReceipt)) {
       throw new PlayerEnvironmentHttpError(
         `Player Environment request failed with HTTP ${response.status}: ${safeMessage(value)}`,

@@ -110,6 +110,24 @@ describe("text-menu-v1", () => {
     expect(() => decodeTextMenuActionResult(r)).toThrow();
   });
 
+  it("retains an exact Host 409 rejection instead of turning it into uncertain transport", async () => {
+    const rejected = { ...result(), status: "not_applied", effect_domain: null,
+      native_delivery: null, action: null, successor: null,
+      reason_code: "stale_snapshot", retry: "reobserve" };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(rejected), { status: 409 }));
+    const client = new PlayerEnvironmentRestClient("http://test", 1000, fetchImpl as typeof fetch);
+    const input = { requestId: rejected.request_id, expectedSnapshotId: "text-old",
+      boundActionId: "tm-old", clientSessionId: "client", controllerLeaseId: "lease",
+      controllerGeneration: 1 };
+    expect((await client.submitTextMenu(input)).data).toEqual(rejected);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // An arbitrary error or malformed typed result still fails closed.
+    fetchImpl.mockImplementationOnce(async () => new Response(JSON.stringify({ error: "failure" }), { status: 500 }));
+    await expect(client.submitTextMenu(input)).rejects.toThrow(/HTTP 500/u);
+    fetchImpl.mockImplementationOnce(async () => new Response(JSON.stringify({ ...rejected, native_delivery: "delivered" }), { status: 409 }));
+    await expect(client.submitTextMenu(input)).rejects.toThrow();
+  });
+
   it("uses the explicit selector on all four HTTP calls", async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
       String(url).includes("/capabilities?") ? capabilities() :
