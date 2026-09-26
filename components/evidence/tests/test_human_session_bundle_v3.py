@@ -8,6 +8,7 @@ from typing import Any
 
 from sts2_platform_evidence import HumanSessionBundleV3, verify_human_session_bundle
 from sts2_platform_evidence.human_text_inputs import verify_human_text_inputs
+
 from tests import test_human_session_bundle_v2 as v2
 from tests.test_human_session_bundle_v2 import canonical, sha_bytes, sha_file
 
@@ -530,6 +531,41 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
             verified.human_text_inputs[0]["record_id"] = "mutated"  # type: ignore[index]
         with self.assertRaises(TypeError):
             verified.human_text_inputs[0]["snapshot"]["snapshot_id"] = "mutated"  # type: ignore[index]
+
+    def test_native_input_mechanisms_bind_public_verbs_without_promoting_commit(self) -> None:
+        bundle = self._bundle()
+        pairs = (
+            ("controller_confirmed_input_signal", "confirm_card"),
+            ("controller_canceled_input_signal", "cancel_card_play"),
+            ("controller_target_finish_input", "confirm_target"),
+            ("controller_target_canceled_input", "cancel_card_play"),
+        )
+        for mechanism, verb in pairs:
+            with self.subTest(mechanism=mechanism):
+                row = self._text_row(bundle)
+                row["native_mechanism"] = mechanism
+                row["chosen_action"]["verb"] = verb
+                row["snapshot"]["interaction"]["kind"] = "combat_card_operation"
+                row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
+                self._declare_text(bundle, [row])
+                result = verify_human_session_bundle(bundle)
+                self.assertTrue(result.passed, result.findings)
+                self.assertEqual(result.require_value().human_text_inputs[0]["chosen_action"]["verb"], verb)
+                # The old canonical trace/count is separate from this input label.
+                self.assertEqual(result.require_value().canonical_count, 1)
+                row["chosen_action"]["verb"] = "begin_card_play"
+                row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
+                self._declare_text(bundle, [row])
+                self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                                 "human_text_input_chosen_action_not_unique")
+
+    def test_unrecognized_native_input_provenance_is_not_an_accepted_label(self) -> None:
+        bundle = self._bundle()
+        row = self._text_row(bundle)
+        row["native_mechanism"] = "unproved_future_driver"
+        self._declare_text(bundle, [row])
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_native_mechanism_invalid")
 
     def test_declared_text_stream_requires_file_and_close_seal(self) -> None:
         bundle = self._bundle()

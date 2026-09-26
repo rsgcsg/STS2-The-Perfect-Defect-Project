@@ -57,6 +57,26 @@ def test_exact_begin_is_only_label_and_negative_row_remains_accounted() -> None:
     assert report["rows"][2]["snapshot_id"] is None
     assert report["native_successor_supervision"] is False
     assert report["human_origin"] == "explicit_owner_attestation_not_machine_verifiable"
+    assert report["label_boundary"] == "owner_attested_human_exact_native_begin_input"
+
+
+def test_verified_device_provenance_does_not_change_model_input() -> None:
+    rows = (observation("session-a", "a"), observation("session-b", "b"))
+    for row in rows:
+        row["chosen_action"]["verb"] = "cancel_card_play"
+        row["snapshot"]["menu_actions"]["actions"][1]["verb"] = "cancel_card_play"
+        row["native_mechanism"] = "controller_canceled_input_signal"
+    samples, report = _project(rows)
+    targeted = copy.deepcopy(rows)
+    for row in targeted:
+        row["native_mechanism"] = "controller_target_canceled_input"
+    other, other_report = _project(targeted)
+    assert samples == other
+    assert report == other_report
+    assert report["label_boundary"] == "owner_attested_human_exact_native_input"
+    assert all("controller_" not in sample.state_text
+               and all("controller_" not in action for action in sample.action_texts)
+               for sample in samples)
 
 
 def test_duplicate_visible_input_collapses_sessions_and_blocks_leakage() -> None:
@@ -96,7 +116,14 @@ def test_source_requires_verified_archived_evidence(tmp_path) -> None:
         load_human_text_source(target, "unverified-id")
 
 
-def test_declared_bundle_archive_is_reverified_when_source_loads(tmp_path) -> None:
+@pytest.mark.parametrize(("mechanism", "verb"), [
+    ("begin_card_play_exact_factory_return", "begin_card_play"),
+    ("controller_confirmed_input_signal", "confirm_card"),
+    ("controller_canceled_input_signal", "cancel_card_play"),
+    ("controller_target_finish_input", "confirm_target"),
+    ("controller_target_canceled_input", "cancel_card_play"),
+])
+def test_declared_bundle_archive_is_reverified_when_source_loads(tmp_path, mechanism, verb) -> None:
     bundle = bundle3(tmp_path / "fixture")
     raw = bundle / "raw"
     recording = load(raw / "recording-manifest.json")
@@ -110,7 +137,7 @@ def test_declared_bundle_archive_is_reverified_when_source_loads(tmp_path) -> No
         "surface": {"kind": "combat_turn"}, "context": {}}
     current["information_policy"]["scope"] = "current_page"
     current["menu_actions"]["ordering_semantics"] = "native_order_with_fixed_information_groups"
-    current["menu_actions"]["actions"][1]["verb"] = "begin_card_play"
+    current["menu_actions"]["actions"][1]["verb"] = verb
     artifact = {"product": "fixture", "version": "1", "source_revision": "b" * 40,
                 "source_digest_sha256": "a" * 64, "sha256": "a" * 64,
                 "module_version_id": "11111111-1111-1111-1111-111111111111"}
@@ -134,7 +161,7 @@ def test_declared_bundle_archive_is_reverified_when_source_loads(tmp_path) -> No
         "mapping_basis": "text_menu_native_reference_equality",
         "native_owner_witness_id": "owner-1", "native_subject_witness_id": "subject-1",
         "native_carrier_witness_id": "carrier-1",
-        "native_mechanism": "begin_card_play_exact_factory_return",
+        "native_mechanism": mechanism,
         "disposition": "accepted_input", "external_controller_active": False,
     }
     stream = raw / "human-text-inputs.jsonl"
@@ -156,5 +183,11 @@ def test_declared_bundle_archive_is_reverified_when_source_loads(tmp_path) -> No
     source = publish_human_text_source(target, (evidence.artifact_id,), PRODUCER)
     _, loaded = load_human_text_source(target, source.artifact_id)
     assert loaded == rows
+    samples, _ = _project((*loaded, observation("other-session", "other-page")))
+    archived = next(sample for sample in samples if sample.chosen_index == 1
+                    and verb in sample.action_texts[1])
+    assert archived.action_keys[archived.chosen_index] == row["chosen_action"]["action_id"]
+    assert mechanism not in archived.state_text
+    assert all(mechanism not in action for action in archived.action_texts)
     with pytest.raises(BoundaryError, match="independent_groups_required"):
         _project(loaded)
