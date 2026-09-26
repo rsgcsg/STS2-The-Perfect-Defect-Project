@@ -195,8 +195,16 @@ def _project(rows: tuple[dict, ...]) -> tuple[tuple[ModelSample, ...], dict]:
         included = result["status"] == "applied"
         lineage.append({
             "source_index": ordinal, "record_id": row["record_id"],
+            "run_id": row["run_id"], "step_index": row["step_index"],
             "source_ref": row["source_ref"], "origin": row["origin"],
             "snapshot_id": snapshot["snapshot_id"],
+            "native_snapshot_id": snapshot["menu"]["native_snapshot_id"],
+            "menu_cursor": snapshot["menu"]["cursor"],
+            "candidate_digest": public.candidate_digest,
+            "candidate_action_ids": list(public.action_ids),
+            "selected_action_id": row["selected_action_id"],
+            "request_id": row["request"]["request_id"],
+            "result_status": result["status"],
             "successor_snapshot_id": result["successor"]["snapshot_id"] if included else None,
             "effect_domain": result.get("effect_domain"),
             "native_delivery": result.get("native_delivery"),
