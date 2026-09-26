@@ -88,6 +88,105 @@ public sealed class PlayerEnvironmentContractTests
     }
 
     [Fact]
+    public void TextRestOrderUsesNativeOptionIndexAndRetainsExactActions()
+    {
+        var surface = new RestSiteSurface("rest_site", "room", new[]
+        {
+            new VisibleRestOption("dig", 2, "DIG", "Dig", null, true),
+            new VisibleRestOption("rest", 0, "REST", "Rest", null, true),
+            new VisibleRestOption("smith", 1, "SMITH", "Smith", null, true)
+        }, false);
+        PlayerEnvironmentBoundAction Action(string hash, string subject) =>
+            new(hash, "activate", "room", subject,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), hash);
+        PlayerEnvironmentBoundAction[] hashed =
+        {
+            Action("a", "dig"), Action("b", "smith"), Action("c", "rest")
+        };
+
+        AssertExactNativeOrder(surface, hashed, hashed[2], hashed[1], hashed[0]);
+    }
+
+    [Fact]
+    public void TextShopOrderUsesVisibleInventoryCategoryAndSlotOrder()
+    {
+        var surface = new ShopInventorySurface("shop_inventory", "screen",
+            new[]
+            {
+                new VisibleShopCardOffer("card-1", "slot-card-1", 1, 80, true, true,
+                    true, true, null, false, null),
+                new VisibleShopCardOffer("card-0", "slot-card-0", 0, 70, true, true,
+                    true, true, null, false, null)
+            },
+            new[] { new VisibleShopRelicOffer("relic", "slot-relic", 0, 150,
+                true, true, true, true, null, null) },
+            new[] { new VisibleShopPotionOffer("potion", "slot-potion", 0, 50,
+                true, true, true, true, null, "POTION", "Potion", null, "Common") },
+            new VisibleShopCardRemovalOffer("removal", "slot-removal", 0, 75, 25,
+                true, true, true, true, null), true);
+        PlayerEnvironmentBoundAction Action(string hash, string subject) =>
+            new(hash, "activate", "screen", subject,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), hash);
+        PlayerEnvironmentBoundAction[] hashed =
+        {
+            Action("a", "removal"), Action("b", "potion"),
+            Action("c", "relic"), Action("d", "card-1"), Action("e", "card-0")
+        };
+
+        AssertExactNativeOrder(surface, hashed,
+            hashed[4], hashed[3], hashed[2], hashed[1], hashed[0]);
+    }
+
+    [Fact]
+    public void TextMapOrderUsesCurrentNativeRouteList()
+    {
+        var surface = new MapNavigationSurface("map_navigation", "map", true, false,
+            "none", new[]
+            {
+                new VisibleMapChoice("left", 1, 2, "monster"),
+                new VisibleMapChoice("right", 2, 2, "rest")
+            });
+        PlayerEnvironmentBoundAction Action(string hash, string subject) =>
+            new(hash, "select", "map", subject,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), hash);
+        PlayerEnvironmentBoundAction[] hashed =
+        {
+            Action("a", "right"), Action("b", "left")
+        };
+
+        AssertExactNativeOrder(surface, hashed, hashed[1], hashed[0]);
+    }
+
+    [Fact]
+    public void TextTreasureOrderUsesVisibleRelicHoldersAndRetainsControlOrder()
+    {
+        VisibleTreasureRelic Relic(string id) => new(id, id, id, null, "Common",
+            Array.Empty<VisibleKeyword>(), Array.Empty<VisibleCard>());
+        var surface = new TreasureRoomSurface("treasure_room", "choose", "room", true,
+            new[] { Relic("left"), Relic("right") }, true, true, false);
+        PlayerEnvironmentBoundAction Action(string hash, string? subject) =>
+            new(hash, "activate", "room", subject,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), hash);
+        PlayerEnvironmentBoundAction[] hashed =
+        {
+            Action("a", null), Action("b", "right"), Action("c", "left")
+        };
+
+        AssertExactNativeOrder(surface, hashed, hashed[2], hashed[1], hashed[0]);
+    }
+
+    private static void AssertExactNativeOrder(ILiveSurface surface,
+        PlayerEnvironmentBoundAction[] input,
+        params PlayerEnvironmentBoundAction[] expected)
+    {
+        IReadOnlyList<PlayerEnvironmentBoundAction> ordered =
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, input);
+        Assert.Equal(expected.Length, ordered.Count);
+        for (int index = 0; index < expected.Length; index++)
+            Assert.Same(expected[index], ordered[index]);
+    }
+
+    [Fact]
     public void TextMultiSelectUsesVisibleCardOrderAndLeavesConfirmAfterCards()
     {
         VisibleCard Card(string id) => new(id, id, id, "Skill", "1", null,
