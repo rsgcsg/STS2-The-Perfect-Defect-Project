@@ -12,6 +12,32 @@ namespace STS2Connector;
 public sealed class TextMenuTests
 {
     [Fact]
+    public void PassiveRenderedTipStaysOnCurrentPageWithoutReplacingNativeActions()
+    {
+        TextMenuFrame frame = Frame();
+        var tip = new JsonObject
+        {
+            ["text_tips"] = new JsonArray(new JsonObject
+            {
+                ["title"] = "Evoke", ["description"] = "Rendered orb effect"
+            }),
+            ["card_previews"] = new JsonArray()
+        };
+        PlayerEnvironmentSnapshot page = NativeTextMenuInformation.AttachPassiveHoverFacts(
+            frame.Page, (new JsonNode[] { tip }, 0));
+        TextMenuSnapshot projected = new TextMenuSession().Observe(
+            frame with { Page = page }).Snapshot;
+
+        Assert.Equal("combat_turn", projected.Interaction.Kind);
+        Assert.Equal("interactive", projected.Status);
+        Assert.Equal(new[] { "select", "open_information" },
+            projected.MenuActions.Actions.Select(action => action.Verb));
+        Assert.Equal("Evoke", projected.Interaction.Content.Surface
+            ["visible_hover_tips"]?[0]?["text_tips"]?[0]?["title"]?.GetValue<string>());
+        Assert.Equal("combat_turn", frame.Page.Interaction.Content.Surface["kind"]?.GetValue<string>());
+    }
+
+    [Fact]
     public void GeneratedTextIdentifiersPassTheActualSharedHttpActionAdmission()
     {
         var executor = Executor(() => Frame(() => NativeInputResult.Delivered("fixture")));
