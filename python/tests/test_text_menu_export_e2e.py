@@ -14,16 +14,17 @@ from test_text_menu_data import row
 from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
+from stpd import token_policy_installation
 from stpd.fullrun.text_menu_data import publish_text_menu_bc_view, publish_text_menu_source
 from stpd.fullrun.token_inputs import load_token_inputs, publish_token_inputs
 from stpd.policy.token_decision import TokenDecisionScorer, export_token_model
 from stpd.policy.token_port import ROOT, TokenPolicyAdapter
-from stpd.token_policy_installation import bind_text_menu_export
+from stpd.token_policy_installation import bind_text_menu_export, validate
 from stpd.workers.token_ranking import TokenConfig
 from stpd.workers.token_worker import execute_tokens, prepare_token_run
 
 
-def test_synthetic_source_to_real_export_and_installed_adapter(tmp_path):
+def test_synthetic_source_to_real_export_and_installed_adapter(tmp_path, monkeypatch):
     torch.set_num_threads(2)
     archive = store(tmp_path / "artifacts")
     first, second = row("one"), row("two", native=True)
@@ -89,6 +90,13 @@ def test_synthetic_source_to_real_export_and_installed_adapter(tmp_path):
             ROOT, destination, config_path, manifest_path, manifest_id="synthetic-text-menu-1",
             policy=policy, requirements=requirements, support=support,
         )
+        artifact_target = (destination / "model.json").resolve()
+        manifest_directory = manifest_path.parent.resolve()
+        artifact_pin = Path(manifest["artifact"]["path"])
+        same_drive = artifact_target.drive.casefold() == manifest_directory.drive.casefold()
+        assert artifact_pin.is_absolute() is not same_drive
+        assert (manifest_directory / artifact_pin).resolve() == artifact_target
+        validate(ROOT, config_path, manifest_path)
         adapter = TokenPolicyAdapter(config_path, manifest_path)
         keys = list(score_map)
         digest = hashlib.sha256(canonical_json(keys).encode()).hexdigest()
@@ -104,3 +112,22 @@ def test_synthetic_source_to_real_export_and_installed_adapter(tmp_path):
         with pytest.raises(BoundaryError, match="candidate_binding_mismatch"):
             adapter.decide(request)
         adapter.close()
+
+        # Runtime accepts absolute artifact paths, which are required when a
+        # Windows model export and the Python manifest are on different drives.
+        absolute_config = folder / "absolute-config.json"
+        absolute_manifest = folder / "absolute-manifest.json"
+        with monkeypatch.context() as patch:
+            patch.setattr(token_policy_installation, "_manifest_artifact_path",
+                          lambda artifact, _directory: str(artifact))
+            _, bound = bind_text_menu_export(
+                ROOT, destination, absolute_config, absolute_manifest,
+                manifest_id="synthetic-text-menu-absolute-1", policy=policy,
+                requirements=requirements, support=support,
+            )
+        assert Path(bound["artifact"]["path"]) == destination / "model.json"
+        validate(ROOT, absolute_config, absolute_manifest)
+        absolute_adapter = TokenPolicyAdapter(absolute_config, absolute_manifest)
+        absolute_request = {**request, "manifest": bound, "candidate_digest": digest}
+        assert absolute_adapter.decide(absolute_request)["candidate_digest"] == digest
+        absolute_adapter.close()
