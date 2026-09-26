@@ -43,6 +43,12 @@ public static partial class ConnectorMod
         }
         try
         {
+            if (inputProfile == TextMenuContract.Profile)
+            {
+                var menuTask = RunOnMainThread(PlayerEnvironmentService.ObserveTextMenu);
+                SendJson(response, menuTask.GetAwaiter().GetResult());
+                return;
+            }
             var task = RunOnMainThread(() => PlayerEnvironmentService.Observe(inputProfile));
             SendJson(response, task.GetAwaiter().GetResult());
         }
@@ -142,6 +148,17 @@ public static partial class ConnectorMod
         }
         try
         {
+            if (action.InputProfile == TextMenuContract.Profile)
+            {
+                var menuTask = RunOnMainThread(() => PlayerEnvironmentService.SubmitTextMenu(action));
+                TextMenuActionResult result = menuTask.GetAwaiter().GetResult();
+                response.StatusCode = result.Status switch
+                {
+                    "applied" => 200, "unknown" => 202, _ => 409
+                };
+                SendJson(response, result);
+                return;
+            }
             var task = RunOnMainThread(() => PlayerEnvironmentService.Submit(action));
             PlayerEnvironmentActionReceipt receipt = task.GetAwaiter().GetResult();
             response.StatusCode = receipt.Delivery switch
@@ -284,6 +301,17 @@ public static partial class ConnectorMod
         if (!IsSafeProtocolIdentifier(requestId, 128))
         {
             SendApiError(response, 400, "invalid_request_id", "A bounded request_id is required.");
+            return;
+        }
+        if (inputProfile == TextMenuContract.Profile)
+        {
+            TextMenuActionResult? result = PlayerEnvironmentService.FindTextMenuResult(requestId);
+            if (result == null)
+            {
+                SendApiError(response, 404, "request_not_found", "No text-menu result exists for this request ID.");
+                return;
+            }
+            SendJson(response, result);
             return;
         }
         PlayerEnvironmentActionReceipt? receipt = PlayerEnvironmentService.FindReceipt(requestId);
