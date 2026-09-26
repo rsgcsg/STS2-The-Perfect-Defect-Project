@@ -28,15 +28,14 @@ public sealed class BundleTextMenuTests
     }
 
     [Fact]
-    public void PreviewInspectionDoesNotCreateAPartialMenuFromUnboundPublicCards()
+    public void RecognizedPreviewFailsClosedWhenPublicCardsAreUnbound()
     {
         TextMenuFrame frame = Frame("card_bundle_selection", "preview", "interactive", "complete");
         var entities = new NativeEntityRegistry();
 
         TextMenuFrame result = NativeTextMenuBundle.AppendPreviewInspection(frame, entities);
 
-        Assert.Same(frame, result);
-        Assert.Single(result.Leaves);
+        AssertPartialWithoutActions(result);
         Assert.Equal(0, entities.TrackedReferenceCount);
     }
 
@@ -68,9 +67,20 @@ public sealed class BundleTextMenuTests
 
         TextMenuFrame result = NativeTextMenuBundle.AppendPreviewInspection(frame, entities);
 
-        Assert.Same(frame, result);
-        Assert.Single(result.Leaves);
+        AssertPartialWithoutActions(result);
         Assert.Equal(0, entities.TrackedReferenceCount);
+    }
+
+    private static void AssertPartialWithoutActions(TextMenuFrame result)
+    {
+        Assert.Equal("settling", result.Page.Status);
+        Assert.Equal("partial", result.Page.Completeness.Status);
+        Assert.Contains("current_native_bundle_preview_inspection_binding",
+            result.Page.Completeness.Missing);
+        Assert.Empty(result.Leaves);
+        TextMenuSnapshot observed = new TextMenuSession().Observe(result).Snapshot;
+        Assert.Equal("unavailable", observed.MenuActions.Status);
+        Assert.Empty(observed.MenuActions.Actions);
     }
 
     private static TextMenuFrame Frame(
