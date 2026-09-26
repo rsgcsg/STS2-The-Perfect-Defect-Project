@@ -49,6 +49,31 @@ internal static class NativeTextMenuFrameBuilder
 
         // An entered native information page owns input over the room. Do not
         // accidentally append combat actions from the legacy underlying room.
+        if (page.Interaction.Kind == "native_map")
+        {
+            if (legacy.HostObservation.Surface is MapNavigationSurface
+                && legacy.Snapshot.BoundActions.Status == "complete")
+            {
+                var referents = page.Referents.ToList();
+                foreach (PlayerEnvironmentBoundAction action in
+                         legacy.Snapshot.BoundActions.Actions)
+                    if (legacy.Bindings.TryGetValue(action.BoundActionId,
+                            out PlayerEnvironmentNativeBinding? binding))
+                    {
+                        leaves.Add(FromLegacy(action, binding, executeLegacy));
+                        foreach (string id in action.Arguments.Select(value => value.ReferentId)
+                                     .Concat(action.SubjectReferentId is { } subject
+                                         ? new[] { subject } : Array.Empty<string>()))
+                            if (!referents.Any(value => value.ReferentId == id)
+                                && legacy.Snapshot.Referents.FirstOrDefault(value =>
+                                    value.ReferentId == id && value.State.Visible)
+                                    is { } native)
+                                referents.Add(native);
+                    }
+                page = page with { Referents = referents };
+            }
+            return new TextMenuFrame(page, owner, leaves);
+        }
         if (page.Interaction.Stage == "native_information_page"
             || page.Interaction.Kind == "native_information_unresolved")
             return new TextMenuFrame(page, owner, leaves);
@@ -88,6 +113,18 @@ internal static class NativeTextMenuFrameBuilder
                     "select_potion_target", "Select " + target.Entity.Name,
                     targetId, () => NativeTextMenuPotions.SelectTarget(exactTarget)));
             }
+            if (NativeTextMenuPotions.MerchantTarget() is { } merchant)
+            {
+                string merchantId = entities.GetId(merchant, "merchant_button");
+                if (!referents.Any(value => value.ReferentId == merchantId))
+                    referents.Add(new PlayerEnvironmentReferent(merchantId,
+                        "merchant_target", "control", "Merchant",
+                        new PlayerEnvironmentReferentState(true, true, false, false,
+                            "native_visible_fact"), null, null));
+                leaves.Add(Leaf("select_foul_potion_merchant:" + merchantId,
+                    "select_potion_target", "Select merchant", merchantId,
+                    () => NativeTextMenuPotions.SelectMerchant(merchant)));
+            }
             leaves.Add(Leaf("cancel_potion_target:" + potionId,
                 "cancel_potion_target", "Cancel potion targeting", potionId,
                 NativeTextMenuPotions.CancelTargeting));
@@ -109,6 +146,7 @@ internal static class NativeTextMenuFrameBuilder
                         ["kind"] = "potion_targeting",
                         ["potion_referent_id"] = potionId,
                         ["target_count"] = targets.Count
+                            + (NativeTextMenuPotions.MerchantTarget() == null ? 0 : 1)
                     }, ValidContext(page.Interaction.Content.Context,
                         "combat_potion_targeting")),
                     Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
@@ -208,8 +246,25 @@ internal static class NativeTextMenuFrameBuilder
                 if (legacy.Bindings.TryGetValue(action.BoundActionId,
                         out PlayerEnvironmentNativeBinding? binding))
                     leaves.Add(FromLegacy(action, binding, executeLegacy));
+            // The persistent top-bar belt may still be an enabled native
+            // control in shops/events outside combat. In particular this is
+            // how Foul Potion's real merchant-targeting flow is entered.
+            leaves.AddRange(NativeTextMenuPotions.Openers(entities));
         }
 
+        if (leaves.Any(leaf => leaf.Verb == "open_potion_popup"))
+        {
+            var referents = page.Referents.ToList();
+            foreach (TextMenuLeaf opener in leaves.Where(leaf =>
+                         leaf.Verb == "open_potion_popup"))
+                if (opener.SubjectReferentId is { } potionId
+                    && !referents.Any(value => value.ReferentId == potionId))
+                    referents.Add(new PlayerEnvironmentReferent(potionId,
+                        "potion", "entity", opener.Label,
+                        new PlayerEnvironmentReferentState(true, true, false,
+                            false, "native_visible_fact"), null, null));
+            page = page with { Referents = referents };
+        }
         return new TextMenuFrame(page, owner, leaves);
     }
 

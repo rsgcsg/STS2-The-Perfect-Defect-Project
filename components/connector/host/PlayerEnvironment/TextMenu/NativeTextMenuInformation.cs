@@ -15,6 +15,7 @@ using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
@@ -232,6 +233,13 @@ internal static class NativeTextMenuInformation
 
     private static void RecognizeCurrentNativePage()
     {
+        NInspectCardScreen? inspectCard = CurrentInspectCard();
+        if (inspectCard != null)
+        {
+            _ownedScreen = inspectCard;
+            _ownedKind = "inspect_card";
+            return;
+        }
         NInspectRelicScreen? inspect = NGame.Instance?.InspectRelicScreen;
         if (inspect != null && ConnectorMod.IsNodeVisible(inspect)
             && ActiveScreenContext.Instance.IsCurrent(inspect))
@@ -286,6 +294,19 @@ internal static class NativeTextMenuInformation
         }
     }
 
+    private static NInspectCardScreen? CurrentInspectCard()
+    {
+        Node? root = NGame.Instance?.GetTree()?.Root;
+        if (root == null) return null;
+        NInspectCardScreen[] screens = ConnectorMod.FindAll<NInspectCardScreen>(root)
+            .Where(screen => ConnectorMod.IsLiveNode(screen)
+                && ConnectorMod.IsNodeVisible(screen)
+                && ActiveScreenContext.Instance.IsCurrent(screen)).ToArray();
+        if (screens.Length > 1)
+            throw new InvalidOperationException("Ambiguous native card inspection owner.");
+        return screens.SingleOrDefault();
+    }
+
     private static NativeTextMenuInformationCapture CaptureOwned(
         SnapshotBuildResult legacy,
         NativeEntityRegistry entities)
@@ -295,7 +316,8 @@ internal static class NativeTextMenuInformation
         string key = $"native_information:{legacy.Snapshot.Session.RuntimeInstanceId}:{kind}:{entities.GetId(screen, "native_page")}";
         if (_returnPending)
         {
-            if (screen is NInspectRelicScreen relic && !ConnectorMod.IsNodeVisible(relic))
+            if (screen is NInspectRelicScreen relic && !ConnectorMod.IsNodeVisible(relic)
+                || screen is NInspectCardScreen card && !ConnectorMod.IsNodeVisible(card))
             {
                 ClearOwner();
                 return Capture(legacy, entities);
@@ -309,15 +331,18 @@ internal static class NativeTextMenuInformation
         {
             if (legacy.HostObservation.Surface is not MapNavigationSurface)
                 return FailClosedPage(legacy, key, "native_map_content_unresolved");
+            bool mapCatalogComplete = legacy.Snapshot.Status == "interactive"
+                && legacy.Snapshot.BoundActions.Status == "complete";
+            NBackButton? back = ((NMapScreen)screen).GetNodeOrNull<NBackButton>("Back");
             PlayerEnvironmentSnapshot mapPage = legacy.Snapshot with
             {
-                Status = "interactive",
+                Status = mapCatalogComplete ? "interactive" : "settling",
                 Referents = PlayerEnvironmentService.ProjectFactReferents(
                     legacy.Snapshot.Interaction.Content.Surface).Values.ToArray(),
                 Completeness = legacy.Snapshot.Completeness with
                 {
-                    Status = "complete",
-                    InteractionDiscovery = "complete_for_current_native_map_return"
+                    Status = mapCatalogComplete ? "complete" : "partial",
+                    InteractionDiscovery = "current_native_map_travel_and_back"
                 },
                 Interaction = legacy.Snapshot.Interaction with
                 {
@@ -328,11 +353,15 @@ internal static class NativeTextMenuInformation
                 }
             };
             return new NativeTextMenuInformationCapture(mapPage, key,
-                new[] { Leaf("return_native_map", "root", "return_native_map",
-                    "Close map", () => Return(screen, kind)) });
+                back is { IsEnabled: true } && ConnectorMod.IsNodeVisible(back)
+                    ? new[] { Leaf("return_native_map", "root", "return_native_map",
+                        "Close map", () => ReturnMap((NMapScreen)screen, back)) }
+                    : Array.Empty<NativeTextMenuInformationLeaf>());
         }
         if (screen is NInspectRelicScreen relicScreen)
             return CaptureRelic(legacy, relicScreen, key);
+        if (screen is NInspectCardScreen cardScreen)
+            return CaptureCardInspect(legacy, cardScreen, key);
         if (screen is NHoverTipSet)
             return CaptureTip(legacy, key);
 
@@ -400,10 +429,21 @@ internal static class NativeTextMenuInformation
                 Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
             }
         };
-        return new NativeTextMenuInformationCapture(page, key,
-            new[] { Leaf("return_native_information", "root",
+        var pageLeaves = new List<NativeTextMenuInformationLeaf>();
+        NButton? capstoneBack = screen is Node capstone
+            ? capstone.GetNodeOrNull<NButton>("BackButton") : null;
+        if (capstoneBack is { IsEnabled: true }
+            && ConnectorMod.IsNodeVisible(capstoneBack))
+            pageLeaves.Add(Leaf("return_native_information", "root",
                 "return_native_information", "Return from information page",
-                () => Return(screen, kind)) });
+                () => ReturnCapstone(screen, kind, capstoneBack)));
+        if (screen is NDeckViewScreen deck)
+        {
+            var visible = page.Referents.ToList();
+            AddDeckCardInspectLeaves(deck, entities, pageLeaves, visible);
+            page = page with { Referents = visible };
+        }
+        return new NativeTextMenuInformationCapture(page, key, pageLeaves);
     }
 
     private static NativeTextMenuInformationCapture FailClosedPage(
@@ -544,7 +584,7 @@ internal static class NativeTextMenuInformation
                 || holder.Relic?.Model == null
                 || !holder.IsEnabled || !ConnectorMod.IsNodeVisible(holder)) continue;
             IHoverTip[] tips = holder.Relic.Model.HoverTips.ToArray();
-            if (tips.Length == 0 || tips.Any(tip => tip is not HoverTip)) continue;
+            if (tips.Length == 0) continue;
             string id = entities.GetId(holder, "relic_holder");
             leaves.Add(Leaf($"show_relic_tips:{id}", "relic_tips",
                 "show_relic_tips", $"Show {holder.Relic.Model.Title.GetFormattedText()} tips",
@@ -567,9 +607,9 @@ internal static class NativeTextMenuInformation
             return NativeInputResult.Rejected("native_relic_tip_owner_changed",
                 "The exact relic holder is no longer current and enabled.");
         IHoverTip[] tips = holder.Relic.Model.HoverTips.ToArray();
-        if (tips.Length == 0 || tips.Any(tip => tip is not HoverTip))
+        if (tips.Length == 0)
             return NativeInputResult.Rejected("native_relic_tip_unavailable",
-                "The current relic tips cannot be rendered as a complete text page.");
+                "The current relic has no native hover tips.");
         NHoverTipSet.Remove(holder);
         NHoverTipSet? set = NHoverTipSet.CreateAndShow(holder, tips);
         if (set == null || !ConnectorMod.IsNodeVisible(set))
@@ -626,8 +666,7 @@ internal static class NativeTextMenuInformation
             foreach (NCardHolder holder in VisibleNodes<NCardHolder>(cardRoot))
             {
                 if (holder.CardNode?.Visibility != ModelVisibility.Visible
-                    || holder.CardModel == null
-                    || holder.CardModel.HoverTips.Any(tip => tip is not HoverTip))
+                    || holder.CardModel == null)
                     continue;
                 AddSignalTipLeaf(entities, leaves, holder, "card_tips",
                     Control.SignalName.FocusEntered, "Card tips");
@@ -638,7 +677,6 @@ internal static class NativeTextMenuInformation
         {
             foreach (NPower power in VisibleNodes<NPower>(room))
             {
-                if (power.Model.HoverTips.Any(tip => tip is not HoverTip)) continue;
                 AddSignalTipLeaf(entities, leaves, power, "power_tips",
                     Control.SignalName.MouseEntered, "Power tips");
             }
@@ -647,8 +685,6 @@ internal static class NativeTextMenuInformation
                     Control.SignalName.MouseEntered, "Intent tips");
             foreach (NOrb orb in VisibleNodes<NOrb>(room))
             {
-                if (orb.Model?.HoverTips.Any(tip => tip is not HoverTip) == true)
-                    continue;
                 AddSignalTipLeaf(entities, leaves, orb, "orb_tips",
                     Control.SignalName.FocusEntered, "Orb tips");
             }
@@ -739,8 +775,7 @@ internal static class NativeTextMenuInformation
     {
         Node? textContainer = set.GetNodeOrNull<Node>("textHoverTipContainer");
         Node? cardContainer = set.GetNodeOrNull<Node>("cardHoverTipContainer");
-        if (textContainer == null || cardContainer == null
-            || cardContainer.GetChildCount() > 0) return null;
+        if (textContainer == null || cardContainer == null) return null;
         var texts = new JsonArray();
         foreach (Node entry in textContainer.GetChildren())
         {
@@ -753,7 +788,30 @@ internal static class NativeTextMenuInformation
                 ["description"] = description.Text
             });
         }
-        return texts.Count > 0 ? texts : null;
+        var cards = new JsonArray();
+        foreach (Node entry in cardContainer.GetChildren())
+        {
+            if (entry is not Control control || !ConnectorMod.IsNodeVisible(control))
+                return null;
+            NCard? card = control.GetNodeOrNull<NCard>("%Card");
+            if (card == null || !ConnectorMod.IsNodeVisible(card)
+                || card.Visibility != ModelVisibility.Visible)
+                return null;
+            var title = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%TitleLabel");
+            var cost = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%EnergyLabel");
+            var description = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%DescriptionLabel");
+            if (title == null || cost == null || description == null)
+                return null;
+            cards.Add(new JsonObject
+            {
+                ["title"] = title.Text,
+                ["cost"] = cost.Text,
+                ["description"] = description.Text
+            });
+        }
+        return texts.Count + cards.Count > 0
+            ? new JsonObject { ["text_tips"] = texts, ["card_previews"] = cards }
+            : null;
     }
 
     private static NativeInputResult OpenRelic(
@@ -789,7 +847,11 @@ internal static class NativeTextMenuInformation
         // Read the text actually rendered by native's unlocked/seen logic.
         // The underlying RelicModel may contain facts the screen hides.
         string title = screen.GetNode<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%RelicName").Text;
+        string rarity = screen.GetNode<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%Rarity").Text;
         string description = screen.GetNode<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%RelicDescription").Text;
+        string flavor = screen.GetNode<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%FlavorText").Text;
+        NGoldArrowButton? left = screen.GetNodeOrNull<NGoldArrowButton>("LeftArrow");
+        NGoldArrowButton? right = screen.GetNodeOrNull<NGoldArrowButton>("RightArrow");
         PlayerEnvironmentSnapshot page = legacy.Snapshot with
         {
             Status = "interactive",
@@ -805,14 +867,158 @@ internal static class NativeTextMenuInformation
                 ContentSchema = "sts2.player-environment/surface/relic_inspect_text_menu-1",
                 Content = new PlayerEnvironmentInteractionContent(
                     new JsonObject { ["kind"] = "relic_inspect",
-                        ["title"] = title, ["description"] = description },
+                        ["title"] = title, ["rarity"] = rarity,
+                        ["description"] = description, ["flavor"] = flavor },
                     new JsonObject { ["kind"] = "relic_inspect" }),
                 Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
             }
         };
-        return new NativeTextMenuInformationCapture(page, key,
-            new[] { Leaf("return_relic_inspect", "root", "return_relic_inspect",
-                "Close relic inspection", () => Return(screen, "relic_inspect")) });
+        var leaves = new List<NativeTextMenuInformationLeaf>
+        {
+            Leaf("return_relic_inspect", "root", "return_relic_inspect",
+                "Close relic inspection", () => Return(screen, "relic_inspect"))
+        };
+        if (left is { IsEnabled: true } && ConnectorMod.IsNodeVisible(left))
+            leaves.Add(Leaf("previous_relic", "root", "previous_relic",
+                "Previous relic", () => ClickRelicArrow(screen, left, "LeftArrow")));
+        if (right is { IsEnabled: true } && ConnectorMod.IsNodeVisible(right))
+            leaves.Add(Leaf("next_relic", "root", "next_relic",
+                "Next relic", () => ClickRelicArrow(screen, right, "RightArrow")));
+        return new NativeTextMenuInformationCapture(page, key, leaves);
+    }
+
+    private static NativeInputResult ClickRelicArrow(
+        NInspectRelicScreen screen, NGoldArrowButton arrow, string path)
+    {
+        if (!ReferenceEquals(_ownedScreen, screen)
+            || !IsExactOwner(screen, "relic_inspect")
+            || !ReferenceEquals(screen.GetNodeOrNull<NGoldArrowButton>(path), arrow)
+            || !arrow.IsEnabled || !ConnectorMod.IsNodeVisible(arrow))
+            return NativeInputResult.Rejected("relic_inspect_arrow_changed",
+                "The native relic inspection arrow is no longer enabled.");
+        arrow.ForceClick();
+        return NativeInputResult.Delivered("native_relic_inspect_arrow_clicked");
+    }
+
+    private static void AddDeckCardInspectLeaves(
+        NDeckViewScreen deck, NativeEntityRegistry entities,
+        List<NativeTextMenuInformationLeaf> leaves,
+        List<PlayerEnvironmentReferent> referents)
+    {
+        NCardGrid? grid = deck.GetNodeOrNull<NCardGrid>("CardGrid");
+        if (grid == null || !IsExactOwner(deck, "run_deck")) return;
+        foreach (NGridCardHolder holder in grid.CurrentlyDisplayedCardHolders)
+        {
+            CardModel? card = holder.CardModel;
+            if (card == null || !ConnectorMod.IsLiveNode(holder)
+                || !ConnectorMod.IsNodeVisible(holder)
+                || holder.CardNode?.Visibility != ModelVisibility.Visible)
+                continue;
+            string id = entities.GetId(card, "card");
+            if (!referents.Any(value => value.ReferentId == id))
+                referents.Add(new PlayerEnvironmentReferent(id, "card", "entity",
+                    holder.CardNode.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%TitleLabel")?.Text,
+                    new PlayerEnvironmentReferentState(true, true, false, false,
+                        "native_visible_fact"), null, null));
+            NGridCardHolder exactHolder = holder;
+            CardModel exactCard = card;
+            leaves.Add(new NativeTextMenuInformationLeaf(
+                "inspect_deck_card:" + id, "root", "inspect_deck_card",
+                "Inspect " + (referents.First(value => value.ReferentId == id).Label
+                    ?? "card"), id,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(),
+                () => OpenDeckCardInspect(deck, grid, exactHolder, exactCard)));
+        }
+    }
+
+    private static NativeInputResult OpenDeckCardInspect(
+        NDeckViewScreen deck, NCardGrid grid,
+        NGridCardHolder holder, CardModel card)
+    {
+        if (!IsExactOwner(deck, "run_deck")
+            || !ReferenceEquals(deck.GetNodeOrNull<NCardGrid>("CardGrid"), grid)
+            || !grid.CurrentlyDisplayedCardHolders.Contains(holder)
+            || !ReferenceEquals(holder.CardModel, card)
+            || !ConnectorMod.IsLiveNode(holder)
+            || !ConnectorMod.IsNodeVisible(holder)
+            || holder.CardNode?.Visibility != ModelVisibility.Visible)
+            return NativeInputResult.Rejected("deck_card_holder_changed",
+                "The exact native deck card holder is no longer displayed.");
+        // Native NCardGrid receives the holder's Pressed signal, then
+        // NDeckViewScreen receives HolderPressed and opens NInspectCardScreen.
+        holder.EmitSignal(NCardHolder.SignalName.Pressed, holder);
+        return NativeInputResult.Delivered("native_deck_card_holder_pressed");
+    }
+
+    private static NativeTextMenuInformationCapture CaptureCardInspect(
+        SnapshotBuildResult legacy, NInspectCardScreen screen, string key)
+    {
+        NCard? card = screen.GetNodeOrNull<NCard>("Card");
+        var title = card?.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%TitleLabel");
+        var cost = card?.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%EnergyLabel");
+        var description = card?.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%DescriptionLabel");
+        NButton? left = screen.GetNodeOrNull<NButton>("LeftArrow");
+        NButton? right = screen.GetNodeOrNull<NButton>("RightArrow");
+        NTickbox? upgrade = screen.GetNodeOrNull<NTickbox>("%Upgrade");
+        if (card == null || card.Visibility != ModelVisibility.Visible
+            || title == null || cost == null || description == null
+            || upgrade == null)
+            return FailClosedPage(legacy, key, "native_card_inspect_display_unresolved");
+        var surface = new JsonObject
+        {
+            ["kind"] = "inspect_card",
+            ["title"] = title.Text,
+            ["cost"] = cost.Text,
+            ["description"] = description.Text,
+            ["upgrade_preview_checked"] = upgrade.IsTicked
+        };
+        PlayerEnvironmentSnapshot page = legacy.Snapshot with
+        {
+            Status = "interactive",
+            Referents = Array.Empty<PlayerEnvironmentReferent>(),
+            Completeness = new PlayerEnvironmentCompleteness("complete",
+                "current_native_card_inspection_display",
+                "exact_native_card_inspection_controls",
+                Array.Empty<string>(), Array.Empty<string>()),
+            Interaction = legacy.Snapshot.Interaction with
+            {
+                Kind = "inspect_card", Stage = "native_information_page",
+                Prompt = title.Text,
+                ContentSchema = "sts2.player-environment/surface/inspect_card_text_menu-1",
+                Content = new PlayerEnvironmentInteractionContent(surface,
+                    new JsonObject { ["kind"] = "inspect_card" }),
+                Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
+            }
+        };
+        var leaves = new List<NativeTextMenuInformationLeaf>
+        {
+            Leaf("return_card_inspect", "root", "return_card_inspect",
+                "Close card inspection", () => Return(screen, "inspect_card"))
+        };
+        if (left is { IsEnabled: true } && ConnectorMod.IsNodeVisible(left))
+            leaves.Add(Leaf("previous_inspect_card", "root", "previous_inspect_card",
+                "Previous card", () => ClickCardInspectControl(screen, left, "LeftArrow")));
+        if (right is { IsEnabled: true } && ConnectorMod.IsNodeVisible(right))
+            leaves.Add(Leaf("next_inspect_card", "root", "next_inspect_card",
+                "Next card", () => ClickCardInspectControl(screen, right, "RightArrow")));
+        if (upgrade.IsEnabled && ConnectorMod.IsNodeVisible(upgrade))
+            leaves.Add(Leaf("toggle_card_upgrade_preview", "root",
+                "toggle_card_upgrade_preview", "Toggle upgrade preview",
+                () => ClickCardInspectControl(screen, upgrade, "%Upgrade")));
+        return new NativeTextMenuInformationCapture(page, key, leaves);
+    }
+
+    private static NativeInputResult ClickCardInspectControl(
+        NInspectCardScreen screen, NButton button, string path)
+    {
+        if (!ReferenceEquals(_ownedScreen, screen)
+            || !IsExactOwner(screen, "inspect_card")
+            || !ReferenceEquals(screen.GetNodeOrNull<NButton>(path), button)
+            || !button.IsEnabled || !ConnectorMod.IsNodeVisible(button))
+            return NativeInputResult.Rejected("card_inspect_control_changed",
+                "The exact native card inspection control is no longer enabled.");
+        button.ForceClick();
+        return NativeInputResult.Delivered("native_card_inspect_control_clicked");
     }
 
     private static bool CanOpen(NTopBarDeckButton? button) =>
@@ -908,11 +1114,11 @@ internal static class NativeTextMenuInformation
             _returnPending = true;
             return NativeInputResult.Delivered("NInspectRelicScreen.Close; native close animation pending");
         }
-        if (screen is NMapScreen map)
+        if (screen is NInspectCardScreen inspectCard)
         {
-            map.Close();
-            ClearOwner();
-            return NativeInputResult.Delivered("NMapScreen.Close; exact page released");
+            inspectCard.Close();
+            _returnPending = true;
+            return NativeInputResult.Delivered("NInspectCardScreen.Close; native close animation pending");
         }
         if (screen is NHoverTipSet && (_nativeTipOwner ?? _tipOwner) is { } tipOwner)
         {
@@ -925,6 +1131,34 @@ internal static class NativeTextMenuInformation
             return NativeInputResult.Delivered("NCapstoneContainer.Close; release pending");
         ClearOwner();
         return NativeInputResult.Delivered("NCapstoneContainer.Close; exact page released");
+    }
+
+    private static NativeInputResult ReturnMap(NMapScreen map, NBackButton back)
+    {
+        if (!ReferenceEquals(_ownedScreen, map)
+            || !IsExactOwner(map, "native_map")
+            || !ReferenceEquals(map.GetNodeOrNull<NBackButton>("Back"), back)
+            || !back.IsEnabled || !ConnectorMod.IsNodeVisible(back))
+            return NativeInputResult.Rejected("native_map_back_changed",
+                "The native map Back control is not currently enabled.");
+        back.ForceClick();
+        if (!map.IsOpen) ClearOwner();
+        return NativeInputResult.Delivered("native_map_back_button_clicked");
+    }
+
+    private static NativeInputResult ReturnCapstone(
+        object screen, string kind, NButton back)
+    {
+        if (!ReferenceEquals(_ownedScreen, screen) || !IsExactOwner(screen, kind)
+            || screen is not Node node
+            || !ReferenceEquals(node.GetNodeOrNull<NButton>("BackButton"), back)
+            || !back.IsEnabled || !ConnectorMod.IsNodeVisible(back))
+            return NativeInputResult.Rejected("native_information_back_changed",
+                "The exact native information Back control is unavailable.");
+        back.ForceClick();
+        if (!ReferenceEquals(NCapstoneContainer.Instance?.CurrentCapstoneScreen, screen))
+            ClearOwner();
+        return NativeInputResult.Delivered("native_information_back_button_clicked");
     }
 
     private static void ClearOwner()
@@ -960,6 +1194,9 @@ internal static class NativeTextMenuInformation
             NInspectRelicScreen relic => kind == "relic_inspect"
                 && ConnectorMod.IsNodeVisible(relic)
                 && ActiveScreenContext.Instance.IsCurrent(relic),
+            NInspectCardScreen card => kind == "inspect_card"
+                && ConnectorMod.IsNodeVisible(card)
+                && ActiveScreenContext.Instance.IsCurrent(card),
             NHoverTipSet tip => kind is "native_tip" or "relic_tips" or "card_tips"
                     or "power_tips" or "intent_tips" or "orb_tips"
                     or "topbar_tips"

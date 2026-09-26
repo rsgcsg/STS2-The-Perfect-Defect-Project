@@ -9,8 +9,10 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Potions;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Potions;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Runs;
@@ -65,12 +67,51 @@ internal static class NativeTextMenuPotions
         NCombatRoom? room = NCombatRoom.Instance;
         NTargetManager? manager = NTargetManager.Instance;
         if (potion == null || room == null || manager?.IsInSelection != true
-            || !CombatManager.Instance.IsInProgress)
+            || !CombatManager.Instance.IsInProgress
+            || potion.TargetType is not (TargetType.AnyEnemy or TargetType.AnyPlayer
+                or TargetType.AnyAlly))
             return Array.Empty<NCreature>();
         return room.CreatureNodes.Where(node => ConnectorMod.IsLiveNode(node)
             && ConnectorMod.IsNodeVisible(node)
             && node.Entity is { IsHittable: true }
             && manager.AllowedToTargetNode(node)).ToArray();
+    }
+
+    internal static NMerchantButton? MerchantTarget()
+    {
+        if (PendingPotion is not FoulPotion potion
+            || potion.TargetType != TargetType.TargetedNoCreature
+            || potion.Owner.RunState.CurrentRoom is not { } currentRoom
+            || NTargetManager.Instance is not { IsInSelection: true } manager)
+            return null;
+        (NMerchantButton? button, _) = FoulPotion.GetFoulPotionMerchantTarget(
+            currentRoom);
+        return button != null && ConnectorMod.IsLiveNode(button)
+            && ConnectorMod.IsNodeVisible(button) && button.IsEnabled
+            && manager.AllowedToTargetNode(button)
+            ? button : null;
+    }
+
+    internal static NativeInputResult SelectMerchant(NMerchantButton button)
+    {
+        if (!ReferenceEquals(MerchantTarget(), button))
+            return NativeInputResult.Rejected("potion_merchant_target_changed",
+                "The exact visible native merchant target is no longer current.");
+        NTargetManager manager = NTargetManager.Instance;
+        bool hovered = false;
+        void OnHovered(Node current)
+        {
+            if (ReferenceEquals(current, button)) hovered = true;
+        }
+        manager.NodeHovered += OnHovered;
+        try { manager.OnNodeHovered(button); }
+        finally { manager.NodeHovered -= OnHovered; }
+        if (!hovered || !manager.IsInSelection)
+            return NativeInputResult.Rejected("potion_merchant_focus_changed",
+                "Native targeting did not accept the current merchant button.");
+        manager._Input(new InputEventAction { Action = MegaInput.select, Pressed = true });
+        ClearPendingTargeting();
+        return NativeInputResult.Delivered("native_foul_potion_merchant_selected");
     }
 
     internal static NativeInputResult SelectTarget(NCreature node)
@@ -183,7 +224,10 @@ internal static class NativeTextMenuPotions
             return Array.Empty<TextMenuLeaf>();
         string id = expected.PotionEntityId;
         var leaves = new List<TextMenuLeaf>();
-        if (expected.CanUse && Button(popup, "%UseButton") is { } use)
+        if (expected.CanUse && Button(popup, "%UseButton") is { } use
+            && (potion is not FoulPotion
+                || NControllerManager.Instance?.IsUsingDirectionalNavigation == true
+                || NGame.IsGameFocusedWindow()))
             leaves.Add(new TextMenuLeaf("choose_potion_use:" + id, "root", "choose_potion_use",
                 "Use " + expected.Name, id,
                 Array.Empty<PlayerEnvironment.Protocol.PlayerEnvironmentBoundActionArgument>(),
@@ -230,6 +274,21 @@ internal static class NativeTextMenuPotions
             || !ReferenceEquals(Button(popup, path), button))
             return NativeInputResult.Rejected("potion_popup_changed",
                 "The native popup control is no longer current.");
+        NControllerManager? controller = NControllerManager.Instance;
+        if (path == "%UseButton" && potion is FoulPotion
+            && controller?.IsUsingDirectionalNavigation != true)
+        {
+            if (controller == null || !NGame.IsGameFocusedWindow())
+                return NativeInputResult.Rejected("controller_input_unavailable",
+                    "Foul Potion's merchant target requires current native directional input.");
+            controller._Input(new InputEventAction
+            { Action = Controller.faceButtonSouth, Pressed = true });
+            if (!controller.IsUsingDirectionalNavigation
+                || !ReferenceEquals(PotionPopupSurfaceReader.Current(), popup)
+                || !ReferenceEquals(Button(popup, path), button))
+                return NativeInputResult.Delivered(
+                    "native_controller_mode_changed_foul_potion_use_pending");
+        }
         button.ForceClick();
         if (path == "%UseButton" && NTargetManager.Instance?.IsInSelection == true
             && (potion.TargetType is
