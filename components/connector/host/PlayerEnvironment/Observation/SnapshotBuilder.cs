@@ -20,7 +20,8 @@ internal static partial class PlayerEnvironmentService
         IReadOnlyCollection<string>? requiredReadKinds = null,
         Func<string, IReadOnlyCollection<string>>? requiredReadKindsForInteraction = null,
         ProcessLocalCaptureProfiler? captureProfiler = null,
-        string? inputProfile = null)
+        string? inputProfile = null,
+        bool textMenuCapture = false)
     {
         if (!IsSupportedInputProfile(inputProfile))
             throw new ArgumentException("Unsupported Player Environment input profile.", nameof(inputProfile));
@@ -136,7 +137,9 @@ internal static partial class PlayerEnvironmentService
         IReadOnlyList<NativeUiBoundAction> nativeBindings = Measure(
             "native_binding_catalog",
             () => CanPublishMutationAuthority(draft.Readiness)
-                ? rewardPotionProfile
+                ? textMenuCapture && draft.Surface is CombatTurnSurface combat
+                    ? BuildTextCombatBindings(draft, combat)
+                    : rewardPotionProfile
                     ? NativeUiActionRuntime.BuildRewardPotionBindings(draft)
                     : BuildPlayerEnvironmentBindings(draft)
                 : Array.Empty<NativeUiBoundAction>());

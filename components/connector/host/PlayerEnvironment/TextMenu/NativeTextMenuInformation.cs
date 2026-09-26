@@ -331,9 +331,18 @@ internal static class NativeTextMenuInformation
         {
             if (legacy.HostObservation.Surface is not MapNavigationSurface)
                 return FailClosedPage(legacy, key, "native_map_content_unresolved");
-            bool mapCatalogComplete = legacy.Snapshot.Status == "interactive"
-                && legacy.Snapshot.BoundActions.Status == "complete";
             NBackButton? back = ((NMapScreen)screen).GetNodeOrNull<NBackButton>("Back");
+            bool backAvailable = back is { IsEnabled: true }
+                && ConnectorMod.IsNodeVisible(back);
+            bool mapCatalogComplete = CanPublishMapPage(
+                legacy.Snapshot.Status,
+                legacy.Snapshot.BoundActions.Status,
+                legacy.Snapshot.BoundActions.MaterializedCount,
+                legacy.Snapshot.BoundActions.TotalCount,
+                legacy.HostObservation.Readiness,
+                legacy.HostObservation.Completeness,
+                (MapNavigationSurface)legacy.HostObservation.Surface,
+                backAvailable);
             PlayerEnvironmentSnapshot mapPage = legacy.Snapshot with
             {
                 Status = mapCatalogComplete ? "interactive" : "settling",
@@ -353,7 +362,7 @@ internal static class NativeTextMenuInformation
                 }
             };
             return new NativeTextMenuInformationCapture(mapPage, key,
-                back is { IsEnabled: true } && ConnectorMod.IsNodeVisible(back)
+                backAvailable
                     ? new[] { Leaf("return_native_map", "root", "return_native_map",
                         "Close map", () => ReturnMap((NMapScreen)screen, back)) }
                     : Array.Empty<NativeTextMenuInformationLeaf>());
@@ -444,6 +453,37 @@ internal static class NativeTextMenuInformation
             page = page with { Referents = visible };
         }
         return new NativeTextMenuInformationCapture(page, key, pageLeaves);
+    }
+
+    internal static bool CanPublishMapPage(
+        string snapshotStatus,
+        string projectionStatus,
+        int materializedCount,
+        long totalCount,
+        string nativeReadiness,
+        StateCompleteness nativeCompleteness,
+        MapNavigationSurface map,
+        bool nativeBackAvailable)
+    {
+        if (projectionStatus != "complete")
+            return false;
+        if (snapshotStatus == "interactive")
+            return true;
+        // The map reader deliberately settles when it has no route or
+        // annotation command. Its separately enabled native Back control is
+        // still a complete current-page action in that exact empty state.
+        return nativeBackAvailable
+            && snapshotStatus == "settling"
+            && nativeReadiness == "settling"
+            && nativeCompleteness.PlayerVisibleSemantics
+                == "contract_complete_for_visible_singleplayer_map_navigation"
+            && nativeCompleteness.InteractionDiscovery
+                == "temporarily_empty_while_map_input_is_not_route_ready"
+            && nativeCompleteness.Missing.Count == 0
+            && map.NextOptions.Count == 0
+            && !map.CanExitAnnotation
+            && materializedCount == 0
+            && totalCount == 0;
     }
 
     private static NativeTextMenuInformationCapture FailClosedPage(
