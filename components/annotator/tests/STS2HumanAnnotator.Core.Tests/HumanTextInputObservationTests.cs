@@ -58,6 +58,46 @@ public sealed class HumanTextInputObservationTests
             Assert.NotEmpty(HumanTextInputObservationValidator.Validate(row));
     }
 
+    [Theory]
+    [InlineData(HumanTextInputObservationContract.ControllerConfirmedInputSignal, "confirm_card")]
+    [InlineData(HumanTextInputObservationContract.ControllerCanceledInputSignal, "cancel_card_play")]
+    [InlineData(HumanTextInputObservationContract.ControllerTargetFinishInput, "confirm_target")]
+    [InlineData(HumanTextInputObservationContract.ControllerTargetCanceledInput, "cancel_card_play")]
+    public void ContinuationMechanismMustMatchFrozenNativeVerb(
+        string mechanism, string verb)
+    {
+        HumanTextInputObservation row = Accepted();
+        JsonObject snapshot = (JsonObject)row.Snapshot!.DeepClone();
+        JsonObject chosen = (JsonObject)row.ChosenAction!.DeepClone();
+        chosen["verb"] = verb;
+        snapshot["menu_actions"]!["actions"]![0] = chosen.DeepClone();
+        row = row with
+        {
+            Snapshot = snapshot,
+            SnapshotSha256 = EvidenceIdentity.Sha256Json(snapshot),
+            ChosenAction = chosen,
+            NativeOwnerWitnessId = row.NativeCarrierWitnessId,
+            NativeMechanism = mechanism
+        };
+        Assert.Empty(HumanTextInputObservationValidator.Validate(row));
+        Assert.Contains("text_input_continuation_owner_mismatch",
+            HumanTextInputObservationValidator.Validate(row with
+            { NativeOwnerWitnessId = "different-owner" }));
+        Assert.Contains("text_input_chosen_action_not_unique",
+            HumanTextInputObservationValidator.Validate(row with
+            { NativeMechanism = HumanTextInputObservationContract.NativeMechanism }));
+        Assert.Contains("text_input_native_verb_mechanism_mismatch",
+            HumanTextInputObservationValidator.Validate(row with
+            {
+                Disposition = HumanTextInputObservationContract.RejectedOrCancelled,
+                ReasonCode = "native_callback_unproved",
+                NativeMechanism = HumanTextInputObservationContract.NativeMechanism
+            }));
+        Assert.Contains("text_input_native_mechanism_invalid",
+            HumanTextInputObservationValidator.Validate(row with
+            { NativeMechanism = "inferred_from_later_state" }));
+    }
+
     [Fact]
     public void FailureRowIsNontrainingAndHistoricalManifestHasNoStream()
     {

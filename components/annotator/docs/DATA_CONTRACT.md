@@ -34,9 +34,30 @@ not mean `PlayCardAction` committed, damage/block occurred, or a causal successo
 was captured. Cancellation/rejection before this synchronous native return,
 unavailable capture and failed/ambiguous mapping retain explicit negative
 dispositions rather than gaining a positive label. A later cancellation does
-not erase the fact that the Human began the interaction, and is not covered by
-this first input label. The frozen observation and mapping are not replaced by
-later frames.
+not erase the fact that the Human began the interaction. The frozen observation
+and mapping are not replaced by later frames.
+
+Controller-held card input can add `confirm_card`, `confirm_target`, and
+`cancel_card_play` rows in this stream. The public text-menu verbs are
+device-neutral; `native_mechanism` records private Human evidence provenance,
+not a model action or Host dispatch mode. `confirm_card` requires the exact
+controller `_Input` confirmation signal's `TryPlayCard` call. Untargeted
+`cancel_card_play` requires its cancellation signal's `CancelPlayCard` call.
+The target manager is bound to the exact controller card-play carrier when
+that carrier synchronously starts targeting its own card node. A later target
+input must retain this manager/carrier, the session and the exact frozen
+card/target mapping. `confirm_target` requires selection input and
+`FinishTargeting(false)` with the same frozen target during that `_Input` call.
+Targeted `cancel_card_play` requires cancellation input and
+`FinishTargeting(true)` in that call. A select input changed to cancellation by
+native exit conditions is a negative observation, not Human cancellation.
+
+These are accepted native **inputs** only. Target focus alone, an automatic
+target choice, a later asynchronous `SelectionFinished` continuation, native
+card Commit and causal successor are distinct facts. The recorder neither
+infers an input from a later `TryPlayCard`/`CancelPlayCard` call nor maps an
+unbound mouse-held stage. Unavailable capture, exact mapping mismatch, native
+exception and unproved same-invocation delivery retain negative dispositions.
 Opaque witness references bind evidence and are not model-visible strategy
 features or executable operands.
 
@@ -45,10 +66,10 @@ projection. The explicit owner's Human-origin attestation remains necessary;
 machine validation cannot establish Human origin. Research may derive an
 explicitly admitted input-choice view from accepted rows, without inventing a
 Connector request, Receipt, native Commit or successor. Agent traces retain
-their separate schema and origin. This initial slice does not claim Human
-target/confirm/cancel, information-menu navigation or full-run text coverage;
-in particular, mouse and controller card-play interactions need their own
-native evidence before their later steps can be labeled.
+their separate schema and origin. This slice does not claim mouse-held
+continuation, information-menu navigation, full-run text coverage or a
+card-play causal transition. Actual Human origin still requires owner
+attestation and an exact loaded-runtime canary.
 
 Native-input correlation supports exactly `PlayCardAction`/`play` and
 `UsePotionAction`/`use`, with matching native witness type and exact scoped
