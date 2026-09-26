@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from pathlib import Path
 
 import pytest
 from platform_bundle3_fixture import bundle3, load, seal, write
 from test_artifact_store_v1 import PRODUCER, store
 from test_text_menu_data import snapshot
 
-from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 from stpd.fullrun.text_menu_human_import import (
     _project,
     load_human_text_source,
@@ -18,6 +19,7 @@ from stpd.fullrun.text_menu_human_import import (
     publish_human_text_source,
     publish_verified_human_text_bundle,
 )
+from stpd.fullrun.text_menu_inputs import project_text_menu_snapshot
 
 
 def observation(session: str, name: str, disposition: str = "accepted_input") -> dict:
@@ -70,6 +72,20 @@ def test_forged_choice_cannot_become_human_label() -> None:
         _project(rows)
 
 
+def test_actual_core_serialized_row_projects_exact_current_menu() -> None:
+    fixture = (Path(__file__).parents[2] / "components/evidence/tests/fixtures/human_text"
+               / "core_accepted.jsonl")
+    row = decode_json(fixture.read_bytes())
+    assert "reason_code" not in row
+    assert row["snapshot"]["referents"][0]["properties"] is None
+    public = project_text_menu_snapshot(row["snapshot"])
+    assert public.action_ids.count(row["chosen_action"]["action_id"]) == 1
+    samples, report = _project((row, observation("synthetic-independent", "other")))
+    assert len(samples) == 2
+    assert {sample.split for sample in samples} == {"train", "dev"}
+    assert report["rows"][0]["selected_action_id"] == row["chosen_action"]["action_id"]
+
+
 def test_source_requires_verified_archived_evidence(tmp_path) -> None:
     target = store(tmp_path)
     with pytest.raises((BoundaryError, KeyError)):
@@ -90,6 +106,8 @@ def test_declared_bundle_archive_is_reverified_when_source_loads(tmp_path) -> No
     current["session"] = {"runtime_instance_id": "runtime-1",
                           "environment_fingerprint": "environment-1"}
     current["interaction"]["content_schema"] = "combat_turn-1"
+    current["interaction"]["content"] = {
+        "surface": {"kind": "combat_turn"}, "context": {}}
     current["information_policy"]["scope"] = "current_page"
     current["menu_actions"]["ordering_semantics"] = "native_order_with_fixed_information_groups"
     current["menu_actions"]["actions"][1]["verb"] = "begin_card_play"
