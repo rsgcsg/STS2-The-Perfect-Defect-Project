@@ -31,9 +31,12 @@ controller activity excludes the attempt from Human recording.
 
 `accepted_input` means the Human began that native input interaction. It does
 not mean `PlayCardAction` committed, damage/block occurred, or a causal successor
-was captured. Cancellation/rejection, unavailable capture and failed/ambiguous
-mapping retain explicit negative dispositions rather than gaining a positive
-label. The frozen observation and mapping are not replaced by later frames.
+was captured. Cancellation/rejection before this synchronous native return,
+unavailable capture and failed/ambiguous mapping retain explicit negative
+dispositions rather than gaining a positive label. A later cancellation does
+not erase the fact that the Human began the interaction, and is not covered by
+this first input label. The frozen observation and mapping are not replaced by
+later frames.
 Opaque witness references bind evidence and are not model-visible strategy
 features or executable operands.
 

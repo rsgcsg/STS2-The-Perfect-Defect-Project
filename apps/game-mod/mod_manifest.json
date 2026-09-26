@@ -3,7 +3,7 @@
   "name": "STS2 AI Platform",
   "author": "rsgcsg",
   "description": "Unified Connector, Human Annotator and Platform Live UI",
-  "version": "0.2.0-rc.12",
+  "version": "0.2.0-rc.13",
   "has_pck": false,
   "has_dll": true,
   "affects_gameplay": false,
