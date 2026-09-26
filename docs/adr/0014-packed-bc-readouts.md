@@ -32,7 +32,8 @@ Register `stage1a.b.s.v2` and `stage1a.b.pf.v2`, graph `b.shared-observation.v2`
 D-Simple's two v1 recipes are unchanged. Keep the B v1 factories and old artifacts
 readable; the operator-paused v1 run is not resumed, migrated or called completed.
 
-Scratch executes the entire packed sequence in one Transformer call. Frozen Qwen
+The initial scratch implementation executes the entire packed sequence in one
+Transformer call. Frozen Qwen
 may exploit the exact graph decomposition: first all fixed O/action tokens once
 without autograd, then all readouts together with gradients using that shared KV.
 That is two calls to the same core for disjoint token sets, not a per-candidate loop,
@@ -40,6 +41,15 @@ not two networks, and not a claim that the optimized physical path is literally 
 forward invocation. A complete packed forward remains the verification reference.
 Use additive masks with explicit positions and disable ordinary causal-mask inference.
 KV lives for this decision only. Trainable prefixes cannot use frozen decomposition.
+
+Implementation update (2026-09-26): scratch B v2 evaluation now computes the
+observation once per layer and reuses that layer's projected state keys/values
+for each isolated action branch. Zero-dropout scratch training uses the same
+decomposition with autograd and activation checkpointing. The weights, positions,
+causal graph and recipe ID are unchanged. Training with positive dropout keeps
+the original single packed call because changing dropout draw order would alter
+continuation from an existing checkpoint. That training path still allocates the
+dense packed mask and has not been qualified for very large menus.
 
 PF still trains only the shared query and Linear head (2049 parameters for width1024).
 Its fixed backbone still performs computation. Packed dense attention has quadratic
