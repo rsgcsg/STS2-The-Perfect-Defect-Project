@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from test_artifact_store_v1 import PRODUCER, store
@@ -29,7 +31,9 @@ from stpd.fullrun.text_menu_runtime_import import (
 sys.path.insert(0, str(Path(__file__).parents[2] / "components/evidence/tests"))
 
 
-def _events(*, outcome: bool = True, dispatch: bool = True):
+def _events(
+    *, outcome: bool = True, dispatch: bool = True,
+) -> list[dict[str, Any]]:
     source = row("agent", origin="agent", native=True)
     snapshot = source["snapshot"]
     selected = source["selected_action_id"]
@@ -90,8 +94,10 @@ def test_result_request_or_action_drift_is_rejected():
 
 
 @pytest.fixture
-def verified_fixture():
-    from test_agent_run_evidence import TextMenuAgentRunEvidenceTests
+def verified_fixture() -> Iterator[Any]:
+    from test_agent_run_evidence import (  # type: ignore[import-not-found]
+        TextMenuAgentRunEvidenceTests,
+    )
 
     fixture = TextMenuAgentRunEvidenceTests(
         "test_text_navigation_is_verified_without_native_receipt")

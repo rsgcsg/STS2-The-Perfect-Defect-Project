@@ -5,19 +5,22 @@ from __future__ import annotations
 import copy
 import io
 from dataclasses import replace
+from typing import Any
 
 import pytest
-
 from test_artifact_store_v1 import PRODUCER, store
 
 from spireagent.json_boundary import BoundaryError, json_bytes
 from stpd.fullrun.text_menu_data import (
-    SOURCE_SCHEMA, load_text_menu_bc_view, load_text_menu_source,
-    publish_text_menu_bc_view, publish_text_menu_source,
+    SOURCE_SCHEMA,
+    load_text_menu_bc_view,
+    load_text_menu_source,
+    publish_text_menu_bc_view,
+    publish_text_menu_source,
 )
 
 
-def snapshot(name: str):
+def snapshot(name: str) -> dict[str, Any]:
     return {
         "protocol_version": "1.0.0", "schema": "sts2.player-environment/text-menu-snapshot-1",
         "input_profile": "text-menu-v1", "snapshot_id": f"opaque-snapshot-{name}",
@@ -47,7 +50,9 @@ def snapshot(name: str):
     }
 
 
-def row(run: str, *, origin: str = "synthetic", native: bool = False):
+def row(
+    run: str, *, origin: str = "synthetic", native: bool = False,
+) -> dict[str, Any]:
     before, after = snapshot(run + "-before"), snapshot(run + "-after")
     if not native:
         after["menu"]["cursor"] = "information"
@@ -80,7 +85,8 @@ def test_source_view_loader_reprojects_and_retains_u_lineage(tmp_path):
     assert b'"human_origin_verified":false' in report
     forged_payload = target.put_payload("samples", io.BytesIO(json_bytes(samples[0].to_dict())))
     with pytest.raises(BoundaryError, match="view_projection_mismatch"):
-        load_text_menu_bc_view(target, replace(view, payloads=(forged_payload, view.payload("lineage"))))
+        load_text_menu_bc_view(
+            target, replace(view, payloads=(forged_payload, view.payload("lineage"))))
 
 
 def test_agent_requires_opt_in_and_human_has_no_label_mapping(tmp_path):
@@ -189,7 +195,8 @@ def test_navigation_is_u_only_even_if_native_page_changes_concurrently(tmp_path)
     (lambda r: r["request"].update(expected_snapshot_id="wrong"), "request_frame_binding_mismatch"),
     (lambda r: r["result"].update(native_delivery="delivered"), "applied_effect_mismatch"),
     (lambda r: r["result"].update(successor=r["snapshot"]), "unchanged_navigation_identity"),
-    (lambda r: r["result"].update(action={**r["result"]["action"], "label": "Other"}), "result_choice_mismatch"),
+    (lambda r: r["result"].update(action={**r["result"]["action"], "label": "Other"}),
+     "result_choice_mismatch"),
 ])
 def test_trace_fails_on_binding_or_effect_drift(tmp_path, change, code):
     first = row("a")

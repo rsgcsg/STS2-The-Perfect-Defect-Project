@@ -316,13 +316,16 @@ def publish_text_menu_bc_view(store: ArtifactStore, source_id: str, producer: Pr
     manifest = Manifest("model_view", producer, (Parent("dataset", source_id),), payloads,
                         FrozenObject.of({"schema": VIEW_SCHEMA, "serializer": report["serializer"],
                                          "scope": "engineering", "samples": len(samples),
-                                         "source_digest": source.parameters.value()["source_digest"],
+                                         "source_digest": source.parameters.value()[
+                                             "source_digest"],
                                          "label_boundary": report["label_boundary"]}))
     store.publish(manifest)
     return manifest
 
 
-def load_text_menu_bc_view(store: ArtifactStore, manifest: Manifest) -> tuple[Manifest, tuple[ModelSample, ...]]:
+def load_text_menu_bc_view(
+    store: ArtifactStore, manifest: Manifest,
+) -> tuple[Manifest, tuple[ModelSample, ...]]:
     if (manifest.kind != "model_view" or manifest.parameters.value().get("schema") != VIEW_SCHEMA
             or [p.role for p in manifest.parents] != ["dataset"]
             or sorted(p.role for p in manifest.payloads) != ["lineage", "samples"]):
