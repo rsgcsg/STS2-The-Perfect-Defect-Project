@@ -9,3 +9,32 @@ A `system_navigation` action has `effect_domain=text_menu`. Its applied result c
 TypeScript clients call `textMenuCapabilities`, `observeTextMenu`, `submitTextMenu`, and `textMenuResult`. The strict decoder rejects legacy payloads, missing profile/result fields, illegal system edges, unknown current referents, duplicate IDs, incomplete executable catalogs and system results pretending to deliver native input. Reference and Managed Hosts must each prove their native leaf bindings and fair-player facts; schema compatibility alone is not cross-Host qualification.
 
 The two JSON examples in `sdk/typescript/test/fixtures/text-menu-root.json` and `text-menu-system-result.json` are portable contract fixtures. They are synthetic and do not prove native behavior.
+
+## Semantic interaction versus native input device
+
+The public interaction describes the current game operation: a held card,
+target selection, confirmation or cancellation. It does not define separate
+mouse and controller model protocols. Device-specific callbacks, Godot objects,
+pointer coordinates and input signals belong to the Host's private adapter.
+A fast or non-Godot Host can implement the same profile with its own bindings;
+it must still prove current-page facts, complete actions, native revalidation
+and delivery outcomes. It cannot copy the desktop Host's qualification.
+
+Normalize only facts and effects that are actually equivalent. A mouse-held
+card outside its native play zone is not automatically a confirmation-ready
+card. In the inspected game, `NMouseCardPlay.StartAsync` checks the play zone
+after targeting, and untargeted play also depends on press/release state;
+`NControllerCardPlay._Input` instead has explicit confirm/cancel signals.
+The current desktop adapter supports controller-held continuations and leaves
+mouse-held continuations settling. That is an adapter coverage gap, not a
+requirement for models to learn device names, nor a claim that mouse actions
+are illegal in the game. No polling or automatic device switch repairs an
+already ongoing Human interaction.
+
+Host-private witness bindings correlate the exact card-play operation, card,
+and (when applicable) target node with a public menu choice. Annotator records
+the actual input mechanism separately as provenance. Evidence validates that
+mechanism's allowed public verb; STPD consumes the verified semantic choice,
+without reproducing the game's input-method whitelist or placing that metadata
+in model text. Begin, confirm, cancel and target confirmation remain input
+observations, not proof of card Commit or a causal successor.

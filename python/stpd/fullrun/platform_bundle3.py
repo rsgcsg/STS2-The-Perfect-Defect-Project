@@ -179,9 +179,13 @@ class _SemanticProjection:
                     **value.get("content", {}),
                 }
             if isinstance(value.get("referent_id"), str):
+                # Connector explicitly serializes absent public properties as
+                # null. This adds no inferred facts; the visible referent still
+                # keeps its role and state.
+                properties = value.get("properties")
                 self.entities[value["referent_id"]] = {
                     "role": value.get("role"),
-                    **value.get("properties", {}),
+                    **({} if properties is None else properties),
                     "state": value.get("state", {}),
                 }
             if isinstance(value.get("slot_entity_id"), str):

@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from sts2_platform_evidence import HumanSessionBundleV3, verify_human_session_bundle
+from sts2_platform_evidence.human_text_inputs import verify_human_text_inputs
+
 from tests import test_human_session_bundle_v2 as v2
 from tests.test_human_session_bundle_v2 import canonical, sha_bytes, sha_file
 
@@ -446,6 +448,292 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
         self._write(raw / "session-close-receipt.json", receipt)
         self._reseal(bundle)
         self.assertEqual(verify_human_session_bundle(bundle).findings[0].code, "session_close_receipt_invalid_or_missing")
+
+    def _declare_text(self, bundle: Path, rows: list[dict[str, Any]]) -> Path:
+        raw = bundle / "raw"
+        recording = json.loads((raw / "recording-manifest.json").read_text())
+        recording.update(text_input_schema_version=1, close_schema_version=1)
+        self._write(raw / "recording-manifest.json", recording)
+        path = raw / "human-text-inputs.jsonl"
+        self._stream(path, rows)
+        self._write(raw / "session-close-receipt.json", {
+            "schema": "sts2.human-annotator/session-close-1",
+            "session_id": recording["session_id"], "timeline_id": recording["timeline_id"],
+            "status": "closed", "closed_at": "2026-09-11T00:00:00Z",
+            "human_text_input_count": len(rows), "human_text_inputs_sha256": sha_file(path),
+        })
+        self._reseal(bundle)
+        return path
+
+    def _text_row(self, bundle: Path) -> dict[str, Any]:
+        recording = json.loads((bundle / "raw" / "recording-manifest.json").read_text())
+        action = {"action_id": "card-1", "kind": "native_input", "verb": "begin_card_play",
+                  "label": "Play Strike", "subject_referent_id": "card-1", "arguments": [],
+                  "effect_domain": "native_input"}
+        snapshot = {"schema": "sts2.player-environment/text-menu-snapshot-1",
+                    "input_profile": "text-menu-v1", "protocol_version": "1.0.0",
+                    "snapshot_id": "snapshot-1", "sequence": 1,
+                    "observed_at": "1970-01-01T00:00:00Z", "persistent": None,
+                    "status": "interactive", "completeness": {"status": "complete"},
+                    "session": {"runtime_instance_id": "runtime-1",
+                                "environment_fingerprint": "environment-1"},
+                    "interaction": {"interaction_id": "combat-1", "kind": "combat_turn",
+                                    "content_schema": "combat_turn-1",
+                                    "content": {"surface": {"kind": "combat_turn"}, "context": {}}},
+                    "referents": [{"referent_id": "card-1", "kind": "entity",
+                                   "role": "hand_card", "state": {"visible": True}}],
+                    "information_policy": {"scope": "current_page",
+                                           "includes_hidden_information": False},
+                    "menu": {"cursor": "root", "revision": 0,
+                             "native_snapshot_id": "native-1"},
+                    "menu_actions": {"status": "complete", "materialized_count": 1,
+                                     "total_count": 1,
+                                     "ordering_semantics": "native_order_with_fixed_information_groups",
+                                     "actions": [action]}}
+        digest = sha_bytes(canonical(snapshot).encode())
+        artifact = {"product": "artifact", "version": "1", "source_revision": "b" * 40,
+                    "source_digest_sha256": "a" * 64, "sha256": "a" * 64,
+                    "module_version_id": "11111111-1111-1111-1111-111111111111"}
+        return {"schema_version": 1, "schema": "sts2.human-annotator/human-text-input-1",
+                "sequence": 1, "record_id": "text-1", "session_id": recording["session_id"],
+                "timeline_id": recording["timeline_id"], "run_id": "run-0001",
+                "observed_at": "1970-01-01T00:00:00Z", "recorded_at": "1970-01-01T00:00:01Z",
+                "environment": {"game": {"version": "game", "commit": "commit",
+                                          "main_assembly_sha256": "a" * 64,
+                                          "main_assembly_module_version_id": "11111111-1111-1111-1111-111111111111"},
+                                "connector": artifact, "annotator": artifact,
+                                "player_environment_protocol": "1.0.0", "runtime_instance_id": "runtime-1",
+                                "environment_fingerprint": "environment-1", "modset_status": "exact",
+                                "modset_fingerprint": "a" * 64},
+                "snapshot": snapshot, "snapshot_sha256": digest, "chosen_action": action,
+                "mapping_status": "exact_unique", "match_count": 1,
+                "mapping_basis": "text_menu_native_reference_equality",
+                "native_owner_witness_id": "owner-1", "native_subject_witness_id": "subject-1",
+                "native_carrier_witness_id": "carrier-1",
+                "native_mechanism": "begin_card_play_exact_factory_return",
+                "disposition": "accepted_input", "external_controller_active": False}
+
+    def test_declared_text_stream_accepts_empty_and_exact_human_input(self) -> None:
+        bundle = self._bundle()
+        self._declare_text(bundle, [])
+        empty = verify_human_session_bundle(bundle)
+        self.assertTrue(empty.passed, empty.findings)
+        self.assertEqual(empty.require_value().text_input_schema_version, 1)
+        self.assertEqual(empty.require_value().human_text_inputs, ())
+        row = self._text_row(bundle)
+        self._declare_text(bundle, [row])
+        result = verify_human_session_bundle(bundle)
+        self.assertTrue(result.passed, result.findings)
+        verified = result.require_value()
+        self.assertEqual(verified.text_input_schema_version, 1)
+        self.assertEqual(len(verified.human_text_inputs), 1)
+        with self.assertRaises(TypeError):
+            verified.human_text_inputs[0]["record_id"] = "mutated"  # type: ignore[index]
+        with self.assertRaises(TypeError):
+            verified.human_text_inputs[0]["snapshot"]["snapshot_id"] = "mutated"  # type: ignore[index]
+
+    def test_native_input_mechanisms_bind_public_verbs_without_promoting_commit(self) -> None:
+        bundle = self._bundle()
+        pairs = (
+            ("controller_confirmed_input_signal", "confirm_card"),
+            ("controller_canceled_input_signal", "cancel_card_play"),
+            ("controller_target_finish_input", "confirm_target"),
+            ("controller_target_canceled_input", "cancel_card_play"),
+        )
+        for mechanism, verb in pairs:
+            with self.subTest(mechanism=mechanism):
+                row = self._text_row(bundle)
+                row["native_mechanism"] = mechanism
+                row["native_owner_witness_id"] = row["native_carrier_witness_id"]
+                row["chosen_action"]["verb"] = verb
+                row["snapshot"]["interaction"]["kind"] = "combat_card_operation"
+                row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
+                self._declare_text(bundle, [row])
+                result = verify_human_session_bundle(bundle)
+                self.assertTrue(result.passed, result.findings)
+                self.assertEqual(result.require_value().human_text_inputs[0]["chosen_action"]["verb"], verb)
+                # The old canonical trace/count is separate from this input label.
+                self.assertEqual(result.require_value().canonical_count, 1)
+                row["native_owner_witness_id"] = "different-owner"
+                self._declare_text(bundle, [row])
+                self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                                 "human_text_input_continuation_owner_mismatch")
+                row["native_owner_witness_id"] = row["native_carrier_witness_id"]
+                row["chosen_action"]["verb"] = "begin_card_play"
+                row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
+                self._declare_text(bundle, [row])
+                self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                                 "human_text_input_native_verb_mechanism_mismatch")
+                row.update(disposition="rejected_or_cancelled", reason_code="unproved_input")
+                self._declare_text(bundle, [row])
+                self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                                 "human_text_input_native_verb_mechanism_mismatch")
+
+    def test_unrecognized_native_input_provenance_is_not_an_accepted_label(self) -> None:
+        bundle = self._bundle()
+        row = self._text_row(bundle)
+        row["native_mechanism"] = "unproved_future_driver"
+        self._declare_text(bundle, [row])
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_native_mechanism_invalid")
+
+    def test_declared_text_stream_requires_file_and_close_seal(self) -> None:
+        bundle = self._bundle()
+        path = self._declare_text(bundle, [self._text_row(bundle)])
+        path.unlink()
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_stream_or_close_seal_missing")
+        self._declare_text(bundle, [self._text_row(bundle)])
+        receipt_path = bundle / "raw" / "session-close-receipt.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt["human_text_input_count"] = 0
+        self._write(receipt_path, receipt)
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_close_seal_mismatch")
+        receipt["human_text_input_count"] = 1
+        receipt["human_text_inputs_sha256"] = "0" * 64
+        self._write(receipt_path, receipt)
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_close_seal_mismatch")
+
+    def test_resealed_text_stream_rejects_torn_tail_and_fabricated_result(self) -> None:
+        bundle = self._bundle()
+        row = self._text_row(bundle)
+        path = self._declare_text(bundle, [row])
+        path.write_bytes(path.read_bytes().rstrip(b"\n"))
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_torn_tail")
+        row["result"] = {"status": "applied"}
+        self._declare_text(bundle, [row])
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_schema_invalid")
+
+    def test_text_input_exact_binding_and_failure_are_distinct(self) -> None:
+        bundle = self._bundle()
+        row = self._text_row(bundle)
+        row["native_carrier_witness_id"] = None
+        self._declare_text(bundle, [row])
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_exact_mapping_missing")
+        failed = self._text_row(bundle)
+        failed.update(disposition="capture_failed", reason_code="pre_capture_failed",
+                      mapping_status="capture_failed", match_count=0, mapping_basis="none",
+                      environment=None, snapshot=None, snapshot_sha256=None,
+                      chosen_action=None, native_carrier_witness_id=None)
+        self._declare_text(bundle, [failed])
+        result = verify_human_session_bundle(bundle)
+        self.assertTrue(result.passed, result.findings)
+        failed.update(disposition="rejected_or_cancelled", reason_code="native_cancelled",
+                      mapping_status="exact_unique", match_count=1,
+                      environment=self._text_row(bundle)["environment"],
+                      snapshot=self._text_row(bundle)["snapshot"],
+                      snapshot_sha256=self._text_row(bundle)["snapshot_sha256"],
+                      chosen_action=self._text_row(bundle)["chosen_action"])
+        self._declare_text(bundle, [failed])
+        self.assertTrue(verify_human_session_bundle(bundle).passed)
+        failed.update(disposition="not_mapped", reason_code="ambiguous",
+                      mapping_status="ambiguous", match_count=2)
+        self._declare_text(bundle, [failed])
+        self.assertTrue(verify_human_session_bundle(bundle).passed)
+
+    def test_text_stream_rejects_resealed_identity_digest_and_order_drift(self) -> None:
+        bundle = self._bundle()
+        original = self._text_row(bundle)
+        cases = [
+            ({"session_id": "other"}, "human_text_input_identity_invalid"),
+            ({"snapshot_sha256": "0" * 64}, "human_text_input_snapshot_digest_mismatch"),
+            ({"selected_action_id": "invented"}, "human_text_input_schema_invalid"),
+            ({"sequence": 2}, "human_text_input_identity_invalid"),
+        ]
+        for update, code in cases:
+            with self.subTest(update=update):
+                row = dict(original) | update
+                self._declare_text(bundle, [row])
+                self.assertEqual(verify_human_session_bundle(bundle).findings[0].code, code)
+        second = dict(original) | {"sequence": 2}
+        self._declare_text(bundle, [original, second])
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_duplicate_record_id")
+
+    def test_resealed_complete_catalog_rejects_bad_nonchosen_action(self) -> None:
+        bundle = self._bundle()
+        row = self._text_row(bundle)
+        row["snapshot"]["menu_actions"]["actions"].append(
+            {"action_id": "other", "kind": "native_input", "verb": "begin_card_play",
+             "label": "Other", "subject_referent_id": "hidden-card", "arguments": [],
+             "effect_domain": "native_input"})
+        row["snapshot"]["menu_actions"].update(total_count=2, materialized_count=2)
+        row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
+        self._declare_text(bundle, [row])
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_catalog_incomplete")
+
+    def test_resealed_input_requires_actual_current_page_content(self) -> None:
+        bundle = self._bundle()
+        row = self._text_row(bundle)
+        del row["snapshot"]["interaction"]["content"]
+        row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
+        self._declare_text(bundle, [row])
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_catalog_incomplete")
+
+    def test_undeclared_text_stream_and_unsupported_version_fail(self) -> None:
+        bundle = self._bundle()
+        raw = bundle / "raw"
+        (raw / "human-text-inputs.jsonl").write_bytes(b"")
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "undeclared_human_text_input_stream")
+        recording = json.loads((raw / "recording-manifest.json").read_text())
+        recording["text_input_schema_version"] = 2
+        self._write(raw / "recording-manifest.json", recording)
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_schema_invalid")
+
+    def test_actual_core_serialized_synthetic_row_has_exact_snapshot_digest(self) -> None:
+        source = Path(__file__).parent / "fixtures/human_text/core_accepted.jsonl"
+        path = self.root / "human-text-inputs.jsonl"
+        path.write_bytes(source.read_bytes())
+        rows = verify_human_text_inputs(
+            self.root,
+            {"text_input_schema_version": 1, "session_id": "session-test",
+             "timeline_id": "timeline-test"},
+            {"human_text_input_count": 1, "human_text_inputs_sha256": sha_file(path)},
+            ("run-0001",),
+        )
+        self.assertEqual(rows[0]["disposition"], "accepted_input")
+        self.assertEqual(rows[0]["snapshot_sha256"],
+                         "473de3dc3c45a0c21e07e20b6faac11b37572d0b6623483c51af9a950b9eb5cf")
+
+    def test_durable_text_append_failure_survives_resealing_and_recovery(self) -> None:
+        bundle = self._bundle()
+        self._declare_text(bundle, [self._text_row(bundle)])
+        raw = bundle / "raw"
+        self._write(raw / "human-text-input-failure.json", {
+            "schema": "sts2.human-annotator/human-text-input-failure-1",
+            "session_id": self._text_row(bundle)["session_id"],
+            "timeline_id": self._text_row(bundle)["timeline_id"],
+            "failed_at": "2026-09-11T00:00:00Z", "reason": "write_failed",
+        })
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_append_failure")
+        receipt_path = raw / "session-close-receipt.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt["recovery"] = "sts2.human-annotator/interrupted-recovery-1"
+        self._write(receipt_path, receipt)
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_append_failure")
+        (raw / "human-text-input-failure.json").unlink()
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_recovery_unsupported")
 
     def test_read_blob_reference_cannot_escape_raw(self) -> None:
         bundle = self._bundle()

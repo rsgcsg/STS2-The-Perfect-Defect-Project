@@ -199,7 +199,10 @@ internal static class NativeTextMenuFrameBuilder
                         ? "card_targeting" : "card_confirm");
                 leaves.Add(Leaf("cancel_card:" + cardId, "cancel_card_play",
                     "Cancel held card", cardId,
-                    () => NativeTextMenuCombat.Cancel(hand, controller, card)));
+                    () => NativeTextMenuCombat.Cancel(hand, controller, card)) with
+                {
+                    NativeWitness = HeldCardWitness(controller, card)
+                });
                 if (NTargetManager.Instance.IsInSelection)
                 {
                     foreach (NCreature target in NativeTextMenuCombat.CurrentTargets(
@@ -216,7 +219,15 @@ internal static class NativeTextMenuFrameBuilder
                             "confirm_target", "Confirm " + target.Entity.Name,
                             targetId,
                             () => NativeTextMenuCombat.ConfirmTarget(
-                                hand, controller, card, exactTarget)));
+                                hand, controller, card, exactTarget)) with
+                        {
+                            NativeWitness = new TextMenuNativeWitnessBinding(
+                                controller, card,
+                                new Dictionary<string, object>(StringComparer.Ordinal)
+                                {
+                                    ["target"] = exactTarget
+                                })
+                        });
                     }
                 }
                 else if (card.TargetType is not (TargetType.AnyEnemy or TargetType.AnyAlly))
@@ -224,7 +235,10 @@ internal static class NativeTextMenuFrameBuilder
                     leaves.Add(Leaf("confirm_card:" + cardId,
                         "confirm_card", "Confirm held card", cardId,
                         () => NativeTextMenuCombat.ConfirmUntargeted(
-                            hand, controller, card)));
+                            hand, controller, card)) with
+                    {
+                        NativeWitness = HeldCardWitness(controller, card)
+                    });
                 }
                 return new TextMenuFrame(page, owner, leaves);
             }
@@ -258,7 +272,14 @@ internal static class NativeTextMenuFrameBuilder
                 string id = entities.GetId(card, "card");
                 leaves.Add(Leaf("begin_card:" + id, "begin_card_play",
                     "Begin " + card.Title, id,
-                    () => NativeTextMenuCombat.Begin(hand, exactHolder, exactCard)));
+                    () => NativeTextMenuCombat.Begin(hand, exactHolder, exactCard)) with
+                {
+                    NativeWitness = new TextMenuNativeWitnessBinding(
+                        hand, exactCard, new Dictionary<string, object>(StringComparer.Ordinal)
+                        {
+                            ["holder"] = exactHolder
+                        })
+                });
             }
             leaves.AddRange(NativeTextMenuPotions.Openers(entities));
         }
@@ -410,6 +431,10 @@ internal static class NativeTextMenuFrameBuilder
         Func<NativeInputResult> dispatch) =>
         new(key, "root", verb, label, subject,
             Array.Empty<PlayerEnvironmentBoundActionArgument>(), dispatch);
+
+    private static TextMenuNativeWitnessBinding HeldCardWitness(
+        NCardPlay play, CardModel card) =>
+        new(play, card, new Dictionary<string, object>(StringComparer.Ordinal));
 
     private static PlayerEnvironmentSnapshot CardOperationPage(
         PlayerEnvironmentSnapshot source, NPlayerHand hand, NControllerCardPlay play,
