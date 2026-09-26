@@ -25,6 +25,10 @@ public sealed class RecordingSessionStore : IDisposable
     private readonly FileStream _semanticBoundaryTrace;
     private readonly FileStream _canonicalTransitions;
     private readonly FileStream _nativeSemanticDiscriminator;
+    private readonly FileStream? _humanTextInputs;
+    private long _humanTextInputSequence;
+    private readonly HashSet<string> _humanTextInputIds = new(StringComparer.Ordinal);
+    private bool _humanTextInputAppendFailed;
     private readonly Dictionary<string, long> _families = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _readsByKind = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _invalidationsByReason = new(StringComparer.Ordinal);
@@ -73,12 +77,16 @@ public sealed class RecordingSessionStore : IDisposable
                 Path.Combine(directory, "canonical-transitions.jsonl"));
             _nativeSemanticDiscriminator = OpenBufferedAppend(
                 Path.Combine(directory, "native-semantic-discriminator.jsonl"));
+            if (manifest.TextInputSchemaVersion == HumanTextInputObservationContract.SchemaVersion)
+                _humanTextInputs = OpenBufferedAppend(Path.Combine(directory,
+                    HumanTextInputObservationContract.FileName));
             WriteCoverage();
         }
         catch
         {
             _invalidations?.Dispose(); _journal?.Dispose(); _semanticBoundaryTrace?.Dispose();
             _canonicalTransitions?.Dispose(); _nativeSemanticDiscriminator?.Dispose(); _ownerLease?.Dispose();
+            _humanTextInputs?.Dispose();
             throw;
         }
     }
@@ -135,7 +143,8 @@ public sealed class RecordingSessionStore : IDisposable
         if (manifest.SchemaVersion != CurrentRecordingContract.SchemaVersion
             || manifest.Schema != CurrentRecordingContract.ManifestSchema
             || manifest.CaptureProfileId != captureProfile.ProfileId
-            || manifest.CaptureProfileSha256 != EvidenceIdentity.Sha256Json(captureProfile))
+            || manifest.CaptureProfileSha256 != EvidenceIdentity.Sha256Json(captureProfile)
+            || manifest.TextInputSchemaVersion is not (null or HumanTextInputObservationContract.SchemaVersion))
             throw new InvalidDataException("Current recording manifest does not bind the capture profile.");
         return new RecordingSessionStore(
             Path.Combine(Path.GetFullPath(root), SafeId(manifest.SessionId, nameof(manifest.SessionId))),
@@ -494,6 +503,55 @@ public sealed class RecordingSessionStore : IDisposable
                 () => AppendBufferedLine(_nativeSemanticDiscriminator, value)));
     }
 
+    public void AppendHumanTextInputObservation(HumanTextInputObservation value)
+    {
+        lock (_gate)
+        {
+            if (_closed) throw new ObjectDisposedException(nameof(RecordingSessionStore));
+            if (_humanTextInputAppendFailed)
+                throw new InvalidDataException("Human text input stream already failed this session.");
+            try
+            {
+                if (Manifest.TextInputSchemaVersion != HumanTextInputObservationContract.SchemaVersion
+                    || _humanTextInputs is null)
+                    throw new InvalidDataException("Human text input stream was not declared by this manifest.");
+                IReadOnlyList<string> errors = HumanTextInputObservationValidator.Validate(value);
+                if (errors.Count > 0 || value.SessionId != Manifest.SessionId
+                    || value.TimelineId != Manifest.TimelineId)
+                    throw new InvalidDataException($"Human text input observation is invalid: {string.Join(',', errors)}");
+                if (value.Sequence != _humanTextInputSequence + 1)
+                    throw new InvalidDataException("Human text input sequence is not contiguous.");
+                if (_humanTextInputIds.Contains(value.RecordId))
+                    throw new InvalidDataException("Human text input record ID is duplicated.");
+                AppendBufferedLine(_humanTextInputs, value);
+                _humanTextInputSequence = value.Sequence;
+                _humanTextInputIds.Add(value.RecordId);
+            }
+            catch (Exception exception)
+            {
+                _humanTextInputAppendFailed = true;
+                _appendHealth = "failed";
+                _lastError = exception.Message;
+                if (exception is IOException or UnauthorizedAccessException)
+                    _diskHealth = "failed";
+                try
+                {
+                    WriteCreateNew(Path.Combine(DirectoryPath, "human-text-input-failure.json"),
+                        JsonSerializer.Serialize(new {
+                            schema = "sts2.human-annotator/human-text-input-failure-1",
+                            session_id = Manifest.SessionId, timeline_id = Manifest.TimelineId,
+                            failed_at = DateTimeOffset.UtcNow,
+                            reason = exception is IOException or UnauthorizedAccessException
+                                ? "write_failed" : "append_validation_failed"
+                        }, EvidenceJson.IndentedOptions));
+                }
+                catch (Exception markerError) when (markerError is IOException or UnauthorizedAccessException)
+                { /* The permanent latch still prevents a clean close. */ }
+                throw;
+            }
+        }
+    }
+
     public void AppendInvalidation(InvalidationRecord invalidation)
     {
         if (invalidation.SchemaVersion != CurrentRecordingContract.SchemaVersion
@@ -556,6 +614,7 @@ public sealed class RecordingSessionStore : IDisposable
                     _semanticBoundaryTrace.Flush(flushToDisk: true);
                     _canonicalTransitions.Flush(flushToDisk: true);
                     _nativeSemanticDiscriminator.Flush(flushToDisk: true);
+                    _humanTextInputs?.Flush(flushToDisk: true);
                 });
                 WriteAtomic(
                     Path.Combine(DirectoryPath, "performance-profile.json"),
@@ -569,6 +628,12 @@ public sealed class RecordingSessionStore : IDisposable
                 _semanticBoundaryTrace.Dispose();
                 _canonicalTransitions.Dispose();
                 _nativeSemanticDiscriminator.Dispose();
+                _humanTextInputs?.Dispose();
+                if (_humanTextInputAppendFailed)
+                {
+                    _ownerLease?.Dispose();
+                    throw new InvalidDataException("Human text input stream failed; session cannot close cleanly.");
+                }
                 if (Manifest.CloseSchemaVersion == 1)
                 {
                     string receipt = Path.Combine(DirectoryPath, "session-close-receipt.json");
@@ -576,7 +641,12 @@ public sealed class RecordingSessionStore : IDisposable
                     WriteCreateNew(temporary, JsonSerializer.Serialize(new {
                         schema = "sts2.human-annotator/session-close-1",
                         session_id = Manifest.SessionId, timeline_id = Manifest.TimelineId,
-                        closed_at = DateTimeOffset.UtcNow, status = "closed"
+                        closed_at = DateTimeOffset.UtcNow, status = "closed",
+                        human_text_input_count = Manifest.TextInputSchemaVersion == 1
+                            ? _humanTextInputSequence : (long?)null,
+                        human_text_inputs_sha256 = Manifest.TextInputSchemaVersion == 1
+                            ? EvidenceIdentity.Sha256File(Path.Combine(DirectoryPath,
+                                HumanTextInputObservationContract.FileName)) : null
                     }, EvidenceJson.IndentedOptions));
                     File.Move(temporary, receipt); // only after evidence and receipt bytes flush successfully
                 }
@@ -620,9 +690,12 @@ public sealed class RecordingSessionStore : IDisposable
             try
             {
                 operation();
-                _appendHealth = "healthy";
-                _diskHealth = "healthy";
-                _lastError = null;
+                if (!_humanTextInputAppendFailed)
+                {
+                    _appendHealth = "healthy";
+                    _diskHealth = "healthy";
+                    _lastError = null;
+                }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
