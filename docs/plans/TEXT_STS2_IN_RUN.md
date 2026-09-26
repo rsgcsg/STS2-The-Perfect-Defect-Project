@@ -36,7 +36,7 @@ their own native bindings; Godot object references never cross the wire.
 | Combat, player can act | Begin each eligible hand card, open each usable potion slot popup, End Turn, actual draw/discard/exhaust controls, Information | `NPlayerHand` holder Pressed, native potion/top-bar controls, existing exact End Turn binding |
 | Held card with targets | Current native creature targets and the native cancellation path; focus/confirm reflects targeting state | `NControllerCardPlay`, `NTargetManager.OnNodeHovered` and native select input |
 | Held untargeted card | Native confirmation or cancellation while that operation still owns input | `NCardPlay`/`NControllerCardPlay` input and `CancelPlayCard` |
-| Potion popup / targeting | Actual enabled use/discard/close controls; native eligible creature target or cancel | Exact current popup and `NTargetManager`; unavailable target families stay unsupported |
+| Potion popup / targeting | Actual enabled use/discard/close controls; native eligible creature target, exact Foul Potion merchant or cancel | Exact current popup and `NTargetManager`; unsupported target families stay fail-closed |
 | Map | Current native travel destinations and existing map controls | Exact map owner/destination binding; no coordinates or hidden future room information |
 | Reward list | Each currently visible reward entry, native continue/skip and actual potion controls | Exact `NRewardsScreen` ordinary or linked child controls; unopened card choices are absent |
 | Card reward inner page | Current full native card/alternative options and native return/skip when present | Existing unprofiled exact `CardRewardSurfaceReader`; button wording does not define permanent loss |
@@ -44,6 +44,12 @@ their own native bindings; Godot object references never cross the wire.
 | Multi-select / nested selector | One select or deselect at a time; native confirm/cancel only when offered | Existing selector owner, exact current chosen set and native cardinality rules; no subset enumeration |
 | Deck, pile, map, relic inspection or displayed tips | Current entered page contents and its real return/preview controls | Native opened page/tooltip owner; no background Read collection |
 | Settling, unsupported modal or terminal | Public current facts and no invented executable choice | Observe until an actual ready page, or return control; main menu/start/load/abandon/process operations are outside model A(S) |
+
+The native deck supports clicking a displayed card for its real inspect screen,
+including enabled previous/next and upgrade-preview controls. The native pile
+viewer does not bind that click, so no pile inspect action is invented. Purely
+visual deck sorting is omitted like scrolling: the complete current list remains
+available. A passive map can still expose its native Back while travel is disabled.
 
 The implementation resides in Connector's `PlayerEnvironment/TextMenu`.
 `NativeTextMenuFrameBuilder` composes current native facts;
