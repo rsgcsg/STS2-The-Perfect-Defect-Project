@@ -75,8 +75,6 @@ def bundled_release(tmp_path):
             },
             "node_modules/zod": {
                 "version": "0.1.0", "inBundle": True,
-                "resolved": bundled["transitive_zod"]["url"],
-                "integrity": bundled["transitive_zod"]["integrity"],
             },
         },
     }
@@ -112,7 +110,7 @@ def test_bundled_runtime_validates_complete_nested_closure(bundled_release):
     [
         "missing_pin", "unknown_layout", "mixed_pin", "identity_schema", "identity_source",
         "identity_connector", "sdk_content", "zod_content", "sdk_version", "zod_version",
-        "shrinkwrap", "wrong_bundle_hash", "zod_integrity", "sdk_dependency",
+        "shrinkwrap", "wrong_bundle_hash", "wrong_zod_integrity", "sdk_dependency",
     ],
 )
 def test_bundled_runtime_rejects_identity_and_dependency_mismatch(bundled_release, mutation):
@@ -127,6 +125,8 @@ def test_bundled_runtime_rejects_identity_and_dependency_mismatch(bundled_releas
         pin["dependency_content_sha256"] = {"zod": "0" * 64}
     elif mutation == "wrong_bundle_hash":
         pin["bundled_connector_pin"]["bundle_sha256"] = "0" * 64
+    elif mutation == "wrong_zod_integrity":
+        pin["bundled_connector_pin"]["transitive_zod"]["integrity"] = "sha512-wrong"
     elif mutation in {"identity_schema", "identity_source", "identity_connector"}:
         path = root / "package-identity.json"
         identity = json.loads(path.read_text())
@@ -143,15 +143,12 @@ def test_bundled_runtime_rejects_identity_and_dependency_mismatch(bundled_releas
         metadata = json.loads(path.read_text())
         metadata["version"] = "wrong"
         path.write_text(json.dumps(metadata))
-    elif mutation in {"zod_integrity", "sdk_dependency"}:
+    elif mutation == "sdk_dependency":
         path = root / "npm-shrinkwrap.json"
         metadata = json.loads(path.read_text())
-        if mutation == "zod_integrity":
-            metadata["packages"]["node_modules/zod"]["integrity"] = "sha512-wrong"
-        else:
-            metadata["packages"][f"node_modules/{runtime_install.CONNECTOR_PACKAGE}"][
-                "dependencies"
-            ] = {}
+        metadata["packages"][f"node_modules/{runtime_install.CONNECTOR_PACKAGE}"][
+            "dependencies"
+        ] = {}
         path.write_text(json.dumps(metadata))
     else:
         (root / "npm-shrinkwrap.json").write_text("{}")

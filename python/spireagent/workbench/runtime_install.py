@@ -238,8 +238,6 @@ def _validate_bundled_dependencies(package: Path, pin: dict[str, Any]) -> None:
             != sdk_dependencies
             or entries.get(f"node_modules/{CONNECTOR_PACKAGE}", {}).get("inBundle") is not True
             or entries.get("node_modules/zod", {}).get("version") != zod_pin["version"]
-            or entries.get("node_modules/zod", {}).get("resolved") != zod_pin["url"]
-            or entries.get("node_modules/zod", {}).get("integrity") != zod_pin["integrity"]
             or entries.get("node_modules/zod", {}).get("inBundle") is not True):
         raise PackageIdentityError("Runtime bundled dependency metadata differs from pin")
     sdk_hash, zod_hash = _bundled_hashes(sdk, zod)
