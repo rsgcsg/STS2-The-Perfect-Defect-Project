@@ -116,6 +116,10 @@ public static class HumanTextInputObservationValidator
                 || string.IsNullOrWhiteSpace(String(interaction, "interaction_id"))
                 || string.IsNullOrWhiteSpace(String(interaction, "kind"))
                 || string.IsNullOrWhiteSpace(String(interaction, "content_schema"))
+                || interaction["content"] is not JsonObject content
+                || content["surface"] is not JsonObject surface
+                || string.IsNullOrWhiteSpace(String(surface, "kind"))
+                || content["context"] is not JsonObject
                 || snapshot["referents"] is not JsonArray referents
                 || snapshot["information_policy"] is not JsonObject policy
                 || string.IsNullOrWhiteSpace(String(policy, "scope"))
@@ -171,6 +175,8 @@ public static class HumanTextInputObservationValidator
         {
             if (node is not JsonObject referent
                 || string.IsNullOrWhiteSpace(String(referent, "referent_id"))
+                || string.IsNullOrWhiteSpace(String(referent, "role"))
+                || String(referent, "kind") is not ("entity" or "control")
                 || referent["state"] is not JsonObject state
                 || state["visible"] is not JsonValue visibleNode
                 || !visibleNode.TryGetValue<bool>(out bool visible)
