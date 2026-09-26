@@ -1,7 +1,7 @@
 """Owner-attested Human text-input observations for engineering BC.
 
 This source is a verified recording archive, not a transition dataset. A native
-begin witness labels only the selected current menu action; it says nothing
+input witness labels only the selected current menu action; it says nothing
 about Connector delivery, Receipt, effects, or a successor state.
 """
 
@@ -189,6 +189,7 @@ def load_human_text_source(
 
 
 def _project(rows: tuple[dict, ...]) -> tuple[tuple[ModelSample, ...], dict]:
+    """Project rows from the typed verifier; native mechanism validation is its job."""
     parent: dict[str, str] = {}
     inputs: dict[str, str] = {}
     accepted: list[tuple[dict, Any, str]] = []
@@ -220,14 +221,13 @@ def _project(rows: tuple[dict, ...]) -> tuple[tuple[ModelSample, ...], dict]:
         chosen = row.get("chosen_action")
         if (row["mapping_status"] != "exact_unique" or row["match_count"] != 1
                 or row["mapping_basis"] != "text_menu_native_reference_equality"
-                or row["native_mechanism"] != "begin_card_play_exact_factory_return"
                 or row["external_controller_active"] is not False
                 or not isinstance(snapshot, dict) or not isinstance(chosen, dict)):
-            raise BoundaryError("human_text_import", "exact_begin_input_required")
+            raise BoundaryError("human_text_import", "exact_native_input_required")
         public = project_text_menu_snapshot(snapshot)
         actions = snapshot["menu_actions"]["actions"]
         matches = [index for index, action in enumerate(actions) if action == chosen]
-        if (len(matches) != 1 or chosen.get("verb") != "begin_card_play"
+        if (len(matches) != 1 or chosen.get("kind") != "native_input"
                 or chosen.get("effect_domain") != "native_input"
                 or public.action_ids[matches[0]] != chosen.get("action_id")):
             raise BoundaryError("human_text_import", "chosen_catalog_binding_mismatch")
@@ -263,9 +263,14 @@ def _project(rows: tuple[dict, ...]) -> tuple[tuple[ModelSample, ...], dict]:
             ))
     if {sample.split for sample in samples} != {"train", "dev"}:
         raise BoundaryError("human_text_import", "nonempty_train_dev_required")
+    # Preserve byte-for-byte reconstruction of existing begin-only views. Later
+    # input labels have a broader explicit boundary, not a renamed old artifact.
+    begin_only = all(row["chosen_action"]["verb"] == "begin_card_play"
+                     for row, _, _ in accepted)
     return tuple(samples), {
         "schema": VIEW_SCHEMA, "serializer": IDENTITY,
-        "label_boundary": "owner_attested_human_exact_native_begin_input",
+        "label_boundary": ("owner_attested_human_exact_native_begin_input" if begin_only
+                           else "owner_attested_human_exact_native_input"),
         "human_origin": "explicit_owner_attestation_not_machine_verifiable",
         "native_successor_supervision": False,
         "split_basis": "whole_session_run_and_duplicate_visible_current_input",

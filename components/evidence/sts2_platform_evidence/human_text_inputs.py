@@ -9,15 +9,24 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any
 
 from .human_session_bundle_v1 import BundleVerificationError, _sha256_file
 
 SCHEMA = "sts2.human-annotator/human-text-input-1"
-MECHANISM = "begin_card_play_exact_factory_return"
+# Producer-specific provenance is interpreted here, never by the model or its
+# research projection. Several native mechanisms can prove one public verb.
+MECHANISM_VERBS = {
+    "begin_card_play_exact_factory_return": "begin_card_play",
+    "controller_confirmed_input_signal": "confirm_card",
+    "controller_canceled_input_signal": "cancel_card_play",
+    "controller_target_finish_input": "confirm_target",
+    "controller_target_canceled_input": "cancel_card_play",
+}
 MAPPING_BASIS = "text_menu_native_reference_equality"
 DISPOSITIONS = {"accepted_input", "not_mapped", "capture_failed", "rejected_or_cancelled"}
 HEX_SHA = re.compile(r"[0-9a-fA-F]{64}\Z")
@@ -148,8 +157,13 @@ def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
            "human_text_input_identity_invalid")
     _check(row.get("external_controller_active") is False,
            "human_text_input_external_controller")
-    _check(row.get("native_mechanism") == MECHANISM,
+    mechanism = row.get("native_mechanism")
+    _check(isinstance(mechanism, str) and mechanism in MECHANISM_VERBS,
            "human_text_input_native_mechanism_invalid")
+    mapped_action = row.get("chosen_action")
+    if isinstance(mapped_action, dict):
+        _check(mapped_action.get("verb") == MECHANISM_VERBS[mechanism],
+               "human_text_input_native_verb_mechanism_mismatch")
     _check(_nonempty(row.get("native_owner_witness_id"))
            and (row.get("disposition") == "capture_failed"
                 or _nonempty(row.get("native_subject_witness_id"))),
@@ -166,6 +180,9 @@ def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
                and row.get("mapping_basis") == MAPPING_BASIS
                and _nonempty(row.get("native_carrier_witness_id")),
                "human_text_input_exact_mapping_missing")
+        if MECHANISM_VERBS[mechanism] != "begin_card_play":
+            _check(row.get("native_owner_witness_id") == row.get("native_carrier_witness_id"),
+                   "human_text_input_continuation_owner_mismatch")
     snapshot = row.get("snapshot")
     if snapshot is None:
         _check(not accepted and disposition == "capture_failed"
@@ -251,7 +268,7 @@ def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
     chosen = row.get("chosen_action")
     _check(isinstance(chosen, dict) and chosen.get("kind") == "native_input"
            and chosen.get("effect_domain") == "native_input"
-           and chosen.get("verb") == "begin_card_play"
+           and chosen.get("verb") == MECHANISM_VERBS[mechanism]
            and _nonempty(chosen.get("action_id"))
            and _nonempty(chosen.get("subject_referent_id"))
            and isinstance(chosen.get("arguments"), list)
