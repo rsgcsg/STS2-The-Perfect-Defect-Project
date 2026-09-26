@@ -3,6 +3,23 @@
 Use rsgcsg/STS2-The-Perfect-Defect-Project for all new development.
 Snapshot: 2026-09-23. Routing and exact-source observations, not deployment authority.
 
+## Active implementation, 2026-09-26
+
+The user approved the [in-run text STS2 implementation](../plans/TEXT_STS2_IN_RUN.md).
+Its topic starts from develop source anchor
+`1820a3650467b93fbc4df59f752a6e8c5b3fe74f`. The opt-in `text-menu-v1`
+separates current native presentation from eight explicitly synthetic information
+menu kinds. Connector owns native binding; Runtime distinguishes menu navigation
+from native delivery; STPD consumes the complete current menu with a separate
+serializer and evidence lineage. Existing profiles and historical model/data
+identities keep their original meanings.
+
+This source candidate is not yet a live full-game or Human-data acceptance.
+Candidate versions, checks, package and loaded identities must be read from its
+actual PR and runtime receipts; the historical B0 rows below are not current
+installation observations. Work occurs in isolated topics without replacing the
+running collector/model worktree.
+
 ## Active mainline and next gate
 
 The local supervisor has taken over unfinished B0 and subsequent work. The web architect

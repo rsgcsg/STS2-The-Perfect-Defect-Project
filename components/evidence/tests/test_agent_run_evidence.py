@@ -496,3 +496,225 @@ class AgentRunEvidenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
+    def _text_snapshot(self, snapshot_id: str, sequence: int, action: dict[str, Any], cursor: str = "root") -> dict[str, Any]:
+        snapshot = self._snapshot(snapshot_id, sequence)
+        snapshot.pop("bound_actions")
+        snapshot.pop("reads")
+        snapshot.update(schema="sts2.player-environment/text-menu-snapshot-1", input_profile="text-menu-v1")
+        snapshot["interaction"]["content_schema"] = "sts2.player-environment/surface/combat_text_menu-1"
+        snapshot["menu"] = {"cursor": cursor, "revision": sequence, "native_snapshot_id": "native-1"}
+        snapshot["menu_actions"] = {"status": "complete", "materialized_count": 1, "total_count": 1, "ordering_semantics": "connector_order", "actions": [action]}
+        return snapshot
+
+    def _text_evidence(self, name: str, *, native: bool = False) -> Path:
+        directory = self._evidence(name)
+        policy_path = directory / "policy-manifest.json"
+        policy = json.loads(policy_path.read_text())
+        policy["representation"] = {"id": "text", "version": "1", "input_schema": "sts2.player-environment/text-menu-snapshot-1"}
+        policy_path.write_bytes(canonical(policy))
+        digest = sha256(json.dumps(policy, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True).encode())
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["policy_manifest_sha256"] = digest
+        manifest_path.write_bytes(canonical(manifest))
+        attestation_path = directory / "adapter-attestation.json"
+        attestation = json.loads(attestation_path.read_text())
+        attestation["policy_manifest_sha256"] = digest
+        attestation_path.write_bytes(canonical(attestation))
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        action = {"action_id": "native-end" if native else "nav-info", "kind": "native_input" if native else "system_navigation", "verb": "end_turn" if native else "open_information", "label": "End turn" if native else "Information", "subject_referent_id": None, "arguments": [], "effect_domain": "native_input" if native else "text_menu"}
+        first = self._text_snapshot("text-1", 1, action)
+        next_action = action if native else {**action, "action_id": "nav-back", "verb": "back", "label": "Back"}
+        successor = self._text_snapshot("text-2", 2, next_action, "root" if native else "information")
+        candidate_digest = sha256(json.dumps([action["action_id"]], separators=(",", ":")).encode())
+        decision = events[1]
+        decision["payload"]["decision"].update(snapshot_id="text-1", candidate_digest=candidate_digest, candidate_count=1, scores=[1.0], selected_index=0, disposition="admit")
+        decision["payload"]["resolved_bound_action_id"] = action["action_id"]
+        request_id = f"request-{name}-decision-1"
+        result = {"protocol_version": "1.0.0", "schema": "sts2.player-environment/text-menu-action-result-1", "input_profile": "text-menu-v1", "request_id": request_id, "status": "applied", "effect_domain": action["effect_domain"], "native_delivery": "delivered" if native else None, "action": action, "reason_code": None, "detail": None, "retry": "never", "successor": successor if not native else None, "attribution": None}
+        def event(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+            return {"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0, "recorded_at": "2026-08-25T00:00:02.000Z", "kind": kind, "payload": payload}
+        events = [events[0], event("text_decision_input", {"decision_id": "decision-1", "snapshot": first}), decision,
+                  event("controller_acquired", {}),
+                  event("text_menu_dispatch_attempt", {"decision_id": "decision-1", "action_id": action["action_id"], "effect_domain": action["effect_domain"], "native_submissions_used": 1 if native else 0, "menu_navigations_used": 0 if native else 1}),
+                  event("text_native_delivery" if native else "menu_navigation", {"decision_id": "decision-1", **({} if native else {"action_id": action["action_id"]}), "result": result})]
+        if native:
+            events.append(event("text_observed_successor", {"decision_id": "decision-1", "successor": successor}))
+        events.append(event("controller_released", {}))
+        for index, item in enumerate(events, 1): item["sequence"] = index
+        self._rewrite_events(directory, events)
+        return directory
+
+    def test_text_navigation_is_verified_without_native_receipt(self) -> None:
+        directory = self._text_evidence("text-nav")
+        self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[5]["payload"]["result"]["native_delivery"] = "delivered"
+        self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_text_native_delivery_requires_terminal_observation(self) -> None:
+        directory = self._text_evidence("text-native", native=True)
+        self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events.pop(6)
+        for index, event in enumerate(events, 1): event["sequence"] = index
+        self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_text_decision_rejects_digest_and_selected_action_drift(self) -> None:
+        for change in ("candidate_digest", "resolved_bound_action_id"):
+            directory = self._text_evidence("text-drift-" + change)
+            events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+            if change == "candidate_digest": events[2]["payload"]["decision"][change] = "0" * 64
+            else: events[2]["payload"][change] = "wrong-action"
+            self._rewrite_events(directory, events)
+            self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_text_unknown_requires_tainted_manifest_and_never_retry(self) -> None:
+        directory = self._text_evidence("text-unknown", native=True)
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[5]["kind"] = "text_native_unknown"
+        result = events[5]["payload"]["result"]
+        result.update(status="unknown", native_delivery="unknown", successor=None, retry="never")
+        events.pop(6)
+        for index, event in enumerate(events, 1): event["sequence"] = index
+        self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest.update(status="tainted", tainted=True)
+        manifest_path.write_bytes(canonical(manifest))
+        self._rewrite_events(directory, events)
+        self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
+        result["retry"] = "reobserve"
+        self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_text_result_rejects_wrong_request(self) -> None:
+        directory = self._text_evidence("text-request")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[5]["payload"]["result"]["request_id"] = "wrong"
+        self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_text_not_applied_is_not_a_native_delivery(self) -> None:
+        directory = self._text_evidence("text-not-applied", native=True)
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[5]["kind"] = "text_menu_not_applied"
+        result = events[5]["payload"]["result"]
+        result.update(status="not_applied", native_delivery="not_delivered", successor=None, retry="reobserve")
+        events.pop(6)
+        for index, event in enumerate(events, 1): event["sequence"] = index
+        self._rewrite_events(directory, events)
+        self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
+        result["native_delivery"] = "delivered"
+        self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_text_rejected_result_requires_real_correlation_mismatch_and_taint(self) -> None:
+        directory = self._text_evidence("text-rejected", native=True)
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[5]["kind"] = "text_menu_result_rejected"
+        events[5]["payload"] = {"decision_id": "decision-1", "expected_request_id": "request-text-rejected-decision-1", "expected_action_id": "native-end", "result": events[5]["payload"]["result"]}
+        events.pop(6)
+        for index, event in enumerate(events, 1): event["sequence"] = index
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest.update(status="tainted", tainted=True)
+        manifest_path.write_bytes(canonical(manifest))
+        self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+        events[5]["payload"]["result"]["request_id"] = "wrong-request"
+        self._rewrite_events(directory, events)
+        self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_text_dispatch_and_result_must_match_selected_action(self) -> None:
+        for field in ("dispatch", "result"):
+            directory = self._text_evidence("text-action-" + field, native=True)
+            events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+            if field == "dispatch": events[4]["payload"]["action_id"] = "wrong-action"
+            else: events[5]["payload"]["result"]["action"]["action_id"] = "wrong-action"
+            self._rewrite_events(directory, events)
+            self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_text_input_must_precede_decision_and_be_complete(self) -> None:
+        directory = self._text_evidence("text-input")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[1]["payload"]["snapshot"]["menu_actions"]["status"] = "truncated"
+        self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+        events = [event for event in events if event["kind"] != "text_decision_input"]
+        for index, event in enumerate(events, 1): event["sequence"] = index
+        self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_text_one_step_runtime_budget_events_use_strict_current_shape(self) -> None:
+        directory = self._text_evidence("text-one-step", native=True)
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        budget = {"state": "inactive", "max_submissions": 2, "submissions_used": 1,
+                  "max_policy_calls": 3, "policy_calls_used": 1, "deadline_ms": 10000,
+                  "elapsed_ms": 100, "remaining_ms": 9900, "exhausted_reason": None,
+                  "ended_reason": "mode_changed"}
+        def event(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+            return {"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0, "recorded_at": "2026-08-25T00:00:03.000Z", "kind": kind, "payload": payload}
+        events.insert(0, event("mode_changed", {"mode": "one_step", "autonomy_budget": {**budget, "state": "active", "ended_reason": None, "submissions_used": 0, "policy_calls_used": 0}}))
+        events.append(event("one_step_completed", {"autonomy_budget": budget}))
+        events.append(event("stopped", {"autonomy_budget": budget, "controller": "released"}))
+        for index, item in enumerate(events, 1): item["sequence"] = index
+        self._rewrite_events(directory, events)
+        self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
+        events[-2]["payload"]["autonomy_budget"]["remaining_ms"] = 9901
+        self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_budget_exhaustion_and_release_failure_are_typed(self) -> None:
+        directory = self._text_evidence("text-exhausted")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        budget = {"state": "exhausted", "max_submissions": 1, "submissions_used": 1,
+                  "max_policy_calls": 2, "policy_calls_used": 1, "deadline_ms": 10000,
+                  "elapsed_ms": 100, "remaining_ms": 9900,
+                  "exhausted_reason": "submission_attempt_limit", "ended_reason": None}
+        events.append({"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": len(events)+1,
+                       "recorded_at": "2026-08-25T00:00:03.000Z",
+                       "kind": "autonomy_budget_exhausted",
+                       "payload": {"reason": "submission_attempt_limit", "budget": budget, "controller": "released"}})
+        self._rewrite_events(directory, events)
+        self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
+        events[-1]["payload"]["reason"] = "deadline"
+        self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_text_referent_and_transport_identity_match_public_codec(self) -> None:
+        directory = self._text_evidence("text-referent", native=True)
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        referent = {"referent_id": "card.1", "role": "card", "kind": "entity", "label": "Strike",
+                    "state": {"visible": True, "enabled": True, "selected": False,
+                              "focused": False, "observation_basis": "native_visible_fact"},
+                    "properties_schema": None, "properties": None}
+        events[1]["payload"]["snapshot"]["referents"].append(referent)
+        events[1]["payload"]["snapshot"]["menu_actions"]["actions"][0]["subject_referent_id"] = "card.1"
+        events[5]["payload"]["result"]["action"]["subject_referent_id"] = "card.1"
+        self._rewrite_events(directory, events)
+        self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
+        for field, bad in (("kind", "linked_choice"), ("observation_basis", "inferred")):
+            broken = json.loads(json.dumps(events))
+            state = broken[1]["payload"]["snapshot"]["referents"][0]
+            if field == "kind": state[field] = bad
+            else: state["state"][field] = bad
+            self._rewrite_events(directory, broken)
+            self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+        broken = json.loads(json.dumps(events))
+        broken[1]["payload"]["snapshot"]["snapshot_id"] = "bad/id"
+        self._rewrite_events(directory, broken)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+        broken = json.loads(json.dumps(events))
+        broken[1]["payload"]["snapshot"]["menu_actions"]["actions"][0]["action_id"] = "bad/id"
+        self._rewrite_events(directory, broken)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+        broken = json.loads(json.dumps(events))
+        broken[1]["payload"]["snapshot"]["interaction"]["content_schema"] = "sts2.player-environment/surface/bad-page-1"
+        self._rewrite_events(directory, broken)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)

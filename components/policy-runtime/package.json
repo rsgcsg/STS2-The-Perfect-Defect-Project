@@ -1,6 +1,6 @@
 {
   "name": "@rsgcsg/sts2-policy-runtime",
-  "version": "0.1.0-rc.8",
+  "version": "0.1.0-rc.9",
   "description": "Small policy runtime over the strict STS2 Connector Player Environment",
   "license": "MIT",
   "type": "module",
@@ -27,6 +27,7 @@
     "sts2-policy-port": "bin/policy-port.mjs"
   },
   "scripts": {
+    "pretypecheck": "npm --prefix ../connector/sdk/typescript run build",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "test": "vitest run",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
@@ -35,7 +36,7 @@
     "check:package": "node tools/check-package.mjs"
   },
   "dependencies": {
-    "@rsgcsg/sts2-connector-client": "https://github.com/rsgcsg/STS2-The-Pefect-Defect-Project/releases/download/compat/platform-import-v1/rsgcsg-sts2-connector-client-1.1.0-rc.1.tgz"
+    "@rsgcsg/sts2-connector-client": "file:../connector/sdk/typescript"
   },
   "devDependencies": {
     "@types/node": "^20.19.14",

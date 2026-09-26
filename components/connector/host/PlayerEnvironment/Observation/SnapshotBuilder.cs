@@ -20,9 +20,10 @@ internal static partial class PlayerEnvironmentService
         IReadOnlyCollection<string>? requiredReadKinds = null,
         Func<string, IReadOnlyCollection<string>>? requiredReadKindsForInteraction = null,
         ProcessLocalCaptureProfiler? captureProfiler = null,
-        string? inputProfile = null)
+        string? inputProfile = null,
+        bool textMenuCapture = false)
     {
-        if (!IsSupportedInputProfile(inputProfile))
+        if (!IsSupportedInputProfile(inputProfile) || inputProfile == TextMenuContract.Profile)
             throw new ArgumentException("Unsupported Player Environment input profile.", nameof(inputProfile));
         T Measure<T>(string phase, Func<T> operation) =>
             captureProfiler == null ? operation() : captureProfiler.Measure(phase, operation);
@@ -136,7 +137,9 @@ internal static partial class PlayerEnvironmentService
         IReadOnlyList<NativeUiBoundAction> nativeBindings = Measure(
             "native_binding_catalog",
             () => CanPublishMutationAuthority(draft.Readiness)
-                ? rewardPotionProfile
+                ? textMenuCapture && draft.Surface is CombatTurnSurface combat
+                    ? BuildTextCombatBindings(draft, combat)
+                    : rewardPotionProfile
                     ? NativeUiActionRuntime.BuildRewardPotionBindings(draft)
                     : BuildPlayerEnvironmentBindings(draft)
                 : Array.Empty<NativeUiBoundAction>());
@@ -208,7 +211,10 @@ internal static partial class PlayerEnvironmentService
             || profileCatalogIncomplete;
         bool actionsPublished = projected.Projection.Status == "complete"
             && projected.Projection.MaterializedCount > 0;
-        string status = actionsPublished
+        bool textCombatEntryReady = CanPublishTextCombatEntry(
+            textMenuCapture, draft.Surface, draft.Readiness,
+            draft.Completeness, projected.Projection);
+        string status = actionsPublished || textCombatEntryReady
             ? "interactive"
             : visibleUnsupported ? "visible_unsupported" : draft.Readiness == "settling" ? "settling" : "observed";
         PlayerEnvironmentCompleteness completeness = ToCompleteness(
@@ -265,6 +271,20 @@ internal static partial class PlayerEnvironmentService
             projected.Bindings,
             readBuilds);
     }
+
+    internal static bool CanPublishTextCombatEntry(
+        bool textMenuCapture,
+        ILiveSurface surface,
+        string readiness,
+        StateCompleteness nativeCompleteness,
+        PlayerEnvironmentBoundActionProjection projection) =>
+        textMenuCapture
+        && surface is CombatTurnSurface
+        && readiness == "ready"
+        && nativeCompleteness.PlayerVisibleSemantics.StartsWith(
+            "contract_complete_for_immediate_combat_turn", StringComparison.Ordinal)
+        && nativeCompleteness.Missing.Count == 0
+        && projection.Status == "complete";
 
     internal static bool IsOrdinaryRewardPage(LiveObservation draft) =>
         draft.Readiness == "ready"

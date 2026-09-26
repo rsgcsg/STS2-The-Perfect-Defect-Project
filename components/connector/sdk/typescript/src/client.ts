@@ -18,6 +18,11 @@ import {
   type RewardPotionReceipt
 } from "./rewardPotionPage.js";
 import {
+  TEXT_MENU_PROFILE, TEXT_MENU_RESULT_SCHEMA, decodeTextMenuCapabilities, decodeTextMenuSnapshot,
+  decodeTextMenuActionResult, type TextMenuCapabilities, type TextMenuSnapshot,
+  type TextMenuActionResult
+} from "./textMenu.js";
+import {
   decodePlayerClientRegistration,
   decodePlayerCapabilities,
   decodePlayerControllerLeaseResponse,
@@ -61,6 +66,11 @@ export class PlayerEnvironmentRestClient {
       `/api/player-environment/capabilities?input_profile=${REWARD_POTION_PAGE_PROFILE}`));
   }
 
+  async textMenuCapabilities(): Promise<DecodedPlayerPayload<TextMenuCapabilities>> {
+    return decodeTextMenuCapabilities(await this.get(
+      `/api/player-environment/capabilities?input_profile=${TEXT_MENU_PROFILE}`));
+  }
+
   async observe(): Promise<DecodedPlayerPayload<PlayerEnvironmentSnapshot>> {
     return decodePlayerSnapshot(await this.get("/api/player-environment/snapshot"));
   }
@@ -73,6 +83,11 @@ export class PlayerEnvironmentRestClient {
   async observeRewardPotionPage(): Promise<DecodedPlayerPayload<RewardPotionSnapshot>> {
     return decodeRewardPotionSnapshot(await this.get(
       `/api/player-environment/snapshot?input_profile=${REWARD_POTION_PAGE_PROFILE}`));
+  }
+
+  async observeTextMenu(): Promise<DecodedPlayerPayload<TextMenuSnapshot>> {
+    return decodeTextMenuSnapshot(await this.get(
+      `/api/player-environment/snapshot?input_profile=${TEXT_MENU_PROFILE}`));
   }
 
   async read(readId: string, expectedSnapshotId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReadResponse>> {
@@ -137,6 +152,25 @@ export class PlayerEnvironmentRestClient {
     }, true));
   }
 
+  async submitTextMenu(input: {
+    requestId: string;
+    expectedSnapshotId: string;
+    boundActionId: string;
+    clientSessionId: string;
+    controllerLeaseId: string;
+    controllerGeneration: number;
+  }): Promise<DecodedPlayerPayload<TextMenuActionResult>> {
+    return decodeTextMenuActionResult(await this.post("/api/player-environment/actions", {
+      request_id: input.requestId,
+      expected_snapshot_id: input.expectedSnapshotId,
+      bound_action_id: input.boundActionId,
+      client_session_id: input.clientSessionId,
+      controller_lease_id: input.controllerLeaseId,
+      controller_generation: input.controllerGeneration,
+      input_profile: TEXT_MENU_PROFILE
+    }, true));
+  }
+
   async poll(requestId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReceipt>> {
     return decodePlayerReceipt(await this.get(`/api/player-environment/actions/${encodeURIComponent(requestId)}`));
   }
@@ -149,6 +183,11 @@ export class PlayerEnvironmentRestClient {
   async pollRewardPotionPage(requestId: string): Promise<DecodedPlayerPayload<RewardPotionReceipt>> {
     return decodeRewardPotionReceipt(await this.get(
       `/api/player-environment/actions/${encodeURIComponent(requestId)}?input_profile=${REWARD_POTION_PAGE_PROFILE}`));
+  }
+
+  async textMenuResult(requestId: string): Promise<DecodedPlayerPayload<TextMenuActionResult>> {
+    return decodeTextMenuActionResult(await this.get(
+      `/api/player-environment/actions/${encodeURIComponent(requestId)}?input_profile=${TEXT_MENU_PROFILE}`));
   }
 
   async registerClient(input: {
@@ -216,7 +255,8 @@ export class PlayerEnvironmentRestClient {
     }
     const value: unknown = await response.json().catch(() => ({}));
     const isReceipt = isJsonObject(value)
-      && value.schema === "sts2.player-environment/receipt-1";
+      && (value.schema === "sts2.player-environment/receipt-1"
+        || value.schema === TEXT_MENU_RESULT_SCHEMA);
     if (!response.ok && !(acceptReceiptOnError && isReceipt)) {
       throw new PlayerEnvironmentHttpError(
         `Player Environment request failed with HTTP ${response.status}: ${safeMessage(value)}`,

@@ -18,6 +18,9 @@ from ..fullrun.contracts import SemanticAction, SemanticState
 from ..fullrun.public_inputs import COMPACT_IDENTITY, project_public_snapshot
 from ..fullrun.public_inputs import IDENTITY as PUBLIC_IDENTITY
 from ..fullrun.representation import FullRunSerializer
+from ..fullrun.text_menu_inputs import IDENTITY as TEXT_MENU_IDENTITY
+from ..fullrun.text_menu_inputs import SNAPSHOT_SCHEMA as TEXT_MENU_SCHEMA
+from ..fullrun.text_menu_inputs import project_text_menu_snapshot
 from ..fullrun.token_inputs import FORMAT, encode_texts
 from ..models.stage1a import recipe_for
 from ..qwen.l1 import load_pin
@@ -49,7 +52,7 @@ def check_model(model: Manifest) -> tuple[TokenConfig, FullRunSerializer | None]
             raise BoundaryError("token_policy", "qwen_tokenizer_mismatch")
     elif info["vocab_size"] > 8192:
         raise BoundaryError("token_policy", "scratch_vocab_limit")
-    if info.get("serializer") in (PUBLIC_IDENTITY, COMPACT_IDENTITY):
+    if info.get("serializer") in (PUBLIC_IDENTITY, COMPACT_IDENTITY, TEXT_MENU_IDENTITY):
         return config, None
     serializer = FullRunSerializer(info.get("serializer", {}).get("profile", ""))
     if info["serializer"] != serializer.identity:
@@ -133,6 +136,15 @@ class TokenDecisionScorer:
     def score_snapshot(self, snapshot: dict) -> dict[str, float]:
         if self.serializer is not None:
             raise BoundaryError("token_policy", "semantic_model_cannot_score_public_snapshot")
+        if self.artifact.parameters.value()["serializer"] == TEXT_MENU_IDENTITY:
+            if snapshot.get("schema") != TEXT_MENU_SCHEMA:
+                raise BoundaryError("token_policy", "text_menu_snapshot_required")
+            current = project_text_menu_snapshot(snapshot)
+            scores = current.scores_in_catalog_order(
+                self.score_texts(current.state_text, current.action_texts))
+            return dict(zip(current.action_ids, scores, strict=True))
+        if snapshot.get("schema") == TEXT_MENU_SCHEMA:
+            raise BoundaryError("token_policy", "text_menu_model_required")
         public = project_public_snapshot(
             snapshot, compact=self.artifact.parameters.value()["serializer"] == COMPACT_IDENTITY,
         )

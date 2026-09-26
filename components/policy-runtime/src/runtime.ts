@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvironmentSnapshot } from "@rsgcsg/sts2-connector-client";
+import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvironmentSnapshot, TextMenuAction, TextMenuActionResult, TextMenuSnapshot } from "@rsgcsg/sts2-connector-client";
 import { admitWholeDecision } from "./admission.js";
-import { AgentRunEvidence } from "./evidence.js";
+import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { candidateOrderDigest } from "./digest.js";
-import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type DecisionBundle, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type TickResult } from "./contracts.js";
+import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type DecisionAction, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type TickResult } from "./contracts.js";
 import { StaleWholeBundleError } from "./connector.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 
@@ -32,24 +32,26 @@ export interface RuntimeOptions {
 
 export interface Admission { admitted: boolean; reason: string; candidateDigest: string; candidateCount: number }
 
-export function admitWholeDecisionBundle(bundle: DecisionBundle, manifest?: PolicyManifest): Admission {
-  const catalog = bundle.observation.bound_actions;
-  const candidateDigest = candidateOrderDigest(catalog.actions);
-  if (bundle.observation.status !== "interactive") return { admitted: false, reason: `snapshot_${bundle.observation.status}`, candidateDigest, candidateCount: catalog.actions.length };
-  if (bundle.observation.completeness.status !== "complete") return { admitted: false, reason: "snapshot_incomplete", candidateDigest, candidateCount: catalog.actions.length };
-  if (catalog.status !== "complete" || catalog.materialized_count !== catalog.total_count || catalog.materialized_count !== catalog.actions.length || catalog.actions.length === 0) return { admitted: false, reason: "complete_catalog_required", candidateDigest, candidateCount: catalog.actions.length };
-  if (new Set(catalog.actions.map((action) => action.bound_action_id)).size !== catalog.actions.length) return { admitted: false, reason: "duplicate_bound_action_id", candidateDigest, candidateCount: catalog.actions.length };
-  if (manifest && !manifest.support.interaction_kinds.includes(bundle.observation.interaction.kind)) return { admitted: false, reason: "unsupported_interaction_kind", candidateDigest, candidateCount: catalog.actions.length };
-  if (manifest && catalog.actions.some((action) => !manifest.support.action_verbs.includes(action.verb))) return { admitted: false, reason: "unsupported_action_verb", candidateDigest, candidateCount: catalog.actions.length };
-  return { admitted: true, reason: "whole_decision_admitted", candidateDigest, candidateCount: catalog.actions.length };
+export function admitWholeDecisionBundle(bundle: AnyDecisionBundle, manifest?: PolicyManifest): Admission {
+  const catalog = isTextMenuSnapshot(bundle.observation) ? bundle.observation.menu_actions : bundle.observation.bound_actions;
+  const actions = decisionActions(bundle.observation);
+  const candidateDigest = candidateOrderDigest(actions);
+  if (manifest && bundle.observation.schema !== manifest.representation.input_schema) return { admitted: false, reason: "snapshot_profile_drift", candidateDigest, candidateCount: actions.length };
+  if (bundle.observation.status !== "interactive") return { admitted: false, reason: `snapshot_${bundle.observation.status}`, candidateDigest, candidateCount: actions.length };
+  if (bundle.observation.completeness.status !== "complete") return { admitted: false, reason: "snapshot_incomplete", candidateDigest, candidateCount: actions.length };
+  if (catalog.status !== "complete" || catalog.materialized_count !== catalog.total_count || catalog.materialized_count !== actions.length || actions.length === 0) return { admitted: false, reason: "complete_catalog_required", candidateDigest, candidateCount: actions.length };
+  if (new Set(actions.map(decisionActionId)).size !== actions.length) return { admitted: false, reason: isTextMenuSnapshot(bundle.observation) ? "duplicate_action_id" : "duplicate_bound_action_id", candidateDigest, candidateCount: actions.length };
+  if (manifest && !manifest.support.interaction_kinds.includes(bundle.observation.interaction.kind)) return { admitted: false, reason: "unsupported_interaction_kind", candidateDigest, candidateCount: actions.length };
+  if (manifest && actions.some((action) => !manifest.support.action_verbs.includes(action.verb))) return { admitted: false, reason: "unsupported_action_verb", candidateDigest, candidateCount: actions.length };
+  return { admitted: true, reason: "whole_decision_admitted", candidateDigest, candidateCount: actions.length };
 }
 
-export async function refreshWholeDecisionBundle(connector: PolicyConnector, requiredReadKinds: readonly string[], options: { maxAttempts: number; baseBackoffMs: number; sleep?: (milliseconds: number) => Promise<void>; onStale?: (attempt: number, delayMs: number) => Promise<void> | void }): Promise<DecisionBundle | null> {
+export async function refreshWholeDecisionBundle(connector: PolicyConnector, requiredReadKinds: readonly string[], options: { maxAttempts: number; baseBackoffMs: number; sleep?: (milliseconds: number) => Promise<void>; onStale?: (attempt: number, delayMs: number) => Promise<void> | void; inputProfile?: "text-menu-v1" }): Promise<AnyDecisionBundle | null> {
   if (!Number.isSafeInteger(options.maxAttempts) || options.maxAttempts < 1) throw new Error("maxAttempts must be a positive integer");
   if (options.baseBackoffMs < 0) throw new Error("baseBackoffMs must be non-negative");
   const sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
-    try { return await connector.observeBundle(requiredReadKinds); } catch (error) {
+    try { return await connector.observeBundle(requiredReadKinds, options.inputProfile); } catch (error) {
       if (!isStale(error)) throw error;
       const delayMs = attempt < options.maxAttempts ? options.baseBackoffMs * (2 ** (attempt - 1)) : 0;
       await options.onStale?.(attempt, delayMs);
@@ -80,6 +82,8 @@ export class PolicyRuntime {
   private submittedRequestIds = new Set<string>();
   private tickActive = false;
   private consecutiveStaleSubmissions = 0;
+  private nativeSubmissionsUsed = 0;
+  private menuNavigationsUsed = 0;
   private operation: Promise<unknown> = Promise.resolve();
   private requestedMode: RuntimeMode | null = null;
   private stopRequested = false;
@@ -265,6 +269,8 @@ export class PolicyRuntime {
   }
 
   private async tickOnce(): Promise<TickResult> {
+    const textMenu = this.options.manifest.representation.input_schema === "sts2.player-environment/text-menu-snapshot-1";
+    const inputProfile = textMenu ? "text-menu-v1" as const : undefined;
     if (this.stopped) return { type: "not_admitted", reason: "runtime_stopped", status: this.status() };
     if (this.tainted) return { type: "not_admitted", reason: "runtime_tainted", status: this.status() };
     if (this.mode === "human") return { type: "human", status: this.status() };
@@ -274,7 +280,7 @@ export class PolicyRuntime {
     }
     let capabilities: Awaited<ReturnType<PolicyConnector["capabilities"]>>;
     try {
-      capabilities = await this.options.connector.capabilities();
+      capabilities = await this.options.connector.capabilities({ inputProfile });
     } catch (error) {
       await this.failClosed(`capabilities_failed:${message(error)}`);
       return { type: "not_admitted", reason: "capabilities_failed", status: this.status() };
@@ -298,9 +304,9 @@ export class PolicyRuntime {
       this.lastEvidenceEnvironmentFingerprint = this.environment.environment_fingerprint;
     }
     this.refreshing = true;
-    let bundle: DecisionBundle | null;
+    let bundle: AnyDecisionBundle | null;
     try {
-      bundle = await refreshWholeDecisionBundle(this.options.connector, this.options.manifest.requirements.reads, { ...this.staleRefresh, sleep: this.sleep, onStale: async (attempt, delayMs) => { await this.appendEvidence("stale_whole_bundle_discarded", { attempt, delay_ms: delayMs, whole_bundle_discarded: true, action_submission_attempted: false }); } });
+      bundle = await refreshWholeDecisionBundle(this.options.connector, this.options.manifest.requirements.reads, { ...this.staleRefresh, inputProfile, sleep: this.sleep, onStale: async (attempt, delayMs) => { await this.appendEvidence("stale_whole_bundle_discarded", { attempt, delay_ms: delayMs, whole_bundle_discarded: true, action_submission_attempted: false }); } });
     } catch (error) {
       this.refreshing = false;
       await this.failClosed(`observation_failed:${message(error)}`);
@@ -308,6 +314,10 @@ export class PolicyRuntime {
     }
     this.refreshing = false;
     if (!bundle) return { type: "not_admitted", reason: "stale_refresh_exhausted", status: this.status() };
+    if (isTextMenuSnapshot(bundle.observation) !== textMenu) {
+      await this.failClosed("snapshot_profile_drift");
+      return { type: "not_admitted", reason: "snapshot_profile_drift", status: this.status() };
+    }
     this.lastSnapshotId = bundle.observation.snapshot_id;
     this.lastSnapshot = { snapshot_id: bundle.observation.snapshot_id, sequence: bundle.observation.sequence, status: bundle.observation.status, runtime_instance_id: bundle.observation.session.runtime_instance_id, environment_fingerprint: bundle.observation.session.environment_fingerprint };
     this.lastReads = bundle.reads.map((read) => ({ read_id: read.read_id, kind: read.kind, content_schema: read.content_schema, target_referent_id: read.target_referent_id ?? null }));
@@ -357,15 +367,22 @@ export class PolicyRuntime {
     }
     const decision = makeDecision(this.options.manifest, this.runId, bundle, adapterDecision, admission, this.now());
     this.lastPolicySnapshotId = bundle.observation.snapshot_id;
-    let resolved: PlayerEnvironmentBoundAction | null;
+    let resolved: DecisionAction | null;
     try {
       resolved = admitWholeDecision(decision, bundle, this.options.manifest, this.runId).boundAction;
     } catch (error) {
       await this.failClosed(`policy_decision_admission_failed:${message(error)}`);
       return { type: "not_admitted", reason: "policy_decision_admission_failed", status: this.status() };
     }
-    this.lastDecision = { decision_id: decision.decision_id, candidate_digest: decision.candidate_digest, candidate_count: decision.candidate_count, scores: [...decision.scores], selected_index: decision.selected_index, bound_action_id: resolved?.bound_action_id ?? null, bound_action_label: resolved?.label ?? null };
-    if (!(await this.appendEvidence("decision", { decision, resolved_bound_action_id: resolved?.bound_action_id ?? null }))) {
+    const resolvedActionId = resolved ? decisionActionId(resolved) : null;
+    this.lastDecision = { decision_id: decision.decision_id, candidate_digest: decision.candidate_digest, candidate_count: decision.candidate_count, scores: [...decision.scores], selected_index: decision.selected_index, bound_action_id: resolvedActionId, bound_action_label: resolved?.label ?? null };
+    if (textMenu && !(await this.appendEvidence("text_decision_input", {
+      decision_id: decision.decision_id, snapshot: bundle.observation
+    }))) {
+      await this.failClosed("agent_evidence_write_failed_before_submit");
+      return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
+    }
+    if (!(await this.appendEvidence("decision", { decision, resolved_bound_action_id: resolvedActionId }))) {
       await this.failClosed("agent_evidence_write_failed_before_submit");
       return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
     }
@@ -398,20 +415,23 @@ export class PolicyRuntime {
       await this.handoffAutonomyBudget();
       return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
     }
+    if (textMenu) {
+      return this.submitTextMenuDecision(decision, resolved as TextMenuAction, bundle.observation as TextMenuSnapshot, requestId);
+    }
     this.submittedRequestIds.add(requestId);
     let receipt: PlayerEnvironmentReceipt;
     try {
-      receipt = await this.options.connector.submit({ requestId, expectedSnapshotId: bundle.observation.snapshot_id, boundActionId: resolved.bound_action_id });
+      receipt = await this.options.connector.submit({ requestId, expectedSnapshotId: bundle.observation.snapshot_id, boundActionId: (resolved as PlayerEnvironmentBoundAction).bound_action_id }) as PlayerEnvironmentReceipt;
     } catch (error) {
       await this.taint(`unknown_delivery_after_submit:${message(error)}`);
       return { type: "unknown", decision, receipt: null, error: message(error), status: this.status() };
     }
-    if (receipt.request_id !== requestId || receipt.action.bound_action_id !== resolved.bound_action_id) {
+    if (receipt.request_id !== requestId || receipt.action.bound_action_id !== (resolved as PlayerEnvironmentBoundAction).bound_action_id) {
       const reason = "receipt_correlation_failed";
       await this.appendEvidence("receipt_rejected", {
         decision_id: decision.decision_id,
         expected_request_id: requestId,
-        expected_bound_action_id: resolved.bound_action_id,
+        expected_bound_action_id: (resolved as PlayerEnvironmentBoundAction).bound_action_id,
         receipt
       });
       await this.taint(reason);
@@ -447,11 +467,93 @@ export class PolicyRuntime {
       this.lastReceipt = { ...this.lastReceipt!, successor_snapshot_id: successor.snapshot_id };
       if (!(await this.appendEvidence("successor", { decision_id: decision.decision_id, successor }))) await this.taintWithoutEvidence("agent_evidence_write_failed_after_successor");
       if (this.mode === "one_step") await this.completeOneStep();
-      return { type: "delivered", decision, bound_action: resolved, receipt, successor, status: this.status() };
+      return { type: "delivered", decision, bound_action: resolved as PlayerEnvironmentBoundAction, receipt, successor: successor as PlayerEnvironmentSnapshot, status: this.status() };
     } catch (error) {
       await this.taint(`unknown_successor_after_submit:${message(error)}`);
       return { type: "unknown", decision, receipt, error: message(error), status: this.status() };
     }
+  }
+
+  private async submitTextMenuDecision(decision: PolicyDecision, action: TextMenuAction, previous: TextMenuSnapshot, requestId: string): Promise<TickResult> {
+    if (action.effect_domain === "text_menu") this.lastReceipt = null;
+    if (!(await this.appendEvidence("text_menu_dispatch_attempt", { decision_id: decision.decision_id, action_id: action.action_id, effect_domain: action.effect_domain, native_submissions_used: this.nativeSubmissionsUsed + (action.effect_domain === "native_input" ? 1 : 0), menu_navigations_used: this.menuNavigationsUsed + (action.effect_domain === "text_menu" ? 1 : 0) }))) {
+      await this.failClosed("agent_evidence_write_failed_before_submit");
+      return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
+    }
+    this.submittedRequestIds.add(requestId);
+    if (action.effect_domain === "text_menu") this.menuNavigationsUsed += 1;
+    else this.nativeSubmissionsUsed += 1;
+    let result: TextMenuActionResult;
+    try {
+      result = await this.options.connector.submit({ requestId, expectedSnapshotId: previous.snapshot_id, boundActionId: action.action_id, inputProfile: "text-menu-v1" }) as TextMenuActionResult;
+    } catch (error) {
+      await this.taint(`unknown_delivery_after_submit:${message(error)}`);
+      return { type: "unknown", decision, receipt: null, error: message(error), status: this.status() };
+    }
+    if (result.request_id !== requestId || (result.action !== null && canonicalJson(result.action) !== canonicalJson(action))
+        || (result.status !== "not_applied" && (result.action?.action_id !== action.action_id || result.effect_domain !== action.effect_domain))) {
+      await this.appendEvidence("text_menu_result_rejected", { decision_id: decision.decision_id, expected_request_id: requestId, expected_action_id: action.action_id, result });
+      await this.taint("text_menu_result_correlation_failed");
+      return { type: "unknown", decision, receipt: result, error: "text_menu_result_correlation_failed", status: this.status() };
+    }
+    if ((result.status === "applied" && (result.native_delivery !== (action.effect_domain === "text_menu" ? null : "delivered") || result.retry !== "never"))
+        || (result.status === "unknown" && (action.effect_domain !== "native_input" || result.native_delivery !== "unknown" || result.retry !== "never"))) {
+      await this.taint("text_menu_result_invalid_delivery");
+      return { type: "unknown", decision, receipt: result, error: "text_menu_result_invalid_delivery", status: this.status() };
+    }
+    if (result.status === "unknown") {
+      await this.appendEvidence("text_native_unknown", { decision_id: decision.decision_id, result });
+      await this.taint(`unknown_delivery:${result.reason_code ?? "unspecified"}`);
+      return { type: "unknown", decision, receipt: result, error: "Connector returned unknown native delivery", status: this.status() };
+    }
+    if (result.status === "not_applied") {
+      if (!(await this.appendEvidence("text_menu_not_applied", { decision_id: decision.decision_id, result }))) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
+      if (this.mode === "one_step") await this.completeOneStep();
+      else if (this.mode === "auto") await this.releaseControllerAndReturnHuman("action_not_applied");
+      return { type: "text_not_applied", decision, result, status: this.status() };
+    }
+    if (action.effect_domain === "text_menu") {
+      if (result.native_delivery !== null || !result.successor || !this.validTextMenuSuccessor(previous, result.successor, true)) {
+        await this.taint("menu_navigation_successor_invalid");
+        return { type: "unknown", decision, receipt: result, error: "menu_navigation_successor_invalid", status: this.status() };
+      }
+      if (!(await this.appendEvidence("menu_navigation", { decision_id: decision.decision_id, action_id: action.action_id, result }))) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
+      this.setObservedSnapshot(result.successor);
+      if (this.mode === "one_step") await this.completeOneStep();
+      return { type: "navigated", decision, action, result, successor: result.successor, status: this.status() };
+    }
+    this.lastReceipt = { request_id: result.request_id, delivery: "delivered", reason_code: result.reason_code, successor_snapshot_id: result.successor?.snapshot_id ?? null };
+    if (!(await this.appendEvidence("text_native_delivery", { decision_id: decision.decision_id, result }))) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
+    try {
+      const successor = await this.stableSuccessor(previous);
+      if (this.mutationCancellationRequested()) {
+        if (await this.finishAutonomyBudgetHandoffIfRequested()) return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
+        return { type: "not_admitted", reason: "recovery_requested_after_delivery", status: this.status() };
+      }
+      if (!successor || !isTextMenuSnapshot(successor) || !this.validTextMenuSuccessor(previous, successor, false)) {
+        await this.taint("text_native_successor_not_stable");
+        return { type: "unknown", decision, receipt: result, error: "text_native_successor_not_stable", status: this.status() };
+      }
+      this.lastReceipt = { ...this.lastReceipt!, successor_snapshot_id: successor.snapshot_id };
+      if (!(await this.appendEvidence("text_observed_successor", { decision_id: decision.decision_id, successor }))) await this.taintWithoutEvidence("agent_evidence_write_failed_after_successor");
+      if (this.mode === "one_step") await this.completeOneStep();
+      return { type: "text_native_delivered", decision, action, result, successor, status: this.status() };
+    } catch (error) {
+      await this.taint(`unknown_successor_after_submit:${message(error)}`);
+      return { type: "unknown", decision, receipt: result, error: message(error), status: this.status() };
+    }
+  }
+
+  private validTextMenuSuccessor(previous: TextMenuSnapshot, next: TextMenuSnapshot, navigation: boolean): boolean {
+    return next.snapshot_id !== previous.snapshot_id && next.sequence > previous.sequence
+      && next.session.runtime_instance_id === previous.session.runtime_instance_id
+      && next.session.environment_fingerprint === previous.session.environment_fingerprint
+      && (!navigation || next.menu.cursor !== previous.menu.cursor || next.menu.revision > previous.menu.revision);
+  }
+
+  private setObservedSnapshot(observed: AnyDecisionBundle["observation"]): void {
+    this.lastSnapshotId = observed.snapshot_id;
+    this.lastSnapshot = { snapshot_id: observed.snapshot_id, sequence: observed.sequence, status: observed.status, runtime_instance_id: observed.session.runtime_instance_id, environment_fingerprint: observed.session.environment_fingerprint };
   }
 
   async stop(): Promise<RuntimeStatus> {
@@ -516,6 +618,8 @@ export class PolicyRuntime {
 
   private beginAutonomyBudget(): void {
     this.clearAutonomyBudgetDeadline();
+    this.nativeSubmissionsUsed = 0;
+    this.menuNavigationsUsed = 0;
     this.autonomyBudgetGeneration += 1;
     this.autonomyBudgetHandoffQueued = false;
     this.autonomyBudgetRecoveryFenced = false;
@@ -664,13 +768,14 @@ export class PolicyRuntime {
     await this.handoffAutonomyBudget();
     return true;
   }
-  private async stableSuccessor(previous: PlayerEnvironmentSnapshot): Promise<PlayerEnvironmentSnapshot | null> {
+  private async stableSuccessor(previous: AnyDecisionBundle["observation"]): Promise<AnyDecisionBundle["observation"] | null> {
     for (let attempt = 1; attempt <= this.successorPoll.maxAttempts; attempt += 1) {
       if (this.mutationCancellationRequested()) return null;
       // One observation per attempt: do not multiply nested retry budgets.
-      const next = await refreshWholeDecisionBundle(this.options.connector, [], { maxAttempts: 1, baseBackoffMs: 0, sleep: this.sleep });
+      const next = await refreshWholeDecisionBundle(this.options.connector, [], { maxAttempts: 1, baseBackoffMs: 0, inputProfile: isTextMenuSnapshot(previous) ? "text-menu-v1" : undefined, sleep: this.sleep });
       if (next) {
         const observed = next.observation;
+        if (isTextMenuSnapshot(observed) !== isTextMenuSnapshot(previous)) throw new Error("successor_profile_drift");
         if (observed.session.runtime_instance_id !== previous.session.runtime_instance_id
             || observed.session.environment_fingerprint !== previous.session.environment_fingerprint) {
           throw new Error("successor_environment_identity_drift");
@@ -725,7 +830,7 @@ export class PolicyRuntimeApplicationService {
   }
 }
 
-function makeDecision(manifest: PolicyManifest, runId: string, bundle: DecisionBundle, adapter: AdapterDecision, admission: Admission, issuedAt: string): PolicyDecision {
+function makeDecision(manifest: PolicyManifest, runId: string, bundle: AnyDecisionBundle, adapter: AdapterDecision, admission: Admission, issuedAt: string): PolicyDecision {
   const decision = { schema: "sts2.policy-runtime/decision-1" as const, decision_id: `decision-${randomUUID()}`, run_id: runId, manifest_id: manifest.manifest_id, snapshot_id: bundle.observation.snapshot_id, candidate_digest: adapter.candidate_digest, candidate_count: admission.candidateCount, scores: [...adapter.scores], selected_index: adapter.selected_index, disposition: adapter.selected_index === null ? "abstain" as const : "admit" as const, issued_at: issuedAt } satisfies PolicyDecision;
   return validatePolicyDecision(decision);
 }
@@ -733,6 +838,12 @@ function makeDecision(manifest: PolicyManifest, runId: string, bundle: DecisionB
 function isStale(error: unknown): boolean { return error instanceof StaleWholeBundleError || (error instanceof Error && (error as Error & { code?: string }).code === "stale_state"); }
 function manifestCompatibilityReason(manifest: PolicyManifest, capabilities: Awaited<ReturnType<PolicyConnector["capabilities"]>>): string | null {
   if (capabilities.protocol_version !== manifest.requirements.connector_protocol_version) return "connector_protocol_unsupported";
+  if (manifest.representation.input_schema === "sts2.player-environment/text-menu-snapshot-1") {
+    if (!("input_profile" in capabilities) || capabilities.input_profile !== "text-menu-v1"
+        || capabilities.snapshot_schema !== "sts2.player-environment/text-menu-snapshot-1"
+        || capabilities.receipt_schema !== "sts2.player-environment/text-menu-action-result-1") return "connector_text_menu_profile_unsupported";
+  } else if (capabilities.snapshot_schema !== "sts2.player-environment/snapshot-1"
+      || capabilities.receipt_schema !== "sts2.player-environment/receipt-1") return "connector_legacy_profile_unsupported";
   const environment = manifest.requirements.environment;
   if (capabilities.host.host_kind !== environment.host_kind) return "environment_host_kind_drift";
   if (capabilities.host.version !== environment.connector_version) return "environment_connector_version_drift";

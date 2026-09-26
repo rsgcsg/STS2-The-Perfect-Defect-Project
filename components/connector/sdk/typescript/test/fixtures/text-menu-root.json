@@ -1,0 +1,62 @@
+{
+  "protocol_version": "1.0.0",
+  "schema": "sts2.player-environment/text-menu-snapshot-1",
+  "input_profile": "text-menu-v1",
+  "snapshot_id": "text-runtime-1-native-1-u0",
+  "sequence": 1,
+  "observed_at": "2026-09-26T00:00:00Z",
+  "status": "interactive",
+  "persistent": null,
+  "interaction": {
+    "interaction_id": "combat-1",
+    "kind": "combat_turn",
+    "stage": "ready",
+    "prompt": null,
+    "content_schema": "sts2.player-environment/surface/combat_turn-1",
+    "content": {
+      "surface": { "kind": "combat_turn" },
+      "context": { "kind": "combat" }
+    },
+    "capabilities": []
+  },
+  "referents": [],
+  "completeness": {
+    "status": "complete",
+    "visible_information": "current visible combat facts",
+    "interaction_discovery": "exact current owner",
+    "missing": [],
+    "hidden_by_policy": []
+  },
+  "session": {
+    "runtime_instance_id": "runtime-1",
+    "environment_fingerprint": "environment-1"
+  },
+  "information_policy": {
+    "id": "player_visible",
+    "scope": "player_environment",
+    "includes_hidden_information": false,
+    "unknown_field_behavior": "fail_closed"
+  },
+  "menu": {
+    "cursor": "root",
+    "revision": 0,
+    "native_snapshot_id": "native-1"
+  },
+  "menu_actions": {
+    "status": "complete",
+    "materialized_count": 1,
+    "total_count": 1,
+    "ordering_semantics": "fixed_text_menu_v1",
+    "actions": [
+      {
+        "action_id": "menu-open_information-1",
+        "kind": "system_navigation",
+        "verb": "open_information",
+        "label": "Information",
+        "subject_referent_id": null,
+        "arguments": [],
+        "effect_domain": "text_menu"
+      }
+    ]
+  }
+}

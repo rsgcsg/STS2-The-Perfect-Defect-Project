@@ -1952,6 +1952,7 @@ window.SpireProject = (() => {
       install_locked_ml_and_l2_dependencies: "尚未安装模型运行依赖，请按该模型的安装说明准备。",
       backend_probe_unavailable: "暂时无法检查运行硬件，请查看诊断。",
       runtime_package_missing_or_drifted: "需要准备固定模型运行器；“准备并加载”会处理。",
+      text_runtime_local_install_required: "文字模型需要先安装已核对的本地候选运行包；请按模型安装说明完成，现有旧运行器不会被替换。",
       cuda_bf16_available: "显卡满足此模型要求。",
     };
     const box = panel(

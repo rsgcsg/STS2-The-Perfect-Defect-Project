@@ -12,6 +12,293 @@ namespace STS2Connector.Tests;
 public sealed class PlayerEnvironmentContractTests
 {
     [Fact]
+    public void TextCardRewardOrderUsesVisibleCardRowNotBoundActionIds()
+    {
+        var surface = new CardRewardSelectionSurface(
+            "card_reward_selection", "screen", new[]
+            {
+                new VisibleCard("card-left", "LEFT", "Left", "Skill", "1", null, "", "Common", false, false, null),
+                new VisibleCard("card-middle", "MIDDLE", "Middle", "Skill", "1", null, "", "Common", false, false, null),
+                new VisibleCard("card-right", "RIGHT", "Right", "Skill", "1", null, "", "Common", false, false, null)
+            }, new[]
+            {
+                new VisibleCardRewardAlternative("skip", 0, "Skip", true)
+            });
+        PlayerEnvironmentBoundAction Action(string id, string? subject) =>
+            new(id, subject == "skip" ? "activate" : "select", "screen",
+                subject, Array.Empty<PlayerEnvironmentBoundActionArgument>(), id);
+        PlayerEnvironmentBoundAction[] hashedOrder =
+        {
+            Action("a-hash", "card-middle"), Action("b-hash", "skip"),
+            Action("c-hash", "card-left"), Action("d-hash", "card-right")
+        };
+
+        Assert.Equal(new[] { "card-left", "card-middle", "card-right", "skip" },
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, hashedOrder)
+                .Select(action => action.SubjectReferentId));
+        Assert.Equal(hashedOrder,
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(
+                new CombatTurnSurface("combat_turn", "room", true), hashedOrder));
+    }
+
+    [Fact]
+    public void TextRewardClaimOrderKeepsVisibleButtonsBeforeProceed()
+    {
+        var surface = new RewardClaimSurface("reward_claim", "screen", new[]
+        {
+            new VisibleReward("gold", "gold", "Gold", "Gold", true),
+            new VisibleReward("potion", "potion", "Potion", "Potion", true),
+            new VisibleReward("card", "card", "Card", "Card", true)
+        }, false, Array.Empty<VisibleCombatPotion>(), true, true);
+        PlayerEnvironmentBoundAction Action(string id, string? subject) =>
+            new(id, "activate", "screen", subject,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), id);
+        PlayerEnvironmentBoundAction[] hashedOrder =
+        {
+            Action("a-hash", null), Action("b-hash", "card"),
+            Action("c-hash", "potion"), Action("d-hash", "gold")
+        };
+
+        Assert.Equal(new string?[] { "gold", "potion", "card", null },
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, hashedOrder)
+                .Select(action => action.SubjectReferentId));
+    }
+
+    [Fact]
+    public void TextEventOrderUsesNativeOptionIndexAcrossReenteredActionIds()
+    {
+        VisibleEventOption Option(string id, int index) => new(
+            id, index, id, id, true, false, false, false, false,
+            null, null, Array.Empty<VisibleEventOptionTooltip>());
+        var surface = new EventOptionSurface("event_option", "screen", new[]
+        {
+            Option("forge", 2), Option("arcane", 0), Option("gold", 1)
+        });
+        PlayerEnvironmentBoundAction Action(string hash, string id) =>
+            new(hash, "activate", "screen", id,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), id);
+        foreach (PlayerEnvironmentBoundAction[] hashed in new[]
+        {
+            new[] { Action("a", "gold"), Action("b", "arcane"), Action("c", "forge") },
+            new[] { Action("a2", "forge"), Action("b2", "gold"), Action("c2", "arcane") }
+        })
+            Assert.Equal(new[] { "arcane", "gold", "forge" },
+                NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, hashed)
+                    .Select(action => action.SubjectReferentId));
+    }
+
+    [Fact]
+    public void TextRestOrderUsesNativeOptionIndexAndRetainsExactActions()
+    {
+        var surface = new RestSiteSurface("rest_site", "room", new[]
+        {
+            new VisibleRestOption("dig", 2, "DIG", "Dig", null, true),
+            new VisibleRestOption("rest", 0, "REST", "Rest", null, true),
+            new VisibleRestOption("smith", 1, "SMITH", "Smith", null, true)
+        }, false);
+        PlayerEnvironmentBoundAction Action(string hash, string subject) =>
+            new(hash, "activate", "room", subject,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), hash);
+        PlayerEnvironmentBoundAction[] hashed =
+        {
+            Action("a", "dig"), Action("b", "smith"), Action("c", "rest")
+        };
+
+        AssertExactNativeOrder(surface, hashed, hashed[2], hashed[1], hashed[0]);
+    }
+
+    [Fact]
+    public void TextShopOrderUsesVisibleInventoryCategoryAndSlotOrder()
+    {
+        var surface = new ShopInventorySurface("shop_inventory", "screen",
+            new[]
+            {
+                new VisibleShopCardOffer("card-1", "slot-card-1", 1, 80, true, true,
+                    true, true, null, false, null),
+                new VisibleShopCardOffer("card-0", "slot-card-0", 0, 70, true, true,
+                    true, true, null, false, null)
+            },
+            new[] { new VisibleShopRelicOffer("relic", "slot-relic", 0, 150,
+                true, true, true, true, null, null) },
+            new[] { new VisibleShopPotionOffer("potion", "slot-potion", 0, 50,
+                true, true, true, true, null, "POTION", "Potion", null, "Common") },
+            new VisibleShopCardRemovalOffer("removal", "slot-removal", 0, 75, 25,
+                true, true, true, true, null), true);
+        PlayerEnvironmentBoundAction Action(string hash, string subject) =>
+            new(hash, "activate", "screen", subject,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), hash);
+        PlayerEnvironmentBoundAction[] hashed =
+        {
+            Action("a", "removal"), Action("b", "potion"),
+            Action("c", "relic"), Action("d", "card-1"), Action("e", "card-0")
+        };
+
+        AssertExactNativeOrder(surface, hashed,
+            hashed[4], hashed[3], hashed[2], hashed[1], hashed[0]);
+    }
+
+    [Fact]
+    public void TextMapOrderUsesCurrentNativeRouteList()
+    {
+        var surface = new MapNavigationSurface("map_navigation", "map", true, false,
+            "none", new[]
+            {
+                new VisibleMapChoice("left", 1, 2, "monster"),
+                new VisibleMapChoice("right", 2, 2, "rest")
+            });
+        PlayerEnvironmentBoundAction Action(string hash, string subject) =>
+            new(hash, "select", "map", subject,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), hash);
+        PlayerEnvironmentBoundAction[] hashed =
+        {
+            Action("a", "right"), Action("b", "left")
+        };
+
+        AssertExactNativeOrder(surface, hashed, hashed[1], hashed[0]);
+    }
+
+    [Fact]
+    public void TextTreasureOrderUsesVisibleRelicHoldersAndRetainsControlOrder()
+    {
+        VisibleTreasureRelic Relic(string id) => new(id, id, id, null, "Common",
+            Array.Empty<VisibleKeyword>(), Array.Empty<VisibleCard>());
+        var surface = new TreasureRoomSurface("treasure_room", "choose", "room", true,
+            new[] { Relic("left"), Relic("right") }, true, true, false);
+        PlayerEnvironmentBoundAction Action(string hash, string? subject) =>
+            new(hash, "activate", "room", subject,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), hash);
+        PlayerEnvironmentBoundAction[] hashed =
+        {
+            Action("a", null), Action("b", "right"), Action("c", "left")
+        };
+
+        AssertExactNativeOrder(surface, hashed, hashed[2], hashed[1], hashed[0]);
+    }
+
+    private static void AssertExactNativeOrder(ILiveSurface surface,
+        PlayerEnvironmentBoundAction[] input,
+        params PlayerEnvironmentBoundAction[] expected)
+    {
+        IReadOnlyList<PlayerEnvironmentBoundAction> ordered =
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, input);
+        Assert.Equal(expected.Length, ordered.Count);
+        for (int index = 0; index < expected.Length; index++)
+            Assert.Same(expected[index], ordered[index]);
+    }
+
+    [Fact]
+    public void TextMultiSelectUsesVisibleCardOrderAndLeavesConfirmAfterCards()
+    {
+        VisibleCard Card(string id) => new(id, id, id, "Skill", "1", null,
+            "", "Common", false, false, null);
+        var surface = new NativeSimpleCardSelectionSurface(
+            "native_simple_card_selection", "selection", "screen", "Choose",
+            1, 2, 1, new[] { "left" }, new[] { "middle", "right" },
+            new[] { "left" }, true, true, true, true,
+            new[] { Card("left"), Card("middle"), Card("right") });
+        PlayerEnvironmentBoundAction Action(string hash, string verb, string? id) =>
+            new(hash, verb, "screen", id,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), hash);
+        PlayerEnvironmentBoundAction[] hashed =
+        {
+            Action("a", "confirm", "left"), Action("b", "select", "right"),
+            Action("c", "select", "middle"), Action("d", "deselect", "left")
+        };
+
+        Assert.Equal(new[] { "d", "c", "b", "a" },
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, hashed)
+                .Select(action => action.BoundActionId));
+    }
+
+    [Fact]
+    public void TextCombatEntryCanBeInteractiveWithoutEndTurnBinding()
+    {
+        var noEndTurn = new CombatTurnSurface(
+            "combat_turn", "room-current", false)
+        {
+            PlayableCards = new[]
+            {
+                new VisibleCombatCommandOption("card-current", "Card",
+                    Array.Empty<string>())
+            }
+        };
+        Assert.Empty(PlayerEnvironmentService.DescribeTextCombatCommands(noEndTurn));
+        var nativeComplete = new StateCompleteness(
+            "contract_complete_for_immediate_combat_turn_including_visible_companions",
+            "derived_from_same_validator_as_execution",
+            Array.Empty<string>(), Array.Empty<string>());
+        var emptyProjection = new PlayerEnvironmentBoundActionProjection(
+            "test", "complete", 0, 0, 512, "test",
+            Array.Empty<PlayerEnvironmentBoundAction>());
+
+        Assert.True(PlayerEnvironmentService.CanPublishTextCombatEntry(
+            true, noEndTurn, "ready", nativeComplete, emptyProjection));
+        Assert.False(PlayerEnvironmentService.CanPublishTextCombatEntry(
+            false, noEndTurn, "ready", nativeComplete, emptyProjection));
+        Assert.False(PlayerEnvironmentService.CanPublishTextCombatEntry(
+            true, noEndTurn, "settling", nativeComplete, emptyProjection));
+        Assert.False(PlayerEnvironmentService.CanPublishTextCombatEntry(
+            true, noEndTurn, "ready", nativeComplete,
+            emptyProjection with { Status = "truncated" }));
+    }
+
+    [Fact]
+    public void NativeMapBackRemainsAvailableWhenRoutesAreExactlyEmpty()
+    {
+        var emptyMap = new MapNavigationSurface(
+            "map_navigation", "map-current", false, false, "none",
+            Array.Empty<VisibleMapChoice>());
+        var knownEmpty = new StateCompleteness(
+            "contract_complete_for_visible_singleplayer_map_navigation",
+            "temporarily_empty_while_map_input_is_not_route_ready",
+            Array.Empty<string>(), Array.Empty<string>());
+
+        Assert.True(NativeTextMenuInformation.CanPublishMapPage(
+            "settling", "complete", 0, 0, "settling", knownEmpty,
+            emptyMap, nativeBackAvailable: true));
+        Assert.False(NativeTextMenuInformation.CanPublishMapPage(
+            "settling", "complete", 0, 0, "settling", knownEmpty,
+            emptyMap, nativeBackAvailable: false));
+        Assert.False(NativeTextMenuInformation.CanPublishMapPage(
+            "settling", "truncated", 0, 1, "settling", knownEmpty,
+            emptyMap, nativeBackAvailable: true));
+        Assert.False(NativeTextMenuInformation.CanPublishMapPage(
+            "settling", "complete", 0, 0, "settling",
+            knownEmpty with { Missing = new[] { "route_binding_unavailable" } },
+            emptyMap, nativeBackAvailable: true));
+    }
+
+    [Fact]
+    public void TextCombatCatalogKeepsNativeEndTurnWithoutLegacyTargetExpansion()
+    {
+        string[] manyTargets = Enumerable.Range(0, 576)
+            .Select(index => "target-" + index).ToArray();
+        var surface = new CombatTurnSurface("combat_turn", "room-current", true)
+        {
+            PlayableCards = new[]
+            {
+                new VisibleCombatCommandOption("card-current", "Card", manyTargets)
+            },
+            UsablePotions = new[]
+            {
+                new VisibleCombatCommandOption("potion-current", "Potion", manyTargets)
+            }
+        };
+
+        IReadOnlyList<NativeUiActionDescriptor> legacy =
+            NativeUiActionRuntime.DescribeCombatCommands(surface);
+        IReadOnlyList<NativeUiActionDescriptor> text =
+            PlayerEnvironmentService.DescribeTextCombatCommands(surface);
+
+        Assert.Contains(legacy, command => command.Kind == "play_card");
+        Assert.Contains(legacy, command => command.Kind == "use_potion");
+        Assert.Single(text);
+        Assert.Equal("end_turn", text[0].Kind);
+        Assert.Equal("end_turn:room-current", text[0].Key);
+        Assert.Empty(text[0].EntityBindings ?? Array.Empty<ActionEntityBinding>());
+    }
+
+    [Fact]
     public void ProcessImmutableIdentityIsComputedOnceAndReused()
     {
         int calls = 0;

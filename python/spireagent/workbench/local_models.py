@@ -256,7 +256,8 @@ class LocalModelService:
         ):
             raise BoundaryError("local_model", "unsupported_registry")
         # Operator-created local registrations complement the shipped catalog.
-        # They can select only the token adapter, never a command or Runtime package.
+        # They can select only the token adapter, never a command or downloaded code.
+        # A text profile refers to a separate operator-pinned local Runtime bundle.
         local_path = self.root / ".local/token-policies-v1.json"
         if local_path.exists():
             local = _object_file(local_path)
@@ -269,8 +270,16 @@ class LocalModelService:
             value["policies"] = [*value["policies"], *local["policies"]]
         seen = set()
         for entry in value["policies"]:
+            if not isinstance(entry, dict):
+                raise BoundaryError("local_model", "invalid_policy_entry")
+            profile = entry.get("runtime_profile")
+            if "runtime_profile" in entry and (
+                profile != "text-menu-v1" or entry.get("adapter") != "token-v1"
+            ):
+                raise BoundaryError("local_model", "unsupported_runtime_profile")
             object_fields(
-                entry, {"id", "label", "adapter", "manifest", "config"}, "local_model.policy"
+                {key: item for key, item in entry.items() if key != "runtime_profile"},
+                {"id", "label", "adapter", "manifest", "config"}, "local_model.policy"
             )
             if (
                 entry["adapter"] not in SUPPORTED_ADAPTERS
@@ -291,14 +300,43 @@ class LocalModelService:
                 return dict(entry)
         raise BoundaryError("local_model", "unregistered_policy_selection")
 
-    def _runtime_package(self) -> dict[str, Any]:
-        pin = self.registry()["runtime_package"]
+    def runtime_profile(self, identity: str | None = None) -> tuple[Path, dict[str, Any]]:
+        """Resolve operator-owned pins; a downloaded model cannot select executable code."""
+        entry = self.selection(identity) if identity is not None else None
+        if entry is not None and entry.get("runtime_profile") == "text-menu-v1":
+            manifest = _object_file(_inside(self.root, entry["manifest"]))
+            representation = manifest.get("representation")
+            if not isinstance(representation, dict) or representation.get("input_schema") != (
+                "sts2.player-environment/text-menu-snapshot-1"
+            ):
+                raise BoundaryError("local_model", "text_runtime_requires_text_model")
+            profile = _object_file(_inside(self.root, ".local/text-menu-runtime-v1.json"))
+            object_fields(profile, {"schema", "runtime_package"}, "local_model.runtime_profile")
+            pin = profile["runtime_package"]
+            if (profile["schema"] != "stpd/local-text-runtime-v1"
+                    or not isinstance(pin, dict)
+                    or pin.get("dependency_layout") != "bundled_source_candidate"):
+                raise BoundaryError("local_model", "unsupported_runtime_profile")
+            directory = self.directory / "text-menu-v1"
+            if directory.is_symlink():
+                raise BoundaryError("local_model", "runtime_install_path_unsafe")
+        else:
+            directory, pin = self.directory, self.registry()["runtime_package"]
         if not isinstance(pin, dict) or pin.get("package") != RUNTIME_PACKAGE:
             raise BoundaryError("local_model", "runtime_package_not_pinned")
+        return directory, pin
+
+    def _runtime_package(self, identity: str | None = None) -> dict[str, Any]:
+        directory, pin = self.runtime_profile(identity)
         try:
-            return validate_runtime_install(self._node_modules(), pin, self._connector_pin())
+            return validate_runtime_install(
+                self._node_modules(identity), pin, self._connector_pin()
+            )
         except (OSError, ValueError, StopIteration, PackageIdentityError):
-            raise BoundaryError("local_model", "runtime_package_missing_or_drifted") from None
+            raise BoundaryError(
+                "local_model", "text_runtime_local_install_required"
+                if directory != self.directory else "runtime_package_missing_or_drifted"
+            ) from None
 
     def _connector_pin(self) -> dict[str, Any]:
         return next(
@@ -307,14 +345,17 @@ class LocalModelService:
             if p.get("package") == "@rsgcsg/sts2-connector-client"
         )
 
-    def _node_modules(self) -> Path:
-        private = self.directory / "runtime"
+    def _node_modules(self, identity: str | None = None) -> Path:
+        directory, _ = self.runtime_profile(identity)
+        private = directory / "runtime"
         if private.is_symlink():
             raise BoundaryError("local_model", "runtime_install_path_unsafe")
-        return private / "node_modules" if private.exists() else self.root / "node_modules"
+        # A text profile never falls back to the legacy source-tree installation.
+        return (private / "node_modules" if private.exists() or directory != self.directory
+                else self.root / "node_modules")
 
-    def _public_manifest_contract(self, manifest_path: Path) -> None:
-        self._runtime_package()
+    def _public_manifest_contract(self, manifest_path: Path, identity: str | None = None) -> None:
+        self._runtime_package(identity)
         script = (
             "import {readFile} from 'node:fs/promises';"
             "const {validatePolicyManifest}=await import(process.argv[1]);"
@@ -331,7 +372,7 @@ class LocalModelService:
                 "--input-type=module",
                 "-e",
                 script,
-                (self._node_modules() / RUNTIME_PACKAGE / "dist/index.js").as_uri(),
+                (self._node_modules(identity) / RUNTIME_PACKAGE / "dist/index.js").as_uri(),
                 str(manifest_path),
             ],
             env=environment,
@@ -447,8 +488,8 @@ class LocalModelService:
         checks.update(policy_support(entry["adapter"]).inspect(
             self.root, entry, manifest, policy_config
         ))
-        check("runtime_package", lambda: self._runtime_package() and None)
-        check("public_contract", lambda: self._public_manifest_contract(manifest_path))
+        check("runtime_package", lambda: self._runtime_package(identity) and None)
+        check("public_contract", lambda: self._public_manifest_contract(manifest_path, identity))
         checks["node"] = {
             "status": "pass" if shutil.which("node") else "blocked",
             "code": "node_available" if shutil.which("node") else "node_missing",
@@ -594,12 +635,17 @@ class LocalModelService:
             ):
                 raise BoundaryError("local_model", "model_readiness_blocked")
             if report["checks"].get("runtime_package", {}).get("status") != "pass":
+                directory, pin = self.runtime_profile(identity)
+                if directory != self.directory:
+                    # Private candidate bundles have no invented release URL. The
+                    # offline CLI installs their explicitly selected archive first.
+                    raise BoundaryError("local_model", "text_runtime_local_install_required")
                 with self.lock:
                     if self.closed:
                         raise BoundaryError("local_model", "service_closed")
                     self.state["preparation_stage"] = "installing_runtime"
                 installed = install_runtime(
-                    self.directory, self.registry()["runtime_package"], self._connector_pin()
+                    directory, pin, self._connector_pin()
                 )
                 with self.lock:
                     self.state["last_runtime_install"] = installed
@@ -648,12 +694,12 @@ class LocalModelService:
         entry = self.selection(identity)
         manifest_path = _inside(self.root, entry["manifest"])
         manifest = _object_file(manifest_path)
-        package = self._runtime_package()
+        package = self._runtime_package(identity)
         _check_runtime_port(15527)
         connector = _loopback(self.config.platform_url or "http://127.0.0.1:15526")
         command = [
             "node",
-            str(self._node_modules() / RUNTIME_PACKAGE / "dist/cli.js"),
+            str(self._node_modules(identity) / RUNTIME_PACKAGE / "dist/cli.js"),
             "--manifest",
             str(manifest_path),
             "--adapter-command",
@@ -861,7 +907,7 @@ class LocalModelService:
         startup = previous.get("startup")
         entry = self.selection(previous.get("selection_id", ""))
         manifest = _object_file(_inside(self.root, entry["manifest"]))
-        package = self._runtime_package()
+        package = self._runtime_package(entry["id"])
         if not isinstance(startup, dict) or any(
             startup.get(key) != expected
             for key, expected in {
@@ -1071,6 +1117,16 @@ class LocalModelService:
                     counts[event["kind"]] += 1
                     if event["kind"] == "receipt":
                         deliveries[event["payload"]["receipt"]["delivery"]] += 1
+                    elif event["kind"] in {
+                        "text_native_delivery", "text_native_unknown", "text_menu_not_applied",
+                    }:
+                        outcome = event["payload"]["result"]
+                        # Navigation has no native delivery. Rejected/mismatched
+                        # replies are diagnostics, not a correlated outcome.
+                        if outcome["effect_domain"] == "native_input" and (
+                            delivery := outcome["native_delivery"]
+                        ) is not None:
+                            deliveries[delivery] += 1
             report.update(event_counts=dict(counts), delivery_counts=dict(deliveries))
         identity = hashlib.sha256(canonical_json(report).encode()).hexdigest()
         report["evaluation_id"] = identity

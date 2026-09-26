@@ -6,13 +6,14 @@ import type {
   PlayerEnvironmentReceipt,
   PlayerEnvironmentSnapshot
 } from "@rsgcsg/sts2-connector-client";
+import type { TextMenuAction, TextMenuActionResult, TextMenuCapabilities, TextMenuSnapshot } from "@rsgcsg/sts2-connector-client";
 
 export const POLICY_MANIFEST_SCHEMA = "sts2.policy-runtime/policy-manifest-1" as const;
 export const POLICY_DECISION_SCHEMA = "sts2.policy-runtime/decision-1" as const;
 export const AGENT_RUN_SCHEMA = "sts2.policy-runtime/agent-run-1" as const;
 export const POLICY_PORT_SCHEMA = "sts2.policy-runtime/policy-port-1" as const;
 export const EVIDENCE_MANIFEST_SCHEMA = "sts2.policy-runtime/immutable-evidence-manifest-1" as const;
-export const POLICY_RUNTIME_VERSION = "0.1.0-rc.8" as const;
+export const POLICY_RUNTIME_VERSION = "0.1.0-rc.9" as const;
 export const RUNTIME_ENVIRONMENT_SCHEMA = "sts2.policy-runtime/environment-1" as const;
 
 /** Read-only observation used by control clients before preparing a command. */
@@ -59,7 +60,7 @@ export interface PolicyManifest {
   policy: { id: string; version: string; provider: string; architecture: string };
   adapter: { id: string; version: string; protocol: "sts2.policy-runtime/decision-only-ndjson-1"; code_sha256: string };
   artifact: { id: string; path: string; sha256: string };
-  representation: { id: string; version: string; input_schema: "sts2.player-environment/snapshot-1" };
+  representation: { id: string; version: string; input_schema: "sts2.player-environment/snapshot-1" | "sts2.player-environment/text-menu-snapshot-1" };
   requirements: {
     connector_protocol_version: string;
     environment: {
@@ -74,7 +75,7 @@ export interface PolicyManifest {
     };
     reads: string[];
     whole_decision_admission: true;
-    candidate_order_digest: "sha256-json-bound-action-id-order";
+    candidate_order_digest: "sha256-json-bound-action-id-order" | "sha256-json-menu-action-id-order";
     score_count_matches_candidate_count: true;
     selected_index: true;
     successor_required: true;
@@ -118,6 +119,19 @@ export interface AgentRunManifest {
 }
 
 export interface DecisionBundle { observation: PlayerEnvironmentSnapshot; reads: PlayerEnvironmentReadResponse[] }
+export interface TextMenuDecisionBundle { observation: TextMenuSnapshot; reads: [] }
+export type AnyDecisionBundle = DecisionBundle | TextMenuDecisionBundle;
+export type DecisionAction = PlayerEnvironmentBoundAction | TextMenuAction;
+export type DecisionResult = PlayerEnvironmentReceipt | TextMenuActionResult;
+export function isTextMenuSnapshot(snapshot: AnyDecisionBundle["observation"]): snapshot is TextMenuSnapshot {
+  return snapshot.schema === "sts2.player-environment/text-menu-snapshot-1";
+}
+export function decisionActions(snapshot: AnyDecisionBundle["observation"]): readonly DecisionAction[] {
+  return isTextMenuSnapshot(snapshot) ? snapshot.menu_actions.actions : snapshot.bound_actions.actions;
+}
+export function decisionActionId(action: DecisionAction): string {
+  return "action_id" in action ? action.action_id : action.bound_action_id;
+}
 
 /** Decision-only adapter output. The adapter never returns a catalog or action. */
 export interface AdapterDecision { candidate_digest: string; scores: number[]; selected_index: number | null }
@@ -125,7 +139,7 @@ export interface AdapterDecision { candidate_digest: string; scores: number[]; s
 export interface PolicyDecisionInput {
   run_id: string;
   manifest: PolicyManifest;
-  bundle: DecisionBundle;
+  bundle: AnyDecisionBundle;
   candidate_digest: string;
   candidate_count: number;
 }
@@ -143,11 +157,11 @@ export interface PolicyPortDecisionResponse { schema: typeof POLICY_PORT_SCHEMA;
 export interface PolicyPortErrorResponse { schema: typeof POLICY_PORT_SCHEMA; message_type: "error"; request_id: string; error: { code: string; message: string } }
 
 export interface PolicyConnector {
-  capabilities(options?: { fresh?: boolean }): Promise<PlayerEnvironmentCapabilities>;
-  observeBundle(requiredReadKinds: readonly string[]): Promise<DecisionBundle>;
+  capabilities(options?: { fresh?: boolean; inputProfile?: "text-menu-v1" }): Promise<PlayerEnvironmentCapabilities | TextMenuCapabilities>;
+  observeBundle(requiredReadKinds: readonly string[], inputProfile?: "text-menu-v1"): Promise<AnyDecisionBundle>;
   acquireController(): Promise<void>;
   releaseController(): Promise<void>;
-  submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }): Promise<PlayerEnvironmentReceipt>;
+  submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string; inputProfile?: "text-menu-v1" }): Promise<DecisionResult>;
 }
 
 export type RuntimeCommand =
@@ -210,7 +224,10 @@ export type TickResult =
   | { type: "not_executed"; decision: PolicyDecision; status: RuntimeStatus }
   | { type: "delivered"; decision: PolicyDecision; bound_action: PlayerEnvironmentBoundAction; receipt: PlayerEnvironmentReceipt; successor: PlayerEnvironmentSnapshot; status: RuntimeStatus }
   | { type: "not_delivered"; decision: PolicyDecision; receipt: PlayerEnvironmentReceipt; status: RuntimeStatus }
-  | { type: "unknown"; decision: PolicyDecision | null; receipt: PlayerEnvironmentReceipt | null; error: string; status: RuntimeStatus };
+  | { type: "navigated"; decision: PolicyDecision; action: TextMenuAction; result: TextMenuActionResult; successor: TextMenuSnapshot; status: RuntimeStatus }
+  | { type: "text_native_delivered"; decision: PolicyDecision; action: TextMenuAction; result: TextMenuActionResult; successor: TextMenuSnapshot; status: RuntimeStatus }
+  | { type: "text_not_applied"; decision: PolicyDecision; result: TextMenuActionResult; status: RuntimeStatus }
+  | { type: "unknown"; decision: PolicyDecision | null; receipt: DecisionResult | null; error: string; status: RuntimeStatus };
 
 export type ApplicationResult =
   | { type: "status"; status: RuntimeStatus }
@@ -224,8 +241,11 @@ export interface ImmutableEvidenceManifest { schema: typeof EVIDENCE_MANIFEST_SC
 export interface ConnectorAdapterClient {
   capabilities(): Promise<DecodedPlayerPayload<PlayerEnvironmentCapabilities>>;
   observe(): Promise<DecodedPlayerPayload<PlayerEnvironmentSnapshot>>;
+  textMenuCapabilities(): Promise<DecodedPlayerPayload<TextMenuCapabilities>>;
+  observeTextMenu(): Promise<DecodedPlayerPayload<TextMenuSnapshot>>;
   read(readId: string, expectedSnapshotId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReadResponse>>;
   submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string; clientSessionId: string; controllerLeaseId: string; controllerGeneration: number }): Promise<DecodedPlayerPayload<PlayerEnvironmentReceipt>>;
+  submitTextMenu(input: { requestId: string; expectedSnapshotId: string; boundActionId: string; clientSessionId: string; controllerLeaseId: string; controllerGeneration: number }): Promise<DecodedPlayerPayload<TextMenuActionResult>>;
   registerClient(input: { clientInstanceId: string; productId: string; productName: string; productVersion: string }): Promise<DecodedPlayerPayload<{ runtime_instance_id: string; client: { client_session_id: string; client_instance_id: string } }>>;
   acquireController(clientSessionId: string): Promise<DecodedPlayerPayload<{ runtime_instance_id: string; controller?: { controller_lease_id: string; controller_generation: number; client_session_id: string; expires_at: string } | null }>>;
   renewController(input: { clientSessionId: string; controllerLeaseId: string; controllerGeneration: number }): Promise<unknown>;
@@ -239,10 +259,11 @@ export function validatePolicyManifest(value: unknown): PolicyManifest {
   const policy = object(root.policy, "manifest.policy"); exactKeys(policy, ["id", "version", "provider", "architecture"]); nonEmpty(policy, "id"); nonEmpty(policy, "version"); nonEmpty(policy, "provider"); nonEmpty(policy, "architecture");
   const adapter = object(root.adapter, "manifest.adapter"); exactKeys(adapter, ["id", "version", "protocol", "code_sha256"]); nonEmpty(adapter, "id"); nonEmpty(adapter, "version"); literal(adapter, "protocol", "sts2.policy-runtime/decision-only-ndjson-1"); sha256Field(adapter, "code_sha256");
   const artifact = object(root.artifact, "manifest.artifact"); exactKeys(artifact, ["id", "path", "sha256"]); nonEmpty(artifact, "id"); nonEmpty(artifact, "path"); sha256Field(artifact, "sha256");
-  const representation = object(root.representation, "manifest.representation"); exactKeys(representation, ["id", "version", "input_schema"]); nonEmpty(representation, "id"); nonEmpty(representation, "version"); literal(representation, "input_schema", "sts2.player-environment/snapshot-1");
+  const representation = object(root.representation, "manifest.representation"); exactKeys(representation, ["id", "version", "input_schema"]); nonEmpty(representation, "id"); nonEmpty(representation, "version"); enumField(representation, "input_schema", ["sts2.player-environment/snapshot-1", "sts2.player-environment/text-menu-snapshot-1"]);
   const requirements = object(root.requirements, "manifest.requirements"); exactKeys(requirements, ["connector_protocol_version", "environment", "reads", "whole_decision_admission", "candidate_order_digest", "score_count_matches_candidate_count", "selected_index", "successor_required"]); nonEmpty(requirements, "connector_protocol_version");
   const environment = object(requirements.environment, "manifest.requirements.environment"); exactKeys(environment, ["host_kind", "connector_version", "connector_source_revision", "connector_artifact_sha256", "connector_module_version_id", "modset_status", "modset_fingerprint", "loaded_mod_ids"]); enumField(environment, "host_kind", ["live_ui", "headless", "replay", "test"]); nonEmpty(environment, "connector_version"); nonEmpty(environment, "connector_source_revision"); sha256Field(environment, "connector_artifact_sha256"); nonEmpty(environment, "connector_module_version_id"); nonEmpty(environment, "modset_status"); nonEmpty(environment, "modset_fingerprint"); stringArray(environment, "loaded_mod_ids"); uniqueStringArray(environment, "loaded_mod_ids");
-  stringArray(requirements, "reads"); uniqueStringArray(requirements, "reads"); literal(requirements, "whole_decision_admission", true); literal(requirements, "candidate_order_digest", "sha256-json-bound-action-id-order"); literal(requirements, "score_count_matches_candidate_count", true); literal(requirements, "selected_index", true); literal(requirements, "successor_required", true);
+  stringArray(requirements, "reads"); uniqueStringArray(requirements, "reads"); literal(requirements, "whole_decision_admission", true); literal(requirements, "candidate_order_digest", representation.input_schema === "sts2.player-environment/text-menu-snapshot-1" ? "sha256-json-menu-action-id-order" : "sha256-json-bound-action-id-order"); literal(requirements, "score_count_matches_candidate_count", true); literal(requirements, "selected_index", true); literal(requirements, "successor_required", true);
+  if (representation.input_schema === "sts2.player-environment/text-menu-snapshot-1" && (requirements.reads as string[]).length !== 0) throw new Error("text menu profile has no Reads");
   const support = object(root.support, "manifest.support"); exactKeys(support, ["game_versions", "game_commits", "interaction_kinds", "action_verbs"]); nonEmptyUniqueStringArray(support, "game_versions"); nonEmptyUniqueStringArray(support, "game_commits"); nonEmptyUniqueStringArray(support, "interaction_kinds"); nonEmptyUniqueStringArray(support, "action_verbs");
   object(root.adapter_config, "manifest.adapter_config");
   const claims = object(root.claims, "manifest.claims"); exactKeys(claims, ["full_run", "selector", "catalog_filtered", "creates_action_authority", "creates_native_operands"]); booleanField(claims, "full_run"); booleanField(claims, "selector"); literal(claims, "catalog_filtered", false); literal(claims, "creates_action_authority", false); literal(claims, "creates_native_operands", false);

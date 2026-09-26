@@ -147,9 +147,9 @@ s_i = Linear(d,1)(h_i)
 1. 使用因果前缀：观察位置只读观察前缀，不读当前候选或读出位置。
 2. 每个动作分支只读共享观察和本分支因果前缀；读出位置在本动作内容之后。隔离在每一层生效，阻止通过共享观察间接串扰。
 3. 合并分支时，各分支的位置编号与单独输入 `[O;a_i;q]` 相同，不按它在候选列表中排第几个偏移；padding 与边界一致。仅设置普通整串 causal mask 不足以隔离多个候选。
-4. 默认执行必须共享一次观察计算，全部候选分支和读出一起处理。独立分支只作诊断参考及旧产物复现，不作为新 B 的默认训练或部署。候选共享前缀后的输出与梯度，在 eval 关闭 dropout 时须与参考一致；scratch 训练共享前缀的 dropout，因此不承诺与旧执行逐步位级相同。
+4. 默认执行必须共享观察计算，并对完整候选集合评分。物理上可分支执行，但不能为每个候选重新运行完整观察前缀；后者只作诊断参考及旧产物复现。候选共享前缀后的输出与梯度，在 eval 关闭 dropout 时须与参考一致。2026-09-26 起 scratch 的 eval 和零 dropout 训练复用各层观察 KV；正 dropout 训练仍走原 packed 单次调用，以保留旧 checkpoint 的随机数消费顺序。其大菜单训练内存上限尚未验证。
 
-当前版本为 `b.shared-observation.v2`；`b.single-stream.v1` 保留旧逐候选实现及历史 checkpoint，不原地改义。物理执行可将冻结骨干分为“全部固定文本一次”和“全部读出一次”两阶段，这是同一逻辑序列的等价分解，不是两个 Transformer，也不重复按候选处理局面；S 使用一次完整 packed forward。PF/PL/RF 的宽度与层数继承所 pin 的骨干，参考 Qwen 为 1024 维；S 采用第 3 节唯一的两层、384 维主干。评分头统一为 Linear。PF 时 q_readout 与评分头可训练，骨干与原词表 embedding 冻结；q 在所有候选、样本之间共享。PF 的 q 起点复制固定 tokenizer 的 EOS embedding，具体 EOS ID、初值 digest 与 seed 记入 manifest；S 按锁定 seed 初始化 q。它是待验证的最小配方，不是已测最佳值。
+当前版本为 `b.shared-observation.v2`；`b.single-stream.v1` 保留旧逐候选实现及历史 checkpoint，不原地改义。物理执行可将冻结骨干分为“全部固定文本一次”和“全部读出一次”两阶段，这是同一逻辑序列的等价分解，不是两个 Transformer，也不重复按候选处理局面；S 的共享观察 KV 分解同样不增加主干，正 dropout 训练保留原 packed forward。PF/PL/RF 的宽度与层数继承所 pin 的骨干，参考 Qwen 为 1024 维；S 采用第 3 节唯一的两层、384 维主干。评分头统一为 Linear。PF 时 q_readout 与评分头可训练，骨干与原词表 embedding 冻结；q 在所有候选、样本之间共享。PF 的 q 起点复制固定 tokenizer 的 EOS embedding，具体 EOS ID、初值 digest 与 seed 记入 manifest；S 按锁定 seed 初始化 q。它是待验证的最小配方，不是已测最佳值。
 
 C1 沿用相同输入和读出，将 `Y_i=h_i` 作为后果摘要；评分只读 Y_i。**相同参数化、初始化、mask、目标下，C1-N 就是 B-N，不重复注册。** 加 Z-fact 是同图多一道真实后继题，可写 `B/C1 + N+Z-fact`；辅助头只读真实执行分支的 Y，真实后继不进入在线主体。将特殊 token 改名为 FUTURE 本身不会让它会预测。
 

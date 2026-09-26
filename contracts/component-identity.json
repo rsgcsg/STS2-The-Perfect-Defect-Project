@@ -17,7 +17,9 @@
         "sdk/typescript/src/protocol.ts",
         "sdk/typescript/src/decisionBundle.ts",
         "sdk/typescript/src/controllerSession.ts",
-        "sdk/typescript/src/rewardPage.ts"
+        "sdk/typescript/src/rewardPage.ts",
+        "sdk/typescript/src/textMenu.ts",
+        "host/PlayerEnvironment/Protocol/TextMenuContracts.cs"
       ]
     },
     "host-runtime": {
