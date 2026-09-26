@@ -65,6 +65,53 @@ public sealed class PlayerEnvironmentContractTests
     }
 
     [Fact]
+    public void TextEventOrderUsesNativeOptionIndexAcrossReenteredActionIds()
+    {
+        VisibleEventOption Option(string id, int index) => new(
+            id, index, id, id, true, false, false, false, false,
+            null, null, Array.Empty<VisibleEventOptionTooltip>());
+        var surface = new EventOptionSurface("event_option", "screen", new[]
+        {
+            Option("forge", 2), Option("arcane", 0), Option("gold", 1)
+        });
+        PlayerEnvironmentBoundAction Action(string hash, string id) =>
+            new(hash, "activate", "screen", id,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), id);
+        foreach (PlayerEnvironmentBoundAction[] hashed in new[]
+        {
+            new[] { Action("a", "gold"), Action("b", "arcane"), Action("c", "forge") },
+            new[] { Action("a2", "forge"), Action("b2", "gold"), Action("c2", "arcane") }
+        })
+            Assert.Equal(new[] { "arcane", "gold", "forge" },
+                NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, hashed)
+                    .Select(action => action.SubjectReferentId));
+    }
+
+    [Fact]
+    public void TextMultiSelectUsesVisibleCardOrderAndLeavesConfirmAfterCards()
+    {
+        VisibleCard Card(string id) => new(id, id, id, "Skill", "1", null,
+            "", "Common", false, false, null);
+        var surface = new NativeSimpleCardSelectionSurface(
+            "native_simple_card_selection", "selection", "screen", "Choose",
+            1, 2, 1, new[] { "left" }, new[] { "middle", "right" },
+            new[] { "left" }, true, true, true, true,
+            new[] { Card("left"), Card("middle"), Card("right") });
+        PlayerEnvironmentBoundAction Action(string hash, string verb, string? id) =>
+            new(hash, verb, "screen", id,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), hash);
+        PlayerEnvironmentBoundAction[] hashed =
+        {
+            Action("a", "confirm", "left"), Action("b", "select", "right"),
+            Action("c", "select", "middle"), Action("d", "deselect", "left")
+        };
+
+        Assert.Equal(new[] { "d", "c", "b", "a" },
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, hashed)
+                .Select(action => action.BoundActionId));
+    }
+
+    [Fact]
     public void TextCombatEntryCanBeInteractiveWithoutEndTurnBinding()
     {
         var noEndTurn = new CombatTurnSurface(

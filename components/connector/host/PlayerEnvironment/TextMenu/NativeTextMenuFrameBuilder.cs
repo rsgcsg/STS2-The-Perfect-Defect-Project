@@ -78,7 +78,8 @@ internal static class NativeTextMenuFrameBuilder
             {
                 var referents = page.Referents.ToList();
                 foreach (PlayerEnvironmentBoundAction action in
-                         legacy.Snapshot.BoundActions.Actions)
+                         OrderLegacyTextActions(legacy.HostObservation.Surface,
+                             legacy.Snapshot.BoundActions.Actions))
                     if (legacy.Bindings.TryGetValue(action.BoundActionId,
                             out PlayerEnvironmentNativeBinding? binding))
                     {
@@ -297,27 +298,97 @@ internal static class NativeTextMenuFrameBuilder
         IReadOnlyList<PlayerEnvironmentBoundAction> actions)
     {
         var rank = new Dictionary<string, int>(StringComparer.Ordinal);
+        void Add(IEnumerable<string> ids)
+        {
+            foreach (string id in ids) rank.TryAdd(id, rank.Count);
+        }
+        bool selectionOnly = false;
         bool proceedLast = false;
         switch (surface)
         {
+            case EventOptionSurface eventOptions:
+                Add(eventOptions.Options.OrderBy(option => option.Index)
+                    .Select(option => option.EntityId));
+                break;
+            case RestSiteSurface rest:
+                Add(rest.Options.OrderBy(option => option.Index)
+                    .Select(option => option.EntityId));
+                break;
+            case MapNavigationSurface map:
+                Add(map.NextOptions.Select(option => option.EntityId));
+                break;
+            case ShopInventorySurface shop:
+                Add(shop.Cards.OrderBy(offer => offer.InventoryIndex)
+                    .Select(offer => offer.EntityId));
+                Add(shop.Relics.OrderBy(offer => offer.InventoryIndex)
+                    .Select(offer => offer.EntityId));
+                Add(shop.Potions.OrderBy(offer => offer.InventoryIndex)
+                    .Select(offer => offer.EntityId));
+                if (shop.CardRemoval is { } removal) Add(new[] { removal.EntityId });
+                break;
+            case TreasureRoomSurface treasure:
+                Add(treasure.Relics.Select(relic => relic.EntityId));
+                break;
+            case GameOverSurface gameOver:
+                Add(gameOver.OtherControls.Select(control => control.EntityId));
+                break;
             case CardRewardSelectionSurface cardReward:
-                foreach (VisibleCard card in cardReward.Cards)
-                    rank.TryAdd(card.EntityId, rank.Count);
-                foreach (VisibleCardRewardAlternative alternative in
-                         cardReward.Alternatives.OrderBy(item => item.Index))
-                    rank.TryAdd(alternative.EntityId, rank.Count);
+                Add(cardReward.Cards.Select(card => card.EntityId));
+                Add(cardReward.Alternatives.OrderBy(item => item.Index)
+                    .Select(item => item.EntityId));
                 break;
             case RewardClaimSurface reward:
-                foreach (VisibleReward item in reward.Rewards)
-                    rank.TryAdd(item.EntityId, rank.Count);
-                foreach (VisibleCombatPotion potion in reward.DiscardablePotions)
-                    rank.TryAdd(potion.EntityId, rank.Count);
+                Add(reward.Rewards.Select(item => item.EntityId));
+                Add(reward.DiscardablePotions.Select(potion => potion.EntityId));
                 proceedLast = true;
                 break;
+            case CardBundleSelectionSurface bundles:
+                Add(bundles.Bundles.Select(bundle => bundle.EntityId));
+                selectionOnly = true;
+                break;
+            case NativeBossRelicSelectionSurface bossRelics:
+                Add(bossRelics.Relics.Select(relic => relic.EntityId));
+                selectionOnly = true;
+                break;
+            case NativeGeneratedCardChoiceSurface generated:
+                Add(generated.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case NativeSimpleCardSelectionSurface simple:
+                Add(simple.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case NativeCombatPileSelectionSurface pile:
+                Add(pile.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case NativeDeckCardSelectionSurface deck:
+                Add(deck.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case NativeDeckUpgradeSelectionSurface upgrade:
+                Add(upgrade.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case DeckTransformSelectionSurface transform:
+                Add(transform.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case DeckEnchantSelectionSurface enchant:
+                Add(enchant.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case CombatHandCardSelectionSurface hand:
+                Add(hand.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
             default:
+                // No authoritative native ordinal is present for this scene.
                 return actions;
         }
-        return actions.OrderBy(action => action.SubjectReferentId is { } id
+        return actions.OrderBy(action => (!selectionOnly
+                || action.Verb is "select" or "deselect")
+                && action.SubjectReferentId is { } id
                 && rank.TryGetValue(id, out int index) ? index
                 : proceedLast && action.Verb == "activate"
                     && action.SubjectReferentId == null ? rank.Count
