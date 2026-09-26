@@ -31,6 +31,12 @@ later mouse/controller stages and other scenes retain their separate coverage
 gaps. New Human origin still requires actual owner actions/attestation. The
 previous hosted result does not qualify this increment or its future build.
 
+The [2026-09-26 bounded Human begin canary](../evidence/HUMAN_TEXT_BEGIN_CANARY_2026-09-26.md)
+now records exact rc.13 install/load and seven owner-attested native pickup
+observations through verified engineering-source import. Target/cancel/confirm
+labels and other Human scenes remain incomplete; the single session did not
+qualify a train/dev view. PR #47's current CI is a separate source gate.
+
 ## Active mainline and next gate
 
 The local supervisor has taken over unfinished B0 and subsequent work. The web architect
