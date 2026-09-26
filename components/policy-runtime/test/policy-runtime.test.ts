@@ -3,7 +3,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpRequest, type ClientRequest } from "node:http";
-import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvironmentSnapshot } from "@rsgcsg/sts2-connector-client";
+import { decodePlayerControllerLeaseResponse, type PlayerEnvironmentBoundAction, type PlayerEnvironmentReceipt, type PlayerEnvironmentSnapshot } from "@rsgcsg/sts2-connector-client";
 import { admitWholeDecision } from "../src/admission.js";
 import { candidateOrderDigest } from "../src/digest.js";
 import { PolicyRuntime, admitWholeDecisionBundle } from "../src/runtime.js";
@@ -174,6 +174,30 @@ describe("Connector Read materialization", () => {
     await connector.releaseController();
   });
 
+  it("accepts a decoded Host release ack with its null controller omitted", async () => {
+    const capabilities = await new FakeConnector(bundle(["a"])).capabilities();
+    const lease = { controller_lease_id: "lease", controller_generation: 1, client_session_id: "client-session", expires_at: new Date(Date.now() + 60_000).toISOString() };
+    // The Host uses WhenWritingNull; SDK control-1 decoding explicitly permits omission.
+    const released = decodePlayerControllerLeaseResponse({
+      protocol_version: "1.0.0", schema: "sts2.player-environment/control-1",
+      runtime_instance_id: "runtime", status: "controller_released", detail: "released",
+      client: { client_session_id: "client-session", client_instance_id: "client-instance" }
+    });
+    expect(released.data.controller).toBeUndefined();
+    const wire = {
+      capabilities: async () => ({ raw: {}, data: capabilities }),
+      registerClient: async () => ({ raw: {}, data: { runtime_instance_id: "runtime", client: { client_session_id: "client-session", client_instance_id: "client-instance" } } }),
+      acquireController: async () => ({ raw: {}, data: { runtime_instance_id: "runtime", controller: lease } }),
+      renewController: async () => ({ raw: {}, data: { runtime_instance_id: "runtime", controller: lease } }),
+      releaseController: vi.fn(async () => released)
+    } as unknown as ConnectorAdapterClient;
+    const connector = new ConnectorPolicyClient(wire, { clientInstanceId: "client-instance" });
+    await connector.acquireController();
+    await connector.releaseController();
+    expect(wire.releaseController).toHaveBeenCalledTimes(1);
+    await expect(connector.submit({ requestId: "request", expectedSnapshotId: "snapshot", boundActionId: "a" })).rejects.toThrow(/controller/);
+  });
+
   it("does not treat a swallowed SDK close failure or later no-op as a confirmed release", async () => {
     const capabilities = await new FakeConnector(bundle(["a"])).capabilities();
     const lease = { controller_lease_id: "lease", controller_generation: 1, client_session_id: "client-session", expires_at: new Date(Date.now() + 60_000).toISOString() };
@@ -196,13 +220,14 @@ describe("Connector Read materialization", () => {
     expect(wire.submit).not.toHaveBeenCalled();
   });
 
-  it.each(["status", "runtime", "client", "controller", "missing"] as const)("rejects a %s release acknowledgement without another Host release", async mismatch => {
+  it.each(["status", "runtime", "client", "client_instance", "controller", "missing"] as const)("rejects a %s release acknowledgement without another Host release", async mismatch => {
     const capabilities = await new FakeConnector(bundle(["a"])).capabilities();
     const lease = { controller_lease_id: "lease", controller_generation: 1, client_session_id: "client-session", expires_at: new Date(Date.now() + 60_000).toISOString() };
     const correct = { runtime_instance_id: "runtime", status: "controller_released", client: { client_session_id: "client-session", client_instance_id: "client-instance" }, controller: null };
     const bad = mismatch === "status" ? { ...correct, status: "controller_lease_stale" }
       : mismatch === "runtime" ? { ...correct, runtime_instance_id: "other" }
       : mismatch === "client" ? { ...correct, client: { ...correct.client, client_session_id: "other" } }
+      : mismatch === "client_instance" ? { ...correct, client: { ...correct.client, client_instance_id: "other" } }
       : mismatch === "controller" ? { ...correct, controller: lease } : undefined;
     const wire = {
       capabilities: async () => ({ raw: {}, data: capabilities }),

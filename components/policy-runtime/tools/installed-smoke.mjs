@@ -167,7 +167,8 @@ const textHost = createHttpServer(async (request, response) => {
     output = { protocol_version: "1.0.0", schema: "sts2.player-environment/control-1", runtime_instance_id: "fixture-runtime", status: "controller_acquired", detail: "", client: { client_session_id: "client-1", client_instance_id: controlClientInstanceId }, controller: controlLease };
   } else if (url.pathname.endsWith("/controller/release")) {
     controlHeld = false;
-    output = { protocol_version: "1.0.0", schema: "sts2.player-environment/control-1", runtime_instance_id: "fixture-runtime", status: "controller_released", detail: "", client: { client_session_id: "client-1", client_instance_id: controlClientInstanceId }, controller: null };
+    // The real Host omits null controller when serializing a successful release.
+    output = { protocol_version: "1.0.0", schema: "sts2.player-environment/control-1", runtime_instance_id: "fixture-runtime", status: "controller_released", detail: "", client: { client_session_id: "client-1", client_instance_id: controlClientInstanceId } };
   } else if (url.pathname.endsWith("/actions")) {
     assert.equal(body.input_profile, "text-menu-v1"); assert.ok(controlHeld);
     const action = textCurrent.menu_actions.actions[0];

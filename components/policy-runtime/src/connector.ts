@@ -196,7 +196,9 @@ function verifiedReleaseAck(value: unknown, runtimeInstanceId: string, clientSes
   if (!("client" in data) || !data.client || typeof data.client !== "object") return false;
   return "status" in data && data.status === "controller_released"
     && "runtime_instance_id" in data && data.runtime_instance_id === runtimeInstanceId
-    && "controller" in data && data.controller === null
+    // The Host omits null fields on the wire; SDK control-1 permits controller?
+    // on a released lease. A non-null lease still disproves release.
+    && (!("controller" in data) || data.controller === null)
     && "client_session_id" in data.client && data.client.client_session_id === clientSessionId
     && "client_instance_id" in data.client && data.client.client_instance_id === clientInstanceId;
 }
