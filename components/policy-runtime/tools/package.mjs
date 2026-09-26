@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,6 +42,10 @@ export function packageRuntime(outputDirectory, { allowDirty = false } = {}) {
   // Build the SDK whose source identity is recorded below. Never package a
   // previously copied node_modules SDK or an unreleased URL under that identity.
   npm(["run", "build"], sdkRoot);
+  if (!existsSync(path.join(sdkRoot, "dist", "textMenu.js")) ||
+      !readFileSync(path.join(sdkRoot, "dist", "index.js"), "utf8").includes('export * from "./textMenu.js"')) {
+    throw new Error("Connector SDK build does not export the required text menu profile");
+  }
   const stage = mkdtempSync(path.join(os.tmpdir(), "sts2-policy-package-stage-"));
   const zodInstall = mkdtempSync(path.join(os.tmpdir(), "sts2-policy-zod-stage-"));
   try {
