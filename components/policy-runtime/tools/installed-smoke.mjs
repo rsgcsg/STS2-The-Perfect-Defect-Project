@@ -117,8 +117,8 @@ try {
 // Runtime. A synthetic Host controls navigation and native delivery separately.
 const sdkModule = new URL("../node_modules/@rsgcsg/sts2-connector-client/dist/index.js", import.meta.resolve("@rsgcsg/sts2-policy-runtime"));
 const { PlayerEnvironmentRestClient } = await import(sdkModule.href);
-const textAction = { action_id: "menu:open_information:1", kind: "system_navigation", verb: "open_information", label: "Information", subject_referent_id: null, arguments: [], effect_domain: "text_menu" };
-const nativeAction = { action_id: "native:end_turn:2", kind: "native_input", verb: "end_turn", label: "End turn", subject_referent_id: null, arguments: [], effect_domain: "native_input" };
+const textAction = { action_id: "menu.open_information.1", kind: "system_navigation", verb: "open_information", label: "Information", subject_referent_id: null, arguments: [], effect_domain: "text_menu" };
+const nativeAction = { action_id: "native.end_turn.2", kind: "native_input", verb: "end_turn", label: "End turn", subject_referent_id: null, arguments: [], effect_domain: "native_input" };
 function textFrame(number, cursor, action) {
   return {
     protocol_version: "1.0.0", schema: "sts2.player-environment/text-menu-snapshot-1", input_profile: "text-menu-v1",
@@ -189,11 +189,13 @@ textManifest.support.action_verbs = ["open_information", "end_turn"];
 const textConnector = new ConnectorPolicyClient(new PlayerEnvironmentRestClient(`http://127.0.0.1:${textHost.address().port}`, 1000));
 const textRuntime = new PolicyRuntime({ manifest: textManifest, connector: textConnector, mode: "one_step", runId: "installed-text-menu", successorPoll: { maxAttempts: 2, baseBackoffMs: 0 }, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
 try {
-  assert.equal((await textRuntime.tick()).type, "navigated");
+  const textNavigation = await textRuntime.tick();
+  assert.equal(textNavigation.type, "navigated", JSON.stringify(textNavigation));
   assert.equal(textRuntime.status().last_receipt, null);
   assert.equal(controlHeld, false);
   await textRuntime.setMode("one_step");
-  assert.equal((await textRuntime.tick()).type, "text_native_delivered");
+  const textNative = await textRuntime.tick();
+  assert.equal(textNative.type, "text_native_delivered", JSON.stringify(textNative));
   assert.equal(textRuntime.status().last_receipt.delivery, "delivered");
   assert.equal(textPosts, 2);
   assert.equal(controlHeld, false);
