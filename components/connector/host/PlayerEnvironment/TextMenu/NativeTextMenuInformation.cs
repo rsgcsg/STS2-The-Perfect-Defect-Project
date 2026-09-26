@@ -365,9 +365,14 @@ internal static class NativeTextMenuInformation
                 return FailClosedPage(legacy, key, "native_information_zone_missing");
             selectedContent = selected;
         }
-        JsonNode content = JsonSerializer.SerializeToNode(
+        JsonNode details = JsonSerializer.SerializeToNode(
             selectedContent, selectedContent.GetType(), ConnectorMod._jsonOptions)
             ?? new JsonObject();
+        var content = new JsonObject
+        {
+            ["kind"] = kind,
+            ["details"] = details
+        };
 
         PlayerEnvironmentSnapshot page = legacy.Snapshot with
         {
@@ -388,7 +393,7 @@ internal static class NativeTextMenuInformation
                 Kind = kind,
                 Stage = "native_information_page",
                 Prompt = kind.Replace('_', ' '),
-                ContentSchema = $"sts2.player-environment/surface/{kind}-text-menu-1",
+                ContentSchema = $"sts2.player-environment/surface/{kind}_text_menu-1",
                 Content = new PlayerEnvironmentInteractionContent(
                     content,
                     new JsonObject { ["kind"] = kind }),
@@ -412,9 +417,10 @@ internal static class NativeTextMenuInformation
                 Kind = "native_information_unresolved",
                 Stage = "unresolved",
                 Prompt = reason,
-                ContentSchema = "sts2.player-environment/surface/native-information-unresolved-1",
+                ContentSchema = "sts2.player-environment/surface/native_information_unresolved-1",
                 Content = new PlayerEnvironmentInteractionContent(
-                    new JsonObject { ["reason"] = reason },
+                    new JsonObject { ["kind"] = "native_information_unresolved",
+                        ["reason"] = reason },
                     new JsonObject { ["kind"] = "native_information_unresolved" }),
                 Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
             }
@@ -572,9 +578,7 @@ internal static class NativeTextMenuInformation
         _ownedScreen = set;
         _ownedKind = "relic_tips";
         _tipOwner = holder;
-        _tipContent = JsonSerializer.SerializeToNode(tips.Cast<HoverTip>()
-            .Select(tip => new { tip.Title, tip.Description }).ToArray(),
-            ConnectorMod._jsonOptions);
+        _tipContent = ReadRenderedTips(set);
         return NativeInputResult.Delivered("NHoverTipSet.CreateAndShow; exact relic tip set");
     }
 
@@ -596,9 +600,11 @@ internal static class NativeTextMenuInformation
                 Kind = _nativeTipGroup ?? "relic_tips",
                 Stage = "native_information_page",
                 Prompt = "Native tips",
-                ContentSchema = $"sts2.player-environment/surface/{_nativeTipGroup ?? "relic_tips"}-text-menu-1",
+                ContentSchema = $"sts2.player-environment/surface/{_nativeTipGroup ?? "native_tip"}_text_menu-1",
                 Content = new PlayerEnvironmentInteractionContent(
-                    _tipContent.DeepClone(), new JsonObject { ["kind"] = "native_tips" }),
+                    new JsonObject { ["kind"] = "native_tips",
+                        ["tips"] = _tipContent.DeepClone() },
+                    new JsonObject { ["kind"] = "native_tips" }),
                 Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
             }
         };
@@ -784,11 +790,6 @@ internal static class NativeTextMenuInformation
         // The underlying RelicModel may contain facts the screen hides.
         string title = screen.GetNode<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%RelicName").Text;
         string description = screen.GetNode<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%RelicDescription").Text;
-        var surface = new JsonObject
-        {
-            ["title"] = title,
-            ["description"] = description
-        };
         PlayerEnvironmentSnapshot page = legacy.Snapshot with
         {
             Status = "interactive",
@@ -801,9 +802,11 @@ internal static class NativeTextMenuInformation
             {
                 Kind = "relic_inspect", Stage = "native_information_page",
                 Prompt = title,
-                ContentSchema = "sts2.player-environment/surface/relic-inspect-text-menu-1",
+                ContentSchema = "sts2.player-environment/surface/relic_inspect_text_menu-1",
                 Content = new PlayerEnvironmentInteractionContent(
-                    surface, new JsonObject { ["kind"] = "relic_inspect" }),
+                    new JsonObject { ["kind"] = "relic_inspect",
+                        ["title"] = title, ["description"] = description },
+                    new JsonObject { ["kind"] = "relic_inspect" }),
                 Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
             }
         };
