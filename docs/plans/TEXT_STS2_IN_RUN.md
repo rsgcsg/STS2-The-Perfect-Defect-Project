@@ -42,7 +42,8 @@ their own native bindings; Godot object references never cross the wire.
 | Card reward inner page | Current full native card/alternative options and native return/skip when present | Existing unprofiled exact `CardRewardSurfaceReader`; button wording does not define permanent loss |
 | Event / rest / treasure / shop | Current native options and controls, including actual selectors opened by them | Existing exact owner-specific bindings, not a synthetic universal confirm |
 | Multi-select / nested selector | One select or deselect at a time; native confirm/cancel only when offered | Existing selector owner, exact current chosen set and native cardinality rules; no subset enumeration |
-| Deck, pile, map, relic inspection or displayed tips | Current entered page contents and its real return/preview controls | Native opened page/tooltip owner; no background Read collection |
+| Card bundle preview | Confirm or return; inspect each displayed card through its actual native holder | `NChooseABundleSelectionScreen` holder Pressed opens `NInspectCardScreen`; a bundle is one native reward choice, not independent acquisition of its cards |
+| Deck, pile, map, relic inspection or displayed tips | Current entered page contents and its real return/preview controls | Native opened page/explicit tooltip owner; passive visible hover facts stay on the underlying page |
 | Settling, unsupported modal or terminal | Public current facts and no invented executable choice | Observe until an actual ready page, or return control; main menu/start/load/abandon/process operations are outside model A(S) |
 
 The native deck supports clicking a displayed card for its real inspect screen,
@@ -50,6 +51,12 @@ including enabled previous/next and upgrade-preview controls. The native pile
 viewer does not bind that click, so no pile inspect action is invented. Purely
 visual deck sorting is omitted like scrolling: the complete current list remains
 available. A passive map can still expose its native Back while travel is disabled.
+
+Typed card, reward, event, map, shop, rest and selector choices follow their
+native visible lists or native option ordinals. Ordering moves intact bound
+actions, never their targets. Controls without a native ordinal retain their
+existing relative order; action hashes are not a presentation order. Information
+opened from a reward page owns input until its native return completes.
 
 The implementation resides in Connector's `PlayerEnvironment/TextMenu`.
 `NativeTextMenuFrameBuilder` composes current native facts;
@@ -64,7 +71,8 @@ not write private target fields or enqueue its own game action. From mouse
 presentation, the exact native controller-input manager may switch input mode
 before holder activation; it requires the focused game window and rechecks the
 holder afterward. This changes actual native presentation, not just U. Human
-mouse input can change that mode again. This path still needs live qualification.
+mouse input can change that mode again. A bounded Agent canary exercised this path on the exact macOS game build;
+that evidence does not qualify every scene or Human recording.
 
 ## Input and output example
 
@@ -128,7 +136,9 @@ SDK and model projection before attempting native actions. Finally verify scene
 transitions and safe control recovery against an exact loaded candidate.
 
 A source menu adapter does not prove that every game version or uncommon target
-type is supported. At this source stage, non-creature potion targets and tooltip
-card-preview children fail closed. Full-run quality, learned memory, new Human
+type is supported. Unsupported potion target families remain fail-closed; the native Foul Potion
+merchant target has an explicit binding. Rendered tooltip card-preview children
+are read from their current native controls. Passive focus tooltips do not
+replace the underlying action menu or require an extra close action. Full-run quality, learned memory, new Human
 training admission and broader research training are not inferred from these
 engineering checks. Actual receipts belong in the candidate PR and dated evidence.

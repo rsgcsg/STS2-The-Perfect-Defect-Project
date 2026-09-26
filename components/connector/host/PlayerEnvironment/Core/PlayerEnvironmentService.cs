@@ -100,7 +100,7 @@ internal static partial class PlayerEnvironmentService
                 "show_orb_tips", "show_topbar_tips", "open_run_deck", "open_native_map", "inspect_relic",
                 "open_combat_draw_pile", "open_combat_discard_pile", "open_combat_exhaust_pile",
                 "return_native_information", "return_native_map", "return_relic_inspect", "return_native_tips",
-                "inspect_deck_card", "return_card_inspect", "previous_inspect_card", "next_inspect_card",
+                "inspect_deck_card", "inspect_bundle_card", "return_card_inspect", "previous_inspect_card", "next_inspect_card",
                 "toggle_card_upgrade_preview", "previous_relic", "next_relic"
             } : new[]
             {

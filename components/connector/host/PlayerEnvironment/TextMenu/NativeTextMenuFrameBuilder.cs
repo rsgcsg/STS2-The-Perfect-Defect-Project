@@ -29,6 +29,7 @@ internal static class NativeTextMenuFrameBuilder
         Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy)
     {
         TextMenuFrame frame = CaptureCore(legacy, entities, executeLegacy);
+        frame = NativeTextMenuBundle.AppendPreviewInspection(frame, entities);
         return frame with
         {
             Page = NativeTextMenuInformation.AttachCurrentPassiveHoverFacts(frame.Page)
