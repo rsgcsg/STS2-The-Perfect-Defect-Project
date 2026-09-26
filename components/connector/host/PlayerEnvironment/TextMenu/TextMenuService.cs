@@ -15,7 +15,7 @@ internal static partial class PlayerEnvironmentService
 
     private static TextMenuFrame CaptureTextMenuFrame()
     {
-        SnapshotBuildResult native = BuildSnapshot();
+        SnapshotBuildResult native = BuildSnapshot(textMenuCapture: true);
         return NativeTextMenuFrameBuilder.Capture(native, Entities,
             binding => StartPlayerEnvironmentInput(native, binding.NativeAction, binding.ExactOperands));
     }
