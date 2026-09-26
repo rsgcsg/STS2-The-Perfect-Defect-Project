@@ -7,7 +7,8 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path
+from collections.abc import Callable
+from pathlib import Path, PurePath
 from typing import Any
 
 from spireagent.encoding import canonical_json
@@ -18,6 +19,16 @@ from spireagent.policy_files import _inside, _object_file
 CONFIG_SCHEMA = "stpd/token-policy-config-v1"
 CODE_SCOPE = "python-owner-source-and-lock-v1"
 PROTOCOL = "sts2.policy-runtime/decision-only-ndjson-1"
+
+
+def _manifest_artifact_path(
+    artifact: PurePath, manifest_directory: PurePath,
+    relpath: Callable[[str, str], str] = os.path.relpath,
+) -> str:
+    """Use a relative pin where possible, or an absolute pin across Windows drives."""
+    if artifact.drive.casefold() != manifest_directory.drive.casefold():
+        return str(artifact)
+    return relpath(str(artifact), str(manifest_directory))
 
 
 def bind_text_menu_export(
@@ -85,7 +96,8 @@ def bind_text_menu_export(
         "adapter": {"id": "stpd-token-decision-adapter", "version": "1.0.0",
                     "protocol": PROTOCOL, "code_sha256": code_digest(root)},
         "artifact": {"id": identity,
-                     "path": os.path.relpath(export_path / "model.json", manifest_path.parent),
+                     "path": _manifest_artifact_path(
+                         export_path / "model.json", manifest_path.parent),
                      "sha256": config["export_manifest_sha256"]},
         "representation": {"id": IDENTITY["profile"], "version": IDENTITY["version"],
                            "input_schema": SNAPSHOT_SCHEMA},
