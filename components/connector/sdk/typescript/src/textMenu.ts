@@ -17,8 +17,10 @@ const groups = cursors.slice(2);
 const navigation = ["open_information", ...groups.map((group) => `open_${group}`), "back"] as const;
 
 const argumentSchema = z.object({ role: z.string().min(1), referent_id: z.string().min(1) }).strict();
+// The same bounded character domain admitted by the shared Host HTTP action route.
+const transportIdentifier = z.string().min(1).max(128).regex(/^[A-Za-z0-9_.-]+$/u);
 const actionSchema = z.object({
-  action_id: z.string().min(1),
+  action_id: transportIdentifier,
   kind: z.enum(["system_navigation", "native_input"]),
   verb: z.string().min(1),
   label: z.string().min(1),
@@ -141,6 +143,10 @@ export function decodeTextMenuSnapshot(value: unknown): DecodedPlayerPayload<Tex
   const menu = parse(raw.menu, menuSchema, "menu cursor");
   const menuActions = parse(raw.menu_actions, actionsSchema, "menu actions");
   const interaction = asObject(raw.interaction, "text menu interaction");
+  parse(raw.snapshot_id, transportIdentifier, "text menu snapshot identity");
+  parse(interaction.content_schema,
+    z.string().regex(/^sts2\.player-environment\/surface\/[a-z0-9_]+-1$/u),
+    "text menu interaction content schema");
   const capabilities = parse(interaction.capabilities, z.array(capabilitySchema), "text menu capabilities");
   const referents = Array.isArray(raw.referents) ? raw.referents : [];
   const referentIds = new Set(referents.map((item) => isJsonObject(item) ? item.referent_id : null));
@@ -173,8 +179,7 @@ export function decodeTextMenuSnapshot(value: unknown): DecodedPlayerPayload<Tex
   // Validate all unchanged public facts through the existing strict schema. The legacy
   // action projection is a validation placeholder only and is never exposed.
   const normalized: JsonObject = { ...raw, schema: "sts2.player-environment/snapshot-1",
-    status: "observed", interaction: { ...interaction,
-      content_schema: `sts2.player-environment/surface/${interaction.kind}-1`, capabilities: [] },
+    status: "observed", interaction: { ...interaction, capabilities: [] },
     bound_actions: { schema: "sts2.player-environment/bound-actions-1", status: "complete",
       materialized_count: 0, total_count: 0, limit: 512,
       ordering_semantics: "validation_only", actions: [] }, reads: [] };

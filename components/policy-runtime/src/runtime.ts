@@ -376,6 +376,12 @@ export class PolicyRuntime {
     }
     const resolvedActionId = resolved ? decisionActionId(resolved) : null;
     this.lastDecision = { decision_id: decision.decision_id, candidate_digest: decision.candidate_digest, candidate_count: decision.candidate_count, scores: [...decision.scores], selected_index: decision.selected_index, bound_action_id: resolvedActionId, bound_action_label: resolved?.label ?? null };
+    if (textMenu && !(await this.appendEvidence("text_decision_input", {
+      decision_id: decision.decision_id, snapshot: bundle.observation
+    }))) {
+      await this.failClosed("agent_evidence_write_failed_before_submit");
+      return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
+    }
     if (!(await this.appendEvidence("decision", { decision, resolved_bound_action_id: resolvedActionId }))) {
       await this.failClosed("agent_evidence_write_failed_before_submit");
       return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };

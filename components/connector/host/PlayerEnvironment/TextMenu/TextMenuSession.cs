@@ -54,7 +54,7 @@ internal sealed class TextMenuSession
         }
         // The hash includes the source menu and current public content so a host
         // cannot accidentally retain authority by reusing a page token.
-        string snapshotId = "text:" + StableIdentityHash.Object(new
+        string snapshotId = "text-" + StableIdentityHash.Object(new
         {
             profile = TextMenuContract.Profile, owner, revision, cursor,
             native = frame.Page.SnapshotId,
@@ -72,7 +72,7 @@ internal sealed class TextMenuSession
         void Add(string key, string kind, string verb, string label,
             TextMenuLeaf? leaf, string? destination)
         {
-            string id = "tm:" + StableIdentityHash.Object(new { snapshotId, key, kind });
+            string id = "tm-" + StableIdentityHash.Object(new { snapshotId, key, kind });
             var action = new TextMenuAction(id, kind, verb, label,
                 leaf?.SubjectReferentId,
                 leaf?.Arguments ?? Array.Empty<PlayerEnvironmentBoundActionArgument>(),

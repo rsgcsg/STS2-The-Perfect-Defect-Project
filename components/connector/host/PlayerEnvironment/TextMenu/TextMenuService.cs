@@ -16,8 +16,6 @@ internal static partial class PlayerEnvironmentService
     private static TextMenuFrame CaptureTextMenuFrame()
     {
         SnapshotBuildResult native = BuildSnapshot();
-        if (native.HostObservation.Surface.Kind is "reward_claim" or "card_reward_selection" or "potion_popup")
-            native = BuildSnapshot(inputProfile: PlayerEnvironmentContract.RewardPotionPageProfile);
         return NativeTextMenuFrameBuilder.Capture(native, Entities,
             binding => StartPlayerEnvironmentInput(native, binding.NativeAction, binding.ExactOperands));
     }

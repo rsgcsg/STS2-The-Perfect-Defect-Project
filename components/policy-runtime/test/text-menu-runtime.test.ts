@@ -53,6 +53,7 @@ describe("text menu Runtime opt-in", () => {
     let current = root;
     const submissions: string[] = [];
     const events: string[] = [];
+    const inputs: unknown[] = [];
     const connector: PolicyConnector = {
       capabilities: async () => capabilities(), observeBundle: async () => ({ observation: current, reads: [] }),
       acquireController: vi.fn(async () => {}), releaseController: vi.fn(async () => {}),
@@ -60,13 +61,16 @@ describe("text menu Runtime opt-in", () => {
     };
     const seen: string[][] = [];
     const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "text-run", autoBudget: { maxSubmissions: 2, maxPolicyCalls: 3, deadlineMs: 10_000 }, successorPoll: { maxAttempts: 1, baseBackoffMs: 0 }, sleep: async () => {},
-      evidence: { append: async (kind: string) => { events.push(kind); } } as never,
+      evidence: { append: async (kind: string, payload: Record<string, unknown>) => { events.push(kind); if (kind === "text_decision_input") inputs.push(payload); } } as never,
       runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) },
       policy: input => { seen.push(input.bundle.observation.schema === root.schema ? input.bundle.observation.menu_actions.actions.map(action => action.action_id) : []); return { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }; }
     });
     expect((await runtime.tick()).type).toBe("navigated");
     expect(runtime.status().last_receipt).toBeNull();
     expect(events).toContain("menu_navigation");
+    expect(events.indexOf("text_decision_input")).toBeLessThan(events.indexOf("decision"));
+    expect(events.indexOf("decision")).toBeLessThan(events.indexOf("text_menu_dispatch_attempt"));
+    expect(inputs[0]).toMatchObject({ snapshot: root });
     expect(events).not.toContain("receipt");
     expect((await runtime.tick()).type).toBe("text_native_delivered");
     expect(runtime.status().last_receipt?.delivery).toBe("delivered");
@@ -74,6 +78,26 @@ describe("text menu Runtime opt-in", () => {
     expect(submissions).toEqual([nav.action_id, native.action_id]);
     expect(seen).toEqual([[nav.action_id], [native.action_id]]);
     expect(runtime.status().autonomy_budget.submissions_used).toBe(2);
+  });
+
+  it("does not acquire or submit if the exact text input cannot be recorded", async () => {
+    const current = frame(1, "root", [native]);
+    const acquire = vi.fn(async () => {}), submit = vi.fn();
+    const connector: PolicyConnector = {
+      capabilities: async () => capabilities(), observeBundle: async () => ({ observation: current, reads: [] }),
+      acquireController: acquire, releaseController: async () => {}, submit
+    };
+    const events: string[] = [];
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "record-failure",
+      evidence: { append: async (kind: string) => { events.push(kind); if (kind === "text_decision_input") throw new Error("disk fixture"); } } as never,
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) },
+      policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    expect((await runtime.tick()).type).toBe("not_admitted");
+    expect(events).toContain("text_decision_input");
+    expect(events).not.toContain("decision");
+    expect(acquire).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    expect(runtime.status().mode).toBe("human");
   });
 
   it("taints an unknown native result and does not resubmit", async () => {

@@ -12,6 +12,26 @@ namespace STS2Connector;
 public sealed class TextMenuTests
 {
     [Fact]
+    public void GeneratedTextIdentifiersPassTheActualSharedHttpActionAdmission()
+    {
+        var executor = Executor(() => Frame(() => NativeInputResult.Delivered("fixture")));
+        var root = executor.Observe();
+        foreach (var action in root.MenuActions.Actions)
+        {
+            var request = Request(root, action.Verb, "transport-request");
+            Assert.True(ConnectorMod.IsSafeProtocolIdentifier(request.RequestId, 128));
+            Assert.True(ConnectorMod.IsSafeProtocolIdentifier(request.ExpectedSnapshotId, 128));
+            Assert.True(ConnectorMod.IsSafeProtocolIdentifier(request.BoundActionId, 128));
+        }
+        var result = executor.Submit(Request(root, "open_information", "transport-request"));
+        Assert.Equal("applied", result.Status);
+        Assert.True(ConnectorMod.IsSafeProtocolIdentifier(result.Successor!.SnapshotId, 128));
+        Assert.All(result.Successor.MenuActions.Actions, action =>
+            Assert.True(ConnectorMod.IsSafeProtocolIdentifier(action.ActionId, 128)));
+        Assert.False(ConnectorMod.IsSafeProtocolIdentifier("text:invalid", 128));
+    }
+
+    [Fact]
     public void InformationNavigationChangesOnlyCursorAndDoesNotDeliverOrReplayNativeInput()
     {
         int nativeCalls = 0;

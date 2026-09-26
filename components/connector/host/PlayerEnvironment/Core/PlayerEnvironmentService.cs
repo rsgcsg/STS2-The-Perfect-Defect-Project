@@ -86,7 +86,21 @@ internal static partial class PlayerEnvironmentService
             ToHostIdentity(host),
             ToGameIdentity(game),
             ToSessionReference(host, game).EnvironmentFingerprint,
-            new[]
+            inputProfile == TextMenuContract.Profile ? new[]
+            {
+                "activate", "select", "deselect", "confirm", "cancel", "play", "target",
+                "use", "end_turn", "skip", "open", "close", "purchase", "navigate",
+                "begin_card_play", "cancel_card_play", "focus_target", "confirm_target", "confirm_card",
+                "open_potion_popup", "choose_potion_use", "discard_potion", "close_potion_popup",
+                "select_potion_target", "cancel_potion_target",
+                "claim_reward", "claim_linked_reward", "proceed_rewards", "skip_rewards",
+                "open_information", "open_relic_inspect", "open_relic_tips", "open_card_tips",
+                "open_power_tips", "open_intent_tips", "open_orb_tips", "open_topbar_tips", "back",
+                "show_relic_tips", "show_card_tips", "show_power_tips", "show_intent_tips",
+                "show_orb_tips", "show_topbar_tips", "open_run_deck", "open_native_map", "inspect_relic",
+                "open_combat_draw_pile", "open_combat_discard_pile", "open_combat_exhaust_pile",
+                "return_native_information", "return_native_map", "return_relic_inspect", "return_native_tips"
+            } : new[]
             {
                 "activate", "select", "deselect", "confirm", "cancel", "play",
                 "target", "use", "end_turn", "skip", "open", "close"

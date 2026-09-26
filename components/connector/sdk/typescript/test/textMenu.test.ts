@@ -68,6 +68,26 @@ describe("text-menu-v1", () => {
     expect(() => decodeTextMenuSnapshot(p)).toThrow(/unknown current referent/u);
   });
 
+  it("validates native entered page schemas and HTTP-safe text identifiers", () => {
+    for (const kind of ["combat_card_operation_text_menu", "potion_targeting_text_menu",
+      "relic_inspect_text_menu", "relic_tips_text_menu", "native_linked_reward_page"]) {
+      const p = page();
+      p.interaction.content_schema = `sts2.player-environment/surface/${kind}-1`;
+      p.interaction.content.surface = { kind, current_choices: [] };
+      expect(decodeTextMenuSnapshot(p).data.interaction.content.surface.kind).toBe(kind);
+      delete p.interaction.content.surface.kind;
+      expect(() => decodeTextMenuSnapshot(p)).toThrow();
+    }
+    const tips = page(); tips.interaction.content.surface = [];
+    expect(() => decodeTextMenuSnapshot(tips)).toThrow();
+    const malformed = page(); malformed.interaction.content_schema = "unchecked/arbitrary";
+    expect(() => decodeTextMenuSnapshot(malformed)).toThrow(/content schema/u);
+    const snapshot = page(); snapshot.snapshot_id = "text:rejected-by-host";
+    expect(() => decodeTextMenuSnapshot(snapshot)).toThrow(/snapshot identity/u);
+    const action = page(); action.menu_actions.actions[0].action_id = "tm:rejected-by-host";
+    expect(() => decodeTextMenuSnapshot(action)).toThrow();
+  });
+
   it("never turns system navigation into native delivery or retryable unknown", () => {
     expect(decodeTextMenuActionResult(result()).data.native_delivery).toBeNull();
     expect(() => decodeTextMenuActionResult({ ...result(), native_delivery: "delivered" })).toThrow();
@@ -97,7 +117,7 @@ describe("text-menu-v1", () => {
     const client = new PlayerEnvironmentRestClient("http://test", 1000, fetchImpl as typeof fetch);
     await client.textMenuCapabilities(); await client.observeTextMenu();
     await client.submitTextMenu({ requestId: "request-nav-1", expectedSnapshotId: "text-runtime-1-native-1-u0",
-      boundActionId: "menu:open_information:1", clientSessionId: "client", controllerLeaseId: "lease",
+      boundActionId: "menu-open_information-1", clientSessionId: "client", controllerLeaseId: "lease",
       controllerGeneration: 1 });
     await client.textMenuResult("request-nav-1");
     expect(String(fetchImpl.mock.calls[0]?.[0])).toContain(`input_profile=${TEXT_MENU_PROFILE}`);

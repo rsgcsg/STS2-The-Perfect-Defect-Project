@@ -7,7 +7,7 @@
   "effect_domain": "text_menu",
   "native_delivery": null,
   "action": {
-    "action_id": "menu:open_information:1",
+    "action_id": "menu-open_information-1",
     "kind": "system_navigation",
     "verb": "open_information",
     "label": "Information",
