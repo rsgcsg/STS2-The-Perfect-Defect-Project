@@ -12,6 +12,38 @@ namespace STS2Connector.Tests;
 public sealed class PlayerEnvironmentContractTests
 {
     [Fact]
+    public void TextCombatEntryCanBeInteractiveWithoutEndTurnBinding()
+    {
+        var noEndTurn = new CombatTurnSurface(
+            "combat_turn", "room-current", false)
+        {
+            PlayableCards = new[]
+            {
+                new VisibleCombatCommandOption("card-current", "Card",
+                    Array.Empty<string>())
+            }
+        };
+        Assert.Empty(PlayerEnvironmentService.DescribeTextCombatCommands(noEndTurn));
+        var nativeComplete = new StateCompleteness(
+            "contract_complete_for_immediate_combat_turn_including_visible_companions",
+            "derived_from_same_validator_as_execution",
+            Array.Empty<string>(), Array.Empty<string>());
+        var emptyProjection = new PlayerEnvironmentBoundActionProjection(
+            "test", "complete", 0, 0, 512, "test",
+            Array.Empty<PlayerEnvironmentBoundAction>());
+
+        Assert.True(PlayerEnvironmentService.CanPublishTextCombatEntry(
+            true, noEndTurn, "ready", nativeComplete, emptyProjection));
+        Assert.False(PlayerEnvironmentService.CanPublishTextCombatEntry(
+            false, noEndTurn, "ready", nativeComplete, emptyProjection));
+        Assert.False(PlayerEnvironmentService.CanPublishTextCombatEntry(
+            true, noEndTurn, "settling", nativeComplete, emptyProjection));
+        Assert.False(PlayerEnvironmentService.CanPublishTextCombatEntry(
+            true, noEndTurn, "ready", nativeComplete,
+            emptyProjection with { Status = "truncated" }));
+    }
+
+    [Fact]
     public void NativeMapBackRemainsAvailableWhenRoutesAreExactlyEmpty()
     {
         var emptyMap = new MapNavigationSurface(
