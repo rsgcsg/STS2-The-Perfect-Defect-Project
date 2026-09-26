@@ -1284,6 +1284,8 @@ __all__ = [
 
 _TEXT_SNAPSHOT_SCHEMA = "sts2.player-environment/text-menu-snapshot-1"
 _TEXT_RESULT_SCHEMA = "sts2.player-environment/text-menu-action-result-1"
+_TEXT_TRANSPORT_ID = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_TEXT_CONTENT_SCHEMA = re.compile(r"^sts2\.player-environment/surface/[a-z0-9_]+-1$")
 _TEXT_CURSORS = {"root", "information", "relic_inspect", "relic_tips", "card_tips", "power_tips", "intent_tips", "orb_tips", "topbar_tips"}
 _TEXT_NAVIGATION = {"open_information", "open_relic_inspect", "open_relic_tips", "open_card_tips", "open_power_tips", "open_intent_tips", "open_orb_tips", "open_topbar_tips", "back"}
 
@@ -1294,7 +1296,8 @@ def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, An
     _literal(value, "input_profile", "text-menu-v1", _EVENTS_FILE)
     if value["protocol_version"] != environment["connector_protocol_version"]:
         raise AgentRunEvidenceError("runtime_association", f"{label} protocol differs", _EVENTS_FILE)
-    _text(value, "snapshot_id", _EVENTS_FILE)
+    if not _TEXT_TRANSPORT_ID.fullmatch(_text(value, "snapshot_id", _EVENTS_FILE)):
+        raise AgentRunEvidenceError("snapshot_schema", f"{label} snapshot ID is not a transport identifier", _EVENTS_FILE)
     _positive_int(value, "sequence", _EVENTS_FILE)
     _timestamp(value, "observed_at", _EVENTS_FILE)
     _enum(value, "status", {"interactive", "observed", "settling", "visible_unsupported"}, _EVENTS_FILE)
@@ -1309,6 +1312,8 @@ def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, An
         raise AgentRunEvidenceError("snapshot_schema", f"{label} interaction keys are invalid", _EVENTS_FILE)
     for key in ("interaction_id", "kind", "stage", "content_schema"):
         _text(interaction, key, _EVENTS_FILE)
+    if not _TEXT_CONTENT_SCHEMA.fullmatch(interaction["content_schema"]):
+        raise AgentRunEvidenceError("snapshot_schema", f"{label} interaction content schema is invalid", _EVENTS_FILE)
     _nullable_text(interaction, "prompt", _EVENTS_FILE)
     content = _object(interaction["content"], f"{label} interaction content")
     _exact_keys(content, {"surface", "context"}, f"{label} interaction content")
@@ -1346,14 +1351,14 @@ def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, An
             raise AgentRunEvidenceError("snapshot_schema", f"{label} duplicate referent", _EVENTS_FILE)
         ids.add(referent_id)
         _text(referent, "role", _EVENTS_FILE)
-        _text(referent, "kind", _EVENTS_FILE)
+        _enum(referent, "kind", {"entity", "control"}, _EVENTS_FILE)
         _nullable_text(referent, "label", _EVENTS_FILE)
         _nullable_text(referent, "properties_schema", _EVENTS_FILE)
         state = _object(referent["state"], f"{label} referent state")
         if not {"visible", "observation_basis"}.issubset(state) or set(state) - {"visible", "enabled", "selected", "focused", "observation_basis"}:
             raise AgentRunEvidenceError("snapshot_schema", f"{label} referent state keys are invalid", _EVENTS_FILE)
         _boolean(state, "visible", _EVENTS_FILE)
-        _text(state, "observation_basis", _EVENTS_FILE)
+        _literal(state, "observation_basis", "native_visible_fact", _EVENTS_FILE)
         for key in ("enabled", "selected", "focused"):
             _nullable_boolean(state, key, _EVENTS_FILE)
         if referent.get("properties") is not None and referent.get("properties_schema") is None:
@@ -1414,7 +1419,8 @@ def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, An
 
 def _verify_text_action(value: Mapping[str, Any], referent_ids: set[str] | None) -> None:
     _exact_keys(value, {"action_id", "kind", "verb", "label", "subject_referent_id", "arguments", "effect_domain"}, "text menu action")
-    _text(value, "action_id", _EVENTS_FILE)
+    if not _TEXT_TRANSPORT_ID.fullmatch(_text(value, "action_id", _EVENTS_FILE)):
+        raise AgentRunEvidenceError("text_binding", "text action ID is not a transport identifier", _EVENTS_FILE)
     _enum(value, "kind", {"system_navigation", "native_input"}, _EVENTS_FILE)
     _text(value, "verb", _EVENTS_FILE)
     _text(value, "label", _EVENTS_FILE)
