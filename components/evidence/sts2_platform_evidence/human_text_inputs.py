@@ -160,6 +160,10 @@ def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
     mechanism = row.get("native_mechanism")
     _check(isinstance(mechanism, str) and mechanism in MECHANISM_VERBS,
            "human_text_input_native_mechanism_invalid")
+    mapped_action = row.get("chosen_action")
+    if isinstance(mapped_action, dict):
+        _check(mapped_action.get("verb") == MECHANISM_VERBS[mechanism],
+               "human_text_input_native_verb_mechanism_mismatch")
     _check(_nonempty(row.get("native_owner_witness_id"))
            and (row.get("disposition") == "capture_failed"
                 or _nonempty(row.get("native_subject_witness_id"))),
@@ -176,6 +180,9 @@ def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
                and row.get("mapping_basis") == MAPPING_BASIS
                and _nonempty(row.get("native_carrier_witness_id")),
                "human_text_input_exact_mapping_missing")
+        if MECHANISM_VERBS[mechanism] != "begin_card_play":
+            _check(row.get("native_owner_witness_id") == row.get("native_carrier_witness_id"),
+                   "human_text_input_continuation_owner_mismatch")
     snapshot = row.get("snapshot")
     if snapshot is None:
         _check(not accepted and disposition == "capture_failed"

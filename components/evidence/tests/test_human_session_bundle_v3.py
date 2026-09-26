@@ -544,6 +544,7 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
             with self.subTest(mechanism=mechanism):
                 row = self._text_row(bundle)
                 row["native_mechanism"] = mechanism
+                row["native_owner_witness_id"] = row["native_carrier_witness_id"]
                 row["chosen_action"]["verb"] = verb
                 row["snapshot"]["interaction"]["kind"] = "combat_card_operation"
                 row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
@@ -553,11 +554,20 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
                 self.assertEqual(result.require_value().human_text_inputs[0]["chosen_action"]["verb"], verb)
                 # The old canonical trace/count is separate from this input label.
                 self.assertEqual(result.require_value().canonical_count, 1)
+                row["native_owner_witness_id"] = "different-owner"
+                self._declare_text(bundle, [row])
+                self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                                 "human_text_input_continuation_owner_mismatch")
+                row["native_owner_witness_id"] = row["native_carrier_witness_id"]
                 row["chosen_action"]["verb"] = "begin_card_play"
                 row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
                 self._declare_text(bundle, [row])
                 self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
-                                 "human_text_input_chosen_action_not_unique")
+                                 "human_text_input_native_verb_mechanism_mismatch")
+                row.update(disposition="rejected_or_cancelled", reason_code="unproved_input")
+                self._declare_text(bundle, [row])
+                self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                                 "human_text_input_native_verb_mechanism_mismatch")
 
     def test_unrecognized_native_input_provenance_is_not_an_accepted_label(self) -> None:
         bundle = self._bundle()

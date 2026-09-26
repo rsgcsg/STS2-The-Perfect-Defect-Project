@@ -9,7 +9,7 @@ namespace STS2HumanAnnotator.Core;
 /// </summary>
 public static class CurrentRecordingContract
 {
-    public const string ProductVersion = "0.3.0-rc.10";
+    public const string ProductVersion = "0.3.0-rc.11";
     public const int SchemaVersion = 2;
     public const string RecordSchema = "sts2.human-annotator/decision-record-2";
     public const string ManifestSchema = "sts2.human-annotator/recording-manifest-2";

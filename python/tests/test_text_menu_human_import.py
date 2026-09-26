@@ -164,6 +164,8 @@ def test_declared_bundle_archive_is_reverified_when_source_loads(tmp_path, mecha
         "native_mechanism": mechanism,
         "disposition": "accepted_input", "external_controller_active": False,
     }
+    if verb != "begin_card_play":
+        row["native_owner_witness_id"] = row["native_carrier_witness_id"]
     stream = raw / "human-text-inputs.jsonl"
     stream.write_bytes(json_bytes(row))
     write(raw / "session-close-receipt.json", {
