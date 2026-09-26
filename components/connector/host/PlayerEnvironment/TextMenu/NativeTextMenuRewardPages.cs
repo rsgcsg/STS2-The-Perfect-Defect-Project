@@ -181,7 +181,7 @@ internal static class NativeTextMenuRewardPages
                     : "native_reward_binding_unresolved",
                 exact ? Array.Empty<string>()
                     : new[] { "native_linked_reward_presentation_bijection" },
-                Array.Empty<string>()),
+                legacy.Snapshot.Completeness.HiddenByPolicy),
             Interaction = legacy.Snapshot.Interaction with
             {
                 Kind = "reward_claim",
