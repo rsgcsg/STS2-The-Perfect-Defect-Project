@@ -12,6 +12,59 @@ namespace STS2Connector.Tests;
 public sealed class PlayerEnvironmentContractTests
 {
     [Fact]
+    public void TextCardRewardOrderUsesVisibleCardRowNotBoundActionIds()
+    {
+        var surface = new CardRewardSelectionSurface(
+            "card_reward_selection", "screen", new[]
+            {
+                new VisibleCard("card-left", "LEFT", "Left", "Skill", "1", null, "", "Common", false, false, null),
+                new VisibleCard("card-middle", "MIDDLE", "Middle", "Skill", "1", null, "", "Common", false, false, null),
+                new VisibleCard("card-right", "RIGHT", "Right", "Skill", "1", null, "", "Common", false, false, null)
+            }, new[]
+            {
+                new VisibleCardRewardAlternative("skip", 0, "Skip", true)
+            });
+        PlayerEnvironmentBoundAction Action(string id, string? subject) =>
+            new(id, subject == "skip" ? "activate" : "select", "screen",
+                subject, Array.Empty<PlayerEnvironmentBoundActionArgument>(), id);
+        PlayerEnvironmentBoundAction[] hashedOrder =
+        {
+            Action("a-hash", "card-middle"), Action("b-hash", "skip"),
+            Action("c-hash", "card-left"), Action("d-hash", "card-right")
+        };
+
+        Assert.Equal(new[] { "card-left", "card-middle", "card-right", "skip" },
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, hashedOrder)
+                .Select(action => action.SubjectReferentId));
+        Assert.Equal(hashedOrder,
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(
+                new CombatTurnSurface("combat_turn", "room", true), hashedOrder));
+    }
+
+    [Fact]
+    public void TextRewardClaimOrderKeepsVisibleButtonsBeforeProceed()
+    {
+        var surface = new RewardClaimSurface("reward_claim", "screen", new[]
+        {
+            new VisibleReward("gold", "gold", "Gold", "Gold", true),
+            new VisibleReward("potion", "potion", "Potion", "Potion", true),
+            new VisibleReward("card", "card", "Card", "Card", true)
+        }, false, Array.Empty<VisibleCombatPotion>(), true, true);
+        PlayerEnvironmentBoundAction Action(string id, string? subject) =>
+            new(id, "activate", "screen", subject,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), id);
+        PlayerEnvironmentBoundAction[] hashedOrder =
+        {
+            Action("a-hash", null), Action("b-hash", "card"),
+            Action("c-hash", "potion"), Action("d-hash", "gold")
+        };
+
+        Assert.Equal(new string?[] { "gold", "potion", "card", null },
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, hashedOrder)
+                .Select(action => action.SubjectReferentId));
+    }
+
+    [Fact]
     public void TextCombatEntryCanBeInteractiveWithoutEndTurnBinding()
     {
         var noEndTurn = new CombatTurnSurface(

@@ -40,12 +40,6 @@ internal static class NativeTextMenuFrameBuilder
         NativeEntityRegistry entities,
         Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy)
     {
-        if (NativeTextMenuRewardPages.TryCapture(legacy, entities) is { } rewardPage)
-            return rewardPage with
-            {
-                Page = NativeTextMenuInformation.SanitizePage(rewardPage.Page)
-            };
-
         NativeTextMenuInformationCapture information =
             NativeTextMenuInformation.Capture(legacy, entities);
         var leaves = information.Leaves.Select(item => new TextMenuLeaf(
@@ -53,6 +47,22 @@ internal static class NativeTextMenuFrameBuilder
             item.SubjectReferentId, item.Arguments, item.Dispatch)).ToList();
         PlayerEnvironmentSnapshot page = information.Page;
         string owner = information.OwnerKey;
+
+        // A native information screen opened from a linked reward still owns
+        // input. Otherwise retain reward children and add only the currently
+        // enabled top-bar information controls discovered from that screen.
+        if (NativeTextMenuRewardPages.TryCapture(legacy, entities) is { } rewardPage)
+        {
+            if (page.Interaction.Stage == "native_information_page"
+                || page.Interaction.Kind == "native_information_unresolved")
+                return new TextMenuFrame(page, owner, leaves);
+            return rewardPage with
+            {
+                Page = NativeTextMenuInformation.SanitizePage(rewardPage.Page),
+                Leaves = rewardPage.Leaves.Concat(leaves.Where(leaf =>
+                    leaf.Group != "root")).ToArray()
+            };
+        }
 
         RunState? run = RunManager.Instance.DebugOnlyGetState();
         if (run == null || !RunManager.Instance.IsInProgress)
@@ -254,7 +264,9 @@ internal static class NativeTextMenuFrameBuilder
                  && page.Completeness.Status == "complete"
                  && legacy.Snapshot.BoundActions.Status == "complete")
         {
-            foreach (PlayerEnvironmentBoundAction action in legacy.Snapshot.BoundActions.Actions)
+            foreach (PlayerEnvironmentBoundAction action in OrderLegacyTextActions(
+                         legacy.HostObservation.Surface,
+                         legacy.Snapshot.BoundActions.Actions))
                 if (legacy.Bindings.TryGetValue(action.BoundActionId,
                         out PlayerEnvironmentNativeBinding? binding))
                     leaves.Add(FromLegacy(action, binding, executeLegacy));
@@ -278,6 +290,39 @@ internal static class NativeTextMenuFrameBuilder
             page = page with { Referents = referents };
         }
         return new TextMenuFrame(page, owner, leaves);
+    }
+
+    internal static IReadOnlyList<PlayerEnvironmentBoundAction> OrderLegacyTextActions(
+        ILiveSurface surface,
+        IReadOnlyList<PlayerEnvironmentBoundAction> actions)
+    {
+        var rank = new Dictionary<string, int>(StringComparer.Ordinal);
+        bool proceedLast = false;
+        switch (surface)
+        {
+            case CardRewardSelectionSurface cardReward:
+                foreach (VisibleCard card in cardReward.Cards)
+                    rank.TryAdd(card.EntityId, rank.Count);
+                foreach (VisibleCardRewardAlternative alternative in
+                         cardReward.Alternatives.OrderBy(item => item.Index))
+                    rank.TryAdd(alternative.EntityId, rank.Count);
+                break;
+            case RewardClaimSurface reward:
+                foreach (VisibleReward item in reward.Rewards)
+                    rank.TryAdd(item.EntityId, rank.Count);
+                foreach (VisibleCombatPotion potion in reward.DiscardablePotions)
+                    rank.TryAdd(potion.EntityId, rank.Count);
+                proceedLast = true;
+                break;
+            default:
+                return actions;
+        }
+        return actions.OrderBy(action => action.SubjectReferentId is { } id
+                && rank.TryGetValue(id, out int index) ? index
+                : proceedLast && action.Verb == "activate"
+                    && action.SubjectReferentId == null ? rank.Count
+                    : int.MaxValue)
+            .ToArray();
     }
 
     private static TextMenuLeaf FromLegacy(

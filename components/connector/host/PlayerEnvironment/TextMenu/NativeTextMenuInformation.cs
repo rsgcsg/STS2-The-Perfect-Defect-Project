@@ -24,6 +24,7 @@ using MegaCrit.Sts2.Core.Nodes.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Relics;
 using MegaCrit.Sts2.Core.Nodes.Screens;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.Capstones;
 using MegaCrit.Sts2.Core.Nodes.Screens.InspectScreens;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
@@ -550,7 +551,7 @@ internal static class NativeTextMenuInformation
         NMapScreen? screen = NMapScreen.Instance;
         if (button == null || screen == null || screen.IsOpen
             || !button.IsEnabled || !ConnectorMod.IsNodeVisible(button)
-            || NOverlayStack.Instance?.Peek() != null
+            || !CanUseTopBarWithCurrentOverlay()
             || NCapstoneContainer.Instance is { InUse: true }) return;
         leaves.Add(Leaf("open_native_map", "information", "open_native_map",
             "Open map", () => OpenMap(button, screen)));
@@ -562,7 +563,7 @@ internal static class NativeTextMenuInformation
             || !ReferenceEquals(NMapScreen.Instance, screen)
             || screen.IsOpen || !button.IsEnabled
             || !ConnectorMod.IsNodeVisible(button)
-            || NOverlayStack.Instance?.Peek() != null
+            || !CanUseTopBarWithCurrentOverlay()
             || NCapstoneContainer.Instance is { InUse: true })
             return NativeInputResult.Rejected("native_map_control_changed",
                 "The exact Map control is no longer openable.");
@@ -683,12 +684,12 @@ internal static class NativeTextMenuInformation
     private static void AddOtherTipLeaves(
         NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves)
     {
-        if (ActiveHoverTipsField == null || NOverlayStack.Instance?.Peek() != null
-            || NMapScreen.Instance?.IsOpen == true) return;
+        if (ActiveHoverTipsField == null || NMapScreen.Instance?.IsOpen == true) return;
+        bool noOverlay = NOverlayStack.Instance?.Peek() == null;
         NCombatRoom? room = NCombatRoom.Instance;
         Node? cardRoot = NCapstoneContainer.Instance?.CurrentCapstoneScreen as Node
             ?? room;
-        if (cardRoot != null)
+        if (noOverlay && cardRoot != null)
         {
             foreach (NCardHolder holder in VisibleNodes<NCardHolder>(cardRoot))
             {
@@ -699,7 +700,7 @@ internal static class NativeTextMenuInformation
                     Control.SignalName.FocusEntered, "Card tips");
             }
         }
-        if (room != null && ConnectorMod.IsNodeVisible(room)
+        if (noOverlay && room != null && ConnectorMod.IsNodeVisible(room)
             && NCapstoneContainer.Instance is not { InUse: true })
         {
             foreach (NPower power in VisibleNodes<NPower>(room))
@@ -718,6 +719,7 @@ internal static class NativeTextMenuInformation
         }
         NTopBar? topbar = NRun.Instance?.GlobalUi.TopBar;
         if (topbar != null && ConnectorMod.IsNodeVisible(topbar)
+            && CanUseTopBarWithCurrentOverlay()
             && NCapstoneContainer.Instance is not { InUse: true })
         {
             foreach (Control control in new Control[]
@@ -727,7 +729,7 @@ internal static class NativeTextMenuInformation
                     control is NClickableControl
                         ? Control.SignalName.FocusEntered
                         : Control.SignalName.MouseEntered,
-                    "Top bar tips");
+                    "Top bar tips", allowRewardOverlay: true);
         }
     }
 
@@ -750,23 +752,27 @@ internal static class NativeTextMenuInformation
 
     private static void AddSignalTipLeaf(
         NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves,
-        Control source, string group, StringName signal, string label)
+        Control source, string group, StringName signal, string label,
+        bool allowRewardOverlay = false)
     {
         if (!ConnectorMod.IsNodeVisible(source)) return;
         if (source is NClickableControl clickable && !clickable.IsEnabled) return;
         string id = entities.GetId(source, "tip_source");
         leaves.Add(Leaf($"show_{group}:{id}", group, $"show_{group}", label,
-            () => OpenSignalTip(source, group, signal)));
+            () => OpenSignalTip(source, group, signal, allowRewardOverlay)));
     }
 
     private static NativeInputResult OpenSignalTip(
-        Control source, string group, StringName signal)
+        Control source, string group, StringName signal,
+        bool allowRewardOverlay)
     {
         if (!ConnectorMod.IsNodeVisible(source)
             || source is NClickableControl { IsEnabled: false }
             || ActiveHoverTipsField?.GetValue(null) is not
                 Dictionary<Control, NHoverTipSet> active
-            || NOverlayStack.Instance?.Peek() != null
+            || (allowRewardOverlay
+                ? !CanUseTopBarWithCurrentOverlay()
+                : NOverlayStack.Instance?.Peek() != null)
             || NMapScreen.Instance?.IsOpen == true)
             return NativeInputResult.Rejected("native_tip_owner_changed",
                 "The exact visible tip source or native tip registry is unavailable.");
@@ -1114,7 +1120,15 @@ internal static class NativeTextMenuInformation
         button != null && button.IsEnabled
         && ConnectorMod.IsNodeVisible(button)
         && NCapstoneContainer.Instance is { InUse: false }
-        && NOverlayStack.Instance?.Peek() == null;
+        && CanUseTopBarWithCurrentOverlay();
+
+    private static bool CanUseTopBarWithCurrentOverlay()
+    {
+        IOverlayScreen? overlay = NOverlayStack.Instance?.Peek();
+        return overlay == null
+            || (overlay is NRewardsScreen or NCardRewardSelectionScreen
+                && ActiveInputResolver.IsVisibleActiveOverlay(overlay));
+    }
 
     private static bool CanOpen(NCombatCardPile? button) =>
         button != null && button.IsEnabled
