@@ -242,25 +242,47 @@ def publish_verified_text_menu_run(
     store: ArtifactStore, directory: Path, producer: Producer, *, admit_agent: bool = False,
 ) -> tuple[Manifest, Manifest | None, dict[str, Any]]:
     """Return immutable evidence, optional trace source, and accounting."""
+    evidence, source, reports = publish_verified_text_menu_runs(
+        store, (directory,), producer, admit_agent=admit_agent)
+    return evidence[0], source, reports[0]
+
+
+def publish_verified_text_menu_runs(
+    store: ArtifactStore, directories: tuple[Path, ...], producer: Producer, *,
+    admit_agent: bool = False,
+) -> tuple[tuple[Manifest, ...], Manifest | None, tuple[dict[str, Any], ...]]:
+    """Combine exact verified Agent runs into one source with one parent per run."""
     if not admit_agent:
         raise BoundaryError("text_menu_import", "agent_admission_opt_in_required")
-    content, verified = _verified_files(directory)
-    policy = json.loads(content["policy-manifest.json"])
-    if policy.get("representation", {}).get("input_schema") != SNAPSHOT_SCHEMA:
-        raise BoundaryError("text_menu_import", "text_profile_required")
-    rows, report = _trace_rows(_events(content["events.jsonl"], verified.event_count),
-                               verified.run_id, verified.content_id)
-    packed = _archive(content)
-    if len(packed) > MAX_ARCHIVE_BYTES:
-        raise BoundaryError("text_menu_import", "agent_evidence_size_limit")
-    payload = store.put_payload("archive", io.BytesIO(packed), "application/gzip")
-    evidence = Manifest("evidence", producer, (), (payload,), FrozenObject.of({
-        "schema": EVIDENCE_SCHEMA, "content_id": verified.content_id,
-        "run_id": verified.run_id, "event_count": verified.event_count,
-        "origin": "agent", "verification": "typed_pass",
-    }))
-    store.publish(evidence)
+    if not isinstance(directories, tuple) or not directories:
+        raise BoundaryError("text_menu_import", "verified_runs_required")
+    prepared = []
+    for directory in directories:
+        content, verified = _verified_files(directory)
+        policy = json.loads(content["policy-manifest.json"])
+        if policy.get("representation", {}).get("input_schema") != SNAPSHOT_SCHEMA:
+            raise BoundaryError("text_menu_import", "text_profile_required")
+        rows, report = _trace_rows(_events(content["events.jsonl"], verified.event_count),
+                                   verified.run_id, verified.content_id)
+        packed = _archive(content)
+        if len(packed) > MAX_ARCHIVE_BYTES:
+            raise BoundaryError("text_menu_import", "agent_evidence_size_limit")
+        prepared.append((verified, packed, rows, report))
+    if (len({item[0].content_id for item in prepared}) != len(prepared)
+            or len({item[0].run_id for item in prepared}) != len(prepared)):
+        raise BoundaryError("text_menu_import", "duplicate_verified_run")
+    evidence = []
+    for verified, packed, _, _ in prepared:
+        payload = store.put_payload("archive", io.BytesIO(packed), "application/gzip")
+        manifest = Manifest("evidence", producer, (), (payload,), FrozenObject.of({
+            "schema": EVIDENCE_SCHEMA, "content_id": verified.content_id,
+            "run_id": verified.run_id, "event_count": verified.event_count,
+            "origin": "agent", "verification": "typed_pass",
+        }))
+        store.publish(manifest)
+        evidence.append(manifest)
+    rows = tuple(row for _, _, grouped, _ in prepared for row in grouped)
     source = (publish_text_menu_source(store, rows, producer, admit_agent=True,
-                                       verified_evidence_id=evidence.artifact_id)
+                                       verified_evidence_ids=tuple(x.artifact_id for x in evidence))
               if rows else None)
-    return evidence, source, report
+    return tuple(evidence), source, tuple(item[3] for item in prepared)

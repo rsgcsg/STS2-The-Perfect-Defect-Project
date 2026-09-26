@@ -143,15 +143,19 @@ def validate_records(rows: tuple[dict, ...], *, admit_agent: bool = False) -> tu
 def publish_text_menu_source(
     store: ArtifactStore, rows: tuple[dict, ...], producer: Producer, *,
     admit_agent: bool = False, verified_evidence_id: str | None = None,
+    verified_evidence_ids: tuple[str, ...] = (),
 ) -> Manifest:
     validate_records(rows, admit_agent=admit_agent)
-    _verified_agent_parent(store, rows, verified_evidence_id)
+    if verified_evidence_id is not None and verified_evidence_ids:
+        raise BoundaryError("text_menu_data", "ambiguous_evidence_parents")
+    identities = ((verified_evidence_id,) if verified_evidence_id is not None
+                  else verified_evidence_ids)
+    _verified_agent_parent(store, rows, identities)
     raw = b"".join(json_bytes(row) for row in rows)
     if len(raw) > MAX_SOURCE_BYTES:
         raise BoundaryError("text_menu_data", "source_size_limit")
     payload = store.put_payload("records", io.BytesIO(raw), "application/x-ndjson")
-    parents = ((Parent("verified_agent_run", verified_evidence_id),)
-               if verified_evidence_id is not None else ())
+    parents = _evidence_parents(identities)
     manifest = Manifest("dataset", producer, parents, (payload,), FrozenObject.of({
         "schema": SOURCE_SCHEMA, "purpose": "training", "scope": "engineering",
         "agent_admission": admit_agent, "rows": len(rows),
@@ -166,9 +170,10 @@ def publish_text_menu_source(
 def load_text_menu_source(store: ArtifactStore, identity: str) -> tuple[Manifest, tuple[dict, ...]]:
     manifest = store.get_manifest(identity)
     info = manifest.parameters.value()
+    evidence_ids = _evidence_parent_ids(manifest.parents)
     if (manifest.kind != "dataset" or info.get("schema") != SOURCE_SCHEMA
             or [p.role for p in manifest.payloads] != ["records"]
-            or tuple(p.role for p in manifest.parents) not in ((), ("verified_agent_run",))
+            or evidence_ids is None
             or info.get("purpose") != "training" or info.get("scope") != "engineering"
             or type(info.get("agent_admission")) is not bool):
         raise BoundaryError("text_menu_data", "unsupported_source")
@@ -178,8 +183,7 @@ def load_text_menu_source(store: ArtifactStore, identity: str) -> tuple[Manifest
     raw = b"".join(store.read_payload(payload))
     rows = tuple(decode_json(line) for line in raw.splitlines())
     validate_records(rows, admit_agent=info["agent_admission"])
-    _verified_agent_parent(store, rows, (manifest.parent("verified_agent_run")
-                                         if manifest.parents else None))
+    _verified_agent_parent(store, rows, evidence_ids)
     if (raw != b"".join(json_bytes(row) for row in rows)
             or info != {"schema": SOURCE_SCHEMA, "purpose": "training", "scope": "engineering",
                         "agent_admission": info["agent_admission"], "rows": len(rows),
@@ -190,20 +194,44 @@ def load_text_menu_source(store: ArtifactStore, identity: str) -> tuple[Manifest
     return manifest, rows
 
 
+def _evidence_parents(ids: tuple[str, ...]) -> tuple[Parent, ...]:
+    if not ids:
+        return ()
+    if len(ids) == 1:
+        return (Parent("verified_agent_run", ids[0]),)
+    return tuple(Parent(f"verified_agent_run_{i:06d}", identity)
+                 for i, identity in enumerate(ids))
+
+
+def _evidence_parent_ids(parents: tuple[Parent, ...]) -> tuple[str, ...] | None:
+    if not parents:
+        return ()
+    if len(parents) == 1 and parents[0].role == "verified_agent_run":
+        return (parents[0].artifact_id,)
+    if tuple(p.role for p in parents) != tuple(
+        f"verified_agent_run_{i:06d}" for i in range(len(parents))
+    ):
+        return None
+    return tuple(p.artifact_id for p in parents)
+
+
 def _verified_agent_parent(
-    store: ArtifactStore, rows: tuple[dict, ...], evidence_id: str | None,
+    store: ArtifactStore, rows: tuple[dict, ...], evidence_ids: tuple[str, ...],
 ) -> None:
     agents = [row for row in rows if row["origin"] == "agent"]
     if not agents:
-        if evidence_id is not None:
+        if evidence_ids:
             raise BoundaryError("text_menu_data", "unexpected_agent_evidence_parent")
         return
-    if evidence_id is None or len(agents) != len(rows):
+    if not evidence_ids or len(agents) != len(rows) or len(set(evidence_ids)) != len(evidence_ids):
         raise BoundaryError("text_menu_data", "verified_agent_evidence_required")
     # Reproject the exact typed-verified archived run, not just a matching URI.
     from .text_menu_runtime_import import load_verified_agent_run_artifact
 
-    _, expected = load_verified_agent_run_artifact(store, evidence_id)
+    expected = tuple(
+        row for identity in evidence_ids
+        for row in load_verified_agent_run_artifact(store, identity)[1]
+    )
     if rows != expected:
         raise BoundaryError("text_menu_data", "agent_evidence_rows_mismatch")
 

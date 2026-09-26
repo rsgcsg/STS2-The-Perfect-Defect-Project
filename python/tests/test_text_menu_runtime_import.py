@@ -12,12 +12,18 @@ from test_artifact_store_v1 import PRODUCER, store
 from test_text_menu_data import row
 
 from spireagent.json_boundary import BoundaryError
-from stpd.fullrun.text_menu_data import load_text_menu_source, publish_text_menu_source
+from stpd.fullrun.text_menu_data import (
+    load_text_menu_bc_view,
+    load_text_menu_source,
+    publish_text_menu_bc_view,
+    publish_text_menu_source,
+)
 from stpd.fullrun.text_menu_inputs import project_text_menu_snapshot
 from stpd.fullrun.text_menu_runtime_import import (
     _trace_rows,
     load_verified_agent_run_artifact,
     publish_verified_text_menu_run,
+    publish_verified_text_menu_runs,
 )
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "components/evidence/tests"))
@@ -154,3 +160,21 @@ def test_undispatched_decision_archived_without_agent_label(tmp_path, verified_f
     assert source is None
     assert report["diagnostics"][0]["reason"] == "abstained_or_not_dispatched"
     assert load_verified_agent_run_artifact(target, evidence.artifact_id)[1] == ()
+
+
+def test_two_verified_runs_form_a_trainable_view_with_exact_parents(
+    tmp_path, verified_fixture,
+):
+    navigation = verified_fixture._text_evidence("text-multi-nav")
+    native = verified_fixture._text_evidence("text-multi-native", native=True)
+    target = store(tmp_path)
+    evidence, source, reports = publish_verified_text_menu_runs(
+        target, (navigation, native), PRODUCER, admit_agent=True)
+    assert source is not None
+    assert len(evidence) == len(reports) == 2
+    assert [p.role for p in source.parents] == [
+        "verified_agent_run_000000", "verified_agent_run_000001"]
+    assert len(load_text_menu_source(target, source.artifact_id)[1]) == 2
+    view = publish_text_menu_bc_view(target, source.artifact_id, PRODUCER)
+    _, samples = load_text_menu_bc_view(target, view)
+    assert {sample.split for sample in samples} == {"train", "dev"}
