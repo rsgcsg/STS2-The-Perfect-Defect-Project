@@ -11,6 +11,42 @@ optional and may be absent for canonical-only runs; the journal and semantic
 streams retain run identity. The current store does not create a native-action
 ledger.
 
+## Human text-menu input observations
+
+New recordings declare `text_input_schema_version: 1` and retain a separate
+`human-text-inputs.jsonl` stream. Historical manifests without this declaration
+keep their original interpretation. The declared file may be empty; a missing
+file is not an empty capture. A durable close receipt binds its row count and
+exact file digest. This side stream does not increase canonical transition or
+compatibility decision counts.
+
+The first supported input is `begin_card_play`. At the actual native
+`NPlayerHand.StartCardPlay` entry, the recorder freezes Connector's independent
+root text-menu observation, complete ordered menu and exact hand/card/holder
+reference mapping. It does not navigate the Agent's menu cursor or deliver an
+action. The factory-created `NCardPlay` is correlated only inside that exact
+invocation. Acceptance additionally requires normal native return with the
+same retained play carrier; factory creation alone is insufficient. External
+controller activity excludes the attempt from Human recording.
+
+`accepted_input` means the Human began that native input interaction. It does
+not mean `PlayCardAction` committed, damage/block occurred, or a causal successor
+was captured. Cancellation/rejection, unavailable capture and failed/ambiguous
+mapping retain explicit negative dispositions rather than gaining a positive
+label. The frozen observation and mapping are not replaced by later frames.
+Opaque witness references bind evidence and are not model-visible strategy
+features or executable operands.
+
+Typed bundle verification preserves this stream independently from canonical
+projection. The explicit owner's Human-origin attestation remains necessary;
+machine validation cannot establish Human origin. Research may derive an
+explicitly admitted input-choice view from accepted rows, without inventing a
+Connector request, Receipt, native Commit or successor. Agent traces retain
+their separate schema and origin. This initial slice does not claim Human
+target/confirm/cancel, information-menu navigation or full-run text coverage;
+in particular, mouse and controller card-play interactions need their own
+native evidence before their later steps can be labeled.
+
 Native-input correlation supports exactly `PlayCardAction`/`play` and
 `UsePotionAction`/`use`, with matching native witness type and exact scoped
 reference mapping. These inputs may lack a public BoundAction at H; the schema-3
