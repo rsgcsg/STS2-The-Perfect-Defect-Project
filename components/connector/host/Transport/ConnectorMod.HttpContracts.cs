@@ -66,7 +66,7 @@ public static partial class ConnectorMod
         return count > maxBodyBytes ? null : bytes[..count];
     }
 
-    private static bool IsSafeProtocolIdentifier(string? value, int maxLength)
+    internal static bool IsSafeProtocolIdentifier(string? value, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Length > maxLength)
             return false;

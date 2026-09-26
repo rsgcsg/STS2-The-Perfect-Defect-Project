@@ -5,7 +5,7 @@ import {
   type EnvironmentControlClient,
   type EnvironmentControllerSession as ControllerSession
 } from "@rsgcsg/sts2-connector-client";
-import { POLICY_RUNTIME_VERSION, type ConnectorAdapterClient, type DecisionBundle, type PolicyConnector } from "./contracts.js";
+import { POLICY_RUNTIME_VERSION, type AnyDecisionBundle, type ConnectorAdapterClient, type PolicyConnector } from "./contracts.js";
 
 export class StaleWholeBundleError extends Error {
   readonly code = "stale_state" as const;
@@ -38,7 +38,8 @@ export class ConnectorPolicyClient implements PolicyConnector {
     };
   }
 
-  async capabilities(options?: { fresh?: boolean }) {
+  async capabilities(options?: { fresh?: boolean; inputProfile?: "text-menu-v1" }) {
+    if (options?.inputProfile === "text-menu-v1") return (await this.client.textMenuCapabilities()).data;
     // A control precondition must observe the actual endpoint. Never overwrite
     // an admitted/cached identity merely because that endpoint was replaced.
     if (options?.fresh) return (await this.client.capabilities()).data;
@@ -46,7 +47,11 @@ export class ConnectorPolicyClient implements PolicyConnector {
     return this.capabilitiesValue;
   }
 
-  async observeBundle(requiredReadKinds: readonly string[]): Promise<DecisionBundle> {
+  async observeBundle(requiredReadKinds: readonly string[], inputProfile?: "text-menu-v1"): Promise<AnyDecisionBundle> {
+    if (inputProfile === "text-menu-v1") {
+      if (requiredReadKinds.length !== 0) throw new Error("text_menu_reads_unsupported");
+      return { observation: (await this.client.observeTextMenu()).data, reads: [] };
+    }
     const observation = (await this.client.observe()).data;
     const required = new Set(requiredReadKinds);
     for (const kind of required) {
@@ -105,16 +110,21 @@ export class ConnectorPolicyClient implements PolicyConnector {
     this.controller = undefined;
   }
 
-  async submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }) {
+  async submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string; inputProfile?: "text-menu-v1" }) {
     if (this.controller?.bridge.closing) throw new Error("controller_release_unconfirmed");
     if (!this.controller) throw new Error("Policy Runtime requires an acquired Connector controller");
     const credentials = await this.controller.session.credentials();
-    return (await this.client.submit({
-      ...input,
+    const payload = {
+      requestId: input.requestId,
+      expectedSnapshotId: input.expectedSnapshotId,
+      boundActionId: input.boundActionId,
       clientSessionId: credentials.clientSessionId,
       controllerLeaseId: credentials.controllerLeaseId,
       controllerGeneration: credentials.controllerGeneration
-    })).data;
+    };
+    return input.inputProfile === "text-menu-v1"
+      ? (await this.client.submitTextMenu(payload)).data
+      : (await this.client.submit(payload)).data;
   }
 }
 

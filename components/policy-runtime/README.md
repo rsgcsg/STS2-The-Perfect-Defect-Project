@@ -18,7 +18,7 @@ field drift fails closed before Snapshot observation or policy scoring.
 
 ## Standalone consumer package
 
-Version `0.1.0-rc.8` provides a candidate package for external consumers. Build
+Version `0.1.0-rc.9` provides a candidate package for external consumers. Build
 from a committed component checkout with the checked-in lockfile:
 
 ```bash
@@ -27,23 +27,25 @@ npm --prefix components/policy-runtime run check
 npm --prefix components/policy-runtime run package -- --output /absolute/package-output
 ```
 
-The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.8.tgz`,
+The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.9.tgz`,
 `policy-runtime-package.json` and `checksums.sha256`. It requires committed
 component source and does not publish anything. The package contains compiled
 JavaScript/declarations, CLI entries, license, a component identity record and
 an npm production shrinkwrap. It has no dependency on a sibling source tree.
-The Connector SDK uses the exact `consumer-sdk/v1.1.0-rc.1` release URL and
-SHA-512 integrity from this component's lockfile; its transitive dependencies
-are also frozen in the packaged shrinkwrap.
+This candidate bundles the compiled Connector SDK built from the same committed
+workspace source and records its source identity and packaged bytes. The SDK's
+Zod dependency is fetched against its exact locked registry URL and SHA-512,
+then bundled as verified bytes alongside the SDK. The package identity records
+both bundled tree hashes. No published Connector SDK release is implied.
 
-Consumers verify the tarball SHA-256 and install that exact tarball/release URL
+Consumers verify the tarball SHA-256 and install that exact candidate tarball
 with their own lockfile. Invoke the installed `sts2-policy-runtime` executable,
 or import the public `@rsgcsg/sts2-policy-runtime` package and `./child-port`
 export. Pin the component source revision, source and public-contract digests,
 package SHA-256/integrity and protocol from `policy-runtime-package.json`.
 Never substitute a floating branch or raw source import for that pin.
 `check:package` packs twice, compares bytes, installs outside the workspace,
-checks resolved SDK integrity, exercises synthetic modes and starts/stops the
+checks bundled SDK/Zod identity and installed bytes, exercises synthetic modes and starts/stops the
 installed CLI in Human mode. This is CPU package evidence with no game contact.
 It does not establish real-model, game, Full-Run or causal-successor evidence.
 

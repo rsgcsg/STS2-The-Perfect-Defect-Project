@@ -17,6 +17,9 @@ from typing import Any, TextIO
 from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError, object_fields
 
+from ..fullrun.text_menu_inputs import IDENTITY as TEXT_MENU_IDENTITY
+from ..fullrun.text_menu_inputs import SNAPSHOT_SCHEMA as TEXT_MENU_SCHEMA
+from ..fullrun.text_menu_inputs import project_text_menu_snapshot
 from ..token_policy_installation import validate
 from .token_decision import TokenDecisionScorer
 
@@ -33,13 +36,15 @@ class TokenPolicyAdapter:
             snapshot=Path(snapshot) if snapshot is not None else None,
         )
         representation = self.scorer.artifact.parameters.value()["serializer"]
+        input_schema = (TEXT_MENU_SCHEMA if representation == TEXT_MENU_IDENTITY
+                        else "sts2.player-environment/snapshot-1")
         if (
             self.scorer.serializer is not None
             or self.manifest.get("representation")
             != {
                 "id": representation["profile"],
                 "version": representation["version"],
-                "input_schema": "sts2.player-environment/snapshot-1",
+                "input_schema": input_schema,
             }
             or self.scorer.artifact.artifact_id != self.config["model_id"]
         ):
@@ -64,8 +69,15 @@ class TokenPolicyAdapter:
         if bundle["reads"] != []:
             raise BoundaryError("token_policy", "unexpected_reads")
         snapshot = bundle["observation"]
-        actions = snapshot["bound_actions"]["actions"]
-        keys = [a["bound_action_id"] for a in actions]
+        text_menu = (self.manifest.get("representation", {}).get("input_schema")
+                     == TEXT_MENU_SCHEMA)
+        if text_menu:
+            current = project_text_menu_snapshot(snapshot)
+            actions = snapshot["menu_actions"]["actions"]
+            keys = list(current.action_ids)
+        else:
+            actions = snapshot["bound_actions"]["actions"]
+            keys = [a["bound_action_id"] for a in actions]
         candidate_digest = hashlib.sha256(canonical_json(keys).encode()).hexdigest()
         if (
             type(request["candidate_count"]) is not int

@@ -1,0 +1,23 @@
+{
+  "protocol_version": "1.0.0",
+  "schema": "sts2.player-environment/text-menu-action-result-1",
+  "input_profile": "text-menu-v1",
+  "request_id": "request-nav-1",
+  "status": "applied",
+  "effect_domain": "text_menu",
+  "native_delivery": null,
+  "action": {
+    "action_id": "menu-open_information-1",
+    "kind": "system_navigation",
+    "verb": "open_information",
+    "label": "Information",
+    "subject_referent_id": null,
+    "arguments": [],
+    "effect_domain": "text_menu"
+  },
+  "reason_code": null,
+  "detail": "Text cursor changed; no native input was delivered.",
+  "retry": "never",
+  "successor": null,
+  "attribution": null
+}
