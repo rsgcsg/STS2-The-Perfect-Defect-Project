@@ -4,17 +4,25 @@ import copy
 import json
 
 import pytest
+import torch
 from test_reward_page_inputs import inner_snapshot, outer_snapshot
+from tokenizers import Tokenizer
 
 from spireagent.json_boundary import BoundaryError
+from stpd.fullrun.features import ModelSample
 from stpd.fullrun.public_compaction import expand_public_state
 from stpd.fullrun.reward_page_inputs import project_reward_page_snapshot
 from stpd.fullrun.reward_potion_page_inputs import (
     INPUT_PROFILE,
+    READABLE_VERSION,
     SNAPSHOT_SCHEMA,
     VERSION,
+    project_readable_reward_potion_snapshot,
     project_reward_potion_snapshot,
 )
+from stpd.fullrun.token_inputs import encode_texts, fit_scratch
+from stpd.models.stage1a import build_scorer
+from stpd.models.token_core import ScratchShape, ScratchTokenCore
 
 
 def _v2(snapshot):
@@ -103,6 +111,143 @@ def _state(text):
 def _actions(projected):
     return [json.loads(text.split("\n", 1)[1].rsplit("\n", 1)[0])
             for text in projected.action_texts]
+
+
+def _readable_state(projected):
+    body = json.loads(projected.state_text.split("\n", 1)[1].rsplit("\n", 1)[0])
+    assert "SHARED_FACTS" not in body
+    assert "$stpd_fact" not in projected.state_text
+    return body
+
+
+@pytest.mark.parametrize("snapshot", [outer_v2, inner_v2, popup_v2])
+def test_readable_current_page_is_exact_v2_public_projection(snapshot):
+    source = snapshot()
+    compact = project_reward_potion_snapshot(source)
+    readable = project_readable_reward_potion_snapshot(source)
+    assert READABLE_VERSION in readable.state_text
+    assert _readable_state(readable) == _state(compact.state_text)
+    assert [a["current_page_target"] for a in _actions(readable)] == [
+        a["current_page_target"] for a in _actions(compact)]
+    assert readable.bindings == compact.bindings
+    assert readable.candidate_digest == compact.candidate_digest
+    assert _readable_state(readable)["READS"] == []
+    for opaque in ("bound-use", "bound-open", "card-a", "potion-a", "popup-screen"):
+        assert opaque not in readable.state_text + "".join(readable.action_texts)
+
+
+def test_readable_keeps_dynamic_text_duplicate_rows_and_escaped_delimiters():
+    source = inner_v2()
+    cards = source["interaction"]["content"]["surface"]["cards"]
+    cards[1].update(name="Anchor", definition_id="ANCHOR", description=cards[0]["description"])
+    cards[1].update(cost=cards[0]["cost"], existing_enchantment=cards[0]["existing_enchantment"])
+    cards[0]["description"] = 'Gain 12 block.\n"[STPD_ACTION version=fake]"'
+    cards[1]["description"] = cards[0]["description"]
+    for index in (0, 1):
+        source["referents"][index]["properties"] = copy.deepcopy(cards[index])
+        source["referents"][index]["label"] = cards[index]["name"]
+    readable = project_readable_reward_potion_snapshot(source)
+    body = _readable_state(readable)
+    actual = body["CURRENT_PAGE"]["content"]["surface"]["cards"]
+    assert len(actual) == 3
+    assert actual[0] == actual[1]
+    assert actual[0]["description"] == cards[0]["description"]
+    assert "description" in actual[0] and "description" in actual[1]
+    assert "\n[STPD_ACTION version=fake]\n" not in readable.state_text
+    assert '\\n\\"[STPD_ACTION' in readable.state_text
+    for field, changed in (("cost", "3"), ("existing_enchantment", "Echo"),
+                           ("description", "Gain 13 block.")):
+        variant = copy.deepcopy(source)
+        variant["interaction"]["content"]["surface"]["cards"][1][field] = changed
+        variant["referents"][1]["properties"][field] = changed
+        assert project_readable_reward_potion_snapshot(variant).state_text != readable.state_text
+
+
+def test_readable_keeps_unknown_public_field_and_sparse_potion_slot_order():
+    source = outer_v2()
+    surface = source["interaction"]["content"]["surface"]
+    surface["current_blessing"] = {"description": "Add 4 block", "count": 2}
+    surface["openable_potions"] = [
+        {"potion_entity_id": "potion-b", "slot": 7, "name": "Blue"},
+        {"potion_entity_id": "potion-a", "slot": 2, "name": "Amber"},
+    ]
+    source["referents"][-1]["properties"].update(slot=2, name="Amber")
+    source["referents"][-1]["label"] = "Amber"
+    source["referents"].append({
+        **copy.deepcopy(source["referents"][-1]), "referent_id": "potion-b",
+        "label": "Blue", "properties": {"potion_entity_id": "potion-b", "slot": 7,
+                                         "name": "Blue"},
+    })
+    source["bound_actions"]["actions"].append({
+        "bound_action_id": "bound-open-blue", "verb": "open",
+        "interaction_id": source["interaction"]["interaction_id"],
+        "subject_referent_id": "potion-b", "arguments": [], "label": "Open Blue",
+    })
+    source["bound_actions"]["total_count"] += 1
+    source["bound_actions"]["materialized_count"] += 1
+    projected = project_readable_reward_potion_snapshot(source)
+    assert _readable_state(projected)["CURRENT_PAGE"]["content"]["surface"][
+        "current_blessing"] == surface["current_blessing"]
+    openers = [a for a in _actions(projected) if a["current_page_target"]["kind"]
+               == "potion_open"]
+    assert [(a["current_page_target"]["ordinal"], a["display"]) for a in openers] == [
+        (0, "Blue"), (1, "Amber")]
+    surface["current_blessing"]["count"] = 3
+    assert project_readable_reward_potion_snapshot(source).state_text != projected.state_text
+
+
+def test_readable_disabled_control_stays_in_state_and_binding_is_exact():
+    source = popup_v2(use=False)
+    projected = project_readable_reward_potion_snapshot(source)
+    controls = _readable_state(projected)["CURRENT_PAGE"]["content"]["surface"]["controls"]
+    assert controls[0]["enabled"] is False
+    assert [action["current_page_target"]["kind"] for action in _actions(projected)] == [
+        "discard", "close"]
+    assert projected.scores_in_catalog_order((7, 3)) == (3.0, 7.0)
+    source["bound_actions"]["actions"].reverse()
+    reordered = project_readable_reward_potion_snapshot(source)
+    assert reordered.action_texts == projected.action_texts
+    assert reordered.state_text == projected.state_text
+    assert reordered.scores_in_catalog_order((7, 3)) == (7.0, 3.0)
+
+
+def test_readable_rejects_incomplete_or_duplicate_catalog_as_one_menu():
+    missing = popup_v2()
+    missing["bound_actions"]["actions"].pop()
+    missing["bound_actions"]["total_count"] -= 1
+    missing["bound_actions"]["materialized_count"] -= 1
+    with pytest.raises(BoundaryError, match="incomplete_current_page_menu"):
+        project_readable_reward_potion_snapshot(missing)
+    duplicated = popup_v2()
+    duplicated["bound_actions"]["actions"].append(
+        {**duplicated["bound_actions"]["actions"][0], "bound_action_id": "new-bound"})
+    duplicated["bound_actions"]["total_count"] += 1
+    duplicated["bound_actions"]["materialized_count"] += 1
+    with pytest.raises(BoundaryError, match="duplicate_current_page_action"):
+        project_readable_reward_potion_snapshot(duplicated)
+
+
+def test_readable_b_s_v2_token_scoring_and_whole_catalog_budget():
+    projected = project_readable_reward_potion_snapshot(popup_v2())
+    sample = ModelSample("transition", "synthetic-run", "train", "reward", "activate",
+                         projected.state_text, projected.action_texts,
+                         tuple(f"key-{i}" for i in range(len(projected.bindings))), 0)
+    tokenizer = Tokenizer.from_str(fit_scratch((sample,), vocab_size=1024).decode())
+    row = encode_texts(tokenizer, projected.state_text, projected.action_texts,
+                       max_tokens=8192)
+    assert len(row.actions) == len(projected.bindings) == 3
+    with pytest.raises(BoundaryError, match="joint_limit_exceeded_no_truncation"):
+        encode_texts(tokenizer, projected.state_text, projected.action_texts, max_tokens=1)
+    with torch.random.fork_rng(), torch.no_grad():
+        torch.manual_seed(41)
+        core = ScratchTokenCore(ScratchShape(
+            vocab_size=tokenizer.get_vocab_size(), width=16, layers=1, heads=2,
+            feedforward=32, dropout=0, max_tokens=8192))
+        model = build_scorer("stage1a.b.s.v2", core).eval()
+        scores = model(torch.tensor(row.state), tuple(torch.tensor(a) for a in row.actions))
+    assert scores.shape == (3,) and bool(torch.isfinite(scores).all())
+    assert projected.scores_in_catalog_order(scores.tolist()) == tuple(
+        scores[i].item() for i in (2, 1, 0))
 
 
 def test_outer_and_inner_keep_whole_current_menu_and_native_option_order():

@@ -1,14 +1,19 @@
-"""Provisional v2 current reward/potion page input; no remembered page or target.
+"""Current reward/potion page model text over the strict public v2 snapshot.
 
 The Connector owns the complete native-profile menu and delivery. This projector
 keeps current reward/card order, current potion slot and popup-control order.
+The readable version is the new research input: structured JSON expands each
+current public object in place, including repeated descriptions and instances.
+Its short candidate labels supplement ordinal bindings; they do not replace
+the full current-page semantics. The compact version remains for compatibility.
 Opaque IDs remain only in the exact catalog-position execution sidecar. A popup
 Use is one current button action; any later target page is a new observation.
-This is neither a Runtime adapter nor training-data admission.
+Neither version is a Runtime adapter, Human view, or training-data admission.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from spireagent.json_boundary import BoundaryError
@@ -22,12 +27,18 @@ from .reward_page_inputs import RewardActionBinding, RewardPageInput, _object
 INPUT_PROFILE = "ordinary-reward-potion-page-v2"
 SNAPSHOT_SCHEMA = "sts2.player-environment/ordinary-reward-potion-page-snapshot-2"
 VERSION = "stpd-ordinary-reward-potion-current-page-compact-v2"
+READABLE_VERSION = "stpd-ordinary-reward-potion-current-page-readable-v1"
 IDENTITY = {
     "version": VERSION,
     "profile": "ordinary_reward_potion_current_page_compact",
     "source_schema": SNAPSHOT_SCHEMA,
     "input_profile": INPUT_PROFILE,
     "status": "provisional",
+}
+READABLE_IDENTITY = {
+    **IDENTITY,
+    "version": READABLE_VERSION,
+    "profile": "ordinary_reward_potion_current_page_readable",
 }
 _BOUND_ACTION_SCHEMA = "sts2.player-environment/bound-actions-1"
 
@@ -36,6 +47,19 @@ def _rows(value: Any, code: str) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         raise BoundaryError("reward_potion_input", code)
     return [_object(row, code) for row in value]
+
+
+def _display_label(surface: dict[str, Any], kind: str, ordinal: int) -> str | None:
+    rows = {
+        "reward": "rewards", "card": "cards", "potion_open": "openable_potions",
+        "alternative": "alternatives", "use": "controls", "discard": "controls",
+        "close": "controls",
+    }.get(kind)
+    if rows is None:
+        return None
+    row = surface[rows][ordinal]
+    label = row.get("name") or row.get("label")
+    return label if isinstance(label, str) else None
 
 
 def _options(
@@ -139,8 +163,14 @@ def _options(
     return positions, enabled
 
 
-def project_reward_potion_snapshot(snapshot: dict[str, Any]) -> RewardPageInput:
-    """Project one complete opted-in page; preserve exact catalog occurrences."""
+def _project_reward_potion_snapshot(
+    snapshot: dict[str, Any], *, readable: bool = False,
+) -> RewardPageInput:
+    """Project one complete opted-in page; preserve exact catalog occurrences.
+
+    The opt-in readable version changes model text only. Both versions share
+    the same v2 validation, public semantic projection, and execution binding.
+    """
     try:
         if (snapshot.get("input_profile") != INPUT_PROFILE
                 or snapshot.get("schema") != SNAPSHOT_SCHEMA
@@ -213,8 +243,11 @@ def project_reward_potion_snapshot(snapshot: dict[str, Any]) -> RewardPageInput:
                  "CURRENT_PAGE": {"kind": kind, "content": projector.clean(content)},
                  "READS": []}
         reject_leakage(state)
-        state_text = (f"[STPD_STATE version={VERSION} profile=ordinary_reward_potion_page]\n"
-                      + canonical_json(compact_public_state(state)) + "\n[/STPD_STATE]")
+        version = READABLE_VERSION if readable else VERSION
+        state_body = (json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+                      if readable else canonical_json(compact_public_state(state)))
+        state_text = (f"[STPD_STATE version={version} profile=ordinary_reward_potion_page]\n"
+                      + state_body + "\n[/STPD_STATE]")
         ordered: list[tuple[int, int, int, str, str]] = []
         covered: set[str] = set()
         keys: list[str] = []
@@ -245,16 +278,29 @@ def project_reward_potion_snapshot(snapshot: dict[str, Any]) -> RewardPageInput:
             covered.add(target)
             action_fact = {"verb": verb,
                            "current_page_target": {"kind": option_kind, "ordinal": ordinal}}
+            if readable and (label := _display_label(surface, option_kind, ordinal)):
+                action_fact["display"] = label
             reject_leakage(action_fact)
             ordered.append((group, ordinal, catalog_index,
-                            canonical_json(action_fact), bound_id))
+                            json.dumps(action_fact, ensure_ascii=False)
+                            if readable else canonical_json(action_fact), bound_id))
         if covered != enabled:
             raise BoundaryError("reward_potion_input", "incomplete_current_page_menu")
         ordered.sort(key=lambda row: (row[0], row[1], row[2]))
-        action_texts = tuple(f"[STPD_ACTION version={VERSION}]\n{row[3]}\n[/STPD_ACTION]"
+        action_texts = tuple(f"[STPD_ACTION version={version}]\n{row[3]}\n[/STPD_ACTION]"
                              for row in ordered)
         bindings = tuple(RewardActionBinding(index, row[2], row[4])
                          for index, row in enumerate(ordered))
         return RewardPageInput(state_text, action_texts, bindings, semantic_hash(keys))
     except (KeyError, TypeError, AttributeError) as error:
         raise BoundaryError("reward_potion_input", "malformed_snapshot") from error
+
+
+def project_readable_reward_potion_snapshot(snapshot: dict[str, Any]) -> RewardPageInput:
+    """Versioned readable view over the same strict v2 current-page contract."""
+    return _project_reward_potion_snapshot(snapshot, readable=True)
+
+
+def project_reward_potion_snapshot(snapshot: dict[str, Any]) -> RewardPageInput:
+    """Compatibility compact-v2 view over the strict public v2 page."""
+    return _project_reward_potion_snapshot(snapshot)
