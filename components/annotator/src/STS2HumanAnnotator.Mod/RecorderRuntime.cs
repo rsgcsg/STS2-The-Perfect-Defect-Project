@@ -410,6 +410,7 @@ internal static partial class RecorderRuntime
         _humanTextInputSequence = 0;
         _humanTextInputHealthy = true;
         _humanTextInputPendingScopes = 0;
+        HumanTextTargetBindings.Clear();
         _lastIdleStatusAt = DateTimeOffset.MinValue;
         _statusRefreshRequested = true;
         RunLifecycle.Reset();

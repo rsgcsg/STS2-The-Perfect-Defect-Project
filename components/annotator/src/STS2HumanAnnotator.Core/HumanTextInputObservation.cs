@@ -14,6 +14,19 @@ public static class HumanTextInputObservationContract
     public const string RejectedOrCancelled = "rejected_or_cancelled";
     public const string ExactMappingBasis = "text_menu_native_reference_equality";
     public const string NativeMechanism = "begin_card_play_exact_factory_return";
+    public const string ControllerConfirmedInputSignal = "controller_confirmed_input_signal";
+    public const string ControllerCanceledInputSignal = "controller_canceled_input_signal";
+    public const string ControllerTargetFinishInput = "controller_target_finish_input";
+    public const string ControllerTargetCanceledInput = "controller_target_canceled_input";
+
+    public static string? VerbForMechanism(string mechanism) => mechanism switch
+    {
+        NativeMechanism => "begin_card_play",
+        ControllerConfirmedInputSignal => "confirm_card",
+        ControllerCanceledInputSignal or ControllerTargetCanceledInput => "cancel_card_play",
+        ControllerTargetFinishInput => "confirm_target",
+        _ => null
+    };
 }
 
 public sealed record HumanTextInputObservation(
@@ -59,8 +72,12 @@ public static class HumanTextInputObservationValidator
             errors.Add("text_input_identity_invalid");
         if (value.ExternalControllerActive)
             errors.Add("text_input_external_controller");
-        if (value.NativeMechanism != HumanTextInputObservationContract.NativeMechanism)
+        string? expectedVerb = HumanTextInputObservationContract.VerbForMechanism(value.NativeMechanism);
+        if (expectedVerb == null)
             errors.Add("text_input_native_mechanism_invalid");
+        if (value.ChosenAction is JsonObject mappedAction
+            && String(mappedAction, "verb") != expectedVerb)
+            errors.Add("text_input_native_verb_mechanism_mismatch");
         if (string.IsNullOrWhiteSpace(value.NativeOwnerWitnessId)
             || (value.Disposition != HumanTextInputObservationContract.CaptureFailed
                 && string.IsNullOrWhiteSpace(value.NativeSubjectWitnessId)))
@@ -145,7 +162,7 @@ public static class HumanTextInputObservationValidator
             else if (value.ChosenAction is not JsonObject chosen
                 || String(chosen, "kind") != "native_input"
                 || String(chosen, "effect_domain") != "native_input"
-                || String(chosen, "verb") != "begin_card_play"
+                || String(chosen, "verb") != expectedVerb
                 || string.IsNullOrWhiteSpace(String(chosen, "action_id"))
                 || string.IsNullOrWhiteSpace(String(chosen, "subject_referent_id"))
                 || chosen["arguments"] is not JsonArray
