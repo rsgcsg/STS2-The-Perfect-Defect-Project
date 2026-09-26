@@ -50,6 +50,7 @@ public sealed class HumanTextInputObservationTests
             valid with { NativeMechanism = "inferred" },
             valid with { ChosenAction = JsonNode.Parse("{\"action_id\":\"other\",\"kind\":\"native_input\",\"verb\":\"begin_card_play\",\"effect_domain\":\"native_input\"}")!.AsObject() },
             MutateSnapshot(valid, snapshot => snapshot["referents"] = new JsonArray()),
+            MutateSnapshot(valid, snapshot => snapshot["interaction"]!["content"] = null),
             MutateSnapshot(valid, snapshot => snapshot["menu_actions"]!["actions"]!.AsArray().Add(
                 JsonNode.Parse("{\"action_id\":\"card-1\",\"kind\":\"system_navigation\",\"verb\":\"open_information\",\"label\":\"Info\",\"subject_referent_id\":null,\"arguments\":[],\"effect_domain\":\"text_menu\"}"))),
         };
@@ -199,8 +200,12 @@ public sealed class HumanTextInputObservationTests
         snapshot["observed_at"] = DateTimeOffset.UnixEpoch.ToString("O");
         snapshot["persistent"] = null;
         snapshot["interaction"]!["content_schema"] = "sts2.player-environment/surface/combat_turn-1";
-        snapshot["referents"] = JsonNode.Parse("[{\"referent_id\":\"card-1\",\"role\":\"card\",\"kind\":\"card\",\"label\":\"Strike\",\"state\":{\"visible\":true,\"enabled\":true,\"selected\":false,\"focused\":false,\"observation_basis\":\"native_hand\"},\"properties_schema\":null,\"properties\":null}]");
-        snapshot["information_policy"] = JsonNode.Parse("{\"scope\":\"current_page\",\"includes_hidden_information\":false}");
+        snapshot["interaction"]!["prompt"] = null;
+        snapshot["interaction"]!["content"] = JsonNode.Parse("{\"surface\":{\"kind\":\"combat_turn\"},\"context\":{\"kind\":\"combat\"}}");
+        snapshot["interaction"]!["capabilities"] = new JsonArray();
+        snapshot["referents"] = JsonNode.Parse("[{\"referent_id\":\"card-1\",\"role\":\"card\",\"kind\":\"entity\",\"label\":\"Strike\",\"state\":{\"visible\":true,\"enabled\":true,\"selected\":false,\"focused\":false,\"observation_basis\":\"native_visible_fact\"},\"properties_schema\":null,\"properties\":null}]");
+        snapshot["information_policy"] = JsonNode.Parse("{\"id\":\"player_visible_v1\",\"scope\":\"current_page\",\"includes_hidden_information\":false,\"unknown_field_behavior\":\"omit\"}");
+        snapshot["completeness"] = JsonNode.Parse("{\"status\":\"complete\",\"visible_information\":\"complete\",\"interaction_discovery\":\"complete\",\"missing\":[],\"hidden_by_policy\":[]}");
         snapshot["menu"]!["native_snapshot_id"] = "native-1";
         snapshot["menu"]!["revision"] = 0;
         snapshot["menu_actions"]!["ordering_semantics"] = "native_order_with_fixed_information_groups";
