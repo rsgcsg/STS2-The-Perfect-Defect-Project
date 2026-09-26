@@ -129,6 +129,74 @@ public sealed class ProcessLocalTextMenuWitnessTests
         Assert.Equal(0, dispatches.Calls);
     }
 
+    [Theory]
+    [InlineData("cancel_card_play")]
+    [InlineData("confirm_card")]
+    public void HeldCardStageUsesExactCardPlayAndCardWithoutDispatch(string verb)
+    {
+        var dispatches = new DispatchCounter();
+        object hand = new();
+        object play = new();
+        object card = new();
+        object holder = new();
+        TextMenuFrame baseFrame = Frame(hand, card, holder, dispatches);
+        TextMenuFrame frame = baseFrame with
+        {
+            Leaves = new[] { baseFrame.Leaves[0] with
+            {
+                Key = verb, Verb = verb,
+                NativeWitness = new(play, card,
+                    new Dictionary<string, object>())
+            } }
+        };
+        var frozen = new ProcessLocalTextMenuWitnessFrame(
+            frame, Capabilities(), "source", false);
+
+        Assert.Equal("exact_unique", frozen.Resolve(new(verb, play, card,
+            new Dictionary<string, object>())).Status);
+        Assert.Equal("zero", frozen.Resolve(new(verb, hand, card,
+            new Dictionary<string, object>())).Status);
+        Assert.Equal("zero", frozen.Resolve(new(verb, play, new object(),
+            new Dictionary<string, object>())).Status);
+        Assert.Equal("zero", frozen.Resolve(new(verb, play, card,
+            new Dictionary<string, object> { ["holder"] = holder })).Status);
+        Assert.Equal(0, dispatches.Calls);
+    }
+
+    [Fact]
+    public void TargetConfirmationUsesExactCreatureNodeArgument()
+    {
+        var dispatches = new DispatchCounter();
+        object hand = new();
+        object play = new();
+        object card = new();
+        object holder = new();
+        object targetNode = new();
+        object targetEntity = new();
+        TextMenuFrame baseFrame = Frame(hand, card, holder, dispatches);
+        TextMenuFrame frame = baseFrame with
+        {
+            Leaves = new[] { baseFrame.Leaves[0] with
+            {
+                Key = "confirm-target", Verb = "confirm_target",
+                NativeWitness = new(play, card,
+                    new Dictionary<string, object> { ["target"] = targetNode })
+            } }
+        };
+        var frozen = new ProcessLocalTextMenuWitnessFrame(
+            frame, Capabilities(), "source", false);
+
+        Assert.Equal("exact_unique", frozen.Resolve(new("confirm_target", play, card,
+            new Dictionary<string, object> { ["target"] = targetNode })).Status);
+        Assert.Equal("zero", frozen.Resolve(new("confirm_target", play, card,
+            new Dictionary<string, object> { ["target"] = targetEntity })).Status);
+        Assert.Equal("zero", frozen.Resolve(new("confirm_target", play, card,
+            new Dictionary<string, object> { ["creature"] = targetNode })).Status);
+        Assert.Equal("zero", frozen.Resolve(new("confirm_target", play, card,
+            new Dictionary<string, object>())).Status);
+        Assert.Equal(0, dispatches.Calls);
+    }
+
     private static ProcessLocalObservedTextMenuAction Observed(
         object hand, object card, object holder) =>
         new("begin_card_play", hand, card,
