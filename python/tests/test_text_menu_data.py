@@ -87,9 +87,9 @@ def test_agent_requires_opt_in_and_human_has_no_label_mapping(tmp_path):
     target = store(tmp_path)
     with pytest.raises(BoundaryError, match="agent_admission_opt_in_required"):
         publish_text_menu_source(target, (row("a", origin="agent"), row("b")), PRODUCER)
-    source = publish_text_menu_source(
-        target, (row("a", origin="agent"), row("b")), PRODUCER, admit_agent=True)
-    assert len(load_text_menu_source(target, source.artifact_id)[1]) == 2
+    with pytest.raises(BoundaryError, match="verified_agent_evidence_required"):
+        publish_text_menu_source(
+            target, (row("a", origin="agent"), row("b")), PRODUCER, admit_agent=True)
     with pytest.raises(BoundaryError, match="human_observation_mapping_unsupported"):
         publish_text_menu_source(target, (row("a", origin="human"), row("b")), PRODUCER)
 
