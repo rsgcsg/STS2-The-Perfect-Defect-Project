@@ -503,7 +503,7 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         snapshot.pop("bound_actions")
         snapshot.pop("reads")
         snapshot.update(schema="sts2.player-environment/text-menu-snapshot-1", input_profile="text-menu-v1")
-        snapshot["interaction"]["content_schema"] = "sts2.player-environment/surface/combat-text-menu-1"
+        snapshot["interaction"]["content_schema"] = "sts2.player-environment/surface/combat_text_menu-1"
         snapshot["menu"] = {"cursor": cursor, "revision": sequence, "native_snapshot_id": "native-1"}
         snapshot["menu_actions"] = {"status": "complete", "materialized_count": 1, "total_count": 1, "ordering_semantics": "connector_order", "actions": [action]}
         return snapshot
@@ -685,4 +685,36 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
         events[-1]["payload"]["reason"] = "deadline"
         self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_text_referent_and_transport_identity_match_public_codec(self) -> None:
+        directory = self._text_evidence("text-referent", native=True)
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        referent = {"referent_id": "card.1", "role": "card", "kind": "entity", "label": "Strike",
+                    "state": {"visible": True, "enabled": True, "selected": False,
+                              "focused": False, "observation_basis": "native_visible_fact"},
+                    "properties_schema": None, "properties": None}
+        events[1]["payload"]["snapshot"]["referents"].append(referent)
+        events[1]["payload"]["snapshot"]["menu_actions"]["actions"][0]["subject_referent_id"] = "card.1"
+        events[5]["payload"]["result"]["action"]["subject_referent_id"] = "card.1"
+        self._rewrite_events(directory, events)
+        self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
+        for field, bad in (("kind", "linked_choice"), ("observation_basis", "inferred")):
+            broken = json.loads(json.dumps(events))
+            state = broken[1]["payload"]["snapshot"]["referents"][0]
+            if field == "kind": state[field] = bad
+            else: state["state"][field] = bad
+            self._rewrite_events(directory, broken)
+            self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+        broken = json.loads(json.dumps(events))
+        broken[1]["payload"]["snapshot"]["snapshot_id"] = "bad/id"
+        self._rewrite_events(directory, broken)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+        broken = json.loads(json.dumps(events))
+        broken[1]["payload"]["snapshot"]["menu_actions"]["actions"][0]["action_id"] = "bad/id"
+        self._rewrite_events(directory, broken)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+        broken = json.loads(json.dumps(events))
+        broken[1]["payload"]["snapshot"]["interaction"]["content_schema"] = "sts2.player-environment/surface/bad-page-1"
+        self._rewrite_events(directory, broken)
         self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
