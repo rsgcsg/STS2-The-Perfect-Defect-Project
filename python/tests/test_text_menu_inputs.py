@@ -30,9 +30,11 @@ def snapshot():
                             {"entity_id": "opaque-card-2", "name": "Defend",
                              "description": "Gain 5 Block."}]}},
         "referents": [
-            {"referent_id": "opaque-card-1", "role": "hand_card", "state": {},
+            {"referent_id": "opaque-card-1", "role": "hand_card", "kind": "entity",
+             "label": "Defend", "state": {"visible": True},
              "properties": {"name": "Defend", "description": "Gain 5 Block."}},
-            {"referent_id": "opaque-card-2", "role": "hand_card", "state": {},
+            {"referent_id": "opaque-card-2", "role": "hand_card", "kind": "entity",
+             "label": "Defend", "state": {"visible": True},
              "properties": {"name": "Defend", "description": "Gain 5 Block."}},
         ],
         "completeness": {"status": "complete"},
@@ -62,7 +64,8 @@ def test_current_page_full_text_and_exact_binding_order():
     assert first.action_ids == ("opaque-nav", "opaque-play-1", "opaque-play-2")
     assert first.action_kinds == ("system_navigation", "native_input", "native_input")
     assert first.state_text.count("Gain 5 Block.") >= 2
-    assert "CURRENT_MENU" in first.state_text and "open_information" in first.state_text
+    assert '"CURRENT_MENU":{"cursor":"root"}' in first.state_text
+    assert "open_information" in first.action_texts[0]
     assert "opaque-" not in first.state_text + "".join(first.action_texts)
     assert first.action_texts[1] != first.action_texts[2]  # Native occurrence ordinal.
     reordered = copy.deepcopy(source)
@@ -163,12 +166,24 @@ def test_small_b_shared_observation_scores_every_text_menu_action_in_order():
 
 def test_navigation_is_never_counted_as_native_delivery():
     base = {"schema": "sts2.player-environment/text-menu-action-result-1",
-            "status": "applied", "effect_domain": "text_menu", "native_delivery": None}
+            "status": "applied", "effect_domain": "text_menu", "native_delivery": None,
+            "action": snapshot()["menu_actions"]["actions"][0], "retry": "never"}
     assert classify_text_menu_result(base) == "system_navigation"
     assert classify_text_menu_result({**base, "effect_domain": "native_input",
-                                      "native_delivery": "delivered"}) == (
+                                      "native_delivery": "delivered",
+                                      "action": snapshot()["menu_actions"]["actions"][1]}) == (
                                           "native_input_delivered_unsettled")
-    assert classify_text_menu_result({**base, "status": "unknown"}) == "unknown_navigation"
+    assert classify_text_menu_result({**base, "status": "unknown", "effect_domain": "native_input",
+                                      "native_delivery": "unknown",
+                                      "action": snapshot()["menu_actions"]["actions"][1]}) == (
+                                          "unknown_native_delivery")
+    assert classify_text_menu_result({**base, "status": "not_applied",
+                                      "successor": snapshot()}) == "not_applied"
+    for mutation in ({"status": "unknown"}, {"status": "unknown", "effect_domain": None},
+                     {"status": "unknown", "effect_domain": "native_input",
+                      "native_delivery": "unknown", "retry": "reobserve"}):
+        with pytest.raises(BoundaryError, match="result_domain_mismatch"):
+            classify_text_menu_result({**base, **mutation})
     with pytest.raises(BoundaryError, match="result_domain_mismatch"):
         classify_text_menu_result({**base, "native_delivery": "delivered"})
 
@@ -188,3 +203,27 @@ def test_full_menu_is_rejected_if_shared_token_budget_cannot_hold_it():
     current = project_text_menu_snapshot(snapshot())
     with pytest.raises(BoundaryError, match="joint_limit_exceeded_no_truncation"):
         encode_texts(_Tokenizer(), current.state_text, current.action_texts, max_tokens=20)
+
+
+def test_null_persistent_and_visible_referents_and_public_label_collision():
+    source = snapshot()
+    source["persistent"] = None
+    source["referents"][1]["state"]["visible"] = False
+    source["menu_actions"]["actions"].pop()
+    source["menu_actions"].update(total_count=2, materialized_count=2)
+    source["menu_actions"]["actions"][0]["label"] = "opaque-nav"
+    current = project_text_menu_snapshot(source)
+    assert '"CURRENT_PERSISTENT":null' in current.state_text
+    assert current.state_text.count('"role":"hand_card"') == 1
+    assert '"display_text":"opaque-nav"' in current.action_texts[0]
+    source["menu_actions"]["actions"][1]["subject_referent_id"] = "opaque-card-2"
+    with pytest.raises(BoundaryError, match="subject_binding_mismatch"):
+        project_text_menu_snapshot(source)
+
+
+@pytest.mark.parametrize("revision", [-1, "1", True])
+def test_menu_revision_is_nonnegative_integer(revision):
+    source = snapshot()
+    source["menu"]["revision"] = revision
+    with pytest.raises(BoundaryError, match="current_cursor_required"):
+        project_text_menu_snapshot(source)

@@ -61,7 +61,7 @@ def _text(value: Any, code: str) -> str:
     return value
 
 
-def _render(value: dict[str, Any]) -> str:
+def _render(value: Any) -> str:
     # The current page's native order and repeated descriptions remain inline.
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
@@ -78,8 +78,8 @@ def project_text_menu_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:
             raise BoundaryError("text_menu_input", "complete_current_menu_required")
         menu = _object(snapshot["menu"], "menu_required")
         cursor = menu.get("cursor")
-        if (cursor not in CURSORS or type(menu.get("revision")) not in {int, str}
-                or not str(menu["revision"]) or not isinstance(menu.get("native_snapshot_id"), str)
+        if (cursor not in CURSORS or type(menu.get("revision")) is not int
+                or menu["revision"] < 0 or not isinstance(menu.get("native_snapshot_id"), str)
                 or not menu["native_snapshot_id"]):
             raise BoundaryError("text_menu_input", "current_cursor_required")
         catalog = _object(snapshot["menu_actions"], "catalog_required")
@@ -94,8 +94,11 @@ def project_text_menu_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:
             raise BoundaryError("text_menu_input", "complete_catalog_required")
         interaction = _object(snapshot["interaction"], "interaction_required")
         content = _object(interaction["content"], "current_page_content_required")
-        persistent = _object(snapshot["persistent"], "persistent_required")
-        persistent_content = _object(persistent["content"], "persistent_required")
+        persistent = snapshot["persistent"]
+        persistent_content = (None if persistent is None else
+                              _object(persistent, "persistent_required")["content"])
+        if persistent_content is not None:
+            persistent_content = _object(persistent_content, "persistent_content_required")
         referents = snapshot["referents"]
         if not isinstance(referents, list):
             raise BoundaryError("text_menu_input", "referents_required")
@@ -105,16 +108,35 @@ def project_text_menu_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:
             identifier = _text(ref.get("referent_id"), "referent_id_required")
             if identifier in refs:
                 raise BoundaryError("text_menu_input", "duplicate_referent")
+            state = _object(ref.get("state"), "referent_state_required")
+            if type(state.get("visible")) is not bool:
+                raise BoundaryError("text_menu_input", "referent_visibility_required")
+            if (ref.get("kind") not in {"entity", "control"}
+                    or not isinstance(ref.get("role"), str) or not ref["role"]
+                    or ref.get("label") is not None and not isinstance(ref["label"], str)):
+                raise BoundaryError("text_menu_input", "referent_semantics_required")
             refs[identifier] = ref
         projector = _SemanticProjection([persistent_content, content, referents])
+        visible = {identifier: ref for identifier, ref in refs.items()
+                   if ref["state"]["visible"]}
+        positions = {ref["referent_id"]: index for index, ref in enumerate(referents)}
+
+        def semantic_ref(identifier: str) -> dict[str, Any]:
+            ref = visible[identifier]
+            return {"ordinal": positions[identifier], "role": ref["role"], "kind": ref["kind"],
+                    "display_text": ref.get("label"),
+                    "properties": projector.clean(ref.get("properties")),
+                    "state": projector.clean(ref["state"])}
+
         state = {
             "CURRENT_PERSISTENT": projector.clean(persistent_content),
             "CURRENT_PAGE": {"kind": _text(interaction.get("kind"), "kind_required"),
+                             "stage": interaction.get("stage"),
+                             "prompt": interaction.get("prompt"),
                              "content": projector.clean(content)},
-            "CURRENT_MENU": {"cursor": cursor, "actions": []},
-            "CURRENT_VISIBLE_REFERENTS": [projector.clean({"role": ref.get("role"),
-                "properties": ref.get("properties") or {}, "state": ref.get("state") or {}})
-                for ref in referents],
+            "CURRENT_MENU": {"cursor": cursor},
+            "CURRENT_VISIBLE_REFERENTS": [semantic_ref(ref["referent_id"])
+                                          for ref in referents if ref["state"]["visible"]],
         }
         keys: list[str] = []
         kinds: list[str] = []
@@ -131,7 +153,7 @@ def project_text_menu_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:
                     or (verb in NAV_VERBS) != (kind == "system_navigation")):
                 raise BoundaryError("text_menu_input", "action_domain_mismatch")
             subject = action.get("subject_referent_id")
-            if subject is not None and subject not in refs:
+            if subject is not None and subject not in visible:
                 raise BoundaryError("text_menu_input", "subject_binding_mismatch")
             arguments = action.get("arguments")
             if not isinstance(arguments, list):
@@ -142,26 +164,20 @@ def project_text_menu_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:
                 argument = _object(raw_argument, "malformed_argument")
                 role = _text(argument.get("role"), "argument_role_required")
                 reference = argument.get("referent_id")
-                if role in roles or reference not in refs:
+                if role in roles or reference not in visible:
                     raise BoundaryError("text_menu_input", "argument_binding_mismatch")
                 roles.add(role)
-                semantic_arguments.append({"role": role, "target": projector.entity(reference)})
+                semantic_arguments.append({"role": role, "target": semantic_ref(reference)})
             fact = {"ordinal": ordinal, "kind": kind, "verb": verb, "display_text": label,
-                    "subject": projector.entity(subject) if subject is not None else None,
+                    "subject": semantic_ref(subject) if subject is not None else None,
                     "arguments": semantic_arguments}
-            state["CURRENT_MENU"]["actions"].append(fact)
+            reject_leakage(fact)
             keys.append(key)
             kinds.append(kind)
             action_texts.append(f"[STPD_ACTION version={VERSION}]\n{_render(fact)}\n[/STPD_ACTION]")
         reject_leakage(state)
         state_text = (f"[STPD_STATE version={VERSION} profile=text_menu]\n"
                       f"{_render(state)}\n[/STPD_STATE]")
-        # All known execution/capture handles are sidecar-only, even when an
-        # upstream public value happens to contain one as a string.
-        model_text = state_text + "".join(action_texts)
-        for identifier in (*keys, *refs, snapshot["snapshot_id"], menu["native_snapshot_id"]):
-            if _render(identifier) in model_text:
-                raise BoundaryError("text_menu_input", "opaque_binding_in_model_text")
         return TextMenuInput(state_text, tuple(action_texts), tuple(keys), tuple(kinds),
                              semantic_hash(keys))
     except (KeyError, TypeError, AttributeError) as error:
@@ -175,20 +191,28 @@ def classify_text_menu_result(result: dict[str, Any]) -> str:
             raise BoundaryError("text_menu_input", "result_schema_mismatch")
         status, domain, delivery = (result["status"], result["effect_domain"],
                                     result["native_delivery"])
-        if status == "unknown":
-            if domain not in {"text_menu", "native_input", None}:
+        action = result.get("action")
+        if action is not None:
+            action = _object(action, "malformed_result_action")
+            expected = ("text_menu" if action.get("kind") == "system_navigation" else
+                        "native_input" if action.get("kind") == "native_input" else None)
+            if expected is None or action.get("effect_domain") != expected or domain != expected:
                 raise BoundaryError("text_menu_input", "result_domain_mismatch")
-            return {"text_menu": "unknown_navigation", "native_input": "unknown_native_delivery",
-                    None: "unknown_unclassified"}[domain]
+        if status == "unknown":
+            if (domain != "native_input" or delivery != "unknown"
+                    or result.get("retry") != "never"):
+                raise BoundaryError("text_menu_input", "result_domain_mismatch")
+            return "unknown_native_delivery"
         if status == "not_applied":
-            if domain is not None or delivery not in {None, "not_delivered"}:
+            if (delivery not in {None, "not_delivered"}
+                    or action is None and domain is not None):
                 raise BoundaryError("text_menu_input", "result_domain_mismatch")
             return "not_applied"
         if status != "applied":
             raise BoundaryError("text_menu_input", "result_status_mismatch")
-        if domain == "text_menu" and delivery is None:
+        if domain == "text_menu" and delivery is None and action is not None:
             return "system_navigation"
-        if domain == "native_input" and delivery == "delivered":
+        if domain == "native_input" and delivery == "delivered" and action is not None:
             return "native_input_delivered_unsettled"
         raise BoundaryError("text_menu_input", "result_domain_mismatch")
     except (KeyError, TypeError) as error:
