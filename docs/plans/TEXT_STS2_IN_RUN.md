@@ -122,6 +122,23 @@ scores are bound by the ordered action-ID digest, never by sorting scores.
    installed game is compatible. The actual TokenPolicyAdapter and Runtime use
    that manifest and the complete ordered menu.
 
+Scratch B v2 evaluation shares each layer's observation keys/values across
+isolated action branches instead of allocating one all-candidate dense attention
+matrix. With fixed observation and branch lengths, added-candidate attention
+work is linear in candidate count. Observation attention in a multi-layer model
+still has its own length cost; this is not a universal linear-token Transformer.
+The same weights and causal graph are checked against the retained dense
+reference. Positive-dropout training retains the previous execution to preserve
+its checkpoint RNG path; zero-dropout training can use the decomposition.
+Input capacity belongs to the exported model configuration. Over-capacity input
+fails as a whole, without removing page facts or candidates. A larger configured
+engineering export is a new artifact, not a rewrite of an old model.
+
+Failed attempts remain in an imported verified Agent source, including a stale
+rejection whose current action is absent. Only applied choices become BC labels;
+an absent action in a success/unknown result or a mismatched nonempty action is
+not accepted as that original choice.
+
 Runtime source candidates bundle the exact compiled SDK and its locked Zod
 dependency, with source and byte identities. Temporary package installation must
 exercise both legacy and text routes. No unpublished release URL is fabricated;
