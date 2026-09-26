@@ -258,7 +258,14 @@ internal static class NativeTextMenuFrameBuilder
                 string id = entities.GetId(card, "card");
                 leaves.Add(Leaf("begin_card:" + id, "begin_card_play",
                     "Begin " + card.Title, id,
-                    () => NativeTextMenuCombat.Begin(hand, exactHolder, exactCard)));
+                    () => NativeTextMenuCombat.Begin(hand, exactHolder, exactCard)) with
+                {
+                    NativeWitness = new TextMenuNativeWitnessBinding(
+                        hand, exactCard, new Dictionary<string, object>(StringComparer.Ordinal)
+                        {
+                            ["holder"] = exactHolder
+                        })
+                });
             }
             leaves.AddRange(NativeTextMenuPotions.Openers(entities));
         }
