@@ -29,6 +29,16 @@ internal static class NativeTextMenuPotions
         .GetField("_disabledUntilPotionRemoved", BindingFlags.Instance | BindingFlags.NonPublic);
     private static NPotionHolder? _targetingHolder;
     private static PotionModel? _targetingPotion;
+    private static NTargetManager? _targetingManager;
+
+    private static void ClearPendingTargeting()
+    {
+        if (_targetingManager != null)
+            _targetingManager.TargetingEnded -= ClearPendingTargeting;
+        _targetingManager = null;
+        _targetingHolder = null;
+        _targetingPotion = null;
+    }
 
     internal static bool HasPendingTargeting
     {
@@ -37,10 +47,10 @@ internal static class NativeTextMenuPotions
             if (_targetingHolder == null || _targetingPotion == null)
                 return false;
             if (!ReferenceEquals(_targetingHolder.Potion?.Model, _targetingPotion)
-                || NTargetManager.Instance?.IsInSelection != true)
+                || !ReferenceEquals(_targetingManager, NTargetManager.Instance)
+                || _targetingManager?.IsInSelection != true)
             {
-                _targetingHolder = null;
-                _targetingPotion = null;
+                ClearPendingTargeting();
                 return false;
             }
             return true;
@@ -81,8 +91,7 @@ internal static class NativeTextMenuPotions
             return NativeInputResult.Rejected("potion_target_focus_changed",
                 "Native targeting did not accept the exact potion target.");
         manager._Input(new InputEventAction { Action = MegaInput.select, Pressed = true });
-        _targetingHolder = null;
-        _targetingPotion = null;
+        ClearPendingTargeting();
         return NativeInputResult.Delivered("native_potion_target_selected");
     }
 
@@ -93,8 +102,7 @@ internal static class NativeTextMenuPotions
                 "The exact native potion targeting operation is gone.");
         NTargetManager.Instance._Input(new InputEventAction
         { Action = MegaInput.cancel, Pressed = true });
-        _targetingHolder = null;
-        _targetingPotion = null;
+        ClearPendingTargeting();
         return NativeInputResult.Delivered("native_potion_target_cancelled");
     }
 
@@ -228,6 +236,9 @@ internal static class NativeTextMenuPotions
                 TargetType.AnyEnemy or TargetType.TargetedNoCreature
                 || potion.CanThrowAtAlly()))
         {
+            ClearPendingTargeting();
+            _targetingManager = NTargetManager.Instance;
+            _targetingManager.TargetingEnded += ClearPendingTargeting;
             _targetingHolder = holder;
             _targetingPotion = potion;
         }

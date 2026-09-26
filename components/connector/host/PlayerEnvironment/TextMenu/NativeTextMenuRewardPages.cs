@@ -187,12 +187,13 @@ internal static class NativeTextMenuRewardPages
                 Kind = "reward_claim",
                 Stage = "native_linked_reward_page",
                 Prompt = "Choose visible rewards",
-                ContentSchema = "sts2.player-environment/surface/linked-rewards-text-menu-1",
+                ContentSchema = "sts2.player-environment/surface/linked_rewards_text_menu-1",
                 Content = new PlayerEnvironmentInteractionContent(
-                    new JsonObject { ["entries"] = content,
+                    new JsonObject { ["kind"] = "reward_claim",
+                        ["entries"] = content,
                         ["proceed_is_skip"] = proceed?.IsSkip,
                         ["proceed_enabled"] = canProceed },
-                    legacy.Snapshot.Interaction.Content.Context),
+                    new JsonObject { ["kind"] = "reward_claim" }),
                 Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
             }
         };
@@ -270,9 +271,9 @@ internal static class NativeTextMenuRewardPages
 
     private static PlayerEnvironmentReferent Referent(string id, string role,
         string kind, string label, bool enabled) =>
-        new(id, role, kind, label,
+        new(id, role, kind == "rewards_screen" ? "control" : "entity", label,
             new PlayerEnvironmentReferentState(true, enabled, false, false,
-                "current_visible_native_reward_control"), null, null);
+                "native_visible_fact"), null, null);
 
     private static TextMenuLeaf Leaf(string key, string group, string verb,
         string label, string subject, Func<NativeInputResult> dispatch) =>

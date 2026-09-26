@@ -72,17 +72,17 @@ internal static class NativeTextMenuFrameBuilder
             var referents = page.Referents.ToList();
             if (!referents.Any(value => value.ReferentId == potionId))
                 referents.Add(new PlayerEnvironmentReferent(potionId, "potion",
-                    "current_native_potion", pendingPotion.Title.GetFormattedText(),
+                    "entity", pendingPotion.Title.GetFormattedText(),
                     new PlayerEnvironmentReferentState(true, true, false, true,
-                        "current_native_potion_targeting"), null, null));
+                        "native_visible_fact"), null, null));
             foreach (NCreature target in targets)
             {
                 string targetId = entities.GetId(target.Entity, "creature");
                 if (!referents.Any(value => value.ReferentId == targetId))
                     referents.Add(new PlayerEnvironmentReferent(targetId,
-                        "creature", "current_native_target", target.Entity.Name,
+                        "creature", "entity", target.Entity.Name,
                         new PlayerEnvironmentReferentState(true, true, false, true,
-                            "visible_current_native_target"), null, null));
+                            "native_visible_fact"), null, null));
                 var exactTarget = target;
                 leaves.Add(Leaf("select_potion_target:" + targetId,
                     "select_potion_target", "Select " + target.Entity.Name,
@@ -103,12 +103,14 @@ internal static class NativeTextMenuFrameBuilder
                 {
                     Kind = "potion_targeting", Stage = "native_targeting",
                     Prompt = "Choose potion target",
-                    ContentSchema = "sts2.player-environment/surface/potion-targeting-text-menu-1",
+                    ContentSchema = "sts2.player-environment/surface/potion_targeting_text_menu-1",
                     Content = new PlayerEnvironmentInteractionContent(new JsonObject
                     {
+                        ["kind"] = "potion_targeting",
                         ["potion_referent_id"] = potionId,
                         ["target_count"] = targets.Count
-                    }, page.Interaction.Content.Context),
+                    }, ValidContext(page.Interaction.Content.Context,
+                        "combat_potion_targeting")),
                     Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
                 }
             };
@@ -231,9 +233,9 @@ internal static class NativeTextMenuFrameBuilder
     {
         var visible = source.Referents.ToList();
         if (!visible.Any(value => value.ReferentId == cardId))
-            visible.Add(new PlayerEnvironmentReferent(cardId, "card", "held_card",
+            visible.Add(new PlayerEnvironmentReferent(cardId, "card", "entity",
                 card.Title, new PlayerEnvironmentReferentState(
-                    true, true, false, true, "current_native_held_card"),
+                    true, true, false, true, "native_visible_fact"),
                 null, null));
 
         foreach (NCreature target in NativeTextMenuCombat.CurrentTargets(
@@ -242,9 +244,9 @@ internal static class NativeTextMenuFrameBuilder
             string targetId = entities.GetId(target.Entity, "creature");
             if (!visible.Any(value => value.ReferentId == targetId))
                 visible.Add(new PlayerEnvironmentReferent(targetId,
-                    "creature", "current_native_target", target.Entity.Name,
+                    "creature", "entity", target.Entity.Name,
                     new PlayerEnvironmentReferentState(true, true, false, true,
-                        "visible_current_native_target"), null, null));
+                        "native_visible_fact"), null, null));
         }
 
         var cardNode = play.Holder.CardNode;
@@ -254,6 +256,7 @@ internal static class NativeTextMenuFrameBuilder
         bool displayComplete = title != null && cost != null && description != null;
         var surface = new JsonObject
         {
+            ["kind"] = "combat_card_operation",
             ["stage"] = stage,
             ["held_card_referent_id"] = cardId,
             ["displayed_title"] = title,
@@ -275,11 +278,22 @@ internal static class NativeTextMenuFrameBuilder
                 Kind = "combat_card_operation",
                 Stage = stage,
                 Prompt = "Held card native operation",
-                ContentSchema = "sts2.player-environment/surface/combat-card-operation-text-menu-1",
+                ContentSchema = "sts2.player-environment/surface/combat_card_operation_text_menu-1",
                 Content = new PlayerEnvironmentInteractionContent(surface,
-                    source.Interaction.Content.Context),
+                    ValidContext(source.Interaction.Content.Context,
+                        "combat_card_operation")),
                 Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
             }
         };
+    }
+
+    private static JsonNode ValidContext(JsonNode source, string fallbackKind)
+    {
+        if (source is JsonObject obj
+            && obj["kind"] is JsonValue kind
+            && kind.TryGetValue<string>(out string? value)
+            && !string.IsNullOrWhiteSpace(value))
+            return source;
+        return new JsonObject { ["kind"] = fallbackKind };
     }
 }
