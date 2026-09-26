@@ -29,6 +29,20 @@ def _text(value: Any, code: str) -> str:
     return value
 
 
+def _successor(value: Any) -> None:
+    """A result observation can be terminal or unavailable; it is never S'."""
+    if value is None:
+        return
+    if (not isinstance(value, dict)
+            or value.get("schema") != "sts2.player-environment/text-menu-snapshot-1"
+            or value.get("input_profile") != "text-menu-v1"
+            or not isinstance(value.get("snapshot_id"), str)
+            or not value["snapshot_id"]
+            or not isinstance(value.get("information_policy"), dict)
+            or value["information_policy"].get("includes_hidden_information") is not False):
+        raise BoundaryError("text_menu_data", "invalid_result_observation")
+
+
 def _record(row: Any) -> dict:
     if not isinstance(row, dict) or set(row) != {
         "schema", "record_id", "run_id", "step_index", "origin", "source_ref",
@@ -65,26 +79,42 @@ def _record(row: Any) -> dict:
             or result.get("request_id") != request["request_id"]
             or result.get("status") not in {"applied", "not_applied", "unknown"}):
         raise BoundaryError("text_menu_data", "result_choice_mismatch")
+    _successor(result.get("successor"))
+    action = result.get("action")
+    if action is not None and not isinstance(action, dict):
+        raise BoundaryError("text_menu_data", "invalid_result_action")
+    if result.get("effect_domain") != (action.get("effect_domain") if action else None):
+        raise BoundaryError("text_menu_data", "result_domain_mismatch")
     if result.get("status") == "applied":
-        if result.get("action") != chosen:
+        if action != chosen or result.get("retry") != "never":
             raise BoundaryError("text_menu_data", "result_choice_mismatch")
         domain = chosen["effect_domain"]
         delivery = result.get("native_delivery")
         if (result.get("effect_domain") != domain
                 or (domain == "text_menu" and delivery is not None)
                 or (domain == "native_input" and delivery != "delivered")
-                or not isinstance(result.get("successor"), dict)):
+                or (domain == "text_menu" and result.get("successor") is None)):
             raise BoundaryError("text_menu_data", "applied_effect_mismatch")
-        successor = result["successor"]
-        project_text_menu_snapshot(successor)
-        if successor.get("snapshot_id") == snapshot.get("snapshot_id"):
-            raise BoundaryError("text_menu_data", "unchanged_successor_identity")
-    else:
-        if (result.get("action") not in (None, chosen)
+        if domain == "text_menu":
+            next_menu = result["successor"].get("menu")
+            if (result["successor"]["snapshot_id"] == snapshot["snapshot_id"]
+                    or not isinstance(next_menu, dict)
+                    or next_menu.get("cursor") == snapshot["menu"].get("cursor")):
+                raise BoundaryError("text_menu_data", "unchanged_navigation_identity")
+    elif result["status"] == "unknown":
+        if (action != chosen or chosen["effect_domain"] != "native_input"
+                or result.get("native_delivery") != "unknown"
                 or result.get("successor") is not None
-                or result.get("effect_domain") is not None
-                or result.get("native_delivery") not in (None, "not_delivered", "unknown")):
-            raise BoundaryError("text_menu_data", "unproved_successor")
+                or result.get("retry") != "never"):
+            raise BoundaryError("text_menu_data", "unknown_native_delivery_mismatch")
+    else:
+        if (result.get("retry") != "reobserve"
+                or (action is None and result.get("native_delivery") is not None)
+                or (action is not None and action.get("effect_domain") == "text_menu"
+                    and result.get("native_delivery") is not None)
+                or (action is not None and action.get("effect_domain") == "native_input"
+                    and result.get("native_delivery") != "not_delivered")):
+            raise BoundaryError("text_menu_data", "not_applied_disposition_mismatch")
     return row
 
 
@@ -102,14 +132,8 @@ def validate_records(rows: tuple[dict, ...], *, admit_agent: bool = False) -> tu
         if row["record_id"] in ids or key in steps:
             raise BoundaryError("text_menu_data", "duplicate_record_or_step")
         prior = previous.get(row["run_id"])
-        if prior is not None:
-            if row["step_index"] <= prior["step_index"]:
-                raise BoundaryError("text_menu_data", "run_step_order_mismatch")
-            if row["step_index"] == prior["step_index"] + 1:
-                successor = prior["result"].get("successor")
-                if (not isinstance(successor, dict)
-                        or successor.get("snapshot_id") != row["snapshot"].get("snapshot_id")):
-                    raise BoundaryError("text_menu_data", "adjacent_frame_binding_mismatch")
+        if prior is not None and row["step_index"] <= prior["step_index"]:
+            raise BoundaryError("text_menu_data", "run_step_order_mismatch")
         ids.add(row["record_id"])
         steps.add(key)
         previous[row["run_id"]] = row
@@ -205,7 +229,8 @@ def _project(rows: tuple[dict, ...]) -> tuple[tuple[ModelSample, ...], dict]:
             "selected_action_id": row["selected_action_id"],
             "request_id": row["request"]["request_id"],
             "result_status": result["status"],
-            "successor_snapshot_id": result["successor"]["snapshot_id"] if included else None,
+            "successor_snapshot_id": (result["successor"]["snapshot_id"]
+                                      if isinstance(result.get("successor"), dict) else None),
             "effect_domain": result.get("effect_domain"),
             "native_delivery": result.get("native_delivery"),
             "split": split, "status": "included" if included else "excluded",
