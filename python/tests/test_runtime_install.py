@@ -34,6 +34,177 @@ def package(root, name, *, runtime=False):
 
 
 @pytest.fixture
+def bundled_release(tmp_path):
+    node_modules = tmp_path / "node_modules"
+    root = node_modules / runtime_install.RUNTIME_PACKAGE
+    pin = package(root, runtime_install.RUNTIME_PACKAGE, runtime=True)
+    sdk = root / "node_modules" / runtime_install.CONNECTOR_PACKAGE
+    zod = root / "node_modules/zod"
+    package(sdk, runtime_install.CONNECTOR_PACKAGE)
+    package(zod, "zod")
+    sdk_json = json.loads((sdk / "package.json").read_text())
+    sdk_json["dependencies"] = {"zod": "^0.1.0"}
+    (sdk / "package.json").write_text(json.dumps(sdk_json))
+    sdk_hash, zod_hash = runtime_install._bundled_hashes(sdk, zod)
+    bundled = {
+        "mode": runtime_install.BUNDLED_LAYOUT,
+        "name": runtime_install.CONNECTOR_PACKAGE,
+        "version": "0.1.0",
+        "source_revision": "d" * 40,
+        "component_tree_revision": "e" * 40,
+        "component_source_digest_sha256": "f" * 64,
+        "public_contract_digest_sha256": "1" * 64,
+        "bundle_sha256": sdk_hash,
+        "transitive_zod": {
+            "version": "0.1.0",
+            "url": "https://registry.npmjs.org/zod/-/zod-0.1.0.tgz",
+            "integrity": "sha512-synthetic",
+            "bundle_sha256": zod_hash,
+        },
+    }
+    dependencies = {runtime_install.CONNECTOR_PACKAGE: "0.1.0", "zod": "0.1.0"}
+    package_json = json.loads((root / "package.json").read_text())
+    package_json.update(dependencies=dependencies, bundleDependencies=list(dependencies))
+    (root / "package.json").write_text(json.dumps(package_json))
+    shrinkwrap = {
+        "lockfileVersion": 3,
+        "packages": {
+            "": {"dependencies": dependencies, "bundleDependencies": list(dependencies)},
+            f"node_modules/{runtime_install.CONNECTOR_PACKAGE}": {
+                "version": "0.1.0", "inBundle": True, "dependencies": {"zod": "^0.1.0"},
+            },
+            "node_modules/zod": {
+                "version": "0.1.0", "inBundle": True,
+                "resolved": bundled["transitive_zod"]["url"],
+                "integrity": bundled["transitive_zod"]["integrity"],
+            },
+        },
+    }
+    (root / "npm-shrinkwrap.json").write_text(json.dumps(shrinkwrap))
+    identity = {
+        "schema": runtime_install.PACKAGE_IDENTITY_SCHEMA,
+        "component_id": "policy-runtime",
+        "component_version": "0.1.0",
+        "source_revision": pin["source_revision"],
+        "component_tree_revision": pin["component_tree_revision"],
+        "connector_sdk": bundled,
+    }
+    (root / "package-identity.json").write_text(json.dumps(identity))
+    pin.update(
+        dependency_layout=runtime_install.BUNDLED_LAYOUT,
+        bundled_connector_pin=bundled,
+        package_content_sha256=directory_sha256(root),
+    )
+    return node_modules, root, pin
+
+
+def test_bundled_runtime_validates_complete_nested_closure(bundled_release):
+    node_modules, root, pin = bundled_release
+    # The old sibling pin must not substitute for the explicit bundled pin.
+    result = runtime_install.validate_runtime_install(
+        node_modules, pin, {"package": "wrong-sibling"}
+    )
+    assert result["package_content_sha256"] == directory_sha256(root)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_pin", "unknown_layout", "mixed_pin", "identity_schema", "identity_source",
+        "identity_connector", "sdk_content", "zod_content", "sdk_version", "zod_version",
+        "shrinkwrap", "wrong_bundle_hash", "zod_integrity", "sdk_dependency",
+    ],
+)
+def test_bundled_runtime_rejects_identity_and_dependency_mismatch(bundled_release, mutation):
+    node_modules, root, pin = bundled_release
+    sdk = root / "node_modules" / runtime_install.CONNECTOR_PACKAGE
+    zod = root / "node_modules/zod"
+    if mutation == "missing_pin":
+        del pin["bundled_connector_pin"]
+    elif mutation == "unknown_layout":
+        pin["dependency_layout"] = "other"
+    elif mutation == "mixed_pin":
+        pin["dependency_content_sha256"] = {"zod": "0" * 64}
+    elif mutation == "wrong_bundle_hash":
+        pin["bundled_connector_pin"]["bundle_sha256"] = "0" * 64
+    elif mutation in {"identity_schema", "identity_source", "identity_connector"}:
+        path = root / "package-identity.json"
+        identity = json.loads(path.read_text())
+        key = {"identity_schema": "schema", "identity_source": "source_revision",
+               "identity_connector": "connector_sdk"}[mutation]
+        identity[key] = "wrong"
+        path.write_text(json.dumps(identity))
+    elif mutation == "sdk_content":
+        (sdk / "unexpected.js").write_text("changed")
+    elif mutation == "zod_content":
+        (zod / "unexpected.js").write_text("changed")
+    elif mutation in {"sdk_version", "zod_version"}:
+        path = (sdk if mutation == "sdk_version" else zod) / "package.json"
+        metadata = json.loads(path.read_text())
+        metadata["version"] = "wrong"
+        path.write_text(json.dumps(metadata))
+    elif mutation in {"zod_integrity", "sdk_dependency"}:
+        path = root / "npm-shrinkwrap.json"
+        metadata = json.loads(path.read_text())
+        if mutation == "zod_integrity":
+            metadata["packages"]["node_modules/zod"]["integrity"] = "sha512-wrong"
+        else:
+            metadata["packages"][f"node_modules/{runtime_install.CONNECTOR_PACKAGE}"][
+                "dependencies"
+            ] = {}
+        path.write_text(json.dumps(metadata))
+    else:
+        (root / "npm-shrinkwrap.json").write_text("{}")
+    if mutation not in {"missing_pin", "unknown_layout", "mixed_pin"}:
+        # A consistent whole-package hash alone cannot admit a mismatched nested identity.
+        pin["package_content_sha256"] = directory_sha256(root)
+    with pytest.raises(PackageIdentityError):
+        runtime_install.validate_runtime_install(node_modules, pin, {})
+
+
+def test_bundled_runtime_rejects_symlink_anywhere_in_package(tmp_path, bundled_release):
+    node_modules, root, pin = bundled_release
+    external = tmp_path / "outside.txt"
+    external.write_text("unexpected")
+    link = root / "node_modules" / "outside-link"
+    try:
+        link.symlink_to(external)
+    except (NotImplementedError, OSError) as error:
+        if os.name == "nt" and (
+            isinstance(error, NotImplementedError) or getattr(error, "winerror", None) == 1314
+        ):
+            pytest.skip("symbolic-link creation privilege is unavailable")
+        raise
+    with pytest.raises(PackageIdentityError, match="unsafe path"):
+        runtime_install.validate_runtime_install(node_modules, pin, {})
+
+
+def test_offline_install_promotes_bundled_candidate_without_sibling_connector(
+    tmp_path, monkeypatch, isolated_port, bundled_release
+):
+    node_modules, _, pin = bundled_release
+    archive = tmp_path / "candidate.tgz"
+    archive.write_bytes(b"synthetic bundled candidate")
+    pin["release_asset_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
+    actual_run = runtime_install.subprocess.run
+
+    def npm_or_node(command, **kwargs):
+        if command[0] == "npm":
+            runtime_install.shutil.copytree(node_modules, kwargs["cwd"] / "node_modules")
+            return SimpleNamespace(returncode=0)
+        return actual_run(command, **kwargs)
+
+    monkeypatch.setattr(runtime_install.subprocess, "run", npm_or_node)
+    target = tmp_path / "installed"
+    result = runtime_install.install_runtime(
+        target, pin, {"package": "wrong-sibling"}, archive=archive
+    )
+    assert result["status"] == "runtime_installed"
+    assert not (target / "runtime/node_modules" / runtime_install.CONNECTOR_PACKAGE).exists()
+    runtime_install.validate_runtime_install(target / "runtime/node_modules", pin, {})
+
+
+@pytest.fixture
 def isolated_port(monkeypatch):
     # Exercise a real bind without depending on the operator's live Runtime.
     class Probe:
