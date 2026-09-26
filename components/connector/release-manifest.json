@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "release": {
-    "version": "1.3.0-rc.2",
+    "version": "1.3.0-rc.3",
     "channel": "prerelease",
     "status": "local_canary_runtime_seal_required"
   },

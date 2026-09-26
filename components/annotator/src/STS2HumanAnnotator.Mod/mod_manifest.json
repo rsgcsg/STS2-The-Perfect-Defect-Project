@@ -11,7 +11,7 @@
   "dependencies": [
     {
       "id": "STS2_MCP",
-      "min_version": "1.3.0-rc.2"
+      "min_version": "1.3.0-rc.3"
     }
   ]
 }
