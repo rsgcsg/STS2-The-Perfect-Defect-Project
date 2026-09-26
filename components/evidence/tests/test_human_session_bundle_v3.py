@@ -662,7 +662,7 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
         )
         self.assertEqual(rows[0]["disposition"], "accepted_input")
         self.assertEqual(rows[0]["snapshot_sha256"],
-                         "a17ebd56dc40c2619ed4e531076ace3bd3080761946ac58b24868d357ea59785")
+                         "473de3dc3c45a0c21e07e20b6faac11b37572d0b6623483c51af9a950b9eb5cf")
 
     def test_durable_text_append_failure_survives_resealing_and_recovery(self) -> None:
         bundle = self._bundle()
