@@ -40,12 +40,6 @@ internal static class NativeTextMenuFrameBuilder
         NativeEntityRegistry entities,
         Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy)
     {
-        if (NativeTextMenuRewardPages.TryCapture(legacy, entities) is { } rewardPage)
-            return rewardPage with
-            {
-                Page = NativeTextMenuInformation.SanitizePage(rewardPage.Page)
-            };
-
         NativeTextMenuInformationCapture information =
             NativeTextMenuInformation.Capture(legacy, entities);
         var leaves = information.Leaves.Select(item => new TextMenuLeaf(
@@ -53,6 +47,22 @@ internal static class NativeTextMenuFrameBuilder
             item.SubjectReferentId, item.Arguments, item.Dispatch)).ToList();
         PlayerEnvironmentSnapshot page = information.Page;
         string owner = information.OwnerKey;
+
+        // A native information screen opened from a linked reward still owns
+        // input. Otherwise retain reward children and add only the currently
+        // enabled top-bar information controls discovered from that screen.
+        if (NativeTextMenuRewardPages.TryCapture(legacy, entities) is { } rewardPage)
+        {
+            if (page.Interaction.Stage == "native_information_page"
+                || page.Interaction.Kind == "native_information_unresolved")
+                return new TextMenuFrame(page, owner, leaves);
+            return rewardPage with
+            {
+                Page = NativeTextMenuInformation.SanitizePage(rewardPage.Page),
+                Leaves = rewardPage.Leaves.Concat(leaves.Where(leaf =>
+                    leaf.Group != "root")).ToArray()
+            };
+        }
 
         RunState? run = RunManager.Instance.DebugOnlyGetState();
         if (run == null || !RunManager.Instance.IsInProgress)
@@ -68,7 +78,8 @@ internal static class NativeTextMenuFrameBuilder
             {
                 var referents = page.Referents.ToList();
                 foreach (PlayerEnvironmentBoundAction action in
-                         legacy.Snapshot.BoundActions.Actions)
+                         OrderLegacyTextActions(legacy.HostObservation.Surface,
+                             legacy.Snapshot.BoundActions.Actions))
                     if (legacy.Bindings.TryGetValue(action.BoundActionId,
                             out PlayerEnvironmentNativeBinding? binding))
                     {
@@ -254,7 +265,9 @@ internal static class NativeTextMenuFrameBuilder
                  && page.Completeness.Status == "complete"
                  && legacy.Snapshot.BoundActions.Status == "complete")
         {
-            foreach (PlayerEnvironmentBoundAction action in legacy.Snapshot.BoundActions.Actions)
+            foreach (PlayerEnvironmentBoundAction action in OrderLegacyTextActions(
+                         legacy.HostObservation.Surface,
+                         legacy.Snapshot.BoundActions.Actions))
                 if (legacy.Bindings.TryGetValue(action.BoundActionId,
                         out PlayerEnvironmentNativeBinding? binding))
                     leaves.Add(FromLegacy(action, binding, executeLegacy));
@@ -278,6 +291,109 @@ internal static class NativeTextMenuFrameBuilder
             page = page with { Referents = referents };
         }
         return new TextMenuFrame(page, owner, leaves);
+    }
+
+    internal static IReadOnlyList<PlayerEnvironmentBoundAction> OrderLegacyTextActions(
+        ILiveSurface surface,
+        IReadOnlyList<PlayerEnvironmentBoundAction> actions)
+    {
+        var rank = new Dictionary<string, int>(StringComparer.Ordinal);
+        void Add(IEnumerable<string> ids)
+        {
+            foreach (string id in ids) rank.TryAdd(id, rank.Count);
+        }
+        bool selectionOnly = false;
+        bool proceedLast = false;
+        switch (surface)
+        {
+            case EventOptionSurface eventOptions:
+                Add(eventOptions.Options.OrderBy(option => option.Index)
+                    .Select(option => option.EntityId));
+                break;
+            case RestSiteSurface rest:
+                Add(rest.Options.OrderBy(option => option.Index)
+                    .Select(option => option.EntityId));
+                break;
+            case MapNavigationSurface map:
+                Add(map.NextOptions.Select(option => option.EntityId));
+                break;
+            case ShopInventorySurface shop:
+                Add(shop.Cards.OrderBy(offer => offer.InventoryIndex)
+                    .Select(offer => offer.EntityId));
+                Add(shop.Relics.OrderBy(offer => offer.InventoryIndex)
+                    .Select(offer => offer.EntityId));
+                Add(shop.Potions.OrderBy(offer => offer.InventoryIndex)
+                    .Select(offer => offer.EntityId));
+                if (shop.CardRemoval is { } removal) Add(new[] { removal.EntityId });
+                break;
+            case TreasureRoomSurface treasure:
+                Add(treasure.Relics.Select(relic => relic.EntityId));
+                break;
+            case GameOverSurface gameOver:
+                Add(gameOver.OtherControls.Select(control => control.EntityId));
+                break;
+            case CardRewardSelectionSurface cardReward:
+                Add(cardReward.Cards.Select(card => card.EntityId));
+                Add(cardReward.Alternatives.OrderBy(item => item.Index)
+                    .Select(item => item.EntityId));
+                break;
+            case RewardClaimSurface reward:
+                Add(reward.Rewards.Select(item => item.EntityId));
+                Add(reward.DiscardablePotions.Select(potion => potion.EntityId));
+                proceedLast = true;
+                break;
+            case CardBundleSelectionSurface bundles:
+                Add(bundles.Bundles.Select(bundle => bundle.EntityId));
+                selectionOnly = true;
+                break;
+            case NativeBossRelicSelectionSurface bossRelics:
+                Add(bossRelics.Relics.Select(relic => relic.EntityId));
+                selectionOnly = true;
+                break;
+            case NativeGeneratedCardChoiceSurface generated:
+                Add(generated.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case NativeSimpleCardSelectionSurface simple:
+                Add(simple.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case NativeCombatPileSelectionSurface pile:
+                Add(pile.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case NativeDeckCardSelectionSurface deck:
+                Add(deck.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case NativeDeckUpgradeSelectionSurface upgrade:
+                Add(upgrade.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case DeckTransformSelectionSurface transform:
+                Add(transform.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case DeckEnchantSelectionSurface enchant:
+                Add(enchant.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            case CombatHandCardSelectionSurface hand:
+                Add(hand.Cards.Select(card => card.EntityId));
+                selectionOnly = true;
+                break;
+            default:
+                // No authoritative native ordinal is present for this scene.
+                return actions;
+        }
+        return actions.OrderBy(action => (!selectionOnly
+                || action.Verb is "select" or "deselect")
+                && action.SubjectReferentId is { } id
+                && rank.TryGetValue(id, out int index) ? index
+                : proceedLast && action.Verb == "activate"
+                    && action.SubjectReferentId == null ? rank.Count
+                    : int.MaxValue)
+            .ToArray();
     }
 
     private static TextMenuLeaf FromLegacy(

@@ -12,6 +12,106 @@ namespace STS2Connector.Tests;
 public sealed class PlayerEnvironmentContractTests
 {
     [Fact]
+    public void TextCardRewardOrderUsesVisibleCardRowNotBoundActionIds()
+    {
+        var surface = new CardRewardSelectionSurface(
+            "card_reward_selection", "screen", new[]
+            {
+                new VisibleCard("card-left", "LEFT", "Left", "Skill", "1", null, "", "Common", false, false, null),
+                new VisibleCard("card-middle", "MIDDLE", "Middle", "Skill", "1", null, "", "Common", false, false, null),
+                new VisibleCard("card-right", "RIGHT", "Right", "Skill", "1", null, "", "Common", false, false, null)
+            }, new[]
+            {
+                new VisibleCardRewardAlternative("skip", 0, "Skip", true)
+            });
+        PlayerEnvironmentBoundAction Action(string id, string? subject) =>
+            new(id, subject == "skip" ? "activate" : "select", "screen",
+                subject, Array.Empty<PlayerEnvironmentBoundActionArgument>(), id);
+        PlayerEnvironmentBoundAction[] hashedOrder =
+        {
+            Action("a-hash", "card-middle"), Action("b-hash", "skip"),
+            Action("c-hash", "card-left"), Action("d-hash", "card-right")
+        };
+
+        Assert.Equal(new[] { "card-left", "card-middle", "card-right", "skip" },
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, hashedOrder)
+                .Select(action => action.SubjectReferentId));
+        Assert.Equal(hashedOrder,
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(
+                new CombatTurnSurface("combat_turn", "room", true), hashedOrder));
+    }
+
+    [Fact]
+    public void TextRewardClaimOrderKeepsVisibleButtonsBeforeProceed()
+    {
+        var surface = new RewardClaimSurface("reward_claim", "screen", new[]
+        {
+            new VisibleReward("gold", "gold", "Gold", "Gold", true),
+            new VisibleReward("potion", "potion", "Potion", "Potion", true),
+            new VisibleReward("card", "card", "Card", "Card", true)
+        }, false, Array.Empty<VisibleCombatPotion>(), true, true);
+        PlayerEnvironmentBoundAction Action(string id, string? subject) =>
+            new(id, "activate", "screen", subject,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), id);
+        PlayerEnvironmentBoundAction[] hashedOrder =
+        {
+            Action("a-hash", null), Action("b-hash", "card"),
+            Action("c-hash", "potion"), Action("d-hash", "gold")
+        };
+
+        Assert.Equal(new string?[] { "gold", "potion", "card", null },
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, hashedOrder)
+                .Select(action => action.SubjectReferentId));
+    }
+
+    [Fact]
+    public void TextEventOrderUsesNativeOptionIndexAcrossReenteredActionIds()
+    {
+        VisibleEventOption Option(string id, int index) => new(
+            id, index, id, id, true, false, false, false, false,
+            null, null, Array.Empty<VisibleEventOptionTooltip>());
+        var surface = new EventOptionSurface("event_option", "screen", new[]
+        {
+            Option("forge", 2), Option("arcane", 0), Option("gold", 1)
+        });
+        PlayerEnvironmentBoundAction Action(string hash, string id) =>
+            new(hash, "activate", "screen", id,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), id);
+        foreach (PlayerEnvironmentBoundAction[] hashed in new[]
+        {
+            new[] { Action("a", "gold"), Action("b", "arcane"), Action("c", "forge") },
+            new[] { Action("a2", "forge"), Action("b2", "gold"), Action("c2", "arcane") }
+        })
+            Assert.Equal(new[] { "arcane", "gold", "forge" },
+                NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, hashed)
+                    .Select(action => action.SubjectReferentId));
+    }
+
+    [Fact]
+    public void TextMultiSelectUsesVisibleCardOrderAndLeavesConfirmAfterCards()
+    {
+        VisibleCard Card(string id) => new(id, id, id, "Skill", "1", null,
+            "", "Common", false, false, null);
+        var surface = new NativeSimpleCardSelectionSurface(
+            "native_simple_card_selection", "selection", "screen", "Choose",
+            1, 2, 1, new[] { "left" }, new[] { "middle", "right" },
+            new[] { "left" }, true, true, true, true,
+            new[] { Card("left"), Card("middle"), Card("right") });
+        PlayerEnvironmentBoundAction Action(string hash, string verb, string? id) =>
+            new(hash, verb, "screen", id,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), hash);
+        PlayerEnvironmentBoundAction[] hashed =
+        {
+            Action("a", "confirm", "left"), Action("b", "select", "right"),
+            Action("c", "select", "middle"), Action("d", "deselect", "left")
+        };
+
+        Assert.Equal(new[] { "d", "c", "b", "a" },
+            NativeTextMenuFrameBuilder.OrderLegacyTextActions(surface, hashed)
+                .Select(action => action.BoundActionId));
+    }
+
+    [Fact]
     public void TextCombatEntryCanBeInteractiveWithoutEndTurnBinding()
     {
         var noEndTurn = new CombatTurnSurface(
