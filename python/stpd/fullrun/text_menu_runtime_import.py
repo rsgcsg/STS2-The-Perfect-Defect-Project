@@ -212,10 +212,15 @@ def _trace_rows(events: list[dict[str, Any]], run_id: str, content_id: str) -> t
                          "text_native_unknown": ("unknown", "native_input"),
                          "text_menu_not_applied": ("not_applied", None)}
         expected_status, expected_domain = status_domain[kind]
+        # Revalidation may reject an action no longer present in the current
+        # menu. Its original binding remains in input/decision/dispatch; the
+        # Connector legitimately cannot return a current action for it.
+        missing_rejected_action = (kind == "text_menu_not_applied"
+                                   and result.get("action") is None)
         if (result_seq <= dispatch_seq or result["status"] != expected_status
                 or expected_domain is not None and result["effect_domain"] != expected_domain
                 or (kind == "menu_navigation" and outcome["action_id"] != selected)
-                or result.get("action") != chosen):
+                or result.get("action") != chosen and not missing_rejected_action):
             raise BoundaryError("text_menu_import", "outcome_binding_mismatch")
         request_id = f"request-{run_id}-{identity}"
         if result["request_id"] != request_id:

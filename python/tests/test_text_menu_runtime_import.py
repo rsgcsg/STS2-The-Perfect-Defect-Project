@@ -184,3 +184,57 @@ def test_two_verified_runs_form_a_trainable_view_with_exact_parents(
     view = publish_text_menu_bc_view(target, source.artifact_id, PRODUCER)
     _, samples = load_text_menu_bc_view(target, view)
     assert {sample.split for sample in samples} == {"train", "dev"}
+
+
+def test_stale_action_absent_from_current_menu_is_retained_without_bc_label(
+    tmp_path, verified_fixture,
+):
+    directory = verified_fixture._text_evidence("text-stale-absent", native=True)
+    events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+    events[5]["kind"] = "text_menu_not_applied"
+    events[5]["payload"]["result"].update(
+        status="not_applied", action=None, effect_domain=None, native_delivery=None,
+        reason_code="stale_snapshot", successor=None, retry="reobserve")
+    events.pop(6)  # No delivered action, hence no observed-successor event.
+    for sequence, event in enumerate(events, 1):
+        event["sequence"] = sequence
+    verified_fixture._rewrite_events(directory, events)
+    target = store(tmp_path)
+    evidence, source, report = publish_verified_text_menu_run(
+        target, directory, PRODUCER, admit_agent=True)
+    assert source is not None
+    assert source.parent("verified_agent_run") == evidence.artifact_id
+    assert report["outcomes"] == {"not_applied": 1}
+    _, failed_rows = load_text_menu_source(target, source.artifact_id)
+    assert failed_rows[0]["selected_action_id"] == "native-end"
+    assert failed_rows[0]["result"]["action"] is None
+    assert failed_rows[0]["origin"] == "agent"
+
+    # The rejected attempt remains auditable alongside two eligible independent
+    # inputs, but neither its selected action nor a guessed successor is a label.
+    navigation = verified_fixture._text_evidence("text-good-navigation")
+    native = verified_fixture._text_evidence("text-good-native", native=True)
+    _, combined, _ = publish_verified_text_menu_runs(
+        target, (directory, navigation, native), PRODUCER, admit_agent=True)
+    assert combined is not None
+    view = publish_text_menu_bc_view(target, combined.artifact_id, PRODUCER)
+    _, samples = load_text_menu_bc_view(target, view)
+    assert len(samples) == 2
+    assert failed_rows[0]["record_id"] not in {sample.transition_id for sample in samples}
+    lineage = json.loads(target.bytes(view.payload("lineage")))
+    failed = next(item for item in lineage["rows"]
+                  if item["record_id"] == failed_rows[0]["record_id"])
+    assert failed["status"] == "excluded" and failed["reason"] == "not_applied"
+    assert failed["native_delivery"] is None and failed["successor_snapshot_id"] is None
+
+
+def test_rejected_result_with_a_different_present_action_is_still_rejected():
+    events = _events()
+    events[3]["kind"] = "text_menu_not_applied"
+    result = events[3]["payload"]["result"]
+    result.update(status="not_applied", native_delivery="not_delivered",
+                  successor=None, retry="reobserve")
+    result["action"] = copy.deepcopy(result["action"])
+    result["action"]["label"] = "A different action"
+    with pytest.raises(BoundaryError, match="outcome_binding_mismatch"):
+        _trace_rows(events, "agent-run", "evidence-content")
