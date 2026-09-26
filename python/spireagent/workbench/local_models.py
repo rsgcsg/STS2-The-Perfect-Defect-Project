@@ -1117,6 +1117,16 @@ class LocalModelService:
                     counts[event["kind"]] += 1
                     if event["kind"] == "receipt":
                         deliveries[event["payload"]["receipt"]["delivery"]] += 1
+                    elif event["kind"] in {
+                        "text_native_delivery", "text_native_unknown", "text_menu_not_applied",
+                    }:
+                        outcome = event["payload"]["result"]
+                        # Navigation has no native delivery. Rejected/mismatched
+                        # replies are diagnostics, not a correlated outcome.
+                        if outcome["effect_domain"] == "native_input" and (
+                            delivery := outcome["native_delivery"]
+                        ) is not None:
+                            deliveries[delivery] += 1
             report.update(event_counts=dict(counts), delivery_counts=dict(deliveries))
         identity = hashlib.sha256(canonical_json(report).encode()).hexdigest()
         report["evaluation_id"] = identity
