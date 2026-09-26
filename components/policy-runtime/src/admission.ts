@@ -1,6 +1,5 @@
-import type { PlayerEnvironmentBoundAction } from "@rsgcsg/sts2-connector-client";
 import { candidateOrderDigest } from "./digest.js";
-import { validateAdapterDecision, validatePolicyDecision, type DecisionBundle, type PolicyDecision, type PolicyManifest } from "./contracts.js";
+import { decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, type AnyDecisionBundle, type DecisionAction, type PolicyDecision, type PolicyManifest } from "./contracts.js";
 
 export class PolicyAdmissionError extends Error {
   readonly code = "policy_admission_failed" as const;
@@ -9,18 +8,20 @@ export class PolicyAdmissionError extends Error {
 
 export interface AdmittedDecision {
   readonly decision: PolicyDecision;
-  readonly bundle: DecisionBundle;
-  readonly boundAction: PlayerEnvironmentBoundAction | null;
+  readonly bundle: AnyDecisionBundle;
+  readonly boundAction: DecisionAction | null;
   readonly candidateDigest: string;
 }
 
 /** Validate the adapter echo against the current complete bundle, without catalog filtering. */
-export function admitWholeDecision(value: unknown, bundle: DecisionBundle, manifest: PolicyManifest, expectedRunId: string): AdmittedDecision {
+export function admitWholeDecision(value: unknown, bundle: AnyDecisionBundle, manifest: PolicyManifest, expectedRunId: string): AdmittedDecision {
   let decision: PolicyDecision;
   try { decision = validatePolicyDecision(value); } catch (error) { throw new PolicyAdmissionError(error instanceof Error ? error.message : String(error)); }
   if (decision.manifest_id !== manifest.manifest_id || decision.run_id !== expectedRunId || decision.snapshot_id !== bundle.observation.snapshot_id) throw new PolicyAdmissionError("Policy Decision identity does not match the current Agent Run, Manifest, or Snapshot");
-  const actions = bundle.observation.bound_actions.actions;
-  if (bundle.observation.status !== "interactive" || bundle.observation.completeness.status !== "complete" || bundle.observation.bound_actions.status !== "complete" || bundle.observation.bound_actions.materialized_count !== bundle.observation.bound_actions.total_count || actions.length === 0) throw new PolicyAdmissionError("Policy Decision requires a complete whole decision bundle");
+  if (bundle.observation.schema !== manifest.representation.input_schema) throw new PolicyAdmissionError("Policy Decision snapshot profile differs from Manifest");
+  const actions = decisionActions(bundle.observation);
+  const catalog = isTextMenuSnapshot(bundle.observation) ? bundle.observation.menu_actions : bundle.observation.bound_actions;
+  if (bundle.observation.status !== "interactive" || bundle.observation.completeness.status !== "complete" || catalog.status !== "complete" || catalog.materialized_count !== catalog.total_count || catalog.materialized_count !== actions.length || actions.length === 0) throw new PolicyAdmissionError("Policy Decision requires a complete whole decision bundle");
   if (!manifest.support.interaction_kinds.includes(bundle.observation.interaction.kind)) throw new PolicyAdmissionError("current interaction is outside Manifest support");
   if (actions.some((action) => !manifest.support.action_verbs.includes(action.verb))) throw new PolicyAdmissionError("current action catalog is outside Manifest support");
   const digest = candidateOrderDigest(actions);
