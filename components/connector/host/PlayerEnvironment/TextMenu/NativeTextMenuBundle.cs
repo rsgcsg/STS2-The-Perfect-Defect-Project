@@ -27,8 +27,9 @@ internal static class NativeTextMenuBundle
         PlayerEnvironmentSnapshot page = frame.Page;
         if (page.Status != "interactive" || page.Completeness.Status != "complete"
             || page.Interaction.Kind != "card_bundle_selection"
-            || page.Interaction.Stage != "preview"
-            || page.Interaction.Content.Surface is not JsonObject surface
+            || page.Interaction.Stage != "preview")
+            return frame;
+        if (page.Interaction.Content.Surface is not JsonObject surface
             || !ReadString(surface["selected_bundle_entity_id"], out string? bundleId)
             || !ReadExactPublicCards(surface, bundleId!, out string[] cardIds)
             || NOverlayStack.Instance?.Peek() is not NChooseABundleSelectionScreen screen
@@ -39,7 +40,7 @@ internal static class NativeTextMenuBundle
             || !TryCurrentPreview(screen, selected, out Control? preview,
                 out NPreviewCardHolder[] holders)
             || holders.Length != cardIds.Length)
-            return frame;
+            return UnresolvedPreview(frame);
 
         var referents = page.Referents.ToList();
         var added = new List<TextMenuLeaf>();
@@ -50,7 +51,7 @@ internal static class NativeTextMenuBundle
             MegaLabel? title = holder.CardNode?.GetNodeOrNull<MegaLabel>("%TitleLabel");
             if (card == null || title == null || !ConnectorMod.IsNodeVisible(title)
                 || entities.GetId(card, "card") != cardIds[index])
-                return frame;
+                return UnresolvedPreview(frame);
 
             string cardId = cardIds[index];
             if (!referents.Any(value => value.ReferentId == cardId))
@@ -58,7 +59,7 @@ internal static class NativeTextMenuBundle
                     title.Text, new PlayerEnvironmentReferentState(
                         true, true, false, false, "native_visible_fact"), null, null));
             else if (!referents.Any(value => value.ReferentId == cardId && value.State.Visible))
-                return frame;
+                return UnresolvedPreview(frame);
 
             NPreviewCardHolder exactHolder = holder;
             CardModel exactCard = card;
@@ -73,6 +74,26 @@ internal static class NativeTextMenuBundle
         {
             Page = page with { Referents = referents },
             Leaves = frame.Leaves.Concat(added).ToArray()
+        };
+    }
+
+    private static TextMenuFrame UnresolvedPreview(TextMenuFrame frame)
+    {
+        PlayerEnvironmentSnapshot page = frame.Page;
+        return frame with
+        {
+            Page = page with
+            {
+                Status = "settling",
+                Completeness = page.Completeness with
+                {
+                    Status = "partial",
+                    Missing = page.Completeness.Missing
+                        .Append("current_native_bundle_preview_inspection_binding")
+                        .Distinct(StringComparer.Ordinal).ToArray()
+                }
+            },
+            Leaves = Array.Empty<TextMenuLeaf>()
         };
     }
 
