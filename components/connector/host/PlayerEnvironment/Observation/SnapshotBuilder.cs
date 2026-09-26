@@ -211,7 +211,10 @@ internal static partial class PlayerEnvironmentService
             || profileCatalogIncomplete;
         bool actionsPublished = projected.Projection.Status == "complete"
             && projected.Projection.MaterializedCount > 0;
-        string status = actionsPublished
+        bool textCombatEntryReady = CanPublishTextCombatEntry(
+            textMenuCapture, draft.Surface, draft.Readiness,
+            draft.Completeness, projected.Projection);
+        string status = actionsPublished || textCombatEntryReady
             ? "interactive"
             : visibleUnsupported ? "visible_unsupported" : draft.Readiness == "settling" ? "settling" : "observed";
         PlayerEnvironmentCompleteness completeness = ToCompleteness(
@@ -268,6 +271,20 @@ internal static partial class PlayerEnvironmentService
             projected.Bindings,
             readBuilds);
     }
+
+    internal static bool CanPublishTextCombatEntry(
+        bool textMenuCapture,
+        ILiveSurface surface,
+        string readiness,
+        StateCompleteness nativeCompleteness,
+        PlayerEnvironmentBoundActionProjection projection) =>
+        textMenuCapture
+        && surface is CombatTurnSurface
+        && readiness == "ready"
+        && nativeCompleteness.PlayerVisibleSemantics.StartsWith(
+            "contract_complete_for_immediate_combat_turn", StringComparison.Ordinal)
+        && nativeCompleteness.Missing.Count == 0
+        && projection.Status == "complete";
 
     internal static bool IsOrdinaryRewardPage(LiveObservation draft) =>
         draft.Readiness == "ready"
