@@ -11,6 +11,26 @@ namespace STS2Connector.PlayerEnvironment;
 
 internal static partial class PlayerEnvironmentService
 {
+    /// <summary>The text page's combat entry actions are supplied from current
+    /// native holders. Retain only the old exact end-turn binding so the legacy
+    /// card-by-target expansion cannot truncate an unrelated text menu.</summary>
+    internal static IReadOnlyList<NativeUiActionDescriptor> DescribeTextCombatCommands(
+        CombatTurnSurface surface) => NativeUiActionRuntime.DescribeCombatCommands(
+            surface with
+            {
+                PlayableCards = Array.Empty<VisibleCombatCommandOption>(),
+                UsablePotions = Array.Empty<VisibleCombatCommandOption>()
+            });
+
+    private static IReadOnlyList<NativeUiBoundAction> BuildTextCombatBindings(
+        LiveObservation draft, CombatTurnSurface surface) =>
+        DescribeTextCombatCommands(surface)
+            .Select(descriptor => NativeUiActionRuntime.BindActionToCurrentObservation(
+                draft, descriptor))
+            .Where(binding => binding != null)
+            .Cast<NativeUiBoundAction>()
+            .ToArray();
+
     private static IReadOnlyList<NativeUiBoundAction> BuildPlayerEnvironmentBindings(
         LiveObservation draft)
     {

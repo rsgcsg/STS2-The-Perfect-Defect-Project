@@ -12,6 +12,62 @@ namespace STS2Connector.Tests;
 public sealed class PlayerEnvironmentContractTests
 {
     [Fact]
+    public void NativeMapBackRemainsAvailableWhenRoutesAreExactlyEmpty()
+    {
+        var emptyMap = new MapNavigationSurface(
+            "map_navigation", "map-current", false, false, "none",
+            Array.Empty<VisibleMapChoice>());
+        var knownEmpty = new StateCompleteness(
+            "contract_complete_for_visible_singleplayer_map_navigation",
+            "temporarily_empty_while_map_input_is_not_route_ready",
+            Array.Empty<string>(), Array.Empty<string>());
+
+        Assert.True(NativeTextMenuInformation.CanPublishMapPage(
+            "settling", "complete", 0, 0, "settling", knownEmpty,
+            emptyMap, nativeBackAvailable: true));
+        Assert.False(NativeTextMenuInformation.CanPublishMapPage(
+            "settling", "complete", 0, 0, "settling", knownEmpty,
+            emptyMap, nativeBackAvailable: false));
+        Assert.False(NativeTextMenuInformation.CanPublishMapPage(
+            "settling", "truncated", 0, 1, "settling", knownEmpty,
+            emptyMap, nativeBackAvailable: true));
+        Assert.False(NativeTextMenuInformation.CanPublishMapPage(
+            "settling", "complete", 0, 0, "settling",
+            knownEmpty with { Missing = new[] { "route_binding_unavailable" } },
+            emptyMap, nativeBackAvailable: true));
+    }
+
+    [Fact]
+    public void TextCombatCatalogKeepsNativeEndTurnWithoutLegacyTargetExpansion()
+    {
+        string[] manyTargets = Enumerable.Range(0, 576)
+            .Select(index => "target-" + index).ToArray();
+        var surface = new CombatTurnSurface("combat_turn", "room-current", true)
+        {
+            PlayableCards = new[]
+            {
+                new VisibleCombatCommandOption("card-current", "Card", manyTargets)
+            },
+            UsablePotions = new[]
+            {
+                new VisibleCombatCommandOption("potion-current", "Potion", manyTargets)
+            }
+        };
+
+        IReadOnlyList<NativeUiActionDescriptor> legacy =
+            NativeUiActionRuntime.DescribeCombatCommands(surface);
+        IReadOnlyList<NativeUiActionDescriptor> text =
+            PlayerEnvironmentService.DescribeTextCombatCommands(surface);
+
+        Assert.Contains(legacy, command => command.Kind == "play_card");
+        Assert.Contains(legacy, command => command.Kind == "use_potion");
+        Assert.Single(text);
+        Assert.Equal("end_turn", text[0].Kind);
+        Assert.Equal("end_turn:room-current", text[0].Key);
+        Assert.Empty(text[0].EntityBindings ?? Array.Empty<ActionEntityBinding>());
+    }
+
+    [Fact]
     public void ProcessImmutableIdentityIsComputedOnceAndReused()
     {
         int calls = 0;
