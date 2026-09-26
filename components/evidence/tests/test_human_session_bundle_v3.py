@@ -653,6 +653,31 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
         self.assertEqual(rows[0]["snapshot_sha256"],
                          "a17ebd56dc40c2619ed4e531076ace3bd3080761946ac58b24868d357ea59785")
 
+    def test_durable_text_append_failure_survives_resealing_and_recovery(self) -> None:
+        bundle = self._bundle()
+        self._declare_text(bundle, [self._text_row(bundle)])
+        raw = bundle / "raw"
+        self._write(raw / "human-text-input-failure.json", {
+            "schema": "sts2.human-annotator/human-text-input-failure-1",
+            "session_id": self._text_row(bundle)["session_id"],
+            "timeline_id": self._text_row(bundle)["timeline_id"],
+            "failed_at": "2026-09-11T00:00:00Z", "reason": "write_failed",
+        })
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_append_failure")
+        receipt_path = raw / "session-close-receipt.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt["recovery"] = "sts2.human-annotator/interrupted-recovery-1"
+        self._write(receipt_path, receipt)
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_append_failure")
+        (raw / "human-text-input-failure.json").unlink()
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_recovery_unsupported")
+
     def test_read_blob_reference_cannot_escape_raw(self) -> None:
         bundle = self._bundle()
         raw = bundle / "raw"

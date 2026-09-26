@@ -257,6 +257,10 @@ def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
 def verify_human_text_inputs(raw: Path, recording: Mapping[str, Any],
                              close_receipt: Mapping[str, Any] | None,
                              run_ids: tuple[str, ...]) -> tuple[Mapping[str, Any], ...]:
+    # A producer-latched append failure remains disqualifying even if a later
+    # pack or interrupted-recovery copy reseals every surviving byte.
+    _check(not (raw / "human-text-input-failure.json").exists(),
+           "human_text_input_append_failure")
     path = raw / "human-text-inputs.jsonl"
     version = recording.get("text_input_schema_version")
     _check(version is None or type(version) is int and version == 1,
@@ -264,6 +268,8 @@ def verify_human_text_inputs(raw: Path, recording: Mapping[str, Any],
     if version is None:
         _check(not path.exists(), "undeclared_human_text_input_stream")
         return ()
+    _check(close_receipt is None or close_receipt.get("recovery") is None,
+           "human_text_input_recovery_unsupported")
     _check(path.is_file() and close_receipt is not None,
            "human_text_input_stream_or_close_seal_missing")
     content = path.read_bytes()
