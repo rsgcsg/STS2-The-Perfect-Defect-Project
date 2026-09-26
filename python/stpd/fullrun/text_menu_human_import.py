@@ -203,7 +203,7 @@ def _project(rows: tuple[dict, ...]) -> tuple[tuple[ModelSample, ...], dict]:
     for row in rows:
         group = row["session_id"]
         parent.setdefault(group, group)
-        snapshot = row["snapshot"]
+        snapshot = row.get("snapshot")
         if isinstance(snapshot, dict):
             try:
                 visible = project_text_menu_snapshot(snapshot)
@@ -217,7 +217,7 @@ def _project(rows: tuple[dict, ...]) -> tuple[tuple[ModelSample, ...], dict]:
                 parent[max(left, right)] = min(left, right)
         if row["disposition"] != "accepted_input":
             continue
-        chosen = row["chosen_action"]
+        chosen = row.get("chosen_action")
         if (row["mapping_status"] != "exact_unique" or row["match_count"] != 1
                 or row["mapping_basis"] != "text_menu_native_reference_equality"
                 or row["native_mechanism"] != "begin_card_play_exact_factory_return"
@@ -245,12 +245,12 @@ def _project(rows: tuple[dict, ...]) -> tuple[tuple[ModelSample, ...], dict]:
             "source_index": ordinal, "record_id": row["record_id"],
             "session_id": row["session_id"], "run_id": row["run_id"],
             "sequence": row["sequence"], "disposition": row["disposition"],
-            "reason_code": row["reason_code"], "split": split,
+            "reason_code": row.get("reason_code"), "split": split,
             "status": "included" if included else "excluded",
-            "snapshot_id": (row["snapshot"].get("snapshot_id")
-                            if isinstance(row["snapshot"], dict) else None),
-            "selected_action_id": (row["chosen_action"].get("action_id")
-                                   if isinstance(row["chosen_action"], dict) else None),
+            "snapshot_id": (row.get("snapshot", {}).get("snapshot_id")
+                            if isinstance(row.get("snapshot"), dict) else None),
+            "selected_action_id": (row.get("chosen_action", {}).get("action_id")
+                                   if isinstance(row.get("chosen_action"), dict) else None),
         })
         if included:
             public = project_text_menu_snapshot(row["snapshot"])
