@@ -568,7 +568,7 @@ test("legacy and recovery-required dataset status preserve browsing without enab
   assert.equal(post(legacy.calls).length, 0);
 });
 
-test("legacy configured workspace uses the new curation owner state after preparation", async () => {
+test("ready legacy curation suppresses setup cards while dataset purpose controls remain", async () => {
   const artifact = id("a");
   const env = localDatasetEnv({artifact,
     managedStatus: {
@@ -582,12 +582,121 @@ test("legacy configured workspace uses the new curation owner state after prepar
     },
   });
   const page = await env.render();
-  assert.match(text(page), /本机用途记录已准备/);
-  assert.match(text(page), /旧资料的用途历史未完全可证/);
-  assert.match(text(page), /本机数据集检查/);
+  assert.doesNotMatch(text(page), /正在使用现有本机资料库|本机用途记录已准备/);
+  assert.match(text(page), /完整决策数量来自已核验的当前录制/);
   assert.equal(walk(page).some(element => element.name === "local-dataset-purpose"), true);
   assert.equal(env.calls.some(call => call.url === "/api/local-workspace/curation"), true);
   assert.equal(post(env.calls).length, 0);
+});
+
+test("ready legacy workspace directory does not say that preparation is still pending", async () => {
+  const env = setup({
+    identity: {status: "signed_out"}, view: "local-workspace",
+    curationStatus: {schema: "stpd/local-curation-preparation-v1", status: "ready"},
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {status: "legacy_workspace_configured"};
+      if (url === "/api/local-workspace?limit=25&offset=0") return {total: 0, items: []};
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /用途记录已准备/);
+  assert.doesNotMatch(text(page), /准备用途记录后/);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("prepared managed dataset detail leads with manifest facts and links its exact parents", async () => {
+  const dataset = id("a"), source = id("b"), paired = id("c");
+  const env = setup({
+    identity: {status: "signed_out"}, view: "local-workspace", query: `&id=${dataset}`,
+    curationStatus: {
+      schema: "stpd/local-curation-preparation-v1", status: "not_applicable",
+    },
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {
+        status: "ready", curation_status: "ready", workspace_id: id("d"),
+      };
+      if (url === `/api/local-workspace/artifacts/${dataset}`) return {
+        schema: "stpd/local-workspace-artifact-v1", kind: "dataset", artifact_id: dataset,
+        parameters: {
+          schema: "stpd/curated-decision-dataset-v1", display_name: "test split",
+          records: 17, purpose: "test", split_status: "purpose_assigned", paired_training: paired,
+        },
+        parents: [{role: `source_${source}`, artifact_id: source}], payloads: [],
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /数据集概览/);
+  assert.match(text(page), /test split/);
+  assert.match(text(page), /17/);
+  assert.match(text(page), /测试/);
+  assert.match(text(page), /已按所选评测用途分配/);
+  assert.doesNotMatch(text(page), /本机工作空间已就绪|本机用途记录已准备|此页在本机读取/);
+  assert.equal(env.calls.some(call => call.url === "/api/local-workspace/curation"), true,
+    "managed workspaces may report not_applicable from the configured-workspace owner");
+  assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${source}`).textContent,
+    `查看来源 · ${source.slice(0, 16)}`);
+  assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${paired}`).textContent,
+    `查看配对训练数据集 · ${paired.slice(0, 16)}`);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("dataset detail shows unknown when purpose metadata or source parents are absent", async () => {
+  const dataset = id("a");
+  const env = setup({
+    identity: {status: "local_only"}, view: "local-workspace", query: `&id=${dataset}`,
+    curationStatus: {schema: "stpd/local-curation-preparation-v1", status: "ready"},
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {status: "legacy_workspace_configured"};
+      if (url === `/api/local-workspace/artifacts/${dataset}`) return {
+        kind: "dataset", artifact_id: dataset,
+        parameters: {schema: "stpd/curated-decision-dataset-v1"}, parents: [], payloads: [],
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /样本数\n未知/);
+  assert.match(text(page), /用途\n未知/);
+  assert.match(text(page), /数据划分\n未知/);
+  assert.match(text(page), /来源\n未知/);
+  assert.equal(walk(page).some(element => element.tagName === "A" && element.href?.includes("id=")), false);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("dataset detail retains preparation and recoverable continuation until curation is ready", async () => {
+  const dataset = id("a");
+  for (const [status, retryAvailable, actionExpected] of [
+    ["preparation_required", false, true],
+    ["recovery_required", false, false],
+    ["recovery_required", true, true],
+  ]) {
+    const env = setup({
+      identity: {status: "local_only"}, view: "local-workspace", query: `&id=${dataset}`,
+      curationStatus: {
+        schema: "stpd/local-curation-preparation-v1", status, retry_available: retryAvailable,
+        reason: status === "recovery_required" ? "preparation_interrupted" : undefined,
+        csrf_token: "browser-csrf",
+      },
+      handler: async url => {
+        if (url === "/api/local-workspace/managed") return {status: "ready", workspace_id: id("d")};
+        if (url === `/api/local-workspace/artifacts/${dataset}`) return {
+          kind: "dataset", artifact_id: dataset,
+          parameters: {schema: "stpd/curated-decision-dataset-v1", records: 3, purpose: "training"},
+          parents: [], payloads: [],
+        };
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    assert.equal(Boolean(walk(page).find(element => element.dataset?.action === "prepare-local-curation")), actionExpected);
+    if (status === "preparation_required") assert.match(text(page), /首次准备会在本机建立用途记录/);
+    if (status === "recovery_required") assert.match(text(page), retryAvailable
+      ? /上次准备遇到可继续的暂时错误/ : /用途记录需要恢复核对/);
+    assert.equal(post(env.calls).length, 0);
+  }
 });
 
 test("local inventory kind filter uses exact backend kinds and preserves search", async () => {
@@ -635,6 +744,18 @@ test("pending dataset checks do not resubmit; failed and interrupted checks need
   assert.equal(action(pendingPage, "check-local-dataset").disabled, true);
   await action(pendingPage, "refresh-local-dataset-status").onclick();
   assert.equal(post(pending.calls).length, 0);
+
+  const publishing = localDatasetEnv({artifact, datasetStatus: {
+    schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+    operation: {status: "pending", artifact_id: artifact, purpose: "training",
+      paired_training: null, preview_id: "c".repeat(32)},
+    csrf_token: "dataset-csrf",
+  }});
+  const publishingPage = await publishing.render();
+  assert.match(text(publishingPage), /正在创建这份数据集/);
+  assert.equal(action(publishingPage, "check-local-dataset").textContent, "正在创建");
+  assert.equal(action(publishingPage, "refresh-local-dataset-status").textContent, "刷新创建状态");
+  assert.equal(post(publishing.calls).length, 0);
 
   for (const status of ["failed", "interrupted"]) {
     const env = localDatasetEnv({artifact, datasetStatus: {

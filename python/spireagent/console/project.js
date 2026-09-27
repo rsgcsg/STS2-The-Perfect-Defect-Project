@@ -2359,7 +2359,7 @@ window.SpireProject = (() => {
     return box;
   }
 
-  async function managedWorkspaceCard(ctx, box) {
+  async function managedWorkspaceCard(ctx, box, {detail = false} = {}) {
     const data = await request(
       ctx,
       "/api/local-workspace/managed",
@@ -2367,11 +2367,17 @@ window.SpireProject = (() => {
     const localCsrfToken = data.csrf_token;
     delete data.csrf_token;
     if (data.status === "legacy_workspace_configured") {
+      const curation = await request(ctx, "/api/local-workspace/curation");
+      const curationReady = curation.schema === "stpd/local-curation-preparation-v1"
+        && curation.status === "ready";
+      if (detail && curationReady) return;
       box.append(panel(
         "正在使用现有本机资料库",
-        "现有资料保留在原位置。准备用途记录后，可在同一资料库中检查和创建数据集。",
+        curationReady
+          ? "现有资料保留在原位置。用途记录已准备，可在同一资料库中检查和创建数据集。"
+          : "现有资料保留在原位置。准备用途记录后，可在同一资料库中检查和创建数据集。",
       ));
-      await localCurationCard(ctx, box);
+      localCurationCard(ctx, box, curation);
       return;
     }
     if (data.status === "not_created") {
@@ -2398,6 +2404,11 @@ window.SpireProject = (() => {
       box.append(section);
       return;
     }
+    const curation = await request(ctx, "/api/local-workspace/curation");
+    const curationReady = curation.schema === "stpd/local-curation-preparation-v1"
+      && curation.status === "ready";
+    const workspaceReady = data.status === "ready" && data.curation_status === "ready";
+    if (detail && (curationReady || workspaceReady)) return;
     const section = panel(
       "本机工作空间已就绪",
       "可在下方查看资料。创建本身不导入资料，也不表示资料已可训练。",
@@ -2408,17 +2419,16 @@ window.SpireProject = (() => {
     if (data.orphaned_initializations)
       section.append(el("p", `另有 ${data.orphaned_initializations} 个未登记的初始化目录保留在本机。`, "small muted"));
     box.append(section);
-    await localCurationCard(ctx, box);
+    localCurationCard(ctx, box, curation);
   }
 
-  async function localCurationCard(ctx, box) {
-    const value = await request(ctx, "/api/local-workspace/curation");
+  function localCurationCard(ctx, box, value) {
     const {csrf_token: csrfToken, ...data} = value;
     const section = panel("本机数据用途", "准备会保留现有资料；不能确认的旧用途会保持未知，不会自动获得 Gold 资格。");
     if (data.schema !== "stpd/local-curation-preparation-v1") {
       section.append(el("p", "本机用途准备状态格式暂不可用；资料仍保留在原位置。", "small muted"));
       box.append(section);
-      return;
+      return data;
     }
     const status = data.status;
     if (status === "preparation_required") {
@@ -2458,6 +2468,47 @@ window.SpireProject = (() => {
     if (["preparing", "ready", "recovery_required"].includes(status))
       section.append(command(ctx, "refresh-local-curation", "刷新用途状态", async () => reload(ctx), {type:"secondary"}));
     box.append(section);
+    return data;
+  }
+
+  function localDatasetOverview(value) {
+    const parameters = value.parameters && typeof value.parameters === "object"
+      ? value.parameters : {};
+    const purpose = {training:"训练", test:"测试", gold:"Gold 评估"}[parameters.purpose] || "未知";
+    const records = Number.isSafeInteger(parameters.records) && parameters.records >= 0
+      ? count(parameters.records) : "未知";
+    const split = typeof parameters.split_status === "string" && parameters.split_status
+      ? splitLabel(parameters.split_status) : "未知";
+    const overview = panel("数据集概览", "以下信息来自本机已登记的数据集清单；未提供的字段显示为未知。");
+    overview.append(fields([
+      ["样本数", records],
+      ["用途", purpose],
+      ["数据划分", split],
+    ]));
+
+    const parents = Array.isArray(value.parents) ? value.parents.filter(parent =>
+      parent && typeof parent === "object" && hex(parent.artifact_id)) : [];
+    if (parents.length) {
+      const parentLinks = el("div", null, "project-actions");
+      for (const parent of parents) {
+        const isSource = parent.role === `source_${parent.artifact_id}`;
+        parentLinks.append(link(
+          `${isSource ? "查看来源" : "查看父对象"} · ${parent.artifact_id.slice(0, 16)}`,
+          route("local-workspace", parent.artifact_id),
+        ));
+      }
+      overview.append(el("h3", "来源"), parentLinks);
+    } else {
+      overview.append(fields([["来源", "未知"]]));
+    }
+    if (hex(parameters.paired_training)) {
+      overview.append(el("h3", "配对训练数据集"));
+      overview.append(link(
+        `查看配对训练数据集 · ${parameters.paired_training.slice(0, 16)}`,
+        route("local-workspace", parameters.paired_training),
+      ));
+    }
+    return overview;
   }
 
   function localRecordingCard(ctx, importStatus) {
@@ -2613,14 +2664,19 @@ window.SpireProject = (() => {
     section.append(selectionNote);
 
     const pending = operation.status === "pending";
+    const publishing = pending && hex(operation.preview_id, 32);
     const failedOrInterrupted = operationForArtifact
       && ["failed", "interrupted"].includes(operation.status);
     const recoveryRequired = ["failed", "interrupted"].includes(operation.status)
       && (operation.recovery_available === true || operation.error_code === "publication_recovery_required");
     if (pending) {
       section.append(el("p", operationForArtifact
-        ? "正在检查这份录制；可刷新查看进度，不会重复提交。"
-        : "本机另一项数据集检查正在进行；等待其明确结果后再检查当前录制。", "small muted"));
+        ? publishing
+          ? "正在创建这份数据集；可刷新查看进度，不会重复提交。"
+          : "正在检查这份录制；可刷新查看进度，不会重复提交。"
+        : publishing
+          ? "本机另一项数据集正在创建；等待其明确结果后再检查当前录制。"
+          : "本机另一项数据集检查正在进行；等待其明确结果后再检查当前录制。", "small muted"));
     } else if (recoveryRequired && !operationForArtifact) {
       section.append(el("p", "另一份录制的创建结果尚未确认；请先返回该录制核对或恢复用途记录。", "small muted"));
       if (hex(operation.artifact_id))
@@ -2696,7 +2752,7 @@ window.SpireProject = (() => {
         ? !operationForArtifact ? "先处理另一份创建"
           : operation.recovery_available === true ? "先核对上次创建结果" : "需恢复用途记录"
         : failedOrInterrupted
-        ? "重新检查数据集" : pending ? "正在检查" : "检查数据集", async () => {
+        ? "重新检查数据集" : pending ? publishing ? "正在创建" : "正在检查" : "检查数据集", async () => {
       if (pending || recoveryRequired || !validParent()) return;
       checkOptions.disabled = true;
       await request(ctx, "/api/local-datasets/preview", {
@@ -2706,7 +2762,7 @@ window.SpireProject = (() => {
       }, data.csrf_token);
       await reload(ctx);
     }, checkOptions));
-    section.append(command(ctx, "refresh-local-dataset-status", "刷新检查状态", async () => {
+    section.append(command(ctx, "refresh-local-dataset-status", publishing ? "刷新创建状态" : "刷新检查状态", async () => {
       await reload(ctx);
     }, {type:"secondary"}));
     return section;
@@ -2714,9 +2770,10 @@ window.SpireProject = (() => {
 
   async function localWorkspace(ctx) {
     const box = el("div", null, "project-page");
-    box.append(panel("本机资料", "浏览本机资料来源。此页在本机读取，不需要云端登录；开始任何导入或训练都需要独立的明确操作。"));
-    await managedWorkspaceCard(ctx, box);
     const id = new URLSearchParams(ctx.search).get("id");
+    if (!id)
+      box.append(panel("本机资料", "浏览本机资料来源。此页在本机读取，不需要云端登录；开始任何导入或训练都需要独立的明确操作。"));
+    await managedWorkspaceCard(ctx, box, {detail:Boolean(id)});
     if (id) {
       const value = await request(ctx, `/api/local-workspace/artifacts/${encodeURIComponent(id)}`);
       box.append(command(ctx, "local-workspace-back", "返回本机资料目录", () => {
@@ -2729,6 +2786,8 @@ window.SpireProject = (() => {
         : value.kind === "evidence" && value.parameters?.schema === "stpd/local-verified-bundle-v1"
           ? "录制来源" : show(value.kind);
       box.append(panel(heading, `本机对象 · ${value.artifact_id.slice(0, 16)}`));
+      if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1")
+        box.append(localDatasetOverview(value));
       box.append(technical(value, "查看来源详情与内容文件摘要"));
       if (value.kind === "evidence" && value.parameters?.schema === "stpd/local-verified-bundle-v1") {
         const preview = panel("本机样本预览", "选择这份已导入录制后，明确检查其中的样本。不会自动创建数据集。");
