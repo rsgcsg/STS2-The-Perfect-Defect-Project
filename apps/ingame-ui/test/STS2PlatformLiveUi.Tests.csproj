@@ -14,6 +14,7 @@
     <Compile Include="../PlatformPolicyCommands.cs" Link="PlatformPolicyCommands.cs" />
     <Compile Include="../PlatformPolicyBinding.cs" Link="PlatformPolicyBinding.cs" />
     <Compile Include="../PlatformPolicyTransport.cs" Link="PlatformPolicyTransport.cs" />
+    <Compile Include="../PlatformWorkbenchOpen.cs" Link="PlatformWorkbenchOpen.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
