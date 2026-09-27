@@ -7,11 +7,15 @@ import json
 import tempfile
 import tomllib
 import unittest
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
+from unittest.mock import patch
 
 from sts2_platform_evidence.cli import main
-from sts2_platform_evidence.core import VerifierRegistry
+from sts2_platform_evidence.core import VerificationResult, VerifierDescriptor, VerifierRegistry
 from sts2_platform_evidence.human_session_bundle_v1 import (
     BUNDLE_SCHEMA,
     HumanSessionBundleVerifier,
@@ -371,6 +375,36 @@ class EvidenceTests(unittest.TestCase):
         ])
         self.assertEqual(code, 0)
         self.assertEqual(DirectoryTransferManifest.read(transfer_path).artifact_type, "human-session-bundle")
+
+    def test_cli_verify_human_bundle_serializes_immutable_text_input_mappings(self) -> None:
+        @dataclass(frozen=True)
+        class ReportValue:
+            human_text_inputs: tuple[Mapping[str, object], ...]
+
+        report_value = ReportValue((MappingProxyType({
+            "record_id": "record-1",
+            "snapshot": MappingProxyType({"snapshot_id": "snapshot-1"}),
+        }),))
+        descriptor = VerifierDescriptor(
+            "human-session-bundle-v3", "sts2.human-session-bundle-3", 3, ReportValue,
+        )
+        result = VerificationResult(descriptor, "pass", self.root, report_value)
+
+        class StubRegistry:
+            def verify(self, *_args: object, **_kwargs: object) -> VerificationResult[ReportValue]:
+                return result
+
+        output = io.StringIO()
+        with patch("sts2_platform_evidence.cli.registry", return_value=StubRegistry()):
+            with contextlib.redirect_stdout(output):
+                code = main(["verify-human-bundle", str(self.root)])
+
+        self.assertEqual(code, 0)
+        document = json.loads(output.getvalue())
+        self.assertEqual(
+            document["value"]["human_text_inputs"],
+            [{"record_id": "record-1", "snapshot": {"snapshot_id": "snapshot-1"}}],
+        )
 
     def test_cli_receive_publishes_read_only_store_status_and_receipt(self) -> None:
         bundle = self._bundle("cli-receive")
