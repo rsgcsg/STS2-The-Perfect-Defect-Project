@@ -108,9 +108,11 @@ preview status; another explicit command is required to recompute it.
 
 Use **准备本机资料** once when the configured store does not yet have its local curation
 owner. This explicit operation attaches the persistent usage ledger in place; it does not
-move old recordings, copy model weights, or create a second old/new library. Known prior
-uses remain recorded. Unknown old use is not asserted to be clean history; it limits Gold
-claims where relevant, without making all ordinary training selections read-only.
+move old recordings, copy model weights, or create a second old/new library. Readable existing
+training/test Dataset-purpose assignments are registered; historical model/training use is
+not reconstructed or asserted to be clean. Unknown old use restricts Gold claims without
+blocking ordinary training/test selection after preparation. An existing legacy Gold
+assignment instead requires explicit recovery before preparation can become ready.
 
 From one verified recording's detail, preview its eligible canonical decisions, select
 training/test/Gold purpose and explicitly create the Dataset. The result is an immutable
