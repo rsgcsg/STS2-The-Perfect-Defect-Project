@@ -410,6 +410,8 @@ class Application:
                 "schema": "stpd/managed-local-workspace-registration-v1",
                 "status": "legacy_workspace_configured",
                 "requires_cloud_account": False,
+                "curation_status": "recovery_required",
+                "curation_recovery": "legacy_history_requires_explicit_migration",
             }
         from spireagent.workbench.managed_local_workspace import inspect_managed_workspace
 
@@ -435,6 +437,7 @@ class Application:
 
         result = create_managed_workspace(self.config.state_dir)
         result.pop("workspace", None)
+        result.pop("curation_owner", None)
         return result
 
     def start_local_recording_import(self, candidate_id: object,
@@ -647,6 +650,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                             raise ValueError
                         value = app.managed_local_workspace()
                         value.pop("workspace", None)
+                        value.pop("curation_owner", None)
                         if value.get("status") == "not_created":
                             value["csrf_token"] = app.account.csrf
                     else:

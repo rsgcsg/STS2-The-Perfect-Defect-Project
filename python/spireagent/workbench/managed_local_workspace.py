@@ -21,9 +21,16 @@ from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.registry import SQLiteRegistry
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import atomic_json
+from spireagent.workbench.local_curation import (
+    LEDGER_NAME,
+    OWNER_NAME,
+    OWNER_SCHEMA,
+    LocalCurationOwner,
+)
 from spireagent.workbench.local_workspace import LocalWorkspace
 
-WORKSPACE_SCHEMA = "stpd/managed-local-workspace-v1"
+LEGACY_WORKSPACE_SCHEMA = "stpd/managed-local-workspace-v1"
+WORKSPACE_SCHEMA = "stpd/managed-local-workspace-v2"
 REGISTRATION_SCHEMA = "stpd/managed-local-workspace-registration-v1"
 ROOT_NAME = "managed-research-workspaces"
 REGISTRATION_NAME = "managed-research-workspace.json"
@@ -97,13 +104,23 @@ def inspect_managed_workspace(state_dir: Path) -> dict[str, Any]:
         raise BoundaryError("managed_workspace", "workspace_marker_invalid")
     marker = _read_json(directory / "workspace.json", "workspace_marker_invalid")
     expected = {
-        "schema": WORKSPACE_SCHEMA,
+        "schema": LEGACY_WORKSPACE_SCHEMA,
         "workspace_id": identity,
         "created_at": created_at,
         "store": "store",
         "registry": "registry.sqlite",
     }
-    if marker != expected:
+    legacy = marker == expected
+    new_fields = {"curation_ledger": LEDGER_NAME, "ledger_id": marker.get("ledger_id"),
+                  "store_id": marker.get("store_id")}
+    current = (set(marker) == set(expected) | set(new_fields)
+               and marker.get("schema") == WORKSPACE_SCHEMA
+               and all(marker.get(key) == value for key, value in expected.items()
+                       if key != "schema")
+               and marker.get("curation_ledger") == LEDGER_NAME
+               and all(isinstance(marker.get(key), str) and _ID.fullmatch(marker[key])
+                       for key in ("ledger_id", "store_id")))
+    if not legacy and not current:
         raise BoundaryError("managed_workspace", "workspace_marker_invalid")
     store_dir = directory / "store"
     registry_path = directory / "registry.sqlite"
@@ -117,6 +134,21 @@ def inspect_managed_workspace(state_dir: Path) -> dict[str, Any]:
     except sqlite3.DatabaseError as error:
         raise BoundaryError("managed_workspace", "workspace_registry_invalid") from error
     store = ManifestArtifactStore(LocalBlobStore(store_dir, create=False, readonly=True))
+    owner = None
+    curation_status = "recovery_required"
+    if current:
+        owner_marker = _read_json(store_dir / OWNER_NAME, "curation_recovery_required")
+        if owner_marker != {"schema": OWNER_SCHEMA, "workspace_id": identity,
+                            "store_id": marker["store_id"],
+                            "ledger_id": marker["ledger_id"],
+                            "ledger_path": str((directory / LEDGER_NAME).resolve())}:
+            raise BoundaryError("managed_workspace", "curation_recovery_required")
+        try:
+            owner = LocalCurationOwner(directory / LEDGER_NAME, store_dir, identity,
+                                      marker["ledger_id"], marker["store_id"])
+        except BoundaryError as error:
+            raise BoundaryError("managed_workspace", "curation_recovery_required") from error
+        curation_status = "ready"
     return {
         "schema": REGISTRATION_SCHEMA,
         "status": "ready",
@@ -125,6 +157,11 @@ def inspect_managed_workspace(state_dir: Path) -> dict[str, Any]:
         "orphaned_initializations": _orphaned_count(root, identity),
         "requires_cloud_account": False,
         "workspace": LocalWorkspace(registry, store),
+        "curation_status": curation_status,
+        "curation_recovery": (
+            "legacy_history_requires_explicit_migration" if legacy else None
+        ),
+        "curation_owner": owner,
     }
 
 
@@ -150,6 +187,7 @@ def create_managed_workspace(state_dir: Path) -> dict[str, Any]:
     store_dir.mkdir(mode=0o700)
     registry_path = directory / "registry.sqlite"
     created_at = datetime.now(UTC).isoformat(timespec="seconds")
+    ledger_id, store_id = uuid.uuid4().hex, uuid.uuid4().hex
 
     # The durable workspace marker and empty store/index must exist before the
     # one state-directory pointer is published. Failure leaves an inspectable
@@ -157,6 +195,12 @@ def create_managed_workspace(state_dir: Path) -> dict[str, Any]:
     try:
         ManifestArtifactStore(LocalBlobStore(store_dir, create=False, readonly=False))
         SQLiteRegistry(registry_path, readonly=False)
+        atomic_json(store_dir / OWNER_NAME,
+                    {"schema": OWNER_SCHEMA, "workspace_id": identity,
+                     "store_id": store_id, "ledger_id": ledger_id,
+                     "ledger_path": str((directory / LEDGER_NAME).resolve())})
+        LocalCurationOwner(directory / LEDGER_NAME, store_dir, identity, ledger_id,
+                           store_id, create=True)
     except (OSError, sqlite3.DatabaseError, BoundaryError) as error:
         raise BoundaryError("managed_workspace", "workspace_initialization_failed") from error
     marker = {
@@ -165,6 +209,9 @@ def create_managed_workspace(state_dir: Path) -> dict[str, Any]:
         "created_at": created_at,
         "store": "store",
         "registry": "registry.sqlite",
+        "curation_ledger": LEDGER_NAME,
+        "ledger_id": ledger_id,
+        "store_id": store_id,
     }
     try:
         atomic_json(directory / "workspace.json", marker)
