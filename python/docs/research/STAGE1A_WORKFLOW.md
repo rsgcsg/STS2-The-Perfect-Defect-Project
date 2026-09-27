@@ -31,7 +31,16 @@ Arguments above form one command. CPU is an explicit alternative. Training stays
 For B use `stage1a.b.s.v2` or `stage1a.b.pf.v2`; D-Simple retains `.v1`.
 Frozen recipes use the PF input and `--snapshot`. B v2 packs one observation and all
 action readouts; v1 remains historical and must not silently resume into v2.
-Do not run frozen models at large input/candidate counts without a bounded cost check.
+For a new text-menu scratch small-B engineering run, use the explicit
+`--text-menu-small-b` selector in place of `--recipe`; it records B S v2 with zero
+dropout so both training and inference use the shared-observation branch execution.
+The generic `--recipe` route keeps its existing 0.1 dropout default, including for
+existing v2 configs and checkpoints, and is unchanged for historical reproduction.
+With fixed observation and action token lengths, shared observation projections run
+once per layer and branch attention work grows linearly with the number of candidates.
+This is not a claim of linear cost in total token count. Large menus and long inputs
+still need a bounded memory/time check; the scratch attention path's large-menu
+training memory limit has not been established.
 
 The CLI fixes seed1701, FP32, one complete decision per optimizer step, AdamW lr3e-4,
 weight decay0.01 and gradient clip1. The scratch default is the approved 384-wide, two-layer

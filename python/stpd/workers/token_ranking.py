@@ -69,6 +69,11 @@ class TokenConfig:
                             self.feedforward, self.dropout, self.max_tokens)
 
     @classmethod
+    def text_menu_small_b(cls, **overrides: Any) -> TokenConfig:
+        """Explicit scratch B engineering config with the shared-KV branch path enabled."""
+        return cls(recipe="stage1a.b.s.v2", dropout=0.0, **overrides)
+
+    @classmethod
     def decode(cls, value: object) -> TokenConfig:
         # Original exports omitted this field and retain the original 8192 budget.
         if isinstance(value, dict) and "max_tokens" not in value:
