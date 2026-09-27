@@ -12,6 +12,8 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from sts2_platform_evidence.human_session_bundle_v3 import HumanSessionBundleV3
+
 from spireagent.hub.database import create_private_database
 from spireagent.json_boundary import BoundaryError, digest
 from spireagent.research_curation import CurationLedger, InventoryPending
@@ -187,6 +189,50 @@ class LocalCurationOwner:
                 raise BoundaryError("local_curation", "source_index_incomplete")
             db.execute("DELETE FROM local_source_pending WHERE candidate=?", (candidate,))
 
+    @staticmethod
+    def _human_runs(store: ManifestArtifactStore, source: str) -> set[str]:
+        """Read native run membership from the exact typed local archive, not labels."""
+        from spireagent.local_verified_bundle import EVIDENCE_SCHEMA, verified_local_bundle
+
+        manifest = store.get_manifest(source)
+        if (manifest.kind != "evidence"
+                or manifest.parameters.value().get("schema") != EVIDENCE_SCHEMA):
+            raise BoundaryError("local_curation", "local_verified_source_required")
+        with verified_local_bundle(store, manifest) as verified:
+            bundle = verified.bundle
+            if not isinstance(bundle, HumanSessionBundleV3):
+                raise BoundaryError("local_curation", "human_run_identity_mismatch")
+            if any(row["session_id"] != bundle.session_id or
+                   row["run_id"] not in bundle.run_ids for row in bundle.human_text_inputs):
+                raise BoundaryError("local_curation", "human_run_identity_mismatch")
+            result = {bundle.session_id + "/" + run for run in bundle.run_ids}
+            verified.assert_directory_identity()
+            return result
+
+    def index_human_runs(self, store: ManifestArtifactStore, source: str, *,
+                         historical: bool = False) -> set[str]:
+        """Add typed run membership without claiming a canonical transition index.
+
+        A pre-owner source has unknown prior use. A new import retains its pending
+        candidate until this membership and the canonical index are both present.
+        """
+        runs = self._human_runs(store, source)
+        with self.transaction() as db:
+            indexed = db.execute("SELECT 1 FROM curation_sources WHERE id=? AND complete=1",
+                                 (source,)).fetchone()
+            if indexed is None:
+                raise BoundaryError("local_curation", "source_index_incomplete")
+            previous = {row[0] for row in db.execute(
+                "SELECT run FROM curation_source_runs WHERE source=?", (source,))}
+            pending = db.execute("SELECT 1 FROM local_source_pending WHERE artifact=?",
+                                 (source,)).fetchone() is not None
+            if self.legacy_guard and not pending and historical:
+                db.executemany("INSERT OR IGNORE INTO local_legacy_unknown_runs VALUES(?)",
+                               ((run,) for run in runs - previous))
+            db.executemany("INSERT OR IGNORE INTO curation_source_runs VALUES(?,?)",
+                           ((source, run) for run in runs))
+        return runs
+
     def _inventory_pending(self, db: sqlite3.Connection) -> bool:
         if db.execute("SELECT 1 FROM local_source_pending LIMIT 1").fetchone():
             return True
@@ -194,8 +240,22 @@ class LocalCurationOwner:
         store = ManifestArtifactStore(LocalBlobStore(self.store_dir, create=False, readonly=True))
         indexed = {row[0] for row in db.execute(
             "SELECT id FROM curation_sources WHERE complete=1")}
-        return any(artifact not in indexed for artifact in store.manifest_ids()
-                   if store.get_manifest(artifact).kind == "evidence")
+        for artifact in store.manifest_ids():
+            manifest = store.get_manifest(artifact)
+            if manifest.kind != "evidence":
+                continue
+            if artifact not in indexed:
+                return True
+            if manifest.parameters.value().get("schema") == "stpd/local-verified-bundle-v1":
+                try:
+                    runs = self._human_runs(store, artifact)
+                except (BoundaryError, OSError, ValueError):
+                    return True
+                recorded = {row[0] for row in db.execute(
+                    "SELECT run FROM curation_source_runs WHERE source=?", (artifact,))}
+                if not runs <= recorded:
+                    return True
+        return False
 
     def gold_history_unknown(self, db: sqlite3.Connection, runs: Iterable[str]) -> bool:
         if not self.legacy_guard:
