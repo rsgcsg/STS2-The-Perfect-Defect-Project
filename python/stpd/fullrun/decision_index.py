@@ -111,15 +111,18 @@ def resolve_payload(
                 # Damaged metadata cannot choose rows to delete. Orphaned derivative
                 # rows are reclaimed by bounded maintenance, not admitted as a source.
     cache.misses += 1
-    raw = (verified_local.read_archive() if verified_local is not None
-           else b"".join(store.read_payload(payload)))
-    if len(raw) != payload.size or hashlib.sha256(raw).hexdigest() != payload.sha256:
-        raise BoundaryError("decision_index", "source_identity_mismatch")
-    projection = (PlatformBundle3SourceAdapter()._project_verified_local(verified_local, raw)
-                  if verified_local is not None else PlatformBundle3SourceAdapter().project(raw))
+    if verified_local is None:
+        raw = b"".join(store.read_payload(payload))
+        if len(raw) != payload.size or hashlib.sha256(raw).hexdigest() != payload.sha256:
+            raise BoundaryError("decision_index", "source_identity_mismatch")
+        projection = PlatformBundle3SourceAdapter().project(raw)
+    else:
+        if (verified_local.archive_size != payload.size
+                or verified_local.archive_sha256 != payload.sha256):
+            raise BoundaryError("decision_index", "source_identity_mismatch")
+        projection = PlatformBundle3SourceAdapter()._project_verified_local(verified_local)
     environments = (_versions_directory(verified_local.directory)
                     if verified_local is not None else _versions(raw))
-    del raw
     header = {
         "schema": INDEX_SCHEMA, "owner": cache.owner, "source": payload.sha256,
         "size": payload.size, "run_proofs": projection.run_proofs.value(),

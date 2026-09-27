@@ -137,6 +137,25 @@ def test_workbench_preview_and_warm_source_do_not_buffer_archive(
     publish(store, (source,), rules, PRODUCER, selected.logical_id, cache=cache)
 
 
+def test_archive_stream_hash_mismatch_fails_before_projection(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    _, artifact_id, store = _fixture(tmp_path, canonical=True)
+    source = store.get_manifest(artifact_id)
+    original = store.read_payload
+
+    def damaged(payload):
+        if payload.role != "archive":
+            return original(payload)
+        chunks = list(original(payload))
+        chunks[0] = bytes([chunks[0][0] ^ 1]) + chunks[0][1:]
+        return iter(chunks)
+
+    monkeypatch.setattr(store, "read_payload", damaged)
+    with pytest.raises(BoundaryError, match="archive_identity_mismatch"):
+        preview(store, (source,), SelectionRules())
+
+
 def test_cold_projection_reuses_verified_directory_and_rejects_rebinding(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -147,6 +166,12 @@ def test_cold_projection_reuses_verified_directory_and_rejects_rebinding(
 
     unpack = local_bundle.unpack
     calls = 0
+    original_read = Path.read_bytes
+
+    def no_archive_read(path: Path) -> bytes:
+        if path.name == "bundle.tar.gz":
+            pytest.fail("cold projection must stream the archive")
+        return original_read(path)
 
     def counted(*args, **kwargs):
         nonlocal calls
@@ -154,12 +179,15 @@ def test_cold_projection_reuses_verified_directory_and_rejects_rebinding(
         return unpack(*args, **kwargs)
 
     monkeypatch.setattr(local_bundle, "unpack", counted)
+    monkeypatch.setattr(Path, "read_bytes", no_archive_read)
     monkeypatch.setattr(adapter, "_extract", lambda *_: pytest.fail("duplicate extraction"))
     assert len(preview(store, (source,), SelectionRules()).records) == 2
     assert calls == 1
     with verified_local_bundle(store, source) as verified:
         projection = PlatformBundle3SourceAdapter()._project_verified_local(verified)
         assert len(projection.transitions) == 2
+        assert projection.source_sha256 == source.payload("archive").sha256
+        assert projection.source_bytes is None
         raw_file = verified.directory / "raw/recording-manifest.json"
         raw_file.write_bytes(raw_file.read_bytes() + b" ")
         with pytest.raises(BoundaryError, match="bundle_identity_mismatch"):

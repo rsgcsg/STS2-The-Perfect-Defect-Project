@@ -33,13 +33,10 @@ MAX_TRANSFER = 16 * 1024 * 1024
 @dataclass(frozen=True)
 class VerifiedLocalBundle:
     directory: Path
-    archive_path: Path
     bundle: object
     transfer: DirectoryTransferManifest
-
-    def read_archive(self) -> bytes:
-        """Only a cold canonical projection needs the original transport bytes."""
-        return self.archive_path.read_bytes()
+    archive_sha256: str
+    archive_size: int
 
     def assert_directory_identity(self) -> None:
         """Keep a projection bound to the bytes verified in this private context."""
@@ -87,9 +84,19 @@ def verified_local_bundle(
     with tempfile.TemporaryDirectory(prefix="stpd-local-verified-") as name:
         temporary = Path(name)
         archive = temporary / "bundle.tar.gz"
+        archive_digest = hashlib.sha256()
+        archive_size = 0
         with archive.open("xb") as target:
             for chunk in store.read_payload(payloads["archive"]):
+                archive_size += len(chunk)
+                if archive_size > payloads["archive"].size:
+                    raise BoundaryError("local_preview", "archive_identity_mismatch")
+                archive_digest.update(chunk)
                 target.write(chunk)
+        archive_sha256 = archive_digest.hexdigest()
+        if (archive_size != payloads["archive"].size
+                or archive_sha256 != payloads["archive"].sha256):
+            raise BoundaryError("local_preview", "archive_identity_mismatch")
         extracted = temporary / "extracted"
         extracted.mkdir()
         unpack(archive, extracted, transfer)
@@ -113,4 +120,4 @@ def verified_local_bundle(
                     artifact_type="human-session-bundle",
                 ) != transfer):
             raise BoundaryError("local_preview", "bundle_identity_mismatch")
-        yield VerifiedLocalBundle(extracted, archive, bundle, transfer)
+        yield VerifiedLocalBundle(extracted, bundle, transfer, archive_sha256, archive_size)

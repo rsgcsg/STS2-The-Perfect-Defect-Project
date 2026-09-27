@@ -423,25 +423,26 @@ class PlatformBundle3SourceAdapter:
             )
 
     def _project_verified_local(
-        self, verified: VerifiedLocalBundle, source: bytes | None = None,
+        self, verified: VerifiedLocalBundle,
     ) -> SourceProjection:
         """Project the exact directory held by the local typed-verification context."""
         verified.assert_directory_identity()
         bundle = verified.bundle
         assert isinstance(bundle, HumanSessionBundleV3)
         return self._project(
-            verified.directory, verified.read_archive() if source is None else source,
-            bundle.bundle_content_id,
+            verified.directory, None, bundle.bundle_content_id,
             dict(bundle.capture_profile), dict(bundle.manifest),
+            source_sha256=verified.archive_sha256,
         )
 
     def _project(
         self,
         directory: Path,
-        source: bytes,
+        source: bytes | None,
         content_id: str,
         profile: dict[str, Any],
         manifest: dict[str, Any],
+        *, source_sha256: str | None = None,
     ) -> SourceProjection:
         raw = directory / "raw"
         canonical = _lines(directory / "export/canonical-transitions.jsonl")
@@ -481,7 +482,11 @@ class PlatformBundle3SourceAdapter:
                 "human_origin_attestation": manifest["human_origin_attestation"],
             }
         )
-        source_hash = hashlib.sha256(source).hexdigest()
+        if source is None and source_sha256 is None:
+            raise BoundaryError("platform_projection", "source_identity_required")
+        source_hash = (hashlib.sha256(source).hexdigest() if source is not None
+                       else source_sha256)
+        assert source_hash is not None
         runs: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in canonical:
             runs[row["run_id"]].append(row)
