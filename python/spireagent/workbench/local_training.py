@@ -200,7 +200,10 @@ class LocalTrainingService:
                     raise BoundaryError("local_training", "human_source_identity_mismatch")
                 # This is the actual engineering split gate; session count alone
                 # cannot establish independent groups after duplicate collapse.
-                project_human_inputs(rows)
+                samples, _ = project_human_inputs(rows)
+                if (sum(sample.split == "train" for sample in samples) > 32
+                        or sum(sample.split == "dev" for sample in samples) > 8):
+                    raise BoundaryError("local_training", "human_engineering_sample_limit")
                 sources = {parent.artifact_id for parent in manifest.parents}
                 runs: set[str] = set()
                 for source_id in sources:

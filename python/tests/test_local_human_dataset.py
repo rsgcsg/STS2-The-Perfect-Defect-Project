@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from pathlib import Path
@@ -15,7 +16,7 @@ from test_local_recording_preview import _fixture
 from test_text_menu_data import snapshot
 
 from spireagent.artifact_contracts import Manifest
-from spireagent.json_boundary import BoundaryError, FrozenObject
+from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, json_bytes
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig, ProjectConfig, combination
@@ -50,11 +51,34 @@ def _settle(service: LocalDatasetService) -> dict:
 
 
 def _fresh_source(tmp_path: Path, monkeypatch, store: ManifestArtifactStore,
-                  owner, name: str) -> str:
+                  owner, name: str, *, accepted_count: int = 1) -> str:
     monkeypatch.setattr(recording_fixture, "bundle3", lambda path, **kwargs:
                         original_bundle3(path, **{**kwargs, "session_id": "session-" + name}))
     monkeypatch.setattr(recording_fixture, "snapshot", lambda _: snapshot("page-" + name))
+    original_labels = recording_fixture._labels
+
+    def labels(bundle: Path) -> None:
+        original_labels(bundle)
+        if accepted_count == 1:
+            return
+        stream = bundle / "raw/human-text-inputs.jsonl"
+        first, rejected = [decode_json(line) for line in stream.read_bytes().splitlines()]
+        rows = [{**first, "sequence": index, "record_id": f"text-{index}"}
+                for index in range(1, accepted_count + 1)]
+        rows.append({**rejected, "sequence": accepted_count + 1,
+                     "record_id": "text-rejected"})
+        content = b"".join(json_bytes(row) for row in rows)
+        stream.write_bytes(content)
+        receipt_path = bundle / "raw/session-close-receipt.json"
+        receipt = recording_fixture.load(receipt_path)
+        receipt.update(human_text_input_count=len(rows),
+                       human_text_inputs_sha256=hashlib.sha256(content).hexdigest())
+        recording_fixture.write(receipt_path, receipt)
+        recording_fixture.seal(bundle)
+
+    monkeypatch.setattr(recording_fixture, "_labels", labels)
     _, candidate, other = _fixture(tmp_path / name)
+    monkeypatch.setattr(recording_fixture, "_labels", original_labels)
     copied = other.get_manifest(candidate)
     payloads = tuple(store.put_bytes(payload.role,
                                      b"".join(other.read_payload(payload)),
@@ -230,6 +254,37 @@ def test_human_source_trains_real_three_step_worker(tmp_path: Path, monkeypatch)
         assert {row[0] for row in db.execute(
             "SELECT source FROM curation_source_uses WHERE kind='training' AND reference=?",
             (result["operation_id"],))} == set(sources)
+
+
+def test_human_short_training_rejects_large_typed_view_before_use(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    service, _ = _prepared(tmp_path)
+    owner = configured_owner(service.config)
+    store = ManifestArtifactStore(LocalBlobStore(owner.store_dir, create=False))
+    left = _fresh_source(tmp_path, monkeypatch, store, owner, "b", accepted_count=33)
+    right = _fresh_source(tmp_path, monkeypatch, store, owner, "c")
+    monkeypatch.setattr("spireagent.workbench.local_dataset.source_identity",
+                        lambda _: store.get_manifest(left).producer)
+    service.start_human_preview([left, right])
+    preview = _settle(service)
+    assert preview["selected"] == 34 and preview["can_publish"]
+    service.start_publish(preview["preview_id"])
+    published = _settle(service)
+    assert published["status"] == "completed", published.get("error_code")
+    before = set(store.manifest_ids())
+    training = LocalTrainingService(service.config)
+    training.start(published["result_artifact_id"])
+    assert training._thread is not None
+    training._thread.join(timeout=30)
+    result = training.status()["operation"]
+    assert result["status"] == "failed"
+    assert result["error_code"] == "human_engineering_sample_limit"
+    assert not any(key in result for key in ("view_id", "input_id", "run_id"))
+    assert set(store.manifest_ids()) == before
+    with owner.transaction() as db:
+        assert db.execute("SELECT 1 FROM curation_uses LIMIT 1").fetchone() is None
+        assert db.execute("SELECT 1 FROM curation_source_uses LIMIT 1").fetchone() is None
 
 
 def test_human_http_preview_publish_binding_are_explicit_and_cookie_bound(
