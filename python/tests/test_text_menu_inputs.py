@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+from unittest.mock import patch
 
 import pytest
 
@@ -157,23 +158,70 @@ def test_scoring_uses_same_four_recipe_text_route_and_port_catalog_order():
 
 def test_small_b_shared_observation_scores_every_text_menu_action_in_order():
     import torch
+    from torch.nn import functional as F
 
-    from stpd.models.stage1a import build_scorer
-    from stpd.models.token_core import ScratchShape, ScratchTokenCore
+    from stpd.models.token_core import ScratchTokenCore
+    from stpd.workers.token_ranking import TokenConfig, construct_model
 
     current = project_text_menu_snapshot(snapshot())
-    shape = ScratchShape(vocab_size=256, width=16, layers=1, heads=2,
-                         feedforward=32, dropout=0.0, max_tokens=4096)
-    model = build_scorer("stage1a.b.s.v2", ScratchTokenCore(shape)).eval()
+    config = TokenConfig.text_menu_small_b(
+        width=16, layers=2, heads=2, feedforward=32, max_tokens=4096,
+    )
+    assert config.recipe == "stage1a.b.s.v2" and config.dropout == 0.0
+    model, _ = construct_model(config, vocab_size=256)
     state = torch.tensor(list(current.state_text.encode("utf-8")), dtype=torch.long)
     actions = tuple(torch.tensor(list(text.encode("utf-8")), dtype=torch.long)
                     for text in current.action_texts)
-    with torch.no_grad():
+    assert isinstance(model.core, ScratchTokenCore)
+    model.train()
+    with (patch.object(model.core, "_project_attention",
+                       wraps=model.core._project_attention) as project,
+          patch("stpd.models.token_core.F.scaled_dot_product_attention",
+                wraps=F.scaled_dot_product_attention) as attention):
+        train_values = model(state, actions)
+        state_projections = [call for call in project.call_args_list
+                             if call.args[1].shape[0] == len(state)]
+        assert len(state_projections) == config.layers
+        # For fixed state/action lengths, branch query/key work grows once per candidate;
+        # this makes no claim that total work is linear in the input token count.
+        assert attention.call_count == config.layers - 1 + len(actions) * config.layers
+        max_branch = max(len(action) + 1 for action in actions)
+        for call in attention.call_args_list:
+            if call.args[0].shape[-2] == len(state):
+                assert call.args[1].shape[-2] == len(state)
+            else:
+                assert call.args[0].shape[-2] <= max_branch
+                assert call.args[1].shape[-2] <= len(state) + max_branch
+        train_values.square().sum().backward()
+
+    model.eval()
+    with (torch.no_grad(),
+          patch.object(model.core, "_project_attention",
+                       wraps=model.core._project_attention) as project,
+          patch("stpd.models.token_core.F.scaled_dot_product_attention",
+                wraps=F.scaled_dot_product_attention) as attention):
         values = model(state, actions)
+        assert len([call for call in project.call_args_list
+                    if call.args[1].shape[0] == len(state)]) == config.layers
+        assert attention.call_count == config.layers - 1 + len(actions) * config.layers
         reversed_values = model(state, actions[::-1])
+    assert train_values.shape == (3,) and torch.isfinite(train_values).all()
     assert values.shape == (3,) and torch.isfinite(values).all()
     torch.testing.assert_close(values, reversed_values.flip(0))
     assert current.scores_in_catalog_order(values.tolist()) == tuple(values.tolist())
+
+
+def test_explicit_small_b_cli_selector_is_exclusive_with_historical_recipe():
+    import argparse
+
+    from spireagent.research_cli import add_token_recipe_arguments
+
+    parser = argparse.ArgumentParser()
+    add_token_recipe_arguments(parser)
+    assert parser.parse_args(["--text-menu-small-b"]).text_menu_small_b
+    assert parser.parse_args(["--recipe", "stage1a.b.s.v2"]).recipe == "stage1a.b.s.v2"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--recipe", "stage1a.b.s.v2", "--text-menu-small-b"])
 
 
 def test_navigation_is_never_counted_as_native_delivery():
