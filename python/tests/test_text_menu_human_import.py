@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from platform_bundle3_fixture import bundle3, load, seal, write
@@ -12,7 +13,9 @@ from test_artifact_store_v1 import PRODUCER, store
 from test_text_menu_data import snapshot
 
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
+from stpd.fullrun.features import _load_model_view
 from stpd.fullrun.text_menu_human_import import (
+    LEGACY_VIEW_SCHEMA,
     _project,
     load_human_text_source,
     load_verified_human_text_bundle,
@@ -83,6 +86,43 @@ def test_duplicate_visible_input_collapses_sessions_and_blocks_leakage() -> None
     rows = (observation("session-a", "same"), observation("session-b", "same"))
     with pytest.raises(BoundaryError, match="independent_groups_required"):
         _project(rows)
+
+
+def test_same_local_run_id_does_not_claim_cross_session_native_independence() -> None:
+    rows = (observation("session-a", "different-a"),
+            observation("session-b", "different-b"))
+    assert rows[0]["run_id"] == rows[1]["run_id"] == "run-1"
+    assert (project_text_menu_snapshot(rows[0]["snapshot"]).state_text
+            != project_text_menu_snapshot(rows[1]["snapshot"]).state_text)
+
+    samples, report = _project(rows)
+
+    assert {sample.split for sample in samples} == {"train", "dev"}
+    assert len({sample.run_id for sample in samples}) == 2  # scoped by session
+    assert report["split_basis"] == (
+        "recording_session_group_with_duplicate_visible_current_input_collapse")
+    assert report["native_run_independence"] == "unknown_across_sessions"
+    assert [row["run_id"] for row in report["rows"]] == ["run-1", "run-1"]
+
+    legacy_samples, legacy_report = _project(rows, schema=LEGACY_VIEW_SCHEMA)
+    assert legacy_samples == samples
+    assert legacy_report["schema"] == LEGACY_VIEW_SCHEMA
+    assert legacy_report["split_basis"] == (
+        "whole_session_run_and_duplicate_visible_current_input")
+    assert "native_run_independence" not in legacy_report
+
+
+@pytest.mark.parametrize("schema", [LEGACY_VIEW_SCHEMA, "stpd/human-text-input-bc-view-v2"])
+def test_human_view_dispatch_keeps_v1_and_v2_read_paths(schema, monkeypatch) -> None:
+    manifest = SimpleNamespace(
+        kind="model_view", parameters=SimpleNamespace(value=lambda: {"schema": schema}))
+    target = SimpleNamespace(get_manifest=lambda identity: manifest)
+    expected = (manifest, ())
+    monkeypatch.setattr(
+        "stpd.fullrun.text_menu_human_import.load_human_text_bc_view",
+        lambda store, value: expected)
+
+    assert _load_model_view(target, "view-id") == expected
 
 
 def test_forged_choice_cannot_become_human_label() -> None:
