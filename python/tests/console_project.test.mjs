@@ -767,7 +767,7 @@ test("local training state gates pending and unknown outcomes, and links only co
   }});
   const resultPage = await done.render();
   assert.match(text(resultPage), /这不表示模型已加载到游戏/);
-  for (const [output, view] of [[runResult, "local-workspace"], [model, "local-workspace"], [evaluation, "evaluations"]])
+  for (const [output, view] of [[runResult, "local-workspace"], [model, "local-workspace"], [evaluation, "local-workspace"]])
     assert.equal(find(resultPage, element => element.tagName === "A" && element.href === `?view=${view}&id=${output}`) !== null, true);
   assert.equal(walk(resultPage).some(element => element.dataset?.action === "start-local-training"), false);
   assert.equal(post(done.calls).length, 0);
@@ -813,6 +813,46 @@ test("unknown local training schema does not expose unrecognized fields or token
   assert.match(text(page), /训练状态格式未知/);
   assert.match(text(page), /unknown_local_training_status_schema/);
   assert.doesNotMatch(text(page), /must-not-render|\/private\/local\/path|secret marker/);
+  assert.equal(walk(page).some(element => element.dataset?.action === "start-local-training"), false);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("known local training schema only exposes safe codes, stages and exact artifact identities", async () => {
+  const cases = [
+    {
+      availability:"preparation_required", reason:"secretcredential",
+      operation:{status:"idle"},
+    },
+    {
+      availability:"ready", csrf_token:"training-csrf",
+      operation:{status:"pending", dataset_id:id("a"), stage:"/private/secret/stage.txt"},
+    },
+    {
+      availability:"ready", csrf_token:"training-csrf",
+      operation:{status:"failed", dataset_id:id("a"), error_code:"secretcredential"},
+    },
+    {
+      availability:"ready", csrf_token:"training-csrf",
+      operation:{status:"completed", dataset_id:id("a"), operation_id:id("b").slice(0, 32),
+        run_id:"/private/secret/run", checkpoint_id:"/private/secret/checkpoint",
+        result_id:"/private/secret/result", model_id:id("c"), evaluation_id:"/private/secret/evaluation"},
+    },
+  ];
+  for (const status of cases) {
+    const env = localTrainingEnv({trainingStatus:{schema:"stpd/local-training-operation-v1", ...status}});
+    const page = await env.render();
+    assert.doesNotMatch(text(page), /\/private\/secret/);
+    assert.doesNotMatch(text(page), /secretcredential/);
+    if (status.operation.stage) assert.match(text(page), /训练阶段未知/);
+    if (status.operation.error_code) assert.match(text(page), /训练条件暂不可用/);
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
+test("empty local training status response is rejected before reading csrf", async () => {
+  const env = localTrainingEnv({trainingStatus:() => null});
+  const page = await env.render();
+  assert.match(text(page), /训练服务暂不可用/);
   assert.equal(walk(page).some(element => element.dataset?.action === "start-local-training"), false);
   assert.equal(post(env.calls).length, 0);
 });
