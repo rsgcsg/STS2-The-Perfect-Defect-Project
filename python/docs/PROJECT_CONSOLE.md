@@ -143,6 +143,10 @@ public compact-v2 BC view from canonical decisions with exact public-H bindings.
 It rejects missing bindings or an empty train/dev projection instead of falling back
 to native/private features. Human text-menu input labels remain a separate mode;
 their research token support does not yet make them curated datasets in this UI.
+The Human text v1/v2 research path revalidates its typed view before tokenization.
+Its different recording sessions do not prove independent native runs: model and
+baseline reports retain descriptive metrics but suppress whole-run confidence
+intervals; comparisons identify reported session groups rather than independent runs.
 
 The store has one training slot shared across local profiles. GET, rendering and
 refresh never launch work. A pending operation retains its identity; loss of its
