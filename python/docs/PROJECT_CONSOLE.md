@@ -18,7 +18,7 @@ collection or make historical receipts current evidence.
 ## Daily collection
 
 Opening the local Workbench first shows **本机工作台**, a no-login navigation page for
-the existing local model view, the read-only registered research workspace, and an
+the existing local model view, the registered research workspace, and an
 explanation of game-side Human recording. It does not query cloud identity or start any
 game, model, recording, or upload operation. Use the top-right cloud link only when you
 want shared project data; the link is absent when no Hub is configured. Existing direct
@@ -59,7 +59,8 @@ and sizes through the existing local inventory and artifact routes. GET requests
 or repair storage, scan other directories, read payload bytes, prepare a dataset, or start training.
 
 If private `project.json` has a `research_workspace` entry, that configured store remains the
-selected source and is browsed read-only. The page does not replace or hide it with a managed
+selected source. Browsing is read-only; explicit preparation and Dataset commands are separate.
+The page does not replace or hide that store with a managed
 workspace. With no configured `research_workspace`, the first visit reports that no local
 workspace exists; only an explicit **新建本机工作空间** action creates one. The Workbench creates
 an empty store and supported SQLite index under its state directory, then atomically records a
@@ -68,8 +69,8 @@ after a Workbench restart. Creation does not import data or make it trainable.
 
 An invalid registration, marker, store, or index is shown as unavailable and is never silently
 replaced. Interrupted initialization directories are retained and reported; the page does not
-adopt arbitrary old directories. Keep private local paths out of Git. This remains an artifact
-inventory, not a complete offline collection, dataset-building, training, or evaluation workflow.
+adopt arbitrary old directories. Keep private local paths out of Git. An artifact's presence in
+this inventory alone does not make it a usable training set, installed model or validated result.
 
 The page also has an explicit **查看录制来源** / **刷新录制来源** action. It uses the registered,
 byte-verified CollectionTool and its read-only Game Mod setup status to find the owner-reported
@@ -89,8 +90,8 @@ publishing an immutable `stpd/local-verified-bundle-v1` evidence manifest into t
 existing local research store. It never edits the raw recording. Stable worker/campaign labels
 are private local grouping labels, not account or person identity. The long-running command has
 persisted pending/completed/failed/interrupted status; page refresh never retries it.
-This local manifest has no Hub receipt and is not an admitted research source, Dataset, or
-training input. A separate future admission path must explicitly review it.
+This local manifest has no Hub receipt and is not itself a Dataset or training input.
+The separate purpose-bound Dataset path below rechecks the source before selecting samples.
 
 Selecting that exact local-verified evidence artifact exposes an explicit **预览样本** command.
 The local browser POST starts one bounded background read of the selected store; GET only reads
@@ -102,6 +103,28 @@ may overlap and do not establish complete trajectories, independent runs, Human 
 research admission, or trainability. The operation publishes no artifact or usage claim, does
 not contact Hub, and leaves the store and raw recording untouched. Restart loses this ephemeral
 preview status; another explicit command is required to recompute it.
+
+### Prepare the existing library and fix a Dataset
+
+Use **准备本机资料** once when the configured store does not yet have its local curation
+owner. This explicit operation attaches the persistent usage ledger in place; it does not
+move old recordings, copy model weights, or create a second old/new library. Known prior
+uses remain recorded. Unknown old use is not asserted to be clean history; it limits Gold
+claims where relevant, without making all ordinary training selections read-only.
+
+From one verified recording's detail, preview its eligible canonical decisions, select
+training/test/Gold purpose and explicitly create the Dataset. The result is an immutable
+membership selection with source links, not another copy of the raw recording. The
+Dataset detail shows sample count, purpose and split status. A set with only one independent
+component can be saved, but that does not create an independent development partition.
+Accepted Human input labels and canonical decisions remain separate sample types; neither
+count may be silently substituted for the other.
+
+The registry is a rebuildable catalog; the curation ledger is the durable use authority.
+Refreshing a page neither creates a Dataset nor repeats a publication. A failed or interrupted
+operation keeps its identity and reason; an explicit recovery checks for an exact existing
+result before publishing anything again. Dataset purpose is not evidence of model quality,
+native run independence or complete historical use across other stores.
 
 ## Cloud login and connection
 
