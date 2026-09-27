@@ -645,6 +645,8 @@ test("human recording selection survives pagination and search and is cleared ex
   page = await env.render();
   assert.match(text(page), /已选 2 份录制/);
   await action(page, "clear-human-input-selection").onclick();
+  assert.equal(action(page, "clear-human-input-selection").disabled, true,
+    "the clear action stays disabled after clearing the current selection");
   page = await env.render();
   assert.match(text(page), /已选 0 份录制/);
   assert.equal(walk(page).some(element => element.dataset?.action === "publish-human-input-dataset"), false,
