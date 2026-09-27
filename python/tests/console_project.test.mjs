@@ -797,7 +797,7 @@ test("offline evaluation detail reads one exact dev recorded-report summary", as
       if (url === `/api/local-workspace/evaluations/${evaluation}`) return {
         schema:"stpd/local-offline-evaluation-summary-v1", evaluation_id:evaluation,
         evaluation_schema:"stpd/offline-ranking-evaluation-v1", model_id:id("a"), model_view_id:id("b"),
-        model_recipe:null, view_schema:"stpd/model-view-v1", partition:"dev", baseline:"model",
+        model_recipe:null, view_schema:"stpd/fullrun-model-view-v1", partition:"dev", baseline:"model",
         qualification:"not_claimed", scientific_verdict:"not_claimed",
         validation_scope:"recorded_report_and_parent_identities", decision_count:12,
         reported_run_groups:2, multi_candidate_count:8,
