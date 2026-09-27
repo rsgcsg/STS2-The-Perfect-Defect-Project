@@ -498,6 +498,66 @@ test("pending dataset checks do not resubmit; failed and interrupted checks need
   }
 });
 
+test("recoverable local publication is checked only on explicit click", async () => {
+  const artifact = id("a"), previewId = "b".repeat(32);
+  let publishes = 0;
+  const env = localDatasetEnv({artifact, datasetStatus: {
+    schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+    operation: {status: "interrupted", artifact_id: artifact, purpose: "training",
+      paired_training: null, preview_id: previewId, recovery_available: true,
+      can_publish: false},
+    csrf_token: "dataset-csrf",
+  }, datasetHandler: async (url, options) => {
+    assert.equal(url, "/api/local-datasets/publish");
+    assert.equal(options.headers["X-CSRF-Token"], "dataset-csrf");
+    publishes += 1;
+    return {status: "failed", recovery_available: false};
+  }});
+  const page = await env.render();
+  const recover = action(page, "recover-local-dataset-publication");
+  assert.equal(post(env.calls).length, 0);
+  await action(page, "refresh-local-dataset-status").onclick();
+  assert.equal(post(env.calls).length, 0);
+  await recover.onclick();
+  assert.equal(publishes, 1);
+  assert.equal(post(env.calls).length, 1);
+  assert.deepEqual(body(post(env.calls)[0]), {preview_id: previewId});
+  assert.equal(recover.disabled, true);
+  await recover.onclick();
+  assert.equal(post(env.calls).length, 1);
+});
+
+test("local publication recovery requires exact backend availability and CSRF", async () => {
+  const artifact = id("a");
+  for (const operation of [
+    {status: "failed", artifact_id: artifact, purpose: "training", paired_training: null,
+      preview_id: "c".repeat(32), recovery_available: false, can_publish: false},
+    {status: "interrupted", artifact_id: artifact, purpose: "training", paired_training: null,
+      preview_id: "not-a-preview-id", recovery_available: true, can_publish: false},
+  ]) {
+    const env = localDatasetEnv({artifact, datasetStatus: {
+      schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+      operation, csrf_token: "dataset-csrf",
+    }});
+    const page = await env.render();
+    assert.equal(walk(page).some(element =>
+      element.dataset?.action === "recover-local-dataset-publication"), false);
+    assert.equal(post(env.calls).length, 0);
+  }
+
+  const noCsrf = localDatasetEnv({artifact, datasetStatus: {
+    schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+    operation: {status: "failed", artifact_id: artifact, purpose: "training",
+      paired_training: null, preview_id: "d".repeat(32), recovery_available: true,
+      can_publish: false},
+  }});
+  const page = await noCsrf.render();
+  const recover = action(page, "recover-local-dataset-publication");
+  assert.equal(recover.disabled, true);
+  await recover.onclick();
+  assert.equal(post(noCsrf.calls).length, 0);
+});
+
 test("matching preview publishes once and links only its local result", async () => {
   const artifact = id("a"), dataset = id("d"), previewId = "c".repeat(32);
   let operation = {status: "preview_ready", artifact_id: artifact, purpose: "training",

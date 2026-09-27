@@ -2560,6 +2560,19 @@ window.SpireProject = (() => {
       section.append(el("p", "上次检查对应另一份录制或用途选择；旧预览不能用于当前选择。请明确重新检查。", "small muted"));
     }
     let confirmButton = null;
+    if (operationForArtifact && ["failed", "interrupted"].includes(operation.status)
+        && operation.recovery_available === true && hex(operation.preview_id, 32)
+        && sameSelection()) {
+      const recoveryOptions = {primary:true, disabled:!data.csrf_token};
+      section.append(command(ctx, "recover-local-dataset-publication", "核对上次创建结果", async () => {
+        if (!operationForArtifact || !["failed", "interrupted"].includes(operation.status)
+            || operation.recovery_available !== true || !sameSelection()
+            || !hex(operation.preview_id, 32) || !data.csrf_token) return;
+        recoveryOptions.disabled = true;
+        await request(ctx, "/api/local-datasets/publish", {preview_id: operation.preview_id}, data.csrf_token);
+        await reload(ctx);
+      }, recoveryOptions));
+    }
     if (operation.status === "preview_ready" && sameSelection()) {
       section.append(fields([
         ["预览保留决策", count(operation.selected)],
