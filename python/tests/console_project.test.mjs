@@ -568,7 +568,7 @@ test("legacy and recovery-required dataset status preserve browsing without enab
   assert.equal(post(legacy.calls).length, 0);
 });
 
-test("legacy configured workspace uses the new curation owner state after preparation", async () => {
+test("ready legacy curation suppresses setup cards while dataset purpose controls remain", async () => {
   const artifact = id("a");
   const env = localDatasetEnv({artifact,
     managedStatus: {
@@ -582,12 +582,309 @@ test("legacy configured workspace uses the new curation owner state after prepar
     },
   });
   const page = await env.render();
-  assert.match(text(page), /本机用途记录已准备/);
-  assert.match(text(page), /旧资料的用途历史未完全可证/);
-  assert.match(text(page), /本机数据集检查/);
+  assert.doesNotMatch(text(page), /正在使用现有本机资料库|本机用途记录已准备/);
+  assert.match(text(page), /完整决策数量来自已核验的当前录制/);
   assert.equal(walk(page).some(element => element.name === "local-dataset-purpose"), true);
   assert.equal(env.calls.some(call => call.url === "/api/local-workspace/curation"), true);
   assert.equal(post(env.calls).length, 0);
+});
+
+test("ready legacy workspace directory does not say that preparation is still pending", async () => {
+  const env = setup({
+    identity: {status: "signed_out"}, view: "local-workspace",
+    curationStatus: {schema: "stpd/local-curation-preparation-v1", status: "ready"},
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {status: "legacy_workspace_configured"};
+      if (url === "/api/local-workspace?limit=25&offset=0") return {total: 0, items: []};
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /用途记录已准备/);
+  assert.doesNotMatch(text(page), /准备用途记录后/);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("prepared managed dataset detail leads with manifest facts and links its exact parents", async () => {
+  const dataset = id("a"), source = id("b"), paired = id("c");
+  const env = setup({
+    identity: {status: "signed_out"}, view: "local-workspace", query: `&id=${dataset}`,
+    curationStatus: {
+      schema: "stpd/local-curation-preparation-v1", status: "not_applicable",
+    },
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {
+        status: "ready", curation_status: "ready", workspace_id: id("d"),
+      };
+      if (url === `/api/local-workspace/artifacts/${dataset}`) return {
+        schema: "stpd/local-workspace-artifact-v1", kind: "dataset", artifact_id: dataset,
+        parameters: {
+          schema: "stpd/curated-decision-dataset-v1", display_name: "test split",
+          records: 17, purpose: "test", split_status: "purpose_assigned", paired_training: paired,
+        },
+        parents: [{role: `source_${source}`, artifact_id: source}], payloads: [],
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /数据集概览/);
+  assert.match(text(page), /test split/);
+  assert.match(text(page), /17/);
+  assert.match(text(page), /测试/);
+  assert.match(text(page), /已按所选评测用途分配/);
+  assert.doesNotMatch(text(page), /本机工作空间已就绪|本机用途记录已准备|此页在本机读取/);
+  assert.equal(env.calls.some(call => call.url === "/api/local-workspace/curation"), true,
+    "managed workspaces may report not_applicable from the configured-workspace owner");
+  assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${source}`).textContent,
+    `查看来源 · ${source.slice(0, 16)}`);
+  assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${paired}`).textContent,
+    `查看配对训练数据集 · ${paired.slice(0, 16)}`);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("dataset detail shows unknown when purpose metadata or source parents are absent", async () => {
+  const dataset = id("a");
+  const env = setup({
+    identity: {status: "local_only"}, view: "local-workspace", query: `&id=${dataset}`,
+    curationStatus: {schema: "stpd/local-curation-preparation-v1", status: "ready"},
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {status: "legacy_workspace_configured"};
+      if (url === `/api/local-workspace/artifacts/${dataset}`) return {
+        kind: "dataset", artifact_id: dataset,
+        parameters: {schema: "stpd/curated-decision-dataset-v1"}, parents: [], payloads: [],
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /样本数\n未知/);
+  assert.match(text(page), /用途\n未知/);
+  assert.match(text(page), /数据划分\n未知/);
+  assert.match(text(page), /来源\n未知/);
+  assert.equal(walk(page).some(element => element.tagName === "A" && element.href?.includes("id=")), false);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("dataset detail retains preparation and recoverable continuation until curation is ready", async () => {
+  const dataset = id("a");
+  for (const [status, retryAvailable, actionExpected] of [
+    ["preparation_required", false, true],
+    ["recovery_required", false, false],
+    ["recovery_required", true, true],
+  ]) {
+    const env = setup({
+      identity: {status: "local_only"}, view: "local-workspace", query: `&id=${dataset}`,
+      curationStatus: {
+        schema: "stpd/local-curation-preparation-v1", status, retry_available: retryAvailable,
+        reason: status === "recovery_required" ? "preparation_interrupted" : undefined,
+        csrf_token: "browser-csrf",
+      },
+      handler: async url => {
+        if (url === "/api/local-workspace/managed") return {status: "ready", workspace_id: id("d")};
+        if (url === `/api/local-workspace/artifacts/${dataset}`) return {
+          kind: "dataset", artifact_id: dataset,
+          parameters: {schema: "stpd/curated-decision-dataset-v1", records: 3, purpose: "training"},
+          parents: [], payloads: [],
+        };
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    assert.equal(Boolean(walk(page).find(element => element.dataset?.action === "prepare-local-curation")), actionExpected);
+    if (status === "preparation_required") assert.match(text(page), /首次准备会在本机建立用途记录/);
+    if (status === "recovery_required") assert.match(text(page), retryAvailable
+      ? /上次准备遇到可继续的暂时错误/ : /用途记录需要恢复核对/);
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
+test("offline evaluation catalog is a no-login metadata page and never reads summaries", async () => {
+  const evaluation = id("a"), sealed = id("b");
+  const env = setup({
+    identity: {status: "signed_out"}, view: "evaluations",
+    handler: async url => {
+      if (url === "/api/local-workspace?kind=offline_evaluation&limit=25&offset=0") return {
+        schema: "stpd/local-workspace-inventory-v1", kind: "offline_evaluation", total: 2,
+        items: [{artifact_id: evaluation, kind: "offline_evaluation", parents: [], payloads: [],
+          parameters: {schema: "stpd/offline-ranking-evaluation-v1", partition: "dev", baseline: "model"}},
+        {artifact_id: sealed, kind: "offline_evaluation", parents: [], payloads: [],
+          parameters: {schema: "stpd/offline-ranking-evaluation-v1", partition: "test"}}],
+      };
+      if (url === "/api/local-models") return {evaluations: []};
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /本机离线评估/);
+  assert.match(text(page), /描述性离线统计/);
+  assert.match(text(page), /开发集/);
+  assert.doesNotMatch(text(page), new RegExp(sealed));
+  assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${evaluation}`).textContent,
+    `离线评估 · ${evaluation.slice(0, 16)}`);
+  assert.equal(env.calls.some(call => call.url === `/api/local-workspace/evaluations/${evaluation}`), false);
+  assert.equal(env.calls[0].url, "/api/local-workspace?kind=offline_evaluation&limit=25&offset=0");
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("offline evaluation catalog distinguishes empty, missing, unavailable, and unknown", async () => {
+  for (const [response, expected, unexpected] of [
+    [{schema:"stpd/local-workspace-inventory-v1", total:0, items:[]}, /还没有本机离线评估/, /读取失败/],
+    [{schema:"stpd/local-workspace-status-v1", status:"not_configured"}, /尚未建立本机资料空间/, /还没有本机离线评估/],
+    [{schema:"stpd/local-workspace-status-v1", status:"unavailable", error_code:"registry_unavailable"}, /本机离线评估暂不可用/, /还没有本机离线评估/],
+    [{schema:"future/local-evaluation-index-v9", total:0, items:[]}, /目录格式未知/, /还没有本机离线评估/],
+  ]) {
+    const env = setup({
+      identity: {status: "local_only"}, view: "evaluations",
+      handler: async url => {
+        if (url === "/api/local-workspace?kind=offline_evaluation&limit=25&offset=0") return response;
+        if (url === "/api/local-models") return {evaluations: []};
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    assert.match(text(page), expected);
+    assert.doesNotMatch(text(page), unexpected);
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
+test("offline evaluation catalog paginates the exact metadata inventory query", async () => {
+  const offsets = [];
+  const env = setup({
+    identity: {status: "signed_out"}, view: "evaluations",
+    handler: async url => {
+      if (url.startsWith("/api/local-workspace?")) {
+        offsets.push(url);
+        const offset = Number(new URL(url, "http://localhost").searchParams.get("offset"));
+        const evaluation = id(offset === 0 ? "a" : "b");
+        return {schema: "stpd/local-workspace-inventory-v1", kind: "offline_evaluation",
+          total: 26, offset, limit: 25,
+          items: [{artifact_id: evaluation, kind: "offline_evaluation", parents: [], payloads: [],
+            parameters: {schema: "unknown-evaluation-v7", partition: "dev"}}]};
+      }
+      if (url === "/api/local-models") return {evaluations: []};
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const first = await env.render();
+  assert.match(text(first), /unknown-evaluation-v7/);
+  assert.match(text(first), /metadata页 1–25 \/ 26/);
+  assert.ok(action(first, "local-offline-evaluations-next"));
+  assert.equal(env.calls.some(call => call.url.includes("/api/local-workspace/evaluations/")), false);
+  await action(first, "local-offline-evaluations-next").onclick();
+  const second = await env.render();
+  assert.match(text(second), /metadata页 26–26 \/ 26/);
+  assert.ok(action(second, "local-offline-evaluations-prev"));
+  assert.equal(offsets[0], "/api/local-workspace?kind=offline_evaluation&limit=25&offset=0");
+  assert.equal(offsets.at(-1), "/api/local-workspace?kind=offline_evaluation&limit=25&offset=25");
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("offline evaluation detail reads one exact dev recorded-report summary", async () => {
+  const evaluation = id("c");
+  const env = setup({
+    identity: {status: "signed_out"}, view: "local-workspace", query: `&id=${evaluation}`,
+    curationStatus: {schema:"stpd/local-curation-preparation-v1", status:"ready"},
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${evaluation}`) return {
+        artifact_id:evaluation, kind:"offline_evaluation",
+        parameters:{schema:"stpd/offline-ranking-evaluation-v1", partition:"dev"},
+      };
+      if (url === `/api/local-workspace/evaluations/${evaluation}`) return {
+        schema:"stpd/local-offline-evaluation-summary-v1", evaluation_id:evaluation,
+        evaluation_schema:"stpd/offline-ranking-evaluation-v1", model_id:id("a"), model_view_id:id("b"),
+        model_recipe:null, view_schema:"stpd/model-view-v1", partition:"dev", baseline:"model",
+        qualification:"not_claimed", scientific_verdict:"not_claimed",
+        validation_scope:"recorded_report_and_parent_identities", decision_count:12,
+        reported_run_groups:2, multi_candidate_count:8,
+        overall:{count:12, top1:0.123456, mrr:0.7, nll:0.9, confidence:0.4, margin:0.2},
+        interpretation:"producer_recorded_summary_not_full_lineage_or_quality_verification",
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /已记录的开发集结果/);
+  assert.match(text(page), /未重新核验原始数据、模型权重或完整训练来源/);
+  assert.match(text(page), /记录中的对局分组数（未复核独立性）/);
+  assert.match(text(page), /总体记录指标/);
+  assert.match(text(page), /首选命中率（非胜率，Top-1）/);
+  assert.match(text(page), /0\.1235/);
+  assert.doesNotMatch(text(page), /0\.123456/);
+  assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${id("a")}`).textContent,
+    `查看本机模型 · ${id("a").slice(0, 16)}`);
+  assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${id("b")}`).textContent,
+    `查看本机模型视图 · ${id("b").slice(0, 16)}`);
+  assert.equal(env.calls.filter(call => call.url === `/api/local-workspace/evaluations/${evaluation}`).length, 1);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("offline evaluation detail supports Stage1a recorded summaries and optional baselines", async () => {
+  const evaluation = id("e");
+  const stage1a = "stpd/stage1a-ranking-evaluation-v1";
+  const metrics = {count:4, top1:0.25, mrr:0.5, nll:1.2, confidence:0.3, margin:0.1};
+  const env = setup({
+    identity: {status: "signed_out"}, view: "local-workspace", query: `&id=${evaluation}`,
+    curationStatus: {schema:"stpd/local-curation-preparation-v1", status:"ready"},
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${evaluation}`) return {
+        artifact_id:evaluation, kind:"offline_evaluation",
+        parameters:{schema:stage1a, partition:"dev"},
+      };
+      if (url === `/api/local-workspace/evaluations/${evaluation}`) return {
+        schema:"stpd/local-offline-evaluation-summary-v1", evaluation_id:evaluation,
+        evaluation_schema:stage1a, model_id:id("a"), model_view_id:id("b"),
+        model_recipe:"legal-action-ranking", view_schema:"stpd/model-view-v1", partition:"dev",
+        baseline:"model", qualification:"engineering_only", scientific_verdict:"not_claimed",
+        validation_scope:"recorded_report_and_parent_identities", decision_count:4,
+        reported_run_groups:1, multi_candidate_count:3, overall:metrics,
+        baselines:{uniform_legal:metrics, action_only:metrics},
+        interpretation:"producer_recorded_summary_not_full_lineage_or_quality_verification",
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), new RegExp(stage1a.replaceAll("/", "\\/")));
+  assert.match(text(page), /均匀合法动作基准/);
+  assert.match(text(page), /仅动作基准/);
+  assert.equal(env.calls.filter(call => call.url === `/api/local-workspace/evaluations/${evaluation}`).length, 1);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("offline evaluation detail never requests sealed-test or unknown-partition summaries", async () => {
+  for (const [parameters, message] of [
+    [{schema:"stpd/offline-ranking-evaluation-v1", partition:"test"}, /封存测试评估不会在此读取或展示/],
+    [{schema:"future/evaluation-v8", partition:"unknown"}, /未标明可展示的开发集分区/],
+    [{schema:"future/evaluation-v8", partition:"dev"}, /格式暂不支持指标摘要/],
+  ]) {
+    const evaluation = id("d");
+    const env = setup({
+      identity: {status: "signed_out"}, view: "local-workspace", query: `&id=${evaluation}`,
+      curationStatus: {schema:"stpd/local-curation-preparation-v1", status:"ready"},
+      handler: async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+        };
+        if (url === `/api/local-workspace/artifacts/${evaluation}`) return {
+          artifact_id:evaluation, kind:"offline_evaluation", parameters,
+        };
+        if (url.includes("/api/local-workspace/evaluations/")) throw new Error("sealed/unknown summary requested");
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    assert.match(text(page), message);
+    assert.equal(env.calls.some(call => call.url.includes("/api/local-workspace/evaluations/")), false);
+    assert.equal(post(env.calls).length, 0);
+  }
 });
 
 test("local inventory kind filter uses exact backend kinds and preserves search", async () => {
@@ -635,6 +932,18 @@ test("pending dataset checks do not resubmit; failed and interrupted checks need
   assert.equal(action(pendingPage, "check-local-dataset").disabled, true);
   await action(pendingPage, "refresh-local-dataset-status").onclick();
   assert.equal(post(pending.calls).length, 0);
+
+  const publishing = localDatasetEnv({artifact, datasetStatus: {
+    schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+    operation: {status: "pending", artifact_id: artifact, purpose: "training",
+      paired_training: null, preview_id: "c".repeat(32)},
+    csrf_token: "dataset-csrf",
+  }});
+  const publishingPage = await publishing.render();
+  assert.match(text(publishingPage), /正在创建这份数据集/);
+  assert.equal(action(publishingPage, "check-local-dataset").textContent, "正在创建");
+  assert.equal(action(publishingPage, "refresh-local-dataset-status").textContent, "刷新创建状态");
+  assert.equal(post(publishing.calls).length, 0);
 
   for (const status of ["failed", "interrupted"]) {
     const env = localDatasetEnv({artifact, datasetStatus: {
