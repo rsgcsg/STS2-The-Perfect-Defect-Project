@@ -99,6 +99,13 @@ def test_exact_synthetic_public_bc_small_b_subprocess(tmp_path: Path, monkeypatc
     assert model.parameters.value()["config"]["steps"] == 3
     assert model.parameters.value()["config"]["dropout"] == 0.0
     assert model.parameters.value()["config"]["max_tokens"] == 16384
+    assert {key: model.parameters.value()["config"][key] for key in
+            ("width", "layers", "heads", "feedforward", "device")} == {
+                "width": 48, "layers": 1, "heads": 2, "feedforward": 96, "device": "cpu",
+            }
+    assert store.get_manifest(completed["run_id"]).parameters.value()["cpu_threads"] == 2
+    durable = json.loads((owner.path.parent / OPERATION_FILE).read_bytes())
+    assert durable["_exit_code"] == 0
     registry = SQLiteRegistry(config.research_workspace.registry_path, readonly=True)
     assert registry.get(model.artifact_id).to_bytes() == model.to_bytes()
     assert registry.get(report.artifact_id).to_bytes() == report.to_bytes()
