@@ -2,9 +2,10 @@
 
 The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Reviewed source
 anchor: `develop@62a205e40cfd3be6bc056faa6c5538f2828edb95` (through PR #71).
-Resolve live refs and deployed identities before work; this bounded handoff is
-not the running-version owner. Platform, application, Human and research evidence
-remain separate.
+Resolve live GitHub refs and deployed identities before work; current source and
+runtime authorities override this file. This bounded handoff is not the
+running-version owner. Platform, application, Human and research evidence remain
+separate.
 
 ## Implemented and observed
 
@@ -89,7 +90,7 @@ remain separate.
   provenance and recovery belong behind the relevant result, not a second task
   framework or premature cluster manager.
 
-## Durable boundaries and owners
+## Remaining Platform non-claims and owners
 
 Use [the local training guide](../../python/docs/research/LOCAL_TRAINING_WORKBENCH.md),
 [project console guide](../../python/docs/PROJECT_CONSOLE.md),
