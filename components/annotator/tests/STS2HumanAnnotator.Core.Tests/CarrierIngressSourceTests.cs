@@ -111,6 +111,7 @@ public sealed class CarrierIngressSourceTests
         Assert.Contains("ButtonIndex: MouseButton.Right", continuation);
         Assert.Contains("HumanTextMouseCancelShortcutField?.GetValue(carrier)", continuation);
         Assert.Contains("HumanTextInputNativeProof.IsMouseNoHoverCancelCandidate(", continuation);
+        Assert.Contains("if (confirm && !hoverObservationAvailable) return null;", continuation);
         Assert.Contains("if (confirm && target == null && !noHoverMouseCancel) return null;", continuation);
         Assert.Contains("scope.NativeFinishMatched = HumanTextInputNativeProof.MatchesTargetFinish(", continuation);
         Assert.Contains("scope.NativeContinuationCalled = true;", continuation);

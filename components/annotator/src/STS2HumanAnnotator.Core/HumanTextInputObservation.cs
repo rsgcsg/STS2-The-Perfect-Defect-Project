@@ -42,8 +42,10 @@ public static class HumanTextInputNativeProof
     /// candidate only on the exact mouse-card carrier. Native finish proof is
     /// still required before this observation can be accepted.</summary>
     public static bool IsMouseNoHoverCancelCandidate(bool exactMouseCarrier,
-        bool leftButtonReleased, bool hoveredNodeMissing) =>
-        exactMouseCarrier && leftButtonReleased && hoveredNodeMissing;
+        bool leftButtonReleased, bool hoverObservationAvailable,
+        bool hoveredNodeMissing) =>
+        exactMouseCarrier && leftButtonReleased && hoverObservationAvailable
+            && hoveredNodeMissing;
 
     public static bool MatchesTargetFinish(bool requestedCancel, bool nativeCancel,
         object? frozenTarget, object? nativeTarget) =>

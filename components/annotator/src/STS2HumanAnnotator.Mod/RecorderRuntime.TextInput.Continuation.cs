@@ -211,25 +211,28 @@ internal static partial class RecorderRuntime
                         is Func<bool> exit && ReferenceEquals(exit.Target, binding.Carrier)))
                 || (mouseEvent && binding.Carrier is not NMouseCardPlay)) return null;
             bool mouseCarrier = binding.Carrier is NMouseCardPlay;
-            Node? hovered = HumanTextHoveredNodeProperty?.GetValue(manager) as Node;
+            PropertyInfo? hoveredProperty = HumanTextHoveredNodeProperty;
+            object? hoveredValue = hoveredProperty?.GetValue(manager);
+            bool hoverObservationAvailable = hoveredProperty != null
+                && (hoveredValue == null || hoveredValue is Node);
+            if (confirm && !hoverObservationAvailable) return null;
+            Node? hovered = hoveredValue as Node;
             NCreature? target = hovered as NCreature;
             bool noHoverMouseCancel = confirm && mouseEvent
                 && HumanTextInputNativeProof.IsMouseNoHoverCancelCandidate(
                     mouseCarrier, input is InputEventMouseButton mouseButton
                         && mouseButton.ButtonIndex == MouseButton.Left && mouseButton.IsReleased(),
-                    hoveredNodeMissing: hovered == null);
+                    hoverObservationAvailable, hoveredNodeMissing: hovered == null);
             if (confirm && target == null && !noHoverMouseCancel) return null;
+            bool targetConfirm = confirm && !noHoverMouseCancel;
             return BeginHumanTextContinuation(binding.Carrier, input,
-                noHoverMouseCancel ? "cancel_card_play"
-                    : confirm ? "confirm_target" : "cancel_card_play",
+                targetConfirm ? "confirm_target" : "cancel_card_play",
                 mouseCarrier
-                    ? (noHoverMouseCancel ? HumanTextInputObservationContract.MouseTargetCanceledInput
-                        : confirm ? HumanTextInputObservationContract.MouseTargetFinishInput
+                    ? (targetConfirm ? HumanTextInputObservationContract.MouseTargetFinishInput
                         : HumanTextInputObservationContract.MouseTargetCanceledInput)
-                    : (confirm ? HumanTextInputObservationContract.ControllerTargetFinishInput
+                    : (targetConfirm ? HumanTextInputObservationContract.ControllerTargetFinishInput
                         : HumanTextInputObservationContract.ControllerTargetCanceledInput),
-                manager, confirm && !noHoverMouseCancel ? target : null,
-                !confirm || noHoverMouseCancel);
+                manager, targetConfirm ? target : null, !targetConfirm);
         }
         catch (Exception exception)
         {
