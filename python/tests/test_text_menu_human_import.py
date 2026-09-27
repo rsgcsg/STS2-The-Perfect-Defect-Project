@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,6 +31,7 @@ from stpd.fullrun.text_menu_human_import import (
     publish_verified_human_text_bundle,
 )
 from stpd.fullrun.text_menu_inputs import IDENTITY, project_text_menu_snapshot
+from stpd.fullrun.token_comparison import compare_token_results
 from stpd.fullrun.token_inputs import fit_scratch, load_token_inputs, publish_token_inputs
 from stpd.policy.token_decision import TokenDecisionScorer, export_token_model
 from stpd.workers.token_ranking import TokenConfig
@@ -223,13 +225,14 @@ def test_source_requires_verified_archived_evidence(tmp_path) -> None:
 
 def _declared_bundle(
     tmp_path: Path, mechanism: str, verb: str, *, session_id: str | None = None,
+    page_name: str | None = None,
 ) -> tuple[Path, dict, Path]:
     bundle = bundle3(tmp_path / "fixture", session_id=session_id)
     raw = bundle / "raw"
     recording = load(raw / "recording-manifest.json")
     recording.update(text_input_schema_version=1, close_schema_version=1)
     write(raw / "recording-manifest.json", recording)
-    current = snapshot(session_id or "archive")
+    current = snapshot(page_name or session_id or "archive")
     current["session"] = {"runtime_instance_id": "runtime-1",
                           "environment_fingerprint": "environment-1"}
     current["interaction"]["content_schema"] = "combat_turn-1"
@@ -326,10 +329,11 @@ def test_typed_human_text_view_trains_tiny_b_and_exports_standalone_text_menu(
         target = store(tmp_path / "artifacts")
         evidence_ids = []
         observed = []
-        for name in ("session-a", "session-b"):
+        for name, page in (("session-a", "same-page"), ("session-b", "same-page"),
+                           ("session-z", "distinct-page")):
             bundle, row, _ = _declared_bundle(
                 tmp_path / name, "begin_card_play_exact_factory_return",
-                "begin_card_play", session_id=name,
+                "begin_card_play", session_id=name, page_name=page,
             )
             evidence = publish_verified_human_text_bundle(target, bundle, PRODUCER)
             evidence_ids.append(evidence.artifact_id)
@@ -340,7 +344,11 @@ def test_typed_human_text_view_trains_tiny_b_and_exports_standalone_text_menu(
         tokens = publish_token_inputs(target, view.artifact_id, "s", PRODUCER, max_tokens=4096)
         inputs = load_token_inputs(target, tokens.artifact_id)
         assert {sample.split for sample in inputs.samples} == {"train", "dev"}
-        assert len(inputs.samples) == 2
+        assert len(inputs.samples) == 3
+        dev = [sample for sample in inputs.samples if sample.split == "dev"]
+        assert len(dev) == 2 and len({sample.run_id for sample in dev}) == 2
+        assert dev[0].state_text == dev[1].state_text
+        assert {row["run_id"] for row in observed} == {"run-0001"}
         assert b"".join(target.read_payload(tokens.payload("tokenizer"))) == fit_scratch(
             inputs.samples)
         config = TokenConfig.text_menu_small_b(
@@ -349,7 +357,18 @@ def test_typed_human_text_view_trains_tiny_b_and_exports_standalone_text_menu(
         result = execute_tokens(
             target, ObjectStoreRunReporter(target, target.blobs), run.artifact_id, PRODUCER)
         assert result.state == "completed" and result.result_id is not None
-        model_id = target.get_manifest(result.result_id).parent("model")
+        completed = target.get_manifest(result.result_id)
+        model_id = completed.parent("model")
+        report = target.get_manifest(completed.parent("offline_evaluation"))
+        metrics = decode_json(b"".join(target.read_payload(report.payload("metrics"))))
+        assert len(metrics["rows"]) == 2
+        for item in (metrics["summary"], *metrics["baselines"].values()):
+            assert item["overall"]["count"] == 2
+            assert item["bootstrap"]["status"] == "unknown"
+            assert item["bootstrap"]["reason"] == (
+                "native_run_independence_unknown_across_sessions")
+            assert item["bootstrap"]["reported_run_groups"] == 2
+            assert "percentile_95" not in item["bootstrap"]
         assert target.get_manifest(model_id).parameters.value()["serializer"] == IDENTITY
         export = tmp_path / "export"
         export_token_model(target, model_id, export)
@@ -357,6 +376,21 @@ def test_typed_human_text_view_trains_tiny_b_and_exports_standalone_text_menu(
         assert tuple(scores) == tuple(action["action_id"] for action in
                                       observed[0]["snapshot"]["menu_actions"]["actions"])
         assert all(isinstance(score, float) for score in scores.values())
+
+        other_config = replace(config, seed=config.seed + 1, steps=1)
+        other_run = prepare_token_run(target, inputs, other_config, PRODUCER)
+        other_result = execute_tokens(
+            target, ObjectStoreRunReporter(target, target.blobs),
+            other_run.artifact_id, PRODUCER)
+        assert other_result.result_id is not None
+        comparison = compare_token_results(
+            target, [result.result_id, other_result.result_id])
+        for item in comparison["models"]:
+            assert "independent_runs" not in item
+            assert "run_weighted" not in item
+            assert item["reported_run_groups"] == 2
+            assert item["reported_run_group_weighted"] == item["decision_weighted"]
+            assert item["native_run_independence"] == "unknown_across_sessions"
 
         # One typed session cannot provide the independent train/dev split.
         one = publish_human_text_source(target, (evidence_ids[0],), PRODUCER)

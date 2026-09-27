@@ -36,7 +36,7 @@ def compare_token_results(store: ArtifactStore, identities: list[str]) -> dict[s
                     or common_view is not None and common_view != view_id):
                 raise BoundaryError("token_comparison", "same_fixed_dev_view_required")
             common_view = view_id
-            _, samples = load_model_view(store, view_id)
+            view, samples = load_model_view(store, view_id)
             expected = {s.transition_id: s for s in samples if s.split == "dev"}
             metrics = json.loads(b"".join(store.read_payload(report.payload("metrics"))))
             rows = metrics["rows"]
@@ -57,6 +57,11 @@ def compare_token_results(store: ArtifactStore, identities: list[str]) -> dict[s
             by_run: dict[str, list[dict[str, Any]]] = {}
             for row in rows:
                 by_run.setdefault(row["run_id"], []).append(row)
+            human_text = view.parameters.value().get("schema") in {
+                "stpd/human-text-input-bc-view-v1", "stpd/human-text-input-bc-view-v2",
+            }
+            grouped_means = {m: mean(mean(r[m] for r in group)
+                                     for group in by_run.values()) for m in METRICS}
             models.append({
                 "result_id": identity, "run_id": run.artifact_id,
                 "model_id": model.artifact_id, "evaluation_id": report.artifact_id,
@@ -64,10 +69,12 @@ def compare_token_results(store: ArtifactStore, identities: list[str]) -> dict[s
                 "config": model.parameters.value()["config"],
                 "attempt_seconds": result.parameters.value()["attempt_seconds"],
                 "decision_count": len(rows), "multi_candidate_count": len(multiple),
-                "independent_runs": len(by_run),
+                **({"reported_run_groups": len(by_run),
+                    "native_run_independence": "unknown_across_sessions",
+                    "reported_run_group_weighted": grouped_means}
+                   if human_text else {"independent_runs": len(by_run),
+                                       "run_weighted": grouped_means}),
                 "decision_weighted": {m: mean(r[m] for r in rows) for m in METRICS},
-                "run_weighted": {m: mean(mean(r[m] for r in group)
-                                         for group in by_run.values()) for m in METRICS},
                 "multi_candidate": ({m: mean(r[m] for r in multiple) for m in METRICS}
                                     if multiple else None),
             })
