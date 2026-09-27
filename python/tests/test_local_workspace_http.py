@@ -184,6 +184,7 @@ def test_managed_workspace_post_is_local_only_idempotent_and_persists_across_res
         with client.open(root + "/api/local-workspace/managed") as response:
             initial = json.load(response)
         assert initial["status"] == "not_created"
+        assert initial["csrf_token"] == app.account.csrf
         assert not (state_dir / ROOT_NAME).exists()
 
         def post(body: bytes = b"{}", *, origin: str | None = None, csrf: str | None = None,
@@ -212,6 +213,7 @@ def test_managed_workspace_post_is_local_only_idempotent_and_persists_across_res
         expected_origin = root
         assert post(origin="http://localhost:1")[0] == 403
         assert post(origin=expected_origin, csrf="wrong")[0] == 403
+        assert post(origin=expected_origin, csrf="")[0] == 403
         assert post(b'{"path":"/tmp/forbidden"}', origin=expected_origin)[0] == 400
         wrong_host = f"localhost:{server.server_port}"
         assert post(body=b"{}", origin=expected_origin, host=wrong_host)[0] == 403
@@ -397,6 +399,42 @@ def test_corrupt_managed_registration_is_visible_and_never_recreated(tmp_path: P
             inventory = json.load(response)
         assert inventory["status"] == "unavailable"
         assert registration.read_bytes() == original
+        assert not (state_dir / ROOT_NAME).exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+        app.close()
+
+
+def test_managed_create_requires_a_config_bound_running_instance(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    config = ProjectConfig(state_dir, "", "", None, combination(), None)
+    app = Application(config)
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root = f"http://127.0.0.1:{server.server_port}"
+    client = build_opener(HTTPCookieProcessor(CookieJar()))
+    try:
+        client.open(root + "/").close()
+        request = Request(
+            root + "/api/local-workspace/managed/create",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": f"{app.account.cookie_name}={app.account.cookie}",
+                "Origin": root,
+                "X-CSRF-Token": app.account.csrf,
+            },
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as rejected:
+            client.open(request)
+        assert rejected.value.code == 409
+        assert json.loads(rejected.value.read())["error"] == "running_instance_unavailable"
+        assert not (state_dir / REGISTRATION_NAME).exists()
         assert not (state_dir / ROOT_NAME).exists()
     finally:
         server.shutdown()

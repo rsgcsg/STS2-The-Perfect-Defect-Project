@@ -275,9 +275,12 @@ window.SpireProject = (() => {
         : "服务暂时不可用，请刷新状态。")
     );
   };
-  async function request(ctx, path, body) {
+  async function request(ctx, path, body, localCsrfToken) {
     if (!live(ctx)) throw new Error("context_changed");
     const mutation = body !== undefined;
+    const csrfToken = local && typeof localCsrfToken === "string" && localCsrfToken
+      ? localCsrfToken
+      : ctx.identity?.csrf_token || "";
     if (mutation) { datasetReads.clear(); datasetReadEpoch++; }
     const payload =
       mutation && !local
@@ -294,7 +297,7 @@ window.SpireProject = (() => {
         headers: mutation
           ? {
               "Content-Type": "application/json",
-              "X-CSRF-Token": ctx.identity?.csrf_token || "",
+              "X-CSRF-Token": csrfToken,
             }
           : {},
         body: mutation ? JSON.stringify(payload) : undefined,
@@ -2347,6 +2350,8 @@ window.SpireProject = (() => {
       ctx,
       "/api/local-workspace/managed",
     );
+    const localCsrfToken = data.csrf_token;
+    delete data.csrf_token;
     if (data.status === "legacy_workspace_configured") return;
     if (data.status === "not_created") {
       const section = panel(
@@ -2355,10 +2360,14 @@ window.SpireProject = (() => {
       );
       if (data.orphaned_initializations)
         section.append(el("p", `检测到 ${data.orphaned_initializations} 个未登记的初始化目录；会保留原目录，不覆盖它们。`, "small muted"));
-      section.append(command(ctx, "create-managed-local-workspace", "新建本机工作空间", async () => {
-        await request(ctx, "/api/local-workspace/managed/create", {});
-        await reload(ctx);
-      }, {primary:true}));
+      if (typeof localCsrfToken === "string" && localCsrfToken) {
+        section.append(command(ctx, "create-managed-local-workspace", "新建本机工作空间", async () => {
+          await request(ctx, "/api/local-workspace/managed/create", {}, localCsrfToken);
+          await reload(ctx);
+        }, {primary:true}));
+      } else {
+        section.append(el("p", "本机保护验证暂不可用，请刷新页面后重试。", "small muted"));
+      }
       box.append(section);
       return;
     }

@@ -185,6 +185,7 @@ test("local research workspace browses the local API without project identity", 
       if (url === "/api/local-workspace/managed") return {
         schema: "stpd/managed-local-workspace-registration-v1",
         status: "not_created",
+        csrf_token: "session-csrf",
         orphaned_initializations: 0,
         requires_cloud_account: false,
       };
@@ -221,6 +222,7 @@ test("unconfigured local research workspace explains explicit registration", asy
       if (url === "/api/local-workspace/managed") return {
         schema: "stpd/managed-local-workspace-registration-v1",
         status: "not_created",
+        csrf_token: "session-csrf",
         orphaned_initializations: 0,
         requires_cloud_account: false,
       };
@@ -262,21 +264,23 @@ test("empty local workspace reports zero items without an inverted range", async
 
 test("explicit local workspace create uses the browser session and empty command body", async () => {
   let created = false;
+  const localIdentity = {status: "local_only"};
   const env = setup({
-    identity: {status: "signed_out", csrf_token: "browser-csrf"},
+    identity: localIdentity,
     view: "local-workspace",
     handler: async (url, options) => {
       if (url === "/api/local-workspace/managed") return {
         schema: "stpd/managed-local-workspace-registration-v1",
         status: created ? "ready" : "not_created",
+        csrf_token: created ? undefined : "browser-csrf",
         orphaned_initializations: 0,
       };
       if (url === "/api/local-workspace/managed/create") {
         created = true;
         return {
-        schema: "stpd/managed-local-workspace-registration-v1",
-        status: "ready",
-        workspace_id: "d".repeat(32),
+          schema: "stpd/managed-local-workspace-registration-v1",
+          status: "ready",
+          workspace_id: "d".repeat(32),
         };
       }
       if (url === "/api/local-workspace?limit=25&offset=0") return created
@@ -286,6 +290,10 @@ test("explicit local workspace create uses the browser session and empty command
     },
   });
   const page = await env.render();
+  assert.equal(localIdentity.csrf_token, undefined);
+  assert.equal(env.calls[0].url, "/api/local-workspace/managed");
+  assert.equal(env.calls[0].options.method || "GET", "GET");
+  assert.equal(Object.keys(env.calls[0].options.headers).length, 0);
   await action(page, "create-managed-local-workspace").onclick();
   const writes = post(env.calls);
   assert.equal(writes.length, 1);
@@ -293,6 +301,7 @@ test("explicit local workspace create uses the browser session and empty command
   assert.deepEqual(body(writes[0]), {});
   assert.equal(writes[0].options.headers["X-CSRF-Token"], "browser-csrf");
   assert.equal(writes[0].options.credentials, "same-origin");
+  assert.doesNotMatch(text(page), /browser-csrf/);
   assert.equal(env.reloads, 1);
 });
 const template = {

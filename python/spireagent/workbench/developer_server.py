@@ -409,20 +409,21 @@ class Application:
         return inspect_managed_workspace(self.config.state_dir)
 
     def create_managed_local_workspace(self) -> dict[str, Any]:
+        if self.config_path is None:
+            raise BoundaryError("managed_workspace", "running_instance_unavailable")
         if self.config.research_workspace is not None:
             raise BoundaryError("managed_workspace", "legacy_workspace_configured")
-        if self.config_path is not None:
-            try:
-                current = ProjectConfig.load(self.config_path)
-                runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
-            except (OSError, ValueError, TypeError, BoundaryError) as error:
-                raise BoundaryError("managed_workspace", "running_instance_unavailable") from error
-            if not isinstance(runtime, dict):
-                raise BoundaryError("managed_workspace", "running_instance_unavailable")
-            if (current != self.config
-                    or runtime.get("instance_id") != self.instance_id
-                    or runtime.get("configuration_id") != configuration_id(self.config)):
-                raise BoundaryError("managed_workspace", "running_configuration_mismatch")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("managed_workspace", "running_instance_unavailable") from error
+        if not isinstance(runtime, dict):
+            raise BoundaryError("managed_workspace", "running_instance_unavailable")
+        if (current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("managed_workspace", "running_configuration_mismatch")
         from spireagent.workbench.managed_local_workspace import create_managed_workspace
 
         result = create_managed_workspace(self.config.state_dir)
@@ -595,6 +596,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                             raise ValueError
                         value = app.managed_local_workspace()
                         value.pop("workspace", None)
+                        if value.get("status") == "not_created":
+                            value["csrf_token"] = app.account.csrf
                     else:
                         workspace = app.local_research_workspace()
                         if workspace is None:
