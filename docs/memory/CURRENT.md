@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 Use `rsgcsg/STS2-The-Perfect-Defect-Project` for new work. Reviewed source anchor:
-`develop@1a021a80ab67ddfcb411a15ba444ffed04047f16` (through PR #68).
+`develop@26fd8cb3a7a20887e64f25c96b67f646bdbb3a71` (through PR #69).
 Resolve live GitHub refs and deployed identity before work; current source/runtime
 authorities override this file. It is a bounded handoff, not the running-version owner.
 
@@ -55,13 +55,24 @@ authorities override this file. It is a bounded handoff, not the running-version
   recorded metrics and parent identities, not complete training lineage or quality.
   Its source review, synthetic browser checks and hosted Python checks must remain
   separate from the active PR #67 Workbench; it is not automatically installed.
-- The current local-training candidate adds an explicit three-step scratch small-B
-  command to curated training Dataset detail, a store-owned operation slot, durable
-  use recording, and exact model/report links. Its canonical public-BC projection
-  requires public-H bindings and a nonempty independent train/dev split. This is a
-  bounded engineering sample, not full training, inference registration or a quality
-  result. Human text-menu labels are a separate research input path; connecting them
-  to local Dataset-purpose management remains unfinished.
+- PR #69 is merged: an explicit three-step scratch small-B command, a store-owned
+  operation slot, durable use recording, and exact model/report links. Its
+  [Python checks](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36335640672)
+  tested merge object `abd644263c7e1696400bf1420e5a7e07ab5a17fd` (Linux 1471 passed / 2 skipped;
+  Windows 1433 passed / 40 skipped; both 21 subtests). Integration
+  [36337070054](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36337070054)
+  reused that exact tree with fresh guards; it was not a second Python execution.
+  The canonical public-BC path requires public-H bindings and a nonempty grouped
+  train/dev split. The synthetic browser receipt remains separate from the active
+  PR #67 Workbench and from real-data training, inference registration or quality.
+- The Human-input local-library candidate reuses the original verified recording
+  manifests and the same purpose/use ledger. It connects typed Human SOURCE
+  publication to the existing explicit small-B worker; it does not manufacture
+  canonical transitions. Saving a source does not establish an eligible train/dev
+  split. Human v2 conservatively collapses sessions sharing visible input; more
+  recordings do not guarantee more groups. Reports retain unknown native-run
+  independence. This follow-up needs its own source review, selected hosted checks
+  and application activation; PR #69's green does not cover it.
 - Human-input BC is a separate data mode. Input labels must not fill missing
   canonical actions or causal successors. Existing configured stores keep their
   history. The user superseded the temporary read-only preference: continue using
