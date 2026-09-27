@@ -51,3 +51,57 @@ def test_repeated_concurrent_publish_is_exact_and_idempotent(tmp_path: Path) -> 
             assert sum(results) == 1
             assert store.get(key) == b"same"
     assert not list(tmp_path.rglob(".pending-*"))
+
+
+def test_directory_prefix_walk_stays_inside_requested_subtree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = LocalBlobStore(tmp_path)
+    for key in (
+        "manifests/a.json",
+        "manifests/nested/b.json",
+        "manifests/nested/.pending-c.json",
+        "objects/sha256/chunk",
+        "objects-other/chunk",
+    ):
+        assert store.put_if_absent(key, key.encode())
+
+    walked: list[Path] = []
+    original_rglob = Path.rglob
+
+    def counted_rglob(path: Path, pattern: str):
+        walked.append(path)
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(Path, "rglob", counted_rglob)
+    assert store.keys("manifests/") == ("manifests/a.json", "manifests/nested/b.json")
+    assert walked == [tmp_path / "manifests"]
+
+
+def test_keys_preserve_string_prefix_and_empty_prefix_validation(tmp_path: Path) -> None:
+    store = LocalBlobStore(tmp_path)
+    for key in ("objects/a", "objects/ab", "objects-extra/b", "other/c"):
+        assert store.put_if_absent(key, key.encode())
+
+    assert store.keys("objects/") == ("objects/a", "objects/ab")
+    assert store.keys("objects/a") == ("objects/a", "objects/ab")
+    assert store.keys("objects") == (
+        "objects-extra/b",
+        "objects/a",
+        "objects/ab",
+    )
+    with pytest.raises(StoreError, match="invalid_object_key"):
+        store.keys("")
+
+
+def test_directory_prefix_does_not_follow_linked_scan_root(tmp_path: Path) -> None:
+    store = LocalBlobStore(tmp_path / "store")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_bytes(b"not an object")
+    try:
+        (store.root / "manifests").symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory symlinks are unavailable: {error}")
+
+    assert store.keys("manifests/") == ()

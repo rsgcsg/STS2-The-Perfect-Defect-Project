@@ -15,7 +15,9 @@ from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.registry import SQLiteRegistry
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench import local_recording_import as importing
+from spireagent.workbench import managed_local_workspace as managed
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig, ProjectConfig, combination
+from spireagent.workbench.inplace_curation import InplaceCurationPreparation
 
 
 class Catalog:
@@ -52,6 +54,11 @@ def setup(tmp_path: Path, monkeypatch) -> tuple[importing.LocalRecordingImporter
         state, "", "", None, combination(),
         LocalResearchWorkspaceConfig(store_dir, registry_path),
     )
+    preparation = InplaceCurationPreparation(config)
+    preparation.start()
+    assert preparation.thread is not None
+    preparation.thread.join(timeout=15)
+    assert preparation.status()["status"] == "ready"
     template = bundle3(tmp_path / "fixture")
 
     class Tool:
@@ -128,6 +135,22 @@ def test_explicit_verified_import_publishes_once_and_preserves_source(tmp_path, 
     from stpd.fullrun.data import publish_received_source
     with pytest.raises(BoundaryError, match="unsupported_received_bundle"):
         publish_received_source(store, artifact_id, Producer("fixture", "a" * 40, "b" * 64))
+
+
+def test_managed_import_keeps_source_inventory_pending_after_publish(tmp_path, monkeypatch):
+    importer, catalog, _, _ = setup(tmp_path, monkeypatch)
+    state = importer.config.state_dir
+    managed.create_managed_workspace(state)
+    importer.config = ProjectConfig(state, "", "", None, combination())
+    importer.start(catalog.identity, True)
+    done = finished(importer)
+    assert done["status"] == "completed", done
+    selected = managed.inspect_managed_workspace(state)
+    with selected["curation_owner"].transaction() as db:
+        assert db.execute("SELECT candidate,artifact,status FROM local_source_pending"
+                          ).fetchone() == (catalog.identity, done["artifact_id"], "published")
+    with pytest.raises(BoundaryError, match="gold_source_inventory_pending"):
+        selected["curation_owner"].ledger.claim("gold", "gold", {"run"})
 
 
 def test_changed_candidate_and_pack_failure_do_not_publish(tmp_path, monkeypatch):

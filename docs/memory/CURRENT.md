@@ -1,25 +1,28 @@
-# Current project context, 2026-09-27
+# Current project context, 2026-09-28
 
 Use `rsgcsg/STS2-The-Perfect-Defect-Project` for new work. Reviewed source anchor:
-`develop@47ec697259e1fa9ca19c620b4f95f1ad6f808f00` (through PR #60).
+`develop@e6903ff8898bac86381764fa1b4b6498e19bd37e` (through PR #65).
 Resolve live GitHub refs and deployed identity before work; current source/runtime
 authorities override this file. It is a bounded handoff, not the running-version owner.
 
 ## What is implemented and what was observed
 
-- **Game / Human:** the last verified installation is Game Mod rc.16, source
-  `ed40f0ebbfd59587eca0d5688f9c271062d85753`. The closed mouse canary has five
-  exact Human input labels and one successful native card action, but no complete
-  causal successor. The drag-back cancellation still has no explicit label.
-  [The bounded receipt](../evidence/RC14_HUMAN_AND_LOCAL_WORKBENCH_RECEIPT_2026-09-27.md)
-  preserves separate RC14/15/16 observations; none establishes full-game qualification.
-- **Workbench:** PRs #52/#56/#58 provide a no-login local home, managed local
-  storage and explicit recording-source discovery. The owner confirmed opening
-  the local home from the game without login. The last local service source is
-  `bb7db6fffaa489f3af7c0ce8b58d4f56a692f6c2`; backend discovery observed 19 closed
-  metadata candidates, not 19 verified Human bundles. Source merges do not update
-  that service automatically. [PR #58](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/58)
-  records its Python gate and separate local activation receipt.
+- **Game / Human:** the last verified installation is Game Mod rc.17 / Annotator
+  rc.13, installed from `94d76ffd5a56727e344813e31bc14ed4a7a16aeb`.
+  Its separately closed mouse canary has 9 accepted Human input labels, including
+  two same-input proved cancellations, and 3 canonical decisions. Two other
+  cancellation attempts remain unproved; the final action lacks a successor
+  before session close and stays unknown. This is narrow mouse evidence, not
+  full-game qualification. [PR #63's bounded receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/63#issuecomment-5856320923)
+  preserves installed identity separately from its source integration.
+- **Workbench:** the Mod opens the same no-login local Workbench. PRs #61/#62
+  add explicit verified recording import and sample preview. The active service
+  source is `790e7d598eb7b2fdc67bb6268f909abdf95a8be9`; source merges do not
+  automatically update it. The user confirmed the latest recording preview
+  shows 9 input labels and 3 canonical decisions. Raw files and the earlier
+  5-label/zero-canonical import remain intact; no dataset or training was started
+  by preview. [PR #62](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/62)
+  records the separate source/test and local activation evidence.
 - **Data:** PR #54 adds the shared curation authority; #55 separates Human-input BC
   split semantics; #57 adds observed-input sequences and the rc.17 Evidence consumer.
   Existing records keep their identities. Human input labels are not canonical
@@ -37,13 +40,24 @@ authorities override this file. It is a bounded handoff, not the running-version
 
 ## Current packet and next gaps
 
-- Explicit local recording import: choose one closed recording, attest Human origin,
-  pack with the registered tool, verify and publish a separate local evidence artifact.
-  Import keeps raw data intact and does not upload, create a Dataset, or start training.
-  The candidate also clarifies team access while retaining signed-out local use.
-- Next, connect honest Human-input sources to fixed allocation/use checks and the
-  local Dataset workflow. Reuse the curation authority; do not disguise Human inputs
-  as canonical transitions or recreate Gold permissions in a UI cache.
+- Local recording import and sample preview are implemented and narrowly observed.
+  PR #64 integrates the verified local canonical source path, with full Linux/Windows
+  checks. The existing candidate adds a persistent per-store use ledger and explicit Dataset
+  preview/publication for managed stores and in-place preparation for the existing
+  configured store, without moving or duplicating its payloads. It remains source/synthetic-test
+  evidence until its own hosted checks and local activation; the active Workbench
+  above has not been upgraded to this candidate. PR #65 separately integrates
+  spool cleanup ordering, with its own Python Linux/Windows checks.
+- Human-input BC is a separate data mode. Input labels must not fill missing
+  canonical actions or causal successors. Existing configured stores keep their
+  history. The user superseded the temporary read-only preference: continue using
+  the single existing library, without old/new tabs, relocation or duplicate payloads.
+  Explicit preparation attaches the persistent use owner in place. Known uses stay
+  recorded; unknown old use is not invented as clean history and restricts Gold where
+  relevant, rather than blocking all ordinary training/test selection.
+  Gold reservations are not a claim of global history completeness across arbitrary
+  stores or of scientifically validated labels. Interrupted publication checks for
+  an exact existing result on explicit request; it never silently publishes again.
 - Complete the training-job, report/analysis and archive journey on existing services.
   Keep everyday controls simple; expose detailed identity and recovery information
   when needed. Do not build a general cluster manager ahead of this working path.

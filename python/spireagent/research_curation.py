@@ -28,6 +28,7 @@ class CurationTransactions(Protocol):
 
 
 InventoryPending = Callable[[sqlite3.Connection], bool]
+ClaimGuard = Callable[[sqlite3.Connection, str, set[str]], None]
 
 
 class CurationLedger:
@@ -36,9 +37,11 @@ class CurationLedger:
         operations: CurationTransactions,
         *,
         inventory_pending: InventoryPending | None = None,
+        claim_guard: ClaimGuard | None = None,
     ) -> None:
         self.operations = operations
         self._inventory_pending = inventory_pending
+        self._claim_guard = claim_guard
         with operations.transaction() as db:
             for statement in (
                 "CREATE TABLE IF NOT EXISTS curation_sources("
@@ -228,6 +231,8 @@ class CurationLedger:
                 if old[0] != purpose or old_runs != selected:
                     raise BoundaryError("curation", "reservation_identity_conflict")
             related = self._groups(db, selected)
+            if self._claim_guard is not None:
+                self._claim_guard(db, purpose, related)
             claims = self._claims(db, related)
             for claim, (kind, artifact) in claims.items():
                 if claim == identity:

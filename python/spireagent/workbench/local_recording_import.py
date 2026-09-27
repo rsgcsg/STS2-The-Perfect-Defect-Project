@@ -31,6 +31,8 @@ from spireagent.storage.registry import SQLiteRegistry, sync_registry
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.collection_tool_registration import current_collection_tool
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
+from spireagent.workbench.inplace_curation import configured_owner
+from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.local_recordings import LocalRecordingCatalog
 from spireagent.workbench.local_workspace import open_registered_workspace
 from spireagent.workbench.managed_local_workspace import ROOT_NAME, inspect_managed_workspace
@@ -59,7 +61,8 @@ def _sync(store: ManifestArtifactStore, registry: SQLiteRegistry) -> None:
 
 def _selected_store(config: ProjectConfig) -> tuple[ManifestArtifactStore, SQLiteRegistry]:
     if config.research_workspace is not None:
-        # The same registered legacy workspace remains the selected destination.
+        # All profiles using this store must resolve its one persistent owner.
+        configured_owner(config)
         if open_registered_workspace(config.research_workspace) is None:
             raise BoundaryError("local_import", "workspace_required")
         store_dir = config.research_workspace.store_dir
@@ -68,6 +71,8 @@ def _selected_store(config: ProjectConfig) -> tuple[ManifestArtifactStore, SQLit
         selected = inspect_managed_workspace(config.state_dir)
         if selected["status"] != "ready":
             raise BoundaryError("local_import", "workspace_required")
+        if selected["curation_owner"] is None:
+            raise BoundaryError("local_import", "curation_owner_recovery_required")
         directory = config.state_dir.resolve() / ROOT_NAME / selected["workspace_id"]
         store_dir, registry_path = directory / "store", directory / "registry.sqlite"
     if (store_dir.is_symlink() or registry_path.is_symlink()
@@ -75,6 +80,18 @@ def _selected_store(config: ProjectConfig) -> tuple[ManifestArtifactStore, SQLit
         raise BoundaryError("local_import", "workspace_unavailable")
     return (ManifestArtifactStore(LocalBlobStore(store_dir, create=False, readonly=False)),
             SQLiteRegistry(registry_path, readonly=False))
+
+
+def _selected_curation_owner(config: ProjectConfig) -> LocalCurationOwner | None:
+    if config.research_workspace is not None:
+        return configured_owner(config)
+    selected = inspect_managed_workspace(config.state_dir)
+    if selected["status"] != "ready":
+        raise BoundaryError("local_import", "workspace_required")
+    owner = selected["curation_owner"]
+    if not isinstance(owner, LocalCurationOwner):
+        raise BoundaryError("local_import", "curation_owner_recovery_required")
+    return owner
 
 
 def _labels(config: ProjectConfig) -> dict[str, str]:
@@ -198,6 +215,11 @@ class LocalRecordingImporter:
                                   "artifact_id": existing, "finished_at": _now()}
                 self._save()
                 return self.status()
+            owner = _selected_curation_owner(self.config)
+            if owner is not None:
+                # Commit before any payload or manifest write. A crash leaves the
+                # pending row visible to the Gold inventory transaction.
+                owner.begin_source(identity)
             self.operation = {"schema": SCHEMA, "status": "pending", "candidate_id": identity,
                               "started_at": _now()}
             self._save()
@@ -303,5 +325,8 @@ class LocalRecordingImporter:
                 }),
             )
             artifact_id = store.publish(evidence)
+            owner = _selected_curation_owner(self.config)
+            if owner is not None:
+                owner.published_source(candidate_id, artifact_id)
             _sync(store, registry)
             return artifact_id
