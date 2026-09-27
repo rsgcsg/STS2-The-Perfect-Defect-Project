@@ -7,6 +7,22 @@ namespace STS2HumanAnnotator.Core.Tests;
 
 public sealed class HumanTextInputObservationTests
 {
+    [Theory]
+    [InlineData(true, true, true, true, true)]
+    [InlineData(false, true, true, true, false)] // controller/non-mouse input
+    [InlineData(true, false, true, true, false)] // not a left-button release
+    [InlineData(true, true, false, true, false)] // observation entry unavailable
+    [InlineData(true, true, true, false, false)] // some node is hovered, even if not a creature
+    [InlineData(false, false, true, true, false)]
+    public void NoHoverCancellationIsOnlyACandidateForExactMouseLeftRelease(
+        bool exactMouseCarrier, bool leftButtonReleased,
+        bool hoverObservationAvailable, bool hoveredNodeMissing, bool expected)
+    {
+        Assert.Equal(expected, HumanTextInputNativeProof.IsMouseNoHoverCancelCandidate(
+            exactMouseCarrier, leftButtonReleased, hoverObservationAvailable,
+            hoveredNodeMissing));
+    }
+
     [Fact]
     public void MouseTargetProofRejectsAutoCancelEmptyHoverAndReplacedTarget()
     {
