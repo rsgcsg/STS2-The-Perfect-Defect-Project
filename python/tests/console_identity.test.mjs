@@ -308,21 +308,27 @@ function pageSetup(view, identity, connectContent = async () => 'connection fact
   };
   get('connection').textContent = '正在读取状态…';
   let scope = 'owner';
-  const refreshes = [];
+  const refreshes = [], projectScopes = [];
+  let projectRenders = 0;
   const context = vm.createContext({
     document: {body: {dataset: {mode, cloudUrl}}, getElementById: get,
       createElement: element, createDocumentFragment: element, querySelectorAll: () => [], addEventListener() {}},
     Node: Element,
-    window: {addEventListener() {}, SpireProject: {}, SpireIdentity: {
+    window: {addEventListener() {}, SpireProject: {
+      datasetContext: () => '',
+      render: () => { projectRenders++; return 'team page'; },
+    }, SpireIdentity: {
       context: () => scope, isLocal: () => false, refresh: async force => { refreshes.push(force); return identity; },
       renderDevices: () => 'account facts', renderConnect: connectContent,
+      ensureProjectScope() { projectScopes.push(true); },
       localOnly() { scope = 'local'; return {status: 'local_only'}; }, connect() {},
     }},
     location: {search: search === undefined ? ('?view=' + view + (flow ? '&flow=' + flow : '')) : search}, history: {}, Date, URLSearchParams,
     setInterval() {},
   });
   vm.runInContext(readFileSync(new URL('../spireagent/console/console.js', import.meta.url), 'utf8'), context);
-  return {get, context, refreshes, changeScope: () => {scope = 'other';}};
+  return {get, context, refreshes, projectScopes, projectRenders: () => projectRenders,
+    changeScope: () => {scope = 'other';}};
 }
 const settled = () => new Promise(resolve => setImmediate(resolve));
 
@@ -341,6 +347,39 @@ test('no-cloud local root selects the local home without identity, cloud reads, 
   assert.match(flatten(content), /本机模型与资料查看不需要云端登录/);
   assert.match(flatten(content), /上传另需设备授权、开启上传设置且本机投递服务实际运行/);
   assert.equal(vm.runInContext('views.campaigns[1]', context).includes("后台自动上传"), false);
+});
+
+test('no-cloud local team deep links explain the boundary and offer working local pages', async () => {
+  for (const view of ['datasets', 'research', 'models', 'jobs']) {
+    const {get, context, refreshes, projectScopes, projectRenders} = pageSetup(
+      view, null, undefined, '', 'local', `?view=${view}`, '',
+    );
+    await settled();
+    assert.equal(vm.runInContext('state.view', context), view);
+    assert.deepEqual(refreshes, [], `${view} fallback does not request login status`);
+    assert.deepEqual(projectScopes, [], `${view} fallback does not switch project scope`);
+    assert.equal(projectRenders(), 0, `${view} fallback does not call team page renderer`);
+    assert.match(flatten(get('content')), /此入口当前用于团队资料/);
+    assert.match(flatten(get('content')), /配置项目 Hub 并登录后/);
+    assert.match(flatten(get('content')), /本机资料、模型实战和游戏内录制/);
+    const links = descendants(get('content')).filter(item => typeof item.href === 'string');
+    assert.deepEqual(links.map(item => item.href), [
+      '?view=local-workspace', '?view=local-models', '?view=campaigns',
+    ]);
+    assert.equal(get('connection').textContent, '本机工作台');
+  }
+});
+
+test('configured local Hub keeps team navigation available for signed-out accounts', async () => {
+  const {get, context, refreshes, projectScopes, projectRenders} = pageSetup(
+    'datasets', {status: 'signed_out'}, undefined, '', 'local', '?view=datasets', 'https://hub.example',
+  );
+  await settled();
+  assert.equal(vm.runInContext('state.view', context), 'datasets');
+  assert.deepEqual(refreshes, [false]);
+  assert.deepEqual(projectScopes, [true]);
+  assert.equal(projectRenders(), 1);
+  assert.deepEqual(get('content').children, ['team page']);
 });
 
 test('local browser still hides login when Hub is not configured', () => {
