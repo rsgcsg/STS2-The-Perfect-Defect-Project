@@ -32,6 +32,7 @@ window.SpireProject = (() => {
   let readiness = new Map();
   const pending = new Set();
   let activeDataset = null;
+  let localRecordingSnapshot = null;
   const datasetSnapshots = new WeakMap();
   const datasetReads = new Map();
   let datasetReadEpoch = 0;
@@ -2387,10 +2388,62 @@ window.SpireProject = (() => {
     box.append(section);
   }
 
+  function localRecordingCard(ctx) {
+    const section = panel(
+      "本机录制来源",
+      "查看本机报告的录制目录和结束状态。此处不会打包、导入或训练。",
+    );
+    if (localRecordingSnapshot === null) {
+      section.append(command(ctx, "read-local-recordings", "查看录制来源", async () => {
+        localRecordingSnapshot = await request(ctx, "/api/local-recordings");
+        await reload(ctx);
+      }, {type:"secondary"}));
+      return section;
+    }
+    const data = localRecordingSnapshot;
+    section.append(command(ctx, "refresh-local-recordings", "刷新录制来源", async () => {
+      localRecordingSnapshot = await request(ctx, "/api/local-recordings");
+      await reload(ctx);
+    }, {type:"secondary"}));
+    if (data.status === "tool_registration_missing") {
+      section.append(el("p", "尚未注册本机录制组件。请按安装说明完成注册后，再查看录制来源。", "small muted"));
+      return section;
+    }
+    if (data.status !== "ready") {
+      const message = data.status === "recordings_unavailable"
+        ? "本机录制目录当前无法读取，请检查游戏内录制设置。"
+        : "本机录制来源暂不可用；请查看诊断信息后再刷新。";
+      section.append(el("p", message, "small muted"));
+      if (data.error_code) section.append(technical(data, "查看本机来源状态"));
+      return section;
+    }
+    const basis = data.root_basis === "current_runtime"
+      ? "当前游戏连接与加载身份已核对。"
+      : "游戏当前未运行；此状态只表示录制目录已配置。";
+    section.append(el("p", basis, "small muted"));
+    section.append(el("p", "列表中的录制清单与结束回执相互匹配；内容尚未验证，也不能证明由真人操作。", "small muted"));
+    section.append(el("p", `观察时间：${data.observed_at || "未知"}`, "small muted"));
+    if (data.unsealed_count)
+      section.append(el("p", `${data.unsealed_count} 个尚未结束的录制未列出。`, "small muted"));
+    if (data.truncated)
+      section.append(el("p", "已达到列表上限，当前列表不包含全部记录。", "small muted"));
+    const rows = (data.candidates || []).map(item => [
+      String(item.session_id || "未知").slice(0, 24),
+      String(item.timeline_id || "未知").slice(0, 24),
+      item.closed_at || "未知",
+      "录制已结束，内容待验证",
+    ]);
+    section.append(table(["录制", "时间线", "结束时间", "状态"], rows));
+    if (!data.candidate_count)
+      section.append(empty("没有检测到已结束的录制", "尚未结束或信息不完整的录制不会列出。"));
+    return section;
+  }
+
   async function localWorkspace(ctx) {
     const box = el("div", null, "project-page");
     box.append(panel("本机资料", "浏览本机资料来源。此页在本机读取，不需要云端登录；开始任何导入或训练都需要独立的明确操作。"));
     await managedWorkspaceCard(ctx, box);
+    box.append(localRecordingCard(ctx));
     const id = new URLSearchParams(ctx.search).get("id");
     if (id) {
       const value = await request(ctx, `/api/local-workspace/artifacts/${encodeURIComponent(id)}`);
