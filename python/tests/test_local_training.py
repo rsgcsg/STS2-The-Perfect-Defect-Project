@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import threading
+import time
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -25,7 +26,11 @@ from spireagent.workbench.developer import (
     ProjectConfig,
     combination,
 )
-from spireagent.workbench.developer_server import Application, create_server
+from spireagent.workbench.developer_server import (
+    Application,
+    configuration_id,
+    create_server,
+)
 from spireagent.workbench.inplace_curation import InplaceCurationPreparation, configured_owner
 from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_training import OPERATION_FILE, LocalTrainingService
@@ -311,6 +316,75 @@ def test_http_readonly_status_and_exact_browser_write(tmp_path: Path) -> None:
                             data=json.dumps({"dataset_id": "a" * 64, "extra": 1}).encode(),
                             headers=headers), timeout=3)
         assert unknown.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        app.close()
+
+
+def test_http_explicit_start_tracks_exact_completed_run_without_get_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dataset_id, _, store = _ready(tmp_path, monkeypatch)
+    config_path = tmp_path / "project.json"
+    config_path.write_text(json.dumps(config.to_dict()))
+    app = Application(config, config_path=config_path)
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    cookie = f"{app.account.cookie_name}={app.account.cookie}"
+    (config.state_dir / "runtime.json").write_text(json.dumps({
+        "instance_id": app.instance_id, "configuration_id": configuration_id(config),
+        "port": server.server_port,
+    }))
+
+    def status() -> dict:
+        with urlopen(Request(url + "/api/local-training/status",
+                             headers={"Cookie": cookie}), timeout=5) as response:
+            return json.load(response)
+
+    try:
+        owner = configured_owner(config)
+        operation_path = owner.path.parent / OPERATION_FILE
+        before = tuple(store.manifest_ids())
+        initial = status()
+        assert initial["schema"] == "stpd/local-training-operation-v1"
+        assert initial["operation"]["status"] == "idle"
+        assert not operation_path.exists()
+        assert tuple(store.manifest_ids()) == before
+        body = json.dumps({"dataset_id": dataset_id}).encode()
+        headers = {"Cookie": cookie, "Content-Type": "application/json",
+                   "Origin": url, "X-CSRF-Token": initial["csrf_token"]}
+        with urlopen(Request(url + "/api/local-training/start", data=body,
+                             headers=headers), timeout=5) as response:
+            started = json.load(response)
+        assert started["availability"] == "ready"
+        assert started["operation"]["dataset_id"] == dataset_id
+        operation_id = started["operation"]["operation_id"]
+        deadline = time.monotonic() + 45
+        observed = []
+        while time.monotonic() < deadline:
+            current = status()["operation"]
+            observed.append(current["status"])
+            if current["status"] != "pending":
+                break
+            time.sleep(0.05)
+        assert current["status"] == "completed", current
+        assert current["operation_id"] == operation_id
+        result = store.get_manifest(current["result_id"])
+        assert result.parent("run") == current["run_id"]
+        assert result.parent("model") == current["model_id"]
+        assert result.parent("offline_evaluation") == current["evaluation_id"]
+        assert "pending" in observed or observed == ["completed"]
+        manifest_ids = tuple(store.manifest_ids())
+        second = status()["operation"]
+        assert second == current
+        assert tuple(store.manifest_ids()) == manifest_ids
+        public = json.dumps({"start": started, "completed": second})
+        assert app.control_token not in public and app.account.cookie not in public
+        assert str(owner.store_dir) not in public
+        assert "_owner" not in public and "_exit_code" not in public
     finally:
         server.shutdown()
         server.server_close()
