@@ -189,14 +189,25 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
         )
         store.publish(model)
         event("evaluating", model_id=model.artifact_id)
-        rows, summary = evaluate_samples(inputs.samples, engine.scores, seed=config.seed)
+        # Human text-input rows are session-scoped; distinct recorded run IDs do
+        # not establish independent native runs across those sessions.
+        native_run_independence = view.parameters.value().get("schema") not in {
+            "stpd/human-text-input-bc-view-v1", "stpd/human-text-input-bc-view-v2",
+        }
+        rows, summary = evaluate_samples(
+            inputs.samples, engine.scores, seed=config.seed,
+            native_run_independence=native_run_independence,
+        )
         prior = action_only_prior(inputs.samples)
         baselines = {}
         for name, scorer in (
             ("uniform_legal", lambda i: (0.0,) * len(inputs.samples[i].action_keys)),
             ("action_only", lambda i: prior(inputs.samples[i])),
         ):
-            _, baselines[name] = evaluate_samples(inputs.samples, scorer, seed=config.seed)
+            _, baselines[name] = evaluate_samples(
+                inputs.samples, scorer, seed=config.seed,
+                native_run_independence=native_run_independence,
+            )
         metrics = store.put_payload("metrics", io.BytesIO(json_bytes({
             "rows": rows, "summary": summary, "baselines": baselines,
         })), "application/json")
