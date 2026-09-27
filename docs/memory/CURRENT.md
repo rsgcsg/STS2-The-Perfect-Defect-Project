@@ -20,6 +20,23 @@ actual PR and runtime receipts; the historical B0 rows below are not current
 installation observations. Work occurs in isolated topics without replacing the
 running collector/model worktree.
 
+The next isolated increment adds Human text-input observation and verified
+research import. Its source anchor is `949011122778ce3a5c3a8355a3203cdeace74c18`
+(PR #46; hosted run36224363706 completed successfully). The first native seam is
+`NPlayerHand.StartCardPlay`, with exact invocation/factory correlation and an
+independent `human-text-inputs.jsonl` stream. See the
+[Annotator data contract](../../components/annotator/docs/DATA_CONTRACT.md#human-text-menu-input-observations).
+This is a beginning-of-input label, not a card Commit or causal successor;
+later mouse/controller stages and other scenes retain their separate coverage
+gaps. New Human origin still requires actual owner actions/attestation. The
+previous hosted result does not qualify this increment or its future build.
+
+The [2026-09-26 bounded Human begin canary](../evidence/HUMAN_TEXT_BEGIN_CANARY_2026-09-26.md)
+now records exact rc.13 install/load and seven owner-attested native pickup
+observations through verified engineering-source import. Target/cancel/confirm
+labels and other Human scenes remain incomplete; the single session did not
+qualify a train/dev view. PR #47's current CI is a separate source gate.
+
 ## Active mainline and next gate
 
 The local supervisor has taken over unfinished B0 and subsequent work. The web architect

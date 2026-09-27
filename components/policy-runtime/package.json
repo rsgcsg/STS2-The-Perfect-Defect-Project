@@ -1,6 +1,6 @@
 {
   "name": "@rsgcsg/sts2-policy-runtime",
-  "version": "0.1.0-rc.9",
+  "version": "0.1.0-rc.10",
   "description": "Small policy runtime over the strict STS2 Connector Player Environment",
   "license": "MIT",
   "type": "module",

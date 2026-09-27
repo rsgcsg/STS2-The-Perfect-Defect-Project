@@ -21,6 +21,7 @@ from .human_session_bundle_v1 import (
 )
 from .human_session_bundle_v2 import _capture_profile_hash, _validate_profile, _validate_journal, _required_reads
 from .human_summary import _current_summary
+from .human_text_inputs import freeze_json, verify_human_text_inputs
 from .interrupted_recovery import verify_recovery
 
 BUNDLE_SCHEMA = "sts2.human-annotator/session-bundle-3"
@@ -53,6 +54,8 @@ class HumanSessionBundleV3:
     invalidations: int
     dispositions: Mapping[str, int]
     summary: Mapping[str, Any]
+    text_input_schema_version: int | None = None
+    human_text_inputs: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def export_path(self) -> Path:
@@ -189,6 +192,7 @@ class HumanSessionBundleV3Verifier:
                  "continuous_recording_schema_invalid", "unsupported continuous schema")
         _require(recording.get("close_schema_version") in (None, 1),
                  "session_close_schema_invalid", "unsupported close schema")
+        receipt = None
         if recording.get("close_schema_version") == 1:
             receipt_path = raw / "session-close-receipt.json"
             _require(receipt_path.is_file(), "session_close_receipt_invalid_or_missing", "durable close seal missing")
@@ -203,6 +207,7 @@ class HumanSessionBundleV3Verifier:
                 raise BundleVerificationError("session_close_receipt_invalid_or_missing", "invalid close timestamp") from error
         rows = [row for _, row in _jsonl(export_path)]
         _require(len(rows) == count, "canonical_count_mismatch", "canonical row count differs")
+        text_inputs = verify_human_text_inputs(raw, recording, receipt, run_ids)
         expected_runs = {row["run_id"] for row in rows}
         expected_runs.update(row["run_id"] for row in journal if row.get("run_id") is not None)
         _require(set(run_ids) == expected_runs, "run_ids_mismatch", "canonical and journal run IDs differ")
@@ -265,7 +270,8 @@ class HumanSessionBundleV3Verifier:
         summary["counts"]["compatibility_invalid"] = audit["invalid_records"]
         return HumanSessionBundleV3(directory, manifest, profile, session, timeline,
             worker, str(manifest["campaign_id"]), profile_id, content_id,
-            _sha256_file(checksums_path), export_sha, count, run_ids, invalidations, dispositions, summary)
+            _sha256_file(checksums_path), export_sha, count, run_ids, invalidations, dispositions, summary,
+            recording.get("text_input_schema_version"), tuple(freeze_json(row) for row in text_inputs))
 
 
 def _verify_references(

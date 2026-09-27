@@ -28,6 +28,8 @@ public static class RecordingSessionAuditor
             Add(errors, "invalidation_disposition_schema_mismatch");
         if (manifest?.ContinuousSchemaVersion is not (null or 1))
             Add(errors, "continuous_recording_schema_invalid");
+        if (manifest?.TextInputSchemaVersion is not (null or HumanTextInputObservationContract.SchemaVersion))
+            Add(errors, "human_text_input_schema_invalid");
         if (manifest?.CloseSchemaVersion is not (null or 1))
             Add(errors, "session_close_schema_invalid");
         if (profile != null)
@@ -102,6 +104,7 @@ public static class RecordingSessionAuditor
             { Add(errors, "recording_recovery_invalid"); }
         }
         ValidateJournal(directory, manifest, errors);
+        ValidateHumanTextInputs(directory, manifest, errors);
         IReadOnlyList<SemanticBoundaryTraceEvent> semanticEvents = ValidateSemanticBoundaryTrace(
             directory,
             manifest,
@@ -133,6 +136,99 @@ public static class RecordingSessionAuditor
                 "audit_does_not_qualify_unseen_families",
                 "read_capture_is_player_visible_evidence_not_hidden_state"
             });
+    }
+
+    private static void ValidateHumanTextInputs(
+        string directory, CurrentRecordingManifest? manifest, IDictionary<string, long> errors)
+    {
+        if (File.Exists(Path.Combine(directory, "human-text-input-failure.json")))
+            Add(errors, "human_text_input_append_failure");
+        string path = Path.Combine(directory, HumanTextInputObservationContract.FileName);
+        if (manifest?.TextInputSchemaVersion != HumanTextInputObservationContract.SchemaVersion)
+        {
+            if (File.Exists(path)) Add(errors, "undeclared_human_text_input_stream");
+            return;
+        }
+        if (!File.Exists(path))
+        {
+            Add(errors, "human_text_input_stream_missing");
+            return;
+        }
+        using (FileStream stream = File.OpenRead(path))
+        {
+            if (stream.Length > 0)
+            {
+                stream.Seek(-1, SeekOrigin.End);
+                if (stream.ReadByte() != (byte)'\n')
+                    Add(errors, "human_text_input_torn_tail");
+            }
+        }
+        long sequence = 0;
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var journalRuns = new HashSet<string>(StringComparer.Ordinal);
+        string journalPath = Path.Combine(directory, "run-journal.jsonl");
+        if (File.Exists(journalPath))
+        {
+            foreach ((string journalLine, _) in Lines(journalPath))
+            {
+                try
+                {
+                    RunJournalEvent? entry = JsonSerializer.Deserialize<RunJournalEvent>(journalLine, EvidenceJson.Options);
+                    if (entry?.Kind is "run_started" or "run_started_native"
+                        or "run_resumed_native" or "run_observed_in_progress")
+                        journalRuns.Add(entry.RunId);
+                }
+                catch (JsonException) { /* Journal validation reports malformed rows. */ }
+            }
+        }
+        foreach (string line in File.ReadLines(path))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                Add(errors, "human_text_input_blank_line");
+                continue;
+            }
+            HumanTextInputObservation? value;
+            try { value = JsonSerializer.Deserialize<HumanTextInputObservation>(line, EvidenceJson.Options); }
+            catch (JsonException)
+            {
+                Add(errors, "human_text_input_json_invalid");
+                continue;
+            }
+            foreach (string error in HumanTextInputObservationValidator.Validate(value))
+                Add(errors, error);
+            if (value == null) continue;
+            if (value.SessionId != manifest.SessionId || value.TimelineId != manifest.TimelineId)
+                Add(errors, "human_text_input_manifest_mismatch");
+            if (!journalRuns.Contains(value.RunId))
+                Add(errors, "human_text_input_run_not_observed");
+            if (value.Sequence != sequence + 1)
+                Add(errors, "human_text_input_sequence_invalid");
+            sequence = value.Sequence;
+            if (!ids.Add(value.RecordId)) Add(errors, "human_text_input_duplicate_record_id");
+        }
+        if (manifest.CloseSchemaVersion == 1)
+        {
+            string receiptPath = Path.Combine(directory, "session-close-receipt.json");
+            if (File.Exists(receiptPath))
+            {
+                try
+                {
+                    JsonNode? receipt = JsonNode.Parse(File.ReadAllText(receiptPath));
+                    // Offline recovery seals its original inventory instead of
+                    // claiming a normal producer-side stream count.
+                    if (receipt?["recovery"]?.GetValue<string>()
+                            != InterruptedRecordingRecovery.Schema
+                        && (receipt?["human_text_input_count"]?.GetValue<long>() != sequence
+                            || receipt?["human_text_inputs_sha256"]?.GetValue<string>()
+                                != EvidenceIdentity.Sha256File(path)))
+                        Add(errors, "human_text_input_close_seal_mismatch");
+                }
+                catch (Exception exception) when (exception is JsonException or InvalidOperationException
+                    or FormatException)
+                { Add(errors, "human_text_input_close_seal_invalid"); }
+            }
+        }
     }
 
     private static void ValidateProofProjectionCoverage(
