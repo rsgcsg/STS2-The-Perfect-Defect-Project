@@ -7,10 +7,13 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError, decode_json, digest, object_fields
 from spireagent.storage.store import ManifestArtifactStore
+from stpd.fullrun.decision_training import VIEW_SCHEMA as DECISION_VIEW_SCHEMA
 from stpd.fullrun.evaluation import EVALUATION_COLUMNS
 from stpd.fullrun.evaluation import EVALUATION_SCHEMA as FULLRUN_SCHEMA
 from stpd.fullrun.evaluation import MODEL_SCHEMA as FULLRUN_MODEL_SCHEMA
 from stpd.fullrun.features import VIEW_SCHEMA as FULLRUN_VIEW_SCHEMA
+from stpd.fullrun.public_bc import LEGACY_VIEW_SCHEMA as LEGACY_PUBLIC_BC_VIEW_SCHEMA
+from stpd.fullrun.public_bc import VIEW_SCHEMA as PUBLIC_BC_VIEW_SCHEMA
 from stpd.models.stage1a import RECIPES
 from stpd.workers.token_worker import EVALUATION_SCHEMA as TOKEN_SCHEMA
 
@@ -20,9 +23,13 @@ METRICS = ("top1", "mrr", "nll", "confidence", "margin")
 MAX_SUMMARY = 16 * 1024 * 1024
 MAX_TOKEN_METRICS = 64 * 1024 * 1024
 TOKEN_VIEW_SCHEMAS = frozenset({
-    "stpd/decision-model-view-v1", "stpd/public-observation-bc-view-v1",
-    "stpd/public-observation-bc-view-v2", "stpd/text-menu-bc-view-v1",
+    DECISION_VIEW_SCHEMA, LEGACY_PUBLIC_BC_VIEW_SCHEMA, PUBLIC_BC_VIEW_SCHEMA,
+    "stpd/text-menu-bc-view-v1",
 })
+FULLRUN_VIEW_SCHEMAS = TOKEN_VIEW_SCHEMAS | {
+    FULLRUN_VIEW_SCHEMA, "stpd/human-text-input-bc-view-v1",
+    "stpd/human-text-input-bc-view-v2",
+}
 
 
 def _finite(value: Any, depth: int = 0) -> None:
@@ -201,7 +208,7 @@ def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
         raise BoundaryError("local_evaluation", "unsupported_evaluation")
     model, view = _parents(store, manifest)
     if (model.parameters.value().get("schema") != FULLRUN_MODEL_SCHEMA
-            or view.parameters.value().get("schema") != FULLRUN_VIEW_SCHEMA):
+            or view.parameters.value().get("schema") not in FULLRUN_VIEW_SCHEMAS):
         raise BoundaryError("local_evaluation", "invalid_report_parentage")
     recorded = _payload(store, manifest, "summary", MAX_SUMMARY)
     result = _public(manifest, model, view, recorded,

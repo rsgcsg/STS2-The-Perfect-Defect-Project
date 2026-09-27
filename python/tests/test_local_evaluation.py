@@ -13,6 +13,8 @@ from urllib.request import HTTPCookieProcessor, build_opener
 import pytest
 import torch
 from test_artifact_store_v1 import PRODUCER
+from test_decision_policy import identity as decision_identity
+from test_decision_training import prepared as decision_prepared
 from test_fullrun_worker import training
 from test_stage1a_training import token_inputs
 
@@ -24,7 +26,15 @@ from spireagent.storage.store import ManifestArtifactStore, copy_artifact
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig, ProjectConfig, combination
 from spireagent.workbench.developer_server import Application, create_server
 from spireagent.workbench.local_evaluation import SCHEMA, summary
-from stpd.workers.contracts import prepare_run
+from stpd.fullrun.decision_training import (
+    AllocationSpec,
+    publish_allocation,
+    publish_decision_view,
+)
+from stpd.fullrun.features import compile_features
+from stpd.fullrun.representation import FullRunSerializer
+from stpd.qwen.fake_backend import DeterministicFakeQwenBackend
+from stpd.workers.contracts import TrainingConfig, prepare_run, prepare_training_input
 from stpd.workers.token_ranking import TokenConfig
 from stpd.workers.token_worker import execute_tokens, prepare_token_run
 from stpd.workers.worker import execute
@@ -166,6 +176,41 @@ def test_legacy_dev_reads_only_recorded_summary_and_test_is_sealed(
     store.publish(unknown)
     with pytest.raises(BoundaryError, match="unsupported_evaluation"):
         summary(store, unknown.artifact_id)
+
+
+def test_decision_view_worker_report_is_supported_without_loading_lineage(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    owner, dataset = decision_prepared(tmp_path)
+    allocation = publish_allocation(owner.store, dataset, AllocationSpec(), owner.producer)
+    view = publish_decision_view(
+        owner.store, allocation.artifact_id, FullRunSerializer(), owner.producer
+    )
+    backend = DeterministicFakeQwenBackend(1024)
+    backend.identity = decision_identity()
+    features = compile_features(owner.store, view.artifact_id, backend, owner.producer)
+    input_manifest = prepare_training_input(
+        owner.store, features.artifact_id, owner.producer,
+        TrainingConfig(max_steps=2, seed=1701),
+    )
+    _, run = prepare_run(owner.store, input_manifest.artifact_id, owner.producer)
+    reporter = ObjectStoreRunReporter(owner.store, owner.store.blobs)
+    result = execute(owner.store, reporter, run.artifact_id, owner.producer)
+    evaluation_id = owner.store.get_manifest(result.result_id).parent("offline_evaluation")
+    roles = []
+    original_read = owner.store.read_payload
+
+    def observed(payload):
+        roles.append(payload.role)
+        yield from original_read(payload)
+
+    monkeypatch.setattr(owner.store, "read_payload", observed)
+    value = summary(owner.store, evaluation_id)
+    assert roles == ["summary"]
+    assert value["evaluation_schema"] == "stpd/offline-ranking-evaluation-v1"
+    assert value["view_schema"] == "stpd/decision-model-view-v1"
+    assert value["validation_scope"] == "recorded_report_and_parent_identities"
+    assert value["decision_count"] > 0
 
 
 def test_http_requires_local_cookie_and_exact_id_without_cloud_login(tmp_path: Path,
