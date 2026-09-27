@@ -257,6 +257,7 @@ window.SpireProject = (() => {
       runtime_game_mismatch: "模型运行器连接的不是当前游戏，请重新加载模型。",
       runtime_recovery_epoch_mismatch: "你已暂停或结束测试，这条旧操作已取消。",
       request_unknown: "请求结果尚未确认，请先刷新状态。不会自动重发操作。",
+      local_model_export_failed: "本机模型导出与校验未完成。请刷新状态后再按需明确重试。",
       request_unavailable: "暂时无法读取服务，请刷新重试。",
       absolute_game_directory_required: "请填写这台电脑上的游戏安装目录完整路径。",
       default_collection_fields_required: "请填写名称、录制说明和授权说明。",
@@ -2584,6 +2585,132 @@ window.SpireProject = (() => {
     return overview;
   }
 
+  function supportsLocalModelExport(value) {
+    const parameters = value?.parameters && typeof value.parameters === "object"
+      && !Array.isArray(value.parameters) ? value.parameters : {};
+    const config = parameters.config && typeof parameters.config === "object"
+      && !Array.isArray(parameters.config) ? parameters.config : {};
+    const serializer = parameters.serializer && typeof parameters.serializer === "object"
+      && !Array.isArray(parameters.serializer) ? parameters.serializer : {};
+    const backbone = parameters.backbone && typeof parameters.backbone === "object"
+      && !Array.isArray(parameters.backbone) ? parameters.backbone : {};
+    const serializerKeys = ["input_profile", "profile", "source_schema", "status", "version"];
+    return value?.kind === "model" && hex(value.artifact_id)
+      && parameters.schema === "stpd/stage1a-model-v1"
+      && parameters.qualification === "engineering_only"
+      && config.recipe === "stage1a.b.s.v2" && config.device === "cpu"
+      && backbone.kind === "scratch"
+      && Object.keys(serializer).length === serializerKeys.length
+      && serializerKeys.every(key => Object.hasOwn(serializer, key))
+      && serializer.version === "stpd-text-menu-current-page-v1"
+      && serializer.profile === "text_menu_current_page"
+      && serializer.source_schema === "sts2.player-environment/text-menu-snapshot-1"
+      && serializer.input_profile === "text-menu-v1"
+      && serializer.status === "provisional";
+  }
+
+  async function localModelExportCard(ctx, model) {
+    const card = panel("导出并校验", "导出只保存并检查本机模型文件；不会登记为游戏模型或加载，也不检查游戏兼容性。服务端会重新验证模型身份。");
+    const path = "/api/local-model-exports/status";
+    let status;
+    try {
+      status = await request(ctx, path);
+    } catch {
+      if (live(ctx)) card.append(el("p", "导出状态暂不可用；请刷新状态后再试。", "small muted"));
+      if (live(ctx)) card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
+      return card;
+    }
+    if (!live(ctx)) return card;
+    const operation = status?.operation && typeof status.operation === "object"
+      && !Array.isArray(status.operation) ? status.operation : null;
+    if (status?.schema !== "stpd/local-model-export-operation-v1") {
+      const message = "导出状态格式未知；未发起导出。";
+      card.append(el("p", message, "small muted"));
+      card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
+      return card;
+    }
+    const knownStates = ["idle", "pending", "completed", "failed", "interrupted"];
+    const validOwner = operation && (operation.status === "idle"
+      ? operation.model_id === undefined || hex(operation.model_id)
+      : hex(operation.model_id));
+    if (!operation || !knownStates.includes(operation.status) || !validOwner) {
+      card.append(el("p", "导出状态格式未知；未发起导出。", "small muted"));
+      card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
+      return card;
+    }
+
+    const csrf = typeof status.csrf_token === "string" && status.csrf_token.length > 0
+      ? status.csrf_token : "";
+    const startCommand = (label, disabled) => command(ctx, "start-local-model-export", label, async () => {
+      if (!live(ctx) || !supportsLocalModelExport(model)) return;
+      try {
+        await request(ctx, "/api/local-model-exports/start", {model_id:model.artifact_id}, csrf);
+      } catch (error) {
+        if (live(ctx)) throw new Error(error.message === "request_unknown"
+          ? "request_unknown" : "local_model_export_failed");
+        throw error;
+      }
+      if (live(ctx)) await reload(ctx);
+      else if (current?.account === ctx.account && current?.scope === ctx.scope)
+        await window.SpireProject.reload();
+    }, {primary:true, disabled});
+    if (status.availability === "workspace_required") {
+      card.append(el("p", "本机资料空间暂不可用；未显示导出结果，也未发起导出。", "small muted"));
+      card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
+      return card;
+    }
+    if (status.availability === "workspace_changed") {
+      const unresolved = ["pending", "interrupted"].includes(operation.status);
+      card.append(el("p", unresolved
+        ? "之前本机资料空间的导出仍在处理中或结果未确认；请回到原资料空间核验，当前不能启动其他导出。"
+        : "上次记录来自之前的本机资料空间；不会视为当前导出结果。可为当前模型明确重新导出并校验。", "small muted"));
+      if (!csrf) card.append(el("p", "本机浏览器保护令牌暂不可用；刷新状态后再试。", "small muted"));
+      card.append(startCommand(unresolved ? "等待核对原导出" : "为当前资料空间重新导出并校验", unresolved || !csrf));
+      card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
+      return card;
+    }
+    if (status.availability !== "ready") {
+      card.append(el("p", "本机资料空间状态未知；未显示导出结果，也未发起导出。", "small muted"));
+      card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
+      return card;
+    }
+
+    const sameModel = operation.model_id === model.artifact_id;
+    let label = "导出并校验";
+    let disabled = !csrf;
+    if (operation.status === "idle") {
+      card.append(el("p", "尚无导出结果。", "small muted"));
+    } else if (operation.status === "pending" && sameModel) {
+      disabled = true;
+      card.append(el("p", "此模型的导出与校验正在进行；刷新只读取状态。", "small muted"));
+    } else if (operation.status === "pending") {
+      disabled = true;
+      label = "等待另一模型的导出完成";
+      card.append(el("p", "另一模型的导出正在进行；完成前不能启动此模型的导出。", "small muted"));
+    } else if (operation.status === "completed" && sameModel) {
+      label = "重新核验导出";
+      card.append(el("p", "导出校验完成；尚未登记为游戏模型，也未加载。游戏兼容性尚未检查。", "small muted"));
+      if (Number.isSafeInteger(operation.payload_bytes) && operation.payload_bytes >= 0)
+        card.append(fields([["导出大小", bytes(operation.payload_bytes)]]));
+    } else if (operation.status === "failed" && sameModel) {
+      label = "重新导出并校验";
+      card.append(el("p", "上次导出未完成。你可以明确再次发起；不会自动重试。", "small muted"));
+    } else if (operation.status === "interrupted" && sameModel) {
+      label = "核验或继续此模型导出";
+      card.append(el("p", "上次操作中断，结果尚未确认。再次点击会明确核对此模型；不会自动重试。", "small muted"));
+    } else if (operation.status === "interrupted") {
+      disabled = true;
+      label = "等待核对另一模型的导出";
+      card.append(el("p", "另一模型的导出结果尚未确认；先核对该模型，再开始新的导出。", "small muted"));
+    } else {
+      card.append(el("p", "最近的导出记录属于另一模型。", "small muted"));
+    }
+    if (!csrf) card.append(el("p", "本机浏览器保护令牌暂不可用；刷新状态后再试。", "small muted"));
+    card.append(startCommand(label, disabled));
+    card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
+    return card;
+  }
+
   function offlineEvaluationMetrics(value) {
     const metrics = value && typeof value === "object" ? value : {};
     const number = key => Number.isFinite(metrics[key])
@@ -3276,6 +3403,10 @@ window.SpireProject = (() => {
         box.append(localDatasetOverview(value));
       if (value.kind === "model" && value.parameters?.schema === "stpd/stage1a-model-v1")
         box.append(localModelOverview(value));
+      if (supportsLocalModelExport(value)) {
+        const exportCard = await localModelExportCard(ctx, value);
+        if (live(ctx)) box.append(exportCard);
+      }
       if (value.kind === "offline_evaluation")
         box.append(await localOfflineEvaluationDetail(ctx, value));
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1"
