@@ -33,10 +33,12 @@ observations, bundles, private paths, credentials and model weights are omitted.
   reproduced a `mappingproxy` JSON serialization failure. The Evidence component
   suite passed 145 tests. The private-bundle command shape was
   `npm run evidence -- verify-human-bundle <private-bundle-dir>`; it exited 0,
-  reported pass, and emitted all 18 rows. Hosted CI run
+  reported pass, and emitted all 18 rows. PR #51 head
+  `f508d7a1a05c5c93aaf52b98929367fe2494c839` merged normally to develop as
+  `9f895e8b533a25abe971d169000ae81760b8e76d` with tree
+  `6794fe8feda674e099329176859e40ea37634190`. Hosted CI run
   [36301622023](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36301622023)
-  had Linux portability pass while Windows portability was still in progress at
-  the latest check. PR #51 is not yet integrated.
+  completed successfully, including Linux, Windows and portable jobs.
 
 ## Separate RC15 installed and loaded identity
 
@@ -86,7 +88,6 @@ actions or Human evidence. The game remains closed; no new game launch occurred.
 
 ## Next work and limits
 
-- Finish PR #51 review and hosted CI, then record its actual integrated state.
 - Complete PR #52 review and hosted CI, then record its integration state. The
   candidate fixes the signed-out home prompt; the local workspace inventory is
   still only a bounded metadata view.
