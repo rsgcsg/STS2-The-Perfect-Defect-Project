@@ -13,6 +13,7 @@ import json
 import tarfile
 import tempfile
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,17 @@ FILES = ("adapter-attestation.json", "checksums.sha256", "events.jsonl",
 MAX_ARCHIVE_BYTES = 64 * 1024**2
 OUTCOME_KINDS = frozenset({"menu_navigation", "text_native_delivery",
                            "text_native_unknown", "text_menu_not_applied"})
+
+
+@dataclass(frozen=True)
+class VerifiedAgentRunEvents:
+    """Complete events retained from the exact archive bytes admitted by Evidence."""
+
+    evidence_id: str
+    content_id: str
+    run_id: str
+    event_count: int
+    events: tuple[dict[str, Any], ...]
 
 
 def _verified_files(directory: Path) -> tuple[dict[str, bytes], Any]:
@@ -75,10 +87,10 @@ def _archive(content: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def load_verified_agent_run_artifact(
+def _load_verified_agent_run(
     store: ArtifactStore, identity: str,
-) -> tuple[Any, tuple[dict[str, Any], ...]]:
-    """Reverify archived exact bytes before accepting an evidence parent."""
+) -> tuple[Any, tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    """Load exact archive bytes, verify them, and validate every text binding."""
     manifest = store.get_manifest(identity)
     info = manifest.parameters.value()
     if (manifest.kind != "evidence" or info.get("schema") != EVIDENCE_SCHEMA
@@ -120,10 +132,33 @@ def load_verified_agent_run_artifact(
         policy = json.loads((directory / "policy-manifest.json").read_bytes())
         if policy.get("representation", {}).get("input_schema") != SNAPSHOT_SCHEMA:
             raise BoundaryError("text_menu_import", "text_profile_required")
-        rows, _ = _trace_rows(_events((directory / "events.jsonl").read_bytes(),
-                                      result.value.event_count),
-                              result.value.run_id, result.value.content_id)
-        return result.value, rows
+        events = tuple(_events((directory / "events.jsonl").read_bytes(),
+                               result.value.event_count))
+        rows, _ = _trace_rows(list(events), result.value.run_id, result.value.content_id)
+        return result.value, events, rows
+
+
+def load_verified_agent_run_events(
+    store: ArtifactStore, identity: str,
+) -> VerifiedAgentRunEvents:
+    """Return the full verified event stream after existing text binding checks.
+
+    Events are parsed from the bounded temporary extraction only after the
+    Evidence verifier checks the archived bytes. The complete stream and the
+    existing trace projection are both validated before anything is returned.
+    """
+    verified, events, _ = _load_verified_agent_run(store, identity)
+    return VerifiedAgentRunEvents(
+        identity, verified.content_id, verified.run_id, verified.event_count, events,
+    )
+
+
+def load_verified_agent_run_artifact(
+    store: ArtifactStore, identity: str,
+) -> tuple[Any, tuple[dict[str, Any], ...]]:
+    """Reverify archived exact bytes before accepting an evidence parent."""
+    verified, _, rows = _load_verified_agent_run(store, identity)
+    return verified, rows
 
 
 def _events(raw: bytes, count: int) -> list[dict[str, Any]]:

@@ -24,6 +24,7 @@ from stpd.fullrun.text_menu_inputs import project_text_menu_snapshot
 from stpd.fullrun.text_menu_runtime_import import (
     _trace_rows,
     load_verified_agent_run_artifact,
+    load_verified_agent_run_events,
     publish_verified_text_menu_run,
     publish_verified_text_menu_runs,
 )
@@ -124,6 +125,22 @@ def test_finalized_evidence_archive_is_exact_parent_and_reloaded(
     assert verified.content_id == evidence.parameters.value()["content_id"]
     assert load_text_menu_source(target, source.artifact_id)[1] == expected
     assert expected[0]["source_ref"].startswith(f"agent-run://{verified.content_id}/")
+    event_stream = load_verified_agent_run_events(target, evidence.artifact_id)
+    assert event_stream.evidence_id == evidence.artifact_id
+    assert event_stream.content_id == verified.content_id
+    assert event_stream.run_id == verified.run_id
+    assert event_stream.event_count == len(event_stream.events)
+    assert [event["sequence"] for event in event_stream.events] == list(
+        range(1, event_stream.event_count + 1))
+    assert any(event["kind"] == "text_decision_input" for event in event_stream.events)
+    # The public raw-event loader preserves the exact stream only after the old
+    # research-side trace/action binding checks have also succeeded.
+    input_sequence = int(expected[0]["source_ref"].split("#input=")[1].split("&outcome=")[0])
+    outcome_sequence = int(expected[0]["source_ref"].split("&outcome=")[1])
+    assert event_stream.events[input_sequence - 1]["kind"] == "text_decision_input"
+    assert event_stream.events[outcome_sequence - 1]["kind"] in {
+        "menu_navigation", "text_native_delivery",
+    }
     if native:
         assert expected[0]["result"]["successor"] is None
     else:
