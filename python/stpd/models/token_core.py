@@ -201,18 +201,42 @@ class ScratchTokenCore(TokenCore):
         if self.training and self.shape.dropout > 0:
             return super().read_action_queries(state, actions, query)
         self.validate_tokens(state)
+        return self._read_action_queries_from_shared(self.embed_tokens(state), actions, query)
+
+    def read_action_queries_from_shared(
+        self, shared: Tensor, actions: tuple[Tensor, ...], query: Tensor,
+    ) -> Tensor:
+        """Score branches from a differentiable shared prefix (zero dropout only).
+
+        The caller owns the complete shared embedding sequence, including any
+        learned memory prefix. This experimental seam does not change M0 weights.
+        """
+        if self.shape.dropout != 0:
+            raise ValueError("shared embedding prefix requires zero dropout")
+        return self._read_action_queries_from_shared(shared, actions, query)
+
+    def _read_action_queries_from_shared(
+        self, shared: Tensor, actions: tuple[Tensor, ...], query: Tensor,
+    ) -> Tensor:
+        if (shared.ndim != 2 or shared.shape[1] != self.width
+                or shared.shape[0] == 0 or shared.shape[0] > self.max_tokens
+                or shared.device != self.embedding.weight.device
+                or shared.dtype != self.embedding.weight.dtype):
+            raise ValueError("invalid shared embedding shape, device or dtype")
         if not actions or query.shape != (self.width,):
             raise ValueError("invalid candidate catalog or query shape")
+        if query.device != shared.device or query.dtype != shared.dtype:
+            raise ValueError("query and shared embedding device or dtype differ")
         for action in actions:
             self.validate_tokens(action)
-            if action.device != state.device:
-                raise ValueError("state and action token devices differ")
-            if state.numel() + action.numel() + 1 > self.max_tokens:
+            if action.device != shared.device:
+                raise ValueError("shared embeddings and action token devices differ")
+            if shared.shape[0] + action.numel() + 1 > self.max_tokens:
                 raise ValueError("joint input token limit exceeded; truncation is forbidden")
 
-        state_length = state.numel()
+        state_length = shared.shape[0]
         frequency = torch.exp(
-            torch.arange(0, self.width, 2, device=state.device, dtype=torch.float32)
+            torch.arange(0, self.width, 2, device=shared.device, dtype=torch.float32)
             * (-math.log(10000.0) / self.width)
         )
 
@@ -223,7 +247,7 @@ class ScratchTokenCore(TokenCore):
             encoding = torch.stack((angles.sin(), angles.cos()), dim=-1).flatten(1)
             return embeddings + encoding.to(embeddings.dtype)
 
-        shared = positioned(self.embed_tokens(state), 0)
+        shared = positioned(shared, 0)
         state_keys: list[tuple[Tensor, Tensor]] = []
         for index, layer in enumerate(self.encoder.layers):
             state_query, state_key, state_value = self._project_attention(layer, shared)
@@ -243,9 +267,9 @@ class ScratchTokenCore(TokenCore):
             branch_length = hidden.shape[0]
             if branch_length not in masks:
                 masks[branch_length] = torch.cat((
-                    torch.ones(branch_length, state_length, device=state.device,
+                    torch.ones(branch_length, state_length, device=shared.device,
                                dtype=torch.bool),
-                    torch.ones(branch_length, branch_length, device=state.device,
+                    torch.ones(branch_length, branch_length, device=shared.device,
                                dtype=torch.bool).tril(),
                 ), dim=1)
             allowed = masks[branch_length]
