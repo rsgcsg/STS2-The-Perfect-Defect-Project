@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -202,3 +204,49 @@ def test_missing_preparation_plan_cannot_disable_legacy_gold_guard(tmp_path: Pat
         InplaceCurationPreparation(config).start()
     with pytest.raises(BoundaryError, match="legacy_gold_history_unknown"):
         owner.ledger.claim("e" * 64, "gold", runs)
+
+
+def test_pending_source_bridge_and_gold_claim_share_one_writer(tmp_path: Path) -> None:
+    config, source, _ = _config(tmp_path)
+    service = InplaceCurationPreparation(config)
+    service.start()
+    assert _settle(service)["status"] == "ready"
+    owner = configured_owner(config)
+    old_run = next(iter(owner.ledger.source_runs(source) or ()))
+    with owner.transaction() as db:
+        fingerprint = db.execute(
+            "SELECT fingerprint FROM curation_fingerprints WHERE run=? LIMIT 1",
+            (old_run,),
+        ).fetchone()[0]
+    candidate = "f" * 64
+    future_run = "future-run"
+    owner.begin_source(candidate)
+    ready = threading.Barrier(2)
+
+    def bridge() -> None:
+        ready.wait(timeout=5)
+        with owner.transaction() as db:
+            db.execute("INSERT INTO curation_fingerprints VALUES(?,?)",
+                       (fingerprint, future_run))
+            db.execute("DELETE FROM local_source_pending WHERE candidate=?", (candidate,))
+
+    def claim() -> str:
+        ready.wait(timeout=5)
+        try:
+            owner.ledger.claim("g" * 64, "gold", {future_run})
+        except BoundaryError as error:
+            return error.code
+        return "incorrectly_reserved"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        attempted = pool.submit(claim)
+        indexed = pool.submit(bridge)
+        assert attempted.result(timeout=10) in {
+            "gold_source_inventory_pending", "legacy_gold_history_unknown"
+        }
+        indexed.result(timeout=10)
+    with pytest.raises(BoundaryError, match="legacy_gold_history_unknown"):
+        owner.ledger.claim("h" * 64, "gold", {future_run})
+    with owner.transaction() as db:
+        assert db.execute("SELECT count(*) FROM curation_claims WHERE purpose='gold'").fetchone() \
+            == (0,)

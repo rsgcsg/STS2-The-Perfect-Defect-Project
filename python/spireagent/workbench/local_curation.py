@@ -11,11 +11,10 @@ import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
 
 from spireagent.hub.database import create_private_database
 from spireagent.json_boundary import BoundaryError, digest
-from spireagent.research_curation import CurationLedger
+from spireagent.research_curation import CurationLedger, InventoryPending
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
 
@@ -36,18 +35,16 @@ REQUIRED_INDEXES = {
 
 
 class LocalLedger(CurationLedger):
+    def __init__(self, owner: LocalCurationOwner, *,
+                 inventory_pending: InventoryPending | None = None) -> None:
+        super().__init__(owner, inventory_pending=inventory_pending,
+                         claim_guard=owner._historical_claim_guard)
+
     def claim(self, identity: str, purpose: str, runs: Iterable[str], *,
               gold_parents: tuple[str, ...] = (),
               require_inventory: bool = False, annotation_revision: int | None = None) -> None:
         # A local caller cannot accidentally omit the host's Gold inventory gate.
-        selected = tuple(runs)
-        owner = cast(LocalCurationOwner, self.operations)
-        if purpose == "gold" and owner.legacy_guard:
-            with self.operations.transaction() as db:
-                related = self._groups(db, set(selected))
-                if owner.gold_history_unknown(db, related):
-                    raise BoundaryError("local_curation", "legacy_gold_history_unknown")
-        super().claim(identity, purpose, selected, gold_parents=gold_parents,
+        super().claim(identity, purpose, runs, gold_parents=gold_parents,
                       require_inventory=require_inventory or purpose == "gold",
                       annotation_revision=annotation_revision)
 
@@ -207,3 +204,8 @@ class LocalCurationOwner:
             return True
         return any(db.execute("SELECT 1 FROM local_legacy_unknown_runs WHERE run=?",
                               (run,)).fetchone() for run in runs)
+
+    def _historical_claim_guard(self, db: sqlite3.Connection, purpose: str,
+                                related: set[str]) -> None:
+        if purpose == "gold" and self.gold_history_unknown(db, related):
+            raise BoundaryError("local_curation", "legacy_gold_history_unknown")
