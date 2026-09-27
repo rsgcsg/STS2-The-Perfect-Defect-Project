@@ -7,6 +7,8 @@ No Human selected action, planned choice, or unconfirmed delivery is substituted
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 from torch import Tensor, nn
 
@@ -48,7 +50,7 @@ class ExperimentalObservationMemoryB(nn.Module):
         if reset_before or self.reset_each_step:
             hidden = torch.zeros_like(hidden)
         summary = self.core.read_last_query(observation, self.summary_query)
-        return self.gru(summary, hidden)
+        return cast(Tensor, self.gru(summary, hidden))
 
     def _validate_catalog_capacity(self, observation: Tensor,
                                    actions: tuple[Tensor, ...]) -> None:
