@@ -1079,6 +1079,7 @@ test("offline evaluation detail reads one exact dev recorded-report summary", as
   assert.match(text(page), /已记录的开发集结果/);
   assert.match(text(page), /未重新核验原始数据、模型权重或完整训练来源/);
   assert.match(text(page), /记录中的对局分组数（未复核独立性）/);
+  assert.doesNotMatch(text(page), /录制分组数（不代表独立游戏局）/);
   assert.match(text(page), /总体记录指标/);
   assert.match(text(page), /首选命中率（非胜率，Top-1）/);
   assert.match(text(page), /0\.1235/);
@@ -1089,6 +1090,48 @@ test("offline evaluation detail reads one exact dev recorded-report summary", as
     `查看本机模型视图 · ${id("b").slice(0, 16)}`);
   assert.equal(env.calls.filter(call => call.url === `/api/local-workspace/evaluations/${evaluation}`).length, 1);
   assert.equal(post(env.calls).length, 0);
+});
+
+test("Human input report uses session-scoped grouping language and unknown independence conservatively", async () => {
+  const evaluation = id("9"), schema = "stpd/stage1a-ranking-evaluation-v1";
+  for (const [grouping, independence, expectedLabel, expectedNote, hidden] of [
+    ["session_scoped_run_group", "unknown_across_sessions",
+      /录制分组数（不代表独立游戏局）/, /独立性[\s\S]*未知（按录制分组计数，不证明来自不同游戏局）/, null],
+    ["future_grouping", "future_independence",
+      /记录中的对局分组数（未复核独立性）/, /未知（分组信息未确认，不据此认定为独立游戏局）/,
+      /future_grouping|future_independence/],
+  ]) {
+    const env = setup({
+      identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${evaluation}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+        };
+        if (url === `/api/local-workspace/artifacts/${evaluation}`) return {
+          artifact_id:evaluation, kind:"offline_evaluation",
+          parameters:{schema, partition:"dev"},
+        };
+        if (url === `/api/local-workspace/evaluations/${evaluation}`) return {
+          schema:"stpd/local-offline-evaluation-summary-v1", evaluation_id:evaluation,
+          evaluation_schema:schema, model_id:id("a"), model_view_id:id("b"),
+          model_recipe:"stage1a.b.s.v2", view_schema:"stpd/human-text-input-bc-view-v2",
+          partition:"dev", baseline:"model", qualification:"engineering_only",
+          scientific_verdict:"not_claimed", validation_scope:"recorded_report_and_parent_identities",
+          decision_count:5, reported_run_groups:2, multi_candidate_count:0,
+          grouping, native_run_independence:independence,
+          overall:{count:5, top1:1, mrr:1, nll:0, confidence:0, margin:0},
+          interpretation:"producer_recorded_summary_not_full_lineage_or_quality_verification",
+        };
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    assert.match(text(page), expectedLabel);
+    assert.match(text(page), expectedNote);
+    if (hidden) assert.doesNotMatch(text(page), hidden);
+    assert.equal(env.calls.filter(call => call.url === `/api/local-workspace/evaluations/${evaluation}`).length, 1);
+    assert.equal(post(env.calls).length, 0);
+  }
 });
 
 test("offline evaluation detail supports Stage1a recorded summaries and optional baselines", async () => {
