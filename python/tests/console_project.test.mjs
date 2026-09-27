@@ -2260,3 +2260,27 @@ test("taint remains a current execution blocker while history does not trigger c
   assert.equal(action(await env.render(), "model-command-auto").disabled, true);
   assert.equal(post(env.calls).length, 0);
 });
+
+test("another recording's unresolved publication blocks a new dataset check", async () => {
+  for (const recoverable of [true, false]) {
+    const artifact = id("a"), previous = id("b");
+    const env = localDatasetEnv({artifact, datasetStatus: {
+      schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+      operation: {status: "failed", artifact_id: previous, purpose: "training",
+        paired_training: null, preview_id: "d".repeat(32), can_publish: false,
+        recovery_available: recoverable,
+        error_code: recoverable ? "publish_failed" : "publication_recovery_required"},
+      csrf_token: "dataset-csrf",
+    }});
+    const page = await env.render();
+    const check = action(page, "check-local-dataset");
+    assert.equal(check.disabled, true);
+    assert.match(text(page), /另一份录制的创建结果尚未确认/);
+    assert.equal(walk(page).some(element => element.tag === "a"
+      && element.href?.includes(previous)), true);
+    assert.equal(walk(page).some(element => element.dataset?.action === "recover-local-dataset-publication"), false);
+    await check.onclick();
+    await action(page, "refresh-local-dataset-status").onclick();
+    assert.equal(post(env.calls).length, 0);
+  }
+});

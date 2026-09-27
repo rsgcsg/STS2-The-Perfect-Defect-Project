@@ -1120,7 +1120,7 @@ window.SpireProject = (() => {
   const localDatasetBlockerLabel = code => ({
     gold_source_inventory_pending: "还有来源未完成索引，目前不能确认 Gold 隔离。",
     gold_already_in_other_dataset: "该来源已进入其他数据集；请为 Gold 选择独立来源。",
-    gold_requires_gold_merge: "该来源已属于 Gold，不能作为新的 Gold 重复创建；需走 Gold 合并流程。",
+    gold_requires_gold_merge: "该来源已属于 Gold，不能作为新的 Gold 重复创建；本机暂不支持 Gold 合并。",
     gold_previously_used_for_training: "该来源已有训练使用记录，不能作为 Gold。",
     gold_reserved_data: "该来源已保留为 Gold，只能用于受控评估或 Gold 合并。",
     empty_selection: "当前选择没有可保留的样本。",
@@ -2557,12 +2557,16 @@ window.SpireProject = (() => {
     const pending = operation.status === "pending";
     const failedOrInterrupted = operationForArtifact
       && ["failed", "interrupted"].includes(operation.status);
-    const recoveryRequired = failedOrInterrupted
+    const recoveryRequired = ["failed", "interrupted"].includes(operation.status)
       && (operation.recovery_available === true || operation.error_code === "publication_recovery_required");
     if (pending) {
       section.append(el("p", operationForArtifact
         ? "正在检查这份录制；可刷新查看进度，不会重复提交。"
         : "本机另一项数据集检查正在进行；等待其明确结果后再检查当前录制。", "small muted"));
+    } else if (recoveryRequired && !operationForArtifact) {
+      section.append(el("p", "另一份录制的创建结果尚未确认；请先返回该录制核对或恢复用途记录。", "small muted"));
+      if (hex(operation.artifact_id))
+        section.append(link("打开待核对的录制", route("local-workspace", operation.artifact_id)));
     } else if (recoveryRequired) {
       section.append(el("p", operation.recovery_available === true
         ? "上次创建结果尚未核对；请先点击“核对上次创建结果”，不要重新检查。"
@@ -2631,7 +2635,8 @@ window.SpireProject = (() => {
     const checkOptions = {primary:true, disabled:pending || recoveryRequired || !validParent() || !data.csrf_token};
     section.append(command(ctx, "check-local-dataset",
       recoveryRequired
-        ? operation.recovery_available === true ? "先核对上次创建结果" : "需恢复用途记录"
+        ? !operationForArtifact ? "先处理另一份创建"
+          : operation.recovery_available === true ? "先核对上次创建结果" : "需恢复用途记录"
         : failedOrInterrupted
         ? "重新检查数据集" : pending ? "正在检查" : "检查数据集", async () => {
       if (pending || recoveryRequired || !validParent()) return;
