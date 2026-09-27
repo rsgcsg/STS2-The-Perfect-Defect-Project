@@ -19,8 +19,9 @@ internal static partial class RecorderRuntime
     {
         internal HumanTextContinuationScope(HumanTextContinuationScope? previous,
             RecordingSessionStore store, string sessionId, string timelineId,
-            string runId, NControllerCardPlay carrier, string verb, string mechanism,
-            NTargetManager? manager, NCreature? target, bool requestedCancel)
+            string runId, NCardPlay carrier, InputEvent input, string verb,
+            string mechanism, NTargetManager? manager, NCreature? target,
+            bool requestedCancel)
         {
             Previous = previous;
             Store = store;
@@ -28,6 +29,7 @@ internal static partial class RecorderRuntime
             TimelineId = timelineId;
             RunId = runId;
             Carrier = carrier;
+            Input = input;
             Verb = verb;
             Mechanism = mechanism;
             Manager = manager;
@@ -41,7 +43,8 @@ internal static partial class RecorderRuntime
         internal string SessionId { get; }
         internal string TimelineId { get; }
         internal string RunId { get; }
-        internal NControllerCardPlay Carrier { get; }
+        internal NCardPlay Carrier { get; }
+        internal InputEvent Input { get; }
         internal CardModel? Card { get; set; }
         internal string Verb { get; }
         internal string Mechanism { get; }
@@ -60,40 +63,54 @@ internal static partial class RecorderRuntime
     }
 
     private sealed record HumanTextTargetBinding(
-        NTargetManager Manager, NControllerCardPlay Carrier,
+        NTargetManager Manager, NCardPlay Carrier,
         string SessionId, string TimelineId);
 
-    private static readonly AsyncLocal<NControllerCardPlay?> HumanTextStartingController = new();
+    private static readonly HumanTextInputClaimGate HumanTextConsumedInputs = new();
+    private static readonly AsyncLocal<NCardPlay?> HumanTextStartingCard = new();
     private static readonly AsyncLocal<HumanTextContinuationScope?> HumanTextContinuationCurrent = new();
     private static readonly Dictionary<NTargetManager, HumanTextTargetBinding> HumanTextTargetBindings =
         new(ReferenceEqualityComparer.Instance);
     private static readonly PropertyInfo? HumanTextHoveredNodeProperty =
         AccessTools.Property(typeof(NTargetManager), "HoveredNode");
+    private static readonly FieldInfo? HumanTextMouseCancelShortcutField =
+        AccessTools.Field(typeof(NMouseCardPlay), "_cancelShortcut");
+    private static readonly FieldInfo? HumanTextTargetExitConditionField =
+        AccessTools.Field(typeof(NTargetManager), "_exitEarlyCondition");
 
-    internal static NControllerCardPlay? BeginHumanTextTargetSetup(NControllerCardPlay carrier)
+    internal static NCardPlay? BeginHumanTextTargetSetup(NCardPlay carrier)
     {
-        NControllerCardPlay? previous = HumanTextStartingController.Value;
-        HumanTextStartingController.Value = carrier;
+        NCardPlay? previous = HumanTextStartingCard.Value;
+        HumanTextStartingCard.Value = carrier;
         return previous;
     }
 
-    internal static void EndHumanTextTargetSetup(NControllerCardPlay? previous) =>
-        HumanTextStartingController.Value = previous;
+    internal static void EndHumanTextTargetSetup(NCardPlay? previous) =>
+        HumanTextStartingCard.Value = previous;
+
+    internal static void InvalidateHumanTextTargetManager(NTargetManager manager)
+    {
+        lock (Gate) HumanTextTargetBindings.Remove(manager);
+    }
 
     /// <summary>Called only from the native StartTargeting(control) invocation
-    /// inside this carrier's Start. No ambient current card is inferred.</summary>
+    /// inside this carrier's synchronous entry. No ambient current card is inferred.</summary>
     internal static void BindHumanTextTargetManager(
         NTargetManager manager, Control control, TargetMode mode)
     {
         try
         {
-            // Every new manager operation invalidates the previous carrier,
-            // including starts owned by a different native UI family.
-            lock (Gate) HumanTextTargetBindings.Remove(manager);
-            NControllerCardPlay? carrier = HumanTextStartingController.Value;
-            if (carrier == null || mode != TargetMode.Controller
+            NCardPlay? carrier = HumanTextStartingCard.Value;
+            if (!ReferenceEquals(NTargetManager.Instance, manager)
+                || carrier == null || !((carrier is NControllerCardPlay
+                    && mode == TargetMode.Controller)
+                || (carrier is NMouseCardPlay && mode is
+                    TargetMode.ReleaseMouseToTarget or TargetMode.ClickMouseToTarget))
                 || !ReferenceEquals(control, carrier.Holder.CardNode)
-                || !IsCurrentHumanTextController(carrier)) return;
+                || !IsCurrentHumanTextCardCarrier(carrier)
+                || (carrier is NMouseCardPlay
+                    && !(HumanTextTargetExitConditionField?.GetValue(manager)
+                        is Func<bool> exit && ReferenceEquals(exit.Target, carrier)))) return;
             lock (Gate)
             {
                 if (_lifecycle.State != RecordingLifecycleState.Recording
@@ -113,7 +130,7 @@ internal static partial class RecorderRuntime
     {
         try
         {
-            if (input is not InputEventAction action || !IsCurrentHumanTextController(carrier))
+            if (input is not InputEventAction action || !IsCurrentHumanTextCardCarrier(carrier))
                 return null;
             CardModel? card = carrier.Holder.CardModel;
             if (card == null || card.TargetType is TargetType.AnyEnemy or TargetType.AnyAlly)
@@ -123,7 +140,7 @@ internal static partial class RecorderRuntime
                 || action.IsActionPressed(MegaInput.pauseAndBack)
                 || action.IsActionPressed(MegaInput.topPanel);
             if (!confirm && !cancel) return null;
-            return BeginHumanTextContinuation(carrier,
+            return BeginHumanTextContinuation(carrier, input,
                 confirm ? "confirm_card" : "cancel_card_play",
                 confirm ? HumanTextInputObservationContract.ControllerConfirmedInputSignal
                     : HumanTextInputObservationContract.ControllerCanceledInputSignal,
@@ -136,29 +153,74 @@ internal static partial class RecorderRuntime
         }
     }
 
+    internal static HumanTextContinuationScope? BeginHumanTextMouseInput(
+        NMouseCardPlay carrier, InputEvent input)
+    {
+        try
+        {
+            if (!IsCurrentHumanTextCardCarrier(carrier)) return null;
+            bool rightPress = input is InputEventMouseButton
+                { ButtonIndex: MouseButton.Right } button && button.IsPressed();
+            bool shortcut = HumanTextMouseCancelShortcutField?.GetValue(carrier)
+                is StringName name && input.IsActionPressed(name);
+            if (!rightPress && !shortcut) return null;
+            return BeginHumanTextContinuation(carrier, input,
+                "cancel_card_play",
+                HumanTextInputObservationContract.MouseCanceledInputSignal,
+                null, null, requestedCancel: true);
+        }
+        catch (Exception exception)
+        {
+            NativeUiObservationSafety.Report("human_text_input.mouse_prefix", exception);
+            return null;
+        }
+    }
+
     internal static HumanTextContinuationScope? BeginHumanTextTargetInput(
         NTargetManager manager, InputEvent input)
     {
         try
         {
-            if (input is not InputEventAction action || !manager.IsInSelection)
-                return null;
-            bool confirm = action.IsActionPressed(MegaInput.select);
-            bool cancel = action.IsActionPressed(MegaInput.cancel)
-                || action.IsActionPressed(MegaInput.pauseAndBack)
-                || action.IsActionPressed(MegaInput.topPanel);
+            if (!manager.IsInSelection) return null;
+            bool mouseEvent = input is InputEventMouseButton;
+            if (!mouseEvent && input is not InputEventAction) return null;
+            bool confirm;
+            bool cancel;
+            if (input is InputEventMouseButton button)
+            {
+                confirm = button.ButtonIndex == MouseButton.Left && button.IsReleased();
+                cancel = button.ButtonIndex == MouseButton.Right && button.IsPressed();
+            }
+            else
+            {
+                var action = (InputEventAction)input;
+                confirm = action.IsActionPressed(MegaInput.select);
+                cancel = action.IsActionPressed(MegaInput.cancel)
+                    || action.IsActionPressed(MegaInput.pauseAndBack)
+                    || action.IsActionPressed(MegaInput.topPanel);
+            }
             if (!confirm && !cancel) return null;
             HumanTextTargetBinding? binding;
             lock (Gate) HumanTextTargetBindings.TryGetValue(manager, out binding);
-            if (binding == null || !ReferenceEquals(binding.Manager, manager)
+            if (binding == null || !ReferenceEquals(NTargetManager.Instance, manager)
+                || !ReferenceEquals(binding.Manager, manager)
                 || binding.SessionId != SessionId || binding.TimelineId != TimelineId
-                || !IsCurrentHumanTextController(binding.Carrier)) return null;
+                || !IsCurrentHumanTextCardCarrier(binding.Carrier)
+                || (binding.Carrier is NMouseCardPlay
+                    && !(HumanTextTargetExitConditionField?.GetValue(manager)
+                        is Func<bool> exit && ReferenceEquals(exit.Target, binding.Carrier)))
+                || (mouseEvent && binding.Carrier is not NMouseCardPlay)) return null;
+            bool mouseCarrier = binding.Carrier is NMouseCardPlay;
             Node? hovered = HumanTextHoveredNodeProperty?.GetValue(manager) as Node;
             NCreature? target = hovered as NCreature;
-            return BeginHumanTextContinuation(binding.Carrier,
+            if (confirm && target == null) return null;
+            return BeginHumanTextContinuation(binding.Carrier, input,
                 confirm ? "confirm_target" : "cancel_card_play",
-                confirm ? HumanTextInputObservationContract.ControllerTargetFinishInput
-                    : HumanTextInputObservationContract.ControllerTargetCanceledInput,
+                mouseCarrier
+                    ? (confirm ? HumanTextInputObservationContract.MouseTargetFinishInput
+                        : HumanTextInputObservationContract.MouseTargetCanceledInput)
+                    : (confirm ? HumanTextInputObservationContract.ControllerTargetFinishInput
+                        : HumanTextInputObservationContract.ControllerTargetCanceledInput),
                 manager, confirm ? target : null, !confirm);
         }
         catch (Exception exception)
@@ -169,7 +231,7 @@ internal static partial class RecorderRuntime
     }
 
     private static HumanTextContinuationScope? BeginHumanTextContinuation(
-        NControllerCardPlay carrier, string verb, string mechanism,
+        NCardPlay carrier, InputEvent input, string verb, string mechanism,
         NTargetManager? manager, NCreature? target, bool requestedCancel)
     {
         try
@@ -181,7 +243,7 @@ internal static partial class RecorderRuntime
                     || _store == null || !_humanTextInputHealthy
                     || SessionId == null || TimelineId == null) return null;
                 scope = new(HumanTextContinuationCurrent.Value, _store,
-                    SessionId, TimelineId, _currentRunId, carrier, verb,
+                    SessionId, TimelineId, _currentRunId, carrier, input, verb,
                     mechanism, manager, target, requestedCancel);
                 _humanTextInputPendingScopes++;
             }
@@ -236,9 +298,8 @@ internal static partial class RecorderRuntime
         try
         {
             Node? hovered = HumanTextHoveredNodeProperty?.GetValue(manager) as Node;
-            scope.NativeFinishMatched = scope.RequestedCancel
-                ? cancel
-                : !cancel && ReferenceEquals(hovered, scope.Target);
+            scope.NativeFinishMatched = HumanTextInputNativeProof.MatchesTargetFinish(
+                scope.RequestedCancel, cancel, scope.Target, hovered);
         }
         catch (Exception exception)
         {
@@ -351,6 +412,9 @@ internal static partial class RecorderRuntime
                     || SessionId != scope.SessionId || TimelineId != scope.TimelineId
                     || _lifecycle.State is RecordingLifecycleState.Ready
                         or RecordingLifecycleState.Closed) return;
+                if (disposition == HumanTextInputObservationContract.AcceptedInput
+                    && !HumanTextConsumedInputs.TryClaim(scope.Input, scope.SessionId))
+                    return;
                 long sequence = _humanTextInputSequence + 1;
                 var observation = new HumanTextInputObservation(
                     HumanTextInputObservationContract.SchemaVersion,
@@ -408,7 +472,7 @@ internal static partial class RecorderRuntime
         }
     }
 
-    private static bool IsCurrentHumanTextController(NControllerCardPlay carrier)
+    private static bool IsCurrentHumanTextCardCarrier(NCardPlay carrier)
     {
         try
         {

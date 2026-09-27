@@ -8,6 +8,35 @@ namespace STS2HumanAnnotator.Core.Tests;
 public sealed class HumanTextInputObservationTests
 {
     [Fact]
+    public void MouseTargetProofRejectsAutoCancelEmptyHoverAndReplacedTarget()
+    {
+        object target = new();
+        Assert.True(HumanTextInputNativeProof.MatchesTargetFinish(
+            false, false, target, target));
+        Assert.False(HumanTextInputNativeProof.MatchesTargetFinish(
+            false, true, target, target));
+        Assert.False(HumanTextInputNativeProof.MatchesTargetFinish(
+            false, false, null, null));
+        Assert.False(HumanTextInputNativeProof.MatchesTargetFinish(
+            false, false, target, new object()));
+        Assert.True(HumanTextInputNativeProof.MatchesTargetFinish(
+            true, true, null, null));
+        Assert.False(HumanTextInputNativeProof.MatchesTargetFinish(
+            true, false, null, null));
+    }
+
+    [Fact]
+    public void TwoNativeCallbacksCannotClaimTheSamePhysicalInput()
+    {
+        var claims = new HumanTextInputClaimGate();
+        object input = new();
+        Assert.True(claims.TryClaim(input, "session-a"));
+        Assert.False(claims.TryClaim(input, "session-a"));
+        Assert.True(claims.TryClaim(new object(), "session-a"));
+        Assert.True(claims.TryClaim(input, "session-b"));
+    }
+
+    [Fact]
     public void AcceptedObservationPersistsAndAuditsWithoutChangingCanonicalCount()
     {
         string root = Temp();
@@ -63,6 +92,9 @@ public sealed class HumanTextInputObservationTests
     [InlineData(HumanTextInputObservationContract.ControllerCanceledInputSignal, "cancel_card_play")]
     [InlineData(HumanTextInputObservationContract.ControllerTargetFinishInput, "confirm_target")]
     [InlineData(HumanTextInputObservationContract.ControllerTargetCanceledInput, "cancel_card_play")]
+    [InlineData(HumanTextInputObservationContract.MouseCanceledInputSignal, "cancel_card_play")]
+    [InlineData(HumanTextInputObservationContract.MouseTargetFinishInput, "confirm_target")]
+    [InlineData(HumanTextInputObservationContract.MouseTargetCanceledInput, "cancel_card_play")]
     public void ContinuationMechanismMustMatchFrozenNativeVerb(
         string mechanism, string verb)
     {

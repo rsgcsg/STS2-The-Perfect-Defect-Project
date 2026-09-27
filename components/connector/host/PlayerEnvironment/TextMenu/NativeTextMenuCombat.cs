@@ -21,11 +21,21 @@ namespace STS2Connector.PlayerEnvironment;
 
 /// <summary>
 /// Exact, device-scoped entry points into the game's card-play operation. This
-/// class does not recreate card legality or enqueue a PlayCardAction. Mouse drag
-/// requires a separate native input seam and is intentionally unavailable here.
+/// class does not recreate card legality or enqueue a PlayCardAction. Mouse
+/// single-enemy targeting is available only while its exact manager binding
+/// is observable; untargeted mouse release remains outside this menu.
 /// </summary>
 internal static class NativeTextMenuCombat
 {
+    private static readonly System.Reflection.FieldInfo? MouseTargetSignalsField =
+        typeof(NMouseCardPlay).GetField("_signalsConnected",
+            System.Reflection.BindingFlags.Instance
+            | System.Reflection.BindingFlags.NonPublic);
+    private static readonly System.Reflection.FieldInfo? TargetExitConditionField =
+        typeof(NTargetManager).GetField("_exitEarlyCondition",
+            System.Reflection.BindingFlags.Instance
+            | System.Reflection.BindingFlags.NonPublic);
+
     internal static NCardPlay? CurrentCardPlay(NPlayerHand hand) =>
         hand.GetChildren().OfType<NCardPlay>()
             .Where(ConnectorMod.IsLiveNode).SingleOrDefault();
@@ -105,14 +115,34 @@ internal static class NativeTextMenuCombat
         && ConnectorMod.IsLiveNode(play)
         && ConnectorMod.IsLiveNode(play.Holder);
 
+    // Single-target mouse input is owned by the same native target manager.
+    // Its private connection flag is set only while this exact carrier awaits
+    // the manager; an unrelated targeting operation cannot lend it a menu.
+    internal static bool OwnsMouseTarget(
+        NPlayerHand hand, NMouseCardPlay play, CardModel card) =>
+        Owns(hand, play, card)
+        && card.TargetType == TargetType.AnyEnemy
+        && NTargetManager.Instance is { IsInSelection: true } manager
+        // SingleCreatureTargeting passes an instance-bound exit predicate to
+        // StartTargeting. This proves the manager still belongs to this play,
+        // even if another native family reused the singleton meanwhile.
+        && TargetExitConditionField?.GetValue(manager) is Func<bool> exit
+        && ExactMouseManagerOwner(play, exit)
+        && MouseTargetSignalsField?.GetValue(play) is true;
+
+    internal static bool ExactMouseManagerOwner(object play, Delegate? exitCondition) =>
+        exitCondition != null && ReferenceEquals(exitCondition.Target, play);
+
     internal static IReadOnlyList<NCreature> CurrentTargets(
-        NPlayerHand hand, NControllerCardPlay play, CardModel card)
+        NPlayerHand hand, NCardPlay play, CardModel card)
     {
         NCombatRoom? room = NCombatRoom.Instance;
         NTargetManager? targetManager = NTargetManager.Instance;
         if (!Owns(hand, play, card) || room == null
             || targetManager?.IsInSelection != true
             || card.TargetType is not (TargetType.AnyEnemy or TargetType.AnyAlly))
+            return Array.Empty<NCreature>();
+        if (play is NMouseCardPlay mouse && !OwnsMouseTarget(hand, mouse, card))
             return Array.Empty<NCreature>();
 
         return room.CreatureNodes
@@ -125,7 +155,7 @@ internal static class NativeTextMenuCombat
     }
 
     internal static NativeInputResult FocusTarget(
-        NPlayerHand hand, NControllerCardPlay play, CardModel card, NCreature target)
+        NPlayerHand hand, NCardPlay play, CardModel card, NCreature target)
     {
         if (!CurrentTargets(hand, play, card).Contains(target))
             return NativeInputResult.Rejected("card_target_changed",
@@ -146,7 +176,7 @@ internal static class NativeTextMenuCombat
     }
 
     internal static NativeInputResult ConfirmTarget(
-        NPlayerHand hand, NControllerCardPlay play, CardModel card, NCreature target)
+        NPlayerHand hand, NCardPlay play, CardModel card, NCreature target)
     {
         if (!CurrentTargets(hand, play, card).Contains(target))
             return NativeInputResult.Rejected("card_target_changed",

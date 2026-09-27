@@ -539,6 +539,9 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
             ("controller_canceled_input_signal", "cancel_card_play"),
             ("controller_target_finish_input", "confirm_target"),
             ("controller_target_canceled_input", "cancel_card_play"),
+            ("mouse_canceled_input_signal", "cancel_card_play"),
+            ("mouse_target_finish_input", "confirm_target"),
+            ("mouse_target_canceled_input", "cancel_card_play"),
         )
         for mechanism, verb in pairs:
             with self.subTest(mechanism=mechanism):
