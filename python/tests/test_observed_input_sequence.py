@@ -1,0 +1,307 @@
+"""Synthetic regressions for read-only, partial observed-input windows."""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from test_artifact_store_v1 import PRODUCER, store
+from test_text_menu_data import snapshot
+from test_text_menu_human_import import observation
+
+from spireagent.json_boundary import BoundaryError
+from stpd.fullrun.observed_input_sequence import (
+    ObservedInput,
+    ObservedInputView,
+    SourceEventRef,
+    build_fixed_windows,
+    load_observed_input_view,
+)
+from stpd.fullrun.text_menu_runtime_import import publish_verified_text_menu_run
+
+sys.path.insert(0, str(Path(__file__).parents[2] / "components/evidence/tests"))
+
+
+@pytest.fixture
+def verified_fixture():
+    from test_agent_run_evidence import TextMenuAgentRunEvidenceTests
+
+    fixture = TextMenuAgentRunEvidenceTests(
+        "test_text_navigation_is_verified_without_native_receipt")
+    fixture.setUp()
+    try:
+        yield fixture
+    finally:
+        fixture.tearDown()
+
+
+def _input(
+    event_id: str, sequence: int, *, reset: bool = False, choice: bool = True,
+) -> ObservedInput:
+    return ObservedInput(
+        stream_id="agent:content:run", source_kind="agent_decision_inputs",
+        event_id=event_id, source_sequence=sequence, snapshot=snapshot("same-page"),
+        observation_mask=True,
+        selected_action_id="opaque-play" if choice else None, choice_mask=choice,
+        delivery_status="unknown", delivery_mask=False, successor_snapshot=None,
+        successor_relation="unknown", successor_observation_mask=False,
+        causal_successor_mask=False, reset_before=reset,
+        reset_reason="stream_start" if reset else None,
+        source_events=(SourceEventRef(sequence, "text_decision_input", event_id),),
+    )
+
+
+def test_fixed_windows_preserve_real_events_and_ignore_numeric_sequence_gaps():
+    first, returned = _input("event-a", 4, reset=True), _input("event-b", 29)
+    view = ObservedInputView("evidence", "verified_agent_observed_inputs", False,
+                             (first, returned))
+
+    (window,) = build_fixed_windows(view, learn_steps=2, burn_in_steps=1)
+
+    assert len(window.inputs) == 3
+    assert window.inputs[0] is None
+    assert window.inputs[1:] == (first, returned)
+    assert window.valid_mask == (False, True, True)
+    assert window.observation_mask == (False, True, True)
+    assert window.burn_in_mask == (False, False, False)
+    assert window.choice_mask == (False, True, True)
+    assert window.delivery_mask == (False, False, False)
+    assert window.causal_successor_mask == (False, False, False)
+    # A real return to the same page remains a second event because identity differs.
+    assert first.snapshot == returned.snapshot and first.event_id != returned.event_id
+
+
+def test_fixed_windows_split_only_at_explicit_reset_and_reject_duplicate_event_ids():
+    first, reset = _input("event-a", 10, reset=True), _input("event-b", 11, reset=True)
+    view = ObservedInputView("evidence", "verified_agent_observed_inputs", False,
+                             (first, reset))
+    windows = build_fixed_windows(view, learn_steps=1, burn_in_steps=1)
+    assert len(windows) == 2
+    assert all(len(window.inputs) == 2 for window in windows)
+    assert all(window.burn_in_mask == (False, False) for window in windows)
+    with pytest.raises(BoundaryError, match="duplicate_observed_event"):
+        build_fixed_windows(
+            ObservedInputView("evidence", "verified_agent_observed_inputs", False,
+                              (first, first)),
+            learn_steps=1, burn_in_steps=0,
+        )
+    with pytest.raises(BoundaryError, match="event_order_mismatch"):
+        build_fixed_windows(
+            ObservedInputView("evidence", "verified_agent_observed_inputs", False,
+                              (_input("late", 29, reset=True), _input("early", 4))),
+            learn_steps=1, burn_in_steps=0,
+        )
+
+
+def test_human_inputs_are_partial_and_keep_choice_separate_from_delivery(monkeypatch):
+    import stpd.fullrun.observed_input_sequence as module
+
+    accepted = observation("session-a", "accepted")
+    accepted.update(timeline_id="timeline-a")
+    rejected = observation("session-a", "rejected", "rejected_or_cancelled")
+    rejected.update(timeline_id="timeline-a", sequence=6)
+    rejected["chosen_action"] = None
+    missing = observation("session-a", "capture-failed", "capture_failed")
+    missing.update(timeline_id="timeline-a", sequence=2)
+    missing.pop("snapshot")
+    missing.pop("chosen_action")
+    after_missing = observation("session-a", "after-missing")
+    after_missing.update(timeline_id="timeline-a", sequence=3)
+    another_run = observation("session-a", "another-run")
+    another_run.update(timeline_id="timeline-a", run_id="run-2", sequence=1)
+    returned_identity = observation("session-a", "returned-identity")
+    returned_identity.update(timeline_id="timeline-a", sequence=5)
+    manifest = SimpleNamespace(parameters=SimpleNamespace(value=lambda: {
+        "schema": "stpd/human-text-input-source-v1"}))
+    monkeypatch.setattr(module, "load_human_text_source", lambda _store, _identity: (
+        manifest, (accepted, missing, after_missing, another_run, returned_identity, rejected)))
+
+    view = load_observed_input_view(SimpleNamespace(get_manifest=lambda _id: manifest), "source")
+
+    assert view.stream_scope == "partial_human_input_stream"
+    assert view.trajectory_complete is False
+    assert len(view.inputs) == 6
+    assert view.inputs[0].choice_mask is True
+    assert view.inputs[0].delivery_status == "human_witness_only"
+    assert view.inputs[0].delivery_mask is False
+    assert view.inputs[0].causal_successor_mask is False
+    assert view.inputs[1].observation_mask is False
+    assert view.inputs[1].choice_mask is False
+    assert view.inputs[2].reset_before is True
+    assert view.inputs[2].reset_reason == "after_missing_observation"
+    assert view.inputs[3].observation_mask is True
+    assert view.inputs[3].choice_mask is True
+    assert view.inputs[3].reset_before is True
+    assert view.inputs[3].reset_reason == "identity_change"
+    assert view.inputs[4].reset_before is True
+    assert view.inputs[4].reset_reason == "identity_change"
+    windows = build_fixed_windows(view, learn_steps=1, burn_in_steps=0)
+    assert len(windows) == 5
+    assert all(len(window.inputs) == 1 for window in windows)
+
+
+def test_unknown_agent_delivery_does_not_become_not_delivered():
+    item = _input("unknown-action", 1, reset=True)
+    assert item.delivery_status == "unknown"
+    assert item.delivery_mask is False
+    assert item.snapshot["snapshot_id"] == "opaque-snapshot-same-page"
+
+
+@pytest.mark.parametrize(
+    ("native", "expected_delivery", "expected_successor"),
+    [(False, "not_applicable", "ui_navigation"),
+     (True, "delivered", "post_native_observation")],
+)
+def test_agent_view_uses_verified_full_archive_and_keeps_successor_kinds_distinct(
+    tmp_path, verified_fixture, native, expected_delivery, expected_successor,
+):
+    from stpd.fullrun.observed_input_sequence import load_observed_input_view
+
+    directory = verified_fixture._text_evidence(f"sequence-{native}", native=native)
+    target = store(tmp_path)
+    evidence, _, _ = publish_verified_text_menu_run(
+        target, directory, PRODUCER, admit_agent=True)
+
+    view = load_observed_input_view(target, evidence.artifact_id)
+
+    assert view.stream_scope == "verified_agent_observed_inputs"
+    assert view.trajectory_complete is False
+    assert len(view.inputs) == 1
+    item = view.inputs[0]
+    assert item.observation_mask is True
+    assert item.choice_mask is True
+    assert item.delivery_status == expected_delivery
+    assert item.successor_relation == expected_successor
+    assert item.successor_observation_mask is True
+    assert item.causal_successor_mask is False
+    assert item.source_events[0].kind == "text_decision_input"
+    assert item.source_events[0].event_id == ":".join(item.event_id.split(":")[:2])
+
+
+def test_agent_unknown_delivery_keeps_observation_and_unknown_masks(
+    tmp_path, verified_fixture,
+):
+    directory = verified_fixture._text_evidence("sequence-unknown", native=True)
+    events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+    outcome = next(event for event in events if event["kind"] == "text_native_delivery")
+    outcome["kind"] = "text_native_unknown"
+    outcome["payload"]["result"].update(
+        status="unknown", native_delivery="unknown", successor=None, retry="never")
+    events = [event for event in events if event["kind"] != "text_observed_successor"]
+    for sequence, event in enumerate(events, 1):
+        event["sequence"] = sequence
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest.update(status="tainted", tainted=True)
+    from test_agent_run_evidence import canonical
+    manifest_path.write_bytes(canonical(manifest))
+    verified_fixture._rewrite_events(directory, events)
+    target = store(tmp_path)
+    evidence, _, _ = publish_verified_text_menu_run(
+        target, directory, PRODUCER, admit_agent=True)
+
+    item = load_observed_input_view(target, evidence.artifact_id).inputs[0]
+
+    assert item.observation_mask is True
+    assert item.choice_mask is True
+    assert item.delivery_status == "unknown"
+    assert item.delivery_mask is False
+    assert item.successor_observation_mask is False
+    assert item.causal_successor_mask is False
+
+
+@pytest.mark.parametrize(
+    ("native", "delivery", "effect_domain", "expected"),
+    [(False, None, "text_menu", "not_applicable"),
+     (True, "not_delivered", "native_input", "not_delivered")],
+)
+def test_verified_not_applied_outcomes_preserve_delivery_knowledge(
+    tmp_path, verified_fixture, native, delivery, effect_domain, expected,
+):
+    directory = verified_fixture._text_evidence(f"sequence-not-applied-{native}", native=native)
+    events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+    outcome = next(event for event in events if event["kind"] in {
+        "menu_navigation", "text_native_delivery",
+    })
+    outcome["kind"] = "text_menu_not_applied"
+    outcome["payload"].pop("action_id", None)
+    result = outcome["payload"]["result"]
+    result.update(status="not_applied", native_delivery=delivery,
+                  successor=None, retry="reobserve")
+    result["effect_domain"] = effect_domain
+    events = [event for event in events if event["kind"] != "text_observed_successor"]
+    for sequence, event in enumerate(events, 1):
+        event["sequence"] = sequence
+    verified_fixture._rewrite_events(directory, events)
+    target = store(tmp_path)
+    evidence, _, _ = publish_verified_text_menu_run(
+        target, directory, PRODUCER, admit_agent=True)
+
+    item = load_observed_input_view(target, evidence.artifact_id).inputs[0]
+
+    assert item.delivery_status == expected
+    assert item.delivery_mask is (expected == "not_delivered")
+    assert item.observation_mask is True
+    assert item.successor_snapshot is None
+    assert item.causal_successor_mask is False
+
+
+def test_missing_outcome_after_dispatch_is_unknown_not_not_delivered(
+    tmp_path, verified_fixture,
+):
+    directory = verified_fixture._text_evidence("sequence-missing-outcome", native=True)
+    events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+    events = [event for event in events if event["kind"] not in {
+        "text_native_delivery", "text_observed_successor",
+    }]
+    for sequence, event in enumerate(events, 1):
+        event["sequence"] = sequence
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest.update(status="tainted", tainted=True)
+    from test_agent_run_evidence import canonical
+    manifest_path.write_bytes(canonical(manifest))
+    verified_fixture._rewrite_events(directory, events)
+    target = store(tmp_path)
+    evidence, _, _ = publish_verified_text_menu_run(
+        target, directory, PRODUCER, admit_agent=True)
+
+    item = load_observed_input_view(target, evidence.artifact_id).inputs[0]
+
+    assert item.delivery_status == "unknown"
+    assert item.delivery_mask is False
+    assert item.observation_mask is True
+    assert item.successor_snapshot is None
+    assert item.causal_successor_mask is False
+
+
+def test_unpaired_tainted_agent_input_keeps_only_observation(
+    tmp_path, verified_fixture,
+):
+    directory = verified_fixture._text_evidence("sequence-unpaired", native=True)
+    events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+    input_index = next(index for index, event in enumerate(events)
+                       if event["kind"] == "text_decision_input")
+    events = events[:input_index + 1]
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest.update(status="tainted", tainted=True)
+    from test_agent_run_evidence import canonical
+    manifest_path.write_bytes(canonical(manifest))
+    verified_fixture._rewrite_events(directory, events)
+    target = store(tmp_path)
+    evidence, _, _ = publish_verified_text_menu_run(
+        target, directory, PRODUCER, admit_agent=True)
+
+    (item,) = load_observed_input_view(target, evidence.artifact_id).inputs
+
+    assert item.observation_mask is True
+    assert item.choice_mask is False
+    assert item.selected_action_id is None
+    assert item.delivery_status == "not_attempted"
+    assert item.delivery_mask is False
+    assert item.successor_snapshot is None
+    assert item.causal_successor_mask is False
