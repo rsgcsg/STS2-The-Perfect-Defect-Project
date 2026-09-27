@@ -67,9 +67,13 @@ def test_close_failure_does_not_attempt_directory_removal(monkeypatch) -> None:
     original_rmtree = spool_module.shutil.rmtree
 
     class FailingConnection(sqlite3.Connection):
+        fail_close = True
+
         def close(self) -> None:
             events.append("close")
-            raise sqlite3.OperationalError("synthetic close failure")
+            if self.fail_close:
+                raise sqlite3.OperationalError("synthetic close failure")
+            super().close()
 
         def force_close(self) -> None:
             super().close()
@@ -84,6 +88,7 @@ def test_close_failure_does_not_attempt_directory_removal(monkeypatch) -> None:
     def remove_directory(path: Path) -> None:
         if path == directory:
             events.append("cleanup")
+        original_rmtree(path)
 
     monkeypatch.setattr(spool_module.shutil, "rmtree", remove_directory)
     try:
@@ -91,9 +96,16 @@ def test_close_failure_does_not_attempt_directory_removal(monkeypatch) -> None:
             spool.close()
         assert events == ["close"]
         assert directory.is_dir()
+        assert spool._finalizer.alive
+        spool.db.fail_close = False
+        spool.close()
+        spool.close()
+        assert events == ["close", "close", "cleanup"]
+        assert not directory.exists()
     finally:
-        spool.db.force_close()
-        original_rmtree(directory)
+        if directory.exists():
+            spool.db.force_close()
+            original_rmtree(directory)
 
 
 def _private_directories(monkeypatch, tmp_path: Path) -> list[Path]:

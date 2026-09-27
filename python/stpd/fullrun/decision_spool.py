@@ -103,7 +103,9 @@ class DecisionSpool(MutableMapping[str, ResearchTransitionV2]):
         return SpoolSelection(self)
 
     def close(self) -> None:
-        self._finalizer()
+        if self._finalizer.alive:
+            _close_spool(self.db, self.directory)
+            self._finalizer.detach()
 
 
 class SpoolSelection(Sequence[ResearchTransitionV2]):
