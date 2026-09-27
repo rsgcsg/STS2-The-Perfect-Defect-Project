@@ -817,12 +817,14 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                                 value = workspace.artifact(artifact[1])
                             elif parsed.path == "/api/local-workspace":
                                 query = parse_qs(
-                                    parsed.query, strict_parsing=True, max_num_fields=4
+                                    parsed.query, strict_parsing=True, keep_blank_values=True,
+                                    max_num_fields=5,
                                 )
                                 if (
                                     any(len(items) != 1 for items in query.values())
                                     or set(query) - {
                                         "kind",
+                                        "category",
                                         "q",
                                         "limit",
                                         "offset",
@@ -831,6 +833,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                                     raise ValueError
                                 value = workspace.inventory(
                                     kind=query.get("kind", [None])[0],
+                                    category=query.get("category", [None])[0],
                                     query=query.get("q", [None])[0],
                                     limit=int(query.get("limit", ["50"])[0]),
                                     offset=int(query.get("offset", ["0"])[0]),

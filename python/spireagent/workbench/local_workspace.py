@@ -23,6 +23,11 @@ INVENTORY_SCHEMA = "stpd/local-workspace-inventory-v1"
 ARTIFACT_SCHEMA = "stpd/local-workspace-artifact-v1"
 MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 50
+CATEGORIES = frozenset({"recordings", "datasets", "models", "reports", "all"})
+CATEGORY_KINDS = {"datasets": "dataset", "models": "model",
+                  "reports": "offline_evaluation"}
+RECORDING_SCHEMAS = frozenset({"stpd/local-verified-bundle-v1",
+                              "stpd/received-bundle-v1"})
 
 
 def _payloads(manifest: Manifest) -> list[dict[str, Any]]:
@@ -52,6 +57,7 @@ class LocalWorkspace:
         self,
         *,
         kind: str | None = None,
+        category: str | None = None,
         query: str | None = None,
         limit: int = DEFAULT_PAGE_SIZE,
         offset: int = 0,
@@ -59,6 +65,8 @@ class LocalWorkspace:
         """Return a bounded metadata-only page from the configured ArtifactStore."""
         if kind is not None and kind not in KINDS:
             raise BoundaryError("local_workspace", "unknown_artifact_kind")
+        if category is not None and category not in CATEGORIES:
+            raise BoundaryError("local_workspace", "unknown_category")
         if type(limit) is not int or not 1 <= limit <= MAX_PAGE_SIZE:
             raise BoundaryError("local_workspace", "invalid_page_size")
         if type(offset) is not int or offset < 0:
@@ -72,12 +80,19 @@ class LocalWorkspace:
             raise BoundaryError("local_workspace", "invalid_search_query")
 
         search = query.strip().casefold() if query is not None else None
+        category_kind = CATEGORY_KINDS.get(category or "")
         matches: list[tuple[Manifest, dict[str, Any]]] = []
         for artifact_id in self.store.manifest_ids():
             manifest = self.store.get_manifest(artifact_id)
             if kind is not None and manifest.kind != kind:
                 continue
+            if category == "recordings" and manifest.kind != "evidence":
+                continue
+            if category_kind is not None and manifest.kind != category_kind:
+                continue
             parameters = _parameters(manifest)
+            if category == "recordings" and parameters.get("schema") not in RECORDING_SCHEMAS:
+                continue
             if search is not None:
                 searchable = " ".join(
                     (
@@ -124,6 +139,7 @@ class LocalWorkspace:
             "schema": INVENTORY_SCHEMA,
             "source": "configured_local_artifact_store",
             "kind": kind,
+            **({"category": category} if category is not None else {}),
             "query": query.strip() if query is not None else None,
             "limit": limit,
             "offset": offset,

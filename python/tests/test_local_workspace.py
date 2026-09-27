@@ -97,10 +97,55 @@ def test_inventory_shows_store_records_missing_from_rebuildable_registry(tmp_pat
     assert value["items"][0]["registry_cached"] is None
 
 
+def test_category_filters_exact_recording_schemas_before_paging_and_search(
+    tmp_path: Path,
+) -> None:
+    artifact_store, registry, dataset, model = fixture(tmp_path)
+    recordings = []
+    for schema, disposition in (
+        ("stpd/local-verified-bundle-v1", "locally_verified"),
+        ("stpd/received-bundle-v1", "verified"),
+        ("stpd/received-bundle-v1", "quarantined"),
+    ):
+        item = Manifest("evidence", PRODUCER, parameters=FrozenObject.of({
+            "schema": schema, "disposition": disposition,
+        }))
+        artifact_store.publish(item)
+        recordings.append(item.artifact_id)
+    unrelated = Manifest("evidence", PRODUCER, parameters=FrozenObject.of({
+        "schema": "stpd/verified-text-menu-agent-run-v1",
+    }))
+    artifact_store.publish(unrelated)
+    report = Manifest("offline_evaluation", PRODUCER,
+                      parameters=FrozenObject.of({"partition": "dev"}))
+    artifact_store.publish(report)
+    artifact_store.read_payload = lambda _payload: (_ for _ in ()).throw(
+        AssertionError("category inventory must not read payload"))
+    before_registry = registry.path.read_bytes()
+    browser = LocalWorkspace(registry, artifact_store)
+
+    recording_page = browser.inventory(category="recordings", limit=1, offset=1)
+    assert recording_page["total"] == 3
+    assert recording_page["category"] == "recordings"
+    assert recording_page["items"][0]["artifact_id"] == sorted(recordings)[1]
+    assert {item["artifact_id"] for item in browser.inventory(
+        category="recordings", kind="evidence", limit=10)["items"]} == set(recordings)
+    assert browser.inventory(category="recordings", kind="model")["total"] == 0
+    assert browser.inventory(category="recordings", query="quarantined")["total"] == 1
+    assert browser.inventory(category="datasets")["items"][0]["artifact_id"] == dataset.artifact_id
+    assert browser.inventory(category="models")["items"][0]["artifact_id"] == model.artifact_id
+    assert browser.inventory(category="reports")["items"][0]["artifact_id"] == report.artifact_id
+    assert browser.inventory(category="all")["total"] == browser.inventory()["total"] == 7
+    assert "category" not in browser.inventory()
+    assert registry.path.read_bytes() == before_registry
+
+
 @pytest.mark.parametrize(
     ("arguments", "code"),
     [
         ({"kind": "unknown"}, "unknown_artifact_kind"),
+        ({"category": "unknown"}, "unknown_category"),
+        ({"category": ""}, "unknown_category"),
         ({"limit": 0}, "invalid_page_size"),
         ({"limit": 101}, "invalid_page_size"),
         ({"offset": -1}, "invalid_page_offset"),
