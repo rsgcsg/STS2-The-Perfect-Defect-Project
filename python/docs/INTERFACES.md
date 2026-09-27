@@ -238,7 +238,12 @@ unchanged. An annotation change between preview and publication requires a new p
 
 `fullrun.decision_dataset.SelectionRules` is `stpd/decision-selection-v1`.
 `fullrun.decision_store` publishes/loads `stpd/decision-dataset-v1` from independently verified
-received bundle artifacts. The strict `fullrun.data` contract remains separate. See
+received bundles or exact `stpd/local-verified-bundle-v1` artifacts in the selected local store.
+The local path rechecks transfer, raw-source hashes and the installed typed verifier before
+projection, including cache hits; it preserves the local source parent and does not invent a
+Hub receipt. Human input labels never substitute for canonical decisions. This source resolver
+does not grant dataset curation, training/test use, Gold status or independent-run qualification.
+The strict `fullrun.data` contract remains separate. See
 [ADR-0007](adr/0007-fixed-decision-datasets.md) for defaults, bounds and version policy.
 
 Authenticated member BFF routes: `GET games`, `GET datasets`, `GET datasets/{job_id}`,
