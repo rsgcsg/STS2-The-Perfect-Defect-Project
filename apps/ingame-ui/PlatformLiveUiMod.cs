@@ -1,6 +1,6 @@
 using Godot;
 using MegaCrit.Sts2.Core.Modding;
-using System.Net.Http;
+using HttpClient = System.Net.Http.HttpClient;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
