@@ -3126,12 +3126,17 @@ window.SpireProject = (() => {
       }
       clearButton.disabled = selected.size === 0;
     };
-    const clearButton = command(ctx, "clear-human-input-selection", "清空所选录制", async () => {
+    const clearButton = el("button", "清空所选录制", "button");
+    clearButton.type = "button";
+    clearButton.dataset.action = "clear-human-input-selection";
+    clearButton.disabled = selected.size === 0;
+    clearButton.onclick = () => {
+      if (clearButton.disabled) return;
       selected.clear();
       drafts.delete(selectionKey);
       updateSelectionSummary();
       if (previewButton) previewButton.disabled = !canPreview();
-    }, {type:"secondary", disabled:selected.size === 0});
+    };
     updateSelectionSummary();
     section.append(selectionSummary, selectionLimit, clearButton);
 
