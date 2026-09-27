@@ -13,12 +13,18 @@ import pytest
 import test_local_recording_preview as recording_fixture
 
 from spireagent.json_boundary import BoundaryError
+from spireagent.source import source_identity
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.registry import SQLiteRegistry
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench import local_dataset as dataset_module
 from spireagent.workbench import local_training as training_module
-from spireagent.workbench.developer import LocalResearchWorkspaceConfig, ProjectConfig, combination
+from spireagent.workbench.developer import (
+    ROOT,
+    LocalResearchWorkspaceConfig,
+    ProjectConfig,
+    combination,
+)
 from spireagent.workbench.developer_server import Application, create_server
 from spireagent.workbench.inplace_curation import InplaceCurationPreparation, configured_owner
 from spireagent.workbench.local_dataset import LocalDatasetService
@@ -170,6 +176,7 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
     tmp_path: Path, monkeypatch,
 ) -> None:
     config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    producer = source_identity(ROOT)
 
     class FailedChild:
         stdout = io.BytesIO(b"synthetic private failure\n")
@@ -190,6 +197,7 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
         return FailedChild()
 
     monkeypatch.setattr(training_module.subprocess, "Popen", fail_child)
+    monkeypatch.setattr(training_module, "source_identity", lambda _root: producer)
     service = LocalTrainingService(config)
     service.start(dataset_id)
     result = _settle(service)
