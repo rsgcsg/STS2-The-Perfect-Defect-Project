@@ -210,6 +210,29 @@ function localDatasetEnv({artifact = id("a"), sampleStatus = null, datasetStatus
     },
   });
 }
+function localTrainingEnv({artifact = id("a"), kind = "dataset", parameters = null,
+  trainingStatus = null, trainingHandler = () => {}} = {}) {
+  return setup({
+    identity: {status:"signed_out"}, view:"local-workspace", query:`&id=${artifact}`,
+    curationStatus:{schema:"stpd/local-curation-preparation-v1", status:"ready"},
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${artifact}`) return {
+        artifact_id:artifact, kind,
+        parameters:parameters || {schema:"stpd/curated-decision-dataset-v1", purpose:"training", records:5},
+      };
+      if (url === "/api/local-training/status") return typeof trainingStatus === "function"
+        ? trainingStatus(url, options)
+        : trainingStatus || {
+          schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf",
+          operation:{status:"idle"},
+        };
+      return trainingHandler(url, options);
+    },
+  });
+}
 const post = (calls) => calls.filter((call) => call.options.method === "POST");
 const body = (call) => JSON.parse(call.options.body);
 
@@ -663,6 +686,149 @@ test("dataset detail shows unknown when purpose metadata or source parents are a
   assert.match(text(page), /数据划分\n未知/);
   assert.match(text(page), /来源\n未知/);
   assert.equal(walk(page).some(element => element.tagName === "A" && element.href?.includes("id=")), false);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("local training appears only on a fixed training dataset and starts once on click", async () => {
+  const dataset = id("a");
+  let finishStart;
+  const env = localTrainingEnv({
+    artifact:dataset,
+    trainingHandler:async (url, options) => {
+      if (url === "/api/local-training/start" && options.method === "POST")
+        return new Promise(resolve => { finishStart = () => resolve({
+          schema:"stpd/local-training-operation-v1", availability:"ready",
+          operation:{status:"pending", dataset_id:dataset, stage:"reserving"},
+        }); });
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /本机小 B 短训练/);
+  assert.match(text(page), /B v2 scratch、CPU 2 线程和 3 步/);
+  assert.match(text(page), /不代表模型策略质量/);
+  assert.doesNotMatch(text(page), /training-csrf/);
+  assert.equal(env.calls.filter(call => call.url === "/api/local-training/status").length, 1);
+  assert.equal(post(env.calls).length, 0, "GET and rendering never start a training job");
+  const button = action(page, "start-local-training");
+  assert.equal(button.disabled, false);
+  const first = button.onclick();
+  const duplicate = button.onclick();
+  assert.equal(post(env.calls).length, 1, "double click is guarded while the POST is unresolved");
+  const start = post(env.calls)[0];
+  assert.equal(start.url, "/api/local-training/start");
+  assert.deepEqual(JSON.parse(start.options.body), {dataset_id:dataset});
+  assert.equal(start.options.headers["X-CSRF-Token"], "training-csrf");
+  finishStart();
+  await Promise.all([first, duplicate]);
+  assert.equal(button.disabled, true, "one uncertain start cannot be resent from the same rendered card");
+});
+
+test("local training hides for non-training purposes and unsupported dataset schemas", async () => {
+  for (const [kind, parameters] of [
+    ["dataset", {schema:"stpd/curated-decision-dataset-v1", purpose:"test"}],
+    ["dataset", {schema:"stpd/curated-decision-dataset-v1", purpose:"gold"}],
+    ["dataset", {schema:"future/dataset-v9", purpose:"training"}],
+    ["evidence", {schema:"stpd/curated-decision-dataset-v1", purpose:"training"}],
+  ]) {
+    const env = localTrainingEnv({kind, parameters});
+    const page = await env.render();
+    assert.doesNotMatch(text(page), /本机小 B 短训练/);
+    assert.equal(env.calls.some(call => call.url === "/api/local-training/status"), false);
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
+test("local training state gates pending and unknown outcomes, and links only completed outputs", async () => {
+  const dataset = id("a"), runResult = id("b"), model = id("c"), evaluation = id("d");
+  for (const operation of [
+    {status:"pending", dataset_id:dataset, stage:"training"},
+    {status:"interrupted_unknown", dataset_id:dataset, stage:"training"},
+    {status:"recovery_required", dataset_id:dataset, stage:"verifying_result"},
+  ]) {
+    const env = localTrainingEnv({artifact:dataset, trainingStatus:{
+      schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf", operation,
+    }});
+    const page = await env.render();
+    assert.equal(walk(page).some(element => element.dataset?.action === "start-local-training"), false);
+    assert.equal(post(env.calls).length, 0);
+    if (operation.status === "pending") {
+      assert.match(text(page), /关闭游戏不代表训练暂停/);
+      assert.ok(action(page, "refresh-local-training-status"));
+      await action(page, "refresh-local-training-status").onclick();
+      assert.equal(post(env.calls).length, 0, "refresh never repeats the start command");
+    }
+    else assert.match(text(page), /结果.*未能确认/);
+  }
+  const done = localTrainingEnv({artifact:dataset, trainingStatus:{
+    schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf",
+    operation:{status:"completed", dataset_id:dataset, run_id:id("e"), result_id:runResult,
+      model_id:model, evaluation_id:evaluation},
+  }});
+  const resultPage = await done.render();
+  assert.match(text(resultPage), /这不表示模型已加载到游戏/);
+  for (const [output, view] of [[runResult, "local-workspace"], [model, "local-workspace"], [evaluation, "evaluations"]])
+    assert.equal(find(resultPage, element => element.tagName === "A" && element.href === `?view=${view}&id=${output}`) !== null, true);
+  assert.equal(walk(resultPage).some(element => element.dataset?.action === "start-local-training"), false);
+  assert.equal(post(done.calls).length, 0);
+});
+
+test("local training surfaces preparation and failed reasons without guessing retryability", async () => {
+  const prepared = localTrainingEnv({trainingStatus:{
+    schema:"stpd/local-training-operation-v1", availability:"preparation_required",
+    reason:"curation_preparation_required", operation:{status:"idle"},
+  }});
+  const preparationPage = await prepared.render();
+  assert.match(text(preparationPage), /用途记录尚未准备/);
+  assert.ok(walk(preparationPage).some(element => element.tagName === "A" && element.href === "?view=local-workspace"));
+  assert.equal(walk(preparationPage).some(element => element.dataset?.action === "start-local-training"), false);
+  assert.equal(post(prepared.calls).length, 0);
+
+  const failed = localTrainingEnv({trainingStatus:{
+    schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf",
+    operation:{status:"failed", dataset_id:id("a"), error_code:"insufficient_independent_components"},
+  }});
+  const failurePage = await failed.render();
+  assert.match(text(failurePage), /独立对局数量不足/);
+  assert.equal(action(failurePage, "start-local-training").disabled, false,
+    "a new explicit attempt is separate from silent retry");
+  assert.equal(post(failed.calls).length, 0);
+
+  const failedWithRun = localTrainingEnv({trainingStatus:{
+    schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf",
+    operation:{status:"failed", dataset_id:id("f"), run_id:id("e"), error_code:"worker_failure"},
+  }});
+  const uncertain = await failedWithRun.render();
+  assert.match(text(uncertain), /已有训练运行记录/);
+  assert.equal(walk(uncertain).some(element => element.dataset?.action === "start-local-training"), false);
+  assert.equal(post(failedWithRun.calls).length, 0);
+});
+
+test("unknown local training schema does not expose unrecognized fields or tokens", async () => {
+  const env = localTrainingEnv({trainingStatus:{
+    schema:"future/local-training-v9", availability:"ready", csrf_token:"must-not-render",
+    operation:{status:"idle"}, filesystem_path:"/private/local/path", diagnostic_text:"secret marker",
+  }});
+  const page = await env.render();
+  assert.match(text(page), /训练状态格式未知/);
+  assert.match(text(page), /unknown_local_training_status_schema/);
+  assert.doesNotMatch(text(page), /must-not-render|\/private\/local\/path|secret marker/);
+  assert.equal(walk(page).some(element => element.dataset?.action === "start-local-training"), false);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("late local training status cannot render a start action on a changed page", async () => {
+  let releaseStatus;
+  const env = localTrainingEnv({trainingStatus:() => new Promise(resolve => { releaseStatus = resolve; })});
+  const rendering = env.render();
+  for (let index = 0; index < 10 && !releaseStatus; index++)
+    await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof releaseStatus, "function");
+  env.navigate("evaluations");
+  releaseStatus({schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"token",
+    operation:{status:"idle"}});
+  const page = await rendering;
+  assert.equal(walk(page).some(element => element.dataset?.action === "start-local-training"), false);
   assert.equal(post(env.calls).length, 0);
 });
 
