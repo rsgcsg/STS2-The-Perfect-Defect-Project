@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 Use `rsgcsg/STS2-The-Perfect-Defect-Project` for new work. Reviewed source anchor:
-`develop@e6903ff8898bac86381764fa1b4b6498e19bd37e` (through PR #65).
+`develop@b0f9256a50ec1c35801d1710edc73205ba1bae45` (through PR #67).
 Resolve live GitHub refs and deployed identity before work; current source/runtime
 authorities override this file. It is a bounded handoff, not the running-version owner.
 
@@ -17,12 +17,14 @@ authorities override this file. It is a bounded handoff, not the running-version
   preserves installed identity separately from its source integration.
 - **Workbench:** the Mod opens the same no-login local Workbench. PRs #61/#62
   add explicit verified recording import and sample preview. The active service
-  source is `790e7d598eb7b2fdc67bb6268f909abdf95a8be9`; source merges do not
-  automatically update it. The user confirmed the latest recording preview
-  shows 9 input labels and 3 canonical decisions. Raw files and the earlier
-  5-label/zero-canonical import remain intact; no dataset or training was started
-  by preview. [PR #62](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/62)
-  records the separate source/test and local activation evidence.
+  source is `0b9d49451a955bd2454c53b21544911e260c5bc1`, the same tree as
+  reviewed PR #67 integration. Its separate local activation preserved the profile
+  and 328 existing artifact identities/payload descriptors. Actual browser use
+  confirmed 9 input labels / 3 canonical decisions, then explicitly created one
+  3-decision training dataset with insufficient independent-run split status.
+  No training or Gold claim followed. The earlier 5-label/zero-canonical import
+  remains intact. [PR #67 activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/67#issuecomment-5857559811)
+  separates source/test, application activation and game qualification.
 - **Data:** PR #54 adds the shared curation authority; #55 separates Human-input BC
   split semantics; #57 adds observed-input sequences and the rc.17 Evidence consumer.
   Existing records keep their identities. Human input labels are not canonical
@@ -42,12 +44,17 @@ authorities override this file. It is a bounded handoff, not the running-version
 
 - Local recording import and sample preview are implemented and narrowly observed.
   PR #64 integrates the verified local canonical source path, with full Linux/Windows
-  checks. The existing candidate adds a persistent per-store use ledger and explicit Dataset
-  preview/publication for managed stores and in-place preparation for the existing
-  configured store, without moving or duplicating its payloads. It remains source/synthetic-test
-  evidence until its own hosted checks and local activation; the active Workbench
-  above has not been upgraded to this candidate. PR #65 separately integrates
-  spool cleanup ordering, with its own Python Linux/Windows checks.
+  checks. PR #66 adds a persistent per-store use ledger and explicit dataset
+  preview/publication; PR #67 simplifies the result/source navigation. Both have
+  their own hosted Python Linux/Windows evidence and exact-tree merge receipts.
+  In-place preparation of the existing library completed: one known-use and one
+  unknown-use dataset, no unprojected sources. Payloads were not relocated or copied.
+  PR #65 separately integrates spool cleanup ordering.
+- PR #68 is the current offline-report candidate: metadata catalog, exact dev report
+  summary and model/view links, with sealed-test/unknown-format rejection. It reads
+  recorded metrics and parent identities, not complete training lineage or quality.
+  Its source review, synthetic browser checks and current hosted checks must remain
+  separate from the active PR #67 Workbench; it is not automatically installed.
 - Human-input BC is a separate data mode. Input labels must not fill missing
   canonical actions or causal successors. Existing configured stores keep their
   history. The user superseded the temporary read-only preference: continue using
