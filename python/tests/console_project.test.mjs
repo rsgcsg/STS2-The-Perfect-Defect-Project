@@ -175,6 +175,37 @@ function setup({
     },
   };
 }
+function localDatasetEnv({artifact = id("a"), sampleStatus = null, datasetStatus = null,
+  managedStatus = null, datasetHandler = () => {}} = {}) {
+  return setup({
+    identity: {status: "signed_out"}, view: "local-workspace", query: `&id=${artifact}`,
+    handler: async (url, options) => {
+      if (url === "/api/local-workspace/managed") return managedStatus || {
+        schema: "stpd/managed-local-workspace-registration-v1", status: "ready",
+        workspace_id: "c".repeat(32), curation_status: "ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${artifact}`) return {
+        kind: "evidence", artifact_id: artifact,
+        parameters: {schema: "stpd/local-verified-bundle-v1"},
+      };
+      if (url === "/api/local-recordings/preview/status") return sampleStatus || {
+        status: "completed", artifact_id: artifact, availability: "available",
+        human_input_labels: 9, canonical_decisions: 3, human_input_total: 9,
+        human_input_exclusions: {}, decision_exclusions: {}, run_ids_observed: 1,
+        independent_run_qualification: "unknown", csrf_token: "dataset-csrf",
+      };
+      if (url === "/api/local-datasets/status") {
+        const value = typeof datasetStatus === "function" ? datasetStatus() : datasetStatus;
+        return value || {
+          schema: "stpd/local-dataset-operation-v1", availability: "ready",
+          paired_training: [{artifact_id: id("b"), records: 5}],
+          operation: {status: "idle"}, csrf_token: "dataset-csrf",
+        };
+      }
+      return datasetHandler(url, options);
+    },
+  });
+}
 const post = (calls) => calls.filter((call) => call.options.method === "POST");
 const body = (call) => JSON.parse(call.options.body);
 
@@ -358,6 +389,207 @@ test("local verified artifact preview is explicit and scoped to the selected det
   assert.match(text(second), /操作标签 5 条 \/ 完整决策 0 条/);
   assert.match(text(second), /尚未生成数据集/);
   assert.equal(post(env.calls).length, 1);
+});
+
+test("local dataset checks are explicit for each purpose and keep labels separate", async () => {
+  const artifact = id("a"), train = id("b");
+  for (const purpose of ["training", "test", "gold"]) {
+    const env = localDatasetEnv({artifact});
+    const page = await env.render();
+    assert.match(text(page), /完整决策 3 条/);
+    assert.match(text(page), /输入标签不能当作完整转移/);
+    assert.match(text(page), /不代表数据量已足以训练/);
+    assert.equal(post(env.calls).length, 0, "GET/render must not start a dataset operation");
+    const purposeField = field(page, "local-dataset-purpose");
+    const parentField = field(page, "local-dataset-paired-training");
+    purposeField.value = purpose;
+    purposeField.onchange();
+    parentField.value = train;
+    parentField.onchange();
+    if (purpose === "training") assert.equal(parentField.disabled, true);
+    else assert.equal(parentField.disabled, false);
+    await action(page, "check-local-dataset").onclick();
+    const writes = post(env.calls);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].url, "/api/local-datasets/preview");
+    assert.deepEqual(body(writes[0]), {
+      artifact_id: artifact,
+      purpose,
+      paired_training: purpose === "training" ? null : train,
+    });
+    assert.equal(writes[0].options.headers["X-CSRF-Token"], "dataset-csrf");
+  }
+});
+
+test("zero canonical decisions never expose dataset purpose controls", async () => {
+  const artifact = id("a");
+  const env = localDatasetEnv({artifact, sampleStatus: {
+    status: "completed", artifact_id: artifact, availability: "available",
+    human_input_labels: 9, canonical_decisions: 0, human_input_total: 9,
+    human_input_exclusions: {}, decision_exclusions: {}, run_ids_observed: 1,
+  }});
+  const page = await env.render();
+  assert.match(text(page), /操作标签 9 条 \/ 完整决策 0 条/);
+  assert.match(text(page), /不会补成完整决策/);
+  assert.doesNotMatch(text(page), /Gold 评估/);
+  assert.equal(walk(page).some(element => element.name === "local-dataset-purpose"), false);
+  assert.equal(env.calls.some(call => call.url === "/api/local-datasets/status"), false);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("legacy and recovery-required dataset status preserve browsing without enabling writes", async () => {
+  const artifact = id("a");
+  for (const availability of ["workspace_required", "recovery_required"]) {
+    const env = localDatasetEnv({artifact, datasetStatus: {
+      schema: "stpd/local-dataset-operation-v1", availability,
+      reason: availability === "recovery_required" ? "curation_owner_recovery_required" : undefined,
+      paired_training: [], operation: {status: "idle"}, csrf_token: "dataset-csrf",
+    }});
+    const page = await env.render();
+    assert.match(text(page), /本机数据集检查/);
+    assert.match(text(page), /仍可浏览/);
+    assert.equal(action(page, "local-workspace-back").textContent, "返回本机资料目录");
+    assert.equal(walk(page).some(element => element.dataset?.action === "check-local-dataset"), false);
+    assert.equal(post(env.calls).length, 0);
+  }
+  const legacy = localDatasetEnv({artifact, managedStatus: {
+    schema: "stpd/managed-local-workspace-registration-v1",
+    status: "legacy_workspace_configured", curation_status: "recovery_required",
+  }, datasetStatus: {
+    schema: "stpd/local-dataset-operation-v1", availability: "recovery_required",
+    reason: "legacy_history_requires_explicit_migration", paired_training: [],
+    operation: {status: "idle"},
+  }});
+  const legacyPage = await legacy.render();
+  assert.match(text(legacyPage), /旧本机资料空间/);
+  assert.match(text(legacyPage), /用途账本尚未迁移/);
+  assert.match(text(legacyPage), /仍可浏览/);
+  assert.equal(post(legacy.calls).length, 0);
+});
+
+test("pending dataset checks do not resubmit; failed and interrupted checks need a new click", async () => {
+  const artifact = id("a");
+  const pending = localDatasetEnv({artifact, datasetStatus: {
+    schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+    operation: {status: "pending", artifact_id: artifact, purpose: "training", paired_training: null},
+    csrf_token: "dataset-csrf",
+  }});
+  const pendingPage = await pending.render();
+  assert.match(text(pendingPage), /不会重复提交/);
+  assert.equal(action(pendingPage, "check-local-dataset").disabled, true);
+  await action(pendingPage, "refresh-local-dataset-status").onclick();
+  assert.equal(post(pending.calls).length, 0);
+
+  for (const status of ["failed", "interrupted"]) {
+    const env = localDatasetEnv({artifact, datasetStatus: {
+      schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+      operation: {status, artifact_id: artifact, purpose: "training", paired_training: null,
+        error_code: "synthetic_failure"}, csrf_token: "dataset-csrf",
+    }, datasetHandler: async (url) => {
+      if (url === "/api/local-datasets/preview") return {status: "pending"};
+      throw new Error(`unexpected route ${url}`);
+    }});
+    const page = await env.render();
+    assert.match(text(page), /不会自动重试/);
+    assert.equal(post(env.calls).length, 0);
+    await action(page, "check-local-dataset").onclick();
+    assert.equal(post(env.calls).length, 1);
+    assert.equal(post(env.calls)[0].url, "/api/local-datasets/preview");
+  }
+});
+
+test("matching preview publishes once and links only its local result", async () => {
+  const artifact = id("a"), dataset = id("d"), previewId = "preview-token";
+  let operation = {status: "preview_ready", artifact_id: artifact, purpose: "training",
+    paired_training: null, preview_id: previewId, selected: 3, split_status: "single_run",
+    exclusions: {duplicate: 1}, can_publish: true};
+  const env = localDatasetEnv({artifact, datasetStatus: () => ({
+      schema: "stpd/local-dataset-operation-v1", availability: "ready",
+      paired_training: [], operation, csrf_token: "dataset-csrf",
+    }),
+    datasetHandler: async (url, options) => {
+      if (url === "/api/local-datasets/publish") {
+        operation = {...operation, status: "completed", result_artifact_id: dataset};
+        return {status: "completed"};
+      }
+      throw new Error(`unexpected route ${url} ${options.method}`);
+    }});
+  const page = await env.render();
+  assert.match(text(page), /3/);
+  assert.match(text(page), /single_run/);
+  assert.match(text(page), /duplicate/);
+  assert.equal(post(env.calls).length, 0);
+  await action(page, "publish-local-dataset").onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.equal(post(env.calls)[0].url, "/api/local-datasets/publish");
+  assert.deepEqual(body(post(env.calls)[0]), {preview_id: previewId});
+  const completed = await env.render();
+  const resultLink = find(completed, element => element.tagName === "A"
+    && element.textContent === "打开本机数据集");
+  assert.equal(resultLink.href, `?view=local-workspace&id=${dataset}`);
+});
+
+test("changed or mismatched selection cannot confirm an old preview or show another result", async () => {
+  const artifact = id("a"), dataset = id("d"), other = id("e");
+  const env = localDatasetEnv({artifact, datasetStatus: {
+    schema: "stpd/local-dataset-operation-v1", availability: "ready",
+    paired_training: [{artifact_id: id("b"), records: 4}],
+    operation: {status: "preview_ready", artifact_id: artifact, purpose: "training",
+      paired_training: null, preview_id: "old-preview", can_publish: true},
+    csrf_token: "dataset-csrf",
+  }, datasetHandler: async (url) => {
+    if (url === "/api/local-datasets/preview") return {status: "pending"};
+    throw new Error(`unexpected route ${url}`);
+  }});
+  const page = await env.render();
+  const confirm = action(page, "publish-local-dataset");
+  const purpose = field(page, "local-dataset-purpose");
+  purpose.value = "test";
+  purpose.onchange();
+  assert.equal(confirm.disabled, true);
+  assert.match(text(page), /旧预览失效，请重新检查/);
+  await confirm.onclick();
+  assert.equal(post(env.calls).length, 0);
+  await action(page, "check-local-dataset").onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.equal(post(env.calls)[0].url, "/api/local-datasets/preview");
+  assert.deepEqual(body(post(env.calls)[0]), {
+    artifact_id: artifact, purpose: "test", paired_training: null,
+  });
+
+  const stalePreview = localDatasetEnv({artifact, datasetStatus: {
+    schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+    operation: {status: "preview_ready", artifact_id: other, purpose: "training",
+      paired_training: null, preview_id: "other-preview", can_publish: true},
+  }});
+  const stalePage = await stalePreview.render();
+  assert.match(text(stalePage), /对应另一份录制/);
+  assert.equal(walk(stalePage).some(element => element.dataset?.action === "publish-local-dataset"), false);
+  assert.equal(post(stalePreview.calls).length, 0);
+
+  const wrongResult = localDatasetEnv({artifact, datasetStatus: {
+    schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+    operation: {status: "completed", artifact_id: other, purpose: "training",
+      paired_training: null, result_artifact_id: dataset},
+  }});
+  const wrongPage = await wrongResult.render();
+  assert.doesNotMatch(text(wrongPage), /打开本机数据集/);
+  assert.equal(post(wrongResult.calls).length, 0);
+});
+
+test("Gold preview cannot publish when the backend reports it is not ready", async () => {
+  const artifact = id("a");
+  const env = localDatasetEnv({artifact, datasetStatus: {
+    schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+    operation: {status: "preview_ready", artifact_id: artifact, purpose: "gold",
+      paired_training: null, preview_id: "gold-preview", selected: 2,
+      split_status: "unqualified", exclusions: {}, can_publish: false},
+    csrf_token: "dataset-csrf",
+  }});
+  const page = await env.render();
+  assert.match(text(page), /后端尚未确认/);
+  assert.equal(walk(page).some(element => element.dataset?.action === "publish-local-dataset"), false);
+  assert.equal(post(env.calls).length, 0);
 });
 
 test("unconfigured local research workspace explains explicit registration", async () => {
