@@ -22,6 +22,10 @@ window.SpireProject = (() => {
     "evaluations",
     "record-quality",
   ]);
+  const supportedOfflineEvaluationSchemas = new Set([
+    "stpd/offline-ranking-evaluation-v1",
+    "stpd/stage1a-ranking-evaluation-v1",
+  ]);
   let current = null;
   let account = null;
   let offsets = new Map();
@@ -2539,7 +2543,7 @@ window.SpireProject = (() => {
       summary.append(el("p", "该对象未标明可展示的开发集分区；未请求评估摘要。", "small muted"));
       return summary;
     }
-    if (schema !== "stpd/offline-ranking-evaluation-v1") {
+    if (!supportedOfflineEvaluationSchemas.has(schema)) {
       summary.append(el("p", "该开发集评估格式暂不支持指标摘要；此处仅显示对象metadata。", "small muted"));
       return summary;
     }

@@ -823,6 +823,42 @@ test("offline evaluation detail reads one exact dev recorded-report summary", as
   assert.equal(post(env.calls).length, 0);
 });
 
+test("offline evaluation detail supports Stage1a recorded summaries and optional baselines", async () => {
+  const evaluation = id("e");
+  const stage1a = "stpd/stage1a-ranking-evaluation-v1";
+  const metrics = {count:4, top1:0.25, mrr:0.5, nll:1.2, confidence:0.3, margin:0.1};
+  const env = setup({
+    identity: {status: "signed_out"}, view: "local-workspace", query: `&id=${evaluation}`,
+    curationStatus: {schema:"stpd/local-curation-preparation-v1", status:"ready"},
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${evaluation}`) return {
+        artifact_id:evaluation, kind:"offline_evaluation",
+        parameters:{schema:stage1a, partition:"dev"},
+      };
+      if (url === `/api/local-workspace/evaluations/${evaluation}`) return {
+        schema:"stpd/local-offline-evaluation-summary-v1", evaluation_id:evaluation,
+        evaluation_schema:stage1a, model_id:id("a"), model_view_id:id("b"),
+        model_recipe:"legal-action-ranking", view_schema:"stpd/model-view-v1", partition:"dev",
+        baseline:"model", qualification:"engineering_only", scientific_verdict:"not_claimed",
+        validation_scope:"recorded_report_and_parent_identities", decision_count:4,
+        reported_run_groups:1, multi_candidate_count:3, overall:metrics,
+        baselines:{uniform_legal:metrics, action_only:metrics},
+        interpretation:"producer_recorded_summary_not_full_lineage_or_quality_verification",
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), new RegExp(stage1a.replaceAll("/", "\\/")));
+  assert.match(text(page), /均匀合法动作基准/);
+  assert.match(text(page), /仅动作基准/);
+  assert.equal(env.calls.filter(call => call.url === `/api/local-workspace/evaluations/${evaluation}`).length, 1);
+  assert.equal(post(env.calls).length, 0);
+});
+
 test("offline evaluation detail never requests sealed-test or unknown-partition summaries", async () => {
   for (const [parameters, message] of [
     [{schema:"stpd/offline-ranking-evaluation-v1", partition:"test"}, /封存测试评估不会在此读取或展示/],
