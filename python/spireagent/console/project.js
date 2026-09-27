@@ -1114,9 +1114,9 @@ window.SpireProject = (() => {
     return box;
   }
   const datasetTab = () => drafts.get("dataset-tab") || "library";
-  const splitLabel = value => value === "assigned" ? "已按局分组切分" :
-    value === "purpose_assigned" ? "独立评估用途" :
-    value === "insufficient_independent_run_components" ? "独立局数不足，尚未切分" : "查看切分条件";
+  const splitLabel = value => value === "assigned" ? "已分配训练/开发样本" :
+    value === "purpose_assigned" ? "已按所选评测用途分配" :
+    value === "insufficient_independent_run_components" ? "独立对局不足，尚不能形成独立划分" : "划分状态未知";
   const datasetName = item => item.display_name || item.parameters?.name || `数据集 ${item.artifact_id.slice(0, 12)}`;
   function datasetTabs(ctx) {
     const nav = el("nav", null, "dataset-tabs");
@@ -2563,16 +2563,17 @@ window.SpireProject = (() => {
     if (operation.status === "preview_ready" && sameSelection()) {
       section.append(fields([
         ["预览保留决策", count(operation.selected)],
-        ["数据划分与隔离状态", String(operation.split_status ?? "未知")],
+        ["数据划分与隔离状态", splitLabel(operation.split_status)],
       ]));
+      section.append(technical({split_status: operation.split_status ?? null}, "查看划分状态代码"));
       if (operation.exclusions && typeof operation.exclusions === "object")
         section.append(table(["排除原因", "数量"], Object.entries(operation.exclusions).map(
           ([reason, amount]) => [reason, count(amount)],
         )));
-      if (operation.can_publish === true && operation.preview_id) {
+      if (operation.can_publish === true && hex(operation.preview_id, 32)) {
         const confirmOptions = {primary:true, disabled:!data.csrf_token};
         confirmButton = command(ctx, "publish-local-dataset", "确认创建数据集", async () => {
-          if (!sameSelection() || operation.can_publish !== true || !operation.preview_id
+          if (!sameSelection() || operation.can_publish !== true || !hex(operation.preview_id, 32)
               || !data.csrf_token) return;
           confirmOptions.disabled = true;
           await request(ctx, "/api/local-datasets/publish", {preview_id: operation.preview_id}, data.csrf_token);
@@ -2648,7 +2649,7 @@ window.SpireProject = (() => {
               说明: "决策侧计数可能重叠；输入标签不能充当完整轨迹或已执行动作。",
             }, "查看统计与排除原因"));
           }
-          preview.append(el("p", "尚未生成数据集；训练和测试划分需要另行检查。", "small muted"));
+          preview.append(el("p", "样本预览本身不会创建数据集；如已检查用途，创建结果显示在下方用途检查中。", "small muted"));
         } else if (matched && status.status === "failed") {
           preview.append(el("p", "归档预览核验失败，未产生样本结果。", "small muted"));
           preview.append(technical({error_code: status.error_code}, "查看核验错误"));
@@ -2657,7 +2658,7 @@ window.SpireProject = (() => {
           if (Number.isInteger(status.canonical_decisions) && status.canonical_decisions > 0) {
             preview.append(await localDatasetCard(ctx, value.artifact_id));
           } else {
-            preview.append(el("p", "这份录制没有可用于canonical数据集检查的完整决策。操作输入标签不会补成完整决策。", "small muted"));
+            preview.append(el("p", "这份录制没有可用于数据集检查的完整决策。操作输入标签不会补成完整决策。", "small muted"));
           }
         }
         preview.append(command(ctx, "refresh-local-recording-preview", status.status === "pending" ? "刷新进度" : "刷新预览状态", async () => {
