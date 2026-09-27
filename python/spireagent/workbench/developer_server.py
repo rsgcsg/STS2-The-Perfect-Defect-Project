@@ -183,6 +183,7 @@ class Application:
         from spireagent.workbench.collection_flow import CollectionFlow
         from spireagent.workbench.collection_setup import CollectionSetup
         from spireagent.workbench.evaluation_sharing import EvaluationSharing
+        from spireagent.workbench.local_recordings import LocalRecordingCatalog
 
         self.config = config
         self.config_path = config_path
@@ -204,6 +205,7 @@ class Application:
             config, self.hub, self.delivery_environment, self.delivery_process, self.identity
         )
         self.models = LocalModelService(config, hub=self.hub)
+        self.local_recordings = LocalRecordingCatalog(config)
         self.evaluation_sharing = EvaluationSharing(self.models, self.members)
         self.delivery_error: str | None = None
         self.collection_flow = CollectionFlow(
@@ -584,6 +586,15 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, KeyError):
                     self.respond(400, b'{"error":"invalid_member_request"}')
+            elif parsed.path == "/api/local-recordings":
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                if parsed.query:
+                    self.respond(400, b'{"error":"invalid_local_recordings_request"}')
+                    return
+                value = app.local_recordings.read()
+                self.respond(200, json.dumps(value, ensure_ascii=False).encode())
             elif (parsed.path == "/api/local-workspace"
                     or parsed.path.startswith("/api/local-workspace/artifacts/")
                     or parsed.path == "/api/local-workspace/managed"):

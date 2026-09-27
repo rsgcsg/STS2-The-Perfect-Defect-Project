@@ -214,6 +214,42 @@ test("local research workspace browses the local API without project identity", 
   assert.equal(env.calls[0].options.method || "GET", "GET");
 });
 
+test("local recording catalog is fetched only on explicit refresh and missing tool is not zero records", async () => {
+  const env = setup({
+    identity: {status: "signed_out"},
+    view: "local-workspace",
+    handler: async (url) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema: "stpd/managed-local-workspace-registration-v1",
+        status: "ready",
+        workspace_id: "c".repeat(32),
+      };
+      if (url === "/api/local-workspace?limit=25&offset=0") return {
+        schema: "stpd/local-workspace-inventory-v1", total: 0, items: [],
+      };
+      if (url === "/api/local-recordings") return {
+        schema: "stpd/local-recording-catalog-v1",
+        status: "tool_registration_missing",
+        error_code: "collection_tool_registration_missing",
+        candidate_count: 0,
+        candidates: [],
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const initial = await env.render();
+  assert.match(text(initial), /查看录制来源/);
+  assert.equal(env.calls.filter(call => call.url === "/api/local-recordings").length, 0);
+  await action(initial, "read-local-recordings").onclick();
+  assert.equal(env.calls.filter(call => call.url === "/api/local-recordings").length, 1);
+  assert.equal(env.calls.find(call => call.url === "/api/local-recordings").options.method || "GET", "GET");
+  const refreshed = await env.render();
+  assert.match(text(refreshed), /尚未注册本机录制组件/);
+  assert.doesNotMatch(text(refreshed), /没有检测到已结束的录制/);
+  assert.equal(env.calls.filter(call => call.url === "/api/local-recordings").length, 1);
+  assert.equal(post(env.calls).length, 0);
+});
+
 test("unconfigured local research workspace explains explicit registration", async () => {
   const env = setup({
     identity: {status: "signed_out"},
