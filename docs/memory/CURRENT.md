@@ -73,6 +73,8 @@ authorities override this file. It is a bounded handoff, not the running-version
   recordings do not guarantee more groups. Reports retain unknown native-run
   independence. This follow-up needs its own source review, selected hosted checks
   and application activation; PR #69's green does not cover it.
+  [The operator guide](../../python/docs/research/LOCAL_TRAINING_WORKBENCH.md) describes
+  the intended local flow and exact limits; deployment status above remains authoritative.
 - Human-input BC is a separate data mode. Input labels must not fill missing
   canonical actions or causal successors. Existing configured stores keep their
   history. The user superseded the temporary read-only preference: continue using
