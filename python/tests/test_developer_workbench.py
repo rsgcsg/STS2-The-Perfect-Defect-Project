@@ -105,6 +105,15 @@ def test_project_config_optional_local_research_workspace_preserves_legacy_files
     assert ProjectConfig.load(path).research_workspace == loaded.research_workspace
 
 
+def test_project_config_rejects_explicit_null_research_workspace(project):
+    path, _ = project
+    value = json.loads(path.read_bytes())
+    value["research_workspace"] = None
+    path.write_text(json.dumps(value))
+    with pytest.raises(BoundaryError, match="missing_or_unknown_fields"):
+        ProjectConfig.load(path)
+
+
 @pytest.mark.parametrize(
     "url",
     [

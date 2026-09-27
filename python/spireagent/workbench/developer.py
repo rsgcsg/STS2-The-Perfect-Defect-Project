@@ -167,11 +167,12 @@ class ProjectConfig:
             delivery = text(delivery, "project.delivery_config")
         if not state.is_absolute() or (delivery is not None and not Path(delivery).is_absolute()):
             raise BoundaryError("project", "absolute_local_path_required")
-        research_value = obj.get("research_workspace")
         research_workspace = None
-        if research_value is not None:
+        if "research_workspace" in obj:
             research = object_fields(
-                research_value, {"store_dir", "registry_path"}, "project.research_workspace"
+                obj["research_workspace"],
+                {"store_dir", "registry_path"},
+                "project.research_workspace",
             )
             store_dir = Path(text(research["store_dir"], "project.research_store_dir"))
             registry_path = Path(text(research["registry_path"], "project.research_registry_path"))

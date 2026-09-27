@@ -2336,7 +2336,7 @@ window.SpireProject = (() => {
 
   async function localWorkspace(ctx) {
     const box = el("div", null, "project-page");
-    box.append(panel("本机研究资料", "只读查看已登记到这台工作台的研究对象与来源；这里不读取 payload 内容，也不要求项目账号或云端连接。"));
+    box.append(panel("本机资料", "只读查看已连接到这台工作台的资料与来源信息；不读取内容文件，也不需要登录或连接云端。"));
     const id = new URLSearchParams(ctx.search).get("id");
     if (id) {
       const value = await request(ctx, `/api/local-workspace/artifacts/${encodeURIComponent(id)}`);
@@ -2344,15 +2344,15 @@ window.SpireProject = (() => {
         offsets.set("local-workspace", 0);
         window.SpireProject.navigate("local-workspace");
       }, {type:"secondary"}));
-      box.append(panel(`${value.kind} · ${value.artifact_id.slice(0, 16)}`, "内容身份来自本机 ArtifactStore 的既有 manifest。"));
-      box.append(technical(value, "查看 manifest 元数据与安全 payload 摘要"));
+      box.append(panel(`${value.kind} · ${value.artifact_id.slice(0, 16)}`, "资料身份和来源信息来自本机已登记内容。"));
+      box.append(technical(value, "查看来源详情与内容文件摘要"));
       return box;
     }
 
     const query = drafts.get("local-workspace-search") || "";
     const filters = el("div", null, "project-form");
     filters.dataset.projectEditor = "local-workspace-search";
-    const search = input(filters, "搜索本机对象名称或 SHA256", "local-workspace-search", query);
+    const search = input(filters, "搜索本机对象名称或对象 ID", "local-workspace-search", query);
     search.maxLength = 128;
     search.addEventListener("keydown", event => {
       if (event.key === "Enter") {
@@ -2374,8 +2374,8 @@ window.SpireProject = (() => {
     const data = await request(ctx, `/api/local-workspace?${params}`);
     if (data.status === "not_configured") {
       box.append(empty(
-        "本机研究资料尚未登记",
-        "请由本机工作台配置登记已经存在的资料库和索引。此页不会扫描目录、创建资料库或重建索引，也不需要项目账号。",
+        "尚未连接本机资料库，不需要登录",
+        "请在本机工作台设置中登记已经存在的资料库和索引。此页不会扫描目录或创建资料库。",
       ));
       return box;
     }
@@ -2398,7 +2398,7 @@ window.SpireProject = (() => {
         technical(item, "查看 metadata 与 payload 摘要"),
       ]);
     }
-    box.append(table(["本机对象", "Payload", "索引状态", "来源摘要"], rows));
+    box.append(table(["本机资料", "内容文件", "本机索引", "来源信息"], rows));
     if (!data.total) box.append(empty("没有匹配的本机对象", "可清除搜索词，或先在本机准备研究资料。"));
     const pagerBox = el("div", null, "project-actions");
     if (offset > 0) pagerBox.append(command(ctx, "local-workspace-prev", "上一页", async () => {
@@ -2407,7 +2407,7 @@ window.SpireProject = (() => {
     if (offset + limit < data.total) pagerBox.append(command(ctx, "local-workspace-next", "下一页", async () => {
       offsets.set("local-workspace", offset + limit); await reload(ctx);
     }, {type:"secondary"}));
-    pagerBox.append(el("span", `本页 ${offset + 1}–${Math.min(offset + limit, data.total)} / ${data.total}`, "subtext"));
+    pagerBox.append(el("span", data.total ? `本页 ${offset + 1}–${Math.min(offset + limit, data.total)} / ${data.total}` : "共 0 项", "subtext"));
     box.append(pagerBox);
     return box;
   }
