@@ -103,6 +103,15 @@ def load_verified_human_text_bundle(
     store: ArtifactStore, identity: str,
 ) -> tuple[Manifest, Any, tuple[dict, ...]]:
     manifest = store.get_manifest(identity)
+    if manifest.parameters.value().get("schema") == "stpd/local-verified-bundle-v1":
+        # Reuse the original locally attested archive and transfer. This is a
+        # distinct evidence identity, never a received Hub bundle or new claim.
+        from spireagent.local_verified_bundle import verified_local_bundle
+
+        with verified_local_bundle(store, manifest) as verified:
+            bundle, rows = _verified(verified.directory)
+            verified.assert_directory_identity()
+            return manifest, bundle, rows
     if (manifest.kind != "evidence" or manifest.parents
             or [p.role for p in manifest.payloads] != ["archive"]):
         raise BoundaryError("human_text_import", "verified_archive_required")
