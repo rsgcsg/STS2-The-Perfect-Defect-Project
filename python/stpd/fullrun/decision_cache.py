@@ -46,7 +46,7 @@ def implementation_identity() -> str:
     ))
     app = root.parents[1] / "spireagent"
     files.extend(("app/" + name, app / name) for name in (
-        "encoding.py", "json_boundary.py",
+        "encoding.py", "json_boundary.py", "local_verified_bundle.py",
     ))
     return hashlib.sha256(json_bytes([
         [name, hashlib.sha256(path.read_bytes()).hexdigest()]

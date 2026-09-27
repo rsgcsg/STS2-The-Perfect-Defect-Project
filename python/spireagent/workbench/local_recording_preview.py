@@ -6,89 +6,26 @@ proof, complete trajectory, or training authorization.
 
 from __future__ import annotations
 
-import hashlib
-import json
-import tempfile
 import threading
 from collections import Counter
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
-from sts2_platform_evidence import (
-    DirectoryTransferManifest,
-    HumanSessionBundleV3,
-    verify_human_session_bundle,
-)
+from sts2_platform_evidence import HumanSessionBundleV3
 
-from spireagent.hub.uploads import MAX_ARCHIVE, transfer_from_json, unpack
-from spireagent.json_boundary import BoundaryError, digest, json_bytes
-from spireagent.workbench.local_recording_import import EVIDENCE_SCHEMA
+from spireagent.json_boundary import BoundaryError, digest
+from spireagent.local_verified_bundle import verified_local_bundle
 from spireagent.workbench.local_workspace import LocalWorkspace
 
 SCHEMA = "stpd/local-recording-sample-preview-v1"
-MAX_TRANSFER = 16 * 1024 * 1024
 
 
 def preview_artifact(workspace: LocalWorkspace, artifact_id: str) -> dict[str, Any]:
     """Recheck exact immutable bytes and return only verified aggregate facts."""
     digest(artifact_id, "local_preview.artifact_id")
     manifest = workspace.store.get_manifest(artifact_id)
-    parameters = manifest.parameters.value()
-    if (manifest.kind != "evidence" or manifest.parents
-            or parameters.get("schema") != EVIDENCE_SCHEMA
-            or parameters.get("disposition") != "locally_verified"
-            or parameters.get("research_admission") != "not_evaluated"
-            or parameters.get("human_origin_attested") is not True
-            or parameters.get("hub_receipt") is not None
-            or {item.role for item in manifest.payloads} != {"archive", "transfer"}
-            or len(manifest.payloads) != 2):
-        raise BoundaryError("local_preview", "not_local_verified_bundle")
-    payloads = {item.role: item for item in manifest.payloads}
-    if (payloads["archive"].size > MAX_ARCHIVE or payloads["archive"].size == 0
-            or payloads["transfer"].size > MAX_TRANSFER or payloads["transfer"].size == 0
-            or payloads["archive"].media_type != "application/gzip"
-            or payloads["transfer"].media_type != "application/json"):
-        raise BoundaryError("local_preview", "payload_size_or_type_invalid")
-    raw_transfer = b"".join(workspace.store.read_payload(payloads["transfer"]))
-    try:
-        transfer_json = json.loads(raw_transfer)
-        transfer = transfer_from_json(transfer_json)
-    except (ValueError, TypeError, KeyError) as error:
-        raise BoundaryError("local_preview", "transfer_invalid") from error
-    if (raw_transfer != json_bytes(transfer.to_dict())
-            or parameters.get("transfer_manifest_sha256") != transfer.manifest_sha256
-            or parameters.get("content_id") != transfer.content_id):
-        raise BoundaryError("local_preview", "transfer_identity_mismatch")
-    with tempfile.TemporaryDirectory(prefix="stpd-local-preview-") as name:
-        temporary = Path(name)
-        archive = temporary / "bundle.tar.gz"
-        with archive.open("xb") as target:
-            for chunk in workspace.store.read_payload(payloads["archive"]):
-                target.write(chunk)
-        extracted = temporary / "extracted"
-        extracted.mkdir()
-        unpack(archive, extracted, transfer)
-        verification = verify_human_session_bundle(extracted)
-        if not verification.passed:
-            raise BoundaryError("local_preview", "typed_bundle_verification_failed")
-        bundle = verification.require_value()
-        for field, relative in (("manifest_sha256", "raw/recording-manifest.json"),
-                                ("close_sha256", "raw/session-close-receipt.json")):
-            path = extracted / relative
-            if (not path.is_file() or path.stat().st_size > MAX_TRANSFER
-                    or parameters.get(field) != hashlib.sha256(path.read_bytes()).hexdigest()):
-                raise BoundaryError("local_preview", "recording_source_hash_mismatch")
-        if (bundle.bundle_content_id != transfer.content_id
-                or bundle.session_id != parameters.get("session_id")
-                or getattr(bundle, "timeline_id", None) != parameters.get("timeline_id")
-                or bundle.worker_id != parameters.get("worker_id")
-                or bundle.campaign_id != parameters.get("campaign_id")
-                or DirectoryTransferManifest.from_directory(
-                    extracted, content_id=transfer.content_id,
-                    artifact_type="human-session-bundle",
-                ) != transfer):
-            raise BoundaryError("local_preview", "bundle_identity_mismatch")
+    with verified_local_bundle(workspace.store, manifest) as verified:
+        bundle = verified.bundle
         if not isinstance(bundle, HumanSessionBundleV3):
             return {"schema": SCHEMA, "artifact_id": artifact_id,
                     "availability": "archival_format", "available_types": [],

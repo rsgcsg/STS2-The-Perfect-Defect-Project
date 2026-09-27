@@ -294,24 +294,29 @@ def _merge_environment(
 def _versions(source: bytes) -> dict[str, Any]:
     # Called only after the installed verifier accepted the archive. Join identity
     # metadata by the exact environment fingerprint, never by a current runtime.
-    result: dict[str, Any] = {}
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         _extract(source, root)
-        for path in sorted((root / "raw").glob("run-*.jsonl")):
-            if path.name == "run-journal.jsonl":
+        return _versions_directory(root)
+
+
+def _versions_directory(root: Path) -> dict[str, Any]:
+    """Read environment identity from a directory already typed-verified by its owner."""
+    result: dict[str, Any] = {}
+    for path in sorted((root / "raw").glob("run-*.jsonl")):
+        if path.name == "run-journal.jsonl":
+            continue
+        for line in path.read_bytes().splitlines():
+            row = json.loads(line)
+            if row.get("schema") != "sts2.human-annotator/decision-record-2":
                 continue
-            for line in path.read_bytes().splitlines():
-                row = json.loads(line)
-                if row.get("schema") != "sts2.human-annotator/decision-record-2":
-                    continue
-                environment = row.get("environment")
-                if not isinstance(environment, dict):
-                    continue
-                fingerprint = environment.get("environment_fingerprint")
-                if not isinstance(fingerprint, str):
-                    continue
-                _merge_environment(result, fingerprint, environment)
+            environment = row.get("environment")
+            if not isinstance(environment, dict):
+                continue
+            fingerprint = environment.get("environment_fingerprint")
+            if not isinstance(fingerprint, str):
+                continue
+            _merge_environment(result, fingerprint, environment)
     return result
 
 
