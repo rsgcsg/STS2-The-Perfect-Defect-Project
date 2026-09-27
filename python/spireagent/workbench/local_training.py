@@ -19,8 +19,10 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError, digest
 from spireagent.source import source_identity
+from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
+from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.local_dataset import LocalDatasetService
 
 SCHEMA = "stpd/local-training-operation-v1"
@@ -43,7 +45,7 @@ class LocalTrainingService:
         return self._selection._selected()
 
     @staticmethod
-    def _paths(owner) -> tuple[Path, Path]:
+    def _paths(owner: LocalCurationOwner) -> tuple[Path, Path]:
         return owner.path.parent / OPERATION_FILE, owner.path.parent / LOCK_FILE
 
     @staticmethod
@@ -162,7 +164,7 @@ class LocalTrainingService:
                 held.__exit__(None, None, None)
 
     def _run(self, held: AbstractContextManager[None], path: Path, identity: str,
-             owner, store) -> None:
+             owner: LocalCurationOwner, store: ManifestArtifactStore) -> None:
         run_started = False
         try:
             from spireagent.storage.registry import SQLiteRegistry, sync_registry
