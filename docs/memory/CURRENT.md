@@ -73,6 +73,9 @@ authorities override this file. It is a bounded handoff, not the running-version
   recordings do not guarantee more groups. Reports retain unknown native-run
   independence. This follow-up needs its own source review, selected hosted checks
   and application activation; PR #69's green does not cover it.
+  A [synthetic Safari journey](../evidence/HUMAN_INPUT_LOCAL_WORKBENCH_BROWSER_2026-09-28.md)
+  exercised selection, save, real three-step training, report and model links;
+  this is not real-recording training or game inference.
   [The operator guide](../../python/docs/research/LOCAL_TRAINING_WORKBENCH.md) describes
   the intended local flow and exact limits; deployment status above remains authoritative.
 - Human-input BC is a separate data mode. Input labels must not fill missing
