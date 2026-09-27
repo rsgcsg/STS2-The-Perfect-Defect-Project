@@ -393,7 +393,42 @@ class Application:
     def local_research_workspace(self) -> Any | None:
         from spireagent.workbench.local_workspace import open_registered_workspace
 
-        return open_registered_workspace(self.config.research_workspace)
+        if self.config.research_workspace is not None:
+            return open_registered_workspace(self.config.research_workspace)
+        return self.managed_local_workspace().get("workspace")
+
+    def managed_local_workspace(self) -> dict[str, Any]:
+        if self.config.research_workspace is not None:
+            return {
+                "schema": "stpd/managed-local-workspace-registration-v1",
+                "status": "legacy_workspace_configured",
+                "requires_cloud_account": False,
+            }
+        from spireagent.workbench.managed_local_workspace import inspect_managed_workspace
+
+        return inspect_managed_workspace(self.config.state_dir)
+
+    def create_managed_local_workspace(self) -> dict[str, Any]:
+        if self.config_path is None:
+            raise BoundaryError("managed_workspace", "running_instance_unavailable")
+        if self.config.research_workspace is not None:
+            raise BoundaryError("managed_workspace", "legacy_workspace_configured")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("managed_workspace", "running_instance_unavailable") from error
+        if not isinstance(runtime, dict):
+            raise BoundaryError("managed_workspace", "running_instance_unavailable")
+        if (current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("managed_workspace", "running_configuration_mismatch")
+        from spireagent.workbench.managed_local_workspace import create_managed_workspace
+
+        result = create_managed_workspace(self.config.state_dir)
+        result.pop("workspace", None)
+        return result
 
     def close(self) -> None:
         self.evaluation_sharing.close()
@@ -549,46 +584,73 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, KeyError):
                     self.respond(400, b'{"error":"invalid_member_request"}')
-            elif parsed.path == "/api/local-workspace" or parsed.path.startswith(
-                "/api/local-workspace/artifacts/"
-            ):
+            elif (parsed.path == "/api/local-workspace"
+                    or parsed.path.startswith("/api/local-workspace/artifacts/")
+                    or parsed.path == "/api/local-workspace/managed"):
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
                 try:
-                    workspace = app.local_research_workspace()
-                    if workspace is None:
-                        value = {
-                            "schema": "stpd/local-workspace-status-v1",
-                            "status": "not_configured",
-                            "entry": "set research_workspace in the local project config",
-                            "requires_cloud_account": False,
-                        }
+                    if parsed.path == "/api/local-workspace/managed":
+                        if parsed.query:
+                            raise ValueError
+                        value = app.managed_local_workspace()
+                        value.pop("workspace", None)
+                        if value.get("status") == "not_created":
+                            value["csrf_token"] = app.account.csrf
                     else:
-                        artifact = re.fullmatch(
-                            r"/api/local-workspace/artifacts/([a-f0-9]{64})", parsed.path
-                        )
-                        if artifact is not None and not parsed.query:
-                            value = workspace.artifact(artifact[1])
-                        elif parsed.path == "/api/local-workspace":
-                            query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=4)
-                            if any(len(items) != 1 for items in query.values()) or set(query) - {
-                                "kind",
-                                "q",
-                                "limit",
-                                "offset",
-                            }:
-                                raise ValueError
-                            value = workspace.inventory(
-                                kind=query.get("kind", [None])[0],
-                                query=query.get("q", [None])[0],
-                                limit=int(query.get("limit", ["50"])[0]),
-                                offset=int(query.get("offset", ["0"])[0]),
-                            )
+                        workspace = app.local_research_workspace()
+                        if workspace is None:
+                            value = {
+                                "schema": "stpd/local-workspace-status-v1",
+                                "status": "not_configured",
+                                "entry": "create a local workspace from the Workbench page",
+                                "requires_cloud_account": False,
+                            }
                         else:
-                            raise BoundaryError("local_workspace", "route_not_found")
+                            artifact = re.fullmatch(
+                                r"/api/local-workspace/artifacts/([a-f0-9]{64})", parsed.path
+                            )
+                            if artifact is not None and not parsed.query:
+                                value = workspace.artifact(artifact[1])
+                            elif parsed.path == "/api/local-workspace":
+                                query = parse_qs(
+                                    parsed.query, strict_parsing=True, max_num_fields=4
+                                )
+                                if (
+                                    any(len(items) != 1 for items in query.values())
+                                    or set(query) - {
+                                        "kind",
+                                        "q",
+                                        "limit",
+                                        "offset",
+                                    }
+                                ):
+                                    raise ValueError
+                                value = workspace.inventory(
+                                    kind=query.get("kind", [None])[0],
+                                    query=query.get("q", [None])[0],
+                                    limit=int(query.get("limit", ["50"])[0]),
+                                    offset=int(query.get("offset", ["0"])[0]),
+                                )
+                            else:
+                                raise BoundaryError("local_workspace", "route_not_found")
                     self.respond(200, json.dumps(value, ensure_ascii=False).encode())
                 except BoundaryError as error:
+                    if error.stage == "managed_workspace" and error.code in {
+                        "registration_invalid", "workspace_registry_invalid",
+                        "workspace_storage_invalid", "workspace_marker_invalid",
+                        "workspace_root_unavailable", "workspace_root_invalid",
+                        "state_directory_unavailable",
+                    }:
+                        value = {
+                            "schema": "stpd/managed-local-workspace-registration-v1",
+                            "status": "unavailable",
+                            "error_code": error.code,
+                            "requires_cloud_account": False,
+                        }
+                        self.respond(200, json.dumps(value).encode())
+                        return
                     if error.stage == "local_workspace" and error.code in {
                         "store_not_found",
                         "registry_not_found",
@@ -611,6 +673,11 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(status, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, KeyError):
                     self.respond(400, b'{"error":"invalid_local_workspace_request"}')
+            elif parsed.path.startswith("/api/local-workspace/managed/"):
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                self.respond(404, b'{"error":"route_not_found"}')
             elif parsed.path == "/api/identity" or parsed.path.startswith("/api/project/"):
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -657,6 +724,25 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(404, b"{}")
 
         def do_POST(self) -> None:
+            if self.path.startswith("/api/local-workspace/managed/"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                if self.path != "/api/local-workspace/managed/create":
+                    self.respond(404, b'{"error":"route_not_found"}')
+                    return
+                try:
+                    body = self.json_body(maximum=64)
+                    if body:
+                        raise ValueError
+                    with app.operation_lock:
+                        value = app.create_managed_local_workspace()
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_managed_workspace_request"}')
+                return
             if self.path.startswith(("/api/member/", "/api/local-models/")):
                 if not self.browser_write() and not (
                     self.path.startswith("/api/local-models/") and self.control_client()

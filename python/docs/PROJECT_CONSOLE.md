@@ -53,19 +53,23 @@ Local raw sessions and bundles are not automatically deleted after cloud success
 
 ## 本机资料
 
-The local-only **本机资料** page browses artifact manifests in an explicitly registered
-local research store. It uses the local browser session and does not require a project login
-or Hub connection. The optional `research_workspace` object in the private `project.json`
-contains absolute `store_dir` and `registry_path` values. Both must already exist; the store
-must be local and the registry must have the supported schema. The page reads names and safe
-manifest metadata, parent IDs, payload roles, hashes and sizes. It does not read payload bytes,
-scan other directories, create a store, rebuild an index, prepare a dataset, or start training.
+The local-only **本机资料** page uses the local browser session and needs no project login or Hub
+connection. It reads artifact manifests, names, safe metadata, parent IDs, payload roles, hashes
+and sizes through the existing local inventory and artifact routes. GET requests do not create
+or repair storage, scan other directories, read payload bytes, prepare a dataset, or start training.
 
-When the object is absent, the page reports that no local workspace is registered. A missing
-store/index or unsupported registry is shown as unavailable. Registration remains an explicit
-local configuration responsibility; do not place these private paths in Git. This first slice
-is an artifact inventory, not a complete offline collection, dataset-building, training, or
-evaluation workflow.
+If private `project.json` has a `research_workspace` entry, that configured store remains the
+selected source and is browsed read-only. The page does not replace or hide it with a managed
+workspace. With no configured `research_workspace`, the first visit reports that no local
+workspace exists; only an explicit **新建本机工作空间** action creates one. The Workbench creates
+an empty store and supported SQLite index under its state directory, then atomically records a
+versioned registration. Later inventory and artifact reads use those same existing routes, including
+after a Workbench restart. Creation does not import data or make it trainable.
+
+An invalid registration, marker, store, or index is shown as unavailable and is never silently
+replaced. Interrupted initialization directories are retained and reported; the page does not
+adopt arbitrary old directories. Keep private local paths out of Git. This remains an artifact
+inventory, not a complete offline collection, dataset-building, training, or evaluation workflow.
 
 ## Cloud login and connection
 
