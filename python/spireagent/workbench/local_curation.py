@@ -14,7 +14,7 @@ from pathlib import Path
 
 from spireagent.hub.database import create_private_database
 from spireagent.json_boundary import BoundaryError, digest
-from spireagent.research_curation import CurationLedger
+from spireagent.research_curation import CurationLedger, InventoryPending
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
 
@@ -35,6 +35,11 @@ REQUIRED_INDEXES = {
 
 
 class LocalLedger(CurationLedger):
+    def __init__(self, owner: LocalCurationOwner, *,
+                 inventory_pending: InventoryPending | None = None) -> None:
+        super().__init__(owner, inventory_pending=inventory_pending,
+                         claim_guard=owner._historical_claim_guard)
+
     def claim(self, identity: str, purpose: str, runs: Iterable[str], *,
               gold_parents: tuple[str, ...] = (),
               require_inventory: bool = False, annotation_revision: int | None = None) -> None:
@@ -46,18 +51,21 @@ class LocalLedger(CurationLedger):
 
 class LocalCurationOwner:
     def __init__(self, path: Path, store_dir: Path, workspace_id: str,
-                 ledger_id: str, store_id: str, *, create: bool = False) -> None:
+                 ledger_id: str, store_id: str, *, create: bool = False,
+                 allow_existing: bool = False, legacy_guard: bool = False,
+                 owner_schema: str = OWNER_SCHEMA) -> None:
         self.path = path
         self.store_dir = store_dir
         self.identity = (workspace_id, ledger_id, store_id, str(store_dir.resolve()))
         self._ledger: LocalLedger | None = None
         self._schema_ready = False
+        self.legacy_guard = legacy_guard
         if path.is_symlink() or store_dir.is_symlink() or not store_dir.is_dir():
             raise BoundaryError("local_curation", "owner_storage_invalid")
         owner_path = store_dir / OWNER_NAME
         try:
             if owner_path.is_symlink() or json.loads(owner_path.read_text()) != {
-                "schema": OWNER_SCHEMA, "workspace_id": workspace_id, "store_id": store_id,
+                "schema": owner_schema, "workspace_id": workspace_id, "store_id": store_id,
                 "ledger_id": ledger_id, "ledger_path": str(path.resolve()),
             }:
                 raise BoundaryError("local_curation", "store_identity_mismatch")
@@ -66,7 +74,7 @@ class LocalCurationOwner:
         if create:
             if path.exists():
                 raise BoundaryError("local_curation", "ledger_already_exists")
-            if tuple(ManifestArtifactStore(LocalBlobStore(
+            if not allow_existing and tuple(ManifestArtifactStore(LocalBlobStore(
                 store_dir, create=False, readonly=True)).manifest_ids()):
                 raise BoundaryError("local_curation", "existing_store_requires_recovery")
             create_private_database(path)
@@ -78,6 +86,8 @@ class LocalCurationOwner:
                 db.execute("CREATE TABLE local_source_pending("
                            "candidate TEXT PRIMARY KEY,artifact TEXT,status TEXT NOT NULL "
                            "CHECK(status IN ('publishing','published')))")
+                if allow_existing:
+                    db.execute("CREATE TABLE local_legacy_unknown_runs(run TEXT PRIMARY KEY)")
             self._ledger = LocalLedger(self, inventory_pending=self._inventory_pending)
             self._schema_ready = True
         else:
@@ -186,3 +196,16 @@ class LocalCurationOwner:
             "SELECT id FROM curation_sources WHERE complete=1")}
         return any(artifact not in indexed for artifact in store.manifest_ids()
                    if store.get_manifest(artifact).kind == "evidence")
+
+    def gold_history_unknown(self, db: sqlite3.Connection, runs: Iterable[str]) -> bool:
+        if not self.legacy_guard:
+            return False
+        if db.execute("SELECT 1 FROM local_legacy_unknown_runs WHERE run='*'").fetchone():
+            return True
+        return any(db.execute("SELECT 1 FROM local_legacy_unknown_runs WHERE run=?",
+                              (run,)).fetchone() for run in runs)
+
+    def _historical_claim_guard(self, db: sqlite3.Connection, purpose: str,
+                                related: set[str]) -> None:
+        if purpose == "gold" and self.gold_history_unknown(db, related):
+            raise BoundaryError("local_curation", "legacy_gold_history_unknown")

@@ -17,6 +17,7 @@ from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench import local_recording_import as importing
 from spireagent.workbench import managed_local_workspace as managed
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig, ProjectConfig, combination
+from spireagent.workbench.inplace_curation import InplaceCurationPreparation
 
 
 class Catalog:
@@ -53,6 +54,11 @@ def setup(tmp_path: Path, monkeypatch) -> tuple[importing.LocalRecordingImporter
         state, "", "", None, combination(),
         LocalResearchWorkspaceConfig(store_dir, registry_path),
     )
+    preparation = InplaceCurationPreparation(config)
+    preparation.start()
+    assert preparation.thread is not None
+    preparation.thread.join(timeout=15)
+    assert preparation.status()["status"] == "ready"
     template = bundle3(tmp_path / "fixture")
 
     class Tool:

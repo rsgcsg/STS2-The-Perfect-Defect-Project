@@ -375,7 +375,9 @@ def test_gold_claim_precedes_publication_and_blocks_training_race(
     assert settled(service)["status"] == "completed"
 
 
-def test_legacy_config_has_no_dataset_authority(tmp_path: Path, monkeypatch) -> None:
+def test_configured_second_profile_resolves_existing_managed_owner(
+    tmp_path: Path, monkeypatch,
+) -> None:
     service, artifact = setup(tmp_path, monkeypatch)
     owner = managed.inspect_managed_workspace(service.config.state_dir)["curation_owner"]
     legacy = LocalDatasetService(ProjectConfig(
@@ -383,9 +385,9 @@ def test_legacy_config_has_no_dataset_authority(tmp_path: Path, monkeypatch) -> 
         LocalResearchWorkspaceConfig(owner.store_dir,
                                      owner.path.parent / "registry.sqlite"),
     ))
-    assert legacy.status()["availability"] == "recovery_required"
-    with pytest.raises(BoundaryError, match="legacy_history_requires_explicit_migration"):
-        legacy.start_preview(artifact, "gold", None)
+    assert legacy.status()["availability"] == "ready"
+    assert legacy._selected()[0].identity == owner.identity
+    assert legacy._selected()[0].path == owner.path
 
 
 def test_malformed_durable_operation_cannot_be_overwritten(tmp_path: Path, monkeypatch) -> None:

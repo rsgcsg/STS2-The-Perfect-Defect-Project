@@ -145,7 +145,7 @@ def test_schema_loss_after_inspect_is_not_recreated_by_lazy_ledger(
         assert db.execute("SELECT 1 FROM sqlite_master WHERE name=?", (missing,)).fetchone() is None
 
 
-def test_second_state_cannot_write_managed_store_as_legacy(tmp_path: Path) -> None:
+def test_second_state_resolves_managed_store_original_owner(tmp_path: Path) -> None:
     _, directory, owner = create(tmp_path)
     owner.ledger.claim("gold-a", "gold", {"run-a"})
     other_state = tmp_path / "other-state"
@@ -153,8 +153,11 @@ def test_second_state_cannot_write_managed_store_as_legacy(tmp_path: Path) -> No
     config = ProjectConfig(other_state, "", "", None, combination(),
                            LocalResearchWorkspaceConfig(directory / "store",
                                                         directory / "registry.sqlite"))
-    with pytest.raises(BoundaryError, match="managed_store_owner_required"):
-        _selected_store(config)
+    selected_store, _ = _selected_store(config)
+    assert selected_store.manifest_ids() == ()
+    from spireagent.workbench.inplace_curation import configured_owner
+    assert configured_owner(config).path == owner.path
+    assert configured_owner(config).ledger.has_gold()
     with pytest.raises(BoundaryError, match="store_identity_mismatch"):
         LocalCurationOwner(other_state / LEDGER_NAME, directory / "store",
                            owner.identity[0], owner.identity[1], owner.identity[2], create=True)
