@@ -1895,10 +1895,18 @@ window.SpireProject = (() => {
     }
     const status = await request(ctx, member("collection-flow"));
     if (status.schema !== "stpd/local-collection-flow-v1") throw new Error("unsupported_collection_flow_schema");
-    const box = panel("真人采集", "在游戏里开始录制，本机保存原始记录，后台自动封包并上传。");
+    const box = panel("真人采集", "录制由你在游戏里开始和结束；本机保存与后台投递按下方实际状态显示。");
     if (status.device_id !== ctx.identity.device_id || (status.enrollment && status.enrollment.device_id !== ctx.identity.device_id)) throw new Error("collection_status_identity_mismatch");
     const enrollment = status.enrollment, preparation = enrollment?.preparation || {}, native = preparation.native_binding || {};
     const ready = native.bound === true && status.upload?.enabled === true && status.upload?.process === "running";
+    if (status.upload?.enabled !== true)
+      box.append(el("p", "本机后台上传未启用；录制是否可开始及本机保存状态，请按游戏内 Recorder 和下方准备状态核对。", "small muted"));
+    else if (status.upload?.process === "not_configured")
+      box.append(el("p", "上传设置已开启，但本机投递服务未配置运行；此状态不表示数据会自动上传。", "small muted"));
+    else if (status.upload?.process !== "running")
+      box.append(el("p", "上传设置已开启，但本机投递服务当前未运行；此状态不表示数据会自动上传。", "small muted"));
+    else
+      box.append(el("p", "本机后台投递已启用且当前运行；录制关闭后的处理结果以记录页显示的回执为准。", "small muted"));
     box.append(badge(ready ? "已准备好" : collectionSteps[status.next_action] || "需要完成本机准备", ready ? "good" : "wait"));
     if (enrollment) {
       box.append(el("p", "授权已保存 · " + (enrollment.template?.name || "真人采集"), "small muted"));

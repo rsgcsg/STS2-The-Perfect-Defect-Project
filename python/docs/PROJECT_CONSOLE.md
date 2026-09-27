@@ -17,6 +17,19 @@ collection or make historical receipts current evidence.
 
 ## Daily collection
 
+Opening the local Workbench first shows **本机工作台**, a no-login navigation page for
+the existing local model view, the read-only registered research workspace, and an
+explanation of game-side Human recording. It does not query cloud identity or start any
+game, model, recording, or upload operation. Use the top-right cloud link only when you
+want shared project data; the link is absent when no Hub is configured. Existing direct
+links such as `?view=campaigns` remain available and may require the configured project
+account for collection setup and shared authorization.
+
+The recording page describes automatic delivery only from the observed local preference
+and delivery-process state. If delivery is not configured, enabled, and running, the UI
+does not claim that new recordings will upload automatically. Recording itself remains
+under the in-game Mod's explicit Human controls.
+
 Run the approved developer combination through the existing entry:
 
 ```bash

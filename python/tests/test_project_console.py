@@ -35,6 +35,7 @@ def test_shared_shell_has_no_embedded_runtime_data_or_external_dependencies():
         page = render_shell(mode, api, "https://hub.example")
         assert 'lang="zh-CN"' in page and 'data-api="' + api in page
         assert "训练与模型" in page
+        assert ('data-view="local-home"' in page) == (mode == "local")
         assert ('data-view="campaigns"' in page) == (mode == "local")
         assert ('data-view="local-workspace"' in page) == (mode == "local")
         assert "http-equiv" not in page
@@ -51,6 +52,8 @@ def test_shared_shell_has_no_embedded_runtime_data_or_external_dependencies():
             assert 'data-view="' + view in page
     assert asset("../developer.py") is None
     assert 'data-view="local-models"' in render_shell("local", "/api/console")
+    assert 'href="?view=local-home"' in render_shell("local", "/api/console")
+    assert 'href="?view=local-home"' not in render_shell("cloud", "/app/api")
     assert 'data-view="local-models"' not in render_shell("cloud", "/app/api")
     assert 'data-view="local-workspace"' not in render_shell("cloud", "/app/api")
     assert asset("missing.js") is None
@@ -269,6 +272,12 @@ def test_http_shell_and_assets_do_not_query_owners_or_accept_browser_mutations(
             page = response.read().decode()
             assert 'data-view="collections"' in page and app.control_token not in page
             assert response.headers["Content-Security-Policy"] == CSP
+        with urlopen(root + "/", timeout=2) as response:
+            page = response.read().decode()
+            assert 'data-view="local-home"' in page
+            assert 'href="?view=local-home"' in page
+            assert 'data-cloud-url=""' in page
+            assert "打开云端" not in page
         for name, kind in (("console.js", "text/javascript"), ("console.css", "text/css")):
             with urlopen(root + "/assets/" + name, timeout=2) as response:
                 assert response.headers["Content-Type"].startswith(kind)

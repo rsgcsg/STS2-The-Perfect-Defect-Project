@@ -48,6 +48,7 @@ def render_shell(mode: str, api_base: str, cloud_url: str = "") -> str:
     cloud = html.escape(cloud_url.rstrip("/"), quote=True)
     label = "本机工作台" if mode == "local" else "云端数据中心"
     primary = ([
+        ("local-home", "本机工作台", "⌂"),
         ("campaigns", "真人采集", "◉"),
         ("local-models", "模型实战", "▷"),
         ("local-workspace", "本机资料", "▤"),
@@ -83,7 +84,7 @@ def render_shell(mode: str, api_base: str, cloud_url: str = "") -> str:
 <body data-mode="{mode}" data-api="{api_base}" data-cloud-url="{cloud}">
 <a class="skip-link" href="#main">跳到内容</a>
 <aside class="sidebar">
-<a class="brand" href="?view={"campaigns" if mode == "local" else "collections"}">
+<a class="brand" href="?view={"local-home" if mode == "local" else "collections"}">
 <span class="brand-mark">S</span>
 <span>SpireAgent<small>项目控制台</small></span></a>
 <div class="workspace-label">{label}</div><nav aria-label="主导航">{nav}</nav>
