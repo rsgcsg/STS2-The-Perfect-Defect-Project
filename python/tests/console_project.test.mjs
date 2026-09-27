@@ -320,6 +320,46 @@ test("local recording import uses one explicit selection and resets attestation 
   assert.equal(writes[0].options.headers["X-CSRF-Token"], "browser-csrf");
 });
 
+test("local verified artifact preview is explicit and scoped to the selected detail", async () => {
+  const artifact = id("a"), other = id("b");
+  let previewStatus = {status: "completed", artifact_id: other, human_input_labels: 99};
+  const env = setup({
+    identity: {status: "local_only"}, view: "local-workspace", query: `&id=${artifact}`,
+    handler: async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {status: "legacy_workspace_configured"};
+      if (url === `/api/local-workspace/artifacts/${artifact}`) return {
+        kind: "evidence", artifact_id: artifact,
+        parameters: {schema: "stpd/local-verified-bundle-v1"},
+      };
+      if (url === "/api/local-recordings/preview/status")
+        return {...previewStatus, csrf_token: "preview-csrf"};
+      if (url === "/api/local-recordings/preview") {
+        assert.equal(options.method, "POST");
+        previewStatus = {status: "completed", artifact_id: artifact, availability: "available",
+          human_input_labels: 5, canonical_decisions: 0, human_input_total: 6,
+          human_input_exclusions: {"rejected_or_cancelled:cancelled": 1},
+          decision_exclusions: {}, run_ids_observed: 1,
+          independent_run_qualification: "insufficient_canonical_decisions"};
+        return {status: "pending"};
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const first = await env.render();
+  assert.doesNotMatch(text(first), /99/);
+  assert.equal(post(env.calls).length, 0);
+  await action(first, "preview-local-recording").onclick();
+  const writes = post(env.calls);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, "/api/local-recordings/preview");
+  assert.deepEqual(body(writes[0]), {artifact_id: artifact});
+  assert.equal(writes[0].options.headers["X-CSRF-Token"], "preview-csrf");
+  const second = await env.render();
+  assert.match(text(second), /操作标签 5 条 \/ 完整决策 0 条/);
+  assert.match(text(second), /尚未生成数据集/);
+  assert.equal(post(env.calls).length, 1);
+});
+
 test("unconfigured local research workspace explains explicit registration", async () => {
   const env = setup({
     identity: {status: "signed_out"},

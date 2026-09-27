@@ -92,6 +92,17 @@ persisted pending/completed/failed/interrupted status; page refresh never retrie
 This local manifest has no Hub receipt and is not an admitted research source, Dataset, or
 training input. A separate future admission path must explicitly review it.
 
+Selecting that exact local-verified evidence artifact exposes an explicit **预览样本** command.
+The local browser POST starts one bounded background read of the selected store; GET only reads
+the current in-memory status and never starts projection. The command rechecks the manifest,
+transfer inventory, archive, original recording/Close hashes, and typed Evidence bundle. It
+reports verified accepted Human input-label counts separately from canonical decision-record
+counts and displays nonaccepted input reasons and verified decision dispositions. These counts
+may overlap and do not establish complete trajectories, independent runs, Human uniqueness,
+research admission, or trainability. The operation publishes no artifact or usage claim, does
+not contact Hub, and leaves the store and raw recording untouched. Restart loses this ephemeral
+preview status; another explicit command is required to recompute it.
+
 ## Cloud login and connection
 
 Choose **打开云端** from the local page, or open the configured Hub's `/app/` from another device.

@@ -1039,6 +1039,10 @@ function navigationGroup(view) {
 function renderTaskTabs(view) {
   const target = $("task-tabs");
   if (!target) return;
+  if (localShell && !config.cloudUrl && ["research", "models", "jobs"].includes(view)) {
+    target.replaceChildren();
+    return;
+  }
   const groups = {
     collections: [["collections", "记录"], ["statistics", "统计"], ["games", "对局与片段"], ["downloads", "下载"]],
     research: [["research", "训练与分析"], ["models", "模型目录"], ["jobs", "作业"]],
@@ -1050,6 +1054,23 @@ function renderTaskTabs(view) {
     item.addEventListener("click", event => { if (event.button === 0 && !event.metaKey && !event.ctrlKey) { event.preventDefault(); navigate(key); } });
     target.append(item);
   }
+}
+function localTeamEntryUnavailable() {
+  const page = node("div", null, "project-page");
+  const explanation = panel(
+    "此入口当前用于团队资料",
+    "连接团队服务并登录后，可查看团队数据集、训练与模型记录。",
+  );
+  explanation.append(node("p", "本机资料、模型实战和游戏内录制可在本机工作台继续使用。"));
+  page.append(explanation);
+  const localLinks = panel("本机入口");
+  localLinks.append(
+    link("本机资料 →", "?view=local-workspace"),
+    link("模型实战 →", "?view=local-models"),
+    link("真人采集 →", "?view=campaigns"),
+  );
+  page.append(localLinks);
+  return page;
 }
 async function load(manual = false, forceIdentity = manual) {
   if (!manual && (document.activeElement?.id === "device-name" || document.activeElement?.closest("[data-editor], [data-project-editor]"))) return;
@@ -1084,6 +1105,23 @@ async function load(manual = false, forceIdentity = manual) {
     $("content").replaceChildren(localHome());
     $("notice").replaceChildren();
     $("updated").textContent = "本机入口 · 尚未读取云端状态";
+    $("connection").textContent = "本机工作台";
+    renderedContext = `${pageContext}:${window.SpireIdentity.context()}`;
+    $("content").setAttribute("aria-busy", "false");
+    state.busy = false;
+    $("refresh").disabled = false;
+    return;
+  }
+  if (
+    localShell &&
+    !config.cloudUrl &&
+    ["datasets", "research", "models", "jobs"].includes(view)
+  ) {
+    if (serial !== state.serial) return;
+    local = true;
+    $("content").replaceChildren(localTeamEntryUnavailable());
+    $("notice").replaceChildren();
+    $("updated").textContent = "团队入口暂不可用";
     $("connection").textContent = "本机工作台";
     renderedContext = `${pageContext}:${window.SpireIdentity.context()}`;
     $("content").setAttribute("aria-busy", "false");
