@@ -22,10 +22,13 @@ SCOPE = "recorded_report_and_parent_identities"
 METRICS = ("top1", "mrr", "nll", "confidence", "margin")
 MAX_SUMMARY = 16 * 1024 * 1024
 MAX_TOKEN_METRICS = 64 * 1024 * 1024
+HUMAN_VIEW_SCHEMAS = frozenset({
+    "stpd/human-text-input-bc-view-v1", "stpd/human-text-input-bc-view-v2",
+})
 TOKEN_VIEW_SCHEMAS = frozenset({
     DECISION_VIEW_SCHEMA, LEGACY_PUBLIC_BC_VIEW_SCHEMA, PUBLIC_BC_VIEW_SCHEMA,
     "stpd/text-menu-bc-view-v1",
-})
+}) | HUMAN_VIEW_SCHEMAS
 # FullRun feature compilation supports these two views, even though the shared
 # view loader also serves other model families.
 FULLRUN_VIEW_SCHEMAS = frozenset({FULLRUN_VIEW_SCHEMA, DECISION_VIEW_SCHEMA})
@@ -64,15 +67,25 @@ def _overall(value: object) -> dict[str, int | float]:
     return {name: value[name] for name in ("count", *METRICS)}
 
 
-def _report(value: object) -> tuple[dict[str, int | float], int, int]:
+def _report(value: object, *, human_input: bool = False
+            ) -> tuple[dict[str, int | float], int, int]:
     if not isinstance(value, dict):
         raise BoundaryError("local_evaluation", "invalid_report_summary")
     _finite(value)
     overall = _overall(value.get("overall"))
     bootstrap = value.get("bootstrap")
     groups = value.get("by_candidate_count")
-    if (not isinstance(bootstrap, dict) or type(bootstrap.get("runs")) is not int
-            or bootstrap["runs"] < 1 or not isinstance(groups, dict)):
+    if not isinstance(bootstrap, dict) or not isinstance(groups, dict):
+        raise BoundaryError("local_evaluation", "invalid_report_summary")
+    if human_input and (
+        set(bootstrap) != {"status", "reason", "unit", "reported_run_groups"}
+        or bootstrap["status"] != "unknown"
+        or bootstrap["reason"] != "native_run_independence_unknown_across_sessions"
+        or bootstrap["unit"] != "session_scoped_run_group"
+    ):
+        raise BoundaryError("local_evaluation", "invalid_report_summary")
+    runs = bootstrap.get("reported_run_groups" if human_input else "runs")
+    if type(runs) is not int or runs < 1:
         raise BoundaryError("local_evaluation", "invalid_report_summary")
     multiple = total = 0
     for key, group in groups.items():
@@ -83,14 +96,15 @@ def _report(value: object) -> tuple[dict[str, int | float], int, int]:
         total += count
         if int(key) > 1:
             multiple += count
-    if total != overall["count"] or bootstrap["runs"] > overall["count"]:
+    if total != overall["count"] or runs > overall["count"]:
         raise BoundaryError("local_evaluation", "invalid_report_summary")
-    return overall, bootstrap["runs"], multiple
+    return overall, runs, multiple
 
 
 def _public(manifest: Any, model: Any, view: Any, report: object, *,
             baseline: str, baselines: object = None) -> dict[str, Any]:
-    overall, runs, multiple = _report(report)
+    human_input = view.parameters.value().get("schema") in HUMAN_VIEW_SCHEMAS
+    overall, runs, multiple = _report(report, human_input=human_input)
     config = model.parameters.value().get("config")
     recipe = config.get("recipe") if isinstance(config, dict) else None
     if recipe is not None and (not isinstance(recipe, str) or recipe not in RECIPES):
@@ -115,10 +129,14 @@ def _public(manifest: Any, model: Any, view: Any, report: object, *,
         "overall": overall,
         "interpretation": "producer_recorded_summary_not_full_lineage_or_quality_verification",
     }
+    if human_input:
+        result.update(grouping="session_scoped_run_group",
+                      native_run_independence="unknown_across_sessions")
     if baselines is not None:
         if not isinstance(baselines, dict) or set(baselines) != {"uniform_legal", "action_only"}:
             raise BoundaryError("local_evaluation", "invalid_report_baselines")
-        reports = {name: _report(value)[0] for name, value in sorted(baselines.items())}
+        reports = {name: _report(value, human_input=human_input)[0]
+                   for name, value in sorted(baselines.items())}
         if any(value["count"] != overall["count"] for value in reports.values()):
             raise BoundaryError("local_evaluation", "invalid_report_baselines")
         result["baselines"] = reports

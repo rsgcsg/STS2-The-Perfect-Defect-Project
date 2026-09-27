@@ -55,6 +55,63 @@ def _token(tmp_path: Path) -> tuple[object, str]:
     return owner.store, evaluation
 
 
+def test_human_report_keeps_session_groups_unknown_and_rejects_claimed_independence(
+    tmp_path: Path,
+) -> None:
+    from test_text_menu_human_import import _declared_bundle
+
+    from spireagent.json_boundary import json_bytes
+    from stpd.fullrun.text_menu_human_import import (
+        publish_human_text_bc_view,
+        publish_human_text_source,
+        publish_verified_human_text_bundle,
+    )
+    from stpd.fullrun.token_inputs import load_token_inputs, publish_token_inputs
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    identities = []
+    for name, page in (("session-a", "same-page"), ("session-b", "same-page"),
+                       ("session-z", "distinct-page")):
+        bundle, _, _ = _declared_bundle(
+            tmp_path / name, "begin_card_play_exact_factory_return", "begin_card_play",
+            session_id=name, page_name=page)
+        identities.append(publish_verified_human_text_bundle(
+            store, bundle, PRODUCER).artifact_id)
+    source = publish_human_text_source(store, tuple(identities), PRODUCER)
+    view = publish_human_text_bc_view(store, source.artifact_id, PRODUCER)
+    tokens = publish_token_inputs(store, view.artifact_id, "s", PRODUCER, max_tokens=4096)
+    previous_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        config = TokenConfig.text_menu_small_b(
+            steps=1, width=16, layers=1, heads=2, feedforward=32, max_tokens=4096)
+        run = prepare_token_run(store, load_token_inputs(store, tokens.artifact_id),
+                                config, PRODUCER)
+        completed = execute_tokens(store, ObjectStoreRunReporter(store, store.blobs),
+                                   run.artifact_id, PRODUCER)
+    finally:
+        torch.set_num_threads(previous_threads)
+    report = store.get_manifest(store.get_manifest(completed.result_id).parent(
+        "offline_evaluation"))
+    value = summary(store, report.artifact_id)
+    assert value["reported_run_groups"] == 2
+    assert value["grouping"] == "session_scoped_run_group"
+    assert value["native_run_independence"] == "unknown_across_sessions"
+    assert value["decision_count"] == 2
+    assert set(value["baselines"]) == {"uniform_legal", "action_only"}
+    assert "percentile_95" not in json.dumps(value) and "rows" not in value
+    original = json.loads(b"".join(store.read_payload(report.payload("metrics"))))
+    for location in ("model", "uniform_legal", "action_only"):
+        metrics = json.loads(json.dumps(original))
+        selected = metrics["summary"] if location == "model" else metrics["baselines"][location]
+        selected["bootstrap"] = {"status": "computed", "unit": "whole_run", "runs": 2}
+        invalid = replace(report, payloads=(store.put_bytes(
+            "metrics", json_bytes(metrics), "application/json"),))
+        store.publish(invalid)
+        with pytest.raises(BoundaryError, match="invalid_report_summary"):
+            summary(store, invalid.artifact_id)
+
+
 def test_token_single_summary_keeps_exact_parent_ids_and_never_returns_rows(
     tmp_path: Path, monkeypatch,
 ) -> None:
