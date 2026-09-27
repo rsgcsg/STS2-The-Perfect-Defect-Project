@@ -1,97 +1,78 @@
-# Current project context
+# Current project context, 2026-09-27
 
-Use rsgcsg/STS2-The-Perfect-Defect-Project for all new development.
-Snapshot: 2026-09-23. Routing and exact-source observations, not deployment authority.
+Use `rsgcsg/STS2-The-Perfect-Defect-Project` for new work. Current develop
+includes PR #52 normal merge `4b729b8401e3fc6597ece5aedd92173068088079` (parents
+`9f895e8b533a25abe971d169000ae81760b8e76d` and `2ed18832bd3bb58c6a751dd73c8663428b35e32b`,
+tree `aae395fa32c9bd81558a2820ec8f4e3c6b2cbd49`). Resolve live GitHub refs, CI,
+source and deployed identity; current source/runtime authorities override this file.
 
-## Active implementation, 2026-09-27
+## Current evidence
 
-The approved [in-run text STS2](../plans/TEXT_STS2_IN_RUN.md) separates current
-native presentation from eight explicitly synthetic information-menu kinds.
-Connector owns complete menus and binding; Runtime distinguishes menu navigation
-from native delivery. Historical profiles, model/data identities and Human/Agent
-origins retain their meanings. Full-game strategy quality is not yet established.
+- **Installed candidate:** Game Mod `0.2.0-rc.16`, component source anchor
+  `ed40f0ebbfd59587eca0d5688f9c271062d85753`, was installed/cold-loaded with exact
+  identity verification passing. The owner completed the bounded mouse
+  target/cancel canary; its closed bundle verifies five exact input labels and
+  one successful native card action. No complete successor was captured: the
+  final transition remains unknown, not a training-ready transition. The [bounded receipt](../evidence/RC14_HUMAN_AND_LOCAL_WORKBENCH_RECEIPT_2026-09-27.md)
+  retains separate RC14, RC15 and RC16 identities.
+- **Local Workbench:** automated CUA opened the PR #50 browser from the game and
+  browsed metadata after game exit. A separate isolated PR #52 candidate showed
+  a no-login local home and 本机资料 1–25 of 326. The backend runs independently
+  of the game. These observations are not Human evidence or a completed offline
+  dataset/training workflow; exact instances are separated in the receipt.
+- **RC14 Human session:** the owner attested mouse input for a separately closed
+  session. It has 15 canonical transitions and 18 text-input begin labels;
+  neither count implies the missing target/cancel labels. See the receipt for
+  exact producer identity and separate audit counts.
+- **Evidence CLI:** PR #51 fixes serialization of immutable Human input reports;
+  all 145 Evidence tests and the exact private-bundle CLI check passed. Full run
+  [36301622023](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36301622023)
+  succeeded; the PR merged at `9f895e8b533a25abe971d169000ae81760b8e76d`.
+- **Local home:** merged PR #52 adds the no-login local home behavior. Its
+  authored source passed 95 Node and 17 Python tests. Head `2ed18832bd3bb58c6a751dd73c8663428b35e32b`
+  normally incorporates PR #51; its Python-scope
+  [run 36302839895](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36302839895)
+  passed Linux, Windows and portable. Its same-tree integration run 36303808419
+  passed with verified execution reuse and fresh guards. Superseded run 36302306868 was cancelled, not passed.
+- **Mouse continuation candidate:** reviewed source `11938165425833ad4f7364edeba2d77adf995f6a`,
+  component identity anchor `ed40f0e`, with Game Mod rc.16. Local exact-game checks
+  and 297 Annotator Core tests passed; the bounded Human canary captured three
+  begin labels, one explicit cancel and one target confirmation without duplicate
+  cancellation. The drag-back path produced no explicit-cancel label. Untargeted mouse and ally-target stages remain unsupported.
 
-PR #47 normal-merged as `1ecaef8aa20b4d56ca11879d4d1d610bab2ea812`;
-its own full run36240525460 succeeded. Exact rc.14 install/load and three bounded
-synthetic-small-B Agent runs are recorded in the
-[2026-09-27 receipt](../evidence/TEXT_MODEL_WORKBENCH_PROGRESS_2026-09-27.md).
-All three runs sealed and verified, but repeated navigation/potion loops expose
-poor policy behavior. No new rc.14 Human qualification or full-run success follows.
-The [rc.13 Human begin canary](../evidence/HUMAN_TEXT_BEGIN_CANARY_2026-09-26.md)
-remains limited to its original identity and owner-attested pickup labels.
+## Current implementation direction
 
-PR #49 adds an explicit zero-dropout small-B configuration, preserving historical
-configuration defaults. Its full run36296753263 succeeded; normal develop merge
-`51df77741c9beed4c805b7354bcc136adb963450` does not change installed weights.
-At fixed state/action lengths its shared-state candidate path scales linearly in
-candidate count. Learned memory, sequence training and reset controls remain work.
+The [approved in-run text plan](../plans/TEXT_STS2_IN_RUN.md) limits system
+navigation to eight menu kinds: Information and seven lists. Installation, full
+scene coverage, new Human evidence, learned memory and policy quality each need
+separate proof. PR #49 is merged with explicit small-B shared-observation
+training selection; old model defaults and checkpoints remain unchanged. The
+candidate scoring path is linear in menu count at fixed state/action lengths,
+not linear in total sequence tokens. Learned memory and an independently trained
+reset control remain unfinished; see the [progress receipt](../evidence/TEXT_MODEL_WORKBENCH_PROGRESS_2026-09-27.md).
 
-The next Workbench candidate adds a no-cloud-login local metadata view and a
-click-only, instance-checked browser entry from the Mod. This is an incremental
-entry, not the complete in-game Workbench. Dataset editing, training submission,
-embedded/native full workflows and robust crashed-instance replacement remain.
-Do not replace live worktree/environment identity with a branch head.
+## Next work
 
-## Active mainline and next gate
-
-The local supervisor has taken over unfinished B0 and subsequent work. The web architect
-is no longer a daily relay. Read [product delivery](../STAGE1A_PRODUCT_DELIVERY.zh-CN.md),
-[the single-team refinement](../STAGE1A_TEAM_OPERATIONS.zh-CN.md),
-[the current sequence with original task IDs](../plans/STAGE1A_TASKS.zh-CN.md), and
-[AI collaboration](../AI_COLLABORATION.md). Implementation, independent review and integration
-remain separate. Major decisions are stated, native mechanisms precede native abstraction,
-and existing writers/running collection trees are protected.
-
-The authoritative B0 source anchor and review map are in the
-[2026-09-23 handoff](../evidence/STAGE1A_B0_HANDOFF_2026-09-23.md).
-Snapshot below was checked against actual Git objects and GitHub; refresh before mutation:
-
-| Object | Exact observation and boundary |
-|---|---|
-| B0 source anchor | `5b148f22f02d9dbebfb1c50dd1e9501d9aef7bd9`, tree `be30e2f267b2ee1b0427f6edaacd142c120137ff`; deterministic union of reviewed Stage1a and develop0051aaf |
-| #31 integration | Normal merge to develop `3e983857a24fabece0173d133665db652b047f73`, same tree as anchor; [own full35780464198](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/35780464198) success and limited source acceptance; develop35782151978 success with verified same-tree receipt reuse |
-| #29/#32/#34/#35 | Accepted source/test increments integrated into Stage1a; #35 merge `182a4a4bdb3b7da626e7259b87a3ab022d54bf92`, exact-head full run35777828163 success; old failures are retained, not current blockers |
-| #27/#36/#37 | Accepted documentation; new01 acceptance is upper-level/conditional only. #36 merge d3d53b5; #37 develop merge0051aaf; their CI and scope links are in the handoff |
-| Runtime source versus consumer | Unpublished source rc.8, component revision99c75d66; current consumer remains rc.6. No production install/load qualification was performed |
-| B1 native reward fact candidate | Separate, unmerged work; scoped source/test/exact-build review exists but it is not part of the B0 anchor or installed gameplay |
-
-Ordinary new work uses the current reviewed develop, one short topic per bounded packet;
-Stage1a is not a permanent second develop. Protected running/collection trees, models,
-queues and environments remain untouched. Future integration or installation must preserve
-their exact producer and independent checks.
-
-The B0 rows above are historical; the active section and exact PR receipts own the next work.
-Native grounding found that ordinary reward parent/return semantics are a smaller first
-slice than virtualized large-pile selection; the two new01 examples remain distinct.
-The corrected [surface matrix](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/31#issuecomment-5783319535)
-uses the actual four-model token port, not the legacy S1 admission path.
-
-[Issue #33](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/33) remains open:
-accepted fixture work did not change CI workflow topology. Main and Workshop #24/#25/#26/#30
-are unchanged. No new model training, production install, game, paid compute or publication
-is implied by this source handoff. Actual task/run receipts, not this snapshot, own live status.
-
-## Running combinations and protected history
-
-The last qualified Workbench/Hub candidate recorded here remains
-`bafef714a767c3d1d2bf9a4d04281595996f8a5c`.
-[Acceptance](../evidence/CURATION_CONTINUOUS_ACCEPTANCE_2026-09-17.md) and its release
-receipt own the exact bytes, compatibility and rollback; this snapshot does not
-re-observe deployment. Earlier operating, task-flow and migration evidence stays
-in [Status](../STATUS.md), [migration](../MONOREPO_MIGRATION.md) and dated reports,
-not repeated in this handoff. A documentation merge changes no running producer.
-
-Preserve member/device identity, consent, pending outboxes, failed evidence and
-immutable data/model lineage. Gold reservations prohibit affected access through
-an unenforcing rollback image; multi-runtime datasets and persisted unions need
-compatible readers. No new paid-compute or real-data training budget has been authorized. Keep raw data, credentials,
-weights, old tools and installed artifacts outside Git.
-
-Resolve live GitHub refs, CI, source and deployed identity; current source/runtime
-authorities override this file.
+- Publish and check the reviewed mouse continuation candidate; retain the exact
+  bounded Human receipt without claiming full-game qualification.
+- Build the remaining local dataset/assignment/use, training-job, analysis/report
+  and archive workflows on the existing local services.
+- Fill remaining native input families and causal successor coverage separately;
+  the one closed-canary transition remains unknown.
 
 ## Remaining Platform non-claims
 
-CI is source/test evidence, not installed/loaded Runtime, native/Human, full-scene
-product or scientific qualification. Unobserved surfaces and arbitrary game
-versions are not qualified; an incomplete run remains incomplete.
+### Historical evidence and authority
+
+The [local supervisor and Agent collaboration contract](../AI_COLLABORATION.md),
+[Stage1a task table](../plans/STAGE1A_TASKS.zh-CN.md), and [B0 handoff/archive
+receipt](../evidence/STAGE1A_B0_HANDOFF_2026-09-23.md) continue to route work and
+retain their historical evidence. Existing datasets, failed rows, source
+provenance, purposes and Gold protections keep their identities; no old data is
+relabelled or replaced. No new training run or paid compute is authorized here.
+The local Workbench metadata view does not expose payload contents or perform
+training, and does not make every feature work offline. No Full-Run Human
+qualification, broad research admission, model-quality or scientific result is
+claimed. Older accepted baselines remain in the [unified task-flow receipt](../evidence/UNIFIED_TASK_FLOW_2026-09-16.md),
+[operating-flow receipt](../evidence/OPERATING_FLOW_2026-09-16.md), and
+[monorepo Human gate](../evidence/MONOREPO_HUMAN_GATE_2026-09-15.md).
