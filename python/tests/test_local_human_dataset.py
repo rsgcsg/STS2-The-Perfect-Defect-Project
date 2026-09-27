@@ -21,6 +21,7 @@ from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig, ProjectConfig, combination
 from spireagent.workbench.developer_server import Application, configuration_id, create_server
 from spireagent.workbench.inplace_curation import InplaceCurationPreparation, configured_owner
+from spireagent.workbench.local_curation import LocalLedger
 from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_training import LocalTrainingService
 from stpd.fullrun.text_menu_human_import import SOURCE_SCHEMA, load_human_text_source
@@ -302,3 +303,39 @@ def test_human_http_preview_publish_binding_are_explicit_and_cookie_bound(
         server.server_close()
         app.close()
         thread.join(timeout=5)
+
+
+def test_human_publish_recovers_exact_unbound_source_without_republishing(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    service, source = _prepared(tmp_path)
+    owner = configured_owner(service.config)
+    store = ManifestArtifactStore(LocalBlobStore(owner.store_dir, create=False))
+    monkeypatch.setattr("spireagent.workbench.local_dataset.source_identity",
+                        lambda _: store.get_manifest(source).producer)
+    service.start_human_preview([source])
+    preview = _settle(service)
+    original_bind = LocalLedger.bind
+    calls = 0
+
+    def fault_once(self, identity, artifact):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("synthetic bind interruption")
+        return original_bind(self, identity, artifact)
+
+    monkeypatch.setattr(LocalLedger, "bind", fault_once)
+    service.start_publish(preview["preview_id"])
+    failed = _settle(service)
+    assert failed["status"] == "failed" and failed["error_code"] == "publish_failed"
+    published = [item for item in store.manifest_ids()
+                 if store.get_manifest(item).parameters.value().get("schema") == SOURCE_SCHEMA]
+    assert len(published) == 1
+    with pytest.raises(BoundaryError, match="publication_recovery_required"):
+        service.start_human_preview([source])
+    service.start_publish(preview["preview_id"])
+    completed = _settle(service)
+    assert completed["status"] == "completed", completed.get("error_code")
+    assert completed["result_artifact_id"] == published[0]
+    assert owner.ledger.dataset(published[0]) == ("training", owner._human_runs(store, source))
