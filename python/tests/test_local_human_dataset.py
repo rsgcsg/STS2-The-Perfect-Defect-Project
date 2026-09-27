@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import threading
 from pathlib import Path
 from urllib.error import HTTPError
@@ -26,6 +27,7 @@ from spireagent.workbench.local_curation import LocalLedger
 from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_training import LocalTrainingService
 from stpd.fullrun.text_menu_human_import import SOURCE_SCHEMA, load_human_text_source
+from stpd.policy.token_decision import TokenDecisionScorer, export_token_model
 
 
 def _prepared(tmp_path: Path) -> tuple[LocalDatasetService, str]:
@@ -246,6 +248,18 @@ def test_human_source_trains_real_three_step_worker(tmp_path: Path, monkeypatch)
     assert store.get_manifest(result["view_id"]).parameters.value()["schema"] == (
         "stpd/human-text-input-bc-view-v2")
     assert store.get_manifest(result["evaluation_id"]).parameters.value()["partition"] == "dev"
+    # Reuse this exact worker result: Human labels must export to the real
+    # standalone text-menu scorer, with every score bound to the current menu.
+    destination = tmp_path / "human-model-export"
+    export_token_model(store, result["model_id"], destination)
+    scorer = TokenDecisionScorer(destination)
+    _, rows = load_human_text_source(store, dataset_id)
+    observation = next(row["snapshot"] for row in rows if row["disposition"] == "accepted_input")
+    scores = scorer.score_snapshot(observation)
+    expected = tuple(action["action_id"] for action in observation["menu_actions"]["actions"])
+    assert len(expected) >= 2
+    assert tuple(scores) == expected
+    assert all(math.isfinite(value) for value in scores.values())
     runs = owner._human_runs(store, sources[0]) | owner._human_runs(store, sources[1])
     with owner.transaction() as db:
         assert {row[0] for row in db.execute(
