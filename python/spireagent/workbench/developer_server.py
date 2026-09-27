@@ -987,7 +987,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 try:
-                    body = self.json_body(maximum=32768)
+                    maximum = 32768 if self.path == "/api/local-datasets/human-preview" else 256
+                    body = self.json_body(maximum=maximum)
                     if self.path == "/api/local-datasets/preview":
                         if set(body) != {"artifact_id", "purpose", "paired_training"}:
                             raise ValueError
