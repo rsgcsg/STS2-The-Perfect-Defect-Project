@@ -707,6 +707,31 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 value = {**app.local_curation_preparation.status(),
                          "csrf_token": app.account.csrf}
                 self.respond(200, json.dumps(value).encode())
+            elif parsed.path.startswith("/api/local-workspace/evaluations/"):
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                if parsed.query:
+                    self.respond(400, b'{"error":"invalid_local_evaluation_request"}')
+                    return
+                try:
+                    matched = re.fullmatch(
+                        r"/api/local-workspace/evaluations/([a-f0-9]{64})", parsed.path
+                    )
+                    if matched is None:
+                        raise BoundaryError("local_evaluation", "route_not_found")
+                    workspace = app.local_research_workspace()
+                    if workspace is None:
+                        raise BoundaryError("local_evaluation", "workspace_required")
+                    from spireagent.workbench.local_evaluation import summary
+
+                    value = summary(workspace.store, matched[1])
+                    self.respond(200, json.dumps(value, ensure_ascii=False).encode())
+                except BoundaryError as error:
+                    status = 404 if error.code in {"not_found", "route_not_found"} else 409
+                    self.respond(status, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, KeyError, TypeError):
+                    self.respond(409, b'{"error":"invalid_local_evaluation"}')
             elif (parsed.path == "/api/local-workspace"
                     or parsed.path.startswith("/api/local-workspace/artifacts/")
                     or parsed.path == "/api/local-workspace/managed"):
