@@ -10,6 +10,8 @@ const client = fs.readFileSync(path.join(root, "PlatformLiveStatusClient.cs"), "
 const contracts = fs.readFileSync(path.join(root, "PlatformLiveContracts.cs"), "utf8");
 const feed = fs.readFileSync(path.join(root, "PlatformLiveActionFeed.cs"), "utf8");
 const presentation = fs.readFileSync(path.join(root, "PlatformLiveUiPresentation.cs"), "utf8");
+const workbenchOpen = fs.readFileSync(path.join(root, "PlatformWorkbenchOpen.cs"), "utf8");
+const taskBridge = fs.readFileSync(path.join(root, "../game-mod/PlatformTaskBridge.cs"), "utf8");
 
 test("Live UI has a visible entry without keyboard or gameplay authority", () => {
   assert.match(mod, /internal Control Root.*Visible = true/su);
@@ -22,6 +24,32 @@ test("Live UI has a visible entry without keyboard or gameplay authority", () =>
   assert.doesNotMatch(`${mod}\n${client}`, /bound_action_id/u);
   assert.doesNotMatch(`${mod}\n${client}`, /RecorderRuntime|HumanActionScope|AppendDecision/u);
   assert.doesNotMatch(mod, /override void _(Ready|Process|Input)/u);
+});
+
+test("Workbench browser opens only after a user click and a read-only exact-instance health check", () => {
+  assert.match(mod, /BuildHeaderButton\("工作台", BeginOpenWorkbench/u);
+  assert.match(mod, /if \(_disposed \|\| _workbenchOpenCheck is \{ IsCompleted: false \}\)\s+return/u);
+  assert.match(mod, /CompleteWorkbenchOpenCheck\(\);/u);
+  assert.match(mod, /if \(!result\.CanOpen \|\| result\.Url is null\)[\s\S]*?return;[\s\S]*?OS\.ShellOpen\(result\.Url\)/u);
+  assert.match(workbenchOpen, /GetAsync\(\s*GameStatusUrl/u);
+  assert.match(workbenchOpen, /new Uri\(new Uri\(url, UriKind\.Absolute\), "health"\)/u);
+  assert.match(workbenchOpen, /observedInstanceId == instanceId/u);
+  assert.match(workbenchOpen, /AllowAutoRedirect = false, UseProxy = false/u);
+  assert.doesNotMatch(workbenchOpen, /OS\.ShellOpen\(|Process\.Start\(/u);
+});
+
+test("Workbench registration bridge is exact-loopback, game-instance-bound metadata only", () => {
+  assert.match(taskBridge, /request\.UserHostName != Authority \|\| request\.Headers\["Origin"\] != null/u);
+  assert.match(taskBridge, /!IPAddress\.IsLoopback\(request\.RemoteEndPoint\.Address\)/u);
+  assert.match(taskBridge, /RawUrl == "\/v1\/workbench\/status"/u);
+  assert.match(taskBridge, /RawUrl == "\/v1\/workbench\/register"/u);
+  assert.match(taskBridge, /RawUrl == "\/v1\/workbench\/unregister"/u);
+  assert.match(taskBridge, /_workbenchRegistration\.WorkbenchInstanceId != instanceId/u);
+  assert.match(taskBridge, /_workbenchRegistration = null/u);
+  assert.match(taskBridge, /request\.ContentLength64 is <= 0 or > MaximumWorkbenchRegistrationBytes/u);
+  assert.match(taskBridge, /TryReadRegistration\([\s\S]*?document\.RootElement, runtime/u);
+  assert.match(taskBridge, /lock \(Gate\)\s*\{[\s\S]*?_workbenchRegistration = registration;/u);
+  assert.doesNotMatch(taskBridge, /OS\.ShellOpen|Process\.Start|WebBrowser/u);
 });
 
 test("Product navigation exposes exactly model tests and Human collection", () => {

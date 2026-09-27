@@ -26,11 +26,17 @@ class Registry(Protocol):
 class SQLiteRegistry:
     SCHEMA_VERSION = 1
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, readonly: bool = False) -> None:
         self.path = path.expanduser().resolve()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.readonly = readonly
+        if readonly and not self.path.is_file():
+            raise BoundaryError("registry", "not_configured")
+        if not readonly:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if readonly and version != self.SCHEMA_VERSION:
+                raise BoundaryError("registry", "unsupported_or_uninitialized_cache")
             if version not in {0, self.SCHEMA_VERSION}:
                 raise BoundaryError(
                     "registry", "unsupported_cache_schema", "rebuild a separate cache"
@@ -53,10 +59,20 @@ class SQLiteRegistry:
                     );
                     PRAGMA user_version = 1;
                 """)
+            if readonly:
+                try:
+                    connection.execute("SELECT id, kind, manifest, cached FROM artifacts LIMIT 0")
+                    connection.execute("SELECT child, parent, role FROM edges LIMIT 0")
+                except sqlite3.DatabaseError as error:
+                    raise BoundaryError("registry", "unsupported_or_uninitialized_cache") from error
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=30)
+        connection = sqlite3.connect(
+            f"{self.path.as_uri()}?mode=ro" if self.readonly else self.path,
+            timeout=30,
+            uri=self.readonly,
+        )
         try:
             connection.execute("PRAGMA foreign_keys=ON")
             with connection:
@@ -67,6 +83,8 @@ class SQLiteRegistry:
     def rebuild(
         self, manifests: Iterable[Manifest], cached_ids: frozenset[str] = frozenset()
     ) -> int:
+        if self.readonly:
+            raise BoundaryError("registry", "read_only")
         records: dict[str, Manifest] = {}
         for manifest in manifests:
             previous = records.setdefault(manifest.artifact_id, manifest)

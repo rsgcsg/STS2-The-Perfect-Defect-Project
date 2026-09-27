@@ -14,6 +14,7 @@ window.SpireProject = (() => {
     "downloads",
     "research",
     "local-models",
+    "local-workspace",
     "campaigns",
     "collection-overview",
     "datasets",
@@ -2332,6 +2333,84 @@ window.SpireProject = (() => {
     }
     return box;
   }
+
+  async function localWorkspace(ctx) {
+    const box = el("div", null, "project-page");
+    box.append(panel("本机资料", "只读查看已连接到这台工作台的资料与来源信息；不读取内容文件，也不需要登录或连接云端。"));
+    const id = new URLSearchParams(ctx.search).get("id");
+    if (id) {
+      const value = await request(ctx, `/api/local-workspace/artifacts/${encodeURIComponent(id)}`);
+      box.append(command(ctx, "local-workspace-back", "返回本机资料目录", () => {
+        offsets.set("local-workspace", 0);
+        window.SpireProject.navigate("local-workspace");
+      }, {type:"secondary"}));
+      box.append(panel(`${value.kind} · ${value.artifact_id.slice(0, 16)}`, "资料身份和来源信息来自本机已登记内容。"));
+      box.append(technical(value, "查看来源详情与内容文件摘要"));
+      return box;
+    }
+
+    const query = drafts.get("local-workspace-search") || "";
+    const filters = el("div", null, "project-form");
+    filters.dataset.projectEditor = "local-workspace-search";
+    const search = input(filters, "搜索本机对象名称或对象 ID", "local-workspace-search", query);
+    search.maxLength = 128;
+    search.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        drafts.set("local-workspace-search", search.value.trim());
+        offsets.set("local-workspace", 0);
+        reload(ctx);
+      }
+    });
+    filters.append(command(ctx, "search-local-workspace", "搜索", async () => {
+      drafts.set("local-workspace-search", search.value.trim());
+      offsets.set("local-workspace", 0);
+      await reload(ctx);
+    }));
+    box.append(filters);
+    const limit = 25, offset = offsets.get("local-workspace") || 0;
+    const params = new URLSearchParams({limit:String(limit), offset:String(offset)});
+    if (query.trim()) params.set("q", query.trim());
+    const data = await request(ctx, `/api/local-workspace?${params}`);
+    if (data.status === "not_configured") {
+      box.append(empty(
+        "尚未连接本机资料库，不需要登录",
+        "请在本机工作台设置中登记已经存在的资料库和索引。此页不会扫描目录或创建资料库。",
+      ));
+      return box;
+    }
+    if (data.status === "unavailable") {
+      box.append(empty("本机资料暂不可用", "登记的本机资料库或索引当前无法读取；原有文件不会被修改。"));
+      if (data.error_code) box.append(technical(data, "查看本机读取状态"));
+      return box;
+    }
+
+    const rows = [];
+    for (const item of data.items || []) {
+      const candidateName = item.parameters?.display_name || item.parameters?.name || item.parameters?.title;
+      const name = typeof candidateName === "string" ? candidateName.slice(0, 120) : item.kind;
+      const title = link(`${name} · ${item.artifact_id.slice(0, 16)}`, route("local-workspace", item.artifact_id));
+      const payloadCount = (item.payloads || []).length;
+      rows.push([
+        title,
+        count(payloadCount),
+        item.registry_indexed ? (item.registry_cached ? "索引已标记缓存" : "本机索引") : "尚未进入索引",
+        technical(item, "查看 metadata 与 payload 摘要"),
+      ]);
+    }
+    box.append(table(["本机资料", "内容文件", "本机索引", "来源信息"], rows));
+    if (!data.total) box.append(empty("没有匹配的本机对象", "可清除搜索词，或先在本机准备研究资料。"));
+    const pagerBox = el("div", null, "project-actions");
+    if (offset > 0) pagerBox.append(command(ctx, "local-workspace-prev", "上一页", async () => {
+      offsets.set("local-workspace", Math.max(0, offset - limit)); await reload(ctx);
+    }, {type:"secondary"}));
+    if (offset + limit < data.total) pagerBox.append(command(ctx, "local-workspace-next", "下一页", async () => {
+      offsets.set("local-workspace", offset + limit); await reload(ctx);
+    }, {type:"secondary"}));
+    pagerBox.append(el("span", data.total ? `本页 ${offset + 1}–${Math.min(offset + limit, data.total)} / ${data.total}` : "共 0 项", "subtext"));
+    box.append(pagerBox);
+    return box;
+  }
   async function evaluationWithSharing(ctx, value) {
     const box = evaluationPanel(value);
     if (!signedIn(ctx) || !hex(value.evaluation_id)) return box;
@@ -2376,6 +2455,7 @@ window.SpireProject = (() => {
     datasetContext: () => `${datasetTab()}:${drafts.get("dataset-task-id") || ""}`,
     async render(view, identity, mount) {
       if (!supported.has(view)) throw new Error("unsupported_project_view");
+      if (view === "local-workspace" && !local) throw new Error("unsupported_project_view");
       const nextAccount = `${identity?.principal?.subject || "anonymous"}:${identity?.principal?.role || ""}:${identity?.status || ""}`;
       if (account !== nextAccount) {
         account = nextAccount;
@@ -2396,7 +2476,7 @@ window.SpireProject = (() => {
         scope: scope(),
       };
       current = ctx;
-      if (!(["local-models", "evaluations"].includes(view) || (local && ["campaigns", "collection-overview"].includes(view))) && !signedIn(ctx)) return authNotice(ctx);
+      if (!(["local-models", "local-workspace", "evaluations"].includes(view) || (local && ["campaigns", "collection-overview"].includes(view))) && !signedIn(ctx)) return authNotice(ctx);
       try {
         return await {
           members: admin,
@@ -2407,6 +2487,7 @@ window.SpireProject = (() => {
           research,
           evaluations,
           "local-models": localModels,
+          "local-workspace": localWorkspace,
           campaigns,
           "collection-overview": (ctx) => collectionFlow(ctx, true),
           "record-quality": recordQuality,

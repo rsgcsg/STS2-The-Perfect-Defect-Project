@@ -280,6 +280,11 @@ window.SpireIdentity = (() => {
     return box;
   }
   return {refresh, api, renderDevices, renderConnect,
+    localOnly() {
+      if (local && scope !== "local") { scope = "local"; epoch++; }
+      topbar();
+      return {status: "local_only"};
+    },
     ensureProjectScope() {
       if (scope === "local" && identity?.principal && identity.status === "signed_in") {
         scope = "project"; epoch++; topbar();

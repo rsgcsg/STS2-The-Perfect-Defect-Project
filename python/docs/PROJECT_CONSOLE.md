@@ -38,6 +38,22 @@ stops the owned background service. After a computer restart or an explicit stop
 same configuration to resume sealed work. This is not an installed OS autostart service.
 Local raw sessions and bundles are not automatically deleted after cloud success.
 
+## 本机资料
+
+The local-only **本机资料** page browses artifact manifests in an explicitly registered
+local research store. It uses the local browser session and does not require a project login
+or Hub connection. The optional `research_workspace` object in the private `project.json`
+contains absolute `store_dir` and `registry_path` values. Both must already exist; the store
+must be local and the registry must have the supported schema. The page reads names and safe
+manifest metadata, parent IDs, payload roles, hashes and sizes. It does not read payload bytes,
+scan other directories, create a store, rebuild an index, prepare a dataset, or start training.
+
+When the object is absent, the page reports that no local workspace is registered. A missing
+store/index or unsupported registry is shown as unavailable. Registration remains an explicit
+local configuration responsibility; do not place these private paths in Git. This first slice
+is an artifact inventory, not a complete offline collection, dataset-building, training, or
+evaluation workflow.
+
 ## Cloud login and connection
 
 Choose **打开云端** from the local page, or open the configured Hub's `/app/` from another device.
