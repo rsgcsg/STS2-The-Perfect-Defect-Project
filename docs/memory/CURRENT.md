@@ -28,11 +28,14 @@ source and deployed identity; current source/runtime authorities override this f
   [36301622023](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36301622023)
   succeeded; the PR is merged at the develop identity above.
 - **Local home candidate:** PR #52 adds the no-login local home behavior. Its
-  95 Node and 17 Python tests passed. CI run
-  [36302306868](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36302306868)
-  has Linux passed and Windows in progress; it is not yet integrated.
-
-- **Mouse continuation candidate:** reviewed source `11938165425833ad4f7364edeba2d77adf995f6a`, component identity anchor `ed40f0e`, with Game Mod rc.16. Local exact-game checks and 297 Annotator Core tests passed; loaded mouse-target/cancel behavior still needs a separate canary. Untargeted mouse and ally-target stages remain unsupported.
+  authored source passed 95 Node and 17 Python tests. Head `2ed18832bd3bb58c6a751dd73c8663428b35e32b`
+  normally incorporates PR #51; its Python-scope
+  [run 36302839895](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36302839895)
+  is pending. Superseded run 36302306868 was cancelled, not passed.
+- **Mouse continuation candidate:** reviewed source `11938165425833ad4f7364edeba2d77adf995f6a`,
+  component identity anchor `ed40f0e`, with Game Mod rc.16. Local exact-game checks
+  and 297 Annotator Core tests passed; loaded mouse-target/cancel behavior still
+  needs a separate canary. Untargeted mouse and ally-target stages remain unsupported.
 
 ## Current implementation direction
 
