@@ -213,15 +213,23 @@ internal static partial class RecorderRuntime
             bool mouseCarrier = binding.Carrier is NMouseCardPlay;
             Node? hovered = HumanTextHoveredNodeProperty?.GetValue(manager) as Node;
             NCreature? target = hovered as NCreature;
-            if (confirm && target == null) return null;
+            bool noHoverMouseCancel = confirm && mouseEvent
+                && HumanTextInputNativeProof.IsMouseNoHoverCancelCandidate(
+                    mouseCarrier, input is InputEventMouseButton mouseButton
+                        && mouseButton.ButtonIndex == MouseButton.Left && mouseButton.IsReleased(),
+                    hoveredNodeMissing: hovered == null);
+            if (confirm && target == null && !noHoverMouseCancel) return null;
             return BeginHumanTextContinuation(binding.Carrier, input,
-                confirm ? "confirm_target" : "cancel_card_play",
+                noHoverMouseCancel ? "cancel_card_play"
+                    : confirm ? "confirm_target" : "cancel_card_play",
                 mouseCarrier
-                    ? (confirm ? HumanTextInputObservationContract.MouseTargetFinishInput
+                    ? (noHoverMouseCancel ? HumanTextInputObservationContract.MouseTargetCanceledInput
+                        : confirm ? HumanTextInputObservationContract.MouseTargetFinishInput
                         : HumanTextInputObservationContract.MouseTargetCanceledInput)
                     : (confirm ? HumanTextInputObservationContract.ControllerTargetFinishInput
                         : HumanTextInputObservationContract.ControllerTargetCanceledInput),
-                manager, confirm ? target : null, !confirm);
+                manager, confirm && !noHoverMouseCancel ? target : null,
+                !confirm || noHoverMouseCancel);
         }
         catch (Exception exception)
         {

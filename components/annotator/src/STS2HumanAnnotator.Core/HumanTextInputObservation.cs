@@ -38,6 +38,13 @@ public static class HumanTextInputObservationContract
 /// infer an input from a later card-play continuation or a changed game state.</summary>
 public static class HumanTextInputNativeProof
 {
+    /// <summary>A mouse release with no hovered node may start a cancellation
+    /// candidate only on the exact mouse-card carrier. Native finish proof is
+    /// still required before this observation can be accepted.</summary>
+    public static bool IsMouseNoHoverCancelCandidate(bool exactMouseCarrier,
+        bool leftButtonReleased, bool hoveredNodeMissing) =>
+        exactMouseCarrier && leftButtonReleased && hoveredNodeMissing;
+
     public static bool MatchesTargetFinish(bool requestedCancel, bool nativeCancel,
         object? frozenTarget, object? nativeTarget) =>
         requestedCancel ? nativeCancel
