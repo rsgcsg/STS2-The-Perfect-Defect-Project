@@ -17,9 +17,13 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from sts2_platform_evidence.human_session_bundle_v3 import HumanSessionBundleV3Verifier
+from sts2_platform_evidence.human_session_bundle_v3 import (
+    HumanSessionBundleV3,
+    HumanSessionBundleV3Verifier,
+)
 
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json
+from spireagent.local_verified_bundle import VerifiedLocalBundle
 
 from ..canonical import canonical_json, semantic_hash
 from .contracts import (
@@ -417,6 +421,19 @@ class PlatformBundle3SourceAdapter:
                 dict(bundle.capture_profile),
                 dict(bundle.manifest),
             )
+
+    def _project_verified_local(
+        self, verified: VerifiedLocalBundle, source: bytes | None = None,
+    ) -> SourceProjection:
+        """Project the exact directory held by the local typed-verification context."""
+        verified.assert_directory_identity()
+        bundle = verified.bundle
+        assert isinstance(bundle, HumanSessionBundleV3)
+        return self._project(
+            verified.directory, verified.read_archive() if source is None else source,
+            bundle.bundle_content_id,
+            dict(bundle.capture_profile), dict(bundle.manifest),
+        )
 
     def _project(
         self,

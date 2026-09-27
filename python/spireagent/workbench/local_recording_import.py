@@ -24,6 +24,7 @@ from sts2_platform_evidence.collection_tool import CollectionTool
 from spireagent.artifact_contracts import Manifest
 from spireagent.hub.uploads import MAX_ARCHIVE, transfer_from_json, unpack
 from spireagent.json_boundary import BoundaryError, FrozenObject, digest, json_bytes
+from spireagent.local_verified_bundle import EVIDENCE_SCHEMA
 from spireagent.source import source_identity
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.registry import SQLiteRegistry, sync_registry
@@ -35,7 +36,6 @@ from spireagent.workbench.local_workspace import open_registered_workspace
 from spireagent.workbench.managed_local_workspace import ROOT_NAME, inspect_managed_workspace
 
 SCHEMA = "stpd/local-recording-import-operation-v1"
-EVIDENCE_SCHEMA = "stpd/local-verified-bundle-v1"
 IDENTITY_SCHEMA = "stpd/local-recording-import-labels-v1"
 OPERATION_FILE = "local-recording-import-operation.json"
 IDENTITY_FILE = "local-recording-import-labels.json"

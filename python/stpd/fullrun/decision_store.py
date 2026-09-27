@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from spireagent.artifact_contracts import Manifest, Parent, Payload, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, json_bytes
+from spireagent.local_verified_bundle import EVIDENCE_SCHEMA, verified_local_bundle
 from spireagent.storage.store import ArtifactStore
 
 from ..canonical import canonical_json
@@ -19,6 +20,7 @@ from .decision_dataset import (
     DecisionDataset,
     SelectionRules,
     _versions,
+    _versions_directory,
     select_verified_sources,
 )
 from .decision_index import resolve_payload
@@ -34,7 +36,7 @@ Progress = Callable[[str, int, int], None]
 
 def _sources(
     sources: tuple[Manifest, ...], progress: Progress | None = None,
-) -> Iterator[Payload]:
+) -> Iterator[tuple[Manifest, Payload]]:
     if not 1 <= len(sources) <= 100:
         raise BoundaryError("decision_dataset", "source_selection_limit")
     total = 0
@@ -42,17 +44,42 @@ def _sources(
         if progress:
             progress("reading_sources", index, len(sources))
         info = source.parameters.value()
-        if (
-            source.kind != "evidence"
-            or info.get("schema") != "stpd/received-bundle-v1"
-            or info.get("disposition") != "verified"
-        ):
+        received = (info.get("schema") == "stpd/received-bundle-v1"
+                    and info.get("disposition") == "verified")
+        local = info.get("schema") == EVIDENCE_SCHEMA
+        if source.kind != "evidence" or not (received or local):
             raise BoundaryError("decision_dataset", "source_not_verified_receipt")
         payload = source.payload("archive")
         total += payload.size
         if payload.size > MAX_BYTES or total > MAX_BYTES:
             raise BoundaryError("decision_dataset", "source_size_limit")
-        yield payload
+        yield source, payload
+
+
+def _recheck_local_sources(store: ArtifactStore, sources: tuple[Manifest, ...]) -> None:
+    """A preview-cache hit never substitutes for current local evidence bytes."""
+    for source, _ in _sources(sources):
+        if source.parameters.value().get("schema") == EVIDENCE_SCHEMA:
+            with verified_local_bundle(store, source):
+                pass
+
+
+def _lineage_has_local_source(store: ArtifactStore, parents: tuple[Manifest, ...]) -> bool:
+    """A bounded cache-routing check; the normal union loader enforces graph rules."""
+    pending = [store.get_manifest(parent.artifact_id) for parent in parents]
+    seen: set[str] = set()
+    while pending:
+        item = pending.pop()
+        if item.artifact_id in seen:
+            continue
+        seen.add(item.artifact_id)
+        if len(seen) > 256:
+            return True
+        if item.parameters.value().get("schema") == EVIDENCE_SCHEMA:
+            return True
+        if item.kind == "dataset":
+            pending.extend(store.get_manifest(parent.artifact_id) for parent in item.parents)
+    return False
 
 
 def _selection(sources: tuple[Manifest, ...], rules: SelectionRules, schema: str) -> dict:
@@ -66,9 +93,19 @@ def preview(
     on_projection: Callable[[SourceProjection], None] | None = None,
 ) -> DecisionDataset:
     def projections() -> Iterator[tuple[SourceProjection, dict]]:
-        for index, payload in enumerate(_sources(sources, progress)):
+        for index, (source, payload) in enumerate(_sources(sources, progress)):
             if progress:
                 progress("verifying_sources", index, len(sources))
+            if source.parameters.value().get("schema") == EVIDENCE_SCHEMA:
+                with verified_local_bundle(store, source) as verified:
+                    if cache is None:
+                        projection = PlatformBundle3SourceAdapter()._project_verified_local(
+                            verified
+                        )
+                        yield projection, _versions_directory(verified.directory)
+                    else:
+                        yield resolve_payload(cache, store, payload, verified_local=verified)
+                continue
             if cache is None:
                 raw = b"".join(store.read_payload(payload))
                 yield PlatformBundle3SourceAdapter().project(raw), _versions(raw)
@@ -103,6 +140,8 @@ def publish(
                if cache is not None else None)
     if dataset is None:
         dataset = preview(store, sources, rules, cache=cache, progress=progress)
+    else:
+        _recheck_local_sources(store, sources)
     return _publish(store, sources, rules, producer, expected_preview, dataset, SCHEMA, progress)
 
 
@@ -137,7 +176,7 @@ def publish_union(
 ) -> Manifest:
     dataset = (PreviewCache(cache).get(_selection(parents, rules, UNION_SCHEMA), expected_preview)
                if cache is not None else None)
-    if dataset is None:
+    if dataset is None or _lineage_has_local_source(store, parents):
         dataset = preview_union(store, parents, rules, cache=cache, progress=progress)
     return _publish(store, parents, rules, producer, expected_preview,
                     dataset, UNION_SCHEMA, progress)
