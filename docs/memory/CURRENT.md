@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Reviewed source
-anchor: `develop@62a205e40cfd3be6bc056faa6c5538f2828edb95` (through PR #71).
+anchor: `develop@69e01acf8e8ee10416fe3133b041f842cdf5365e` (through PR #72).
 Resolve live GitHub refs and deployed identities before work; current source and
 runtime authorities override this file. This bounded handoff is not the
 running-version owner. Platform, application, Human and research evidence remain
@@ -11,11 +11,9 @@ separate.
 
 - **Native game:** last verified Game Mod rc.17 / Annotator rc.13 installation
   comes from `94d76ffd5a56727e344813e31bc14ed4a7a16aeb`. Its closed mouse canary
-  contains 9 accepted input labels and 3 canonical decisions; two proved
-  cancellations are narrower than general drag-back/async cancellation support.
-  Other cancelled attempts and the final missing successor retain their original
-  dispositions. [PR #63 receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/63#issuecomment-5856320923)
-  is not full-game qualification. The later read-only owner check found the same
+  has 9 input labels and 3 canonical decisions; its narrow cancellation evidence
+  and unknowns remain in [PR #63's receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/63#issuecomment-5856320923).
+  This is not full-game qualification. The later owner check found the same
   loaded rc.17 artifact. Two later owner-attested recording fragments were closed,
   imported and verified: 31 accepted input labels and 23 canonical decisions,
   with two close-before-successor endpoints retained as unknown. The exact
@@ -25,10 +23,8 @@ separate.
 - **Active Workbench:** exact application source
   `9bb9e22f7849cc74df2f53f1b38f038bc6a36d09` was deliberately activated in an
   independent private runtime checkout, using the same profile and existing
-  library. Previous `0b9d49451a955bd2454c53b21544911e260c5bc1` is retained for
-  rollback. No game package or consumer pin changed. Before/after 329 artifact
-  IDs, counts and total sizes matched; the `.curation.sqlite-shm` modification time changed,
-  so this is not a claim that all store bytes stayed identical.
+  library. The prior runtime is retained for rollback. Artifact IDs/payload
+  descriptors matched; SQLite sidecar metadata changed. No package/pin changed.
   [PR #70 activation/integration receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/70#issuecomment-5858556193)
   owns the exact application evidence.
 - **Local data/worker:** PRs #61–#70 connect explicit local verified recording
@@ -48,10 +44,8 @@ separate.
   covers two synthetic sources → save → actual three-step worker → report → model.
   The real worker result also passed standalone export/scorer binding checks.
   This does not establish real-data quality, inference registration or gameplay.
-  PR #70 [full CI](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36338745129)
-  passed both OS lanes and portable; its merge
-  [check](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36340064119)
-  used verified same-tree full receipt reuse plus fresh guards, not a second full.
+  PR #70's full CI 36338745129 passed; merge check 36340064119 reused that
+  exact-tree receipt with fresh guards, not a second full execution.
 - **Models:** PR #49 provides shared-observation small B; candidate scoring grows
   linearly with action count at fixed input lengths. PR #59's observation-only
   GRU prototype/reset control is synthetic research code, not a registered M1
@@ -69,13 +63,15 @@ separate.
   [Python CI](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36340133989)
   passed Linux, Windows and portable; docs were unselected. It is not yet active
   in the installed application source named above.
-- The current candidate fixes command-triggered re-render leaving replacement
+- PR #72 is merged and fixes command-triggered re-render leaving replacement
   buttons disabled after client pending ends. Independent review and integrated
   Node tests passed (119 tests). An isolated Safari search re-render left the
   new search control enabled; further query entry hit an automation clipboard
   timeout, so broader browser coverage is not claimed. Current owner-disabled
   conditions and duplicate-command protection remain; page refresh never starts
-  or retries work. Candidate checks/activation remain separate.
+  or retries work. Its exact Python run
+  [36355739691](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36355739691)
+  passed Linux/Windows and portable. This is not application activation.
 - Saving a Human source does not establish train/dev readiness. Immutable Human
   v1/v2 keep their original split semantics; v2 joins sessions sharing visible
   input and can collapse all groups. More recordings alone do not guarantee an
@@ -93,6 +89,9 @@ separate.
   and permits a new explicit check after a completed operation's workspace changes.
   It does not register a policy, start Runtime, train, or imply game compatibility.
   Candidate source/checks and the active application identity remain distinct.
+  [An isolated Safari export](../evidence/LOCAL_MODEL_EXPORT_BROWSER_2026-09-28.md)
+  used a previously completed synthetic model and observed the completed result;
+  it did not train or export any private-recording model.
 - Fill untargeted/native continuation and full-scene coverage through exact owner
   evidence. Commit is not a causal successor; input labels cannot fill missing
   canonical edges. Preserve unknowns rather than repairing them from later polls.
