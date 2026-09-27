@@ -82,9 +82,30 @@ modify the old profile or data. Candidate home fix [PR #52](https://github.com/r
 at `7c37e15800204756424bc21ac7321b1313fe1949` has 95 Node and 17 Python tests
 passing; CI run
 [36302306868](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36302306868)
-had Linux and Windows portability jobs in progress at the latest check. The
-candidate remains unmerged. These were automated CUA observations, not Human
+was superseded and cancelled after the required normal base alignment. The
+current source combination is `2ed18832bd3bb58c6a751dd73c8663428b35e32b`; its
+[Python-scope run 36302839895](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36302839895)
+is pending. The candidate remains unmerged. These were automated CUA observations, not Human
 actions or Human evidence. The game remains closed; no new game launch occurred.
+
+## Subsequent mouse continuation source candidate
+
+Source `11938165425833ad4f7364edeba2d77adf995f6a` adds bounded single-enemy
+mouse target and explicit-cancel input observation. Independent source review
+checked the exact game IL and the same-input native callback path; component
+identity anchor `ed40f0e` identifies Connector rc.4, Annotator rc.12, Evidence
+rc.17 and Game Mod rc.16. Existing SDK/consumer pins and historical evidence
+remain unchanged. Target selection is accepted input, not a claim of card Commit
+or successor. Untargeted mouse release and ally-targeting stages stay settling.
+
+At clean candidate `1f5cd47958ee3ade3dfa1d3d0e5bda38d911425a`, the supervisor ran
+`npm run check:exact-game` successfully (297 Annotator Core tests, source/tool
+checks, exact native builds with zero warnings/errors); the Connector witness
+filter passed 8 tests and `npm --prefix components/evidence run check` passed
+145 tests. `check:identity`, `check:bom`, closeout and diff checks passed. The
+planner selects full. Hosted CI and the new exact loaded/Human canary are not
+claimed by these local checks. This new candidate does not relabel the RC14
+session above.
 
 ## Next work and limits
 

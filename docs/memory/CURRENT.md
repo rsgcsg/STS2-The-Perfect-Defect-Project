@@ -32,6 +32,8 @@ source and deployed identity; current source/runtime authorities override this f
   [36302306868](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36302306868)
   has Linux passed and Windows in progress; it is not yet integrated.
 
+- **Mouse continuation candidate:** reviewed source `11938165425833ad4f7364edeba2d77adf995f6a`, component identity anchor `ed40f0e`, with Game Mod rc.16. Local exact-game checks and 297 Annotator Core tests passed; loaded mouse-target/cancel behavior still needs a separate canary. Untargeted mouse and ally-target stages remain unsupported.
+
 ## Current implementation direction
 
 The [approved in-run text plan](../plans/TEXT_STS2_IN_RUN.md) limits system
