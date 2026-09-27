@@ -98,7 +98,7 @@ def test_fixed_windows_split_only_at_explicit_reset_and_reject_duplicate_event_i
 
 
 def test_nonempty_burn_in_context_is_masked_from_learning_labels():
-    items = tuple(_input(f"event-{index}", index, reset=index == 0)
+    items = tuple(_input(f"event-{index}", index, reset=index == 1)
                   for index in range(1, 6))
     view = ObservedInputView("evidence", "verified_agent_observed_inputs", False, items)
 
@@ -223,7 +223,7 @@ def test_verified_two_decision_archive_splits_on_owner_reset_event(
     }
     release_index = next(index for index, event in enumerate(events)
                          if event["kind"] == "controller_released")
-    events[release_index:release_index] = [boundary, second_input, second_decision]
+    events[release_index + 1:release_index + 1] = [boundary, second_input, second_decision]
     for sequence, event in enumerate(events, 1):
         event["sequence"] = sequence
     verified_fixture._rewrite_events(directory, events)
