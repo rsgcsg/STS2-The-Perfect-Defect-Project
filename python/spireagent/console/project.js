@@ -1114,9 +1114,17 @@ window.SpireProject = (() => {
     return box;
   }
   const datasetTab = () => drafts.get("dataset-tab") || "library";
-  const splitLabel = value => value === "assigned" ? "已按局分组切分" :
-    value === "purpose_assigned" ? "独立评估用途" :
-    value === "insufficient_independent_run_components" ? "独立局数不足，尚未切分" : "查看切分条件";
+  const splitLabel = value => value === "assigned" ? "已分配训练/开发样本" :
+    value === "purpose_assigned" ? "已按所选评测用途分配" :
+    value === "insufficient_independent_run_components" ? "独立对局不足，尚不能形成独立划分" : "划分状态未知";
+  const localDatasetBlockerLabel = code => ({
+    gold_source_inventory_pending: "Gold 来源仍在索引；完成后可以重新检查。",
+    gold_already_in_other_dataset: "该来源已进入其他数据集；请为 Gold 选择独立来源。",
+    gold_requires_gold_merge: "该来源已属于 Gold；请在数据集列表合并已有 Gold。",
+    gold_previously_used_for_training: "该来源已有训练使用记录，不能作为 Gold。",
+    gold_reserved_data: "该来源已保留为 Gold，只能用于受控评估或 Gold 合并。",
+    empty_selection: "当前选择没有可保留的样本。",
+  })[code];
   const datasetName = item => item.display_name || item.parameters?.name || `数据集 ${item.artifact_id.slice(0, 12)}`;
   function datasetTabs(ctx) {
     const nav = el("nav", null, "dataset-tabs");
@@ -2353,7 +2361,13 @@ window.SpireProject = (() => {
     );
     const localCsrfToken = data.csrf_token;
     delete data.csrf_token;
-    if (data.status === "legacy_workspace_configured") return;
+    if (data.status === "legacy_workspace_configured") {
+      box.append(panel(
+        "已连接旧本机资料空间",
+        "现有资料仍可浏览。用途账本尚未迁移，不能在此工作空间创建或授权训练、测试或 Gold 数据集。",
+      ));
+      return;
+    }
     if (data.status === "not_created") {
       const section = panel(
         "新建本机工作空间",
@@ -2383,6 +2397,8 @@ window.SpireProject = (() => {
       "可在下方查看资料。创建本身不导入资料，也不表示资料已可训练。",
     );
     section.append(el("p", `空间 ${data.workspace_id} · 创建于 ${data.created_at}`, "small muted"));
+    if (data.curation_status === "recovery_required")
+      section.append(el("p", "本机用途账本需要恢复或迁移。现有资料仍可浏览；恢复完成前不能创建或授权数据集。", "small muted"));
     if (data.orphaned_initializations)
       section.append(el("p", `另有 ${data.orphaned_initializations} 个未登记的初始化目录保留在本机。`, "small muted"));
     box.append(section);
@@ -2479,6 +2495,160 @@ window.SpireProject = (() => {
     return section;
   }
 
+  async function localDatasetCard(ctx, artifactId) {
+    const section = panel(
+      "本机数据集检查",
+      "完整决策数量来自已核验的当前录制；输入标签不能当作完整转移。检查或创建都需要明确点击，不代表数据量已足以训练。",
+    );
+    const data = await request(ctx, "/api/local-datasets/status");
+    if (data.schema !== "stpd/local-dataset-operation-v1") {
+      section.append(el("p", "本机数据集状态格式暂不可用；现有录制仍可浏览。", "small muted"));
+      return section;
+    }
+    if (data.availability !== "ready") {
+      const message = data.availability === "workspace_required"
+        ? "本机资料空间尚未建立。录制仍可浏览；创建空间后才能检查数据集。"
+        : data.availability === "recovery_required"
+          ? "本机用途账本需要恢复或迁移。录制仍可浏览；完成恢复前不能创建或授权数据集。"
+          : "本机数据集服务暂不可用；录制仍可浏览。";
+      section.append(el("p", message, "small muted"));
+      if (data.reason) section.append(el("p", String(data.reason), "small muted"));
+      return section;
+    }
+    const operation = data.operation && typeof data.operation === "object"
+      ? data.operation : {status:"idle"};
+    const purposes = ["training", "test", "gold"];
+    const pairedTraining = Array.isArray(data.paired_training) ? data.paired_training : [];
+    const operationForArtifact = operation.artifact_id === artifactId;
+    const initialPurpose = operationForArtifact && purposes.includes(operation.purpose)
+      ? operation.purpose : "training";
+    const initialParent = operationForArtifact && initialPurpose !== "training"
+      && pairedTraining.some(item => item.artifact_id === operation.paired_training)
+      ? operation.paired_training : "";
+    const purpose = select(section, "数据用途", "local-dataset-purpose", [
+      ["training", "训练"], ["test", "测试"], ["gold", "Gold 评估"],
+    ], initialPurpose);
+    const selectionNote = el("p", null, "small muted");
+    const parentOptions = [["", "不关联训练数据集"], ...pairedTraining.map(item => [
+      item.artifact_id,
+      `${String(item.artifact_id).slice(0, 16)} · ${count(item.records)} 条记录`,
+    ])];
+    const parent = select(section, "关联的本机训练数据集（可选；仅测试或 Gold）",
+      "local-dataset-paired-training", parentOptions, initialParent);
+    const parentApplies = () => purpose.value !== "training";
+    parent.disabled = !parentApplies();
+    const selectedParent = () => parentApplies() && parent.value ? parent.value : null;
+    const validParent = () => !selectedParent()
+      || pairedTraining.some(item => item.artifact_id === selectedParent());
+    const sameSelection = () => operationForArtifact
+      && operation.purpose === purpose.value
+      && (operation.paired_training ?? null) === selectedParent();
+    const changed = () => {
+      parent.disabled = !parentApplies();
+      if (confirmButton) {
+        confirmButton.disabled = true;
+        selectionNote.textContent = "用途或训练配对已改变；旧预览失效，请重新检查后再确认。";
+      }
+    };
+    purpose.onchange = changed;
+    parent.onchange = changed;
+    section.append(selectionNote);
+
+    const pending = operation.status === "pending";
+    const failedOrInterrupted = operationForArtifact
+      && ["failed", "interrupted"].includes(operation.status);
+    const recoveryRequired = failedOrInterrupted
+      && (operation.recovery_available === true || operation.error_code === "publication_recovery_required");
+    if (pending) {
+      section.append(el("p", operationForArtifact
+        ? "正在检查这份录制；可刷新查看进度，不会重复提交。"
+        : "本机另一项数据集检查正在进行；等待其明确结果后再检查当前录制。", "small muted"));
+    } else if (recoveryRequired) {
+      section.append(el("p", operation.recovery_available === true
+        ? "上次创建结果尚未核对；请先点击“核对上次创建结果”，不要重新检查。"
+        : "上次创建结果需要恢复用途记录后才能继续；请勿重新检查或重建。", "small muted"));
+    } else if (failedOrInterrupted) {
+      section.append(el("p", "上次检查失败或中断，不会自动重试。确认当前用途后，可明确点击重新检查。", "small muted"));
+      if (operation.error_code) section.append(technical({error_code: operation.error_code}, "查看检查错误"));
+    }
+
+    if (operation.status === "preview_ready" && !sameSelection()) {
+      section.append(el("p", "上次检查对应另一份录制或用途选择；旧预览不能用于当前选择。请明确重新检查。", "small muted"));
+    }
+    let confirmButton = null;
+    if (operationForArtifact && ["failed", "interrupted"].includes(operation.status)
+        && operation.recovery_available === true && hex(operation.preview_id, 32)
+        && sameSelection()) {
+      const recoveryOptions = {primary:true, disabled:!data.csrf_token};
+      section.append(command(ctx, "recover-local-dataset-publication", "核对上次创建结果", async () => {
+        if (!operationForArtifact || !["failed", "interrupted"].includes(operation.status)
+            || operation.recovery_available !== true || !sameSelection()
+            || !hex(operation.preview_id, 32) || !data.csrf_token) return;
+        recoveryOptions.disabled = true;
+        await request(ctx, "/api/local-datasets/publish", {preview_id: operation.preview_id}, data.csrf_token);
+        await reload(ctx);
+      }, recoveryOptions));
+    }
+    if (operation.status === "preview_ready" && sameSelection()) {
+      section.append(fields([
+        ["预览保留决策", count(operation.selected)],
+        ["数据划分与隔离状态", splitLabel(operation.split_status)],
+      ]));
+      section.append(technical({split_status: operation.split_status ?? null}, "查看划分状态代码"));
+      if (operation.exclusions && typeof operation.exclusions === "object")
+        section.append(table(["排除原因", "数量"], Object.entries(operation.exclusions).map(
+          ([reason, amount]) => [reason, count(amount)],
+        )));
+      if (operation.can_publish === true && hex(operation.preview_id, 32)) {
+        const confirmOptions = {primary:true, disabled:!data.csrf_token};
+        confirmButton = command(ctx, "publish-local-dataset", "确认创建数据集", async () => {
+          if (!sameSelection() || operation.can_publish !== true || !hex(operation.preview_id, 32)
+              || !data.csrf_token) return;
+          confirmOptions.disabled = true;
+          await request(ctx, "/api/local-datasets/publish", {preview_id: operation.preview_id}, data.csrf_token);
+          await reload(ctx);
+        }, confirmOptions);
+        section.append(confirmButton);
+      } else {
+        section.append(el("p", "后端尚未确认此选择符合用途隔离条件，当前不能创建数据集。", "small muted"));
+        const blockerLabel = localDatasetBlockerLabel(operation.error_code);
+        if (blockerLabel) section.append(el("p", blockerLabel, "small muted"));
+        if (operation.error_code)
+          section.append(technical({error_code: operation.error_code}, "查看用途限制代码"));
+      }
+    }
+    if (operation.status === "completed" && sameSelection()) {
+      if (hex(operation.result_artifact_id)) {
+        section.append(el("p", "本机数据集已创建。", "small muted"));
+        section.append(link("打开本机数据集", route("local-workspace", operation.result_artifact_id)));
+      } else {
+        section.append(el("p", "创建状态已完成，但结果身份与当前检查不匹配；请刷新本机状态核对。", "small muted"));
+      }
+    }
+    if (operation.status === "interrupted" && operationForArtifact)
+      section.append(el("p", "上次操作中断，结果尚未确认。刷新只读取状态；不要自动重发。", "small muted"));
+
+    const checkOptions = {primary:true, disabled:pending || recoveryRequired || !validParent() || !data.csrf_token};
+    section.append(command(ctx, "check-local-dataset",
+      recoveryRequired
+        ? operation.recovery_available === true ? "先核对上次创建结果" : "需恢复用途记录"
+        : failedOrInterrupted
+        ? "重新检查数据集" : pending ? "正在检查" : "检查数据集", async () => {
+      if (pending || recoveryRequired || !validParent()) return;
+      checkOptions.disabled = true;
+      await request(ctx, "/api/local-datasets/preview", {
+        artifact_id: artifactId,
+        purpose: purpose.value,
+        paired_training: selectedParent(),
+      }, data.csrf_token);
+      await reload(ctx);
+    }, checkOptions));
+    section.append(command(ctx, "refresh-local-dataset-status", "刷新检查状态", async () => {
+      await reload(ctx);
+    }, {type:"secondary"}));
+    return section;
+  }
+
   async function localWorkspace(ctx) {
     const box = el("div", null, "project-page");
     box.append(panel("本机资料", "浏览本机资料来源。此页在本机读取，不需要云端登录；开始任何导入或训练都需要独立的明确操作。"));
@@ -2514,10 +2684,17 @@ window.SpireProject = (() => {
               说明: "决策侧计数可能重叠；输入标签不能充当完整轨迹或已执行动作。",
             }, "查看统计与排除原因"));
           }
-          preview.append(el("p", "尚未生成数据集；训练和测试划分需要另行检查。", "small muted"));
+          preview.append(el("p", "样本预览本身不会创建数据集；如已检查用途，创建结果显示在下方用途检查中。", "small muted"));
         } else if (matched && status.status === "failed") {
           preview.append(el("p", "归档预览核验失败，未产生样本结果。", "small muted"));
           preview.append(technical({error_code: status.error_code}, "查看核验错误"));
+        }
+        if (matched && status.status === "completed" && status.availability === "available") {
+          if (Number.isInteger(status.canonical_decisions) && status.canonical_decisions > 0) {
+            preview.append(await localDatasetCard(ctx, value.artifact_id));
+          } else {
+            preview.append(el("p", "这份录制没有可用于数据集检查的完整决策。操作输入标签不会补成完整决策。", "small muted"));
+          }
         }
         preview.append(command(ctx, "refresh-local-recording-preview", status.status === "pending" ? "刷新进度" : "刷新预览状态", async () => {
           await reload(ctx);
