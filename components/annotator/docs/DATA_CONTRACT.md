@@ -55,7 +55,14 @@ native exit conditions is a negative observation, not Human cancellation.
 The bounded mouse continuation candidate uses the same public verbs. Its
 private mechanisms are `mouse_canceled_input_signal`,
 `mouse_target_finish_input` and `mouse_target_canceled_input`. It adds no
-device field to the text-menu Snapshot or model input. On the exact
+device field to the text-menu Snapshot or model input. A no-hover mouse target
+cancel candidate is captured only for an exact `NMouseCardPlay` left-button
+release when the hovered-node property is available and returns null. It is
+accepted only when that same `_Input` call invokes `FinishTargeting(true)`.
+The release alone does not establish cancellation: the native exit condition,
+including its existing cancellation token, owns that decision. Missing or
+invalid hover observation fails closed. Controller cancellation rules are
+unchanged. On the exact
 `sts2.dll` SHA-256
 `9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4`,
 `NMouseCardPlay.SingleCreatureTargeting` calls the target manager with its own
@@ -70,15 +77,16 @@ later mouse play-zone check remains STS2's decision.
 
 | Native mouse input | Positive Human evidence gate | Current boundary |
 |---|---|---|
-| Single-enemy target left release or recognized `InputEventAction` select | Same `_Input` calls `FinishTargeting(false)` for the frozen exact hovered creature | `confirm_target` records selection input only; later `TryPlayCard`, zone failure and Commit are separate |
-| Target manager right press or a recognized `InputEventAction` cancellation signal | Same `_Input` calls `FinishTargeting(true)` | `cancel_card_play` only for these observed inputs, never an exit-condition, other keyboard event or `_Process` cancellation |
+| Single-enemy target left release over a creature or recognized `InputEventAction` select | Same `_Input` calls `FinishTargeting(false)` for the frozen exact hovered creature | `confirm_target` records selection input only; later `TryPlayCard`, zone failure and Commit are separate |
+| Exact mouse-carrier left release with verified null hover, target-manager right press or a recognized `InputEventAction` cancellation signal | Same `_Input` calls `FinishTargeting(true)` | `cancel_card_play` is accepted only with this same-call native finish proof; a release by itself, an exit-condition without `FinishTargeting(true)`, other keyboard event or `_Process` cancellation is not proof |
 | Mouse card right press or its own cancellation shortcut | Same `_Input` calls this carrier's `CancelPlayCard` | `cancel_card_play` only where the frozen current mouse menu is complete; one physical event cannot create two accepted rows |
 | Non-target held card left release | No same-input native play proof; the async loop later checks play/cancel zones | Settling, with no `confirm_card` label or cancel-only complete menu |
 | Drag into cancel zone, rule failure, invalid target or replacement carrier | No explicit same-input cancellation proof | No Human cancel label; unrelated owners and late callbacks cannot borrow a binding |
 
 Target focus alone creates no Human row. An empty hovered target cannot prove
-`confirm_target`, and a left release turned into cancellation by the native
-exit condition remains a negative observation. Any-ally mouse targeting
+`confirm_target`; the narrowly scoped mouse release candidate can prove
+`cancel_card_play` only with the verified null hover and same-call
+`FinishTargeting(true)` described above. Any-ally mouse targeting
 stays settling until its full native target set has an exact menu. This is
 source/test evidence; loaded behavior and Human origin still need the exact
 owner-run canary and attestation.
