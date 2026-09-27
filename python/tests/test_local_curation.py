@@ -43,15 +43,28 @@ def test_reopen_and_registry_rebuild_preserve_claims(tmp_path: Path) -> None:
 def test_missing_replaced_or_wrong_owner_ledger_fails_closed(tmp_path: Path) -> None:
     state, directory, owner = create(tmp_path)
     owner.ledger.claim("claim-a", "gold", {"run-a"})
+    store = ManifestArtifactStore(LocalBlobStore(directory / "store", create=False))
+    store.publish(Manifest("dataset", Producer("local/test", "a" * 40, "b" * 64)))
     ledger = directory / LEDGER_NAME
     backup = tmp_path / "backup.sqlite"
     shutil.copy2(ledger, backup)
     ledger.unlink()
-    with pytest.raises(BoundaryError, match="curation_recovery_required"):
-        managed.inspect_managed_workspace(state)
+    missing = managed.inspect_managed_workspace(state)
+    assert missing["workspace"].inventory()["total"] == 1
+    assert missing["curation_status"] == "recovery_required"
+    assert missing["curation_owner"] is None
+    assert missing["curation_recovery"] == "curation_owner_recovery_required"
+    assert managed.create_managed_workspace(state)["curation_owner"] is None
+    assert not ledger.exists()
+    managed_config = ProjectConfig(state, "", "", None, combination())
+    with pytest.raises(BoundaryError, match="curation_owner_recovery_required"):
+        _selected_store(managed_config)
     ledger.write_bytes(b"replacement")
-    with pytest.raises(BoundaryError, match="curation_recovery_required"):
-        managed.inspect_managed_workspace(state)
+    damaged = managed.inspect_managed_workspace(state)
+    assert damaged["workspace"].inventory()["total"] == 1
+    assert damaged["curation_status"] == "recovery_required"
+    with pytest.raises(BoundaryError, match="curation_owner_recovery_required"):
+        _selected_store(managed_config)
     ledger.unlink()
     shutil.copy2(backup, ledger)
     with pytest.raises(BoundaryError, match="store_identity_mismatch"):

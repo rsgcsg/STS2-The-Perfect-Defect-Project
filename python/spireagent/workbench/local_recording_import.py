@@ -71,6 +71,8 @@ def _selected_store(config: ProjectConfig) -> tuple[ManifestArtifactStore, SQLit
         selected = inspect_managed_workspace(config.state_dir)
         if selected["status"] != "ready":
             raise BoundaryError("local_import", "workspace_required")
+        if selected["curation_owner"] is None:
+            raise BoundaryError("local_import", "curation_owner_recovery_required")
         directory = config.state_dir.resolve() / ROOT_NAME / selected["workspace_id"]
         store_dir, registry_path = directory / "store", directory / "registry.sqlite"
     if (store_dir.is_symlink() or registry_path.is_symlink()
@@ -88,6 +90,8 @@ def _selected_curation_owner(config: ProjectConfig) -> LocalCurationOwner | None
     selected = inspect_managed_workspace(config.state_dir)
     if selected["status"] != "ready":
         raise BoundaryError("local_import", "workspace_required")
+    if selected["curation_owner"] is None:
+        raise BoundaryError("local_import", "curation_owner_recovery_required")
     return selected["curation_owner"]
 
 

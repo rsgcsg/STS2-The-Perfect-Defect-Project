@@ -137,18 +137,21 @@ def inspect_managed_workspace(state_dir: Path) -> dict[str, Any]:
     owner = None
     curation_status = "recovery_required"
     if current:
-        owner_marker = _read_json(store_dir / OWNER_NAME, "curation_recovery_required")
-        if owner_marker != {"schema": OWNER_SCHEMA, "workspace_id": identity,
-                            "store_id": marker["store_id"],
-                            "ledger_id": marker["ledger_id"],
-                            "ledger_path": str((directory / LEDGER_NAME).resolve())}:
-            raise BoundaryError("managed_workspace", "curation_recovery_required")
         try:
+            owner_marker = _read_json(store_dir / OWNER_NAME, "curation_recovery_required")
+            if owner_marker != {"schema": OWNER_SCHEMA, "workspace_id": identity,
+                                "store_id": marker["store_id"],
+                                "ledger_id": marker["ledger_id"],
+                                "ledger_path": str((directory / LEDGER_NAME).resolve())}:
+                raise BoundaryError("managed_workspace", "curation_recovery_required")
             owner = LocalCurationOwner(directory / LEDGER_NAME, store_dir, identity,
                                       marker["ledger_id"], marker["store_id"])
-        except BoundaryError as error:
-            raise BoundaryError("managed_workspace", "curation_recovery_required") from error
-        curation_status = "ready"
+        except BoundaryError:
+            # The artifact store remains readable; a broken owner can authorize no
+            # local write or new purpose until an explicit recovery is performed.
+            pass
+        else:
+            curation_status = "ready"
     return {
         "schema": REGISTRATION_SCHEMA,
         "status": "ready",
@@ -159,7 +162,8 @@ def inspect_managed_workspace(state_dir: Path) -> dict[str, Any]:
         "workspace": LocalWorkspace(registry, store),
         "curation_status": curation_status,
         "curation_recovery": (
-            "legacy_history_requires_explicit_migration" if legacy else None
+            "legacy_history_requires_explicit_migration" if legacy else
+            "curation_owner_recovery_required" if owner is None else None
         ),
         "curation_owner": owner,
     }
