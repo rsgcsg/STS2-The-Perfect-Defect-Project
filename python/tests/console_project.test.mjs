@@ -828,7 +828,7 @@ test("known Stage 1a model detail summarizes its recipe and links exact parents"
       if (url === `/api/local-workspace/artifacts/${model}`) return {
         schema:"stpd/local-workspace-artifact-v1", artifact_id:model, kind:"model",
         parameters:{schema:"stpd/stage1a-model-v1", config:{recipe:"stage1a.b.s.v2", steps:3, device:"cpu"},
-          steps:3, qualification:"engineering_only"},
+          backbone:{kind:"scratch", shape:{width:48, layers:1}}, steps:3, qualification:"engineering_only"},
         parents:[{role:"run", artifact_id:run}, {role:"model_view", artifact_id:view},
           {role:"checkpoint", artifact_id:checkpoint}, {role:"training_input", artifact_id:id("e")},
           {role:"run", artifact_id:"not-a-hash"}],
@@ -854,6 +854,35 @@ test("known Stage 1a model detail summarizes its recipe and links exact parents"
     "malformed parent identities are never linked");
   assert.match(text(page), /stpd\/stage1a-model-v1/, "exact manifest metadata remains available as a technical fallback");
   assert.equal(post(env.calls).length, 0);
+});
+
+test("Stage 1a model source requires a matching manifest backbone", async () => {
+  const model = id("a");
+  for (const [recipe, backbone, expected, unexpected] of [
+    ["stage1a.b.pf.v2", {kind:"pf", qwen:{snapshot:"fixture"}}, /冻结预训练骨干/, /未知（配方与模型来源记录不一致）/],
+    ["stage1a.b.s.v2", {kind:"pf", qwen:{snapshot:"fixture"}}, /未知（配方与模型来源记录不一致）/, /从头训练/],
+    ["stage1a.b.s.v2", undefined, /模型来源\n未知/, /从头训练/],
+  ]) {
+    const env = setup({
+      identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+        };
+        if (url === `/api/local-workspace/artifacts/${model}`) return {
+          artifact_id:model, kind:"model",
+          parameters:{schema:"stpd/stage1a-model-v1", config:{recipe, steps:3, device:"cpu"},
+            ...(backbone ? {backbone} : {}), steps:3, qualification:"engineering_only"},
+          parents:[], payloads:[],
+        };
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    assert.match(text(page), expected);
+    assert.doesNotMatch(text(page), unexpected);
+    assert.equal(post(env.calls).length, 0);
+  }
 });
 
 test("unknown model schemas keep metadata fallback and do not invent a model overview", async () => {

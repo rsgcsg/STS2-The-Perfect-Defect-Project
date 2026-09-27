@@ -2522,15 +2522,21 @@ window.SpireProject = (() => {
     const config = parameters.config && typeof parameters.config === "object"
       && !Array.isArray(parameters.config) ? parameters.config : {};
     const recipes = {
-      "stage1a.b.s.v1": {label:"B v1", mode:"从头训练"},
-      "stage1a.b.pf.v1": {label:"B v1", mode:"冻结预训练骨干"},
-      "stage1a.dsimple.s.v1": {label:"D-Simple v1", mode:"从头训练"},
-      "stage1a.dsimple.pf.v1": {label:"D-Simple v1", mode:"冻结预训练骨干"},
-      "stage1a.b.s.v2": {label:"B v2", mode:"从头训练"},
-      "stage1a.b.pf.v2": {label:"B v2", mode:"冻结预训练骨干"},
+      "stage1a.b.s.v1": {label:"B v1", backbone:"s", mode:"从头训练"},
+      "stage1a.b.pf.v1": {label:"B v1", backbone:"pf", mode:"冻结预训练骨干"},
+      "stage1a.dsimple.s.v1": {label:"D-Simple v1", backbone:"s", mode:"从头训练"},
+      "stage1a.dsimple.pf.v1": {label:"D-Simple v1", backbone:"pf", mode:"冻结预训练骨干"},
+      "stage1a.b.s.v2": {label:"B v2", backbone:"s", mode:"从头训练"},
+      "stage1a.b.pf.v2": {label:"B v2", backbone:"pf", mode:"冻结预训练骨干"},
     };
     const recipe = typeof config.recipe === "string" && Object.hasOwn(recipes, config.recipe)
       ? recipes[config.recipe] : null;
+    const backbone = parameters.backbone && typeof parameters.backbone === "object"
+      && !Array.isArray(parameters.backbone) ? parameters.backbone.kind : null;
+    const modelSource = recipe && backbone === (recipe.backbone === "s" ? "scratch" : "pf")
+      ? recipe.mode
+      : recipe && ["scratch", "pf"].includes(backbone)
+        ? "未知（配方与模型来源记录不一致）" : "未知";
     const steps = Number.isSafeInteger(parameters.steps) && parameters.steps > 0
       && parameters.steps === config.steps ? count(parameters.steps) : "未知";
     const device = config.device === "cpu" ? "CPU"
@@ -2541,7 +2547,7 @@ window.SpireProject = (() => {
     const overview = panel("模型概览", "以下摘要来自本机模型清单；此处不会加载模型或读取权重文件。");
     overview.append(fields([
       ["训练配方", recipe?.label || "未知"],
-      ["模型来源", recipe?.mode || "未知"],
+      ["模型来源", modelSource],
       ["训练步数", steps],
       ["设备", device],
       ["用途说明", qualification],
