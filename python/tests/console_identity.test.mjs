@@ -10,13 +10,13 @@ class Element {
   addEventListener() {}
   get options() { return this.children; }
 }
-function setup(mode = 'local', flow = '') {
+function setup(mode = 'local', flow = '', cloudUrl = 'https://hub.example') {
   const nodes = new Map(['account-actions', 'device-scope', 'content', 'notice'].map(k => [k, new Element('div')]));
   const calls = [], navigations = [], timers = new Map();
   let now = Date.now(), timerId = 0;
   class Clock extends Date { static now() { return now; } }
   const context = vm.createContext({
-    document: {body: {dataset: {mode}}, getElementById: key => nodes.get(key),
+    document: {body: {dataset: {mode, cloudUrl}}, getElementById: key => nodes.get(key),
       createElement: tag => new Element(tag), querySelector: () => null}, window: {},
     location: {assign(url) { navigations.push(url); }, search: '?view=connect&flow=' + flow}, history: {pushState() {}}, Date: Clock, URLSearchParams, AbortSignal,
     setTimeout: (fn, delay) => { const id = ++timerId; timers.set(id, {fn, delay}); return id; },
@@ -265,7 +265,7 @@ test('device selection changes request scope and invalidates prior response cont
   assert.equal(ui.api('collections', '?limit=25'), '/api/project/collections?limit=25&device=pc');
 });
 
-function pageSetup(view, identity, connectContent = async () => 'connection facts', flow = '') {
+function pageSetup(view, identity, connectContent = async () => 'connection facts', flow = '', mode = 'cloud', search = undefined, cloudUrl = '') {
   const nodes = new Map();
   const element = () => Object.assign(new Element('div'), {
     textContent: '', attributes: {}, addEventListener() {},
@@ -279,20 +279,58 @@ function pageSetup(view, identity, connectContent = async () => 'connection fact
   let scope = 'owner';
   const refreshes = [];
   const context = vm.createContext({
-    document: {body: {dataset: {mode: 'cloud'}}, getElementById: get,
+    document: {body: {dataset: {mode, cloudUrl}}, getElementById: get,
       createElement: element, createDocumentFragment: element, querySelectorAll: () => [], addEventListener() {}},
     Node: Element,
     window: {addEventListener() {}, SpireProject: {}, SpireIdentity: {
       context: () => scope, isLocal: () => false, refresh: async force => { refreshes.push(force); return identity; },
-      renderDevices: () => 'account facts', renderConnect: connectContent, connect() {},
+      renderDevices: () => 'account facts', renderConnect: connectContent,
+      localOnly() { scope = 'local'; return {status: 'local_only'}; }, connect() {},
     }},
-    location: {search: '?view=' + view + (flow ? '&flow=' + flow : '')}, history: {}, Date, URLSearchParams,
+    location: {search: search === undefined ? ('?view=' + view + (flow ? '&flow=' + flow : '')) : search}, history: {}, Date, URLSearchParams,
     setInterval() {},
   });
   vm.runInContext(readFileSync(new URL('../spireagent/console/console.js', import.meta.url), 'utf8'), context);
   return {get, context, refreshes, changeScope: () => {scope = 'other';}};
 }
 const settled = () => new Promise(resolve => setImmediate(resolve));
+
+test('no-cloud local root selects the local home without identity, cloud reads, or commands', async () => {
+  const {get, context, refreshes} = pageSetup('campaigns', null, undefined, '', 'local', '', '');
+  await settled();
+  assert.equal(vm.runInContext('state.view', context), 'local-home');
+  assert.equal(get('title').textContent, '本机工作台');
+  assert.equal(get('connection').textContent, '本机工作台');
+  assert.deepEqual(refreshes, []);
+  const content = get('content');
+  const links = descendants(content).filter(item => typeof item.href === 'string');
+  assert.deepEqual(links.map(item => item.href), [
+    '?view=local-models', '?view=local-workspace', '?view=campaigns',
+  ]);
+  assert.match(flatten(content), /本机模型与资料查看不需要云端登录/);
+  assert.match(flatten(content), /上传另需设备授权、开启上传设置且本机投递服务实际运行/);
+  assert.equal(vm.runInContext('views.campaigns[1]', context).includes("后台自动上传"), false);
+});
+
+test('local browser still hides login when Hub is not configured', () => {
+  const env = setup('local', '', '');
+  env.ui.localOnly();
+  assert.equal(descendants(env.nodes.get('account-actions')).some(n => n.textContent === '登录项目账号'), false);
+});
+
+test('cloud shell cannot select the local-only home through a query string', async () => {
+  const {context} = pageSetup('local-home', {status: 'signed_out'}, undefined, '', 'cloud', '?view=local-home');
+  assert.equal(vm.runInContext('state.view', context), 'collections');
+});
+
+test('local campaign deep links remain available and cloud links appear only when configured', async () => {
+  const campaign = pageSetup('campaigns', {status: 'signed_out'}, undefined, '', 'local', '?view=campaigns');
+  assert.equal(vm.runInContext('state.view', campaign.context), 'campaigns');
+
+  const configuredHome = pageSetup('local-home', null, undefined, '', 'local', '', 'https://hub.example');
+  await settled();
+  assert.match(flatten(configuredHome.get('content')), /可从右上角打开云端/);
+});
 
 test('account and connection pages finish status from observed identity', async () => {
   for (const view of ['devices', 'connect']) {
