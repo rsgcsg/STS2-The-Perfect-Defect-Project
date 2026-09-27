@@ -112,7 +112,8 @@ def action_only_prior(
 
 
 def summarize_rows(
-    rows: list[dict[str, Any]], *, seed: int, bootstrap: int = 200
+    rows: list[dict[str, Any]], *, seed: int, bootstrap: int = 200,
+    native_run_independence: bool = True,
 ) -> dict[str, Any]:
     unsigned(seed, "evaluation.seed")
     unsigned(bootstrap, "evaluation.bootstrap")
@@ -149,7 +150,14 @@ def summarize_rows(
     by_run: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_run[row["run_id"]].append(row)
-    if len(by_run) < 2 or bootstrap < 20:
+    if not native_run_independence:
+        result["bootstrap"] = {
+            "status": "unknown",
+            "reason": "native_run_independence_unknown_across_sessions",
+            "unit": "session_scoped_run_group",
+            "reported_run_groups": len(by_run),
+        }
+    elif len(by_run) < 2 or bootstrap < 20:
         result["bootstrap"] = {
             "status": "insufficient_independent_runs_or_replicates",
             "unit": "whole_run",
@@ -188,6 +196,7 @@ def evaluate_samples(
     seed: int = 0,
     bootstrap: int = 200,
     permit_test: bool = False,
+    native_run_independence: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if partition not in {"dev", "test"} or (partition == "test" and not permit_test):
         raise BoundaryError("evaluation", "sealed_test_requires_explicit_protocol_admission")
@@ -210,7 +219,10 @@ def evaluate_samples(
                 **metrics,
             }
         )
-    return rows, summarize_rows(rows, seed=seed, bootstrap=bootstrap)
+    return rows, summarize_rows(
+        rows, seed=seed, bootstrap=bootstrap,
+        native_run_independence=native_run_independence,
+    )
 
 
 def _validate_protocol(

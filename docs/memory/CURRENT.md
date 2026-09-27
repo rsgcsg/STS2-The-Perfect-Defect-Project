@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 Use `rsgcsg/STS2-The-Perfect-Defect-Project` for new work. Reviewed source anchor:
-`develop@b0f9256a50ec1c35801d1710edc73205ba1bae45` (through PR #67).
+`develop@1a021a80ab67ddfcb411a15ba444ffed04047f16` (through PR #68).
 Resolve live GitHub refs and deployed identity before work; current source/runtime
 authorities override this file. It is a bounded handoff, not the running-version owner.
 
@@ -50,17 +50,25 @@ authorities override this file. It is a bounded handoff, not the running-version
   In-place preparation of the existing library completed: one known-use and one
   unknown-use dataset, no unprojected sources. Payloads were not relocated or copied.
   PR #65 separately integrates spool cleanup ordering.
-- PR #68 is the current offline-report candidate: metadata catalog, exact dev report
+- PR #68 is merged: metadata catalog, exact dev report
   summary and model/view links, with sealed-test/unknown-format rejection. It reads
   recorded metrics and parent identities, not complete training lineage or quality.
-  Its source review, synthetic browser checks and current hosted checks must remain
+  Its source review, synthetic browser checks and hosted Python checks must remain
   separate from the active PR #67 Workbench; it is not automatically installed.
+- The current local-training candidate adds an explicit three-step scratch small-B
+  command to curated training Dataset detail, a store-owned operation slot, durable
+  use recording, and exact model/report links. Its canonical public-BC projection
+  requires public-H bindings and a nonempty independent train/dev split. This is a
+  bounded engineering sample, not full training, inference registration or a quality
+  result. Human text-menu labels are a separate research input path; connecting them
+  to local Dataset-purpose management remains unfinished.
 - Human-input BC is a separate data mode. Input labels must not fill missing
   canonical actions or causal successors. Existing configured stores keep their
   history. The user superseded the temporary read-only preference: continue using
   the single existing library, without old/new tabs, relocation or duplicate payloads.
-  Explicit preparation attaches the persistent use owner in place. Known uses stay
-  recorded; unknown old use is not invented as clean history and restricts Gold where
+  Explicit preparation attaches the persistent use owner in place. Verifiable old
+  training/test Dataset purposes stay recorded; historical training use is not
+  reconstructed. Unknown old use restricts Gold where
   relevant, rather than blocking all ordinary training/test selection.
   Gold reservations are not a claim of global history completeness across arbitrary
   stores or of scientifically validated labels. Interrupted publication checks for

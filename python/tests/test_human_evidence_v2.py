@@ -44,7 +44,9 @@ def _refresh_checksums(bundle: Path) -> None:
     )
 
 
-def _v2_bundle(tmp_path: Path, *, selector: bool = False) -> Path:
+def _v2_bundle(
+    tmp_path: Path, *, selector: bool = False, session_id: str | None = None,
+) -> Path:
     bundle = tmp_path / ("selector-bundle" if selector else "combat-bundle")
     raw = bundle / "raw"
     for relative in ("audit", "export", "profile"):
@@ -53,9 +55,10 @@ def _v2_bundle(tmp_path: Path, *, selector: bool = False) -> Path:
     record = copy.deepcopy(_record())
     record.update(
         {
+            "session_id": session_id or record["session_id"],
             "schema_version": 2,
             "schema": "sts2.human-annotator/decision-record-2",
-            "timeline_id": "timeline-v2-test",
+            "timeline_id": f"timeline-v2-{session_id}" if session_id else "timeline-v2-test",
             "capture_profile_id": "human-combat-read-rich-v2",
         }
     )

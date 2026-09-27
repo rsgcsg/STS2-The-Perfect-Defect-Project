@@ -1,4 +1,4 @@
-"""Verified Stage 1a token inputs over existing decision allocations and ArtifactStore.
+"""Verified Stage 1a token inputs over admitted model views and ArtifactStore.
 
 Both B and D consume the same token IDs. Scratch fitting reads train text only;
 dev is encoded with the fixed vocabulary. No labels, IDs or successors enter text.
@@ -94,7 +94,11 @@ def encode_texts(
 def _source(store: ArtifactStore, view_id: str) -> tuple[ModelSample, ...]:
     training_sources(store, view_id)
     view, samples = load_model_view(store, view_id)
-    allowed = {VIEW_SCHEMA, PUBLIC_BC_SCHEMA, LEGACY_VIEW_SCHEMA, "stpd/text-menu-bc-view-v1"}
+    # The Human schemas are dispatched by load_model_view's lazy typed loader.
+    # Keep ordinary decision inputs independent of that evidence module at import time.
+    allowed = {VIEW_SCHEMA, PUBLIC_BC_SCHEMA, LEGACY_VIEW_SCHEMA,
+               "stpd/text-menu-bc-view-v1", "stpd/human-text-input-bc-view-v1",
+               "stpd/human-text-input-bc-view-v2"}
     if view.parameters.value().get("schema") not in allowed:
         raise BoundaryError("tokens", "fixed_decision_allocation_required")
     if {s.split for s in samples} != {"train", "dev"}:

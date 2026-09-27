@@ -2592,6 +2592,154 @@ window.SpireProject = (() => {
     return summary;
   }
 
+  function localTrainingCode(value) {
+    return typeof value === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(value) ? value : null;
+  }
+
+  const localTrainingReasons = {
+    workspace_required: "本机资料空间尚未建立。",
+    curation_preparation_required: "本机数据用途记录尚未准备。",
+    curation_owner_recovery_required: "本机用途记录需要恢复核对。",
+    curated_training_dataset_required: "请从用途登记为训练的固定数据集启动。",
+    training_claim_mismatch: "数据集用途记录与训练声明不一致。",
+    explicit_training_dataset_required: "只能从用途已登记为训练的数据集启动。",
+    nonempty_train_dev_required: "训练集与开发集都需要有合格的决策样本。",
+    gold_reserved_data: "该来源包含已封存的 Gold 数据，不能用于训练。",
+    source_isolation_index_pending: "来源隔离索引尚未就绪，不能启动训练。",
+    source_index_incomplete: "来源隔离索引尚未就绪，不能启动训练。",
+    clean_checkout_required: "当前源码状态未满足本机工程训练条件。",
+    insufficient_independent_components: "独立对局数量不足，尚不能启动这项训练。",
+    human_observation_missing: "缺少符合要求的公开真人观察，不能准备这项训练。",
+    previous_training_outcome_unknown: "上次训练结果未确认；为防止重复任务，本机拒绝再次启动。",
+  };
+
+  function knownLocalTrainingReasonCode(code) {
+    const safeCode = localTrainingCode(code);
+    return safeCode && Object.hasOwn(localTrainingReasons, safeCode) ? safeCode : null;
+  }
+
+  function localTrainingReason(code) {
+    const knownCode = knownLocalTrainingReasonCode(code);
+    return (knownCode && localTrainingReasons[knownCode]) || "训练条件暂不可用。";
+  }
+
+  function localTrainingStage(stage) {
+    const labels = {
+      reserving: "登记训练任务",
+      allocating: "固定训练数据分配",
+      public_view: "准备训练视图",
+      tokenizing: "准备小 B 输入",
+      preparing_run: "准备训练运行",
+      training: "正在训练",
+      verifying_result: "核对训练结果",
+      completed: "训练已完成",
+    };
+    return (stage && Object.hasOwn(labels, stage) && labels[stage]) || "训练阶段未知";
+  }
+
+  async function localTrainingCard(ctx, dataset) {
+    const card = panel(
+      "本机小 B 短训练",
+      "固定使用 B v2 scratch、CPU 2 线程和 3 步；本机服务会核对训练用途与来源资格。不下载 Qwen 权重，也不会操作游戏。这是工程流程验证，不代表模型策略质量。",
+    );
+    let data;
+    try {
+      data = await request(ctx, "/api/local-training/status");
+    } catch (error) {
+      if (!live(ctx)) return card;
+      card.append(el("p", "本机训练服务暂不可用；没有启动训练。", "small muted"));
+      card.append(technical({error:"local_training_status_unavailable"}, "查看训练服务错误"));
+      return card;
+    }
+    if (!live(ctx)) return card;
+    if (!data || typeof data !== "object" || Array.isArray(data)
+        || data.schema !== "stpd/local-training-operation-v1"
+        || !data.operation || typeof data.operation !== "object") {
+      card.append(el("p", "本机训练状态格式未知，当前不能启动训练。", "small muted"));
+      card.append(technical({error_code:"unknown_local_training_status_schema"}, "查看状态格式错误"));
+      return card;
+    }
+    const csrfToken = data.csrf_token;
+    if (data.availability !== "ready") {
+      card.append(el("p", localTrainingReason(data.reason || data.availability), "small muted"));
+      const reasonCode = knownLocalTrainingReasonCode(data.reason);
+      if (reasonCode) card.append(technical({reason:reasonCode}, "查看训练条件代码"));
+      if (["workspace_required", "preparation_required", "recovery_required"].includes(data.availability))
+        card.append(link("打开本机资料与准备状态", route("local-workspace")));
+      return card;
+    }
+    const operation = data.operation;
+    const currentForDataset = operation.dataset_id === dataset.artifact_id;
+    const taskId = hex(operation.operation_id, 32) ? operation.operation_id : null;
+    if (operation.status === "pending") {
+      const stage = localTrainingStage(operation.stage);
+      card.append(el("p", currentForDataset
+        ? `${stage}。关闭游戏不代表训练暂停；刷新只读取本机工作台报告的状态。`
+        : "本机已有训练任务正在执行；需等待其明确结果后再启动另一项。", "small muted"));
+      if (!currentForDataset && hex(operation.dataset_id))
+        card.append(link("打开正在训练的数据集", route("local-workspace", operation.dataset_id)));
+    } else if (["interrupted_unknown", "recovery_required"].includes(operation.status)) {
+      card.append(el("p", currentForDataset
+        ? "上次训练结果未能确认。为避免重复启动，本页不会重发或自动恢复；请查看任务诊断。"
+        : "另一项本机训练结果未能确认。核对前不会启动新任务。", "small muted"));
+      if (!currentForDataset && hex(operation.dataset_id))
+        card.append(link("打开待核对的数据集", route("local-workspace", operation.dataset_id)));
+    } else if (operation.status === "failed") {
+      card.append(el("p", localTrainingReason(operation.error_code), "small muted"));
+      const errorCode = knownLocalTrainingReasonCode(operation.error_code);
+      if (errorCode) card.append(technical({error_code:errorCode}, "查看失败代码"));
+      if (operation.run_id) {
+        card.append(el("p", "已有训练运行记录；不会从未确认状态自动重试。", "small muted"));
+        if (!currentForDataset && hex(operation.dataset_id))
+          card.append(link("打开待核对的数据集", route("local-workspace", operation.dataset_id)));
+      }
+    } else if (currentForDataset && operation.status === "completed") {
+      card.append(el("p", "本机训练已完成；这不表示模型已加载到游戏或具备已验证的策略质量。", "small muted"));
+    } else if (!(["idle", "completed", "failed"].includes(operation.status))) {
+      card.append(el("p", "本机训练状态暂不支持启动；请查看诊断信息。", "small muted"));
+      card.append(technical({status:"unsupported_operation_status"}, "查看训练状态"));
+      return card;
+    }
+    if (currentForDataset && operation.status === "completed") {
+      for (const [field, label] of [
+        ["result_id", "查看训练结果"],
+        ["model_id", "查看本机模型"],
+      ]) {
+        if (hex(operation[field])) card.append(link(label, route("local-workspace", operation[field])));
+      }
+      if (hex(operation.evaluation_id))
+        card.append(link("查看开发集结果", route("local-workspace", operation.evaluation_id)));
+    }
+    const runId = hex(operation.run_id) ? operation.run_id : null;
+    const checkpointId = hex(operation.checkpoint_id) ? operation.checkpoint_id : null;
+    if (taskId) card.append(technical({operation_id:taskId, run_id:runId,
+      checkpoint_id:checkpointId}, "查看运行身份"));
+
+    const blocksStart = operation.status === "pending"
+      || ["interrupted_unknown", "recovery_required"].includes(operation.status)
+      || (currentForDataset && operation.status === "completed")
+      || (operation.status === "failed" && Boolean(operation.run_id));
+    const hasCsrf = typeof csrfToken === "string" && Boolean(csrfToken);
+    const canStart = !blocksStart && hasCsrf && hex(dataset.artifact_id);
+    if (!hasCsrf)
+      card.append(el("p", "本机浏览器保护令牌暂不可用，请刷新后重试。", "small muted"));
+    if (canStart) {
+      const startOptions = {primary:true};
+      card.append(command(ctx, "start-local-training",
+        currentForDataset && operation.status === "failed" ? "重新尝试一次短训练" : "开始本机短训练",
+        async () => {
+          if (!live(ctx) || startOptions.disabled || !hex(dataset.artifact_id)) return;
+          startOptions.disabled = true;
+          await request(ctx, "/api/local-training/start", {dataset_id:dataset.artifact_id}, csrfToken);
+          await reload(ctx);
+        }, startOptions));
+    }
+    card.append(command(ctx, "refresh-local-training-status", "刷新训练状态", async () => {
+      await reload(ctx);
+    }, {type:"secondary"}));
+    return card;
+  }
+
   function localRecordingCard(ctx, importStatus) {
     const section = panel(
       "本机录制来源",
@@ -2871,6 +3019,9 @@ window.SpireProject = (() => {
         box.append(localDatasetOverview(value));
       if (value.kind === "offline_evaluation")
         box.append(await localOfflineEvaluationDetail(ctx, value));
+      if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1"
+          && value.parameters?.purpose === "training")
+        box.append(await localTrainingCard(ctx, value));
       box.append(technical(value, "查看来源详情与内容文件摘要"));
       if (value.kind === "evidence" && value.parameters?.schema === "stpd/local-verified-bundle-v1") {
         const preview = panel("本机样本预览", "选择这份已导入录制后，明确检查其中的样本。不会自动创建数据集。");

@@ -76,8 +76,11 @@ def seal(bundle: Path) -> None:
     _refresh_checksums(bundle)
 
 
-def bundle3(tmp_path: Path, *, runs: int = 3, public_bindings: bool = False) -> Path:
-    bundle = _v2_bundle(tmp_path)
+def bundle3(
+    tmp_path: Path, *, runs: int = 3, public_bindings: bool = False,
+    session_id: str | None = None,
+) -> Path:
+    bundle = _v2_bundle(tmp_path, session_id=session_id)
     raw = bundle / "raw"
     old = load(raw / "run-0001.jsonl")
     recording = load(raw / "recording-manifest.json")
