@@ -22,12 +22,21 @@ from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.inplace_curation import configured_owner
 from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.managed_local_workspace import ROOT_NAME, inspect_managed_workspace
+from stpd.canonical import semantic_hash
 from stpd.fullrun.contracts import SourceProjection
 from stpd.fullrun.curated_dataset import SCHEMA as CURATED_SCHEMA
 from stpd.fullrun.curated_dataset import curate, load_selection, publish_selection
 from stpd.fullrun.decision_dataset import DecisionDataset, SelectionRules
 from stpd.fullrun.decision_spool import SpoolSelection
 from stpd.fullrun.decision_store import preview
+from stpd.fullrun.text_menu_human_import import (
+    SOURCE_SCHEMA as HUMAN_SOURCE_SCHEMA,
+)
+from stpd.fullrun.text_menu_human_import import (
+    load_human_text_source,
+    load_verified_human_text_bundle,
+    publish_human_text_source,
+)
 
 SCHEMA = "stpd/local-dataset-operation-v1"
 OPERATION_FILE = "local-dataset-operation.json"
@@ -86,6 +95,18 @@ class LocalDatasetService:
             return
         digest(value["id"], "local_dataset.id", length=32)
         digest(value["artifact_id"], "local_dataset.artifact_id")
+        kind = value.get("kind", "canonical")
+        if kind not in {"canonical", "human_input"}:
+            raise ValueError
+        if kind == "human_input":
+            ids = value.get("artifact_ids")
+            if (not isinstance(ids, list) or not 1 <= len(ids) <= 256
+                    or len(set(ids)) != len(ids) or ids[0] != value["artifact_id"]):
+                raise ValueError
+            for identity in ids:
+                digest(identity, "local_dataset.human_source")
+            if value["purpose"] != "training" or value["paired_training"] is not None:
+                raise ValueError
         if value["purpose"] not in PURPOSES or value["paired_training"] is not None \
                 and value["purpose"] == "training":
             raise ValueError
@@ -229,7 +250,54 @@ class LocalDatasetService:
     def _same(self, artifact: str, purpose: str, paired: str | None) -> bool:
         return (self.operation.get("artifact_id") == artifact
                 and self.operation.get("purpose") == purpose
-                and self.operation.get("paired_training") == paired)
+                and self.operation.get("paired_training") == paired
+                and self.operation.get("kind", "canonical") == "canonical")
+
+    def binding(self, artifact_id: object) -> dict[str, Any]:
+        """An exact-ID, metadata/ledger-only purpose lookup; no readiness guess."""
+        identity = digest(artifact_id, "local_dataset.artifact_id")
+        owner, store, _ = self._selected()
+        item = store.get_manifest(identity)
+        if item.kind != "dataset" or item.parameters.value().get("schema") != HUMAN_SOURCE_SCHEMA:
+            raise BoundaryError("local_dataset", "human_input_source_required")
+        with closing(sqlite3.connect(owner.path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+            row = db.execute("SELECT purpose FROM curation_claims WHERE artifact=?",
+                             (identity,)).fetchone()
+        return {"schema": "stpd/local-dataset-binding-v1", "artifact_id": identity,
+                "sample_type": "human_input", "curation_purpose": row[0] if row else None}
+
+    def start_human_preview(self, artifact_ids: object) -> dict[str, Any]:
+        if (not isinstance(artifact_ids, list) or not 1 <= len(artifact_ids) <= 256
+                or len(set(artifact_ids)) != len(artifact_ids)):
+            raise BoundaryError("local_dataset", "human_source_selection_invalid")
+        ids = [digest(value, "local_dataset.human_source") for value in artifact_ids]
+        if self.operation_invalid:
+            raise BoundaryError("local_dataset", "operation_file_invalid")
+        owner, _, _ = self._selected()
+        with self.lock:
+            if self.thread is not None and self.thread.is_alive():
+                if (self.operation.get("kind") == "human_input"
+                        and self.operation.get("artifact_ids") == ids):
+                    return self.status()
+                raise BoundaryError("local_dataset", "operation_in_progress")
+            if (self.operation.get("_phase") == "publish"
+                    and self.operation.get("status") in {"failed", "interrupted"}
+                    and self.operation.get("_producer")):
+                with owner.transaction() as db:
+                    held = db.execute("SELECT 1 FROM curation_claims WHERE id=?",
+                                      (self.operation["id"],)).fetchone()
+                if held:
+                    raise BoundaryError("local_dataset", "publication_recovery_required")
+            identity = uuid.uuid4().hex
+            self.operation = {"status": "pending", "id": identity, "_phase": "preview",
+                              "kind": "human_input", "artifact_id": ids[0],
+                              "artifact_ids": ids, "purpose": "training",
+                              "paired_training": None, "_owner": owner.identity,
+                              "_rules": SelectionRules().to_dict()}
+            self._save()
+            self.thread = threading.Thread(target=self._run_preview, args=(identity,), daemon=True)
+            self.thread.start()
+            return self.status()
 
     def start_preview(self, artifact_id: object, purpose: object,
                       paired_training: object) -> dict[str, Any]:
@@ -284,6 +352,7 @@ class LocalDatasetService:
 
             base = preview(store, (source,), rules, on_projection=projected)
             if index_source:
+                owner.index_human_runs(store, source_id, historical=True)
                 candidate = source.parameters.value().get("candidate_id")
                 if isinstance(candidate, str):
                     with owner.transaction() as db:
@@ -314,6 +383,63 @@ class LocalDatasetService:
             with suppress(Exception):
                 _close(base, selected, training)
             raise
+
+    def _human_source(self, owner: LocalCurationOwner, store: ManifestArtifactStore,
+                      ids: list[str], *, index_source: bool) -> tuple[set[str], str, int]:
+        rows: list[dict[str, Any]] = []
+        runs: set[str] = set()
+        sessions: set[str] = set()
+        for source_id in ids:
+            source = store.get_manifest(source_id)
+            if (source.kind != "evidence"
+                    or source.parameters.value().get("schema") != EVIDENCE_SCHEMA):
+                raise BoundaryError("local_dataset", "local_verified_source_required")
+            _, bundle, batch = load_verified_human_text_bundle(store, source_id)
+            if bundle.session_id in sessions:
+                raise BoundaryError("local_dataset", "duplicate_session")
+            sessions.add(bundle.session_id)
+            rows.extend(batch)
+            runs.update(bundle.session_id + "/" + run for run in bundle.run_ids)
+            if len(rows) > 100000:
+                raise BoundaryError("local_dataset", "human_text_row_limit")
+            if index_source:
+                projected: list[SourceProjection] = []
+                base = None
+                try:
+                    base = preview(store, (source,), SelectionRules(),
+                                   on_projection=projected.append)
+                    if len(projected) != 1:
+                        raise BoundaryError("local_dataset", "source_projection_incomplete")
+                    owner.ledger.index_source(source_id, projected[0])
+                    indexed = owner.index_human_runs(store, source_id, historical=True)
+                    if indexed != {bundle.session_id + "/" + run for run in bundle.run_ids}:
+                        raise BoundaryError("local_dataset", "human_run_identity_mismatch")
+                    candidate = source.parameters.value().get("candidate_id")
+                    if isinstance(candidate, str):
+                        with owner.transaction() as db:
+                            pending = db.execute("SELECT 1 FROM local_source_pending WHERE "
+                                                 "candidate=?", (candidate,)).fetchone()
+                        if pending:
+                            owner.complete_index(candidate, source_id)
+                finally:
+                    _close(base)
+        accepted = sum(row["disposition"] == "accepted_input" for row in rows)
+        return runs, semantic_hash(rows), accepted
+
+    @staticmethod
+    def _human_result(owner: LocalCurationOwner, runs: set[str], accepted: int) -> dict[str, Any]:
+        conflict: str | None = None
+        with owner.transaction() as db:
+            related = owner.ledger._groups(db, runs)
+            if any(purpose == "gold" for purpose, _ in owner.ledger._claims(
+                db, related).values()
+            ):
+                conflict = "gold_reserved_data"
+        return {"selected": accepted, "accepted_labels": accepted,
+                "sample_type": "human_input", "split_status": "not_checked_for_training",
+                "exclusions": {}, "can_publish": accepted > 0 and conflict is None,
+                **({"error_code": conflict} if conflict else
+                   {"error_code": "no_accepted_input"} if not accepted else {})}
 
     def _result(self, selected: DecisionDataset, *, owner: LocalCurationOwner,
                 purpose: str) -> dict[str, Any]:
@@ -355,14 +481,21 @@ class LocalDatasetService:
             owner, store, _ = self._selected()
             if tuple(request["_owner"]) != owner.identity:
                 raise BoundaryError("local_dataset", "workspace_owner_changed")
-            base, selected, revision = self._select(
-                owner, store, request["artifact_id"], request["purpose"],
-                request["paired_training"], SelectionRules.decode(request["_rules"]),
-                index_source=True,
-            )
-            result = self._result(selected, owner=owner, purpose=request["purpose"])
-            update = {**result, "status": "preview_ready", "preview_id": uuid.uuid4().hex,
-                      "_logical_id": selected.logical_id, "_annotation_revision": revision}
+            if request.get("kind") == "human_input":
+                runs, logical_id, accepted = self._human_source(
+                    owner, store, request["artifact_ids"], index_source=True)
+                result = self._human_result(owner, runs, accepted)
+                update = {**result, "status": "preview_ready", "preview_id": uuid.uuid4().hex,
+                          "_logical_id": logical_id, "_annotation_revision": 0}
+            else:
+                base, selected, revision = self._select(
+                    owner, store, request["artifact_id"], request["purpose"],
+                    request["paired_training"], SelectionRules.decode(request["_rules"]),
+                    index_source=True,
+                )
+                result = self._result(selected, owner=owner, purpose=request["purpose"])
+                update = {**result, "status": "preview_ready", "preview_id": uuid.uuid4().hex,
+                          "_logical_id": selected.logical_id, "_annotation_revision": revision}
         except Exception as error:
             code = error.code if isinstance(error, BoundaryError) else "preview_failed"
             update = {"status": "failed", "error_code": code}
@@ -424,6 +557,22 @@ class LocalDatasetService:
         for candidate in store.manifest_ids():
             manifest = store.get_manifest(candidate)
             info = manifest.parameters.value()
+            if request.get("kind") == "human_input":
+                if (manifest.kind != "dataset" or manifest.producer != producer
+                        or info.get("schema") != HUMAN_SOURCE_SCHEMA
+                        or info.get("source_digest") != request["_logical_id"]
+                        or [parent.artifact_id for parent in manifest.parents]
+                        != request["artifact_ids"]):
+                    continue
+                try:
+                    _, rows = load_human_text_source(store, candidate)
+                    runs = self._human_source(owner, store, request["artifact_ids"],
+                                              index_source=False)[0]
+                    if semantic_hash(list(rows)) == request["_logical_id"] and runs == held:
+                        matches.append(candidate)
+                except (BoundaryError, OSError, ValueError):
+                    continue
+                continue
             if (manifest.kind != "dataset" or manifest.producer != producer
                     or info.get("schema") != CURATED_SCHEMA
                     or info.get("logical_id") != request["_logical_id"]
@@ -450,6 +599,45 @@ class LocalDatasetService:
         owner.ledger.bind(identity, matches[0])
         return matches[0]
 
+    def _publish_human(self, owner: LocalCurationOwner, store: ManifestArtifactStore,
+                       request: dict[str, Any], identity: str, row: tuple | None) -> str:
+        if row is not None:
+            result_id = row[0] if row[0] is not None else self._recover_published(
+                owner, store, request, identity)
+            manifest, rows = load_human_text_source(store, result_id)
+            if (manifest.parameters.value()["source_digest"] != request["_logical_id"]
+                    or [p.artifact_id for p in manifest.parents] != request["artifact_ids"]
+                    or semantic_hash(list(rows)) != request["_logical_id"]):
+                raise BoundaryError("local_dataset", "publication_recovery_required")
+            runs = self._human_source(owner, store, request["artifact_ids"],
+                                      index_source=False)[0]
+            if owner.ledger.dataset(result_id) != ("training", runs):
+                raise BoundaryError("local_dataset", "publication_recovery_required")
+            return result_id
+        runs, logical_id, accepted = self._human_source(
+            owner, store, request["artifact_ids"], index_source=False)
+        if logical_id != request["_logical_id"]:
+            raise BoundaryError("local_dataset", "preview_changed")
+        indexed_runs: set[str] = set()
+        for source in request["artifact_ids"]:
+            source_runs = owner.ledger.source_runs(source)
+            if source_runs is None:
+                raise BoundaryError("local_dataset", "source_index_incomplete")
+            indexed_runs.update(source_runs)
+        if not runs <= indexed_runs:
+            raise BoundaryError("local_dataset", "source_run_identity_mismatch")
+        result = self._human_result(owner, runs, accepted)
+        if not result["can_publish"]:
+            raise BoundaryError("local_dataset", result.get("error_code", "preview_changed"))
+        producer = source_identity(ROOT)
+        self._record_producer(identity, producer)
+        owner.ledger.claim(identity, "training", runs)
+        manifest = publish_human_text_source(store, tuple(request["artifact_ids"]), producer)
+        if manifest.parameters.value()["source_digest"] != logical_id:
+            raise BoundaryError("local_dataset", "preview_changed")
+        owner.ledger.bind(identity, manifest.artifact_id)
+        return manifest.artifact_id
+
     def _run_publish(self, identity: str) -> None:
         base = selected = None
         try:
@@ -462,7 +650,9 @@ class LocalDatasetService:
             with owner.transaction() as db:
                 row = db.execute("SELECT artifact FROM curation_claims WHERE id=?",
                                  (identity,)).fetchone()
-            if row is not None:
+            if request.get("kind") == "human_input":
+                result_id = self._publish_human(owner, store, request, identity, row)
+            elif row is not None:
                 result_id = (row[0] if row[0] is not None else
                              self._recover_published(owner, store, request, identity))
                 manifest = store.get_manifest(result_id)

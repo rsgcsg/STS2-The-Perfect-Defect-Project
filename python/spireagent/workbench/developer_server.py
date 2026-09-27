@@ -492,6 +492,20 @@ class Application:
             raise BoundaryError("local_dataset", "running_configuration_mismatch")
         return self.local_datasets.start_preview(artifact_id, purpose, paired_training)
 
+    def start_local_human_dataset_preview(self, artifact_ids: object) -> dict[str, Any]:
+        if self.config_path is None:
+            raise BoundaryError("local_dataset", "running_instance_unavailable")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("local_dataset", "running_instance_unavailable") from error
+        if (not isinstance(runtime, dict) or current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_dataset", "running_configuration_mismatch")
+        return self.local_datasets.start_human_preview(artifact_ids)
+
     def start_local_dataset_publish(self, preview_id: object) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_dataset", "running_instance_unavailable")
@@ -710,6 +724,20 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 try:
                     value = {**app.local_datasets.status(), "csrf_token": app.account.csrf}
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+            elif parsed.path.startswith("/api/local-datasets/binding/"):
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                matched = re.fullmatch(r"/api/local-datasets/binding/([a-f0-9]{64})",
+                                       parsed.path)
+                if matched is None or parsed.query:
+                    self.respond(400, b'{"error":"invalid_local_dataset_request"}')
+                    return
+                try:
+                    value = app.local_datasets.binding(matched[1])
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
@@ -959,13 +987,18 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 try:
-                    body = self.json_body(maximum=256)
+                    maximum = 32768 if self.path == "/api/local-datasets/human-preview" else 256
+                    body = self.json_body(maximum=maximum)
                     if self.path == "/api/local-datasets/preview":
                         if set(body) != {"artifact_id", "purpose", "paired_training"}:
                             raise ValueError
                         value = app.start_local_dataset_preview(
                             body["artifact_id"], body["purpose"], body["paired_training"],
                         )
+                    elif self.path == "/api/local-datasets/human-preview":
+                        if set(body) != {"artifact_ids"}:
+                            raise ValueError
+                        value = app.start_local_human_dataset_preview(body["artifact_ids"])
                     elif self.path == "/api/local-datasets/publish":
                         if set(body) != {"preview_id"}:
                             raise ValueError
