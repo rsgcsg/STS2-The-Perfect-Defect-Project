@@ -51,6 +51,18 @@ def test_shared_shell_has_no_embedded_runtime_data_or_external_dependencies():
         ):
             assert 'data-view="' + view in page
     assert asset("../developer.py") is None
+    no_hub_local = render_shell("local", "/api/console")
+    assert 'data-view="datasets"' not in no_hub_local
+    assert 'data-view="research"' not in no_hub_local
+    for view in (
+        "local-home",
+        "campaigns",
+        "local-models",
+        "local-workspace",
+        "collections",
+        "evaluations",
+    ):
+        assert f'data-view="{view}"' in no_hub_local
     assert 'data-view="local-models"' in render_shell("local", "/api/console")
     assert 'href="?view=local-home"' in render_shell("local", "/api/console")
     assert 'href="?view=local-home"' not in render_shell("cloud", "/app/api")

@@ -47,17 +47,23 @@ def render_shell(mode: str, api_base: str, cloud_url: str = "") -> str:
     assets = "/assets" if mode == "local" else "/app/assets"
     cloud = html.escape(cloud_url.rstrip("/"), quote=True)
     label = "本机工作台" if mode == "local" else "云端数据中心"
-    primary = ([
+    local_primary = ([
         ("local-home", "本机工作台", "⌂"),
         ("campaigns", "真人采集", "◉"),
         ("local-models", "模型实战", "▷"),
         ("local-workspace", "本机资料", "▤"),
-    ] if mode == "local" else []) + [
-        ("collections", "数据", "▤"),
+    ] if mode == "local" else [])
+    shared_primary = [("collections", "数据", "▤")]
+    team_primary = [
         ("datasets", "数据集", "▦"),
         ("research", "训练与模型", "◷"),
-        ("evaluations", "评估结果", "◇"),
     ]
+    primary = (
+        local_primary
+        + shared_primary
+        + (team_primary if mode == "cloud" or cloud_url else [])
+        + [("evaluations", "评估结果", "◇")]
+    )
     nav = "".join(
         f'<a class="nav-item" href="?view={key}" data-view="{key}">'
         f'<span class="nav-icon" aria-hidden="true">{icon}</span>{name}</a>'

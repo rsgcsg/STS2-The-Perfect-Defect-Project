@@ -2494,6 +2494,40 @@ window.SpireProject = (() => {
       }, {type:"secondary"}));
       box.append(panel(`${value.kind} · ${value.artifact_id.slice(0, 16)}`, "资料身份和来源信息来自本机已登记内容。"));
       box.append(technical(value, "查看来源详情与内容文件摘要"));
+      if (value.kind === "evidence" && value.parameters?.schema === "stpd/local-verified-bundle-v1") {
+        const preview = panel("本机样本预览", "选择这份已导入录制后，明确检查其中的样本。不会自动创建数据集。");
+        const status = await request(ctx, "/api/local-recordings/preview/status");
+        const matched = status.artifact_id === value.artifact_id;
+        if (matched && status.status === "pending") {
+          preview.append(el("p", "正在检查这份录制。", "small muted"));
+        } else if (matched && status.status === "completed") {
+          if (status.availability === "archival_format") {
+            preview.append(el("p", "旧版归档未提供当前输入标签与完整决策计数，无法给出样本预览。", "small muted"));
+          } else {
+            preview.append(el("p", `操作标签 ${status.human_input_labels} 条 / 完整决策 ${status.canonical_decisions} 条`, "small muted"));
+            preview.append(technical({
+              输入记录总数: status.human_input_total,
+              输入排除原因: status.human_input_exclusions,
+              决策侧观察项: status.decision_exclusions,
+              观察到的run数量: status.run_ids_observed,
+              独立run资格: status.independent_run_qualification === "insufficient_canonical_decisions" ? "完整决策不足" : "未知",
+              说明: "决策侧计数可能重叠；输入标签不能充当完整轨迹或已执行动作。",
+            }, "查看统计与排除原因"));
+          }
+          preview.append(el("p", "尚未生成数据集；训练和测试划分需要另行检查。", "small muted"));
+        } else if (matched && status.status === "failed") {
+          preview.append(el("p", "归档预览核验失败，未产生样本结果。", "small muted"));
+          preview.append(technical({error_code: status.error_code}, "查看核验错误"));
+        }
+        preview.append(command(ctx, "refresh-local-recording-preview", status.status === "pending" ? "刷新进度" : "刷新预览状态", async () => {
+          await reload(ctx);
+        }, {type:"secondary"}));
+        preview.append(command(ctx, "preview-local-recording", matched && status.status === "completed" ? "重新检查" : "预览样本", async () => {
+          await request(ctx, "/api/local-recordings/preview", {artifact_id: value.artifact_id}, status.csrf_token);
+          await reload(ctx);
+        }, {disabled: status.status === "pending" || !status.csrf_token}));
+        box.append(preview);
+      }
       return box;
     }
 
