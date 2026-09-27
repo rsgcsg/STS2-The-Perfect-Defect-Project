@@ -61,12 +61,51 @@ internal static class HumanTextControllerStartPatch
         ?? throw new MissingMethodException(typeof(NControllerCardPlay).FullName, "Start");
 
     private static void Prefix(NControllerCardPlay __instance,
-        out NControllerCardPlay? __state) =>
+        out NCardPlay? __state) =>
         __state = RecorderRuntime.BeginHumanTextTargetSetup(__instance);
 
-    private static Exception? Finalizer(NControllerCardPlay? __state, Exception? __exception)
+    private static Exception? Finalizer(NCardPlay? __state, Exception? __exception)
     {
         RecorderRuntime.EndHumanTextTargetSetup(__state);
+        return __exception;
+    }
+}
+
+[HarmonyPatch]
+internal static class HumanTextMouseTargetStartPatch
+{
+    internal static MethodBase TargetMethod() =>
+        AccessTools.Method(typeof(NMouseCardPlay), "SingleCreatureTargeting")
+        ?? throw new MissingMethodException(typeof(NMouseCardPlay).FullName,
+            "SingleCreatureTargeting");
+
+    private static void Prefix(NMouseCardPlay __instance,
+        out NCardPlay? __state) =>
+        __state = RecorderRuntime.BeginHumanTextTargetSetup(__instance);
+
+    private static Exception? Finalizer(NCardPlay? __state, Exception? __exception)
+    {
+        RecorderRuntime.EndHumanTextTargetSetup(__state);
+        return __exception;
+    }
+}
+
+[HarmonyPatch]
+internal static class HumanTextMouseInputPatch
+{
+    internal static MethodBase TargetMethod() =>
+        AccessTools.Method(typeof(NMouseCardPlay), nameof(NMouseCardPlay._Input))
+        ?? throw new MissingMethodException(typeof(NMouseCardPlay).FullName, "_Input");
+
+    private static void Prefix(NMouseCardPlay __instance, InputEvent inputEvent,
+        out RecorderRuntime.HumanTextContinuationScope? __state) =>
+        __state = RecorderRuntime.BeginHumanTextMouseInput(__instance, inputEvent);
+
+    private static Exception? Finalizer(
+        RecorderRuntime.HumanTextContinuationScope? __state, Exception? __exception)
+    {
+        NativeNestedCallbackSafety.Run("human_text_input.mouse_finalizer", () =>
+            RecorderRuntime.FinishHumanTextContinuation(__state, __exception));
         return __exception;
     }
 }
@@ -80,10 +119,26 @@ internal static class HumanTextTargetStartPatch
                 && method.GetParameters().Length == 5
                 && method.GetParameters()[1].ParameterType == typeof(Control));
 
+    private static void Prefix(NTargetManager __instance) =>
+        RecorderRuntime.InvalidateHumanTextTargetManager(__instance);
+
     private static void Postfix(NTargetManager __instance,
         [HarmonyArgument(1)] Control control,
         [HarmonyArgument(2)] TargetMode startingMode) =>
         RecorderRuntime.BindHumanTextTargetManager(__instance, control, startingMode);
+}
+
+[HarmonyPatch]
+internal static class HumanTextOtherTargetStartPatch
+{
+    internal static MethodBase TargetMethod() =>
+        typeof(NTargetManager).GetMethods()
+            .Single(method => method.Name == nameof(NTargetManager.StartTargeting)
+                && method.GetParameters().Length == 5
+                && method.GetParameters()[1].ParameterType == typeof(Vector2));
+
+    private static void Prefix(NTargetManager __instance) =>
+        RecorderRuntime.InvalidateHumanTextTargetManager(__instance);
 }
 
 [HarmonyPatch]

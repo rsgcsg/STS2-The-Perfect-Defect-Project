@@ -5,17 +5,24 @@ from __future__ import annotations
 import copy
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from platform_bundle3_fixture import bundle3, load, seal, write
 from test_artifact_store_v1 import PRODUCER, store
 from test_text_menu_data import snapshot
 
-from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
+from spireagent.artifact_contracts import Manifest, Parent
+from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, json_bytes
+from stpd.fullrun.features import _load_model_view, load_model_view
 from stpd.fullrun.text_menu_human_import import (
+    LEGACY_VIEW_SCHEMA,
+    SOURCE_SCHEMA,
+    VIEW_SCHEMA,
     _project,
     load_human_text_source,
     load_verified_human_text_bundle,
+    publish_human_text_bc_view,
     publish_human_text_source,
     publish_verified_human_text_bundle,
 )
@@ -83,6 +90,96 @@ def test_duplicate_visible_input_collapses_sessions_and_blocks_leakage() -> None
     rows = (observation("session-a", "same"), observation("session-b", "same"))
     with pytest.raises(BoundaryError, match="independent_groups_required"):
         _project(rows)
+
+
+def test_same_local_run_id_does_not_claim_cross_session_native_independence() -> None:
+    rows = (observation("session-a", "different-a"),
+            observation("session-b", "different-b"))
+    assert rows[0]["run_id"] == rows[1]["run_id"] == "run-1"
+    assert (project_text_menu_snapshot(rows[0]["snapshot"]).state_text
+            != project_text_menu_snapshot(rows[1]["snapshot"]).state_text)
+
+    samples, report = _project(rows)
+
+    assert {sample.split for sample in samples} == {"train", "dev"}
+    assert len({sample.run_id for sample in samples}) == 2  # scoped by session
+    assert report["split_basis"] == (
+        "recording_session_group_with_duplicate_visible_current_input_collapse")
+    assert report["native_run_independence"] == "unknown_across_sessions"
+    assert [row["run_id"] for row in report["rows"]] == ["run-1", "run-1"]
+
+    legacy_samples, legacy_report = _project(rows, schema=LEGACY_VIEW_SCHEMA)
+    assert legacy_samples == samples
+    assert legacy_report["schema"] == LEGACY_VIEW_SCHEMA
+    assert legacy_report["split_basis"] == (
+        "whole_session_run_and_duplicate_visible_current_input")
+    assert "native_run_independence" not in legacy_report
+
+
+@pytest.mark.parametrize("schema", [LEGACY_VIEW_SCHEMA, "stpd/human-text-input-bc-view-v2"])
+def test_human_view_dispatch_keeps_v1_and_v2_read_paths(schema, monkeypatch) -> None:
+    manifest = SimpleNamespace(
+        kind="model_view", parameters=SimpleNamespace(value=lambda: {"schema": schema}))
+    target = SimpleNamespace(get_manifest=lambda identity: manifest)
+    expected = (manifest, ())
+    monkeypatch.setattr(
+        "stpd.fullrun.text_menu_human_import.load_human_text_bc_view",
+        lambda store, value: expected)
+
+    assert _load_model_view(target, "view-id") == expected
+
+
+def test_v1_and_v2_payloads_revalidate_and_human_view_stays_out_of_token_admission(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    rows = (observation("session-a", "archive-a"),
+            observation("session-b", "archive-b"))
+    target = store(tmp_path)
+    source = Manifest("dataset", PRODUCER, parameters=FrozenObject.of({
+        "schema": SOURCE_SCHEMA, "scope": "engineering", "purpose": "bc_input_observation",
+        "source_digest": "a" * 64,
+    }))
+    target.publish(source)
+    monkeypatch.setattr(
+        "stpd.fullrun.text_menu_human_import.load_human_text_source",
+        lambda _store, identity: (source, rows) if identity == source.artifact_id else None)
+
+    view_v2 = publish_human_text_bc_view(target, source.artifact_id, PRODUCER)
+    assert view_v2.parameters.value()["schema"] == VIEW_SCHEMA
+    _, samples_v2 = load_model_view(target, view_v2.artifact_id)
+
+    samples_v1, lineage_v1 = _project(rows, schema=LEGACY_VIEW_SCHEMA)
+    sample_payload = target.put_bytes(
+        "samples", b"".join(json_bytes(sample.to_dict()) for sample in samples_v1),
+        "application/x-ndjson")
+    lineage_payload = target.put_bytes("lineage", json_bytes(lineage_v1), "application/json")
+    view_v1 = Manifest(
+        "model_view", PRODUCER, (Parent("dataset", source.artifact_id),),
+        (sample_payload, lineage_payload), FrozenObject.of({
+            "schema": LEGACY_VIEW_SCHEMA, "serializer": lineage_v1["serializer"],
+            "scope": "engineering", "samples": len(samples_v1),
+            "source_digest": "a" * 64, "label_boundary": lineage_v1["label_boundary"],
+        }))
+    target.publish(view_v1)
+    _, samples_loaded_v1 = load_model_view(target, view_v1.artifact_id)
+    assert samples_loaded_v1 == samples_v1 == samples_v2
+
+    forged_lineage = decode_json(b"".join(target.read_payload(view_v2.payload("lineage"))))
+    forged_lineage["native_run_independence"] = "proven_independent"
+    forged_payload = target.put_bytes("lineage", json_bytes(forged_lineage), "application/json")
+    forged_view = Manifest(
+        "model_view", PRODUCER, view_v2.parents,
+        (view_v2.payload("samples"), forged_payload), view_v2.parameters,
+    )
+    target.publish(forged_view)
+    with pytest.raises(BoundaryError, match="view_projection_mismatch"):
+        load_model_view(target, forged_view.artifact_id)
+
+    from stpd.fullrun.token_inputs import _source as token_input_source
+
+    for view in (view_v1, view_v2):
+        with pytest.raises(BoundaryError, match="fixed_decision_allocation_required"):
+            token_input_source(target, view.artifact_id)
 
 
 def test_forged_choice_cannot_become_human_label() -> None:
