@@ -35,6 +35,7 @@ window.SpireProject = (() => {
   let exportId = null;
   let readiness = new Map();
   const pending = new Set();
+  const commandControls = new Map();
   let activeDataset = null;
   let localRecordingSnapshot = null;
   const datasetSnapshots = new WeakMap();
@@ -364,7 +365,15 @@ window.SpireProject = (() => {
     button.type = "button";
     button.dataset.action = name;
     const key = `${ctx.account}:${name}`;
-    button.disabled = Boolean(options.disabled) || pending.has(key);
+    const controlKey = key;
+    const disabledState = () => Boolean(options.disabled);
+    button.disabled = disabledState() || pending.has(key);
+    if (current === ctx) {
+      let controls = commandControls.get(controlKey);
+      if (!controls || controls.ctx !== ctx) controls = {ctx, buttons: []};
+      controls.buttons.push({button, disabled:disabledState});
+      commandControls.set(controlKey, controls);
+    }
     if (options.title) button.title = options.title;
     button.onclick = async () => {
       if (!live(ctx) || button.disabled || pending.has(key)) return;
@@ -377,7 +386,12 @@ window.SpireProject = (() => {
           note(ctx, failure(error), "error");
       } finally {
         pending.delete(key);
-        button.disabled = Boolean(options.disabled);
+        button.disabled = disabledState();
+        const controls = commandControls.get(controlKey);
+        if (controls && live(controls.ctx)) {
+          for (const control of controls.buttons)
+            control.button.disabled = control.disabled() || pending.has(key);
+        }
       }
     };
     return button;
@@ -3559,6 +3573,7 @@ window.SpireProject = (() => {
         scope: scope(),
       };
       current = ctx;
+      commandControls.clear();
       if (!(["local-models", "local-workspace", "evaluations"].includes(view) || (local && ["campaigns", "collection-overview"].includes(view))) && !signedIn(ctx)) return authNotice(ctx);
       try {
         return await {

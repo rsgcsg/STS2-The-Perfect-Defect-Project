@@ -91,13 +91,15 @@ function setup({
   importStatus = {schema: "stpd/local-recording-import-operation-v1", status: "idle", csrf_token: "browser-csrf"},
   curationStatus = {schema: "stpd/local-curation-preparation-v1", status: "not_applicable"},
   query = "",
+  renderOnReload = false,
 } = {}) {
   const calls = [],
     notice = new Element("div"),
     confirms = [];
   let selectedScope = mode === "local" ? "local" : "project",
     generation = 0,
-    reloads = 0;
+    reloads = 0,
+    livePage = null;
   const context = vm.createContext({
     document: {
       body: { dataset: { mode, cloudUrl: "https://hub.example.test" } },
@@ -153,6 +155,7 @@ function setup({
   const ui = context.window.SpireProject;
   ui.reload = async () => {
     reloads++;
+    if (renderOnReload) livePage = await ui.render(view, identity);
   };
   return {
     ui,
@@ -163,7 +166,12 @@ function setup({
     get reloads() {
       return reloads;
     },
-    render: (mount) => ui.render(view, identity, mount),
+    render: async (mount) => {
+      const page = await ui.render(view, identity, mount);
+      if (renderOnReload) livePage = page;
+      return page;
+    },
+    get livePage() { return livePage; },
     scope: (value) => {
       selectedScope = value;
       generation++;
@@ -310,6 +318,127 @@ test("local research workspace browses the local API without project identity", 
   assert.equal(env.calls[1].url, "/api/local-recordings/import/status");
   assert.equal(env.calls[2].url.startsWith("/api/local-workspace?"), true);
   assert.equal(env.calls[0].options.method || "GET", "GET");
+});
+
+test("command pending is reconciled into a replacement render without overriding current eligibility", async () => {
+  const source = id("a");
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", renderOnReload:true,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed")
+        return {status:"ready", workspace_id:id("c")};
+      if (url === "/api/local-recordings/import/status") return {status:"idle"};
+      if (url.startsWith("/api/local-workspace?"))
+        return {schema:"stpd/local-workspace-inventory-v1", total:0, items:[]};
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  let page = await env.render();
+  field(page, "local-workspace-search").value = "new query";
+  await action(page, "search-local-workspace").onclick();
+  assert.ok(env.livePage, "reload performs a project render before the click resolves");
+  assert.equal(action(env.livePage, "search-local-workspace").disabled, false,
+    "the fresh search control is enabled after its GET and render finish");
+  assert.equal(post(env.calls).length, 0);
+
+  let previewStatus = {status:"completed", artifact_id:source, availability:"available",
+    human_input_labels:2, canonical_decisions:0, human_input_total:2,
+    human_input_exclusions:{}, decision_exclusions:{}, run_ids_observed:1};
+  const previewEnv = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${source}`,
+    renderOnReload:true,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed")
+        return {status:"ready", workspace_id:id("c")};
+      if (url === `/api/local-workspace/artifacts/${source}`)
+        return {artifact_id:source, kind:"evidence", parameters:{schema:"stpd/local-verified-bundle-v1"}};
+      if (url === "/api/local-recordings/preview/status")
+        return {...previewStatus, csrf_token:"preview-csrf"};
+      if (url === "/api/local-recordings/preview") {
+        assert.equal(options.method, "POST");
+        previewStatus = {status:"pending", artifact_id:source};
+        return {status:"pending"};
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  page = await previewEnv.render();
+  assert.equal(action(page, "preview-local-recording").disabled, false);
+  await action(page, "preview-local-recording").onclick();
+  assert.equal(post(previewEnv.calls).length, 1);
+  assert.equal(action(previewEnv.livePage, "preview-local-recording").disabled, true,
+    "the new page's backend-derived pending state stays disabled after the old action settles");
+
+  const otherSource = id("b");
+  let finishPost, postStarted;
+  const dispatched = new Promise(resolve => { postStarted = resolve; });
+  previewStatus = {status:"completed", artifact_id:source, availability:"available",
+    human_input_labels:2, canonical_decisions:0, human_input_total:2,
+    human_input_exclusions:{}, decision_exclusions:{}, run_ids_observed:1};
+  const contextEnv = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${source}`,
+    renderOnReload:true,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed")
+        return {status:"ready", workspace_id:id("c")};
+      const artifact = url.match(/^\/api\/local-workspace\/artifacts\/([a-f0-9]{64})$/);
+      if (artifact) return {artifact_id:artifact[1], kind:"evidence",
+        parameters:{schema:"stpd/local-verified-bundle-v1"}};
+      if (url === "/api/local-recordings/preview/status")
+        return {...previewStatus, csrf_token:"preview-csrf"};
+      if (url === "/api/local-recordings/preview") {
+        assert.equal(options.method, "POST");
+        previewStatus = {status:"pending", artifact_id:source};
+        postStarted();
+        return new Promise(resolve => {
+          finishPost = () => {
+            previewStatus = {status:"completed", artifact_id:source, availability:"available",
+              human_input_labels:2, canonical_decisions:0, human_input_total:2,
+              human_input_exclusions:{}, decision_exclusions:{}, run_ids_observed:1};
+            resolve({status:"completed"});
+          };
+        });
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  page = await contextEnv.render();
+  const oldContextClick = action(page, "preview-local-recording").onclick();
+  await dispatched;
+  contextEnv.navigate("local-workspace", `&id=${otherSource}`);
+  const otherPage = await contextEnv.render();
+  assert.equal(action(otherPage, "preview-local-recording").disabled, true,
+    "a new artifact remains blocked by its current shared pending DTO");
+  finishPost();
+  await oldContextClick;
+  assert.equal(action(otherPage, "preview-local-recording").disabled, true,
+    "the old context releases its client lock using the new page's own eligibility");
+
+  let attempts = 0;
+  const rejected = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${source}`,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed")
+        return {status:"ready", workspace_id:id("c")};
+      if (url === `/api/local-workspace/artifacts/${source}`)
+        return {artifact_id:source, kind:"evidence", parameters:{schema:"stpd/local-verified-bundle-v1"}};
+      if (url === "/api/local-recordings/preview/status")
+        return {...previewStatus, csrf_token:"preview-csrf"};
+      if (url === "/api/local-recordings/preview") {
+        assert.equal(options.method, "POST");
+        attempts++;
+        return {httpStatus:409, error:"preview_unavailable"};
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  page = await rejected.render();
+  const retry = action(page, "preview-local-recording");
+  await retry.onclick();
+  assert.equal(post(rejected.calls).length, 1, "a rejected POST is not automatically retried");
+  assert.equal(retry.disabled, false, "a rejected promise releases the old control lock");
+  await retry.onclick();
+  assert.equal(attempts, 2, "a second POST requires another explicit user click");
 });
 
 test("local curation preparation is GET-only until one explicit empty-body POST", async () => {
