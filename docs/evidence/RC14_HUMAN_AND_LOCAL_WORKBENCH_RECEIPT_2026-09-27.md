@@ -85,7 +85,12 @@ passing; CI run
 was superseded and cancelled after the required normal base alignment. The
 current source combination is `2ed18832bd3bb58c6a751dd73c8663428b35e32b`; its
 [Python-scope run 36302839895](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36302839895)
-is pending. The candidate remains unmerged. These were automated CUA observations, not Human
+passed (plan, Linux, Windows and portable; docs not selected). PR #52 normally
+merged as `4b729b8401e3fc6597ece5aedd92173068088079`, parents `9f895e8b533a25abe971d169000ae81760b8e76d`
+and `2ed18832bd3bb58c6a751dd73c8663428b35e32b`, tree `aae395fa32c9bd81558a2820ec8f4e3c6b2cbd49`
+(equal to the candidate tree). Integration run
+[36303808419](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36303808419)
+passed via verified execution reuse plus fresh guards, not a second Linux/Windows run. These were automated CUA observations, not Human
 actions or Human evidence. The game was closed throughout this browser-only smoke, before the later RC16 launch below.
 
 ## Subsequent mouse continuation source candidate
@@ -103,8 +108,7 @@ At clean candidate `1f5cd47958ee3ade3dfa1d3d0e5bda38d911425a`, the supervisor ra
 checks, exact native builds with zero warnings/errors); the Connector witness
 filter passed 8 tests and `npm --prefix components/evidence run check` passed
 145 tests. `check:identity`, `check:bom`, closeout and diff checks passed. The
-planner selects full. Hosted CI and the new exact loaded/Human canary are not
-claimed by these local checks. This new candidate does not relabel the RC14
+planner selects full. Hosted CI and loaded/Human evidence are separate from these local checks. This new candidate does not relabel the RC14
 session above.
 
 Subsequent candidate installation occurred at `2026-09-27T07:30:12.491Z`;
@@ -118,16 +122,43 @@ Rollback retains the prior RC15 bytes and configuration. The Agent resumed the
 existing run before recording, then opened a distinct session
 `session-20260927T073248Z-02329ab4821b48d7acc8f0d2f9672eac` for owner-operated
 mouse target/cancel checks. No Agent gameplay occurred after recording start.
-The session is awaiting Human actions and attestation; no new Human result is
-claimed. Hosted CI remains separate from this candidate load observation.
+The owner then replied “鼠标验证完成” for the requested right-click cancel,
+drag-back and normal targeted card play. The session closed at
+`2026-09-27T07:38:14.202583+00:00`; no later action was added to manufacture a successor.
+
+The immutable text-input rows, in sequence, are: `begin_card_play`,
+`cancel_card_play` (`mouse_target_canceled_input`), `begin_card_play`,
+`begin_card_play`, `confirm_target` (`mouse_target_finish_input`). All five map
+exactly once and are accepted input with no external controller. The three
+carrier identities separate the attempts. Only one explicit-cancel label was persisted; source/test evidence separately
+checks event-identity deduplication. This recording does not prove the same
+physical event traversed both callbacks. No additional explicit-cancel label was
+recorded for the owner-attested drag-back portion. Mouse movement is not in the
+stream, so the rows alone cannot prove that movement or assign it to a begin row.
+
+`audit-native-semantic` reports one successful `PlayCardAction`, exact-once
+membership, no native action cancellations/aborts/unknowns. Separately, the
+transition trace retains one `transition_unknown` with
+`session_closed_before_successor_boundary`: native Commit/completion was observed,
+but a complete semantic successor was not. `audit` therefore has zero canonical
+valid records, zero invalid records and zero invalidations. These zeros do not
+mean a complete training transition passed. The run began before recording and
+has no captured native start or terminal event.
+
+`pack-session --attest-human-origin` passed; current Evidence rc.17 source
+`verify-human-bundle` passed with no findings and five text-input records. Bundle
+content ID: `6bcee065766e92d13f0960cf5a39742b052c9fd7dd1e161fafc753100051bc46`;
+checksums SHA-256: `99f0fc48b7f3e07bf4fd1772ee5091067535fa7dac25033a376bdc5563bac2a8`.
+Raw observations and bundle remain private. Verification preserves the unresolved
+transition and grants no training admission. Hosted CI remains separate from
+this exact, bounded Human input observation.
 
 ## Next work and limits
 
-- Complete PR #52 review and hosted CI, then record its integration state. The
-  candidate fixes the signed-out home prompt; the local workspace inventory is
-  still only a bounded metadata view.
-- Capture explicit mouse target-selection and cancellation labels before making
-  claims about either interaction.
+- PR #52 is integrated; its local workspace inventory remains a bounded metadata
+  view. Dataset creation, training, analysis and archive still need local paths.
+- Publish the reviewed mouse source candidate and obtain its own hosted CI.
+  Untargeted/ally mouse stages and complete successor coverage remain separate.
 
 This receipt does not establish complete-game or Full-Run Human qualification,
 complete cancellation/target coverage, research admission, model quality,
