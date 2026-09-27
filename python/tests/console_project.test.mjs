@@ -515,6 +515,8 @@ test("recoverable local publication is checked only on explicit click", async ()
   }});
   const page = await env.render();
   const recover = action(page, "recover-local-dataset-publication");
+  assert.equal(action(page, "check-local-dataset").disabled, true);
+  assert.match(text(page), /请先点击“核对上次创建结果”/);
   assert.equal(post(env.calls).length, 0);
   await action(page, "refresh-local-dataset-status").onclick();
   assert.equal(post(env.calls).length, 0);
@@ -556,6 +558,20 @@ test("local publication recovery requires exact backend availability and CSRF", 
   assert.equal(recover.disabled, true);
   await recover.onclick();
   assert.equal(post(noCsrf.calls).length, 0);
+
+  const recoveryRequired = localDatasetEnv({artifact, datasetStatus: {
+    schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+    operation: {status: "failed", artifact_id: artifact, purpose: "training",
+      paired_training: null, recovery_available: false,
+      error_code: "publication_recovery_required", can_publish: false},
+    csrf_token: "dataset-csrf",
+  }});
+  const blockedPage = await recoveryRequired.render();
+  assert.match(text(blockedPage), /恢复用途记录后才能继续/);
+  assert.equal(action(blockedPage, "check-local-dataset").disabled, true);
+  assert.equal(walk(blockedPage).some(element =>
+    element.dataset?.action === "recover-local-dataset-publication"), false);
+  assert.equal(post(recoveryRequired.calls).length, 0);
 });
 
 test("matching preview publishes once and links only its local result", async () => {
@@ -645,14 +661,55 @@ test("Gold preview cannot publish when the backend reports it is not ready", asy
     schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
     operation: {status: "preview_ready", artifact_id: artifact, purpose: "gold",
       paired_training: null, preview_id: "d".repeat(32), selected: 2,
-      split_status: "purpose_assigned", exclusions: {}, can_publish: false},
+      split_status: "purpose_assigned", exclusions: {}, can_publish: false,
+      error_code: "gold_reserved_data"},
     csrf_token: "dataset-csrf",
   }});
   const page = await env.render();
   assert.match(text(page), /后端尚未确认/);
   assert.match(text(page), /已按所选评测用途分配/);
+  assert.match(text(page), /该来源已保留为 Gold/);
+  assert.match(text(page), /gold_reserved_data/);
   assert.equal(walk(page).some(element => element.dataset?.action === "publish-local-dataset"), false);
   assert.equal(post(env.calls).length, 0);
+});
+
+test("local dataset blockers explain known reasons and retain unknown codes", async () => {
+  const artifact = id("a");
+  const cases = [
+    ["gold_source_inventory_pending", "Gold 来源仍在索引"],
+    ["gold_already_in_other_dataset", "该来源已进入其他数据集"],
+    ["gold_requires_gold_merge", "请在数据集列表合并已有 Gold"],
+    ["gold_previously_used_for_training", "已有训练使用记录"],
+    ["gold_reserved_data", "该来源已保留为 Gold"],
+    ["empty_selection", "当前选择没有可保留的样本"],
+  ];
+  for (const [errorCode, message] of cases) {
+    const env = localDatasetEnv({artifact, datasetStatus: {
+      schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+      operation: {status: "preview_ready", artifact_id: artifact, purpose: "gold",
+        paired_training: null, preview_id: "e".repeat(32), selected: 0,
+        can_publish: false, error_code: errorCode},
+      csrf_token: "dataset-csrf",
+    }});
+    const page = await env.render();
+    assert.match(text(page), new RegExp(message));
+    assert.match(text(page), new RegExp(errorCode));
+    assert.equal(walk(page).some(element => element.dataset?.action === "publish-local-dataset"), false);
+    assert.equal(post(env.calls).length, 0);
+  }
+
+  const unknown = localDatasetEnv({artifact, datasetStatus: {
+    schema: "stpd/local-dataset-operation-v1", availability: "ready", paired_training: [],
+    operation: {status: "preview_ready", artifact_id: artifact, purpose: "gold",
+      paired_training: null, preview_id: "f".repeat(32), selected: 1,
+      can_publish: false, error_code: "future_unmapped_reason"},
+    csrf_token: "dataset-csrf",
+  }});
+  const unknownPage = await unknown.render();
+  assert.match(text(unknownPage), /future_unmapped_reason/);
+  assert.doesNotMatch(text(unknownPage), /future_unmapped_reason.*(已|不能|需要)/);
+  assert.equal(post(unknown.calls).length, 0);
 });
 
 test("local dataset publish requires a backend-shaped preview identity", async () => {

@@ -1117,6 +1117,14 @@ window.SpireProject = (() => {
   const splitLabel = value => value === "assigned" ? "已分配训练/开发样本" :
     value === "purpose_assigned" ? "已按所选评测用途分配" :
     value === "insufficient_independent_run_components" ? "独立对局不足，尚不能形成独立划分" : "划分状态未知";
+  const localDatasetBlockerLabel = code => ({
+    gold_source_inventory_pending: "Gold 来源仍在索引；完成后可以重新检查。",
+    gold_already_in_other_dataset: "该来源已进入其他数据集；请为 Gold 选择独立来源。",
+    gold_requires_gold_merge: "该来源已属于 Gold；请在数据集列表合并已有 Gold。",
+    gold_previously_used_for_training: "该来源已有训练使用记录，不能作为 Gold。",
+    gold_reserved_data: "该来源已保留为 Gold，只能用于受控评估或 Gold 合并。",
+    empty_selection: "当前选择没有可保留的样本。",
+  })[code];
   const datasetName = item => item.display_name || item.parameters?.name || `数据集 ${item.artifact_id.slice(0, 12)}`;
   function datasetTabs(ctx) {
     const nav = el("nav", null, "dataset-tabs");
@@ -2547,11 +2555,19 @@ window.SpireProject = (() => {
     section.append(selectionNote);
 
     const pending = operation.status === "pending";
+    const failedOrInterrupted = operationForArtifact
+      && ["failed", "interrupted"].includes(operation.status);
+    const recoveryRequired = failedOrInterrupted
+      && (operation.recovery_available === true || operation.error_code === "publication_recovery_required");
     if (pending) {
       section.append(el("p", operationForArtifact
         ? "正在检查这份录制；可刷新查看进度，不会重复提交。"
         : "本机另一项数据集检查正在进行；等待其明确结果后再检查当前录制。", "small muted"));
-    } else if (operationForArtifact && ["failed", "interrupted"].includes(operation.status)) {
+    } else if (recoveryRequired) {
+      section.append(el("p", operation.recovery_available === true
+        ? "上次创建结果尚未核对；请先点击“核对上次创建结果”，不要重新检查。"
+        : "上次创建结果需要恢复用途记录后才能继续；请勿重新检查或重建。", "small muted"));
+    } else if (failedOrInterrupted) {
       section.append(el("p", "上次检查失败或中断，不会自动重试。确认当前用途后，可明确点击重新检查。", "small muted"));
       if (operation.error_code) section.append(technical({error_code: operation.error_code}, "查看检查错误"));
     }
@@ -2595,6 +2611,10 @@ window.SpireProject = (() => {
         section.append(confirmButton);
       } else {
         section.append(el("p", "后端尚未确认此选择符合用途隔离条件，当前不能创建数据集。", "small muted"));
+        const blockerLabel = localDatasetBlockerLabel(operation.error_code);
+        if (blockerLabel) section.append(el("p", blockerLabel, "small muted"));
+        if (operation.error_code)
+          section.append(technical({error_code: operation.error_code}, "查看用途限制代码"));
       }
     }
     if (operation.status === "completed" && sameSelection()) {
@@ -2608,11 +2628,13 @@ window.SpireProject = (() => {
     if (operation.status === "interrupted" && operationForArtifact)
       section.append(el("p", "上次操作中断，结果尚未确认。刷新只读取状态；不要自动重发。", "small muted"));
 
-    const checkOptions = {primary:true, disabled:pending || !validParent() || !data.csrf_token};
+    const checkOptions = {primary:true, disabled:pending || recoveryRequired || !validParent() || !data.csrf_token};
     section.append(command(ctx, "check-local-dataset",
-      operationForArtifact && ["failed", "interrupted"].includes(operation.status)
+      recoveryRequired
+        ? operation.recovery_available === true ? "先核对上次创建结果" : "需恢复用途记录"
+        : failedOrInterrupted
         ? "重新检查数据集" : pending ? "正在检查" : "检查数据集", async () => {
-      if (pending || !validParent()) return;
+      if (pending || recoveryRequired || !validParent()) return;
       checkOptions.disabled = true;
       await request(ctx, "/api/local-datasets/preview", {
         artifact_id: artifactId,
