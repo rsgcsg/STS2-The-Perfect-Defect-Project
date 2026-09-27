@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Reviewed source
-anchor: `develop@08436cd67e178e113b7afa4afe06afdca7605950` (through PR #70).
+anchor: `develop@62a205e40cfd3be6bc056faa6c5538f2828edb95` (through PR #71).
 Resolve live refs and deployed identities before work; this bounded handoff is
 not the running-version owner. Platform, application, Human and research evidence
 remain separate.
@@ -22,7 +22,7 @@ remain separate.
   independent private runtime checkout, using the same profile and existing
   library. Previous `0b9d49451a955bd2454c53b21544911e260c5bc1` is retained for
   rollback. No game package or consumer pin changed. Before/after 329 artifact
-  IDs, counts and total sizes matched; The `.curation.sqlite-shm` modification time changed,
+  IDs, counts and total sizes matched; the `.curation.sqlite-shm` modification time changed,
   so this is not a claim that all store bytes stayed identical.
   [PR #70 activation/integration receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/70#issuecomment-5858556193)
   owns the exact application evidence.
@@ -57,13 +57,19 @@ remain separate.
 
 ## Current work and next boundaries
 
-- PR #71 candidate adds recording/dataset/model/report/all filters over existing metadata,
-  retaining search and recording selections. Independent source review, focused
-  tests and isolated Safari navigation passed; read its exact hosted checks and
-  deployment state before claiming it is active. A separate actual-browser finding
-  is being repaired: command-triggered re-render can leave the replacement button
-  disabled after client pending ends. Preserve current owner-disabled conditions
-  and duplicate-command protection; page refresh must never start/retry work.
+- PR #71 is merged: recording/dataset/model/report/all filters use existing
+  metadata and retain search and recording selections. Independent review,
+  focused tests and isolated Safari navigation passed. Its exact
+  [Python CI](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36340133989)
+  passed Linux, Windows and portable; docs were unselected. It is not yet active
+  in the installed application source named above.
+- The current candidate fixes command-triggered re-render leaving replacement
+  buttons disabled after client pending ends. Independent review and integrated
+  Node tests passed (119 tests). An isolated Safari search re-render left the
+  new search control enabled; further query entry hit an automation clipboard
+  timeout, so broader browser coverage is not claimed. Current owner-disabled
+  conditions and duplicate-command protection remain; page refresh never starts
+  or retries work. Candidate checks/activation remain separate.
 - Saving a Human source does not establish train/dev readiness. Immutable Human
   v1/v2 keep their original split semantics; v2 joins sessions sharing visible
   input and can collapse all groups. More recordings alone do not guarantee an
