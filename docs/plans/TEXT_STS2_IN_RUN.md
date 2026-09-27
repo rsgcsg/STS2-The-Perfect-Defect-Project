@@ -111,8 +111,11 @@ scores are bound by the ordered action-ID digest, never by sorting scores.
    is a separate owner boundary; legacy Human records are not silently relabelled.
 3. The text source and derived BC view have new schemas. Failed/unknown attempts
    remain in source evidence; only eligible applied choices become positive BC
-   rows. Train/dev separation groups whole runs and duplicate public inputs.
-   Existing immutable dataset, archive and Gold contracts continue to apply.
+   rows. The Human-input view splits by recording session and collapses sessions
+   with duplicate visible current inputs. This does not establish native-run
+   independence across sessions; session-local run IDs are preserved as lineage,
+   not treated as cross-session run identity. Existing immutable dataset, archive
+   and Gold contracts continue to apply.
 4. Token preparation dispatches by serializer identity and keeps every current
    candidate. The existing small B v2 path supports a synthetic CPU engineering
    test through checkpoint/resume, export and standalone scoring. This is not a
