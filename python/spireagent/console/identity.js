@@ -69,7 +69,7 @@ window.SpireIdentity = (() => {
     select.replaceChildren();
     if (local) { const option = el("option", "这台电脑 · 本地记录与队列"); option.value = "local"; select.append(option); }
     if (principal) {
-      const option = el("option", principal.project_shared ? "项目 · 全部共享数据" : "项目 · 获授权数据"); option.value = "project"; select.append(option);
+      const option = el("option", principal.project_shared ? "团队资料 · 全部共享内容" : "团队资料 · 获授权内容"); option.value = "project"; select.append(option);
       for (const device of identity.devices || []) {
         const option = el("option", device.name || device.device_id);
         option.value = device.device_id; select.append(option);
@@ -171,6 +171,9 @@ window.SpireIdentity = (() => {
     box.append(el("p", profileMeaning));
     box.append(el("p", "退出登录不会转移配置归属或已有数据。"));
     if (local) {
+      box.append(el("p", identity?.hub_configured ?
+        "登录项目账号后，可按权限访问团队工作区中的数据、模型、报告和其他已启用资源。模型文件下载还需要这台电脑的设备授权有效；浏览或下载不会自动加载模型或启动训练、游戏操作。本机资料和本地模型状态仍可在未登录时查看。" :
+        "项目 Hub 尚未配置，暂时无法访问团队工作区及其中的数据、模型和报告。本机资料和本地模型状态仍可查看；请使用项目提供的工作台配置启用团队连接。"));
       box.append(el("p", identity?.device_credential_present ?
         "这台电脑已保存上传凭据；是否有效以 Hub 最近验证为准。个人退出不会删除它。" :
         "先登录并确认连接名称。连接成功后，打开“真人采集”确认日常录制授权并完成本机设置；登录不代表同意上传。"));

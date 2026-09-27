@@ -119,11 +119,42 @@ test('local and cloud account pages explain profiles instead of unique physical 
     if (mode === 'local') {
       assert.ok(descendants(page).some(n => n.textContent === '连接名称'));
       assert.ok(descendants(page).some(n => n.textContent === '登录并连接本机'));
+      assert.match(flatten(page), /登录项目账号后，可按权限访问团队工作区中的数据、模型、报告和其他已启用资源/);
+      assert.match(flatten(page), /模型文件下载还需要这台电脑的设备授权有效/);
+      assert.match(flatten(page), /不会自动加载模型或启动训练、游戏操作/);
+      assert.match(flatten(page), /本机资料和本地模型状态仍可在未登录时查看/);
+      assert.equal(env.calls.length, 0, 'rendering account guidance must not add a request');
     }
   }
   const {page} = await connectionPage({approval_allowed: true});
   assert.match(flatten(page), meaning);
   assert.match(flatten(page), /重新连接已有工作台配置/);
+});
+
+test('signed-in local project scope is labeled as team material without changing its protocol value', async () => {
+  const env = setup();
+  const loading = env.ui.refresh(true);
+  env.calls.shift().answer({
+    ...person(),
+    principal: {subject: 'one', email: 'one@example.test', project_shared: true},
+  });
+  await loading;
+  const option = env.nodes.get('device-scope').options.find(item => item.value === 'project');
+  assert.equal(option.textContent, '团队资料 · 全部共享内容');
+  assert.equal(env.nodes.get('device-scope').value, 'local');
+  assert.equal(env.ui.isLocal(), true);
+});
+
+test('unconfigured local Hub explains unavailable team access without showing a login action', async () => {
+  const env = setup('local', '', '');
+  const loading = env.ui.refresh(true);
+  env.calls.shift().answer({status: 'signed_out', hub_configured: false});
+  await loading;
+  const page = env.ui.renderDevices();
+  assert.match(flatten(page), /项目 Hub 尚未配置，暂时无法访问团队工作区及其中的数据、模型和报告/);
+  assert.match(flatten(page), /本机资料和本地模型状态仍可查看/);
+  assert.equal(descendants(page).some(n => n.textContent === '登录项目账号'), false);
+  assert.equal(env.calls.length, 0, 'rendering account guidance must not add a request');
 });
 
 test('account logout rejects an already in-flight identity response and retains local scope', async () => {
