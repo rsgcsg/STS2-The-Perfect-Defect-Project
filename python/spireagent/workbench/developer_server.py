@@ -33,6 +33,10 @@ from spireagent.workbench.hub_client import HubClient
 from spireagent.workbench.identity import LocalIdentity
 from spireagent.workbench.local_models import LocalModelService
 from spireagent.workbench.member_client import MemberClient
+from spireagent.workbench.native_workbench import (
+    WorkbenchRegistrationLoop,
+    start_workbench_registration,
+)
 
 
 @contextlib.contextmanager
@@ -768,6 +772,7 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
         signal.signal(
             signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start()
         )
+        registration: WorkbenchRegistrationLoop | None = None
         try:
             app.start_delivery()
             atomic_json(
@@ -782,8 +787,16 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
                     "delivery": "configured" if config.delivery_config else "not_configured",
                 },
             )
+            # The Mod bridge belongs to this local native Connector. A remote or
+            # custom Host configuration must not silently bind to another game.
+            if config.platform_url in {"http://127.0.0.1:15526", "http://localhost:15526"}:
+                registration = start_workbench_registration(
+                    f"http://127.0.0.1:{server.server_port}/", app.instance_id
+                )
             server.serve_forever(poll_interval=0.2)
         finally:
+            if registration is not None:
+                registration.close()
             app.close()
             server.server_close()
             (config.state_dir / "runtime.json").unlink(missing_ok=True)

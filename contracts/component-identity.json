@@ -75,7 +75,8 @@
       "version_file": "package.json",
       "contract_paths": [
         "PlatformLiveContracts.cs",
-        "PlatformLiveStatusClient.cs"
+        "PlatformLiveStatusClient.cs",
+        "PlatformWorkbenchOpen.cs"
       ]
     },
     "game-mod": {
@@ -87,7 +88,8 @@
         "mod_manifest.json",
         "collection-setup.mjs",
         "loaded-evidence.mjs",
-        "annotator-configuration.mjs"
+        "annotator-configuration.mjs",
+        "PlatformTaskBridge.cs"
       ]
     }
   }
