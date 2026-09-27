@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import threading
 from pathlib import Path
@@ -13,8 +14,10 @@ import test_local_recording_preview as recording_fixture
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.local import LocalBlobStore
+from spireagent.storage.registry import SQLiteRegistry
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench import local_dataset as dataset_module
+from spireagent.workbench import local_training as training_module
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig, ProjectConfig, combination
 from spireagent.workbench.developer_server import Application, create_server
 from spireagent.workbench.inplace_curation import InplaceCurationPreparation, configured_owner
@@ -22,10 +25,11 @@ from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_training import OPERATION_FILE, LocalTrainingService
 
 
-def _ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, runs: int = 3):
+def _ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, runs: int = 3,
+           public_bindings: bool = True):
     original_bundle = recording_fixture.bundle3
     monkeypatch.setattr(recording_fixture, "bundle3", lambda path, **_kw:
-                        original_bundle(path, runs=runs, public_bindings=True))
+                        original_bundle(path, runs=runs, public_bindings=public_bindings))
     _, source, store = recording_fixture._fixture(tmp_path / "library", canonical=True)
     state = tmp_path / "profile"
     state.mkdir()
@@ -81,11 +85,17 @@ def test_exact_synthetic_public_bc_small_b_subprocess(tmp_path: Path, monkeypatc
     assert result.parent("model") == model.artifact_id
     assert result.parent("offline_evaluation") == report.artifact_id
     assert report.parameters.value()["partition"] == "dev"
-    assert model.parameters.value()["serializer"] == "compact-v2"
+    assert model.parameters.value()["serializer"] == {
+        "profile": "public_compact", "status": "provisional",
+        "version": "stpd-public-snapshot-compact-v2",
+    }
     assert model.parameters.value()["config"]["recipe"] == "stage1a.b.s.v2"
     assert model.parameters.value()["config"]["steps"] == 3
     assert model.parameters.value()["config"]["dropout"] == 0.0
     assert model.parameters.value()["config"]["max_tokens"] == 16384
+    registry = SQLiteRegistry(config.research_workspace.registry_path, readonly=True)
+    assert registry.get(model.artifact_id).to_bytes() == model.to_bytes()
+    assert registry.get(report.artifact_id).to_bytes() == report.to_bytes()
     with owner.transaction() as db:
         assert db.execute("SELECT count(*) FROM curation_uses WHERE reference=?",
                           (completed["operation_id"],)).fetchone()[0] >= 3
@@ -110,6 +120,22 @@ def test_insufficient_independent_components_never_reserves_use(
         assert db.execute("SELECT count(*) FROM curation_uses").fetchone() == (0,)
 
 
+def test_missing_public_h_binding_never_falls_back_to_native_input(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    config, dataset_id, source, _ = _ready(tmp_path, monkeypatch, public_bindings=False)
+    service = LocalTrainingService(config)
+    service.start(dataset_id)
+    result = _settle(service)
+    assert result["status"] == "failed", result
+    assert result["error_code"] == "nonempty_train_dev_required"
+    assert "run_id" not in result
+    owner = configured_owner(config)
+    with owner.transaction() as db:
+        assert db.execute("SELECT source FROM curation_source_uses WHERE reference=?",
+                          (result["operation_id"],)).fetchone() == (source,)
+
+
 def test_one_slot_across_profiles_and_unknown_restart(tmp_path: Path, monkeypatch) -> None:
     config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
     second_state = tmp_path / "other-profile"
@@ -128,6 +154,8 @@ def test_one_slot_across_profiles_and_unknown_restart(tmp_path: Path, monkeypatc
     assert entered.wait(5)
     contender = LocalTrainingService(other)
     assert contender.status()["operation"]["status"] == "pending"
+    same = contender.start(dataset_id)["operation"]
+    assert same["operation_id"] == service.status()["operation"]["operation_id"]
     with pytest.raises(BoundaryError, match="operation_in_progress"):
         contender.start("a" * 64)
     release.set()
@@ -136,6 +164,78 @@ def test_one_slot_across_profiles_and_unknown_restart(tmp_path: Path, monkeypatc
     assert contender.status()["operation"]["status"] == "interrupted_unknown"
     with pytest.raises(BoundaryError, match="previous_training_outcome_unknown"):
         contender.start("a" * 64)
+
+
+def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+
+    class FailedChild:
+        stdout = io.BytesIO(b"synthetic private failure\n")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def wait(self):
+            return 7
+
+    launches = []
+
+    def fail_child(command, **_kwargs):
+        launches.append(command)
+        return FailedChild()
+
+    monkeypatch.setattr(training_module.subprocess, "Popen", fail_child)
+    service = LocalTrainingService(config)
+    service.start(dataset_id)
+    result = _settle(service)
+    assert len(launches) == 1
+    assert result["status"] == "interrupted_unknown", result
+    assert result["error_code"] == "training_process_failed"
+    assert "run_id" in result and "result_id" not in result
+    owner = configured_owner(config)
+    operation = json.loads((owner.path.parent / OPERATION_FILE).read_bytes())
+    assert operation["_exit_code"] == 7
+    log = owner.path.parent / ("local-training-" + result["operation_id"] + ".log")
+    assert log.read_bytes() == b"synthetic private failure\n"
+    assert "synthetic private failure" not in json.dumps(service.status())
+    with pytest.raises(BoundaryError, match="previous_training_outcome_unknown"):
+        LocalTrainingService(config).start(dataset_id)
+
+
+def test_invalid_producer_operation_or_owner_never_starts_child(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    launched = []
+    monkeypatch.setattr(training_module.subprocess, "Popen",
+                        lambda *_args, **_kwargs: launched.append(1))
+    monkeypatch.setattr(training_module, "source_identity",
+                        lambda _root: (_ for _ in ()).throw(
+                            BoundaryError("source", "clean_checkout_required")))
+    service = LocalTrainingService(config)
+    service.start(dataset_id)
+    result = _settle(service)
+    assert result["status"] == "failed"
+    assert result["error_code"] == "clean_checkout_required"
+    assert launched == []
+    owner = configured_owner(config)
+    operation_path = owner.path.parent / OPERATION_FILE
+    operation_path.write_bytes(b"{broken")
+    assert service.status()["availability"] == "recovery_required"
+    with pytest.raises(BoundaryError, match="operation_recovery_required"):
+        service.start(dataset_id)
+    assert launched == []
+    operation_path.unlink()
+    owner.path.unlink()
+    assert service.status()["availability"] == "recovery_required"
+    with pytest.raises(BoundaryError, match="ledger_recovery_required"):
+        service.start(dataset_id)
+    assert launched == []
 
 
 def test_gold_or_test_claim_never_admitted(tmp_path: Path, monkeypatch) -> None:

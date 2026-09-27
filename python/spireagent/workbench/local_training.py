@@ -252,12 +252,13 @@ class LocalTrainingService:
                     exit_code = child.wait()
                 log.flush()
                 os.fsync(log.fileno())
-            self._advance(path, identity, stage="verifying_result")
+            self._advance(path, identity, stage="verifying_result", _exit_code=exit_code)
+            if exit_code:
+                raise BoundaryError("local_training", "training_process_failed")
             reporter = ObjectStoreRunReporter(store, store.blobs)
             result = reporter.completed(run.artifact_id)
             if result is None:
-                raise BoundaryError("local_training", "training_result_unknown"
-                                    if exit_code else "completion_marker_missing")
+                raise BoundaryError("local_training", "completion_marker_missing")
             _verify_completed(store, result, run)
             model_id = result.parent("model")
             evaluation_id = result.parent("offline_evaluation")
