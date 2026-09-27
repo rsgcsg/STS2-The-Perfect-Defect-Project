@@ -11,9 +11,13 @@ from spireagent.storage.blobs import MAX_BLOB_BYTES, StoreError, bounded, safe_k
 
 
 class LocalBlobStore:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, create: bool = True, readonly: bool = False) -> None:
         self.root = root.expanduser().resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.readonly = readonly
+        if create:
+            self.root.mkdir(parents=True, exist_ok=True)
+        elif not self.root.is_dir():
+            raise StoreError("local_store_not_configured")
 
     def _path(self, key: str) -> Path:
         safe_key(key)
@@ -34,6 +38,8 @@ class LocalBlobStore:
         return path
 
     def put_if_absent(self, key: str, data: bytes) -> bool:
+        if self.readonly:
+            raise StoreError("read_only_store")
         bounded(data)
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)

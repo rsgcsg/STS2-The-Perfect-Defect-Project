@@ -86,6 +86,34 @@ def test_setup_combination_schema_and_idempotency(project, tmp_path):
         ProjectConfig.load(path)
 
 
+def test_project_config_optional_local_research_workspace_preserves_legacy_files(project, tmp_path):
+    path, config = project
+    assert config.research_workspace is None
+    value = json.loads(path.read_bytes())
+    value["research_workspace"] = {
+        "store_dir": str(tmp_path / "existing-store"),
+        "registry_path": str(tmp_path / "existing-registry.sqlite"),
+    }
+    path.write_text(json.dumps(value))
+    loaded = ProjectConfig.load(path)
+    assert loaded.research_workspace is not None
+    assert loaded.research_workspace.store_dir == tmp_path / "existing-store"
+    assert loaded.research_workspace.registry_path == tmp_path / "existing-registry.sqlite"
+    schema = json.loads((ROOT / "schemas/developer-project-v1.schema.json").read_bytes())
+    Draft202012Validator(schema).validate(loaded.to_dict())
+    setup(path, state_dir=config.state_dir, install=False)
+    assert ProjectConfig.load(path).research_workspace == loaded.research_workspace
+
+
+def test_project_config_rejects_explicit_null_research_workspace(project):
+    path, _ = project
+    value = json.loads(path.read_bytes())
+    value["research_workspace"] = None
+    path.write_text(json.dumps(value))
+    with pytest.raises(BoundaryError, match="missing_or_unknown_fields"):
+        ProjectConfig.load(path)
+
+
 @pytest.mark.parametrize(
     "url",
     [

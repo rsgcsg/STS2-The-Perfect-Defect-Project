@@ -50,6 +50,7 @@ def render_shell(mode: str, api_base: str, cloud_url: str = "") -> str:
     primary = ([
         ("campaigns", "真人采集", "◉"),
         ("local-models", "模型实战", "▷"),
+        ("local-workspace", "本机资料", "▤"),
     ] if mode == "local" else []) + [
         ("collections", "数据", "▤"),
         ("datasets", "数据集", "▦"),
