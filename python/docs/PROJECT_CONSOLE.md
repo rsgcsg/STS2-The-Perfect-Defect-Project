@@ -128,6 +128,30 @@ operation keeps its identity and reason; an explicit recovery checks for an exac
 result before publishing anything again. Dataset purpose is not evidence of model quality,
 native run independence or complete historical use across other stores.
 
+### Run a local small-B engineering sample
+
+A curated **training** Dataset has one explicit small-sample training command. The
+current preset uses scratch B v2 with shared observation computation, width 48,
+one layer, two attention heads, feedforward width 96, three optimizer steps and two
+CPU threads. It does not download Qwen or require team login. The fixed allocation
+uses at most 32 training and 8 development decisions; this is a pipeline check,
+not a useful-policy or full-game quality claim.
+
+The owner verifies the Dataset membership and durable training claim, then records
+source/run exposure before publishing derivatives. This entry currently builds the
+public compact-v2 BC view from canonical decisions with exact public-H bindings.
+It rejects missing bindings or an empty train/dev projection instead of falling back
+to native/private features. Human text-menu input labels remain a separate mode;
+their research token support does not yet make them curated datasets in this UI.
+
+The store has one training slot shared across local profiles. GET, rendering and
+refresh never launch work. A pending operation retains its identity; loss of its
+supervisor is an unknown outcome, not permission to restart. A failure before a run
+exists may be retried explicitly; an existing run with an unknown outcome needs
+reconciliation first. Completion verifies the exact result and indexes its model and
+development report. Links open those artifacts in the same local library. This does
+not register the model for game inference or silently replace a loaded model.
+
 ## Cloud login and connection
 
 Choose **打开云端** from the local page, or open the configured Hub's `/app/` from another device.
