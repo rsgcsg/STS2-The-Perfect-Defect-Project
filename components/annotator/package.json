@@ -1,6 +1,6 @@
 {
   "name": "@rsgcsg/sts2-human-annotator",
-  "version": "0.3.0-rc.9",
+  "version": "0.3.0-rc.11",
   "private": true,
   "description": "Native STS2 UI human decision recorder",
   "license": "MIT",

@@ -130,6 +130,10 @@ def _load_model_view(
         module = importlib.import_module("stpd.fullrun.text_menu_data")
         return cast(tuple[Manifest, tuple[ModelSample, ...]],
                     module.load_text_menu_bc_view(store, manifest))
+    if parameters.get("schema") == "stpd/human-text-input-bc-view-v1":
+        module = importlib.import_module("stpd.fullrun.text_menu_human_import")
+        return cast(tuple[Manifest, tuple[ModelSample, ...]],
+                    module.load_human_text_bc_view(store, manifest))
     if parameters.get("schema") in {PUBLIC_BC_SCHEMA, LEGACY_VIEW_SCHEMA}:
         return load_public_bc_view(store, manifest)
     if parameters.get("schema") == DECISION_VIEW_SCHEMA:
