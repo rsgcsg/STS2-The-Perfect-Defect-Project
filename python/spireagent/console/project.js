@@ -275,9 +275,12 @@ window.SpireProject = (() => {
         : "服务暂时不可用，请刷新状态。")
     );
   };
-  async function request(ctx, path, body) {
+  async function request(ctx, path, body, localCsrfToken) {
     if (!live(ctx)) throw new Error("context_changed");
     const mutation = body !== undefined;
+    const csrfToken = local && typeof localCsrfToken === "string" && localCsrfToken
+      ? localCsrfToken
+      : ctx.identity?.csrf_token || "";
     if (mutation) { datasetReads.clear(); datasetReadEpoch++; }
     const payload =
       mutation && !local
@@ -294,7 +297,7 @@ window.SpireProject = (() => {
         headers: mutation
           ? {
               "Content-Type": "application/json",
-              "X-CSRF-Token": ctx.identity?.csrf_token || "",
+              "X-CSRF-Token": csrfToken,
             }
           : {},
         body: mutation ? JSON.stringify(payload) : undefined,
@@ -2342,9 +2345,52 @@ window.SpireProject = (() => {
     return box;
   }
 
+  async function managedWorkspaceCard(ctx, box) {
+    const data = await request(
+      ctx,
+      "/api/local-workspace/managed",
+    );
+    const localCsrfToken = data.csrf_token;
+    delete data.csrf_token;
+    if (data.status === "legacy_workspace_configured") return;
+    if (data.status === "not_created") {
+      const section = panel(
+        "新建本机工作空间",
+        "在本机工作台创建一个独立的空资料库，不需要登录或云端连接。不会导入资料、开始训练或替换已连接的旧资料库。",
+      );
+      if (data.orphaned_initializations)
+        section.append(el("p", `检测到 ${data.orphaned_initializations} 个未登记的初始化目录；会保留原目录，不覆盖它们。`, "small muted"));
+      if (typeof localCsrfToken === "string" && localCsrfToken) {
+        section.append(command(ctx, "create-managed-local-workspace", "新建本机工作空间", async () => {
+          await request(ctx, "/api/local-workspace/managed/create", {}, localCsrfToken);
+          await reload(ctx);
+        }, {primary:true}));
+      } else {
+        section.append(el("p", "本机保护验证暂不可用，请刷新页面后重试。", "small muted"));
+      }
+      box.append(section);
+      return;
+    }
+    if (data.status !== "ready") {
+      const section = panel("本机工作空间暂不可用", "登记或存储校验未通过。现有目录会保留；本页不会重新初始化或覆盖它们。");
+      if (data.error_code) section.append(technical(data, "查看本机空间状态"));
+      box.append(section);
+      return;
+    }
+    const section = panel(
+      "本机工作空间已就绪",
+      "可在下方查看资料。创建本身不导入资料，也不表示资料已可训练。",
+    );
+    section.append(el("p", `空间 ${data.workspace_id} · 创建于 ${data.created_at}`, "small muted"));
+    if (data.orphaned_initializations)
+      section.append(el("p", `另有 ${data.orphaned_initializations} 个未登记的初始化目录保留在本机。`, "small muted"));
+    box.append(section);
+  }
+
   async function localWorkspace(ctx) {
     const box = el("div", null, "project-page");
-    box.append(panel("本机资料", "只读查看已连接到这台工作台的资料与来源信息；不读取内容文件，也不需要登录或连接云端。"));
+    box.append(panel("本机资料", "浏览本机资料来源。此页在本机读取，不需要云端登录；开始任何导入或训练都需要独立的明确操作。"));
+    await managedWorkspaceCard(ctx, box);
     const id = new URLSearchParams(ctx.search).get("id");
     if (id) {
       const value = await request(ctx, `/api/local-workspace/artifacts/${encodeURIComponent(id)}`);
@@ -2382,8 +2428,8 @@ window.SpireProject = (() => {
     const data = await request(ctx, `/api/local-workspace?${params}`);
     if (data.status === "not_configured") {
       box.append(empty(
-        "尚未连接本机资料库，不需要登录",
-        "请在本机工作台设置中登记已经存在的资料库和索引。此页不会扫描目录或创建资料库。",
+        "尚未建立本机资料空间",
+        "新建空间后，你可以在这里浏览和管理本机资料。",
       ));
       return box;
     }
