@@ -78,10 +78,47 @@ class LocalBlobStore:
 
     def keys(self, prefix: str) -> tuple[str, ...]:
         safe_key(prefix, prefix=True)
+        # Only a prefix ending at a directory boundary can safely narrow the
+        # walk to that directory. A bare prefix (for example ``objects``)
+        # intentionally retains string-prefix semantics, including siblings
+        # such as ``objects-backup``.
+        if prefix.endswith("/"):
+            scan_parts = prefix[:-1].split("/")
+        elif "/" in prefix:
+            scan_parts = prefix.split("/")[:-1]
+        else:
+            scan_parts = []
+
+        scan_root = self.root
+        unsafe_scan_root = False
+        for part in scan_parts:
+            scan_root = scan_root / part
+            try:
+                metadata = os.lstat(scan_root)
+            except FileNotFoundError:
+                return ()
+            except OSError:
+                # Keep the previous whole-store walk behavior if we cannot
+                # safely inspect the proposed subtree root.
+                unsafe_scan_root = True
+                break
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or getattr(metadata, "st_file_attributes", 0) & 0x400
+            ):
+                # Do not start rglob at a linked/reparse directory. Falling
+                # back preserves the old walk's no-follow traversal behavior.
+                unsafe_scan_root = True
+                break
+            if not stat.S_ISDIR(metadata.st_mode):
+                return ()
+        if unsafe_scan_root:
+            scan_root = self.root
+
         return tuple(
             sorted(
                 path.relative_to(self.root).as_posix()
-                for path in self.root.rglob("*")
+                for path in scan_root.rglob("*")
                 if path.is_file()
                 and not path.name.startswith(".pending-")
                 and path.relative_to(self.root).as_posix().startswith(prefix)
