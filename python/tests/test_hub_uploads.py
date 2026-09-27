@@ -70,17 +70,49 @@ def test_missing_object_does_not_starve_and_owner_findings_are_preserved(tmp_pat
     owner_result = SimpleNamespace(
         passed=False, findings=[SimpleNamespace(code="exact_owner_failure")]
     )
-    with patch("spireagent.hub.uploads.verify_human_session_bundle", return_value=owner_result):
-        assert service.verify_pending() == 2
-    assert service.operations.upload(missing)["status"] == "verification_pending"
-    assert service.operations.upload(missing)["verify_attempts"] == 1
-    receipt = service.operations.upload(present)["receipt"]
-    assert "exact_owner_failure" in receipt
-    assert service.operations.upload(present)["status"] == "quarantined"
-    assert service.verify_pending() == 0
+    clock = SimpleNamespace(now=100.0)
+    with patch("spireagent.hub.uploads.time", SimpleNamespace(time=lambda: clock.now)):
+        with patch("spireagent.hub.uploads.verify_human_session_bundle", return_value=owner_result):
+            assert service.verify_pending() == 2
+        assert service.operations.upload(missing)["status"] == "verification_pending"
+        assert service.operations.upload(missing)["verify_attempts"] == 1
+        receipt = service.operations.upload(present)["receipt"]
+        assert "exact_owner_failure" in receipt
+        assert service.operations.upload(present)["status"] == "quarantined"
+        assert service.verify_pending() == 0
     for _attempt in range(4):
         service.operations.verification_failure(missing, "missing", now=time.time())
     assert service.operations.upload(missing)["status"] == "transfer_failed"
+
+
+def test_pending_upload_can_be_retried_when_backoff_expires_during_drain(
+    tmp_path: Path,
+) -> None:
+    service, intent, data = fixture(tmp_path)
+    missing = service.intent("missing", intent)["upload_id"]
+    present = service.intent("present", intent)["upload_id"]
+    assert isinstance(service.staging, LocalStaging)
+    service.staging.write(present, io.BytesIO(data), len(data))
+    service.operations.request_verification(missing)
+    service.operations.request_verification(present)
+    clock = SimpleNamespace(now=100.0)
+
+    def slow_owner_failure(_directory: Path) -> SimpleNamespace:
+        clock.now += 2.1
+        return SimpleNamespace(passed=False, findings=[SimpleNamespace(code="exact_owner_failure")])
+
+    with patch("spireagent.hub.uploads.time", SimpleNamespace(time=lambda: clock.now)):
+        with patch(
+            "spireagent.hub.uploads.verify_human_session_bundle",
+            side_effect=slow_owner_failure,
+        ):
+            assert service.verify_pending() == 3
+        missing_row = service.operations.upload(missing)
+        assert missing_row["status"] == "verification_pending"
+        assert missing_row["verify_attempts"] == 2
+        assert missing_row["retry_at"] == 106.1
+        assert service.operations.upload(present)["status"] == "quarantined"
+        assert service.verify_pending() == 0
 
 
 def test_disk_failure_is_not_semantic_quarantine(tmp_path: Path) -> None:

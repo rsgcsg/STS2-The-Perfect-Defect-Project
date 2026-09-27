@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from spireagent.artifact_contracts import Payload
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.local_verified_bundle import VerifiedLocalBundle
 from spireagent.storage.store import ArtifactStore
 
 from .contracts import ResearchTransitionV2, SourceProjection
@@ -50,9 +51,10 @@ def index_ready(cache: VerifiedSourceCache, payload: Payload) -> bool:
 
 def resolve_payload(
     cache: VerifiedSourceCache, store: ArtifactStore, payload: Payload,
+    *, verified_local: VerifiedLocalBundle | None = None,
 ) -> tuple[SourceProjection, dict[str, Any]]:
     from . import decision_cache
-    from .decision_dataset import _versions
+    from .decision_dataset import _versions, _versions_directory
 
     key = hashlib.sha256(json_bytes([INDEX_SCHEMA, cache.owner, payload.sha256])).hexdigest()
     with cache._connect() as db:
@@ -109,12 +111,18 @@ def resolve_payload(
                 # Damaged metadata cannot choose rows to delete. Orphaned derivative
                 # rows are reclaimed by bounded maintenance, not admitted as a source.
     cache.misses += 1
-    raw = b"".join(store.read_payload(payload))
-    if len(raw) != payload.size or hashlib.sha256(raw).hexdigest() != payload.sha256:
-        raise BoundaryError("decision_index", "source_identity_mismatch")
-    projection = PlatformBundle3SourceAdapter().project(raw)
-    environments = _versions(raw)
-    del raw
+    if verified_local is None:
+        raw = b"".join(store.read_payload(payload))
+        if len(raw) != payload.size or hashlib.sha256(raw).hexdigest() != payload.sha256:
+            raise BoundaryError("decision_index", "source_identity_mismatch")
+        projection = PlatformBundle3SourceAdapter().project(raw)
+    else:
+        if (verified_local.archive_size != payload.size
+                or verified_local.archive_sha256 != payload.sha256):
+            raise BoundaryError("decision_index", "source_identity_mismatch")
+        projection = PlatformBundle3SourceAdapter()._project_verified_local(verified_local)
+    environments = (_versions_directory(verified_local.directory)
+                    if verified_local is not None else _versions(raw))
     header = {
         "schema": INDEX_SCHEMA, "owner": cache.owner, "source": payload.sha256,
         "size": payload.size, "run_proofs": projection.run_proofs.value(),
