@@ -2515,6 +2515,60 @@ window.SpireProject = (() => {
     return overview;
   }
 
+  function localModelOverview(value) {
+    const parameters = value.parameters && typeof value.parameters === "object"
+      && !Array.isArray(value.parameters) ? value.parameters : {};
+    if (parameters.schema !== "stpd/stage1a-model-v1") return null;
+    const config = parameters.config && typeof parameters.config === "object"
+      && !Array.isArray(parameters.config) ? parameters.config : {};
+    const recipes = {
+      "stage1a.b.s.v1": {label:"B v1", backbone:"s", mode:"从头训练"},
+      "stage1a.b.pf.v1": {label:"B v1", backbone:"pf", mode:"冻结预训练骨干"},
+      "stage1a.dsimple.s.v1": {label:"D-Simple v1", backbone:"s", mode:"从头训练"},
+      "stage1a.dsimple.pf.v1": {label:"D-Simple v1", backbone:"pf", mode:"冻结预训练骨干"},
+      "stage1a.b.s.v2": {label:"B v2", backbone:"s", mode:"从头训练"},
+      "stage1a.b.pf.v2": {label:"B v2", backbone:"pf", mode:"冻结预训练骨干"},
+    };
+    const recipe = typeof config.recipe === "string" && Object.hasOwn(recipes, config.recipe)
+      ? recipes[config.recipe] : null;
+    const backbone = parameters.backbone && typeof parameters.backbone === "object"
+      && !Array.isArray(parameters.backbone) ? parameters.backbone.kind : null;
+    const modelSource = recipe && backbone === (recipe.backbone === "s" ? "scratch" : "pf")
+      ? recipe.mode
+      : recipe && ["scratch", "pf"].includes(backbone)
+        ? "未知（配方与模型来源记录不一致）" : "未知";
+    const steps = Number.isSafeInteger(parameters.steps) && parameters.steps > 0
+      && parameters.steps === config.steps ? count(parameters.steps) : "未知";
+    const device = config.device === "cpu" ? "CPU"
+      : config.device === "mps" ? "Apple MPS" : "未知";
+    const qualification = parameters.qualification === "engineering_only"
+      ? "工程验证用途；不代表模型质量或游戏实战资格"
+      : "未知";
+    const overview = panel("模型概览", "以下摘要来自本机模型清单；此处不会加载模型或读取权重文件。");
+    overview.append(fields([
+      ["训练配方", recipe?.label || "未知"],
+      ["模型来源", modelSource],
+      ["训练步数", steps],
+      ["设备", device],
+      ["用途说明", qualification],
+    ]));
+    const parentLabels = {run:"关联训练运行", model_view:"关联输入视图", checkpoint:"关联检查点"};
+    const parents = Array.isArray(value.parents) ? value.parents.filter(parent =>
+      parent && typeof parent === "object" && Object.hasOwn(parentLabels, parent.role)
+        && hex(parent.artifact_id)) : [];
+    if (parents.length) {
+      const parentLinks = el("div", null, "project-actions");
+      for (const parent of parents) {
+        parentLinks.append(link(
+          `${parentLabels[parent.role]} · ${parent.artifact_id.slice(0, 16)}`,
+          route("local-workspace", parent.artifact_id),
+        ));
+      }
+      overview.append(parentLinks);
+    }
+    return overview;
+  }
+
   function offlineEvaluationMetrics(value) {
     const metrics = value && typeof value === "object" ? value : {};
     const number = key => Number.isFinite(metrics[key])
@@ -2558,17 +2612,26 @@ window.SpireProject = (() => {
         summary.append(el("p", "评估摘要格式或核验范围未知，未将其视为已验证结果。", "small muted"));
         return summary;
       }
-      summary.append(fields([
+      const hasGroupingMetadata = value.grouping !== undefined
+        || value.native_run_independence !== undefined;
+      const sessionScopedGroups = value.grouping === "session_scoped_run_group"
+        && value.native_run_independence === "unknown_across_sessions";
+      const facts = [
         ["评估格式", value.evaluation_schema || schema || "未知"],
         ["模型", hex(value.model_id) ? value.model_id.slice(0, 16) : "未知"],
         ["模型视图", hex(value.model_view_id) ? value.model_view_id.slice(0, 16) : "未知"],
         ["模型配方", typeof value.model_recipe === "string" && value.model_recipe ? value.model_recipe : "未知"],
         ["视图格式", typeof value.view_schema === "string" && value.view_schema ? value.view_schema : "未知"],
         ["记录中的决策数", count(value.decision_count)],
-        ["记录中的对局分组数（未复核独立性）", count(value.reported_run_groups)],
+        [sessionScopedGroups ? "录制分组数（不代表独立游戏局）" : "记录中的对局分组数（未复核独立性）",
+          count(value.reported_run_groups)],
         ["多候选决策数", count(value.multi_candidate_count)],
         ["基准", value.baseline || "未知"],
-      ]));
+      ];
+      if (hasGroupingMetadata) facts.push(["独立性", sessionScopedGroups
+        ? "未知（按录制分组计数，不证明来自不同游戏局）"
+        : "未知（分组信息未确认，不据此认定为独立游戏局）"]);
+      summary.append(fields(facts));
       const related = el("div", null, "project-actions");
       if (hex(value.model_id)) related.append(link(`查看本机模型 · ${value.model_id.slice(0, 16)}`, route("local-workspace", value.model_id)));
       if (hex(value.model_view_id)) related.append(link(`查看本机模型视图 · ${value.model_view_id.slice(0, 16)}`, route("local-workspace", value.model_view_id)));
@@ -3017,6 +3080,8 @@ window.SpireProject = (() => {
       box.append(panel(heading, `本机对象 · ${value.artifact_id.slice(0, 16)}`));
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1")
         box.append(localDatasetOverview(value));
+      if (value.kind === "model" && value.parameters?.schema === "stpd/stage1a-model-v1")
+        box.append(localModelOverview(value));
       if (value.kind === "offline_evaluation")
         box.append(await localOfflineEvaluationDetail(ctx, value));
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1"

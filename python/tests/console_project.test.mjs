@@ -817,6 +817,97 @@ test("unknown local training schema does not expose unrecognized fields or token
   assert.equal(post(env.calls).length, 0);
 });
 
+test("known Stage 1a model detail summarizes its recipe and links exact parents", async () => {
+  const model = id("a"), run = id("b"), view = id("c"), checkpoint = id("d");
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return {
+        schema:"stpd/local-workspace-artifact-v1", artifact_id:model, kind:"model",
+        parameters:{schema:"stpd/stage1a-model-v1", config:{recipe:"stage1a.b.s.v2", steps:3, device:"cpu"},
+          backbone:{kind:"scratch", shape:{width:48, layers:1}}, steps:3, qualification:"engineering_only"},
+        parents:[{role:"run", artifact_id:run}, {role:"model_view", artifact_id:view},
+          {role:"checkpoint", artifact_id:checkpoint}, {role:"training_input", artifact_id:id("e")},
+          {role:"run", artifact_id:"not-a-hash"}],
+        payloads:[{role:"weights", sha256:id("f"), size:128, media_type:"application/vnd.safetensors"}],
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /模型概览/);
+  assert.match(text(page), /B v2/);
+  assert.match(text(page), /从头训练/);
+  assert.match(text(page), /训练步数[\s\S]*3/);
+  assert.match(text(page), /设备[\s\S]*CPU/);
+  assert.match(text(page), /工程验证用途；不代表模型质量或游戏实战资格/);
+  for (const [artifact, label] of [[run, "关联训练运行"], [view, "关联输入视图"], [checkpoint, "关联检查点"]]) {
+    const parent = find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${artifact}`);
+    assert.match(parent.textContent, new RegExp(label));
+  }
+  assert.equal(walk(page).filter(element => element.tagName === "A" && element.href.includes(id("e"))).length, 0,
+    "training input is not presented as one of the requested run/view/checkpoint links");
+  assert.equal(walk(page).some(element => element.tagName === "A" && element.href.includes("not-a-hash")), false,
+    "malformed parent identities are never linked");
+  assert.match(text(page), /stpd\/stage1a-model-v1/, "exact manifest metadata remains available as a technical fallback");
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("Stage 1a model source requires a matching manifest backbone", async () => {
+  const model = id("a");
+  for (const [recipe, backbone, expected, unexpected] of [
+    ["stage1a.b.pf.v2", {kind:"pf", qwen:{snapshot:"fixture"}}, /冻结预训练骨干/, /未知（配方与模型来源记录不一致）/],
+    ["stage1a.b.s.v2", {kind:"pf", qwen:{snapshot:"fixture"}}, /未知（配方与模型来源记录不一致）/, /从头训练/],
+    ["stage1a.b.s.v2", undefined, /模型来源\n未知/, /从头训练/],
+  ]) {
+    const env = setup({
+      identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+        };
+        if (url === `/api/local-workspace/artifacts/${model}`) return {
+          artifact_id:model, kind:"model",
+          parameters:{schema:"stpd/stage1a-model-v1", config:{recipe, steps:3, device:"cpu"},
+            ...(backbone ? {backbone} : {}), steps:3, qualification:"engineering_only"},
+          parents:[], payloads:[],
+        };
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    assert.match(text(page), expected);
+    assert.doesNotMatch(text(page), unexpected);
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
+test("unknown model schemas keep metadata fallback and do not invent a model overview", async () => {
+  const model = id("a");
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return {
+        artifact_id:model, kind:"model", parameters:{schema:"future/model-v9", recipe:"unknown", steps:9},
+        parents:[{role:"run", artifact_id:"not-a-hash"}], payloads:[],
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.doesNotMatch(text(page), /模型概览|从头训练|冻结预训练骨干/);
+  assert.match(text(page), /future\/model-v9/);
+  assert.match(text(page), /recipe[\s\S]*unknown/);
+  assert.equal(walk(page).some(element => element.tagName === "A" && element.href.includes("not-a-hash")), false);
+  assert.equal(post(env.calls).length, 0);
+});
+
 test("known local training schema only exposes safe codes, stages and exact artifact identities", async () => {
   const cases = [
     {
@@ -1017,6 +1108,7 @@ test("offline evaluation detail reads one exact dev recorded-report summary", as
   assert.match(text(page), /已记录的开发集结果/);
   assert.match(text(page), /未重新核验原始数据、模型权重或完整训练来源/);
   assert.match(text(page), /记录中的对局分组数（未复核独立性）/);
+  assert.doesNotMatch(text(page), /录制分组数（不代表独立游戏局）/);
   assert.match(text(page), /总体记录指标/);
   assert.match(text(page), /首选命中率（非胜率，Top-1）/);
   assert.match(text(page), /0\.1235/);
@@ -1027,6 +1119,48 @@ test("offline evaluation detail reads one exact dev recorded-report summary", as
     `查看本机模型视图 · ${id("b").slice(0, 16)}`);
   assert.equal(env.calls.filter(call => call.url === `/api/local-workspace/evaluations/${evaluation}`).length, 1);
   assert.equal(post(env.calls).length, 0);
+});
+
+test("Human input report uses session-scoped grouping language and unknown independence conservatively", async () => {
+  const evaluation = id("9"), schema = "stpd/stage1a-ranking-evaluation-v1";
+  for (const [grouping, independence, expectedLabel, expectedNote, hidden] of [
+    ["session_scoped_run_group", "unknown_across_sessions",
+      /录制分组数（不代表独立游戏局）/, /独立性[\s\S]*未知（按录制分组计数，不证明来自不同游戏局）/, null],
+    ["future_grouping", "future_independence",
+      /记录中的对局分组数（未复核独立性）/, /未知（分组信息未确认，不据此认定为独立游戏局）/,
+      /future_grouping|future_independence/],
+  ]) {
+    const env = setup({
+      identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${evaluation}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+        };
+        if (url === `/api/local-workspace/artifacts/${evaluation}`) return {
+          artifact_id:evaluation, kind:"offline_evaluation",
+          parameters:{schema, partition:"dev"},
+        };
+        if (url === `/api/local-workspace/evaluations/${evaluation}`) return {
+          schema:"stpd/local-offline-evaluation-summary-v1", evaluation_id:evaluation,
+          evaluation_schema:schema, model_id:id("a"), model_view_id:id("b"),
+          model_recipe:"stage1a.b.s.v2", view_schema:"stpd/human-text-input-bc-view-v2",
+          partition:"dev", baseline:"model", qualification:"engineering_only",
+          scientific_verdict:"not_claimed", validation_scope:"recorded_report_and_parent_identities",
+          decision_count:5, reported_run_groups:2, multi_candidate_count:0,
+          grouping, native_run_independence:independence,
+          overall:{count:5, top1:1, mrr:1, nll:0, confidence:0, margin:0},
+          interpretation:"producer_recorded_summary_not_full_lineage_or_quality_verification",
+        };
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    assert.match(text(page), expectedLabel);
+    assert.match(text(page), expectedNote);
+    if (hidden) assert.doesNotMatch(text(page), hidden);
+    assert.equal(env.calls.filter(call => call.url === `/api/local-workspace/evaluations/${evaluation}`).length, 1);
+    assert.equal(post(env.calls).length, 0);
+  }
 });
 
 test("offline evaluation detail supports Stage1a recorded summaries and optional baselines", async () => {
