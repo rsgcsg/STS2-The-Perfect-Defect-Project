@@ -307,6 +307,8 @@ class InplaceCurationPreparation:
                 if len(projections) != 1:
                     raise BoundaryError("local_curation", "source_projection_incomplete")
                 owner.ledger.index_source(identity, projections[0])
+                if item.parameters.value().get("schema") == "stpd/local-verified-bundle-v1":
+                    owner.index_human_runs(store, identity, historical=True)
                 # Even a verified old source has no complete local download/use
                 # receipt history. Its runs cannot be sealed as new Gold.
                 runs = owner.ledger.source_runs(identity)

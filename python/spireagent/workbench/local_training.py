@@ -174,6 +174,17 @@ class LocalTrainingService:
             from stpd.fullrun.decision_spool import SpoolSelection
             from stpd.fullrun.decision_training import AllocationSpec, allocate, publish_allocation
             from stpd.fullrun.public_bc import publish_public_bc_view
+            from stpd.fullrun.text_menu_human_import import (
+                SOURCE_SCHEMA as HUMAN_SOURCE_SCHEMA,
+            )
+            from stpd.fullrun.text_menu_human_import import (
+                _project as project_human_inputs,
+            )
+            from stpd.fullrun.text_menu_human_import import (
+                load_human_text_source,
+                load_verified_human_text_bundle,
+                publish_human_text_bc_view,
+            )
             from stpd.fullrun.token_inputs import load_token_inputs, publish_token_inputs
             from stpd.workers.token_ranking import TokenConfig
             from stpd.workers.token_worker import _verify_completed, prepare_token_run
@@ -182,25 +193,43 @@ class LocalTrainingService:
             producer = source_identity(ROOT)
             manifest = store.get_manifest(dataset_id)
             info = manifest.parameters.value()
-            if (manifest.kind != "dataset" or info.get("schema") != DATASET_SCHEMA
-                    or info.get("purpose") != "training" or info.get("merging") is not False
-                    or not manifest.parents or len(manifest.parents) > 100
-                    or any(p.role != "source_" + p.artifact_id for p in manifest.parents)):
-                raise BoundaryError("local_training", "curated_training_dataset_required")
-            dataset = load_selection(store, manifest, cache=None)
-            try:
-                runs = {row["run_id"] for row in dataset.records.summaries()} if isinstance(
-                    dataset.records, SpoolSelection
-                ) else {record.run_id for record in dataset.records}
-                claim = owner.ledger.dataset(dataset_id)
-                if claim != ("training", runs):
-                    raise BoundaryError("local_training", "training_claim_mismatch")
-                spec = AllocationSpec(isolation="run", max_train=32, max_dev=8)
-                allocate(dataset, spec)
-            finally:
-                if isinstance(dataset.records, SpoolSelection):
-                    dataset.records.owner.close()
-            sources = {parent.artifact_id for parent in manifest.parents}
+            human = info.get("schema") == HUMAN_SOURCE_SCHEMA
+            if human:
+                source_manifest, rows = load_human_text_source(store, dataset_id)
+                if source_manifest != manifest:
+                    raise BoundaryError("local_training", "human_source_identity_mismatch")
+                # This is the actual engineering split gate; session count alone
+                # cannot establish independent groups after duplicate collapse.
+                samples, _ = project_human_inputs(rows)
+                if (sum(sample.split == "train" for sample in samples) > 32
+                        or sum(sample.split == "dev" for sample in samples) > 8):
+                    raise BoundaryError("local_training", "human_engineering_sample_limit")
+                sources = {parent.artifact_id for parent in manifest.parents}
+                runs: set[str] = set()
+                for source_id in sources:
+                    _, bundle, _ = load_verified_human_text_bundle(store, source_id)
+                    runs.update(bundle.session_id + "/" + run for run in bundle.run_ids)
+                spec = None
+            else:
+                if (manifest.kind != "dataset" or info.get("schema") != DATASET_SCHEMA
+                        or info.get("purpose") != "training" or info.get("merging") is not False
+                        or not manifest.parents or len(manifest.parents) > 100
+                        or any(p.role != "source_" + p.artifact_id for p in manifest.parents)):
+                    raise BoundaryError("local_training", "curated_training_dataset_required")
+                dataset = load_selection(store, manifest, cache=None)
+                try:
+                    runs = {row["run_id"] for row in dataset.records.summaries()} if isinstance(
+                        dataset.records, SpoolSelection
+                    ) else {record.run_id for record in dataset.records}
+                    spec = AllocationSpec(isolation="run", max_train=32, max_dev=8)
+                    allocate(dataset, spec)
+                finally:
+                    if isinstance(dataset.records, SpoolSelection):
+                        dataset.records.owner.close()
+                sources = {parent.artifact_id for parent in manifest.parents}
+            claim = owner.ledger.dataset(dataset_id)
+            if claim != ("training", runs):
+                raise BoundaryError("local_training", "training_claim_mismatch")
             indexed_runs: set[str] = set()
             for source in sorted(sources):
                 source_runs = owner.ledger.source_runs(source)
@@ -213,11 +242,16 @@ class LocalTrainingService:
             for source in sorted(sources):
                 owner.ledger.use_source(source, "training", identity)
             owner.ledger.use(runs, "training", identity)
-            self._advance(path, identity, stage="allocating")
-            allocation = publish_allocation(store, dataset_id, spec, producer)
-            self._advance(path, identity, stage="public_view",
-                          allocation_id=allocation.artifact_id)
-            view = publish_public_bc_view(store, allocation.artifact_id, producer)
+            if human:
+                self._advance(path, identity, stage="public_view")
+                view = publish_human_text_bc_view(store, dataset_id, producer)
+            else:
+                assert spec is not None
+                self._advance(path, identity, stage="allocating")
+                allocation = publish_allocation(store, dataset_id, spec, producer)
+                self._advance(path, identity, stage="public_view",
+                              allocation_id=allocation.artifact_id)
+                view = publish_public_bc_view(store, allocation.artifact_id, producer)
             self._advance(path, identity, stage="tokenizing", view_id=view.artifact_id)
             inputs_manifest = publish_token_inputs(store, view.artifact_id, "s", producer,
                                                    max_tokens=16384)
