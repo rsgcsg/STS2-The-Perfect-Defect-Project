@@ -38,6 +38,19 @@ def test_local_workspace_page_api_uses_local_cookie_without_cloud_session(
         parameters=FrozenObject.of({"name": "offline fixture"}),
     )
     artifact_store.publish(manifest)
+    local_recording = artifact_store.publish(Manifest(
+        "evidence", manifest.producer,
+        parameters=FrozenObject.of({"schema": "stpd/local-verified-bundle-v1"}),
+    ))
+    received_recording = artifact_store.publish(Manifest(
+        "evidence", manifest.producer,
+        parameters=FrozenObject.of({"schema": "stpd/received-bundle-v1",
+                                    "disposition": "quarantined"}),
+    ))
+    artifact_store.publish(Manifest(
+        "evidence", manifest.producer,
+        parameters=FrozenObject.of({"schema": "stpd/verified-text-menu-agent-run-v1"}),
+    ))
     registry_path = tmp_path / "registry.sqlite"
     registry = SQLiteRegistry(registry_path)
     sync_registry(artifact_store, registry, frozenset({manifest.artifact_id}))
@@ -67,11 +80,29 @@ def test_local_workspace_page_api_uses_local_cookie_without_cloud_session(
         assert denied.value.code == 401
         client.open(root + "/").close()
         before_db = registry_path.read_bytes()
+        before_manifests = tuple(artifact_store.manifest_ids())
         with client.open(root + "/api/local-workspace?kind=dataset&limit=10&offset=0") as response:
             page = json.load(response)
         assert page["source"] == "configured_local_artifact_store"
         assert page["total"] == 1
         assert page["items"][0]["artifact_id"] == manifest.artifact_id
+        with client.open(
+            root + "/api/local-workspace?category=recordings&limit=1&offset=1"
+        ) as response:
+            recordings = json.load(response)
+        assert recordings["total"] == 2
+        assert recordings["category"] == "recordings"
+        assert recordings["items"][0]["artifact_id"] == sorted(
+            (local_recording, received_recording))[1]
+        with client.open(root + "/api/local-workspace?category=recordings&kind=model") as response:
+            assert json.load(response)["total"] == 0
+        with client.open(root + "/api/local-workspace?category=all&kind=dataset") as response:
+            assert json.load(response)["items"][0]["artifact_id"] == manifest.artifact_id
+        for query, code in (("category=unknown", 409), ("category=", 409),
+                            ("category=recordings&category=models", 400)):
+            with pytest.raises(HTTPError) as invalid:
+                client.open(root + "/api/local-workspace?" + query)
+            assert invalid.value.code == code
         with client.open(
             root + "/api/local-workspace/artifacts/" + manifest.artifact_id
         ) as response:
@@ -80,6 +111,7 @@ def test_local_workspace_page_api_uses_local_cookie_without_cloud_session(
         assert status == 200
         assert detail["payloads"][0]["sha256"] == payload.sha256
         assert registry_path.read_bytes() == before_db
+        assert tuple(artifact_store.manifest_ids()) == before_manifests
     finally:
         server.shutdown()
         server.server_close()

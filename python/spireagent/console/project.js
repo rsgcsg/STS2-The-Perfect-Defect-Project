@@ -3339,6 +3339,26 @@ window.SpireProject = (() => {
 
     const query = drafts.get("local-workspace-search") || "";
     const selectedKind = drafts.get("local-workspace-kind") || "";
+    const categories = [
+      ["recordings", "录制"],
+      ["datasets", "数据集"],
+      ["models", "模型"],
+      ["reports", "报告"],
+      ["all", "全部"],
+    ];
+    const requestedCategory = drafts.get("local-workspace-category") || "all";
+    const selectedCategory = categories.some(([value]) => value === requestedCategory)
+      ? requestedCategory : "all";
+    const categoryNav = el("div", null, "project-actions");
+    for (const [value, label] of categories) {
+      categoryNav.append(command(ctx, `local-workspace-category-${value}`, label, async () => {
+        drafts.set("local-workspace-category", value);
+        drafts.set("local-workspace-kind", "");
+        offsets.set("local-workspace", 0);
+        await reload(ctx);
+      }, {primary:value === selectedCategory}));
+    }
+    box.append(categoryNav);
     const filters = el("div", null, "project-form");
     filters.dataset.projectEditor = "local-workspace-search";
     const search = input(filters, "搜索本机对象名称或对象 ID", "local-workspace-search", query);
@@ -3372,6 +3392,7 @@ window.SpireProject = (() => {
     box.append(filters);
     const limit = 25, offset = offsets.get("local-workspace") || 0;
     const params = new URLSearchParams({limit:String(limit), offset:String(offset)});
+    if (selectedCategory !== "all") params.set("category", selectedCategory);
     if (query.trim()) params.set("q", query.trim());
     if (selectedKind) params.set("kind", selectedKind);
     const data = await request(ctx, `/api/local-workspace?${params}`);
@@ -3387,6 +3408,8 @@ window.SpireProject = (() => {
       if (data.error_code) box.append(technical(data, "查看本机读取状态"));
       return box;
     }
+    const categoryLabel = categories.find(([value]) => value === selectedCategory)?.[1] || "全部";
+    box.append(el("p", `${categoryLabel} · 共 ${count(data.total)} 项`, "small muted"));
 
     const humanSources = (data.items || []).filter(item => item?.kind === "evidence"
       && item.parameters?.schema === "stpd/local-verified-bundle-v1" && hex(item.artifact_id));

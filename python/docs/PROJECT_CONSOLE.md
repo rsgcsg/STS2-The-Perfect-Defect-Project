@@ -53,6 +53,15 @@ Local raw sessions and bundles are not automatically deleted after cloud success
 
 ## 本机资料
 
+The catalog offers **录制 / 数据集 / 模型 / 报告 / 全部** shortcuts in the same
+workspace. These select metadata categories, reset pagination and the advanced kind
+filter, and retain the visible search term and selected recording IDs. **录制** includes
+local-verified and received-bundle evidence; a quarantined received bundle remains
+visible. Category membership never grants Human origin, training use or model readiness.
+Only the existing eligible local-verified sources expose the Human-input selection control.
+The GET category filter combines with kind/search before total counts and pagination;
+unknown categories are rejected. Switching categories does not publish, import or train.
+
 The local-only **本机资料** page uses the local browser session and needs no project login or Hub
 connection. It reads artifact manifests, names, safe metadata, parent IDs, payload roles, hashes
 and sizes through the existing local inventory and artifact routes. GET requests do not create
