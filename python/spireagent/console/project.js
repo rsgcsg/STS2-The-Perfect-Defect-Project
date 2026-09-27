@@ -2511,6 +2511,73 @@ window.SpireProject = (() => {
     return overview;
   }
 
+  function offlineEvaluationMetrics(value) {
+    const metrics = value && typeof value === "object" ? value : {};
+    const number = key => Number.isFinite(metrics[key]) ? String(metrics[key]) : "未知";
+    return fields([
+      ["样本数", number("count")],
+      ["Top-1", number("top1")],
+      ["MRR", number("mrr")],
+      ["NLL", number("nll")],
+      ["置信度", number("confidence")],
+      ["边际", number("margin")],
+    ]);
+  }
+
+  async function localOfflineEvaluationDetail(ctx, artifact) {
+    const parameters = artifact.parameters && typeof artifact.parameters === "object"
+      ? artifact.parameters : {};
+    const summary = panel("已记录的开发集结果", "这是生产者记录的离线摘要，不代表游戏通关或模型质量；本页未重新核验原始数据、模型权重或完整训练来源。");
+    const schema = parameters.schema || parameters.evaluation_schema;
+    if (parameters.partition === "test" || parameters.sealed_test === true) {
+      summary.append(el("p", "封存测试评估不会在此读取或展示。", "small muted"));
+      return summary;
+    }
+    if (parameters.partition !== "dev" || !hex(artifact.artifact_id)) {
+      summary.append(el("p", "该对象未标明可展示的开发集分区；未请求评估摘要。", "small muted"));
+      return summary;
+    }
+    try {
+      const value = await request(ctx, `/api/local-workspace/evaluations/${artifact.artifact_id}`);
+      if (value.schema !== "stpd/local-offline-evaluation-summary-v1"
+          || value.evaluation_id !== artifact.artifact_id
+          || value.partition !== "dev"
+          || value.validation_scope !== "recorded_report_and_parent_identities"
+          || value.interpretation !== "producer_recorded_summary_not_full_lineage_or_quality_verification") {
+        summary.append(el("p", "评估摘要格式或核验范围未知，未将其视为已验证结果。", "small muted"));
+        summary.append(technical(value, "查看未识别的摘要"));
+        return summary;
+      }
+      summary.append(fields([
+        ["评估格式", value.evaluation_schema || schema || "未知"],
+        ["模型", hex(value.model_id) ? value.model_id.slice(0, 16) : "未知"],
+        ["模型视图", hex(value.model_view_id) ? value.model_view_id.slice(0, 16) : "未知"],
+        ["模型配方", typeof value.model_recipe === "string" && value.model_recipe ? value.model_recipe : "未知"],
+        ["视图格式", typeof value.view_schema === "string" && value.view_schema ? value.view_schema : "未知"],
+        ["记录中的决策数", count(value.decision_count)],
+        ["记录中的对局分组数（未复核独立性）", count(value.reported_run_groups)],
+        ["多候选决策数", count(value.multi_candidate_count)],
+        ["基准", value.baseline || "未知"],
+      ]));
+      summary.append(el("h3", "总体记录指标"), offlineEvaluationMetrics(value.overall));
+      if (value.baselines && typeof value.baselines === "object") {
+        for (const [key, label] of [["uniform_legal", "均匀合法动作基准"], ["action_only", "仅动作基准"]]) {
+          if (value.baselines[key]) summary.append(el("h3", label), offlineEvaluationMetrics(value.baselines[key]));
+        }
+      }
+      summary.append(technical({
+        validation_scope: value.validation_scope,
+        qualification: value.qualification,
+        scientific_verdict: value.scientific_verdict,
+        interpretation: value.interpretation,
+      }, "摘要范围与资格字段"));
+    } catch (error) {
+      summary.append(el("p", "无法读取这份开发集的本机摘要；这不表示评估为空或通过。", "small muted"));
+      summary.append(technical({error: error?.message || "unknown"}, "查看摘要读取错误"));
+    }
+    return summary;
+  }
+
   function localRecordingCard(ctx, importStatus) {
     const section = panel(
       "本机录制来源",
@@ -2788,6 +2855,8 @@ window.SpireProject = (() => {
       box.append(panel(heading, `本机对象 · ${value.artifact_id.slice(0, 16)}`));
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1")
         box.append(localDatasetOverview(value));
+      if (value.kind === "offline_evaluation")
+        box.append(await localOfflineEvaluationDetail(ctx, value));
       box.append(technical(value, "查看来源详情与内容文件摘要"));
       if (value.kind === "evidence" && value.parameters?.schema === "stpd/local-verified-bundle-v1") {
         const preview = panel("本机样本预览", "选择这份已导入录制后，明确检查其中的样本。不会自动创建数据集。");
@@ -2925,9 +2994,79 @@ window.SpireProject = (() => {
     }, {disabled: value.evidence_verification !== "pass"}));
     return box;
   }
+  async function localOfflineEvaluationCatalog(ctx) {
+    const box = panel(
+      "本机离线评估",
+      "已记录的开发集结果是描述性离线统计，不代表游戏通关或模型质量。",
+    );
+    const limit = 25, offset = offsets.get("local-offline-evaluations") || 0;
+    const params = new URLSearchParams({kind:"offline_evaluation", limit:String(limit), offset:String(offset)});
+    let data;
+    try {
+      data = await request(ctx, `/api/local-workspace?${params}`);
+    } catch (error) {
+      box.append(el("p", "本机离线评估目录暂不可用；读取失败不会当作空列表。", "small muted"));
+      box.append(technical({error: error?.message || "unknown"}, "查看读取错误"));
+      return box;
+    }
+    if (data.status === "not_configured") {
+      box.append(empty("尚未建立本机资料空间", "建立并准备本机资料空间后，可在这里查看离线评估。"));
+      return box;
+    }
+    if (data.status === "unavailable") {
+      box.append(empty("本机离线评估暂不可用", "本机资料索引读取失败；请查看错误详情。"));
+      if (data.error_code) box.append(technical({error_code: data.error_code}, "查看读取错误"));
+      return box;
+    }
+    if (data.schema !== "stpd/local-workspace-inventory-v1"
+        || !Array.isArray(data.items) || !Number.isSafeInteger(data.total) || data.total < 0) {
+      box.append(el("p", "本机离线评估目录格式未知，未按空列表处理。", "small muted"));
+      box.append(technical(data, "查看未识别的目录metadata"));
+      return box;
+    }
+    if (data.total === 0) {
+      box.append(empty("还没有本机离线评估", "完成明确的开发集评估后，已记录结果会显示在这里。"));
+      return box;
+    }
+    const visible = data.items.filter(item => {
+      const parameters = item?.parameters && typeof item.parameters === "object"
+        ? item.parameters : {};
+      return parameters.partition !== "test" && parameters.sealed_test !== true;
+    });
+    if (visible.length) {
+      const rows = visible.map(item => {
+        const parameters = item.parameters && typeof item.parameters === "object"
+          ? item.parameters : {};
+        const schema = typeof parameters.schema === "string" ? parameters.schema : "未知格式";
+        const candidateName = parameters.display_name || parameters.name || parameters.title;
+        const name = typeof candidateName === "string" && candidateName.trim()
+          ? candidateName.trim().slice(0, 120) : "离线评估";
+        const identity = hex(item.artifact_id) ? item.artifact_id : null;
+        const title = identity
+          ? link(`${name} · ${identity.slice(0, 16)}`, route("local-workspace", identity))
+          : el("span", name);
+        const partition = parameters.partition === "dev" ? "开发集" : "未知";
+        return [title, partition, schema, technical(item, "查看评估metadata")];
+      });
+      box.append(table(["本机评估", "分区", "格式", "metadata"], rows));
+    } else {
+      box.append(empty("当前页没有可展示的开发集评估", "封存测试评估不在本机列表中展示。"));
+    }
+    const pagerBox = el("div", null, "project-actions");
+    if (offset > 0) pagerBox.append(command(ctx, "local-offline-evaluations-prev", "上一页", async () => {
+      offsets.set("local-offline-evaluations", Math.max(0, offset - limit)); await reload(ctx);
+    }, {type:"secondary"}));
+    if (offset + limit < data.total) pagerBox.append(command(ctx, "local-offline-evaluations-next", "下一页", async () => {
+      offsets.set("local-offline-evaluations", offset + limit); await reload(ctx);
+    }, {type:"secondary"}));
+    pagerBox.append(el("span", `metadata页 ${data.total ? `${offset + 1}–${Math.min(offset + limit, data.total)} / ${data.total}` : "0 项"}`, "subtext"));
+    box.append(pagerBox);
+    return box;
+  }
   async function evaluations(ctx) {
     const box = el("div", null, "project-page");
     if (local) {
+      box.append(await localOfflineEvaluationCatalog(ctx));
       if (signedIn(ctx)) {
         const sharing = await request(ctx, "/api/local-models/share-status");
         if (sharing.status !== "idle") box.append(panel("实战记录分享", `${show(sharing.status)}${sharing.error ? " · " + failure({message: sharing.error}) : ""}`), technical(sharing));
