@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import uuid
+from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -142,7 +143,7 @@ def _jsonable(value: object) -> object:
         return str(value)
     if isinstance(value, tuple):
         return [_jsonable(item) for item in value]
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {key: _jsonable(item) for key, item in value.items()}
     return value
 
