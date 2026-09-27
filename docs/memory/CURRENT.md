@@ -22,7 +22,7 @@ remain separate.
   independent private runtime checkout, using the same profile and existing
   library. Previous `0b9d49451a955bd2454c53b21544911e260c5bc1` is retained for
   rollback. No game package or consumer pin changed. Before/after 329 artifact
-  IDs, counts and total sizes matched; SQLite shared-memory bookkeeping changed,
+  IDs, counts and total sizes matched; The `.curation.sqlite-shm` modification time changed,
   so this is not a claim that all store bytes stayed identical.
   [PR #70 activation/integration receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/70#issuecomment-5858556193)
   owns the exact application evidence.
@@ -57,7 +57,7 @@ remain separate.
 
 ## Current work and next boundaries
 
-- PR #71 adds recording/dataset/model/report/all filters over existing metadata,
+- PR #71 candidate adds recording/dataset/model/report/all filters over existing metadata,
   retaining search and recording selections. Independent source review, focused
   tests and isolated Safari navigation passed; read its exact hosted checks and
   deployment state before claiming it is active. A separate actual-browser finding
