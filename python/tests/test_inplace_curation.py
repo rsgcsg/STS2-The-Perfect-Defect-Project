@@ -250,3 +250,38 @@ def test_pending_source_bridge_and_gold_claim_share_one_writer(tmp_path: Path) -
     with owner.transaction() as db:
         assert db.execute("SELECT count(*) FROM curation_claims WHERE purpose='gold'").fetchone() \
             == (0,)
+
+
+def test_bridge_visible_at_inventory_gate_cannot_launder_old_unknown_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bridge appears after the old precheck point but before final claim groups."""
+    config, source, _ = _config(tmp_path)
+    service = InplaceCurationPreparation(config)
+    service.start()
+    assert _settle(service)["status"] == "ready"
+    owner = configured_owner(config)
+    old_run = next(iter(owner.ledger.source_runs(source) or ()))
+    with owner.transaction() as db:
+        fingerprint = db.execute(
+            "SELECT fingerprint FROM curation_fingerprints WHERE run=? LIMIT 1",
+            (old_run,),
+        ).fetchone()[0]
+        assert owner.ledger._groups(db, {"future-run"}) == {"future-run"}
+
+    observed = []
+
+    def inventory_after_bridge(db) -> bool:
+        assert db.in_transaction
+        db.execute("INSERT INTO curation_fingerprints VALUES(?,?)",
+                   (fingerprint, "future-run"))
+        observed.append(owner.ledger._groups(db, {"future-run"}))
+        return owner._inventory_pending(db)
+
+    monkeypatch.setattr(owner.ledger, "_inventory_pending", inventory_after_bridge)
+    with pytest.raises(BoundaryError, match="legacy_gold_history_unknown"):
+        owner.ledger.claim("i" * 64, "gold", {"future-run"})
+    assert observed == [{old_run, "future-run"}]
+    with owner.transaction() as db:
+        assert db.execute("SELECT 1 FROM curation_claims WHERE id=?", ("i" * 64,)).fetchone() \
+            is None
