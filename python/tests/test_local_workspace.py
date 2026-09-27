@@ -140,6 +140,28 @@ def test_category_filters_exact_recording_schemas_before_paging_and_search(
     assert registry.path.read_bytes() == before_registry
 
 
+@pytest.mark.parametrize("schema", [[], {}])
+def test_recording_category_ignores_nonstring_schema_without_hiding_all(
+    tmp_path: Path, schema: object,
+) -> None:
+    artifact_store, registry, _, _ = fixture(tmp_path)
+    malformed = Manifest("evidence", PRODUCER,
+                         parameters=FrozenObject.of({"schema": schema}))
+    artifact_store.publish(malformed)
+    recording = Manifest("evidence", PRODUCER, parameters=FrozenObject.of({
+        "schema": "stpd/received-bundle-v1", "disposition": "verified",
+    }))
+    artifact_store.publish(recording)
+    browser = LocalWorkspace(registry, artifact_store)
+
+    assert [item["artifact_id"] for item in browser.inventory(category="recordings")["items"]] \
+        == [recording.artifact_id]
+    assert {item["artifact_id"] for item in browser.inventory(category="all")["items"]} \
+        >= {malformed.artifact_id, recording.artifact_id}
+    assert {item["artifact_id"] for item in browser.inventory()["items"]} \
+        >= {malformed.artifact_id, recording.artifact_id}
+
+
 @pytest.mark.parametrize(
     ("arguments", "code"),
     [

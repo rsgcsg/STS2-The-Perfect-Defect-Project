@@ -91,8 +91,10 @@ class LocalWorkspace:
             if category_kind is not None and manifest.kind != category_kind:
                 continue
             parameters = _parameters(manifest)
-            if category == "recordings" and parameters.get("schema") not in RECORDING_SCHEMAS:
-                continue
+            if category == "recordings":
+                schema = parameters.get("schema")
+                if not isinstance(schema, str) or schema not in RECORDING_SCHEMAS:
+                    continue
             if search is not None:
                 searchable = " ".join(
                     (
