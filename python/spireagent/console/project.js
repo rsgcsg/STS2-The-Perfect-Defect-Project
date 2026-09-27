@@ -2388,11 +2388,27 @@ window.SpireProject = (() => {
     box.append(section);
   }
 
-  function localRecordingCard(ctx) {
+  function localRecordingCard(ctx, importStatus) {
     const section = panel(
       "本机录制来源",
-      "查看本机报告的录制目录和结束状态。此处不会打包、导入或训练。",
+      "选择已结束的录制，验证后加入本机资料库。原始录制保留，不会上传或开始训练。",
     );
+    const {csrf_token: localCsrfToken, ...safeImportStatus} = importStatus;
+    if (importStatus.status === "pending") {
+      section.append(el("p", "本机正在打包并验证所选录制；可离开本页，稍后刷新状态。", "small muted"));
+    } else if (importStatus.status === "completed") {
+      section.append(el("p", "上一次本机导入已完成。", "small muted"));
+      if (importStatus.artifact_id)
+        section.append(link("查看已导入对象", route("local-workspace", importStatus.artifact_id)));
+    } else if (importStatus.status === "published_index_unavailable") {
+      section.append(el("p", "归档已写入本机资料库，但索引更新失败；请查看状态并修复后再明确重试。", "small muted"));
+    } else if (["failed", "interrupted_unknown", "publication_unknown"].includes(importStatus.status)) {
+      section.append(el("p", "上一次导入未确认完成；不会自动重试。请查看状态并核对后再明确操作。", "small muted"));
+    }
+    if (importStatus.error_code) section.append(technical(safeImportStatus, "查看导入状态"));
+    section.append(command(ctx, "refresh-local-import-status", "刷新导入状态", async () => {
+      await reload(ctx);
+    }, {type:"secondary"}));
     if (localRecordingSnapshot === null) {
       section.append(command(ctx, "read-local-recordings", "查看录制来源", async () => {
         localRecordingSnapshot = await request(ctx, "/api/local-recordings");
@@ -2434,6 +2450,30 @@ window.SpireProject = (() => {
       "录制已结束，内容待验证",
     ]);
     section.append(table(["录制", "时间线", "结束时间", "状态"], rows));
+    const candidates = (data.candidates || []).filter(item =>
+      !(importStatus.status === "completed" && importStatus.candidate_id === item.candidate_id));
+    if (candidates.length) {
+      const selection = select(section, "要导入的录制", "local-recording-selection",
+        [["", "请选择一条录制"], ...candidates.map(item => [item.candidate_id,
+          `${item.closed_at || "结束时间未知"} · ${item.session_id}`])], "");
+      const checkbox = input(section, "我确认所选录制来自真人操作", "local-recording-attestation", false, "checkbox");
+      const canImport = () => checkbox.checked && candidates.some(item => item.candidate_id === selection.value)
+        && importStatus.status !== "pending" && !!localCsrfToken;
+      const button = command(ctx, "import-local-recording", "验证并导入本机", async () => {
+        if (!canImport()) return;
+        await request(ctx, "/api/local-recordings/import", {
+          candidate_id: selection.value,
+          human_origin_attested: true,
+        }, localCsrfToken);
+        await reload(ctx);
+      }, {disabled:true});
+      selection.onchange = () => {
+        checkbox.checked = false;
+        button.disabled = true;
+      };
+      checkbox.onchange = () => { button.disabled = !canImport(); };
+      section.append(button);
+    }
     if (!data.candidate_count)
       section.append(empty("没有检测到已结束的录制", "尚未结束或信息不完整的录制不会列出。"));
     return section;
@@ -2443,7 +2483,8 @@ window.SpireProject = (() => {
     const box = el("div", null, "project-page");
     box.append(panel("本机资料", "浏览本机资料来源。此页在本机读取，不需要云端登录；开始任何导入或训练都需要独立的明确操作。"));
     await managedWorkspaceCard(ctx, box);
-    box.append(localRecordingCard(ctx));
+    const importStatus = await request(ctx, "/api/local-recordings/import/status");
+    box.append(localRecordingCard(ctx, importStatus));
     const id = new URLSearchParams(ctx.search).get("id");
     if (id) {
       const value = await request(ctx, `/api/local-workspace/artifacts/${encodeURIComponent(id)}`);
