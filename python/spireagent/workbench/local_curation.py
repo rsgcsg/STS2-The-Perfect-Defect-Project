@@ -51,6 +51,7 @@ class LocalCurationOwner:
         self.store_dir = store_dir
         self.identity = (workspace_id, ledger_id, store_id, str(store_dir.resolve()))
         self._ledger: LocalLedger | None = None
+        self._schema_ready = False
         if path.is_symlink() or store_dir.is_symlink() or not store_dir.is_dir():
             raise BoundaryError("local_curation", "owner_storage_invalid")
         owner_path = store_dir / OWNER_NAME
@@ -78,6 +79,7 @@ class LocalCurationOwner:
                            "candidate TEXT PRIMARY KEY,artifact TEXT,status TEXT NOT NULL "
                            "CHECK(status IN ('publishing','published')))")
             self._ledger = LocalLedger(self, inventory_pending=self._inventory_pending)
+            self._schema_ready = True
         else:
             if not path.is_file():
                 raise BoundaryError("local_curation", "ledger_recovery_required")
@@ -90,6 +92,7 @@ class LocalCurationOwner:
                         "SELECT count(*) FROM local_curation_identity").fetchone()[0] != 1:
                         raise BoundaryError("local_curation", "ledger_identity_mismatch")
                     self._validate_existing(db)
+                    self._schema_ready = True
                 finally:
                     db.close()
             except sqlite3.DatabaseError as error:
@@ -129,6 +132,8 @@ class LocalCurationOwner:
                     if row != self.identity or db.execute(
                         "SELECT count(*) FROM local_curation_identity").fetchone()[0] != 1:
                         raise BoundaryError("local_curation", "ledger_identity_mismatch")
+                    if self._schema_ready:
+                        self._validate_existing(db)
                 yield db
                 if db.in_transaction:
                     db.commit()

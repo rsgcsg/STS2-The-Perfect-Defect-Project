@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -125,6 +126,23 @@ def test_dataset_manifest_does_not_count_as_unindexed_source(tmp_path: Path) -> 
     store = ManifestArtifactStore(LocalBlobStore(directory / "store", create=False))
     store.publish(Manifest("dataset", Producer("local/test", "a" * 40, "b" * 64)))
     owner.ledger.claim("gold", "gold", {"run"})
+
+
+@pytest.mark.parametrize("statement,missing", [
+    ("DROP TABLE curation_claims", "curation_claims"),
+    ("DROP INDEX curation_run_claims", "curation_run_claims"),
+])
+def test_schema_loss_after_inspect_is_not_recreated_by_lazy_ledger(
+    tmp_path: Path, statement: str, missing: str,
+) -> None:
+    state, directory, _ = create(tmp_path)
+    owner = managed.inspect_managed_workspace(state)["curation_owner"]
+    with sqlite3.connect(directory / LEDGER_NAME) as db:
+        db.execute(statement)
+    with pytest.raises(BoundaryError, match="ledger_recovery_required"):
+        _ = owner.ledger
+    with sqlite3.connect(directory / LEDGER_NAME) as db:
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name=?", (missing,)).fetchone() is None
 
 
 def test_second_state_cannot_write_managed_store_as_legacy(tmp_path: Path) -> None:
