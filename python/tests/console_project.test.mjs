@@ -841,7 +841,7 @@ test("offline evaluation detail supports Stage1a recorded summaries and optional
       if (url === `/api/local-workspace/evaluations/${evaluation}`) return {
         schema:"stpd/local-offline-evaluation-summary-v1", evaluation_id:evaluation,
         evaluation_schema:stage1a, model_id:id("a"), model_view_id:id("b"),
-        model_recipe:"legal-action-ranking", view_schema:"stpd/model-view-v1", partition:"dev",
+        model_recipe:"stage1a.b.s.v2", view_schema:"stpd/decision-model-view-v1", partition:"dev",
         baseline:"model", qualification:"engineering_only", scientific_verdict:"not_claimed",
         validation_scope:"recorded_report_and_parent_identities", decision_count:4,
         reported_run_groups:1, multi_candidate_count:3, overall:metrics,
@@ -856,6 +856,32 @@ test("offline evaluation detail supports Stage1a recorded summaries and optional
   assert.match(text(page), /均匀合法动作基准/);
   assert.match(text(page), /仅动作基准/);
   assert.equal(env.calls.filter(call => call.url === `/api/local-workspace/evaluations/${evaluation}`).length, 1);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("unknown offline summary does not render arbitrary response payloads", async () => {
+  const evaluation = id("d");
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${evaluation}`,
+    curationStatus:{schema:"stpd/local-curation-preparation-v1", status:"ready"},
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${evaluation}`) return {
+        artifact_id:evaluation, kind:"offline_evaluation",
+        parameters:{schema:"stpd/offline-ranking-evaluation-v1", partition:"dev"},
+      };
+      if (url === `/api/local-workspace/evaluations/${evaluation}`) return {
+        schema:"future-summary", rows:[{state_text:"PRIVATE_ROW_SENTINEL"}],
+        path:"PRIVATE_PATH_SENTINEL",
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /评估摘要格式或核验范围未知/);
+  assert.doesNotMatch(text(page), /PRIVATE_ROW_SENTINEL|PRIVATE_PATH_SENTINEL/);
   assert.equal(post(env.calls).length, 0);
 });
 

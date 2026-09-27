@@ -2556,7 +2556,6 @@ window.SpireProject = (() => {
           || value.validation_scope !== "recorded_report_and_parent_identities"
           || value.interpretation !== "producer_recorded_summary_not_full_lineage_or_quality_verification") {
         summary.append(el("p", "评估摘要格式或核验范围未知，未将其视为已验证结果。", "small muted"));
-        summary.append(technical(value, "查看未识别的摘要"));
         return summary;
       }
       summary.append(fields([
@@ -3036,7 +3035,6 @@ window.SpireProject = (() => {
     if (data.schema !== "stpd/local-workspace-inventory-v1"
         || !Array.isArray(data.items) || !Number.isSafeInteger(data.total) || data.total < 0) {
       box.append(el("p", "本机离线评估目录格式未知，未按空列表处理。", "small muted"));
-      box.append(technical(data, "查看未识别的目录metadata"));
       return box;
     }
     if (data.total === 0) {
