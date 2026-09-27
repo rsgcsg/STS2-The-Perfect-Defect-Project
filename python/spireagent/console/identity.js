@@ -3,6 +3,7 @@
 // Same account and views in both shells. Credentials remain in their owning servers.
 window.SpireIdentity = (() => {
   const local = document.body.dataset.mode === "local";
+  const cloudConfigured = Boolean(document.body.dataset.cloudUrl);
   let identity = null, checked = 0, busy = null, scope = local ? "local" : "project";
   let deviceDraft = null;
   let timer = null, refreshPage = () => {}, epoch = 0, loggingOut = false;
@@ -60,7 +61,7 @@ window.SpireIdentity = (() => {
         message(result.remote_revoked ? "已退出账号；这台电脑的上传授权保留。" :
           "已退出本机账号；云端会话未确认撤销，将按有效期失效。上传授权保留。");
       }));
-    } else if (local) {
+    } else if (local && cloudConfigured) {
       target.append(action(identity?.status === "reconnect_required" ? "重新登录" : "登录项目账号",
         () => { location.assign("?view=devices"); }));
     }

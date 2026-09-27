@@ -760,6 +760,24 @@ test("persisted older activity is shown as the selected collection without activ
   assert.equal(post(env.calls).length, 0);
 });
 
+test("collection page claims automatic delivery only when its local owner reports it running", async () => {
+  for (const [upload, expected, forbidden] of [
+    [{ enabled: false, process: "not_configured" }, "本机后台上传未启用", "本机后台投递已启用"],
+    [{ enabled: true, process: "not_configured" }, "本机投递服务未配置运行", "本机后台投递已启用"],
+    [{ enabled: true, process: "stopped" }, "本机投递服务当前未运行", "本机后台投递已启用"],
+    [{ enabled: true, process: "running" }, "本机后台投递已启用且当前运行", "本机后台上传未启用"],
+  ]) {
+    const env = setup({ view: "campaigns", handler: (url) => url.endsWith("/collection-flow") ? {
+      schema: "stpd/local-collection-flow-v1", device_id: "this-pc", enrollment: null,
+      default: null, consent_required: false, stage: "unavailable", next_action: "reconnect", upload,
+    } : emptyList() });
+    const page = await env.render();
+    assert.match(text(page), new RegExp(expected));
+    assert.doesNotMatch(text(page), new RegExp(forbidden));
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
 test("in-page project navigation preserves selected export identities and leaves file downloads untouched", async () => {
   const artifact = id("5");
   const env = setup({

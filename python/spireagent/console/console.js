@@ -5,6 +5,7 @@ const config = document.body.dataset;
 const localShell = config.mode === "local";
 let local = localShell;
 const views = {
+  "local-home": ["本机工作台", "本机模型、本机资料与游戏内录制入口。云端登录可选。"],
   devices: ["账号与电脑", "一个项目账号，管理获授权的电脑。"],
   connect: ["确认电脑接入", "核对名称与配对码，批准刚刚发起的请求。"],
   overview: ["概览", "采集、上传与研究进展，一处查看。"],
@@ -20,7 +21,7 @@ const views = {
   research: ["训练与模型", "查看真实训练产物、benchmark 和数据分析，区分尚未执行的计划。"],
   "local-models": ["模型实战", "检查兼容性、加载模型，再明确开始真实游戏评估。"],
   "local-workspace": ["本机资料", "直接浏览已登记的本机研究资料与来源。无需项目账号或云端连接。"],
-  campaigns: ["真人采集", "准备一次，在游戏内控制录制；后台自动保存和上传。"],
+  campaigns: ["真人采集", "在游戏内由你控制录制；本机后台投递状态按实际配置显示。"],
   evaluations: ["评估结果", "模型游戏实战与离线评价分别展示；片段和未知结果不会计作胜局。"],
 };
 const labels = {
@@ -142,6 +143,42 @@ function empty(title, description) {
     node("p", description),
   );
   return element;
+}
+function localHome() {
+  const page = node("div", null, "project-page");
+  const intro = panel(
+    "先从本机开始",
+    "本机模型与资料查看不需要云端登录。游戏内操作由你在 Mod 中明确开始；采集授权和本机准备按现有流程完成。",
+  );
+  intro.append(node("p", config.cloudUrl
+    ? "云端共享和账号功能可选；需要时可从右上角打开云端。"
+    : "此工作台尚未配置云端入口；本机功能仍可使用。"));
+  page.append(intro);
+
+  const grid = node("div", null, "grid-two");
+  const models = panel(
+    "本机模型",
+    "查看本机审核过的模型选择与 Runtime 状态。准备并加载、开始测试都需要你分别明确操作。",
+  );
+  models.append(link("打开模型实战 →", "?view=local-models"));
+  const workspace = panel(
+    "本机资料",
+    "只读浏览已登记的本机研究资料。没有登记资料库时会说明现状；此页不会创建或扫描资料库。",
+  );
+  workspace.append(link("打开本机资料 →", "?view=local-workspace"));
+  grid.append(models, workspace);
+  page.append(grid);
+
+  const recording = panel(
+    "游戏内真人录制",
+    "录制由你在 STS2 游戏 Mod 中开始和结束；打开工作台不会启动游戏或触发录制。",
+  );
+  recording.append(
+    node("p", "录制保存在本机。上传另需设备授权、开启上传设置且本机投递服务实际运行；没有投递配置时，新录制不会自动上传。查看下方真人采集状态可核对。"),
+    link("查看真人采集配置与状态 →", "?view=campaigns"),
+  );
+  page.append(recording);
+  return page;
 }
 function technical(value) {
   const element = node("details", null, "technical");
@@ -961,9 +998,9 @@ function readLocation() {
   const params = new URLSearchParams(location.search),
     requested = params.get("view");
   state.view = Object.hasOwn(views, requested) &&
-    (requested !== "local-workspace" || localShell)
+    (!["local-workspace", "local-home"].includes(requested) || localShell)
     ? requested
-    : (localShell ? "campaigns" : "collections");
+    : (localShell ? "local-home" : "collections");
   const id = params.get("id");
   state.id =
     ["collections", "datasets", "models", "local-workspace"].includes(state.view) &&
@@ -1021,6 +1058,7 @@ async function load(manual = false, forceIdentity = manual) {
   const serial = ++state.serial;
   const view = state.view,
     id = state.id;
+  if (localShell && view === "local-home") window.SpireIdentity.localOnly();
   const record = view === "connect" ? new URLSearchParams(location.search).get("flow") : id;
   const pageContext = `${view}:${record || ""}:${state.offset}:${state.limit}:${view === "datasets" && !id ? window.SpireProject.datasetContext() : ""}`;
   let context = `${pageContext}:${window.SpireIdentity.context()}`;
@@ -1040,6 +1078,19 @@ async function load(manual = false, forceIdentity = manual) {
   renderTaskTabs(view);
   $("content").setAttribute("aria-busy", "true");
   $("refresh").disabled = true;
+  if (localShell && view === "local-home") {
+    if (serial !== state.serial) return;
+    local = true;
+    $("content").replaceChildren(localHome());
+    $("notice").replaceChildren();
+    $("updated").textContent = "本机入口 · 尚未读取云端状态";
+    $("connection").textContent = "本机工作台";
+    renderedContext = `${pageContext}:${window.SpireIdentity.context()}`;
+    $("content").setAttribute("aria-busy", "false");
+    state.busy = false;
+    $("refresh").disabled = false;
+    return;
+  }
   const route = id ? `${view}/${id}` : view;
   const query =
     ["collections", "datasets", "jobs", "models"].includes(view) && !id
@@ -1206,7 +1257,7 @@ document.querySelectorAll("[data-view]").forEach((item) =>
 );
 $("refresh").addEventListener("click", () => load(true));
 $("lifecycle-note").textContent = localShell
-  ? "关闭网页 ≠ 停止后台投递"
+  ? "本机上传状态以真人采集页的实际配置与观测为准"
   : "邀请制项目 · 共享数据按权限访问";
 window.SpireProject.reload = () => load(true, false);
 window.SpireProject.navigate = (view, id = null) => navigate(view, id);
