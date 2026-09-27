@@ -236,6 +236,9 @@ test("local research workspace browses the local API without project identity", 
           payloads: [{role: "records", sha256: id("b"), size: 24, media_type: "application/json"}],
           registry_indexed: true,
           registry_cached: false,
+        }, {
+          artifact_id: id("d"), kind: "evidence", payloads: [],
+          registry_indexed: true, registry_cached: false,
         }],
       };
       throw new Error(`unexpected route ${url}`);
@@ -243,7 +246,8 @@ test("local research workspace browses the local API without project identity", 
   });
   const page = await env.render();
   assert.match(text(page), /本机资料/);
-  assert.match(text(page), /dataset/);
+  assert.match(text(page), /数据集/);
+  assert.match(text(page), /证据/);
   assert.match(text(page), /本机索引/);
   assert.equal(env.calls.length, 3);
   assert.equal(env.calls[0].url === "/api/local-workspace/managed", true);

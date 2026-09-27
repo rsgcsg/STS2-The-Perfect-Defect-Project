@@ -70,7 +70,7 @@ window.SpireProject = (() => {
     character: "角色",
     difficulty: "难度",
     game_version: "游戏版本",
-    evidence: "录制来源",
+    evidence: "证据",
     dataset: "数据集",
     feature_job: "特征任务",
     protocol: "固定分配 / 协议",
@@ -2830,7 +2830,8 @@ window.SpireProject = (() => {
     const rows = [];
     for (const item of data.items || []) {
       const candidateName = item.parameters?.display_name || item.parameters?.name || item.parameters?.title;
-      const name = typeof candidateName === "string" ? candidateName.slice(0, 120) : item.kind;
+      const name = typeof candidateName === "string" && candidateName.trim()
+        ? candidateName.trim().slice(0, 120) : show(item.kind);
       const title = link(`${name} · ${item.artifact_id.slice(0, 16)}`, route("local-workspace", item.artifact_id));
       const payloadCount = (item.payloads || []).length;
       rows.push([
