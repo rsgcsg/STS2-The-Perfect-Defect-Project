@@ -16,8 +16,12 @@ separate.
   Other cancelled attempts and the final missing successor retain their original
   dispositions. [PR #63 receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/63#issuecomment-5856320923)
   is not full-game qualification. The later read-only owner check found the same
-  loaded rc.17 artifact and a closed Recorder; a new untargeted-card Human canary
-  has been requested, not yet accepted. Do not assume it has happened.
+  loaded rc.17 artifact. Two later owner-attested recording fragments were closed,
+  imported and verified: 31 accepted input labels and 23 canonical decisions,
+  with two close-before-successor endpoints retained as unknown. The exact
+  Defense+ binding/Commit/successor is proved; a Human mouse untargeted-confirm
+  label remains unproved. [The bounded receipt](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
+  separates these facts and does not establish two independent full games.
 - **Active Workbench:** exact application source
   `9bb9e22f7849cc74df2f53f1b38f038bc6a36d09` was deliberately activated in an
   independent private runtime checkout, using the same profile and existing
@@ -36,7 +40,8 @@ separate.
   remains; separately, an explicit owner API preview/publication selected two
   previously attested recordings into one Human source: 14 accepted labels and
   2 rejected/cancelled rows retained, no new payload copy. The resulting library
-  has 330 manifests. Its training-purpose binding was read back; split remains
+  then had 330 manifests; importing the two newer fragments brings it to 332.
+  The earlier dataset's training-purpose binding was read back; split remains
   `not_checked_for_training`, and no real-data worker was started. This was an
   API exercise; only opening the saved detail was additionally observed in Safari.
 - **Synthetic journey:** [the Safari receipt](../evidence/HUMAN_INPUT_LOCAL_WORKBENCH_BROWSER_2026-09-28.md)
@@ -82,6 +87,12 @@ separate.
   a game; registering a selectable policy requires honest environment/support
   facts and separately qualified Runtime loading. One observed page cannot stand
   for all scenes. Do not fabricate package URLs or reuse historical identities.
+- The offline-export candidate adds one explicit model-detail action for CPU
+  scratch small B in the current text-menu format. It reuses existing artifact
+  export and standalone scorer verification, preserves pending/unknown outcomes,
+  and permits a new explicit check after a completed operation's workspace changes.
+  It does not register a policy, start Runtime, train, or imply game compatibility.
+  Candidate source/checks and the active application identity remain distinct.
 - Fill untargeted/native continuation and full-scene coverage through exact owner
   evidence. Commit is not a causal successor; input labels cannot fill missing
   canonical edges. Preserve unknowns rather than repairing them from later polls.
