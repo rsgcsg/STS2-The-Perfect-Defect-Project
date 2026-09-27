@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import sys
 from pathlib import Path
@@ -96,6 +97,26 @@ def test_fixed_windows_split_only_at_explicit_reset_and_reject_duplicate_event_i
         )
 
 
+def test_nonempty_burn_in_context_is_masked_from_learning_labels():
+    items = tuple(_input(f"event-{index}", index, reset=index == 0)
+                  for index in range(1, 6))
+    view = ObservedInputView("evidence", "verified_agent_observed_inputs", False, items)
+
+    windows = build_fixed_windows(view, learn_steps=2, burn_in_steps=1)
+
+    assert len(windows) == 3
+    assert windows[0].inputs == (None, items[0], items[1])
+    assert windows[0].burn_in_mask == (False, False, False)
+    assert windows[0].choice_mask == (False, True, True)
+    assert windows[1].inputs == (items[1], items[2], items[3])
+    assert windows[1].burn_in_mask == (True, False, False)
+    assert windows[1].choice_mask == (False, True, True)
+    assert windows[2].inputs == (items[3], items[4], None)
+    assert windows[2].burn_in_mask == (True, False, False)
+    assert windows[2].valid_mask == (True, True, False)
+    assert windows[2].choice_mask == (False, True, False)
+
+
 def test_human_inputs_are_partial_and_keep_choice_separate_from_delivery(monkeypatch):
     import stpd.fullrun.observed_input_sequence as module
 
@@ -179,6 +200,49 @@ def test_agent_view_uses_verified_full_archive_and_keeps_successor_kinds_distinc
     assert item.causal_successor_mask is False
     assert item.source_events[0].kind == "text_decision_input"
     assert item.source_events[0].event_id == ":".join(item.event_id.split(":")[:2])
+
+
+def test_verified_two_decision_archive_splits_on_owner_reset_event(
+    tmp_path, verified_fixture,
+):
+    directory = verified_fixture._text_evidence("sequence-two-decisions")
+    events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+    input_event = next(event for event in events if event["kind"] == "text_decision_input")
+    decision_event = next(event for event in events if event["kind"] == "decision")
+    second_input = copy.deepcopy(input_event)
+    second_input["payload"]["decision_id"] = "decision-2"
+    second_input["payload"]["snapshot"]["snapshot_id"] = "text-3"
+    second_input["payload"]["snapshot"]["sequence"] = 3
+    second_decision = copy.deepcopy(decision_event)
+    second_decision["payload"]["decision"]["decision_id"] = "decision-2"
+    second_decision["payload"]["decision"]["snapshot_id"] = "text-3"
+    boundary = {
+        "schema": input_event["schema"], "sequence": 0,
+        "recorded_at": input_event["recorded_at"], "kind": "mode_changed",
+        "payload": {"mode": "one_step"},
+    }
+    release_index = next(index for index, event in enumerate(events)
+                         if event["kind"] == "controller_released")
+    events[release_index:release_index] = [boundary, second_input, second_decision]
+    for sequence, event in enumerate(events, 1):
+        event["sequence"] = sequence
+    verified_fixture._rewrite_events(directory, events)
+    target = store(tmp_path)
+    evidence, _, _ = publish_verified_text_menu_run(
+        target, directory, PRODUCER, admit_agent=True)
+
+    view = load_observed_input_view(target, evidence.artifact_id)
+
+    assert len(view.inputs) == 2
+    assert view.inputs[0].reset_reason == "environment_admitted"
+    assert view.inputs[1].reset_before is True
+    assert view.inputs[1].reset_reason == "mode_changed"
+    assert view.inputs[1].choice_mask is True
+    assert view.inputs[1].delivery_status == "not_attempted"
+    windows = build_fixed_windows(view, learn_steps=2, burn_in_steps=0)
+    assert len(windows) == 2
+    assert [window.inputs[0].event_id for window in windows] == [
+        item.event_id for item in view.inputs]
 
 
 def test_agent_unknown_delivery_keeps_observation_and_unknown_masks(
