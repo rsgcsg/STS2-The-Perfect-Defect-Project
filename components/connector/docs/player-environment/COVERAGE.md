@@ -18,6 +18,13 @@ already moved from `NPlayerHand.ActiveHolders` to the native play queue are
 excluded, and End Turn is published only while its real native button remains
 enabled. This preserves the game's own queueing behavior without creating a
 second legality model.
+The opt-in text menu publishes a mouse-held card operation only for
+single-enemy targeting while the current `NTargetManager` retains the exact
+`NMouseCardPlay` exit predicate and its targeting signal connection. Its
+complete menu uses native focus, target selection and cancellation paths;
+selection delivery does not prove the later mouse play-zone check or card
+Commit. Missing private owner binding, any-ally targeting and untargeted
+mouse drag/release remain settling with no partial cancel-only catalog.
 The no-owner frame between a delivered standard-run entry and the mounted run
 is a bounded `settling` lifecycle, not a transient unsupported Surface. A real
 unknown owner remains fail-closed. The exact event-room model also settles while

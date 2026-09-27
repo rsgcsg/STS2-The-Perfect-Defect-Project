@@ -52,6 +52,37 @@ Targeted `cancel_card_play` requires cancellation input and
 `FinishTargeting(true)` in that call. A select input changed to cancellation by
 native exit conditions is a negative observation, not Human cancellation.
 
+The bounded mouse continuation candidate uses the same public verbs. Its
+private mechanisms are `mouse_canceled_input_signal`,
+`mouse_target_finish_input` and `mouse_target_canceled_input`. It adds no
+device field to the text-menu Snapshot or model input. On the exact
+`sts2.dll` SHA-256
+`9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4`,
+`NMouseCardPlay.SingleCreatureTargeting` calls the target manager with its own
+card node and an instance-bound exit predicate before awaiting
+`SelectionFinished`. The recorder binds that exact call to the live carrier
+and session. Connector also checks that the current manager's exit predicate
+targets the same mouse carrier and that carrier's targeting connection is
+still active. Missing or changed private fields leave the stage settling.
+The complete mouse menu is limited to single-enemy targeting through the
+native target manager. Native focus and select remain its own paths, and the
+later mouse play-zone check remains STS2's decision.
+
+| Native mouse input | Positive Human evidence gate | Current boundary |
+|---|---|---|
+| Single-enemy target left release or recognized `InputEventAction` select | Same `_Input` calls `FinishTargeting(false)` for the frozen exact hovered creature | `confirm_target` records selection input only; later `TryPlayCard`, zone failure and Commit are separate |
+| Target manager right press or a recognized `InputEventAction` cancellation signal | Same `_Input` calls `FinishTargeting(true)` | `cancel_card_play` only for these observed inputs, never an exit-condition, other keyboard event or `_Process` cancellation |
+| Mouse card right press or its own cancellation shortcut | Same `_Input` calls this carrier's `CancelPlayCard` | `cancel_card_play` only where the frozen current mouse menu is complete; one physical event cannot create two accepted rows |
+| Non-target held card left release | No same-input native play proof; the async loop later checks play/cancel zones | Settling, with no `confirm_card` label or cancel-only complete menu |
+| Drag into cancel zone, rule failure, invalid target or replacement carrier | No explicit same-input cancellation proof | No Human cancel label; unrelated owners and late callbacks cannot borrow a binding |
+
+Target focus alone creates no Human row. An empty hovered target cannot prove
+`confirm_target`, and a left release turned into cancellation by the native
+exit condition remains a negative observation. Any-ally mouse targeting
+stays settling until its full native target set has an exact menu. This is
+source/test evidence; loaded behavior and Human origin still need the exact
+owner-run canary and attestation.
+
 These are accepted native **inputs** only. Target focus alone, an automatic
 target choice, a later asynchronous `SelectionFinished` continuation, native
 card Commit and causal successor are distinct facts. The recorder neither
@@ -66,7 +97,7 @@ projection. The explicit owner's Human-origin attestation remains necessary;
 machine validation cannot establish Human origin. Research may derive an
 explicitly admitted input-choice view from accepted rows, without inventing a
 Connector request, Receipt, native Commit or successor. Agent traces retain
-their separate schema and origin. This slice does not claim mouse-held
+their separate schema and origin. This slice does not claim general mouse-held
 continuation, information-menu navigation, full-run text coverage or a
 card-play causal transition. Actual Human origin still requires owner
 attestation and an exact loaded-runtime canary.

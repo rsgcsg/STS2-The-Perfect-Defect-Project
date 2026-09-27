@@ -11,6 +11,28 @@ namespace STS2Connector;
 public sealed class ProcessLocalTextMenuWitnessTests
 {
     [Fact]
+    public void MouseTargetManagerCannotBorrowAnotherCarriersSelection()
+    {
+        Assert.NotNull(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NMouseCardPlay)
+            .GetField("_signalsConnected", System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic));
+        Assert.Equal(typeof(Func<bool>),
+            typeof(MegaCrit.Sts2.Core.Nodes.Combat.NTargetManager)
+                .GetField("_exitEarlyCondition", System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.NonPublic)?.FieldType);
+        var first = new NativeOwner();
+        var second = new NativeOwner();
+        Assert.True(NativeTextMenuCombat.ExactMouseManagerOwner(first, first.Exit));
+        Assert.False(NativeTextMenuCombat.ExactMouseManagerOwner(first, second.Exit));
+        Assert.False(NativeTextMenuCombat.ExactMouseManagerOwner(first, null));
+    }
+
+    private sealed class NativeOwner
+    {
+        internal bool Exit() => false;
+    }
+
+    [Fact]
     public void ExactNativeReferencesSelectOneSameNamedCardWithoutDispatch()
     {
         var dispatches = new DispatchCounter();

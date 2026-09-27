@@ -26,6 +26,9 @@ MECHANISM_VERBS = {
     "controller_canceled_input_signal": "cancel_card_play",
     "controller_target_finish_input": "confirm_target",
     "controller_target_canceled_input": "cancel_card_play",
+    "mouse_canceled_input_signal": "cancel_card_play",
+    "mouse_target_finish_input": "confirm_target",
+    "mouse_target_canceled_input": "cancel_card_play",
 }
 MAPPING_BASIS = "text_menu_native_reference_equality"
 DISPOSITIONS = {"accepted_input", "not_mapped", "capture_failed", "rejected_or_cancelled"}

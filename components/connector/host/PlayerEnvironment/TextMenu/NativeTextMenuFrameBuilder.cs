@@ -189,24 +189,29 @@ internal static class NativeTextMenuFrameBuilder
             // authorize a new stage. Never inherit old play(card,target).
             leaves.Clear();
             owner = $"card_play:{RuntimeHelpers.GetHashCode(run)}:{entities.GetId((object?)play ?? hand, "card_play")}";
-            if (play is NControllerCardPlay controller
-                && controller.Holder.CardModel is { } card
-                && NativeTextMenuCombat.Owns(hand, controller, card))
+            bool controllerHeld = play is NControllerCardPlay;
+            bool mouseTargetHeld = play is NMouseCardPlay mouse
+                && mouse.Holder.CardModel is { } mouseCard
+                && NativeTextMenuCombat.OwnsMouseTarget(hand, mouse, mouseCard)
+                && NativeTextMenuCombat.CurrentTargets(hand, mouse, mouseCard).Count > 0;
+            if ((controllerHeld || mouseTargetHeld)
+                && play?.Holder.CardModel is { } card
+                && NativeTextMenuCombat.Owns(hand, play, card))
             {
                 string cardId = entities.GetId(card, "card");
-                page = CardOperationPage(page, hand, controller, card, cardId, entities,
+                page = CardOperationPage(page, hand, play, card, cardId, entities,
                     NTargetManager.Instance.IsInSelection
                         ? "card_targeting" : "card_confirm");
                 leaves.Add(Leaf("cancel_card:" + cardId, "cancel_card_play",
                     "Cancel held card", cardId,
-                    () => NativeTextMenuCombat.Cancel(hand, controller, card)) with
+                    () => NativeTextMenuCombat.Cancel(hand, play, card)) with
                 {
-                    NativeWitness = HeldCardWitness(controller, card)
+                    NativeWitness = HeldCardWitness(play, card)
                 });
                 if (NTargetManager.Instance.IsInSelection)
                 {
                     foreach (NCreature target in NativeTextMenuCombat.CurrentTargets(
-                                 hand, controller, card))
+                                 hand, play, card))
                     {
                         var exactTarget = target;
                         string targetId = entities.GetId(target.Entity, "creature");
@@ -214,15 +219,15 @@ internal static class NativeTextMenuFrameBuilder
                             "focus_target", "Focus " + target.Entity.Name,
                             targetId,
                             () => NativeTextMenuCombat.FocusTarget(
-                                hand, controller, card, exactTarget)));
+                                hand, play, card, exactTarget)));
                         leaves.Add(Leaf("confirm_target:" + targetId,
                             "confirm_target", "Confirm " + target.Entity.Name,
                             targetId,
                             () => NativeTextMenuCombat.ConfirmTarget(
-                                hand, controller, card, exactTarget)) with
+                                hand, play, card, exactTarget)) with
                         {
                             NativeWitness = new TextMenuNativeWitnessBinding(
-                                controller, card,
+                                play, card,
                                 new Dictionary<string, object>(StringComparer.Ordinal)
                                 {
                                     ["target"] = exactTarget
@@ -230,7 +235,8 @@ internal static class NativeTextMenuFrameBuilder
                         });
                     }
                 }
-                else if (card.TargetType is not (TargetType.AnyEnemy or TargetType.AnyAlly))
+                else if (play is NControllerCardPlay controller
+                    && card.TargetType is not (TargetType.AnyEnemy or TargetType.AnyAlly))
                 {
                     leaves.Add(Leaf("confirm_card:" + cardId,
                         "confirm_card", "Confirm held card", cardId,
@@ -437,7 +443,7 @@ internal static class NativeTextMenuFrameBuilder
         new(play, card, new Dictionary<string, object>(StringComparer.Ordinal));
 
     private static PlayerEnvironmentSnapshot CardOperationPage(
-        PlayerEnvironmentSnapshot source, NPlayerHand hand, NControllerCardPlay play,
+        PlayerEnvironmentSnapshot source, NPlayerHand hand, NCardPlay play,
         CardModel card, string cardId, NativeEntityRegistry entities, string stage)
     {
         var visible = source.Referents.ToList();
