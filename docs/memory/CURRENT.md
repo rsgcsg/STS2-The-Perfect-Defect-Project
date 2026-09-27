@@ -2,8 +2,8 @@
 
 Use `rsgcsg/STS2-The-Perfect-Defect-Project` for new work. Reviewed source anchor:
 `develop@47ec697259e1fa9ca19c620b4f95f1ad6f808f00` (through PR #60).
-Resolve live refs and deployed identity before work; this file is a bounded handoff,
-not the authority for running versions or later commits.
+Resolve live GitHub refs and deployed identity before work; current source/runtime
+authorities override this file. It is a bounded handoff, not the running-version owner.
 
 ## What is implemented and what was observed
 
@@ -51,7 +51,7 @@ not the authority for running versions or later commits.
   Native drag-back/_Process/untargeted paths require exact owner evidence, not timing
   guesses. Full-scene execution and model quality remain independent gates.
 
-## Continuing boundaries
+## Remaining Platform non-claims
 
 The [in-run text plan](../plans/TEXT_STS2_IN_RUN.md), [collaboration contract](../AI_COLLABORATION.md),
 [Stage1a table](../plans/STAGE1A_TASKS.zh-CN.md), and
