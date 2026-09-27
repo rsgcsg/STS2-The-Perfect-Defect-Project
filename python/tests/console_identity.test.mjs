@@ -38,6 +38,29 @@ const person = (subject = 'one') => ({status: 'signed_in', csrf_token: 'csrf',
 
 const flatten = element => [element.textContent || '', ...(element.children || []).map(flatten)].join(' ');
 const descendants = element => [element, ...(element.children || []).flatMap(descendants)];
+test('local-only boot retains account navigation without requesting cloud identity', async () => {
+  const env = setup();
+  assert.equal(env.ui.localOnly().status, 'local_only');
+  assert.equal(env.calls.length, 0);
+  assert.equal(env.nodes.get('device-scope').value, 'local');
+  const login = descendants(env.nodes.get('account-actions')).find(n => n.textContent === '登录项目账号');
+  assert.ok(login);
+  await login.onclick();
+  assert.deepEqual(env.navigations, ['?view=devices']);
+  assert.equal(env.calls.length, 0);
+});
+test('local-only view selects local scope without clearing an existing signed-in account', async () => {
+  const env = setup();
+  const loading = env.ui.refresh(true);
+  env.calls.shift().answer(person()); await loading;
+  env.ui.ensureProjectScope();
+  assert.equal(env.ui.isLocal(), false);
+  env.ui.localOnly();
+  assert.equal(env.ui.isLocal(), true);
+  assert.match(flatten(env.nodes.get('account-actions')), /one@example.test/);
+  assert.equal(env.calls.length, 0);
+});
+
 async function connectionPage(facts) {
   const env = setup('cloud', 'a'.repeat(32));
   const initial = env.ui.refresh(true); env.calls.shift().answer(person('current')); await initial;

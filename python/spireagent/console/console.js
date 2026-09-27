@@ -1076,7 +1076,7 @@ async function load(manual = false, forceIdentity = manual) {
         item.open = opened.includes(item.dataset.preserve);
       });
       renderedContext = context;
-      $("updated").textContent = "当前账号下的服务观测";
+      $("updated").textContent = localWorkspaceOnly ? "本机资料读取完成" : "当前账号下的服务观测";
       $("connection").textContent = identity?.status === "signed_in" ? "已通过身份验证" : "本机工作台";
       return;
     }
