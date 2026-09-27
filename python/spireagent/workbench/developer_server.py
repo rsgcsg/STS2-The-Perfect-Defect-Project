@@ -184,6 +184,7 @@ class Application:
         from spireagent.workbench.collection_setup import CollectionSetup
         from spireagent.workbench.evaluation_sharing import EvaluationSharing
         from spireagent.workbench.local_recording_import import LocalRecordingImporter
+        from spireagent.workbench.local_recording_preview import LocalRecordingPreview
         from spireagent.workbench.local_recordings import LocalRecordingCatalog
 
         self.config = config
@@ -209,6 +210,7 @@ class Application:
         self.local_recordings = LocalRecordingCatalog(config)
         # Keep command-time owner observations separate from concurrent browser GET scans.
         self.local_recording_import = LocalRecordingImporter(config, LocalRecordingCatalog(config))
+        self.local_recording_preview = LocalRecordingPreview(self.local_research_workspace)
         self.evaluation_sharing = EvaluationSharing(self.models, self.members)
         self.delivery_error: str | None = None
         self.collection_flow = CollectionFlow(
@@ -624,6 +626,15 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 value = {**app.local_recording_import.status(), "csrf_token": app.account.csrf}
                 self.respond(200, json.dumps(value).encode())
+            elif parsed.path == "/api/local-recordings/preview/status":
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                if parsed.query:
+                    self.respond(400, b'{"error":"invalid_local_preview_request"}')
+                    return
+                value = {**app.local_recording_preview.status(), "csrf_token": app.account.csrf}
+                self.respond(200, json.dumps(value).encode())
             elif (parsed.path == "/api/local-workspace"
                     or parsed.path.startswith("/api/local-workspace/artifacts/")
                     or parsed.path == "/api/local-workspace/managed"):
@@ -764,6 +775,24 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(404, b"{}")
 
         def do_POST(self) -> None:
+            if self.path.startswith("/api/local-recordings/preview"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                if self.path != "/api/local-recordings/preview":
+                    self.respond(404, b'{"error":"route_not_found"}')
+                    return
+                try:
+                    body = self.json_body(maximum=128)
+                    if set(body) != {"artifact_id"}:
+                        raise ValueError
+                    value = app.local_recording_preview.start(body["artifact_id"])
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_local_preview_request"}')
+                return
             if self.path.startswith("/api/local-recordings/import"):
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')

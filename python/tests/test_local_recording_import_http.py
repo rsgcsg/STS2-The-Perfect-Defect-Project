@@ -76,3 +76,58 @@ def test_local_import_http_requires_browser_proof_and_explicit_attestation(
         server.server_close()
         thread.join(timeout=3)
         app.close()
+
+
+def test_local_preview_http_requires_explicit_authenticated_post(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    config.state_dir.mkdir()
+    config_path = tmp_path / "project.json"
+    atomic_json(config_path, config.to_dict())
+    app = Application(config, config_path=config_path)
+    atomic_json(config.state_dir / "runtime.json", {
+        "instance_id": app.instance_id, "configuration_id": configuration_id(config),
+    })
+    calls: list[object] = []
+    monkeypatch.setattr(app.local_recording_preview, "start", lambda artifact:
+                        calls.append(artifact) or {"status": "pending"})
+    monkeypatch.setattr(app.account, "status", lambda: pytest.fail("cloud login not required"))
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root = f"http://127.0.0.1:{server.server_port}"
+    client = build_opener(HTTPCookieProcessor(CookieJar()))
+
+    def post(body: dict, *, origin: str | None = root, csrf: str | None = None) -> int:
+        headers = {"Content-Type": "application/json",
+                   "X-CSRF-Token": app.account.csrf if csrf is None else csrf}
+        if origin is not None:
+            headers["Origin"] = origin
+        request = Request(root + "/api/local-recordings/preview",
+                          data=json.dumps(body).encode(), headers=headers, method="POST")
+        try:
+            with client.open(request) as response:
+                return response.status
+        except HTTPError as error:
+            return error.code
+
+    try:
+        valid = {"artifact_id": "a" * 64}
+        assert post(valid) == 403
+        client.open(root + "/").close()
+        with client.open(root + "/api/local-recordings/preview/status") as response:
+            assert json.load(response)["status"] == "idle"
+        assert calls == []
+        assert post(valid, origin="http://localhost:1") == 403
+        assert post(valid, csrf="wrong") == 403
+        assert post({"artifact_id": "a" * 64, "path": "/private/raw"}) == 400
+        assert calls == []
+        assert post(valid) == 200
+        assert calls == ["a" * 64]
+        assert app.hub is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+        app.close()
