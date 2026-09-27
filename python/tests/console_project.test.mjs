@@ -1559,6 +1559,89 @@ test("local inventory kind filter uses exact backend kinds and preserves search"
   assert.equal(post(env.calls).length, 0);
 });
 
+test("local workspace category shortcuts are read-only and preserve Human selection", async () => {
+  const source = id("a"), secondSource = id("e"), dataset = id("b"), model = id("c"), report = id("d");
+  const requests = [];
+  const itemsByCategory = {
+    recordings: [source, secondSource].map(artifact_id => ({artifact_id, kind:"evidence",
+      parameters:{schema:"stpd/local-verified-bundle-v1"}})),
+    datasets: [{artifact_id:dataset, kind:"dataset", parameters:{schema:"stpd/curated-decision-dataset-v1"}}],
+    models: [{artifact_id:model, kind:"model", parameters:{schema:"stpd/stage1a-model-v1"}}],
+    reports: [{artifact_id:report, kind:"offline_evaluation", parameters:{schema:"stpd/stage1a-evaluation-v1"}}],
+    all: [
+      {artifact_id:source, kind:"evidence", parameters:{schema:"stpd/local-verified-bundle-v1"}},
+      {artifact_id:secondSource, kind:"evidence", parameters:{schema:"stpd/local-verified-bundle-v1"}},
+      {artifact_id:dataset, kind:"dataset", parameters:{schema:"stpd/curated-decision-dataset-v1"}},
+    ],
+  };
+  const env = localHumanDatasetEnv({items:url => {
+    requests.push(url);
+    const params = new URLSearchParams(url.split("?")[1]);
+    return itemsByCategory[params.get("category") || "all"];
+  }, total:26});
+
+  let page = await env.render();
+  assert.match(text(page), /全部 · 共 26 项/);
+  for (const label of ["录制", "数据集", "模型", "报告", "全部"])
+    assert.ok(walk(page).some(element => element.tagName === "BUTTON" && element.textContent === label));
+  for (const checkbox of walk(page).filter(element => element.name === "local-human-source")) {
+    checkbox.checked = true;
+    checkbox.onchange();
+  }
+  assert.match(text(page), /已选 2 份录制/);
+  assert.equal(post(env.calls).length, 0);
+
+  const search = field(page, "local-workspace-search");
+  search.value = "keep this search";
+  await action(page, "search-local-workspace").onclick();
+  page = await env.render();
+  const kind = field(page, "local-workspace-kind");
+  kind.value = "checkpoint";
+  kind.onchange();
+  page = await env.render();
+  await action(page, "local-workspace-next").onclick();
+  page = await env.render();
+  assert.equal(new URLSearchParams(requests.at(-1).split("?")[1]).get("offset"), "25");
+  await action(page, "local-workspace-category-recordings").onclick();
+  page = await env.render();
+  assert.match(text(page), /录制 · 共 26 项/);
+  assert.equal(field(page, "local-workspace-kind").value, "");
+  assert.equal(walk(page).filter(element => element.name === "local-human-source").length, 2);
+  assert.equal(walk(page).filter(element => element.name === "local-human-source").every(element => element.checked), true);
+  const recordingQuery = new URLSearchParams(requests.at(-1).split("?")[1]);
+  assert.equal(recordingQuery.get("category"), "recordings");
+  assert.equal(recordingQuery.get("q"), "keep this search");
+  assert.equal(recordingQuery.get("kind"), null, "category shortcut clears the old advanced type filter");
+  assert.equal(recordingQuery.get("offset"), "0");
+
+  await action(page, "local-workspace-category-datasets").onclick();
+  page = await env.render();
+  assert.match(text(page), /数据集 · 共 26 项/);
+  assert.match(text(page), /已选 2 份录制/);
+  assert.equal(walk(page).some(element => element.name === "local-human-source"), false,
+    "filtered-out selection remains in the shared draft while its row is hidden");
+
+  await action(page, "local-workspace-category-models").onclick();
+  page = await env.render();
+  assert.match(text(page), /模型 · 共 26 项/);
+  await action(page, "local-workspace-category-reports").onclick();
+  page = await env.render();
+  assert.match(text(page), /报告 · 共 26 项/);
+  await action(page, "local-workspace-category-all").onclick();
+  page = await env.render();
+  assert.match(text(page), /全部 · 共 26 项/);
+  assert.equal(walk(page).filter(element => element.name === "local-human-source").length, 2);
+  assert.equal(walk(page).filter(element => element.name === "local-human-source").every(element => element.checked), true,
+    "returning to all restores both checkboxes from the same ordered selection draft");
+  const allQuery = new URLSearchParams(requests.at(-1).split("?")[1]);
+  assert.equal(allQuery.has("category"), false, "all remains compatible with the unfiltered listing");
+  assert.equal(allQuery.get("q"), "keep this search");
+  for (const category of ["recordings", "datasets", "models", "reports"])
+    assert.ok(requests.some(url => new URLSearchParams(url.split("?")[1]).get("category") === category),
+      `${category} shortcut sends its typed category to the owner API`);
+  assert.equal(post(env.calls).length, 0, "category changes and rendering issue GETs only");
+});
+
 test("pending dataset checks do not resubmit; failed and interrupted checks need a new click", async () => {
   const artifact = id("a");
   const pending = localDatasetEnv({artifact, datasetStatus: {
