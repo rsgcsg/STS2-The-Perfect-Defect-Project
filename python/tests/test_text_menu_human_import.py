@@ -15,6 +15,7 @@ from test_text_menu_data import snapshot
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, json_bytes
 from stpd.fullrun.features import _load_model_view, load_model_view
+from stpd.fullrun.observed_input_sequence import load_observed_input_view
 from stpd.fullrun.text_menu_human_import import (
     LEGACY_VIEW_SCHEMA,
     SOURCE_SCHEMA,
@@ -282,6 +283,15 @@ def test_declared_bundle_archive_is_reverified_when_source_loads(tmp_path, mecha
     source = publish_human_text_source(target, (evidence.artifact_id,), PRODUCER)
     _, loaded = load_human_text_source(target, source.artifact_id)
     assert loaded == rows
+    observed = load_observed_input_view(target, source.artifact_id)
+    assert observed.stream_scope == "partial_human_input_stream"
+    assert observed.trajectory_complete is False
+    assert len(observed.inputs) == 1
+    assert observed.inputs[0].choice_mask is True
+    assert observed.inputs[0].delivery_status == "human_witness_only"
+    assert observed.inputs[0].delivery_mask is False
+    assert observed.inputs[0].successor_snapshot is None
+    assert observed.inputs[0].causal_successor_mask is False
     samples, _ = _project((*loaded, observation("other-session", "other-page")))
     archived = next(sample for sample in samples if sample.chosen_index == 1
                     and verb in sample.action_texts[1])
