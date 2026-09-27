@@ -99,6 +99,27 @@ public sealed class CarrierIngressSourceTests
     }
 
     [Fact]
+    public void MouseContinuationRequiresPhysicalIngressAndSameCallNativeProof()
+    {
+        string patches = Source("HumanTextInputPatches.cs");
+        string continuation = Source("RecorderRuntime.TextInput.Continuation.cs");
+        Assert.Contains("typeof(NMouseCardPlay), \"SingleCreatureTargeting\"", patches);
+        Assert.Contains("ParameterType == typeof(Vector2)", patches);
+        Assert.Contains("RecorderRuntime.InvalidateHumanTextTargetManager(__instance)", patches);
+        Assert.Contains("RecorderRuntime.BeginHumanTextMouseInput(__instance, inputEvent)", patches);
+        Assert.Contains("RecorderRuntime.BeginHumanTextTargetInput(__instance, inputEvent)", patches);
+        Assert.Contains("ButtonIndex: MouseButton.Right", continuation);
+        Assert.Contains("HumanTextMouseCancelShortcutField?.GetValue(carrier)", continuation);
+        Assert.Contains("if (confirm && target == null) return null;", continuation);
+        Assert.Contains("scope.NativeFinishMatched = HumanTextInputNativeProof.MatchesTargetFinish(", continuation);
+        Assert.Contains("scope.NativeContinuationCalled = true;", continuation);
+        Assert.Contains("scope == null || scope.Finished || !scope.RequestedCancel", continuation);
+        Assert.Contains("!HumanTextConsumedInputs.TryClaim(scope.Input, scope.SessionId)", continuation);
+        Assert.DoesNotContain("BeginHumanTextContinuation(",
+            continuation[continuation.IndexOf("internal static void ObserveHumanTextTryPlay")..]);
+    }
+
+    [Fact]
     public void CanonicalSuccessIsPublishedBeforeOptionalCompatibilityAndUnavailableAccountingIsExplicit()
     {
         string runtime = Source("RecorderRuntime.cs");

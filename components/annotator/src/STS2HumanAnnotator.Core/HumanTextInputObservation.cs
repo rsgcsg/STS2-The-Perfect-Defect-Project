@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Runtime.CompilerServices;
 
 namespace STS2HumanAnnotator.Core;
 
@@ -18,15 +19,55 @@ public static class HumanTextInputObservationContract
     public const string ControllerCanceledInputSignal = "controller_canceled_input_signal";
     public const string ControllerTargetFinishInput = "controller_target_finish_input";
     public const string ControllerTargetCanceledInput = "controller_target_canceled_input";
+    public const string MouseCanceledInputSignal = "mouse_canceled_input_signal";
+    public const string MouseTargetFinishInput = "mouse_target_finish_input";
+    public const string MouseTargetCanceledInput = "mouse_target_canceled_input";
 
     public static string? VerbForMechanism(string mechanism) => mechanism switch
     {
         NativeMechanism => "begin_card_play",
         ControllerConfirmedInputSignal => "confirm_card",
-        ControllerCanceledInputSignal or ControllerTargetCanceledInput => "cancel_card_play",
-        ControllerTargetFinishInput => "confirm_target",
+        ControllerCanceledInputSignal or ControllerTargetCanceledInput
+            or MouseCanceledInputSignal or MouseTargetCanceledInput => "cancel_card_play",
+        ControllerTargetFinishInput or MouseTargetFinishInput => "confirm_target",
         _ => null
     };
+}
+
+/// <summary>Process-local proof gates for one native input callback. They do not
+/// infer an input from a later card-play continuation or a changed game state.</summary>
+public static class HumanTextInputNativeProof
+{
+    public static bool MatchesTargetFinish(bool requestedCancel, bool nativeCancel,
+        object? frozenTarget, object? nativeTarget) =>
+        requestedCancel ? nativeCancel
+            : !nativeCancel && frozenTarget != null
+                && ReferenceEquals(frozenTarget, nativeTarget);
+}
+
+/// <summary>One physical InputEvent can reach both the card and target nodes.
+/// Only one accepted row may claim that exact event in a recording session.</summary>
+public sealed class HumanTextInputClaimGate
+{
+    private sealed class Claim(string sessionId)
+    {
+        internal string SessionId { get; } = sessionId;
+    }
+
+    private readonly ConditionalWeakTable<object, Claim> _claims = new();
+    private readonly object _gate = new();
+
+    public bool TryClaim(object input, string sessionId)
+    {
+        lock (_gate)
+        {
+            if (_claims.TryGetValue(input, out Claim? previous)
+                && previous.SessionId == sessionId) return false;
+            _claims.Remove(input);
+            _claims.Add(input, new Claim(sessionId));
+            return true;
+        }
+    }
 }
 
 public sealed record HumanTextInputObservation(
