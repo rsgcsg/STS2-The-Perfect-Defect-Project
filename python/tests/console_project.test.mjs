@@ -88,6 +88,7 @@ function setup({
   identity = owner(),
   view = "statistics",
   handler = () => emptyList(),
+  importStatus = {schema: "stpd/local-recording-import-operation-v1", status: "idle", csrf_token: "browser-csrf"},
   query = "",
 } = {}) {
   const calls = [],
@@ -130,7 +131,8 @@ function setup({
     },
     fetch: async (url, options) => {
       calls.push({ url, options });
-      const body = await handler(url, options);
+      const body = url === "/api/local-recordings/import/status"
+        ? importStatus : await handler(url, options);
       return {
         ok: !(body?.httpStatus >= 400),
         status: body?.httpStatus || 200,
@@ -208,9 +210,10 @@ test("local research workspace browses the local API without project identity", 
   assert.match(text(page), /本机资料/);
   assert.match(text(page), /dataset/);
   assert.match(text(page), /本机索引/);
-  assert.equal(env.calls.length, 2);
+  assert.equal(env.calls.length, 3);
   assert.equal(env.calls[0].url === "/api/local-workspace/managed", true);
-  assert.equal(env.calls[1].url.startsWith("/api/local-workspace?"), true);
+  assert.equal(env.calls[1].url, "/api/local-recordings/import/status");
+  assert.equal(env.calls[2].url.startsWith("/api/local-workspace?"), true);
   assert.equal(env.calls[0].options.method || "GET", "GET");
 });
 
@@ -248,6 +251,54 @@ test("local recording catalog is fetched only on explicit refresh and missing to
   assert.doesNotMatch(text(refreshed), /没有检测到已结束的录制/);
   assert.equal(env.calls.filter(call => call.url === "/api/local-recordings").length, 1);
   assert.equal(post(env.calls).length, 0);
+});
+
+test("local recording import starts only after the unchecked attestation is selected", async () => {
+  const candidate = id("a");
+  const env = setup({
+    identity: {status: "local_only"},
+    view: "local-workspace",
+    handler: async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema: "stpd/managed-local-workspace-registration-v1", status: "ready",
+        workspace_id: "c".repeat(32),
+      };
+      if (url === "/api/local-workspace?limit=25&offset=0") return {
+        schema: "stpd/local-workspace-inventory-v1", total: 0, items: [],
+      };
+      if (url === "/api/local-recordings") return {
+        schema: "stpd/local-recording-catalog-v1", status: "ready",
+        observed_at: "2026-09-27T00:00:00Z", root_basis: "configured_only",
+        candidate_count: 1, candidates: [{
+          candidate_id: candidate, session_id: "session-1", timeline_id: "timeline-1",
+          closed_at: "2026-09-27T00:00:00Z",
+        }],
+      };
+      if (url === "/api/local-recordings/import") {
+        assert.equal(options.method, "POST");
+        return {status: "pending"};
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const initial = await env.render();
+  await action(initial, "read-local-recordings").onclick();
+  const page = await env.render();
+  const button = action(page, `import-local-recording-${candidate}`);
+  const checkbox = find(page, element => element.tag === "input" && element.type === "checkbox");
+  assert.equal(checkbox.checked, false);
+  assert.equal(button.disabled, true);
+  await button.onclick();
+  assert.equal(post(env.calls).length, 0);
+  checkbox.checked = true;
+  checkbox.onchange();
+  assert.equal(button.disabled, false);
+  await button.onclick();
+  const writes = post(env.calls);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, "/api/local-recordings/import");
+  assert.deepEqual(body(writes[0]), {candidate_id: candidate, human_origin_attested: true});
+  assert.equal(writes[0].options.headers["X-CSRF-Token"], "browser-csrf");
 });
 
 test("unconfigured local research workspace explains explicit registration", async () => {

@@ -81,6 +81,17 @@ unavailable owner status, and an unavailable recordings root are distinct states
 The page keeps the last explicit observation while it refreshes other content; clicking either
 source-list action performs a new bounded owner check.
 
+For one listed closed recording, the local browser can explicitly attest Human origin and
+request **验证并导入本机**. The checkbox starts unchecked. The authenticated command rechecks the
+current Game Mod owner and both Close metadata hashes, invokes the registered byte-verified
+CollectionTool, then verifies the produced archive with the typed Evidence verifier before
+publishing an immutable `stpd/local-verified-bundle-v1` evidence manifest into the selected
+existing local research store. It never edits the raw recording. Stable worker/campaign labels
+are private local grouping labels, not account or person identity. The long-running command has
+persisted pending/completed/failed/interrupted status; page refresh never retries it.
+This local manifest has no Hub receipt and is not an admitted research source, Dataset, or
+training input. A separate future admission path must explicitly review it.
+
 ## Cloud login and connection
 
 Choose **打开云端** from the local page, or open the configured Hub's `/app/` from another device.

@@ -183,6 +183,7 @@ class Application:
         from spireagent.workbench.collection_flow import CollectionFlow
         from spireagent.workbench.collection_setup import CollectionSetup
         from spireagent.workbench.evaluation_sharing import EvaluationSharing
+        from spireagent.workbench.local_recording_import import LocalRecordingImporter
         from spireagent.workbench.local_recordings import LocalRecordingCatalog
 
         self.config = config
@@ -206,6 +207,8 @@ class Application:
         )
         self.models = LocalModelService(config, hub=self.hub)
         self.local_recordings = LocalRecordingCatalog(config)
+        # Keep command-time owner observations separate from concurrent browser GET scans.
+        self.local_recording_import = LocalRecordingImporter(config, LocalRecordingCatalog(config))
         self.evaluation_sharing = EvaluationSharing(self.models, self.members)
         self.delivery_error: str | None = None
         self.collection_flow = CollectionFlow(
@@ -432,6 +435,23 @@ class Application:
         result.pop("workspace", None)
         return result
 
+    def start_local_recording_import(self, candidate_id: object,
+                                     human_origin_attested: object) -> dict[str, Any]:
+        if human_origin_attested is not True:
+            raise BoundaryError("local_import", "explicit_human_origin_attestation_required")
+        if self.config_path is None:
+            raise BoundaryError("local_import", "running_instance_unavailable")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("local_import", "running_instance_unavailable") from error
+        if (not isinstance(runtime, dict) or current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_import", "running_configuration_mismatch")
+        return self.local_recording_import.start(candidate_id, human_origin_attested)
+
     def close(self) -> None:
         self.evaluation_sharing.close()
         self.members.close()
@@ -595,6 +615,15 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 value = app.local_recordings.read()
                 self.respond(200, json.dumps(value, ensure_ascii=False).encode())
+            elif parsed.path == "/api/local-recordings/import/status":
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                if parsed.query:
+                    self.respond(400, b'{"error":"invalid_local_import_request"}')
+                    return
+                value = {**app.local_recording_import.status(), "csrf_token": app.account.csrf}
+                self.respond(200, json.dumps(value).encode())
             elif (parsed.path == "/api/local-workspace"
                     or parsed.path.startswith("/api/local-workspace/artifacts/")
                     or parsed.path == "/api/local-workspace/managed"):
@@ -735,6 +764,26 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(404, b"{}")
 
         def do_POST(self) -> None:
+            if self.path.startswith("/api/local-recordings/import"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                if self.path != "/api/local-recordings/import":
+                    self.respond(404, b'{"error":"route_not_found"}')
+                    return
+                try:
+                    body = self.json_body(maximum=256)
+                    if set(body) != {"candidate_id", "human_origin_attested"}:
+                        raise ValueError
+                    value = app.start_local_recording_import(
+                        body["candidate_id"], body["human_origin_attested"],
+                    )
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_local_import_request"}')
+                return
             if self.path.startswith("/api/local-workspace/managed/"):
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')
