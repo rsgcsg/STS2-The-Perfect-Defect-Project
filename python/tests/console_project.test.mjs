@@ -233,7 +233,7 @@ function localTrainingEnv({artifact = id("a"), kind = "dataset", parameters = nu
     },
   });
 }
-function localHumanDatasetEnv({items, operation = {status:"idle"}, detailId = null,
+function localHumanDatasetEnv({items, total = null, operation = {status:"idle"}, detailId = null,
   binding = null, trainingStatus = null, onWrite = () => {}} = {}) {
   const sources = items || [{artifact_id:id("a"), kind:"evidence", parameters:{schema:"stpd/local-verified-bundle-v1"}}];
   return setup({
@@ -244,8 +244,10 @@ function localHumanDatasetEnv({items, operation = {status:"idle"}, detailId = nu
         schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
       };
       if (url === "/api/local-recordings/import/status") return {status:"idle"};
-      if (url.startsWith("/api/local-workspace?") || url === "/api/local-workspace")
-        return {items:sources, total:sources.length, status:"ready"};
+      if (url.startsWith("/api/local-workspace?") || url === "/api/local-workspace") {
+        const listed = typeof sources === "function" ? sources(url) : sources;
+        return {items:listed, total:total ?? listed.length, status:"ready"};
+      }
       if (url === "/api/local-datasets/status") return {
         schema:"stpd/local-dataset-operation-v1", availability:"ready", csrf_token:"human-csrf",
         operation:typeof operation === "function" ? operation() : operation,
@@ -253,7 +255,7 @@ function localHumanDatasetEnv({items, operation = {status:"idle"}, detailId = nu
       if (detailId && url === `/api/local-workspace/artifacts/${detailId}`) return {
         artifact_id:detailId, kind:"dataset", parameters:{schema:"stpd/human-text-input-source-v1"},
       };
-      if (detailId && url === `/api/local-workspace/binding/${detailId}`)
+      if (detailId && url === `/api/local-datasets/binding/${detailId}`)
         return typeof binding === "function" ? binding() : binding;
       if (url === "/api/local-training/status") return trainingStatus || {
         schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"train-csrf",
@@ -582,7 +584,7 @@ test("human input dataset selection is limited to verified evidence on the visib
   ]});
   const page = await env.render();
   assert.equal(walk(page).filter(element => element.name === "local-human-source").length, 2);
-  assert.match(text(page), /当前页/);
+  assert.match(text(page), /已选 0 份录制（本页 0 份）/);
   assert.equal(post(env.calls).length, 0, "render and status GET never preview or save");
   const boxes = walk(page).filter(element => element.name === "local-human-source");
   assert.equal(action(page, "preview-human-input-dataset").disabled, true);
@@ -599,6 +601,55 @@ test("human input dataset selection is limited to verified evidence on the visib
   assert.equal(writes[0].options.headers["X-CSRF-Token"], "human-csrf");
   assert.equal(writes.some(call => call.url === "/api/local-datasets/preview"), false);
   assert.equal(writes.some(call => call.url === "/api/local-training/start"), false);
+});
+
+test("human recording selection survives pagination and search and is cleared explicitly", async () => {
+  const first = id("a"), second = id("b"), preview = "e".repeat(32);
+  let operation = {status:"idle"};
+  const env = localHumanDatasetEnv({total:26, operation:() => operation,
+    items:url => new URLSearchParams(url.split("?")[1]).get("offset") === "25"
+      ? [{artifact_id:second, kind:"evidence", parameters:{schema:"stpd/local-verified-bundle-v1"}}]
+      : [{artifact_id:first, kind:"evidence", parameters:{schema:"stpd/local-verified-bundle-v1"}}],
+    onWrite:(url, options) => {
+      if (url === "/api/local-datasets/human-preview") {
+        const value = JSON.parse(options.body);
+        operation = {status:"preview_ready", kind:"human_input", sample_type:"human_input", purpose:"training",
+          artifact_id:value.artifact_ids[0], artifact_ids:value.artifact_ids, accepted_labels:11,
+          split_status:"not_checked_for_training", can_publish:true, preview_id:preview};
+        return {status:"preview_ready"};
+      }
+      return {status:"completed"};
+    },
+  });
+  let page = await env.render();
+  field(page, "local-human-source").checked = true;
+  field(page, "local-human-source").onchange();
+  await action(page, "local-workspace-next").onclick();
+  page = await env.render();
+  assert.match(text(page), /已选 1 份录制（本页 0 份）/);
+  assert.equal(field(page, "local-human-source").checked, false);
+  field(page, "local-human-source").checked = true;
+  field(page, "local-human-source").onchange();
+  assert.match(text(page), /已选 2 份录制（本页 1 份）/);
+  await action(page, "refresh-human-input-dataset-status").onclick();
+  assert.equal(post(env.calls).length, 0, "status refresh never creates a preview");
+  await action(page, "preview-human-input-dataset").onclick();
+  assert.deepEqual(body(post(env.calls)[0]), {artifact_ids:[first, second]});
+  assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"], "human-csrf");
+  page = await env.render();
+  assert.ok(action(page, "publish-human-input-dataset"));
+
+  const search = field(page, "local-workspace-search");
+  search.value = "other filter";
+  await action(page, "search-local-workspace").onclick();
+  page = await env.render();
+  assert.match(text(page), /已选 2 份录制/);
+  await action(page, "clear-human-input-selection").onclick();
+  page = await env.render();
+  assert.match(text(page), /已选 0 份录制/);
+  assert.equal(walk(page).some(element => element.dataset?.action === "publish-human-input-dataset"), false,
+    "clearing selection invalidates an old preview");
+  assert.equal(post(env.calls).length, 1, "selection clearing and redraw do not write");
 });
 
 test("human preview and publish require the exact ordered source selection", async () => {
@@ -659,6 +710,27 @@ test("shared pending and unresolved publication recovery block a new human previ
     assert.equal(walk(page).some(element => element.dataset?.action === "recover-human-dataset-publish"), false);
     assert.equal(post(env.calls).length, 0);
   }
+  const earlyPending = localHumanDatasetEnv({operation:{status:"pending", kind:"human_input",
+    purpose:"training", artifact_ids:[first]}});
+  const earlyPendingPage = await earlyPending.render();
+  field(earlyPendingPage, "local-human-source").checked = true;
+  field(earlyPendingPage, "local-human-source").onchange();
+  const earlyPendingRerender = await earlyPending.render();
+  assert.match(text(earlyPendingRerender), /正在检查所选操作标签来源/,
+    "early pending DTO has no sample_type or artifact_id yet but still identifies its selection");
+  assert.equal(action(earlyPendingRerender, "preview-human-input-dataset").disabled, true);
+  assert.equal(post(earlyPending.calls).length, 0);
+
+  const earlyFailed = localHumanDatasetEnv({operation:{status:"failed", kind:"human_input",
+    purpose:"training", artifact_ids:[first], error_code:"independent_groups_required"}});
+  const earlyFailedPage = await earlyFailed.render();
+  field(earlyFailedPage, "local-human-source").checked = true;
+  field(earlyFailedPage, "local-human-source").onchange();
+  const earlyFailedRerender = await earlyFailed.render();
+  assert.match(text(earlyFailedRerender), /当前划分无法形成训练和开发两组/,
+    "early failure reports its blocker without requiring sample_type");
+  assert.match(text(earlyFailedRerender), /上次操作失败或中断/);
+
   const preview = "e".repeat(32);
   const recoverable = localHumanDatasetEnv({operation:{status:"interrupted", kind:"human_input",
     sample_type:"human_input", purpose:"training", artifact_id:first, artifact_ids:[first],
@@ -675,7 +747,7 @@ test("shared pending and unresolved publication recovery block a new human previ
   assert.deepEqual(body(post(recoverable.calls)[0]), {preview_id:preview});
 });
 
-test("a training-group warning does not block saving the Human SOURCE dataset", async () => {
+test("a training-group warning does not block saving the Human input dataset", async () => {
   const source = id("a"), preview = "e".repeat(32);
   let operation = {status:"idle"};
   const env = localHumanDatasetEnv({operation:() => operation});
@@ -687,8 +759,8 @@ test("a training-group warning does not block saving the Human SOURCE dataset", 
     split_status:"not_checked_for_training", error_code:"independent_groups_required",
     can_publish:true, preview_id:preview};
   page = await env.render();
-  assert.match(text(page), /训练分组需要更多不重复录制/);
-  assert.ok(action(page, "publish-human-input-dataset"), "SOURCE storage remains available");
+  assert.match(text(page), /当前划分无法形成训练和开发两组/);
+  assert.ok(action(page, "publish-human-input-dataset"), "saving the input dataset remains available");
   await action(page, "publish-human-input-dataset").onclick();
   assert.equal(post(env.calls).length, 1);
   assert.equal(post(env.calls)[0].url, "/api/local-datasets/publish");
@@ -718,6 +790,8 @@ test("human dataset training requires an exact local purpose binding", async () 
   ]) {
     const env = localHumanDatasetEnv({detailId:dataset, binding});
     const page = await env.render();
+    assert.equal(env.calls.some(call => call.url === `/api/local-datasets/binding/${dataset}`), true);
+    assert.equal(env.calls.some(call => call.url === `/api/local-workspace/binding/${dataset}`), false);
     assert.equal(env.calls.some(call => call.url === "/api/local-training/status"), false);
     assert.equal(walk(page).some(element => element.dataset?.action === "start-local-training"), false);
     assert.equal(post(env.calls).length, 0);

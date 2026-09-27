@@ -1132,7 +1132,7 @@ window.SpireProject = (() => {
     gold_requires_gold_merge: "该来源已属于 Gold，不能作为新的 Gold 重复创建；本机暂不支持 Gold 合并。",
     gold_previously_used_for_training: "该来源已有训练使用记录，不能作为 Gold。",
     gold_reserved_data: "该来源已保留为 Gold，只能用于受控评估或 Gold 合并。",
-    independent_groups_required: "训练分组需要更多不重复录制；已保存的操作标签不会自动具备训练资格。",
+    independent_groups_required: "当前划分无法形成训练和开发两组。数据可以保留；需要补充不同输入，或使用后续支持的划分方式。",
     empty_selection: "当前选择没有可保留的样本。",
   })[code];
   const datasetName = item => item.display_name || item.parameters?.name || `数据集 ${item.artifact_id.slice(0, 12)}`;
@@ -2672,7 +2672,7 @@ window.SpireProject = (() => {
     gold_reserved_data: "该来源包含已封存的 Gold 数据，不能用于训练。",
     source_isolation_index_pending: "来源隔离索引尚未就绪，不能启动训练。",
     source_index_incomplete: "来源隔离索引尚未就绪，不能启动训练。",
-    independent_groups_required: "训练需要更多不重复录制分组；已登记的操作标签不代表训练划分已就绪。",
+    independent_groups_required: "当前划分无法形成训练和开发两组。数据可以保留；需要补充不同输入，或使用后续支持的划分方式。操作标签登记本身不表示训练条件已满足。",
     clean_checkout_required: "当前源码状态未满足本机工程训练条件。",
     insufficient_independent_components: "独立对局数量不足，尚不能启动这项训练。",
     human_observation_missing: "缺少符合要求的公开真人观察，不能准备这项训练。",
@@ -3070,24 +3070,27 @@ window.SpireProject = (() => {
   }
 
   async function localHumanDatasetCard(ctx, candidates) {
-    const section = panel("从录制创建操作标签训练集",
-      "仅从当前页已验证录制中选择操作标签。可保存为本机 training 用途数据集；这不代表标签是完整动作，也不表示训练划分已就绪。选择不会跨分页自动保留。");
+    const section = panel("从录制创建操作标签数据集",
+      "从已验证录制中选择操作标签，可保存为本机训练用途数据集。这些标签不是完整动作记录，训练分组仍由训练服务单独检查。选择可跨页保留，最多 256 份。");
     const selectionKey = "local-human-dataset-source-ids";
-    const allowed = new Set(candidates.map(item => item.artifact_id));
-    const selected = new Set((drafts.get(selectionKey) || []).filter(id => allowed.has(id)));
+    const savedSelection = drafts.get(selectionKey);
+    const selected = new Set(Array.isArray(savedSelection)
+      ? savedSelection.filter((id, index) => hex(id) && savedSelection.indexOf(id) === index).slice(0, 256)
+      : []);
     let previewButton = null;
     let canPreview = () => false;
     const currentIds = () => [...selected];
     const sameSelection = operation => {
       const chosen = currentIds();
       return operation?.kind === "human_input"
-        && operation.sample_type === "human_input"
         && operation.purpose === "training"
         && Array.isArray(operation.artifact_ids)
         && operation.artifact_ids.length === chosen.length
         && chosen.every((id, index) => operation.artifact_ids[index] === id)
-        && chosen.length > 0 && operation.artifact_id === chosen[0];
+        && chosen.length > 0
+        && (operation.artifact_id == null || operation.artifact_id === chosen[0]);
     };
+    const sameHumanResult = operation => sameSelection(operation) && operation.sample_type === "human_input";
     const selectors = new Map();
     for (const item of candidates) {
       const label = el("label", null, "project-check");
@@ -3099,15 +3102,38 @@ window.SpireProject = (() => {
       label.append(checkbox, el("span", `加入 · ${item.artifact_id.slice(0, 16)}`));
       selectors.set(item.artifact_id, label);
       checkbox.onchange = () => {
+        if (checkbox.checked && !selected.has(item.artifact_id) && selected.size >= 256) {
+          checkbox.checked = false;
+          selectionLimit.textContent = "一次最多选择 256 份录制；当前选择未更改。";
+          return;
+        }
         if (checkbox.checked) selected.add(item.artifact_id);
         else selected.delete(item.artifact_id);
         drafts.set(selectionKey, currentIds());
-        selectionSummary.textContent = `已选择当前页 ${selected.size} 份录制。`;
+        updateSelectionSummary();
         if (previewButton) previewButton.disabled = !canPreview();
       };
     }
-    const selectionSummary = el("p", `已选择当前页 ${selected.size} 份录制。`, "small muted");
-    section.append(selectionSummary);
+    const selectedOnPage = () => candidates.filter(item => selected.has(item.artifact_id)).length;
+    const selectionSummary = el("p", null, "small muted");
+    const selectionLimit = el("p", null, "small muted");
+    const updateSelectionSummary = () => {
+      selectionSummary.textContent = `已选 ${selected.size} 份录制（本页 ${selectedOnPage()} 份）。`;
+      selectionLimit.textContent = "";
+      for (const [artifactId, label] of selectors) {
+        const checkbox = label.children[0];
+        checkbox.checked = selected.has(artifactId);
+      }
+      clearButton.disabled = selected.size === 0;
+    };
+    const clearButton = command(ctx, "clear-human-input-selection", "清空所选录制", async () => {
+      selected.clear();
+      drafts.delete(selectionKey);
+      updateSelectionSummary();
+      if (previewButton) previewButton.disabled = !canPreview();
+    }, {type:"secondary", disabled:selected.size === 0});
+    updateSelectionSummary();
+    section.append(selectionSummary, selectionLimit, clearButton);
 
     let status;
     try {
@@ -3134,6 +3160,7 @@ window.SpireProject = (() => {
     const operation = status.operation && typeof status.operation === "object"
       ? status.operation : {status:"idle"};
     const matching = sameSelection(operation);
+    const matchingResult = sameHumanResult(operation);
     const pending = operation.status === "pending";
     const recoveryRequired = ["failed", "interrupted"].includes(operation.status)
       && (operation.recovery_available === true || operation.error_code === "publication_recovery_required");
@@ -3149,14 +3176,16 @@ window.SpireProject = (() => {
       section.append(el("p", matching
         ? "上一次保存结果需要核对；不会自动重发。"
         : "本机另一项数据集操作需要恢复核对；完成前不能启动新的预览。", "small muted"));
-      if (matching && operation.recovery_available === true && hex(operation.preview_id, 32) && hasCsrf) {
+      if (matchingResult && operation.recovery_available === true && hex(operation.preview_id, 32) && hasCsrf) {
         section.append(command(ctx, "recover-human-dataset-publish", "核对并保存已预览数据集", async () => {
-          if (!sameSelection(operation) || !operation.can_publish || !hex(operation.preview_id, 32)) return;
+          if (!sameHumanResult(operation) || !operation.can_publish || !hex(operation.preview_id, 32)) return;
           await request(ctx, "/api/local-datasets/publish", {preview_id:operation.preview_id}, status.csrf_token);
           await reload(ctx);
         }, {primary:true}));
+      } else if (matching && operation.recovery_available === true) {
+        section.append(el("p", "上次操作身份信息不完整，不能确认或保存；请刷新状态核对。", "small muted"));
       }
-    } else if (operation.status === "preview_ready" && matching) {
+    } else if (operation.status === "preview_ready" && matchingResult) {
       const accepted = Number.isSafeInteger(operation.accepted_labels) && operation.accepted_labels >= 0
         ? count(operation.accepted_labels) : "未知";
       section.append(fields([
@@ -3167,9 +3196,9 @@ window.SpireProject = (() => {
       if (operation.error_code === "independent_groups_required")
         section.append(el("p", localDatasetBlockerLabel(operation.error_code), "small muted"));
       if (operation.can_publish === true && hex(operation.preview_id, 32) && hasCsrf) {
-        section.append(el("p", "当前预览可以保存为 SOURCE；训练资格仍由训练服务单独检查。", "small muted"));
-        section.append(command(ctx, "publish-human-input-dataset", "确认保存操作标签训练集", async () => {
-          if (!sameSelection(operation) || operation.can_publish !== true || !hex(operation.preview_id, 32)) return;
+        section.append(el("p", "当前预览可以保存为操作标签数据集；训练资格仍由训练服务单独检查。", "small muted"));
+        section.append(command(ctx, "publish-human-input-dataset", "确认保存操作标签数据集", async () => {
+          if (!sameHumanResult(operation) || operation.can_publish !== true || !hex(operation.preview_id, 32)) return;
           await request(ctx, "/api/local-datasets/publish", {preview_id:operation.preview_id}, status.csrf_token);
           await reload(ctx);
         }, {primary:true}));
@@ -3177,11 +3206,13 @@ window.SpireProject = (() => {
         section.append(el("p", localDatasetBlockerLabel(operation.error_code)
           || "当前预览未确认可保存；不会更改用途或训练资格。", "small muted"));
       }
+    } else if (operation.status === "preview_ready" && matching) {
+      section.append(el("p", "预览缺少完整的操作标签来源信息，不能用于当前选择。", "small muted"));
     } else if (operation.status === "preview_ready") {
       section.append(el("p", operation.kind === "human_input"
         ? "当前共享预览对应另一组录制；不会用于当前选择。"
         : "当前共享预览属于完整决策数据集检查；不会用于操作标签数据集。", "small muted"));
-    } else if (operation.status === "completed" && matching && hex(operation.result_artifact_id)) {
+    } else if (operation.status === "completed" && matchingResult && hex(operation.result_artifact_id)) {
       section.append(el("p", "操作标签数据集已保存；训练分组尚未确认，也没有自动启动训练。", "small muted"));
       section.append(link("打开操作标签数据集", route("local-workspace", operation.result_artifact_id)));
     } else if (["failed", "interrupted"].includes(operation.status) && matching) {
@@ -3236,7 +3267,7 @@ window.SpireProject = (() => {
         let binding = null;
         try {
           if (hex(value.artifact_id))
-            binding = await request(ctx, `/api/local-workspace/binding/${value.artifact_id}`);
+            binding = await request(ctx, `/api/local-datasets/binding/${value.artifact_id}`);
         } catch {
           // An unavailable binding is not proof that the source has training use.
         }
@@ -3248,7 +3279,7 @@ window.SpireProject = (() => {
         } else {
           bindingCard.append(el("p", binding?.schema === "stpd/local-dataset-binding-v1"
             && binding.artifact_id === value.artifact_id && binding.sample_type === "human_input"
-            ? "本机用途账本尚未确认 training 用途；当前不显示训练入口。"
+            ? "本机用途账本尚未确认训练用途；当前不显示训练入口。"
             : "无法确认此对象的本机用途登记；当前不显示训练入口。", "small muted"));
           box.append(bindingCard);
         }
@@ -3316,7 +3347,6 @@ window.SpireProject = (() => {
     ];
     const kind = select(filters, "类型", "local-workspace-kind", kindOptions, selectedKind);
     kind.onchange = () => {
-      drafts.delete("local-human-dataset-source-ids");
       drafts.set("local-workspace-kind", kind.value);
       offsets.set("local-workspace", 0);
       reload(ctx);
@@ -3324,14 +3354,12 @@ window.SpireProject = (() => {
     search.addEventListener("keydown", event => {
       if (event.key === "Enter") {
         event.preventDefault();
-        drafts.delete("local-human-dataset-source-ids");
         drafts.set("local-workspace-search", search.value.trim());
         offsets.set("local-workspace", 0);
         reload(ctx);
       }
     });
     filters.append(command(ctx, "search-local-workspace", "搜索", async () => {
-      drafts.delete("local-human-dataset-source-ids");
       drafts.set("local-workspace-search", search.value.trim());
       offsets.set("local-workspace", 0);
       await reload(ctx);
@@ -3357,7 +3385,10 @@ window.SpireProject = (() => {
 
     const humanSources = (data.items || []).filter(item => item?.kind === "evidence"
       && item.parameters?.schema === "stpd/local-verified-bundle-v1" && hex(item.artifact_id));
-    const humanDataset = humanSources.length ? await localHumanDatasetCard(ctx, humanSources) : null;
+    const savedHumanSelection = drafts.get("local-human-dataset-source-ids");
+    const hasSavedHumanSelection = Array.isArray(savedHumanSelection) && savedHumanSelection.some(id => hex(id));
+    const humanDataset = humanSources.length || hasSavedHumanSelection
+      ? await localHumanDatasetCard(ctx, humanSources) : null;
     const rows = [];
     for (const item of data.items || []) {
       const candidateName = item.parameters?.display_name || item.parameters?.name || item.parameters?.title;
@@ -3375,16 +3406,14 @@ window.SpireProject = (() => {
       ]);
     }
     box.append(table(["本机资料", "内容文件", "本机索引", "来源信息",
-      ...(humanDataset ? ["加入当前页的操作标签集"] : [])], rows));
+      ...(humanDataset ? ["加入操作标签集"] : [])], rows));
     if (humanDataset) box.append(humanDataset.section);
     if (!data.total) box.append(empty("没有匹配的本机对象", "可清除搜索词，或先在本机准备研究资料。"));
     const pagerBox = el("div", null, "project-actions");
     if (offset > 0) pagerBox.append(command(ctx, "local-workspace-prev", "上一页", async () => {
-      drafts.delete("local-human-dataset-source-ids");
       offsets.set("local-workspace", Math.max(0, offset - limit)); await reload(ctx);
     }, {type:"secondary"}));
     if (offset + limit < data.total) pagerBox.append(command(ctx, "local-workspace-next", "下一页", async () => {
-      drafts.delete("local-human-dataset-source-ids");
       offsets.set("local-workspace", offset + limit); await reload(ctx);
     }, {type:"secondary"}));
     pagerBox.append(el("span", data.total ? `本页 ${offset + 1}–${Math.min(offset + limit, data.total)} / ${data.total}` : "共 0 项", "subtext"));
