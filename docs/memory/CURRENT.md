@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 Use `rsgcsg/STS2-The-Perfect-Defect-Project` for new work. Reviewed source anchor:
-`develop@210ff3c3a552700e25c5c4ec1549daa320a63885` (through PR #64).
+`develop@e6903ff8898bac86381764fa1b4b6498e19bd37e` (through PR #65).
 Resolve live GitHub refs and deployed identity before work; current source/runtime
 authorities override this file. It is a bounded handoff, not the running-version owner.
 
@@ -45,11 +45,14 @@ authorities override this file. It is a bounded handoff, not the running-version
   checks. This candidate adds a persistent per-store use ledger and explicit Dataset
   preview/publication for newly managed workspaces. It remains source/synthetic-test
   evidence until its own hosted checks and local activation; the active Workbench
-  above has not been upgraded to this candidate. PR #65 separately fixes spool
-  cleanup ordering and is still a candidate at this anchor.
+  above has not been upgraded to this candidate. PR #65 separately integrates
+  spool cleanup ordering, with its own Python Linux/Windows checks.
 - Human-input BC is a separate data mode. Input labels must not fill missing
   canonical actions or causal successors. Existing configured stores keep their
-  history and require an explicit migration before new use authority is created.
+  history. The user chose to keep the old configured store read-only because its
+  historical uses are uncertain; a separate managed space is the next write target,
+  with an explicit old/new navigation path still to be implemented. Do not copy old
+  evidence into a new empty ledger to relabel its history.
   Gold reservations are not a claim of global history completeness across arbitrary
   stores or of scientifically validated labels. Interrupted publication checks for
   an exact existing result on explicit request; it never silently publishes again.
