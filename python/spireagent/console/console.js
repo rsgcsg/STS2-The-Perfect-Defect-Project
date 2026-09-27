@@ -163,7 +163,7 @@ function localHome() {
   models.append(link("打开模型实战 →", "?view=local-models"));
   const workspace = panel(
     "本机资料",
-    "只读浏览已登记的本机研究资料。没有登记资料库时会说明现状；此页不会创建或扫描资料库。",
+    "浏览本机研究资料。没有已配置资料库时，可在资料页明确新建空工作空间；打开页面只读取状态，不会自动创建或扫描资料库。",
   );
   workspace.append(link("打开本机资料 →", "?view=local-workspace"));
   grid.append(models, workspace);
