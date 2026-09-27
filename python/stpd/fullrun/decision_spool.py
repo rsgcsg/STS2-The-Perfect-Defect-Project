@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import tempfile
+import weakref
 from collections.abc import Iterator, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any, overload
@@ -16,6 +18,12 @@ from .contracts import ResearchTransitionV2
 from .representation import decision_fingerprint
 
 
+def _close_spool(db: sqlite3.Connection, directory: Path) -> None:
+    """One owner orders SQLite handle release before private-file removal."""
+    db.close()
+    shutil.rmtree(directory)
+
+
 class DecisionSpool(MutableMapping[str, ResearchTransitionV2]):
     """Keep large state/action/Read payloads off the aggregate selection heap.
 
@@ -24,13 +32,26 @@ class DecisionSpool(MutableMapping[str, ResearchTransitionV2]):
     """
 
     def __init__(self) -> None:
-        self.directory = tempfile.TemporaryDirectory(prefix="stpd-decision-rows-")
-        self.db = sqlite3.connect(Path(self.directory.name) / "rows.sqlite")
-        self.db.execute("PRAGMA cache_size=-2048")
-        self.db.execute("PRAGMA temp_store=FILE")
-        self.db.execute("CREATE TABLE records(id TEXT PRIMARY KEY,run TEXT,sequence INTEGER,"
-                        "body TEXT NOT NULL,summary TEXT NOT NULL,"
-                        "selected INTEGER NOT NULL DEFAULT 0)")
+        self.directory = Path(tempfile.mkdtemp(prefix="stpd-decision-rows-"))
+        try:
+            self.db = sqlite3.connect(self.directory / "rows.sqlite")
+        except BaseException:
+            shutil.rmtree(self.directory)
+            raise
+        try:
+            self._finalizer = weakref.finalize(self, _close_spool, self.db, self.directory)
+        except BaseException:
+            _close_spool(self.db, self.directory)
+            raise
+        try:
+            self.db.execute("PRAGMA cache_size=-2048")
+            self.db.execute("PRAGMA temp_store=FILE")
+            self.db.execute("CREATE TABLE records(id TEXT PRIMARY KEY,run TEXT,sequence INTEGER,"
+                            "body TEXT NOT NULL,summary TEXT NOT NULL,"
+                            "selected INTEGER NOT NULL DEFAULT 0)")
+        except BaseException:
+            self.close()
+            raise
 
     def __getitem__(self, key: str) -> ResearchTransitionV2:
         row = self.db.execute("SELECT body FROM records WHERE id=?", (key,)).fetchone()
@@ -82,12 +103,7 @@ class DecisionSpool(MutableMapping[str, ResearchTransitionV2]):
         return SpoolSelection(self)
 
     def close(self) -> None:
-        self.db.close()
-        self.directory.cleanup()
-
-    def __del__(self) -> None:
-        if hasattr(self, "db"):
-            self.close()
+        self._finalizer()
 
 
 class SpoolSelection(Sequence[ResearchTransitionV2]):
