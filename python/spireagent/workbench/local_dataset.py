@@ -130,6 +130,8 @@ class LocalDatasetService:
         except BoundaryError as error:
             if error.code == "workspace_required":
                 return "workspace_required", error.code
+            if error.code == "curation_preparation_required":
+                return "preparation_required", error.code
             return "recovery_required", error.code
         return "ready", None
 

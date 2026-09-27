@@ -536,7 +536,7 @@ test("zero canonical decisions never expose dataset purpose controls", async () 
 
 test("legacy and recovery-required dataset status preserve browsing without enabling writes", async () => {
   const artifact = id("a");
-  for (const availability of ["workspace_required", "recovery_required"]) {
+  for (const availability of ["workspace_required", "preparation_required", "recovery_required"]) {
     const env = localDatasetEnv({artifact, datasetStatus: {
       schema: "stpd/local-dataset-operation-v1", availability,
       reason: availability === "recovery_required" ? "curation_owner_recovery_required" : undefined,
@@ -545,6 +545,10 @@ test("legacy and recovery-required dataset status preserve browsing without enab
     const page = await env.render();
     assert.match(text(page), /本机数据集检查/);
     assert.match(text(page), /仍可浏览/);
+    if (availability === "preparation_required") {
+      assert.match(text(page), /本机用途记录尚未准备/);
+      assert.doesNotMatch(text(page), /用途记录需要恢复/);
+    }
     assert.equal(action(page, "local-workspace-back").textContent, "返回本机资料目录");
     assert.equal(walk(page).some(element => element.dataset?.action === "check-local-dataset"), false);
     assert.equal(post(env.calls).length, 0);
@@ -829,6 +833,7 @@ test("Gold preview cannot publish when the backend reports it is not ready", asy
 test("local dataset blockers explain known reasons and retain unknown codes", async () => {
   const artifact = id("a");
   const cases = [
+    ["legacy_gold_history_unknown", "相关旧资料的历史用途无法完整核实"],
     ["gold_source_inventory_pending", "还有来源未完成索引"],
     ["gold_already_in_other_dataset", "该来源已进入其他数据集"],
     ["gold_requires_gold_merge", "不能作为新的 Gold 重复创建"],

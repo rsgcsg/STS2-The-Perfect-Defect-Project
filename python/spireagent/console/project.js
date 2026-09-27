@@ -1122,6 +1122,7 @@ window.SpireProject = (() => {
     value === "purpose_assigned" ? "已按所选评测用途分配" :
     value === "insufficient_independent_run_components" ? "独立对局不足，尚不能形成独立划分" : "划分状态未知";
   const localDatasetBlockerLabel = code => ({
+    legacy_gold_history_unknown: "相关旧资料的历史用途无法完整核实，不能作为 Gold；仍可按训练或测试用途重新检查。",
     gold_source_inventory_pending: "还有来源未完成索引，目前不能确认 Gold 隔离。",
     gold_already_in_other_dataset: "该来源已进入其他数据集；请为 Gold 选择独立来源。",
     gold_requires_gold_merge: "该来源已属于 Gold，不能作为新的 Gold 重复创建；本机暂不支持 Gold 合并。",
@@ -2403,7 +2404,7 @@ window.SpireProject = (() => {
     );
     section.append(el("p", `空间 ${data.workspace_id} · 创建于 ${data.created_at}`, "small muted"));
     if (data.curation_status === "recovery_required")
-      section.append(el("p", "本机用途账本需要恢复或迁移。现有资料仍可浏览；恢复完成前不能创建或授权数据集。", "small muted"));
+      section.append(el("p", "本机用途记录需要恢复核对。现有资料仍可浏览；恢复完成前不能创建或授权数据集。", "small muted"));
     if (data.orphaned_initializations)
       section.append(el("p", `另有 ${data.orphaned_initializations} 个未登记的初始化目录保留在本机。`, "small muted"));
     box.append(section);
@@ -2564,9 +2565,9 @@ window.SpireProject = (() => {
       const message = data.availability === "workspace_required"
         ? "本机资料空间尚未建立。录制仍可浏览；创建空间后才能检查数据集。"
         : data.availability === "preparation_required"
-          ? "本机用途记录尚未准备。请先在资料目录完成明确准备，再检查数据集。"
+          ? "本机用途记录尚未准备。录制仍可浏览；请先在资料目录准备用途记录，再检查数据集。"
         : data.availability === "recovery_required"
-          ? "本机用途账本需要恢复或迁移。录制仍可浏览；完成恢复前不能创建或授权数据集。"
+          ? "本机用途记录需要恢复。录制仍可浏览；完成恢复前不能创建或授权数据集。"
           : "本机数据集服务暂不可用；录制仍可浏览。";
       section.append(el("p", message, "small muted"));
       if (data.reason) section.append(el("p", String(data.reason), "small muted"));

@@ -43,8 +43,8 @@ authorities override this file. It is a bounded handoff, not the running-version
 - Local recording import and sample preview are implemented and narrowly observed.
   PR #64 integrates the verified local canonical source path, with full Linux/Windows
   checks. The existing candidate adds a persistent per-store use ledger and explicit Dataset
-  preview/publication for managed stores. In-place preparation for the existing
-  configured store is being completed before activation. It remains source/synthetic-test
+  preview/publication for managed stores and in-place preparation for the existing
+  configured store, without moving or duplicating its payloads. It remains source/synthetic-test
   evidence until its own hosted checks and local activation; the active Workbench
   above has not been upgraded to this candidate. PR #65 separately integrates
   spool cleanup ordering, with its own Python Linux/Windows checks.

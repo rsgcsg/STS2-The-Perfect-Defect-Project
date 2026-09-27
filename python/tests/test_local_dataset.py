@@ -375,6 +375,21 @@ def test_gold_claim_precedes_publication_and_blocks_training_race(
     assert settled(service)["status"] == "completed"
 
 
+def test_existing_store_needs_preparation_without_claiming_corruption(tmp_path: Path) -> None:
+    _, artifact, source_store = _fixture(tmp_path / "source", canonical=True)
+    store = tmp_path / "source/store"
+    original = source_store.get_manifest(artifact).to_bytes()
+    service = LocalDatasetService(ProjectConfig(
+        tmp_path / "state", "", "", None, combination(),
+        LocalResearchWorkspaceConfig(store, tmp_path / "source/registry.sqlite"),
+    ))
+    status = service.status()
+    assert status["availability"] == "preparation_required"
+    assert status["reason"] == "curation_preparation_required"
+    assert not (store / ".curation-owner.json").exists()
+    assert source_store.get_manifest(artifact).to_bytes() == original
+
+
 def test_configured_second_profile_resolves_existing_managed_owner(
     tmp_path: Path, monkeypatch,
 ) -> None:
