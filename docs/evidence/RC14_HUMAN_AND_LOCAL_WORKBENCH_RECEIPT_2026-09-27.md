@@ -45,7 +45,7 @@ observations, bundles, private paths, credentials and model weights are omitted.
 The installed Game Mod was `0.2.0-rc.15`, artifact SHA-256
 `bbb865799bf24cb78ec45e6c7cee11db5164825e94d1af36afbfb4f53f08c3c6`, MVID
 `0b833363-7a80-4fc2-9e3c-e1d430c456de`. The loaded report returned `pass` with
-no errors. The game was later normally stopped and is not currently running.
+no errors. The game was later normally stopped before the subsequent RC16 preparation below.
 This RC15 result binds Platform source `37dbddce66c3b2809f68cf3dc2cfb5e70fea64bf`
 and digest `33655ea8bcc91aa91fbb9dc218abe09243a9dcc9a80e93d43a784741d877a277`,
 Connector source `a76f3bf5cc4ed5f04d6dbb6ec013081eeac529c5`, Annotator source
@@ -86,7 +86,7 @@ was superseded and cancelled after the required normal base alignment. The
 current source combination is `2ed18832bd3bb58c6a751dd73c8663428b35e32b`; its
 [Python-scope run 36302839895](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36302839895)
 is pending. The candidate remains unmerged. These were automated CUA observations, not Human
-actions or Human evidence. The game remains closed; no new game launch occurred.
+actions or Human evidence. The game was closed throughout this browser-only smoke, before the later RC16 launch below.
 
 ## Subsequent mouse continuation source candidate
 
@@ -106,6 +106,20 @@ filter passed 8 tests and `npm --prefix components/evidence run check` passed
 planner selects full. Hosted CI and the new exact loaded/Human canary are not
 claimed by these local checks. This new candidate does not relabel the RC14
 session above.
+
+Subsequent candidate installation occurred at `2026-09-27T07:30:12.491Z`;
+`verify-loaded` returned pass with no errors after cold launch. RC16 artifact
+SHA-256 is `a1e514bac79d45a523d445f090631bc6f461da68a698c2f922cef0f700da0548`,
+MVID `2c23259c-64ed-47c9-af2f-4c32fe5816fd`, runtime
+`9d5e71fe94ad4a22901344c7887f4d14`. Platform compiled-source digest is
+`320f2e40222e8c240e55ff60dde3b4310168e99137b48328694d9c1a45a484a4`;
+Connector and Annotator source anchor is `ed40f0ebbfd59587eca0d5688f9c271062d85753`.
+Rollback retains the prior RC15 bytes and configuration. The Agent resumed the
+existing run before recording, then opened a distinct session
+`session-20260927T073248Z-02329ab4821b48d7acc8f0d2f9672eac` for owner-operated
+mouse target/cancel checks. No Agent gameplay occurred after recording start.
+The session is awaiting Human actions and attestation; no new Human result is
+claimed. Hosted CI remains separate from this candidate load observation.
 
 ## Next work and limits
 

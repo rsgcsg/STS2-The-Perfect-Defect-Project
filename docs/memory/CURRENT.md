@@ -8,17 +8,17 @@ source and deployed identity; current source/runtime authorities override this f
 
 ## Current evidence
 
-- **Installed package:** Game Mod `0.2.0-rc.15` was installed and its loaded
-  identity check passed with no errors. The root Agent's CUA workflow later
-  quit the game; the process is not currently running. The exact artifact and component identities
-  and post-quit check are in the [latest bounded receipt](../evidence/RC14_HUMAN_AND_LOCAL_WORKBENCH_RECEIPT_2026-09-27.md).
-- **Local Workbench:** root Agent CUA first opened the PR #50 integrated local
-  browser from the game and browsed metadata after game exit. In a separate,
-  isolated candidate profile, CUA then saw a local home with no login prompt and
-  loaded 本机资料 1–25 of 326; that service and the game are currently separate,
-  and the game remains closed. These are automated UI observations, not Human
-  evidence. The [receipt](../evidence/RC14_HUMAN_AND_LOCAL_WORKBENCH_RECEIPT_2026-09-27.md)
-  separates the prior server from current candidate identity and limits.
+- **Installed candidate:** Game Mod `0.2.0-rc.16`, component source anchor
+  `ed40f0ebbfd59587eca0d5688f9c271062d85753`, was installed/cold-loaded with exact
+  identity verification passing. The game is running for a bounded mouse
+  target/cancel canary; its new recording awaits owner actions and attestation.
+  This is not a passed Human gate. The [bounded receipt](../evidence/RC14_HUMAN_AND_LOCAL_WORKBENCH_RECEIPT_2026-09-27.md)
+  retains separate RC14, RC15 and RC16 identities.
+- **Local Workbench:** automated CUA opened the PR #50 browser from the game and
+  browsed metadata after game exit. A separate isolated PR #52 candidate showed
+  a no-login local home and 本机资料 1–25 of 326. The backend runs independently
+  of the game. These observations are not Human evidence or a completed offline
+  dataset/training workflow; exact instances are separated in the receipt.
 - **RC14 Human session:** the owner attested mouse input for a separately closed
   session. It has 15 canonical transitions and 18 text-input begin labels;
   neither count implies the missing target/cancel labels. See the receipt for
