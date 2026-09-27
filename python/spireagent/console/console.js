@@ -1059,7 +1059,7 @@ function localTeamEntryUnavailable() {
   const page = node("div", null, "project-page");
   const explanation = panel(
     "此入口当前用于团队资料",
-    "配置项目 Hub 并登录后，可查看团队数据集、训练与模型记录。",
+    "连接团队服务并登录后，可查看团队数据集、训练与模型记录。",
   );
   explanation.append(node("p", "本机资料、模型实战和游戏内录制可在本机工作台继续使用。"));
   page.append(explanation);

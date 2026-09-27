@@ -360,7 +360,7 @@ test('no-cloud local team deep links explain the boundary and offer working loca
     assert.deepEqual(projectScopes, [], `${view} fallback does not switch project scope`);
     assert.equal(projectRenders(), 0, `${view} fallback does not call team page renderer`);
     assert.match(flatten(get('content')), /此入口当前用于团队资料/);
-    assert.match(flatten(get('content')), /配置项目 Hub 并登录后/);
+    assert.match(flatten(get('content')), /连接团队服务并登录后/);
     assert.match(flatten(get('content')), /本机资料、模型实战和游戏内录制/);
     const links = descendants(get('content')).filter(item => typeof item.href === 'string');
     assert.deepEqual(links.map(item => item.href), [
