@@ -89,6 +89,7 @@ function setup({
   view = "statistics",
   handler = () => emptyList(),
   importStatus = {schema: "stpd/local-recording-import-operation-v1", status: "idle", csrf_token: "browser-csrf"},
+  curationStatus = {schema: "stpd/local-curation-preparation-v1", status: "not_applicable"},
   query = "",
 } = {}) {
   const calls = [],
@@ -132,7 +133,9 @@ function setup({
     fetch: async (url, options) => {
       calls.push({ url, options });
       const body = url === "/api/local-recordings/import/status"
-        ? importStatus : await handler(url, options);
+        ? importStatus
+        : url === "/api/local-workspace/curation"
+          ? curationStatus : await handler(url, options);
       return {
         ok: !(body?.httpStatus >= 400),
         status: body?.httpStatus || 200,
@@ -176,9 +179,10 @@ function setup({
   };
 }
 function localDatasetEnv({artifact = id("a"), sampleStatus = null, datasetStatus = null,
-  managedStatus = null, datasetHandler = () => {}} = {}) {
+  managedStatus = null, curationStatus = undefined, datasetHandler = () => {}} = {}) {
   return setup({
     identity: {status: "signed_out"}, view: "local-workspace", query: `&id=${artifact}`,
+    ...(curationStatus ? {curationStatus} : {}),
     handler: async (url, options) => {
       if (url === "/api/local-workspace/managed") return managedStatus || {
         schema: "stpd/managed-local-workspace-registration-v1", status: "ready",
@@ -246,6 +250,91 @@ test("local research workspace browses the local API without project identity", 
   assert.equal(env.calls[1].url, "/api/local-recordings/import/status");
   assert.equal(env.calls[2].url.startsWith("/api/local-workspace?"), true);
   assert.equal(env.calls[0].options.method || "GET", "GET");
+});
+
+test("local curation preparation is GET-only until one explicit empty-body POST", async () => {
+  const env = setup({
+    identity: {status: "signed_out"}, view: "local-workspace",
+    curationStatus: {
+      schema: "stpd/local-curation-preparation-v1", status: "preparation_required",
+      legacy_dataset_count: 4, unknown_dataset_count: 4, csrf_token: "browser-csrf",
+    },
+    handler: async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {status: "ready", workspace_id: "c".repeat(32)};
+      if (url === "/api/local-workspace?limit=25&offset=0") return {total: 0, items: []};
+      if (url === "/api/local-workspace/curation/prepare") {
+        assert.equal(options.method, "POST");
+        return {status: "preparing"};
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /首次准备会在本机建立用途记录/);
+  assert.match(text(page), /用途未知：4 份/);
+  assert.doesNotMatch(text(page), /browser-csrf/);
+  assert.equal(post(env.calls).length, 0, "GET/render must not prepare the ledger");
+  await action(page, "prepare-local-curation").onclick();
+  const writes = post(env.calls);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, "/api/local-workspace/curation/prepare");
+  assert.deepEqual(body(writes[0]), {});
+  assert.equal(writes[0].options.headers["X-CSRF-Token"], "browser-csrf");
+});
+
+test("curation progress is read-only and recovery only resumes when backend permits it", async () => {
+  for (const [status, retryAvailable, hasPrepare] of [
+    ["preparing", false, false],
+    ["recovery_required", false, false],
+    ["recovery_required", true, true],
+  ]) {
+    const env = setup({
+      identity: {status: "local_only"}, view: "local-workspace",
+      curationStatus: {
+        schema: "stpd/local-curation-preparation-v1", status, retry_available: retryAvailable,
+        phase: "registering_sources", processed: 2, total: 5,
+        reason: status === "recovery_required" ? "curation_plan_interrupted" : undefined,
+        csrf_token: "browser-csrf",
+      },
+      handler: async url => {
+        if (url === "/api/local-workspace/managed") return {status: "legacy_workspace_configured"};
+        if (url === "/api/local-workspace?limit=25&offset=0") return {total: 0, items: []};
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    if (retryAvailable || status === "preparing") assert.match(text(page), /2 \/ 5/);
+    assert.equal(Boolean(walk(page).find(element => element.dataset?.action === "prepare-local-curation")), hasPrepare);
+    if (status === "preparing") assert.equal(action(page, "refresh-local-curation").disabled, false);
+    assert.equal(post(env.calls).length, 0, "render/refresh affordances never auto-resume");
+    if (hasPrepare) {
+      await action(page, "prepare-local-curation").onclick();
+      assert.equal(post(env.calls).length, 1);
+      assert.deepEqual(body(post(env.calls)[0]), {});
+    }
+  }
+});
+
+test("ready curation preserves ordinary training and test use while Gold history stays explicit", async () => {
+  const env = setup({
+    identity: {status: "signed_out"}, view: "local-workspace",
+    curationStatus: {
+      schema: "stpd/local-curation-preparation-v1", status: "ready",
+      historical_use_history: "unknown", known_dataset_count: 2,
+      unknown_dataset_count: 3, unknown_source_count: 1,
+    },
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {status: "ready", workspace_id: "c".repeat(32)};
+      if (url === "/api/local-workspace?limit=25&offset=0") return {total: 0, items: []};
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /训练和测试数据仍按各自规则检查/);
+  assert.match(text(page), /旧资料的用途历史未完全可证/);
+  assert.match(text(page), /Gold 仍按来源与已有用途限制/);
+  assert.equal(walk(page).some(element => element.dataset?.action === "prepare-local-curation"), false);
+  assert.equal(post(env.calls).length, 0);
 });
 
 test("local recording catalog is fetched only on explicit refresh and missing tool is not zero records", async () => {
@@ -378,6 +467,10 @@ test("local verified artifact preview is explicit and scoped to the selected det
   });
   const first = await env.render();
   assert.doesNotMatch(text(first), /99/);
+  assert.match(text(first), /录制来源/);
+  assert.match(text(first), new RegExp(artifact.slice(0, 16)));
+  assert.equal(env.calls.some(call => call.url === "/api/local-recordings/import/status"), false,
+    "artifact details should not load the repeated inventory import card");
   assert.equal(post(env.calls).length, 0);
   await action(first, "preview-local-recording").onclick();
   const writes = post(env.calls);
@@ -461,10 +554,65 @@ test("legacy and recovery-required dataset status preserve browsing without enab
     operation: {status: "idle"},
   }});
   const legacyPage = await legacy.render();
-  assert.match(text(legacyPage), /旧本机资料空间/);
-  assert.match(text(legacyPage), /用途账本尚未迁移/);
+  assert.match(text(legacyPage), /正在使用现有本机资料库/);
+  assert.match(text(legacyPage), /准备用途记录后/);
   assert.match(text(legacyPage), /仍可浏览/);
   assert.equal(post(legacy.calls).length, 0);
+});
+
+test("legacy configured workspace uses the new curation owner state after preparation", async () => {
+  const artifact = id("a");
+  const env = localDatasetEnv({artifact,
+    managedStatus: {
+      schema: "stpd/managed-local-workspace-registration-v1",
+      status: "legacy_workspace_configured", curation_status: "recovery_required",
+    },
+    curationStatus: {
+      schema: "stpd/local-curation-preparation-v1", status: "ready",
+      historical_use_history: "unknown", known_dataset_count: 1,
+      unknown_dataset_count: 2, unknown_source_count: 1,
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /本机用途记录已准备/);
+  assert.match(text(page), /旧资料的用途历史未完全可证/);
+  assert.match(text(page), /本机数据集检查/);
+  assert.equal(walk(page).some(element => element.name === "local-dataset-purpose"), true);
+  assert.equal(env.calls.some(call => call.url === "/api/local-workspace/curation"), true);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("local inventory kind filter uses exact backend kinds and preserves search", async () => {
+  const requested = [];
+  const env = setup({
+    identity: {status: "signed_out"}, view: "local-workspace",
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {status: "ready", workspace_id: "c".repeat(32)};
+      if (url.startsWith("/api/local-workspace?")) {
+        requested.push(url);
+        return {schema: "stpd/local-workspace-inventory-v1", total: 0, items: []};
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const initial = await env.render();
+  assert.match(text(initial), /全部类型/);
+  const search = field(initial, "local-workspace-search");
+  search.value = "my run";
+  await action(initial, "search-local-workspace").onclick();
+  const searched = await env.render();
+  const kind = field(searched, "local-workspace-kind");
+  assert.deepEqual(kind.children.map(option => option.value), [
+    "", "evidence", "dataset", "model_view", "feature_set", "feature_job", "training_input",
+    "experiment", "run", "checkpoint", "model", "offline_evaluation", "live_evaluation",
+    "performance", "run_event", "run_result", "gold_tasks", "gold_labels", "protocol", "analysis",
+  ]);
+  kind.value = "checkpoint";
+  kind.onchange();
+  await env.render();
+  assert.equal(requested[0], "/api/local-workspace?limit=25&offset=0");
+  assert.equal(requested.at(-1), "/api/local-workspace?limit=25&offset=0&q=my+run&kind=checkpoint");
+  assert.equal(post(env.calls).length, 0);
 });
 
 test("pending dataset checks do not resubmit; failed and interrupted checks need a new click", async () => {
