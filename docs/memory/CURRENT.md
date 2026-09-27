@@ -42,17 +42,19 @@ authorities override this file. It is a bounded handoff, not the running-version
 
 - Local recording import and sample preview are implemented and narrowly observed.
   PR #64 integrates the verified local canonical source path, with full Linux/Windows
-  checks. This candidate adds a persistent per-store use ledger and explicit Dataset
-  preview/publication for newly managed workspaces. It remains source/synthetic-test
+  checks. The existing candidate adds a persistent per-store use ledger and explicit Dataset
+  preview/publication for managed stores. In-place preparation for the existing
+  configured store is being completed before activation. It remains source/synthetic-test
   evidence until its own hosted checks and local activation; the active Workbench
   above has not been upgraded to this candidate. PR #65 separately integrates
   spool cleanup ordering, with its own Python Linux/Windows checks.
 - Human-input BC is a separate data mode. Input labels must not fill missing
   canonical actions or causal successors. Existing configured stores keep their
-  history. The user chose to keep the old configured store read-only because its
-  historical uses are uncertain; a separate managed space is the next write target,
-  with an explicit old/new navigation path still to be implemented. Do not copy old
-  evidence into a new empty ledger to relabel its history.
+  history. The user superseded the temporary read-only preference: continue using
+  the single existing library, without old/new tabs, relocation or duplicate payloads.
+  Explicit preparation attaches the persistent use owner in place. Known uses stay
+  recorded; unknown old use is not invented as clean history and restricts Gold where
+  relevant, rather than blocking all ordinary training/test selection.
   Gold reservations are not a claim of global history completeness across arbitrary
   stores or of scientifically validated labels. Interrupted publication checks for
   an exact existing result on explicit request; it never silently publishes again.
