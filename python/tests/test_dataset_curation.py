@@ -116,6 +116,26 @@ def test_gold_and_training_claim_race_has_exactly_one_winner(tmp_path: Path) -> 
     assert len([item for item in result if item]) == 1
 
 
+def test_hub_gold_inventory_check_uses_verified_upload_and_commits_atomically(
+    tmp_path: Path,
+) -> None:
+    owner, _, source, _ = setup(tmp_path)
+    ledger = CurationLedger(owner.operations)
+    with pytest.raises(BoundaryError, match="gold_source_inventory_pending"):
+        ledger.claim("reserved", "gold", {"run"}, require_inventory=True)
+    with owner.operations.transaction() as db:
+        assert db.execute("SELECT 1 FROM curation_claims WHERE id='reserved'").fetchone() is None
+        db.execute(
+            "INSERT INTO curation_sources VALUES(?,?,1)",
+            (source.artifact_id, source.payload("archive").sha256),
+        )
+    ledger.claim("reserved", "gold", {"run"}, require_inventory=True)
+    with owner.operations.transaction() as db:
+        assert db.execute(
+            "SELECT purpose FROM curation_claims WHERE id='reserved'"
+        ).fetchone()[0] == "gold"
+
+
 def test_transitive_duplicate_groups_and_unindexed_use_are_not_lost(tmp_path: Path) -> None:
     operations = Operations(tmp_path / "operations.sqlite")
     ledger = CurationLedger(operations)
