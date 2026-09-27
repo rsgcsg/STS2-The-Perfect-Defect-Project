@@ -25,6 +25,7 @@ class Element {
   setAttribute(key, value) {
     this.attributes[key] = value;
   }
+  addEventListener() {}
 }
 const walk = (node) => [node, ...(node?.children || []).flatMap(walk)];
 const text = (node) =>
@@ -174,6 +175,54 @@ function setup({
 }
 const post = (calls) => calls.filter((call) => call.options.method === "POST");
 const body = (call) => JSON.parse(call.options.body);
+
+test("local research workspace browses the local API without project identity", async () => {
+  const artifactId = id("a");
+  const env = setup({
+    identity: {status: "signed_out"},
+    view: "local-workspace",
+    handler: async (url) => {
+      if (url.startsWith("/api/local-workspace?")) return {
+        schema: "stpd/local-workspace-inventory-v1",
+        source: "configured_local_artifact_store",
+        total: 1,
+        items: [{
+          artifact_id: artifactId,
+          kind: "dataset",
+          payloads: [{role: "records", sha256: id("b"), size: 24, media_type: "application/json"}],
+          registry_indexed: true,
+          registry_cached: false,
+        }],
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /本机研究资料/);
+  assert.match(text(page), /dataset/);
+  assert.match(text(page), /本机索引/);
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.calls[0].url.startsWith("/api/local-workspace?"), true);
+  assert.equal(env.calls[0].options.method || "GET", "GET");
+});
+
+test("unconfigured local research workspace explains explicit registration", async () => {
+  const env = setup({
+    identity: {status: "signed_out"},
+    view: "local-workspace",
+    handler: async (url) => {
+      assert.equal(url, "/api/local-workspace?limit=25&offset=0");
+      return {
+        schema: "stpd/local-workspace-status-v1",
+        status: "not_configured",
+        requires_cloud_account: false,
+      };
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /本机研究资料尚未登记/);
+  assert.match(text(page), /登记已经存在的资料库和索引/);
+});
 const template = {
   template_id: id("b"),
   template: {

@@ -19,6 +19,7 @@ const views = {
   downloads: ["数据下载", "固定下载清单和校验值；封存与未获共享授权的数据保持受限。"],
   research: ["训练与模型", "查看真实训练产物、benchmark 和数据分析，区分尚未执行的计划。"],
   "local-models": ["模型实战", "检查兼容性、加载模型，再明确开始真实游戏评估。"],
+  "local-workspace": ["本机资料", "直接浏览已登记的本机研究资料与来源。无需项目账号或云端连接。"],
   campaigns: ["真人采集", "准备一次，在游戏内控制录制；后台自动保存和上传。"],
   evaluations: ["评估结果", "模型游戏实战与离线评价分别展示；片段和未知结果不会计作胜局。"],
 };
@@ -959,10 +960,13 @@ let renderedContext = null;
 function readLocation() {
   const params = new URLSearchParams(location.search),
     requested = params.get("view");
-  state.view = Object.hasOwn(views, requested) ? requested : (localShell ? "campaigns" : "collections");
+  state.view = Object.hasOwn(views, requested) &&
+    (requested !== "local-workspace" || localShell)
+    ? requested
+    : (localShell ? "campaigns" : "collections");
   const id = params.get("id");
   state.id =
-    ["collections", "datasets", "models"].includes(state.view) &&
+    ["collections", "datasets", "models", "local-workspace"].includes(state.view) &&
     /^(?:[a-f0-9]{32}|[a-f0-9]{64})$/.test(id || "")
       ? id
       : null;
@@ -1042,7 +1046,10 @@ async function load(manual = false, forceIdentity = manual) {
       ? `?limit=${state.limit}&offset=${state.offset}`
       : "";
   try {
-    const identity = await window.SpireIdentity.refresh(forceIdentity);
+    const localWorkspaceOnly = localShell && view === "local-workspace";
+    const identity = localWorkspaceOnly
+      ? window.SpireIdentity.localOnly()
+      : await window.SpireIdentity.refresh(forceIdentity);
     if (serial !== state.serial) return;
     document.querySelectorAll("[data-admin-only]").forEach(item => { item.hidden = identity?.principal?.role !== "admin"; });
     if (["members", "statistics", "downloads", "research", "campaigns"].includes(view) || (["datasets", "games"].includes(view) && !id)) {
@@ -1058,7 +1065,7 @@ async function load(manual = false, forceIdentity = manual) {
         $("updated").textContent = "当前页面状态已检查";
       return;
     }
-    if (["members", "statistics", "downloads", "research", "local-models", "campaigns", "evaluations"].includes(view) || (["datasets", "games"].includes(view) && !id)) {
+    if (["members", "statistics", "downloads", "research", "local-models", "local-workspace", "campaigns", "evaluations"].includes(view) || (["datasets", "games"].includes(view) && !id)) {
       const opened = [...document.querySelectorAll("details[open]")].map(item => item.dataset.preserve);
       const content = await window.SpireProject.render(view, identity, shell => {
         if (serial === state.serial && identityContext === window.SpireIdentity.context()) $("content").replaceChildren(shell);

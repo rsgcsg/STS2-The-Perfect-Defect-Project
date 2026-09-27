@@ -23,6 +23,20 @@
         "null"
       ]
     },
+    "research_workspace": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "store_dir": {"type": "string", "minLength": 1},
+            "registry_path": {"type": "string", "minLength": 1}
+          },
+          "required": ["store_dir", "registry_path"]
+        }
+      ]
+    },
     "combination": {
       "type": "object",
       "additionalProperties": false,
