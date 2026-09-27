@@ -211,6 +211,29 @@ def test_decision_view_worker_report_is_supported_without_loading_lineage(
     assert value["view_schema"] == "stpd/decision-model-view-v1"
     assert value["validation_scope"] == "recorded_report_and_parent_identities"
     assert value["decision_count"] > 0
+    # The shared view loader accepts public BC, but this FullRun worker does not.
+    # Keep every other parent relationship valid to isolate the view admission.
+    evaluation = owner.store.get_manifest(evaluation_id)
+    model = owner.store.get_manifest(evaluation.parent("model"))
+    unsupported = replace(view, parameters=FrozenObject.of({
+        **view.parameters.value(), "schema": "stpd/public-observation-bc-view-v2",
+    }))
+    owner.store.publish(unsupported)
+    rebound_model = replace(model, parents=tuple(
+        replace(parent, artifact_id=unsupported.artifact_id)
+        if parent.role == "model_view" else parent for parent in model.parents
+    ))
+    owner.store.publish(rebound_model)
+    rebound_report = replace(evaluation, parents=tuple(
+        replace(parent, artifact_id=(unsupported.artifact_id if parent.role == "model_view"
+                                     else rebound_model.artifact_id))
+        for parent in evaluation.parents
+    ))
+    owner.store.publish(rebound_report)
+    roles.clear()
+    with pytest.raises(BoundaryError, match="invalid_report_parentage"):
+        summary(owner.store, rebound_report.artifact_id)
+    assert roles == []
 
 
 def test_http_requires_local_cookie_and_exact_id_without_cloud_login(tmp_path: Path,

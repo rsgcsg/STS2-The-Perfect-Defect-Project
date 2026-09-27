@@ -26,10 +26,9 @@ TOKEN_VIEW_SCHEMAS = frozenset({
     DECISION_VIEW_SCHEMA, LEGACY_PUBLIC_BC_VIEW_SCHEMA, PUBLIC_BC_VIEW_SCHEMA,
     "stpd/text-menu-bc-view-v1",
 })
-FULLRUN_VIEW_SCHEMAS = TOKEN_VIEW_SCHEMAS | {
-    FULLRUN_VIEW_SCHEMA, "stpd/human-text-input-bc-view-v1",
-    "stpd/human-text-input-bc-view-v2",
-}
+# FullRun feature compilation supports these two views, even though the shared
+# view loader also serves other model families.
+FULLRUN_VIEW_SCHEMAS = frozenset({FULLRUN_VIEW_SCHEMA, DECISION_VIEW_SCHEMA})
 
 
 def _finite(value: Any, depth: int = 0) -> None:
