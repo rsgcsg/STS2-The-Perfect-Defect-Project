@@ -15,7 +15,7 @@ from time import perf_counter
 
 from spireagent.hub.curation_access import record_use
 from spireagent.hub.database import Operations
-from spireagent.json_boundary import BoundaryError, json_bytes, object_fields
+from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
 from spireagent.source import source_identity
 from spireagent.storage.config import open_store
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
@@ -76,6 +76,8 @@ def main() -> int:
     token_train.add_argument("--resume")
     token_train.add_argument("--stop-after", type=int)
     token_train.add_argument("--max-tokens", type=int, default=16384)
+    run_tokens = commands.add_parser("run-tokens", help="execute an existing exact token run")
+    run_tokens.add_argument("--run", required=True)
     export = commands.add_parser("export")
     export.add_argument("--model", required=True)
     export.add_argument("--destination", type=Path, required=True)
@@ -224,6 +226,16 @@ def main() -> int:
             result = asdict(execute_tokens(
                 store, ObjectStoreRunReporter(store, store.blobs), run.artifact_id, runtime,
                 snapshot=args.snapshot, resume=args.resume, stop_after=args.stop_after,
+            ))
+        elif args.command == "run-tokens":
+            import torch
+
+            from stpd.workers.token_worker import execute_tokens
+
+            torch.set_num_threads(2)
+            run_id = digest(args.run, "token_run.id")
+            result = asdict(execute_tokens(
+                store, ObjectStoreRunReporter(store, store.blobs), run_id, runtime,
             ))
         elif args.command == "train":
             config = TrainingConfig(
