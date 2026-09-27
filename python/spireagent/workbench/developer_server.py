@@ -33,6 +33,10 @@ from spireagent.workbench.hub_client import HubClient
 from spireagent.workbench.identity import LocalIdentity
 from spireagent.workbench.local_models import LocalModelService
 from spireagent.workbench.member_client import MemberClient
+from spireagent.workbench.native_workbench import (
+    WorkbenchRegistrationLoop,
+    start_workbench_registration,
+)
 
 
 @contextlib.contextmanager
@@ -386,6 +390,11 @@ class Application:
             "hub": self.hub.snapshot() if self.hub else {"status": "not_configured"},
         }
 
+    def local_research_workspace(self) -> Any | None:
+        from spireagent.workbench.local_workspace import open_registered_workspace
+
+        return open_registered_workspace(self.config.research_workspace)
+
     def close(self) -> None:
         self.evaluation_sharing.close()
         self.members.close()
@@ -540,6 +549,68 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, KeyError):
                     self.respond(400, b'{"error":"invalid_member_request"}')
+            elif parsed.path == "/api/local-workspace" or parsed.path.startswith(
+                "/api/local-workspace/artifacts/"
+            ):
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                try:
+                    workspace = app.local_research_workspace()
+                    if workspace is None:
+                        value = {
+                            "schema": "stpd/local-workspace-status-v1",
+                            "status": "not_configured",
+                            "entry": "set research_workspace in the local project config",
+                            "requires_cloud_account": False,
+                        }
+                    else:
+                        artifact = re.fullmatch(
+                            r"/api/local-workspace/artifacts/([a-f0-9]{64})", parsed.path
+                        )
+                        if artifact is not None and not parsed.query:
+                            value = workspace.artifact(artifact[1])
+                        elif parsed.path == "/api/local-workspace":
+                            query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=4)
+                            if any(len(items) != 1 for items in query.values()) or set(query) - {
+                                "kind",
+                                "q",
+                                "limit",
+                                "offset",
+                            }:
+                                raise ValueError
+                            value = workspace.inventory(
+                                kind=query.get("kind", [None])[0],
+                                query=query.get("q", [None])[0],
+                                limit=int(query.get("limit", ["50"])[0]),
+                                offset=int(query.get("offset", ["0"])[0]),
+                            )
+                        else:
+                            raise BoundaryError("local_workspace", "route_not_found")
+                    self.respond(200, json.dumps(value, ensure_ascii=False).encode())
+                except BoundaryError as error:
+                    if error.stage == "local_workspace" and error.code in {
+                        "store_not_found",
+                        "registry_not_found",
+                        "unsupported_or_uninitialized_cache",
+                        "registry_unavailable",
+                    }:
+                        self.respond(
+                            200,
+                            json.dumps(
+                                {
+                                    "schema": "stpd/local-workspace-status-v1",
+                                    "status": "unavailable",
+                                    "error_code": error.code,
+                                    "requires_cloud_account": False,
+                                }
+                            ).encode(),
+                        )
+                        return
+                    status = 404 if error.code in {"not_found", "route_not_found"} else 409
+                    self.respond(status, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, KeyError):
+                    self.respond(400, b'{"error":"invalid_local_workspace_request"}')
             elif parsed.path == "/api/identity" or parsed.path.startswith("/api/project/"):
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -701,6 +772,7 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
         signal.signal(
             signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start()
         )
+        registration: WorkbenchRegistrationLoop | None = None
         try:
             app.start_delivery()
             atomic_json(
@@ -715,8 +787,16 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
                     "delivery": "configured" if config.delivery_config else "not_configured",
                 },
             )
+            # The Mod bridge belongs to this local native Connector. A remote or
+            # custom Host configuration must not silently bind to another game.
+            if config.platform_url in {"http://127.0.0.1:15526", "http://localhost:15526"}:
+                registration = start_workbench_registration(
+                    f"http://127.0.0.1:{server.server_port}/", app.instance_id
+                )
             server.serve_forever(poll_interval=0.2)
         finally:
+            if registration is not None:
+                registration.close()
             app.close()
             server.server_close()
             (config.state_dir / "runtime.json").unlink(missing_ok=True)

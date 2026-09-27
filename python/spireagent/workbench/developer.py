@@ -106,15 +106,27 @@ def combination(root: Path = ROOT) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
+class LocalResearchWorkspaceConfig:
+    """An explicit pointer to existing local research objects and their index."""
+
+    store_dir: Path
+    registry_path: Path
+
+    def to_dict(self) -> dict[str, str]:
+        return {"store_dir": str(self.store_dir), "registry_path": str(self.registry_path)}
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     state_dir: Path
     hub_url: str
     platform_url: str
     delivery_config: Path | None
     combination: dict[str, Any]
+    research_workspace: LocalResearchWorkspaceConfig | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "schema": CONFIG_SCHEMA,
             "state_dir": str(self.state_dir),
             "hub_url": self.hub_url,
@@ -122,14 +134,29 @@ class ProjectConfig:
             "delivery_config": str(self.delivery_config) if self.delivery_config else None,
             "combination": self.combination,
         }
+        if self.research_workspace is not None:
+            value["research_workspace"] = self.research_workspace.to_dict()
+        return value
 
     @classmethod
     def load(cls, path: Path, *, require_current_combination: bool = True) -> ProjectConfig:
-        obj = object_fields(
-            decode_json(path.read_bytes()),
-            {"schema", "state_dir", "hub_url", "platform_url", "delivery_config", "combination"},
-            "project.config",
-        )
+        raw = decode_json(path.read_bytes())
+        if not isinstance(raw, dict):
+            raise BoundaryError("project.config", "missing_or_unknown_fields")
+        fields = {
+            "schema",
+            "state_dir",
+            "hub_url",
+            "platform_url",
+            "delivery_config",
+            "combination",
+        }
+        if frozenset(raw) not in {
+            frozenset(fields),
+            frozenset(fields | {"research_workspace"}),
+        }:
+            raise BoundaryError("project.config", "missing_or_unknown_fields")
+        obj = object_fields(raw, set(raw), "project.config")
         if obj["schema"] != CONFIG_SCHEMA or not isinstance(obj["combination"], dict):
             raise BoundaryError("project", "unsupported_project_config")
         if require_current_combination and obj["combination"] != combination():
@@ -140,12 +167,25 @@ class ProjectConfig:
             delivery = text(delivery, "project.delivery_config")
         if not state.is_absolute() or (delivery is not None and not Path(delivery).is_absolute()):
             raise BoundaryError("project", "absolute_local_path_required")
+        research_workspace = None
+        if "research_workspace" in obj:
+            research = object_fields(
+                obj["research_workspace"],
+                {"store_dir", "registry_path"},
+                "project.research_workspace",
+            )
+            store_dir = Path(text(research["store_dir"], "project.research_store_dir"))
+            registry_path = Path(text(research["registry_path"], "project.research_registry_path"))
+            if not store_dir.is_absolute() or not registry_path.is_absolute():
+                raise BoundaryError("project", "absolute_local_path_required")
+            research_workspace = LocalResearchWorkspaceConfig(store_dir, registry_path)
         return cls(
             state,
             endpoint(obj["hub_url"], optional=True),
             endpoint(obj["platform_url"], optional=True),
             Path(delivery) if delivery is not None else None,
             dict(obj["combination"]),
+            research_workspace,
         )
 
 
@@ -198,12 +238,18 @@ def _setup_unlocked(
         delivery_value = decode_json(delivery_config.read_bytes())
         if isinstance(delivery_value, dict):
             hub_url = endpoint(delivery_value.get("hub_url"))
+    current_config = (
+        ProjectConfig.load(path, require_current_combination=False)
+        if path.exists() and not replace_config
+        else None
+    )
     config = ProjectConfig(
         state_dir.expanduser().resolve(),
         endpoint(hub_url, optional=True),
         endpoint(platform_url, optional=True),
         delivery_config.expanduser().resolve() if delivery_config else None,
         combination(),
+        current_config.research_workspace if current_config is not None else None,
     )
     if path.exists() and not replace_config:
         current = ProjectConfig.load(path)

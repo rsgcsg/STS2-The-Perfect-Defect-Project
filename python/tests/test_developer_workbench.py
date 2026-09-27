@@ -86,6 +86,34 @@ def test_setup_combination_schema_and_idempotency(project, tmp_path):
         ProjectConfig.load(path)
 
 
+def test_project_config_optional_local_research_workspace_preserves_legacy_files(project, tmp_path):
+    path, config = project
+    assert config.research_workspace is None
+    value = json.loads(path.read_bytes())
+    value["research_workspace"] = {
+        "store_dir": str(tmp_path / "existing-store"),
+        "registry_path": str(tmp_path / "existing-registry.sqlite"),
+    }
+    path.write_text(json.dumps(value))
+    loaded = ProjectConfig.load(path)
+    assert loaded.research_workspace is not None
+    assert loaded.research_workspace.store_dir == tmp_path / "existing-store"
+    assert loaded.research_workspace.registry_path == tmp_path / "existing-registry.sqlite"
+    schema = json.loads((ROOT / "schemas/developer-project-v1.schema.json").read_bytes())
+    Draft202012Validator(schema).validate(loaded.to_dict())
+    setup(path, state_dir=config.state_dir, install=False)
+    assert ProjectConfig.load(path).research_workspace == loaded.research_workspace
+
+
+def test_project_config_rejects_explicit_null_research_workspace(project):
+    path, _ = project
+    value = json.loads(path.read_bytes())
+    value["research_workspace"] = None
+    path.write_text(json.dumps(value))
+    with pytest.raises(BoundaryError, match="missing_or_unknown_fields"):
+        ProjectConfig.load(path)
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -727,3 +755,56 @@ def test_repository_rename_does_not_accept_unrelated_repository(tmp_path):
     path.write_text(json.dumps(value))
     with pytest.raises(BoundaryError):
         combination(tmp_path)
+
+
+@pytest.mark.parametrize("platform", [
+    "", "http://127.0.0.1:15526", "http://localhost:15526",
+    "http://127.0.0.1:25526", "https://other-host.example.invalid",
+])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_native_workbench_registration_follows_server_lifecycle(
+    project, monkeypatch, platform, interrupted
+):
+    from dataclasses import replace
+
+    from spireagent.workbench import developer_server
+
+    path, original = project
+    config = replace(original, platform_url=platform)
+    native = platform in {"http://127.0.0.1:15526", "http://localhost:15526"}
+    events = []
+    real_create = developer_server.create_server
+
+    class Registration:
+        def close(self):
+            events.append("unregister")
+
+    def register(url, instance_id):
+        runtime = json.loads((config.state_dir / "runtime.json").read_bytes())
+        assert url == f"http://127.0.0.1:{runtime['port']}/"
+        assert instance_id == runtime["instance_id"]
+        events.append("register")
+        return Registration()
+
+    def create(app):
+        server = real_create(app)
+
+        def run(*, poll_interval):
+            assert events == (["register"] if native else [])
+            events.append("serve")
+            if interrupted:
+                raise RuntimeError("synthetic_server_exit")
+
+        server.serve_forever = run
+        return server
+
+    monkeypatch.setattr(developer_server, "doctor", lambda _: {"status": "PASS"})
+    monkeypatch.setattr(developer_server, "start_workbench_registration", register)
+    monkeypatch.setattr(developer_server, "create_server", create)
+    if interrupted:
+        with pytest.raises(RuntimeError, match="synthetic_server_exit"):
+            developer_server.serve(config, config_path=path)
+    else:
+        assert developer_server.serve(config, config_path=path) == {"status": "stopped"}
+    assert events == (["register", "serve", "unregister"] if native else ["serve"])
+    assert not (config.state_dir / "runtime.json").exists()

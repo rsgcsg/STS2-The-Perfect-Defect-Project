@@ -36,6 +36,7 @@ def test_shared_shell_has_no_embedded_runtime_data_or_external_dependencies():
         assert 'lang="zh-CN"' in page and 'data-api="' + api in page
         assert "训练与模型" in page
         assert ('data-view="campaigns"' in page) == (mode == "local")
+        assert ('data-view="local-workspace"' in page) == (mode == "local")
         assert "http-equiv" not in page
         assert "localStorage" not in asset("console.js")[1].decode()
         assert "innerHTML" not in asset("console.js")[1].decode()
@@ -51,6 +52,7 @@ def test_shared_shell_has_no_embedded_runtime_data_or_external_dependencies():
     assert asset("../developer.py") is None
     assert 'data-view="local-models"' in render_shell("local", "/api/console")
     assert 'data-view="local-models"' not in render_shell("cloud", "/app/api")
+    assert 'data-view="local-workspace"' not in render_shell("cloud", "/app/api")
     assert asset("missing.js") is None
     with pytest.raises(ValueError):
         render_shell("cloud", "/arbitrary")

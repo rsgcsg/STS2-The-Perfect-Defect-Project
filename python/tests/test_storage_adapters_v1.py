@@ -136,6 +136,27 @@ def test_registry_rejects_future_schema_and_cached_tamper(tmp_path: Path) -> Non
         SQLiteRegistry(path)
 
 
+def test_read_only_registry_requires_existing_schema_and_rejects_rebuild(tmp_path: Path) -> None:
+    missing = tmp_path / "missing" / "registry.sqlite"
+    with pytest.raises(BoundaryError, match="not_configured"):
+        SQLiteRegistry(missing, readonly=True)
+    assert not missing.parent.exists()
+
+    uninitialized = tmp_path / "uninitialized.sqlite"
+    uninitialized.touch()
+    with pytest.raises(BoundaryError, match="unsupported_or_uninitialized_cache"):
+        SQLiteRegistry(uninitialized, readonly=True)
+    assert uninitialized.stat().st_size == 0
+
+    writable = SQLiteRegistry(tmp_path / "ready.sqlite")
+    manifest = Manifest("dataset", PRODUCER)
+    writable.rebuild([manifest])
+    readonly = SQLiteRegistry(writable.path, readonly=True)
+    assert readonly.get(manifest.artifact_id) == manifest
+    with pytest.raises(BoundaryError, match="read_only"):
+        readonly.rebuild([manifest])
+
+
 def test_s3_wire_contract_uses_real_sdk_validation_without_network() -> None:
     import base64
     import hashlib

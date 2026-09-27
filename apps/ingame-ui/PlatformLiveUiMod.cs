@@ -1,5 +1,6 @@
 using Godot;
 using MegaCrit.Sts2.Core.Modding;
+using HttpClient = System.Net.Http.HttpClient;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -167,8 +168,11 @@ internal sealed class PlatformLivePanel : IDisposable
     private PlatformLiveStatus? _pendingStatus;
     private string? _displayedPolicyRunId;
     private Button _endTestButton = null!;
+    private Button _workbenchButton = null!;
     private bool _policyCommandPending;
     private readonly PlatformPolicyCommands _policyCommands = new();
+    private readonly HttpClient _workbenchHttpClient = PlatformWorkbenchOpenClient.CreateHttpClient();
+    private Task<PlatformWorkbenchOpenResult>? _workbenchOpenCheck;
     private long _policyUiIntent;
     private string? _pendingPollError;
     private long _lastRecordingEventSequence;
@@ -225,6 +229,7 @@ internal sealed class PlatformLivePanel : IDisposable
             _tree.ProcessFrame -= _processFrameHandler;
         Root.Resized -= ApplyWorkspaceBounds;
         _statusClient.Dispose();
+        _workbenchHttpClient.Dispose();
     }
 
     private static Shortcut WorkspaceShortcut(Key key) => new()
@@ -306,6 +311,8 @@ internal sealed class PlatformLivePanel : IDisposable
         _workspaceTitle.AddThemeFontSizeOverride("font_size", 18);
         _workspaceTitle.AddThemeColorOverride("font_color", TextPrimary);
         titleRow.AddChild(_workspaceTitle);
+        _workbenchButton = BuildHeaderButton("工作台", BeginOpenWorkbench, "Open the connected local Workbench in your default browser.");
+        titleRow.AddChild(_workbenchButton);
         titleRow.AddChild(BuildHeaderButton("Minimize", MinimizePanel, "Keep a small live view during play."));
         titleRow.AddChild(BuildHeaderButton("Reset", ResetLayout, "Restore position, size and active surface."));
         var closeButton = BuildHeaderButton("收起", HidePanel, "Close workspace and return to gameplay.");
@@ -1386,9 +1393,55 @@ internal sealed class PlatformLivePanel : IDisposable
 
     private void OnProcessFrame()
     {
+        CompleteWorkbenchOpenCheck();
         ApplyPendingStatus();
         ApplyPendingPollError();
         ExpireToasts();
+    }
+
+    private void BeginOpenWorkbench()
+    {
+        if (_disposed || _workbenchOpenCheck is { IsCompleted: false })
+            return;
+        _workbenchButton.Disabled = true;
+        _workbenchOpenCheck = PlatformWorkbenchOpenClient.CheckAsync(_workbenchHttpClient);
+        PushToast("workbench.open", "正在确认本机工作台连接…");
+    }
+
+    private void CompleteWorkbenchOpenCheck()
+    {
+        Task<PlatformWorkbenchOpenResult>? check = _workbenchOpenCheck;
+        if (check is null || !check.IsCompleted || _disposed)
+            return;
+
+        _workbenchOpenCheck = null;
+        _workbenchButton.Disabled = false;
+        PlatformWorkbenchOpenResult result;
+        try
+        {
+            result = check.GetAwaiter().GetResult();
+        }
+        catch (Exception)
+        {
+            result = new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.Unavailable);
+        }
+
+        if (!result.CanOpen || result.Url is null)
+        {
+            string message = result.State switch
+            {
+                PlatformWorkbenchOpenState.NotRegistered => "本机工作台尚未连接。请在电脑上打开工作台后重试。",
+                PlatformWorkbenchOpenState.Stale => "本机工作台连接已失效。正常退出后会自动清除；若工作台异常退出，请重启游戏后再连接。",
+                _ => "本机工作台暂不可用。请在电脑上打开工作台后重试。"
+            };
+            PushToast("workbench.open", message);
+            return;
+        }
+
+        Error opened = OS.ShellOpen(result.Url);
+        PushToast("workbench.open", opened == Error.Ok
+            ? "已在默认浏览器中打开本机工作台。"
+            : "系统未能打开本机工作台，请从电脑上重新打开工作台后重试。");
     }
 
     private void ShowPanel()
