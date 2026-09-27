@@ -27,6 +27,15 @@ from stpd.workers.contracts import TrainingConfig, prepare_run, prepare_training
 from stpd.workers.worker import execute
 
 
+def add_token_recipe_arguments(parser: argparse.ArgumentParser) -> None:
+    recipe = parser.add_mutually_exclusive_group(required=True)
+    recipe.add_argument("--recipe")
+    recipe.add_argument(
+        "--text-menu-small-b", action="store_true",
+        help="use the explicit zero-dropout scratch B v2 engineering config",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--store")
@@ -59,7 +68,7 @@ def main() -> int:
     train.add_argument("--resume")
     token_train = commands.add_parser("train-tokens", help="bounded local Stage 1a token training")
     token_train.add_argument("--inputs", required=True)
-    token_train.add_argument("--recipe", required=True)
+    add_token_recipe_arguments(token_train)
     token_train.add_argument("--steps", type=int, default=10)
     token_train.add_argument("--backend", choices=("cpu", "mps"), required=True)
     token_train.add_argument("--snapshot", type=Path)
@@ -204,8 +213,13 @@ def main() -> int:
 
             torch.set_num_threads(2)
             inputs = load_token_inputs(store, args.inputs)
-            token_config = TokenConfig(recipe=args.recipe, steps=args.steps, device=args.backend,
-                                       max_tokens=args.max_tokens)
+            token_config = (
+                TokenConfig.text_menu_small_b(steps=args.steps, device=args.backend,
+                                              max_tokens=args.max_tokens)
+                if args.text_menu_small_b else
+                TokenConfig(recipe=args.recipe, steps=args.steps, device=args.backend,
+                            max_tokens=args.max_tokens)
+            )
             run = prepare_token_run(store, inputs, token_config, runtime, replicate=args.replicate)
             result = asdict(execute_tokens(
                 store, ObjectStoreRunReporter(store, store.blobs), run.artifact_id, runtime,
