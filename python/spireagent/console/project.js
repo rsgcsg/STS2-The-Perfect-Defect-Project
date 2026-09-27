@@ -1118,9 +1118,9 @@ window.SpireProject = (() => {
     value === "purpose_assigned" ? "已按所选评测用途分配" :
     value === "insufficient_independent_run_components" ? "独立对局不足，尚不能形成独立划分" : "划分状态未知";
   const localDatasetBlockerLabel = code => ({
-    gold_source_inventory_pending: "Gold 来源仍在索引；完成后可以重新检查。",
+    gold_source_inventory_pending: "还有来源未完成索引，目前不能确认 Gold 隔离。",
     gold_already_in_other_dataset: "该来源已进入其他数据集；请为 Gold 选择独立来源。",
-    gold_requires_gold_merge: "该来源已属于 Gold；请在数据集列表合并已有 Gold。",
+    gold_requires_gold_merge: "该来源已属于 Gold，不能作为新的 Gold 重复创建；需走 Gold 合并流程。",
     gold_previously_used_for_training: "该来源已有训练使用记录，不能作为 Gold。",
     gold_reserved_data: "该来源已保留为 Gold，只能用于受控评估或 Gold 合并。",
     empty_selection: "当前选择没有可保留的样本。",
