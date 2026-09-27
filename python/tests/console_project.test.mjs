@@ -589,16 +589,33 @@ test("ready legacy curation suppresses setup cards while dataset purpose control
   assert.equal(post(env.calls).length, 0);
 });
 
-test("prepared dataset detail leads with manifest facts and links its exact parents", async () => {
+test("ready legacy workspace directory does not say that preparation is still pending", async () => {
+  const env = setup({
+    identity: {status: "signed_out"}, view: "local-workspace",
+    curationStatus: {schema: "stpd/local-curation-preparation-v1", status: "ready"},
+    handler: async url => {
+      if (url === "/api/local-workspace/managed") return {status: "legacy_workspace_configured"};
+      if (url === "/api/local-workspace?limit=25&offset=0") return {total: 0, items: []};
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /用途记录已准备/);
+  assert.doesNotMatch(text(page), /准备用途记录后/);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("prepared managed dataset detail leads with manifest facts and links its exact parents", async () => {
   const dataset = id("a"), source = id("b"), paired = id("c");
   const env = setup({
     identity: {status: "signed_out"}, view: "local-workspace", query: `&id=${dataset}`,
     curationStatus: {
-      schema: "stpd/local-curation-preparation-v1", status: "ready",
-      historical_use_history: "unknown",
+      schema: "stpd/local-curation-preparation-v1", status: "not_applicable",
     },
     handler: async url => {
-      if (url === "/api/local-workspace/managed") return {status: "ready", workspace_id: id("d")};
+      if (url === "/api/local-workspace/managed") return {
+        status: "ready", curation_status: "ready", workspace_id: id("d"),
+      };
       if (url === `/api/local-workspace/artifacts/${dataset}`) return {
         schema: "stpd/local-workspace-artifact-v1", kind: "dataset", artifact_id: dataset,
         parameters: {
@@ -617,6 +634,8 @@ test("prepared dataset detail leads with manifest facts and links its exact pare
   assert.match(text(page), /测试/);
   assert.match(text(page), /已按所选评测用途分配/);
   assert.doesNotMatch(text(page), /本机工作空间已就绪|本机用途记录已准备|此页在本机读取/);
+  assert.equal(env.calls.some(call => call.url === "/api/local-workspace/curation"), true,
+    "managed workspaces may report not_applicable from the configured-workspace owner");
   assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${source}`).textContent,
     `查看来源 · ${source.slice(0, 16)}`);
   assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${paired}`).textContent,

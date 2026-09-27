@@ -2368,11 +2368,14 @@ window.SpireProject = (() => {
     delete data.csrf_token;
     if (data.status === "legacy_workspace_configured") {
       const curation = await request(ctx, "/api/local-workspace/curation");
-      if (detail && curation.schema === "stpd/local-curation-preparation-v1"
-          && curation.status === "ready") return;
+      const curationReady = curation.schema === "stpd/local-curation-preparation-v1"
+        && curation.status === "ready";
+      if (detail && curationReady) return;
       box.append(panel(
         "正在使用现有本机资料库",
-        "现有资料保留在原位置。准备用途记录后，可在同一资料库中检查和创建数据集。",
+        curationReady
+          ? "现有资料保留在原位置。用途记录已准备，可在同一资料库中检查和创建数据集。"
+          : "现有资料保留在原位置。准备用途记录后，可在同一资料库中检查和创建数据集。",
       ));
       localCurationCard(ctx, box, curation);
       return;
@@ -2402,8 +2405,10 @@ window.SpireProject = (() => {
       return;
     }
     const curation = await request(ctx, "/api/local-workspace/curation");
-    if (detail && curation.schema === "stpd/local-curation-preparation-v1"
-        && curation.status === "ready") return;
+    const curationReady = curation.schema === "stpd/local-curation-preparation-v1"
+      && curation.status === "ready";
+    const workspaceReady = data.status === "ready" && data.curation_status === "ready";
+    if (detail && (curationReady || workspaceReady)) return;
     const section = panel(
       "本机工作空间已就绪",
       "可在下方查看资料。创建本身不导入资料，也不表示资料已可训练。",
