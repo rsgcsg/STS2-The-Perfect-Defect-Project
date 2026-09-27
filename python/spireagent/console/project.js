@@ -2391,7 +2391,7 @@ window.SpireProject = (() => {
   function localRecordingCard(ctx, importStatus) {
     const section = panel(
       "本机录制来源",
-      "查看本机报告的录制目录和结束状态。只有明确确认来源后才会在本机打包、验证并导入所选资料库；导入不等于可训练。",
+      "选择已结束的录制，验证后加入本机资料库。原始录制保留，不会上传或开始训练。",
     );
     const {csrf_token: localCsrfToken, ...safeImportStatus} = importStatus;
     if (importStatus.status === "pending") {
@@ -2450,26 +2450,28 @@ window.SpireProject = (() => {
       "录制已结束，内容待验证",
     ]);
     section.append(table(["录制", "时间线", "结束时间", "状态"], rows));
-    for (const item of data.candidates || []) {
-      if (importStatus.status === "completed" && importStatus.candidate_id === item.candidate_id)
-        continue;
-      const option = el("label", null, "small muted");
-      const checkbox = el("input");
-      checkbox.type = "checkbox";
-      checkbox.checked = false;
-      option.append(checkbox, el("span", ` 我确认录制 ${String(item.session_id || "").slice(0, 24)} 来自真实人类操作；仅导入本机资料库。`));
-      section.append(option);
-      const button = command(ctx, `import-local-recording-${item.candidate_id}`, "验证并导入本机", async () => {
-        if (!checkbox.checked) return;
+    const candidates = (data.candidates || []).filter(item =>
+      !(importStatus.status === "completed" && importStatus.candidate_id === item.candidate_id));
+    if (candidates.length) {
+      const selection = select(section, "要导入的录制", "local-recording-selection",
+        [["", "请选择一条录制"], ...candidates.map(item => [item.candidate_id,
+          `${item.closed_at || "结束时间未知"} · ${item.session_id}`])], "");
+      const checkbox = input(section, "我确认所选录制来自真人操作", "local-recording-attestation", false, "checkbox");
+      const canImport = () => checkbox.checked && candidates.some(item => item.candidate_id === selection.value)
+        && importStatus.status !== "pending" && !!localCsrfToken;
+      const button = command(ctx, "import-local-recording", "验证并导入本机", async () => {
+        if (!canImport()) return;
         await request(ctx, "/api/local-recordings/import", {
-          candidate_id: item.candidate_id,
+          candidate_id: selection.value,
           human_origin_attested: true,
         }, localCsrfToken);
         await reload(ctx);
       }, {disabled:true});
-      checkbox.onchange = () => {
-        button.disabled = !checkbox.checked || importStatus.status === "pending" || !localCsrfToken;
+      selection.onchange = () => {
+        checkbox.checked = false;
+        button.disabled = true;
       };
+      checkbox.onchange = () => { button.disabled = !canImport(); };
       section.append(button);
     }
     if (!data.candidate_count)

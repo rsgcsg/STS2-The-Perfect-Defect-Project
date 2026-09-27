@@ -253,7 +253,7 @@ test("local recording catalog is fetched only on explicit refresh and missing to
   assert.equal(post(env.calls).length, 0);
 });
 
-test("local recording import starts only after the unchecked attestation is selected", async () => {
+test("local recording import uses one explicit selection and resets attestation when it changes", async () => {
   const candidate = id("a");
   const env = setup({
     identity: {status: "local_only"},
@@ -269,9 +269,12 @@ test("local recording import starts only after the unchecked attestation is sele
       if (url === "/api/local-recordings") return {
         schema: "stpd/local-recording-catalog-v1", status: "ready",
         observed_at: "2026-09-27T00:00:00Z", root_basis: "configured_only",
-        candidate_count: 1, candidates: [{
+        candidate_count: 2, candidates: [{
           candidate_id: candidate, session_id: "session-1", timeline_id: "timeline-1",
           closed_at: "2026-09-27T00:00:00Z",
+        }, {
+          candidate_id: id("b"), session_id: "session-2", timeline_id: "timeline-2",
+          closed_at: "2026-09-27T00:01:00Z",
         }],
       };
       if (url === "/api/local-recordings/import") {
@@ -284,8 +287,24 @@ test("local recording import starts only after the unchecked attestation is sele
   const initial = await env.render();
   await action(initial, "read-local-recordings").onclick();
   const page = await env.render();
-  const button = action(page, `import-local-recording-${candidate}`);
-  const checkbox = find(page, element => element.tag === "input" && element.type === "checkbox");
+  const button = action(page, "import-local-recording");
+  const checkbox = field(page, "local-recording-attestation");
+  const selection = field(page, "local-recording-selection");
+  assert.equal(walk(page).filter(element => element.dataset?.action === "import-local-recording").length, 1);
+  assert.equal(checkbox.checked, false);
+  assert.equal(button.disabled, true);
+  await button.onclick();
+  assert.equal(post(env.calls).length, 0);
+  checkbox.checked = true;
+  checkbox.onchange();
+  assert.equal(button.disabled, true);
+  selection.value = id("b");
+  selection.onchange();
+  checkbox.checked = true;
+  checkbox.onchange();
+  assert.equal(button.disabled, false);
+  selection.value = candidate;
+  selection.onchange();
   assert.equal(checkbox.checked, false);
   assert.equal(button.disabled, true);
   await button.onclick();

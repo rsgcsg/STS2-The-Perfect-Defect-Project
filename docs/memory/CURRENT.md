@@ -1,78 +1,61 @@
 # Current project context, 2026-09-27
 
-Use `rsgcsg/STS2-The-Perfect-Defect-Project` for new work. Current develop
-includes PR #52 normal merge `4b729b8401e3fc6597ece5aedd92173068088079` (parents
-`9f895e8b533a25abe971d169000ae81760b8e76d` and `2ed18832bd3bb58c6a751dd73c8663428b35e32b`,
-tree `aae395fa32c9bd81558a2820ec8f4e3c6b2cbd49`). Resolve live GitHub refs, CI,
-source and deployed identity; current source/runtime authorities override this file.
+Use `rsgcsg/STS2-The-Perfect-Defect-Project` for new work. Reviewed source anchor:
+`develop@47ec697259e1fa9ca19c620b4f95f1ad6f808f00` (through PR #60).
+Resolve live refs and deployed identity before work; this file is a bounded handoff,
+not the authority for running versions or later commits.
 
-## Current evidence
+## What is implemented and what was observed
 
-- **Installed candidate:** Game Mod `0.2.0-rc.16`, component source anchor
-  `ed40f0ebbfd59587eca0d5688f9c271062d85753`, was installed/cold-loaded with exact
-  identity verification passing. The owner completed the bounded mouse
-  target/cancel canary; its closed bundle verifies five exact input labels and
-  one successful native card action. No complete successor was captured: the
-  final transition remains unknown, not a training-ready transition. The [bounded receipt](../evidence/RC14_HUMAN_AND_LOCAL_WORKBENCH_RECEIPT_2026-09-27.md)
-  retains separate RC14, RC15 and RC16 identities.
-- **Local Workbench:** automated CUA opened the PR #50 browser from the game and
-  browsed metadata after game exit. A separate isolated PR #52 candidate showed
-  a no-login local home and 本机资料 1–25 of 326. The backend runs independently
-  of the game. These observations are not Human evidence or a completed offline
-  dataset/training workflow; exact instances are separated in the receipt.
-- **RC14 Human session:** the owner attested mouse input for a separately closed
-  session. It has 15 canonical transitions and 18 text-input begin labels;
-  neither count implies the missing target/cancel labels. See the receipt for
-  exact producer identity and separate audit counts.
-- **Evidence CLI:** PR #51 fixes serialization of immutable Human input reports;
-  all 145 Evidence tests and the exact private-bundle CLI check passed. Full run
-  [36301622023](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36301622023)
-  succeeded; the PR merged at `9f895e8b533a25abe971d169000ae81760b8e76d`.
-- **Local home:** merged PR #52 adds the no-login local home behavior. Its
-  authored source passed 95 Node and 17 Python tests. Head `2ed18832bd3bb58c6a751dd73c8663428b35e32b`
-  normally incorporates PR #51; its Python-scope
-  [run 36302839895](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36302839895)
-  passed Linux, Windows and portable. Its same-tree integration run 36303808419
-  passed with verified execution reuse and fresh guards. Superseded run 36302306868 was cancelled, not passed.
-- **Mouse continuation candidate:** reviewed source `11938165425833ad4f7364edeba2d77adf995f6a`,
-  component identity anchor `ed40f0e`, with Game Mod rc.16. Local exact-game checks
-  and 297 Annotator Core tests passed; the bounded Human canary captured three
-  begin labels, one explicit cancel and one target confirmation without duplicate
-  cancellation. The drag-back path produced no explicit-cancel label. Untargeted mouse and ally-target stages remain unsupported.
+- **Game / Human:** the last verified installation is Game Mod rc.16, source
+  `ed40f0ebbfd59587eca0d5688f9c271062d85753`. The closed mouse canary has five
+  exact Human input labels and one successful native card action, but no complete
+  causal successor. The drag-back cancellation still has no explicit label.
+  [The bounded receipt](../evidence/RC14_HUMAN_AND_LOCAL_WORKBENCH_RECEIPT_2026-09-27.md)
+  preserves separate RC14/15/16 observations; none establishes full-game qualification.
+- **Workbench:** PRs #52/#56/#58 provide a no-login local home, managed local
+  storage and explicit recording-source discovery. The owner confirmed opening
+  the local home from the game without login. The last local service source is
+  `bb7db6fffaa489f3af7c0ce8b58d4f56a692f6c2`; backend discovery observed 19 closed
+  metadata candidates, not 19 verified Human bundles. Source merges do not update
+  that service automatically. [PR #58](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/58)
+  records its Python gate and separate local activation receipt.
+- **Data:** PR #54 adds the shared curation authority; #55 separates Human-input BC
+  split semantics; #57 adds observed-input sequences and the rc.17 Evidence consumer.
+  Existing records keep their identities. Human input labels are not canonical
+  transitions or proof of gameplay effects. Sequence reading does not grant training use.
+- **Models:** PR #49 adds explicit small-B shared-observation training selection.
+  PR #59 adds an experimental observation-only GRU memory prototype and independent
+  reset control with synthetic tests. Its
+  [Python run](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36315089482)
+  passed; it is not a registered training recipe, full M1, learned quality result,
+  or replacement for installed models. Candidate scoring is linear in action count
+  at fixed input lengths, not linear in all sequence tokens.
+- **Team:** PR #60 documents one Workbench and host-neutral team coordination.
+  Cloud, LAN and a designated team computer are deployment choices. Current compute
+  remains a fixed provider target; no general multi-host scheduler is claimed.
 
-## Current implementation direction
+## Current packet and next gaps
 
-The [approved in-run text plan](../plans/TEXT_STS2_IN_RUN.md) limits system
-navigation to eight menu kinds: Information and seven lists. Installation, full
-scene coverage, new Human evidence, learned memory and policy quality each need
-separate proof. PR #49 is merged with explicit small-B shared-observation
-training selection; old model defaults and checkpoints remain unchanged. The
-candidate scoring path is linear in menu count at fixed state/action lengths,
-not linear in total sequence tokens. Learned memory and an independently trained
-reset control remain unfinished; see the [progress receipt](../evidence/TEXT_MODEL_WORKBENCH_PROGRESS_2026-09-27.md).
+- Explicit local recording import: choose one closed recording, attest Human origin,
+  pack with the registered tool, verify and publish a separate local evidence artifact.
+  Import keeps raw data intact and does not upload, create a Dataset, or start training.
+  The candidate also clarifies team access while retaining signed-out local use.
+- Next, connect honest Human-input sources to fixed allocation/use checks and the
+  local Dataset workflow. Reuse the curation authority; do not disguise Human inputs
+  as canonical transitions or recreate Gold permissions in a UI cache.
+- Complete the training-job, report/analysis and archive journey on existing services.
+  Keep everyday controls simple; expose detailed identity and recovery information
+  when needed. Do not build a general cluster manager ahead of this working path.
+- Fill remaining native input families and causal successor coverage separately.
+  Native drag-back/_Process/untargeted paths require exact owner evidence, not timing
+  guesses. Full-scene execution and model quality remain independent gates.
 
-## Next work
+## Continuing boundaries
 
-- Publish and check the reviewed mouse continuation candidate; retain the exact
-  bounded Human receipt without claiming full-game qualification.
-- Build the remaining local dataset/assignment/use, training-job, analysis/report
-  and archive workflows on the existing local services.
-- Fill remaining native input families and causal successor coverage separately;
-  the one closed-canary transition remains unknown.
-
-## Remaining Platform non-claims
-
-### Historical evidence and authority
-
-The [local supervisor and Agent collaboration contract](../AI_COLLABORATION.md),
-[Stage1a task table](../plans/STAGE1A_TASKS.zh-CN.md), and [B0 handoff/archive
-receipt](../evidence/STAGE1A_B0_HANDOFF_2026-09-23.md) continue to route work and
-retain their historical evidence. Existing datasets, failed rows, source
-provenance, purposes and Gold protections keep their identities; no old data is
-relabelled or replaced. No new training run or paid compute is authorized here.
-The local Workbench metadata view does not expose payload contents or perform
-training, and does not make every feature work offline. No Full-Run Human
-qualification, broad research admission, model-quality or scientific result is
-claimed. Older accepted baselines remain in the [unified task-flow receipt](../evidence/UNIFIED_TASK_FLOW_2026-09-16.md),
-[operating-flow receipt](../evidence/OPERATING_FLOW_2026-09-16.md), and
-[monorepo Human gate](../evidence/MONOREPO_HUMAN_GATE_2026-09-15.md).
+The [in-run text plan](../plans/TEXT_STS2_IN_RUN.md), [collaboration contract](../AI_COLLABORATION.md),
+[Stage1a table](../plans/STAGE1A_TASKS.zh-CN.md), and
+[B0 historical handoff](../evidence/STAGE1A_B0_HANDOFF_2026-09-23.md) retain their roles.
+No real-data training, paid compute or broad research admission is granted by this
+status note. Preserve failed evidence, datasets, Gold reservations, model weights and
+old provenance. Source/test, installed/live, Human and scientific claims remain distinct.
