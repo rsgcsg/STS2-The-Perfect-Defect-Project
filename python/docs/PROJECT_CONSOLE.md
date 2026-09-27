@@ -71,6 +71,16 @@ replaced. Interrupted initialization directories are retained and reported; the 
 adopt arbitrary old directories. Keep private local paths out of Git. This remains an artifact
 inventory, not a complete offline collection, dataset-building, training, or evaluation workflow.
 
+The page also has an explicit **查看录制来源** / **刷新录制来源** action. It uses the registered,
+byte-verified CollectionTool and its read-only Game Mod setup status to find the owner-reported
+recordings root; it does not read Game Mod configuration files directly or guess a default path.
+The action lists only immediate session directories whose recording manifest and matching Close
+receipt are present. It never packs, imports, rebinds, starts the game, or contacts Hub. A listed
+Close marker is not a verified Evidence bundle or proof of Human origin. Missing tool registration,
+unavailable owner status, and an unavailable recordings root are distinct states, not empty lists.
+The page keeps the last explicit observation while it refreshes other content; clicking either
+source-list action performs a new bounded owner check.
+
 ## Cloud login and connection
 
 Choose **打开云端** from the local page, or open the configured Hub's `/app/` from another device.
