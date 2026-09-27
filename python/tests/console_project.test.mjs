@@ -817,6 +817,68 @@ test("unknown local training schema does not expose unrecognized fields or token
   assert.equal(post(env.calls).length, 0);
 });
 
+test("known Stage 1a model detail summarizes its recipe and links exact parents", async () => {
+  const model = id("a"), run = id("b"), view = id("c"), checkpoint = id("d");
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return {
+        schema:"stpd/local-workspace-artifact-v1", artifact_id:model, kind:"model",
+        parameters:{schema:"stpd/stage1a-model-v1", config:{recipe:"stage1a.b.s.v2", steps:3, device:"cpu"},
+          steps:3, qualification:"engineering_only"},
+        parents:[{role:"run", artifact_id:run}, {role:"model_view", artifact_id:view},
+          {role:"checkpoint", artifact_id:checkpoint}, {role:"training_input", artifact_id:id("e")},
+          {role:"run", artifact_id:"not-a-hash"}],
+        payloads:[{role:"weights", sha256:id("f"), size:128, media_type:"application/vnd.safetensors"}],
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /模型概览/);
+  assert.match(text(page), /B v2/);
+  assert.match(text(page), /从头训练/);
+  assert.match(text(page), /训练步数[\s\S]*3/);
+  assert.match(text(page), /设备[\s\S]*CPU/);
+  assert.match(text(page), /工程验证用途；不代表模型质量或游戏实战资格/);
+  for (const [artifact, label] of [[run, "关联训练运行"], [view, "关联输入视图"], [checkpoint, "关联检查点"]]) {
+    const parent = find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${artifact}`);
+    assert.match(parent.textContent, new RegExp(label));
+  }
+  assert.equal(walk(page).filter(element => element.tagName === "A" && element.href.includes(id("e"))).length, 0,
+    "training input is not presented as one of the requested run/view/checkpoint links");
+  assert.equal(walk(page).some(element => element.tagName === "A" && element.href.includes("not-a-hash")), false,
+    "malformed parent identities are never linked");
+  assert.match(text(page), /stpd\/stage1a-model-v1/, "exact manifest metadata remains available as a technical fallback");
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("unknown model schemas keep metadata fallback and do not invent a model overview", async () => {
+  const model = id("a");
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return {
+        artifact_id:model, kind:"model", parameters:{schema:"future/model-v9", recipe:"unknown", steps:9},
+        parents:[{role:"run", artifact_id:"not-a-hash"}], payloads:[],
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.doesNotMatch(text(page), /模型概览|从头训练|冻结预训练骨干/);
+  assert.match(text(page), /future\/model-v9/);
+  assert.match(text(page), /recipe[\s\S]*unknown/);
+  assert.equal(walk(page).some(element => element.tagName === "A" && element.href.includes("not-a-hash")), false);
+  assert.equal(post(env.calls).length, 0);
+});
+
 test("known local training schema only exposes safe codes, stages and exact artifact identities", async () => {
   const cases = [
     {

@@ -2515,6 +2515,54 @@ window.SpireProject = (() => {
     return overview;
   }
 
+  function localModelOverview(value) {
+    const parameters = value.parameters && typeof value.parameters === "object"
+      && !Array.isArray(value.parameters) ? value.parameters : {};
+    if (parameters.schema !== "stpd/stage1a-model-v1") return null;
+    const config = parameters.config && typeof parameters.config === "object"
+      && !Array.isArray(parameters.config) ? parameters.config : {};
+    const recipes = {
+      "stage1a.b.s.v1": {label:"B v1", mode:"从头训练"},
+      "stage1a.b.pf.v1": {label:"B v1", mode:"冻结预训练骨干"},
+      "stage1a.dsimple.s.v1": {label:"D-Simple v1", mode:"从头训练"},
+      "stage1a.dsimple.pf.v1": {label:"D-Simple v1", mode:"冻结预训练骨干"},
+      "stage1a.b.s.v2": {label:"B v2", mode:"从头训练"},
+      "stage1a.b.pf.v2": {label:"B v2", mode:"冻结预训练骨干"},
+    };
+    const recipe = typeof config.recipe === "string" && Object.hasOwn(recipes, config.recipe)
+      ? recipes[config.recipe] : null;
+    const steps = Number.isSafeInteger(parameters.steps) && parameters.steps > 0
+      && parameters.steps === config.steps ? count(parameters.steps) : "未知";
+    const device = config.device === "cpu" ? "CPU"
+      : config.device === "mps" ? "Apple MPS" : "未知";
+    const qualification = parameters.qualification === "engineering_only"
+      ? "工程验证用途；不代表模型质量或游戏实战资格"
+      : "未知";
+    const overview = panel("模型概览", "以下摘要来自本机模型清单；此处不会加载模型或读取权重文件。");
+    overview.append(fields([
+      ["训练配方", recipe?.label || "未知"],
+      ["模型来源", recipe?.mode || "未知"],
+      ["训练步数", steps],
+      ["设备", device],
+      ["用途说明", qualification],
+    ]));
+    const parentLabels = {run:"关联训练运行", model_view:"关联输入视图", checkpoint:"关联检查点"};
+    const parents = Array.isArray(value.parents) ? value.parents.filter(parent =>
+      parent && typeof parent === "object" && Object.hasOwn(parentLabels, parent.role)
+        && hex(parent.artifact_id)) : [];
+    if (parents.length) {
+      const parentLinks = el("div", null, "project-actions");
+      for (const parent of parents) {
+        parentLinks.append(link(
+          `${parentLabels[parent.role]} · ${parent.artifact_id.slice(0, 16)}`,
+          route("local-workspace", parent.artifact_id),
+        ));
+      }
+      overview.append(parentLinks);
+    }
+    return overview;
+  }
+
   function offlineEvaluationMetrics(value) {
     const metrics = value && typeof value === "object" ? value : {};
     const number = key => Number.isFinite(metrics[key])
@@ -3017,6 +3065,8 @@ window.SpireProject = (() => {
       box.append(panel(heading, `本机对象 · ${value.artifact_id.slice(0, 16)}`));
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1")
         box.append(localDatasetOverview(value));
+      if (value.kind === "model" && value.parameters?.schema === "stpd/stage1a-model-v1")
+        box.append(localModelOverview(value));
       if (value.kind === "offline_evaluation")
         box.append(await localOfflineEvaluationDetail(ctx, value));
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1"
