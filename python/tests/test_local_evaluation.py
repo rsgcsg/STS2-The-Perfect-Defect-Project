@@ -100,6 +100,25 @@ def test_human_report_keeps_session_groups_unknown_and_rejects_claimed_independe
     assert value["decision_count"] == 2
     assert set(value["baselines"]) == {"uniform_legal", "action_only"}
     assert "percentile_95" not in json.dumps(value) and "rows" not in value
+    # A valid second view must not relabel the model/report while the real
+    # training input still names the first view. All other identities agree.
+    other_view = publish_human_text_bc_view(
+        store, source.artifact_id, replace(PRODUCER, source_revision="d" * 40))
+    assert other_view.artifact_id != view.artifact_id
+    model = store.get_manifest(report.parent("model"))
+    rebound_model = replace(model, parents=tuple(
+        replace(parent, artifact_id=other_view.artifact_id)
+        if parent.role == "model_view" else parent for parent in model.parents
+    ))
+    store.publish(rebound_model)
+    rebound_report = replace(report, parents=tuple(
+        replace(parent, artifact_id=(other_view.artifact_id if parent.role == "model_view"
+                                     else rebound_model.artifact_id))
+        for parent in report.parents
+    ))
+    store.publish(rebound_report)
+    with pytest.raises(BoundaryError, match="invalid_report_parentage"):
+        summary(store, rebound_report.artifact_id)
     original = json.loads(b"".join(store.read_payload(report.payload("metrics"))))
     for location in ("model", "uniform_legal", "action_only"):
         metrics = json.loads(json.dumps(original))

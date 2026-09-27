@@ -182,6 +182,9 @@ def _token_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str, Any
     if (run.kind != "run" or run.parameters.value().get("schema") != "stpd/stage1a-run-v1"
             or run.producer != model.producer
             or training_input.kind != "training_input"
+            or training_input.parameters.value().get("schema") != "stpd/stage1a-token-input-v1"
+            or [parent.role for parent in training_input.parents] != ["model_view"]
+            or training_input.parent("model_view") != view.artifact_id
             or not isinstance(run_config, dict)
             or model.parent("training_input") != run.parent("training_input")
             or model.parameters.value().get("config") != run_config
