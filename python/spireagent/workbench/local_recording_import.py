@@ -31,7 +31,8 @@ from spireagent.storage.registry import SQLiteRegistry, sync_registry
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.collection_tool_registration import current_collection_tool
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
-from spireagent.workbench.local_curation import OWNER_NAME, LocalCurationOwner
+from spireagent.workbench.inplace_curation import configured_owner
+from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.local_recordings import LocalRecordingCatalog
 from spireagent.workbench.local_workspace import open_registered_workspace
 from spireagent.workbench.managed_local_workspace import ROOT_NAME, inspect_managed_workspace
@@ -60,13 +61,12 @@ def _sync(store: ManifestArtifactStore, registry: SQLiteRegistry) -> None:
 
 def _selected_store(config: ProjectConfig) -> tuple[ManifestArtifactStore, SQLiteRegistry]:
     if config.research_workspace is not None:
-        # The same registered legacy workspace remains the selected destination.
+        # All profiles using this store must resolve its one persistent owner.
+        configured_owner(config)
         if open_registered_workspace(config.research_workspace) is None:
             raise BoundaryError("local_import", "workspace_required")
         store_dir = config.research_workspace.store_dir
         registry_path = config.research_workspace.registry_path
-        if (store_dir / OWNER_NAME).exists() or (store_dir / OWNER_NAME).is_symlink():
-            raise BoundaryError("local_import", "managed_store_owner_required")
     else:
         selected = inspect_managed_workspace(config.state_dir)
         if selected["status"] != "ready":
@@ -83,16 +83,15 @@ def _selected_store(config: ProjectConfig) -> tuple[ManifestArtifactStore, SQLit
 
 
 def _selected_curation_owner(config: ProjectConfig) -> LocalCurationOwner | None:
-    # Configured legacy stores have no provable historical use ledger. They remain
-    # importable evidence destinations, but cannot acquire a fresh curation owner.
     if config.research_workspace is not None:
-        return None
+        return configured_owner(config)
     selected = inspect_managed_workspace(config.state_dir)
     if selected["status"] != "ready":
         raise BoundaryError("local_import", "workspace_required")
-    if selected["curation_owner"] is None:
+    owner = selected["curation_owner"]
+    if not isinstance(owner, LocalCurationOwner):
         raise BoundaryError("local_import", "curation_owner_recovery_required")
-    return selected["curation_owner"]
+    return owner
 
 
 def _labels(config: ProjectConfig) -> dict[str, str]:

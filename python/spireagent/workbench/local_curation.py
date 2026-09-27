@@ -11,6 +11,7 @@ import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
 
 from spireagent.hub.database import create_private_database
 from spireagent.json_boundary import BoundaryError, digest
@@ -39,25 +40,35 @@ class LocalLedger(CurationLedger):
               gold_parents: tuple[str, ...] = (),
               require_inventory: bool = False, annotation_revision: int | None = None) -> None:
         # A local caller cannot accidentally omit the host's Gold inventory gate.
-        super().claim(identity, purpose, runs, gold_parents=gold_parents,
+        selected = tuple(runs)
+        owner = cast(LocalCurationOwner, self.operations)
+        if purpose == "gold" and owner.legacy_guard:
+            with self.operations.transaction() as db:
+                related = self._groups(db, set(selected))
+                if owner.gold_history_unknown(db, related):
+                    raise BoundaryError("local_curation", "legacy_gold_history_unknown")
+        super().claim(identity, purpose, selected, gold_parents=gold_parents,
                       require_inventory=require_inventory or purpose == "gold",
                       annotation_revision=annotation_revision)
 
 
 class LocalCurationOwner:
     def __init__(self, path: Path, store_dir: Path, workspace_id: str,
-                 ledger_id: str, store_id: str, *, create: bool = False) -> None:
+                 ledger_id: str, store_id: str, *, create: bool = False,
+                 allow_existing: bool = False, legacy_guard: bool = False,
+                 owner_schema: str = OWNER_SCHEMA) -> None:
         self.path = path
         self.store_dir = store_dir
         self.identity = (workspace_id, ledger_id, store_id, str(store_dir.resolve()))
         self._ledger: LocalLedger | None = None
         self._schema_ready = False
+        self.legacy_guard = legacy_guard
         if path.is_symlink() or store_dir.is_symlink() or not store_dir.is_dir():
             raise BoundaryError("local_curation", "owner_storage_invalid")
         owner_path = store_dir / OWNER_NAME
         try:
             if owner_path.is_symlink() or json.loads(owner_path.read_text()) != {
-                "schema": OWNER_SCHEMA, "workspace_id": workspace_id, "store_id": store_id,
+                "schema": owner_schema, "workspace_id": workspace_id, "store_id": store_id,
                 "ledger_id": ledger_id, "ledger_path": str(path.resolve()),
             }:
                 raise BoundaryError("local_curation", "store_identity_mismatch")
@@ -66,7 +77,7 @@ class LocalCurationOwner:
         if create:
             if path.exists():
                 raise BoundaryError("local_curation", "ledger_already_exists")
-            if tuple(ManifestArtifactStore(LocalBlobStore(
+            if not allow_existing and tuple(ManifestArtifactStore(LocalBlobStore(
                 store_dir, create=False, readonly=True)).manifest_ids()):
                 raise BoundaryError("local_curation", "existing_store_requires_recovery")
             create_private_database(path)
@@ -78,6 +89,8 @@ class LocalCurationOwner:
                 db.execute("CREATE TABLE local_source_pending("
                            "candidate TEXT PRIMARY KEY,artifact TEXT,status TEXT NOT NULL "
                            "CHECK(status IN ('publishing','published')))")
+                if allow_existing:
+                    db.execute("CREATE TABLE local_legacy_unknown_runs(run TEXT PRIMARY KEY)")
             self._ledger = LocalLedger(self, inventory_pending=self._inventory_pending)
             self._schema_ready = True
         else:
@@ -186,3 +199,11 @@ class LocalCurationOwner:
             "SELECT id FROM curation_sources WHERE complete=1")}
         return any(artifact not in indexed for artifact in store.manifest_ids()
                    if store.get_manifest(artifact).kind == "evidence")
+
+    def gold_history_unknown(self, db: sqlite3.Connection, runs: Iterable[str]) -> bool:
+        if not self.legacy_guard:
+            return False
+        if db.execute("SELECT 1 FROM local_legacy_unknown_runs WHERE run='*'").fetchone():
+            return True
+        return any(db.execute("SELECT 1 FROM local_legacy_unknown_runs WHERE run=?",
+                              (run,)).fetchone() for run in runs)

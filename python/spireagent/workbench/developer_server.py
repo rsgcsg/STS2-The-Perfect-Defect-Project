@@ -183,6 +183,7 @@ class Application:
         from spireagent.workbench.collection_flow import CollectionFlow
         from spireagent.workbench.collection_setup import CollectionSetup
         from spireagent.workbench.evaluation_sharing import EvaluationSharing
+        from spireagent.workbench.inplace_curation import InplaceCurationPreparation
         from spireagent.workbench.local_dataset import LocalDatasetService
         from spireagent.workbench.local_recording_import import LocalRecordingImporter
         from spireagent.workbench.local_recording_preview import LocalRecordingPreview
@@ -213,6 +214,7 @@ class Application:
         self.local_recording_import = LocalRecordingImporter(config, LocalRecordingCatalog(config))
         self.local_recording_preview = LocalRecordingPreview(self.local_research_workspace)
         self.local_datasets = LocalDatasetService(config)
+        self.local_curation_preparation = InplaceCurationPreparation(config)
         self.evaluation_sharing = EvaluationSharing(self.models, self.members)
         self.delivery_error: str | None = None
         self.collection_flow = CollectionFlow(
@@ -441,6 +443,20 @@ class Application:
         result.pop("workspace", None)
         result.pop("curation_owner", None)
         return result
+
+    def prepare_local_curation(self) -> dict[str, Any]:
+        if self.config_path is None or self.config.research_workspace is None:
+            raise BoundaryError("local_curation", "configured_workspace_required")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("local_curation", "running_instance_unavailable") from error
+        if (not isinstance(runtime, dict) or current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_curation", "running_configuration_mismatch")
+        return self.local_curation_preparation.start()
 
     def start_local_recording_import(self, candidate_id: object,
                                      human_origin_attested: object) -> dict[str, Any]:
@@ -681,6 +697,16 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
+            elif parsed.path == "/api/local-workspace/curation":
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                if parsed.query:
+                    self.respond(400, b'{"error":"invalid_local_curation_request"}')
+                    return
+                value = {**app.local_curation_preparation.status(),
+                         "csrf_token": app.account.csrf}
+                self.respond(200, json.dumps(value).encode())
             elif (parsed.path == "/api/local-workspace"
                     or parsed.path.startswith("/api/local-workspace/artifacts/")
                     or parsed.path == "/api/local-workspace/managed"):
@@ -822,6 +848,24 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(404, b"{}")
 
         def do_POST(self) -> None:
+            if self.path.startswith("/api/local-workspace/curation/"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                if self.path != "/api/local-workspace/curation/prepare":
+                    self.respond(404, b'{"error":"route_not_found"}')
+                    return
+                try:
+                    body = self.json_body(maximum=64)
+                    if body:
+                        raise ValueError
+                    value = app.prepare_local_curation()
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_local_curation_request"}')
+                return
             if self.path.startswith("/api/local-recordings/preview"):
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')

@@ -19,8 +19,10 @@ from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.registry import SQLiteRegistry, sync_registry
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
+from spireagent.workbench.inplace_curation import configured_owner
 from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.managed_local_workspace import ROOT_NAME, inspect_managed_workspace
+from stpd.fullrun.contracts import SourceProjection
 from stpd.fullrun.curated_dataset import SCHEMA as CURATED_SCHEMA
 from stpd.fullrun.curated_dataset import curate, load_selection, publish_selection
 from stpd.fullrun.decision_dataset import DecisionDataset, SelectionRules
@@ -106,7 +108,10 @@ class LocalDatasetService:
 
     def _selected(self) -> tuple[LocalCurationOwner, ManifestArtifactStore, Path]:
         if self.config.research_workspace is not None:
-            raise BoundaryError("local_dataset", "legacy_history_requires_explicit_migration")
+            owner = configured_owner(self.config)
+            configured = self.config.research_workspace
+            store = ManifestArtifactStore(LocalBlobStore(configured.store_dir, create=False))
+            return owner, store, configured.registry_path
         selected = inspect_managed_workspace(self.config.state_dir)
         if selected["status"] != "ready":
             raise BoundaryError("local_dataset", "workspace_required")
@@ -271,7 +276,7 @@ class LocalDatasetService:
         selected: DecisionDataset | None = None
         training: DecisionDataset | None = None
         try:
-            def projected(value) -> None:
+            def projected(value: SourceProjection) -> None:
                 if index_source:
                     owner.ledger.index_source(source_id, value)
 
@@ -316,7 +321,9 @@ class LocalDatasetService:
             related = owner.ledger._groups(db, selected.run_ids)
             claims = owner.ledger._claims(db, related)
             if purpose == "gold":
-                if owner._inventory_pending(db):
+                if owner.gold_history_unknown(db, related):
+                    conflict = "legacy_gold_history_unknown"
+                elif owner._inventory_pending(db):
                     conflict = "gold_source_inventory_pending"
                 elif any(kind != "gold" for kind, _ in claims.values()):
                     conflict = "gold_already_in_other_dataset"
