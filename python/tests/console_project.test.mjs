@@ -182,6 +182,12 @@ test("local research workspace browses the local API without project identity", 
     identity: {status: "signed_out"},
     view: "local-workspace",
     handler: async (url) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema: "stpd/managed-local-workspace-registration-v1",
+        status: "not_created",
+        orphaned_initializations: 0,
+        requires_cloud_account: false,
+      };
       if (url.startsWith("/api/local-workspace?")) return {
         schema: "stpd/local-workspace-inventory-v1",
         source: "configured_local_artifact_store",
@@ -201,8 +207,9 @@ test("local research workspace browses the local API without project identity", 
   assert.match(text(page), /本机资料/);
   assert.match(text(page), /dataset/);
   assert.match(text(page), /本机索引/);
-  assert.equal(env.calls.length, 1);
-  assert.equal(env.calls[0].url.startsWith("/api/local-workspace?"), true);
+  assert.equal(env.calls.length, 2);
+  assert.equal(env.calls[0].url === "/api/local-workspace/managed", true);
+  assert.equal(env.calls[1].url.startsWith("/api/local-workspace?"), true);
   assert.equal(env.calls[0].options.method || "GET", "GET");
 });
 
@@ -211,6 +218,12 @@ test("unconfigured local research workspace explains explicit registration", asy
     identity: {status: "signed_out"},
     view: "local-workspace",
     handler: async (url) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema: "stpd/managed-local-workspace-registration-v1",
+        status: "not_created",
+        orphaned_initializations: 0,
+        requires_cloud_account: false,
+      };
       assert.equal(url, "/api/local-workspace?limit=25&offset=0");
       return {
         schema: "stpd/local-workspace-status-v1",
@@ -220,24 +233,67 @@ test("unconfigured local research workspace explains explicit registration", asy
     },
   });
   const page = await env.render();
-  assert.match(text(page), /尚未连接本机资料库，不需要登录/);
-  assert.match(text(page), /登记已经存在的资料库和索引/);
+  assert.match(text(page), /新建本机工作空间/);
+  assert.match(text(page), /不会导入资料、开始训练或替换已连接的旧资料库/);
+  assert.match(text(page), /尚未建立本机资料空间/);
+  assert.equal(post(env.calls).length, 0);
 });
 
 test("empty local workspace reports zero items without an inverted range", async () => {
   const env = setup({
     identity: {status: "signed_out"},
     view: "local-workspace",
-    handler: async () => ({
+    handler: async (url) => url === "/api/local-workspace/managed" ? {
+      schema: "stpd/managed-local-workspace-registration-v1",
+      status: "ready",
+      workspace_id: "c".repeat(32),
+      created_at: "2026-09-27T00:00:00+00:00",
+    } : {
       schema: "stpd/local-workspace-inventory-v1",
       source: "configured_local_artifact_store",
       total: 0,
       items: [],
-    }),
+    },
   });
   const page = await env.render();
   assert.match(text(page), /共 0 项/);
   assert.doesNotMatch(text(page), /1–0/);
+});
+
+test("explicit local workspace create uses the browser session and empty command body", async () => {
+  let created = false;
+  const env = setup({
+    identity: {status: "signed_out", csrf_token: "browser-csrf"},
+    view: "local-workspace",
+    handler: async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema: "stpd/managed-local-workspace-registration-v1",
+        status: created ? "ready" : "not_created",
+        orphaned_initializations: 0,
+      };
+      if (url === "/api/local-workspace/managed/create") {
+        created = true;
+        return {
+        schema: "stpd/managed-local-workspace-registration-v1",
+        status: "ready",
+        workspace_id: "d".repeat(32),
+        };
+      }
+      if (url === "/api/local-workspace?limit=25&offset=0") return created
+        ? {schema: "stpd/local-workspace-inventory-v1", total: 0, items: []}
+        : {schema: "stpd/local-workspace-status-v1", status: "not_configured"};
+      throw new Error(`unexpected route ${url} ${options.method}`);
+    },
+  });
+  const page = await env.render();
+  await action(page, "create-managed-local-workspace").onclick();
+  const writes = post(env.calls);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, "/api/local-workspace/managed/create");
+  assert.deepEqual(body(writes[0]), {});
+  assert.equal(writes[0].options.headers["X-CSRF-Token"], "browser-csrf");
+  assert.equal(writes[0].options.credentials, "same-origin");
+  assert.equal(env.reloads, 1);
 });
 const template = {
   template_id: id("b"),
