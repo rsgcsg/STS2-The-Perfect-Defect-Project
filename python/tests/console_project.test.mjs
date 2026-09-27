@@ -801,7 +801,7 @@ test("offline evaluation detail reads one exact dev recorded-report summary", as
         qualification:"not_claimed", scientific_verdict:"not_claimed",
         validation_scope:"recorded_report_and_parent_identities", decision_count:12,
         reported_run_groups:2, multi_candidate_count:8,
-        overall:{count:12, top1:0.5, mrr:0.7, nll:0.9, confidence:0.4, margin:0.2},
+        overall:{count:12, top1:0.123456, mrr:0.7, nll:0.9, confidence:0.4, margin:0.2},
         interpretation:"producer_recorded_summary_not_full_lineage_or_quality_verification",
       };
       throw new Error(`unexpected route ${url}`);
@@ -812,6 +812,13 @@ test("offline evaluation detail reads one exact dev recorded-report summary", as
   assert.match(text(page), /未重新核验原始数据、模型权重或完整训练来源/);
   assert.match(text(page), /记录中的对局分组数（未复核独立性）/);
   assert.match(text(page), /总体记录指标/);
+  assert.match(text(page), /首选命中率（非胜率，Top-1）/);
+  assert.match(text(page), /0\.1235/);
+  assert.doesNotMatch(text(page), /0\.123456/);
+  assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${id("a")}`).textContent,
+    `查看本机模型 · ${id("a").slice(0, 16)}`);
+  assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${id("b")}`).textContent,
+    `查看本机模型视图 · ${id("b").slice(0, 16)}`);
   assert.equal(env.calls.filter(call => call.url === `/api/local-workspace/evaluations/${evaluation}`).length, 1);
   assert.equal(post(env.calls).length, 0);
 });
@@ -820,6 +827,7 @@ test("offline evaluation detail never requests sealed-test or unknown-partition 
   for (const [parameters, message] of [
     [{schema:"stpd/offline-ranking-evaluation-v1", partition:"test"}, /封存测试评估不会在此读取或展示/],
     [{schema:"future/evaluation-v8", partition:"unknown"}, /未标明可展示的开发集分区/],
+    [{schema:"future/evaluation-v8", partition:"dev"}, /格式暂不支持指标摘要/],
   ]) {
     const evaluation = id("d");
     const env = setup({

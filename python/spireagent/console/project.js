@@ -2513,12 +2513,14 @@ window.SpireProject = (() => {
 
   function offlineEvaluationMetrics(value) {
     const metrics = value && typeof value === "object" ? value : {};
-    const number = key => Number.isFinite(metrics[key]) ? String(metrics[key]) : "未知";
+    const number = key => Number.isFinite(metrics[key])
+      ? new Intl.NumberFormat("zh-CN", {maximumFractionDigits:4, useGrouping:false}).format(metrics[key])
+      : "未知";
     return fields([
       ["样本数", number("count")],
-      ["Top-1", number("top1")],
-      ["MRR", number("mrr")],
-      ["NLL", number("nll")],
+      ["首选命中率（非胜率，Top-1）", number("top1")],
+      ["平均倒数排名（MRR）", number("mrr")],
+      ["负对数似然（NLL）", number("nll")],
       ["置信度", number("confidence")],
       ["边际", number("margin")],
     ]);
@@ -2537,10 +2539,15 @@ window.SpireProject = (() => {
       summary.append(el("p", "该对象未标明可展示的开发集分区；未请求评估摘要。", "small muted"));
       return summary;
     }
+    if (schema !== "stpd/offline-ranking-evaluation-v1") {
+      summary.append(el("p", "该开发集评估格式暂不支持指标摘要；此处仅显示对象metadata。", "small muted"));
+      return summary;
+    }
     try {
       const value = await request(ctx, `/api/local-workspace/evaluations/${artifact.artifact_id}`);
       if (value.schema !== "stpd/local-offline-evaluation-summary-v1"
           || value.evaluation_id !== artifact.artifact_id
+          || value.evaluation_schema !== schema
           || value.partition !== "dev"
           || value.validation_scope !== "recorded_report_and_parent_identities"
           || value.interpretation !== "producer_recorded_summary_not_full_lineage_or_quality_verification") {
@@ -2559,6 +2566,10 @@ window.SpireProject = (() => {
         ["多候选决策数", count(value.multi_candidate_count)],
         ["基准", value.baseline || "未知"],
       ]));
+      const related = el("div", null, "project-actions");
+      if (hex(value.model_id)) related.append(link(`查看本机模型 · ${value.model_id.slice(0, 16)}`, route("local-workspace", value.model_id)));
+      if (hex(value.model_view_id)) related.append(link(`查看本机模型视图 · ${value.model_view_id.slice(0, 16)}`, route("local-workspace", value.model_view_id)));
+      if (related.children.length) summary.append(el("h3", "关联对象"), related);
       summary.append(el("h3", "总体记录指标"), offlineEvaluationMetrics(value.overall));
       if (value.baselines && typeof value.baselines === "object") {
         for (const [key, label] of [["uniform_legal", "均匀合法动作基准"], ["action_only", "仅动作基准"]]) {
