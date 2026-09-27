@@ -29,7 +29,8 @@ from .text_menu_inputs import IDENTITY, project_text_menu_snapshot
 
 EVIDENCE_SCHEMA = "stpd/verified-human-text-input-bundle-v1"
 SOURCE_SCHEMA = "stpd/human-text-input-source-v1"
-VIEW_SCHEMA = "stpd/human-text-input-bc-view-v1"
+LEGACY_VIEW_SCHEMA = "stpd/human-text-input-bc-view-v1"
+VIEW_SCHEMA = "stpd/human-text-input-bc-view-v2"
 ROW_SCHEMA = "sts2.human-annotator/human-text-input-1"
 MAX_BUNDLES = 256
 MAX_ROWS = 100000
@@ -188,8 +189,12 @@ def load_human_text_source(
     return manifest, rows
 
 
-def _project(rows: tuple[dict, ...]) -> tuple[tuple[ModelSample, ...], dict]:
+def _project(
+    rows: tuple[dict, ...], *, schema: str = VIEW_SCHEMA,
+) -> tuple[tuple[ModelSample, ...], dict]:
     """Project rows from the typed verifier; native mechanism validation is its job."""
+    if schema not in {VIEW_SCHEMA, LEGACY_VIEW_SCHEMA}:
+        raise BoundaryError("human_text_import", "unsupported_view")
     parent: dict[str, str] = {}
     inputs: dict[str, str] = {}
     accepted: list[tuple[dict, Any, str]] = []
@@ -268,12 +273,18 @@ def _project(rows: tuple[dict, ...]) -> tuple[tuple[ModelSample, ...], dict]:
     begin_only = all(row["chosen_action"]["verb"] == "begin_card_play"
                      for row, _, _ in accepted)
     return tuple(samples), {
-        "schema": VIEW_SCHEMA, "serializer": IDENTITY,
+        "schema": schema, "serializer": IDENTITY,
         "label_boundary": ("owner_attested_human_exact_native_begin_input" if begin_only
                            else "owner_attested_human_exact_native_input"),
         "human_origin": "explicit_owner_attestation_not_machine_verifiable",
         "native_successor_supervision": False,
-        "split_basis": "whole_session_run_and_duplicate_visible_current_input",
+        "split_basis": (
+            "recording_session_group_with_duplicate_visible_current_input_collapse"
+            if schema == VIEW_SCHEMA else
+            "whole_session_run_and_duplicate_visible_current_input"
+        ),
+        **({"native_run_independence": "unknown_across_sessions"}
+           if schema == VIEW_SCHEMA else {}),
         "rows": report_rows,
     }
 
@@ -305,9 +316,12 @@ def load_human_text_bc_view(
             or [p.role for p in manifest.parents] != ["dataset"]
             or sorted(p.role for p in manifest.payloads) != ["lineage", "samples"]):
         raise BoundaryError("human_text_import", "unsupported_view")
+    schema = manifest.parameters.value().get("schema")
+    if schema not in {VIEW_SCHEMA, LEGACY_VIEW_SCHEMA}:
+        raise BoundaryError("human_text_import", "unsupported_view")
     source, rows = load_human_text_source(store, manifest.parent("dataset"))
-    samples, report = _project(rows)
-    expected = {"schema": VIEW_SCHEMA, "serializer": IDENTITY, "scope": "engineering",
+    samples, report = _project(rows, schema=schema)
+    expected = {"schema": schema, "serializer": IDENTITY, "scope": "engineering",
                 "samples": len(samples), "source_digest": source.parameters.value()[
                     "source_digest"],
                 "label_boundary": report["label_boundary"]}
