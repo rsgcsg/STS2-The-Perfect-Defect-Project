@@ -328,7 +328,13 @@ export class PolicyRuntime {
     }
     const admission = admitWholeDecisionBundle(bundle, this.options.manifest);
     if (!admission.admitted) {
-      if (this.mode === "auto" && bundle.observation.status !== "settling") await this.releaseControllerAndReturnHuman();
+      if (this.mode === "auto" && bundle.observation.status !== "settling") {
+        if (textMenu && !(await this.appendEvidence("text_observation_not_admitted", { reason: admission.reason, snapshot: bundle.observation }))) {
+          await this.failClosed("agent_evidence_nonadmitted_observation_write_failed");
+          return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
+        }
+        await this.releaseControllerAndReturnHuman();
+      }
       return { type: "not_admitted", reason: admission.reason, status: this.status() };
     }
     if (this.mode === "shadow" && this.lastPolicySnapshotId === bundle.observation.snapshot_id) {

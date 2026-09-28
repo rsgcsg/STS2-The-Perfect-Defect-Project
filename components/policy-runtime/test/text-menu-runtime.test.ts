@@ -49,6 +49,68 @@ function result(requestId: string, action: TextMenuAction, successor: TextMenuSn
 }
 
 describe("text menu Runtime opt-in", () => {
+  it("records an unsupported interactive terminal page before Auto hands control to Human", async () => {
+    const page = decodeTextMenuSnapshot({ ...frame(1, "root", [{ ...native, action_id: "game-over-advance", verb: "activate", label: "Continue" }]),
+      interaction: { interaction_id: "game-over", kind: "game_over", stage: "intro", content_schema: "sts2.player-environment/surface/game_over-1",
+        content: { surface: { kind: "game_over", stage: "intro", screen_entity_id: "game-over-screen", return_destination: null, can_advance_summary: true, can_return: false, other_controls: [] },
+          context: { kind: "game_over", result: "loss", game_mode: "standard", score: null, floor_reached: null, ascension: null } },
+        capabilities: [{ verb: "activate", subject_role: null, arguments: [], availability_basis: "exact_current_text_menu" }] }
+    }).data;
+    const events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    const acquire = vi.fn(async () => {}), submit = vi.fn(async () => { throw new Error("unexpected submit"); }), score = vi.fn();
+    const supported = manifest();
+    supported.support.action_verbs.push("activate");
+    const runtime = new PolicyRuntime({ manifest: supported, mode: "auto", runId: "unadmitted-terminal",
+      connector: { capabilities: async () => ({ ...capabilities(), verbs: ["activate"] }), observeBundle: async () => ({ observation: page, reads: [] }), acquireController: acquire, releaseController: vi.fn(async () => {}), submit },
+      evidence: { append: async (kind: string, payload: Record<string, unknown>) => { events.push({ kind, payload }); } } as never,
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) }, policy: score });
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "unsupported_interaction_kind" });
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "released", tainted: false });
+    expect(score).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    expect(events.map(event => event.kind)).toEqual(["environment_admitted", "text_observation_not_admitted", "handoff_to_human"]);
+    expect(events[1]?.payload).toEqual({ reason: "unsupported_interaction_kind", snapshot: page });
+  });
+
+  it("does not record repeated settling observations or identity-mismatched pages", async () => {
+    const base = frame(1, "root", []);
+    const settling: TextMenuSnapshot = { ...base, status: "settling", menu_actions: { ...base.menu_actions, status: "unavailable" } };
+    const events: string[] = [];
+    let current = settling;
+    const score = vi.fn(), acquire = vi.fn(), submit = vi.fn();
+    const runtime = new PolicyRuntime({ manifest: manifest(), mode: "auto", runId: "settling-reject",
+      connector: { capabilities: async () => capabilities(), observeBundle: async () => ({ observation: current, reads: [] }), acquireController: acquire, releaseController: vi.fn(), submit },
+      evidence: { append: async (kind: string) => { events.push(kind); } } as never,
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) }, policy: score });
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "snapshot_settling" });
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "snapshot_settling" });
+    expect(events).toEqual(["environment_admitted"]);
+    expect(runtime.status().mode).toBe("auto");
+    current = { ...frame(2, "root", [native]), session: { ...base.session, environment_fingerprint: "foreign" } };
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "environment_identity_drift" });
+    expect(events).not.toContain("text_observation_not_admitted");
+    expect(score).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("fails closed if a rejected text observation cannot be recorded", async () => {
+    const current = frame(1, "root", [{ ...native, verb: "unsupported_verb" }]);
+    const events: string[] = [];
+    const score = vi.fn(), acquire = vi.fn(), submit = vi.fn();
+    const runtime = new PolicyRuntime({ manifest: manifest(), mode: "auto", runId: "rejected-write-failure",
+      connector: { capabilities: async () => capabilities(), observeBundle: async () => ({ observation: current, reads: [] }), acquireController: acquire, releaseController: vi.fn(), submit },
+      evidence: { append: async (kind: string) => { events.push(kind); if (kind === "text_observation_not_admitted") throw new Error("disk full"); } } as never,
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) }, policy: score });
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "agent_evidence_write_failed" });
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "released" });
+    expect(events).toEqual(["environment_admitted", "text_observation_not_admitted", "fail_closed"]);
+    expect(score).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   it("continues a confirmed card through a complete native pile selector and back to combat", async () => {
     const action = (id: string, verb: string, subject: string | null = null): TextMenuAction => ({ ...native, action_id: id, verb, label: id, subject_referent_id: subject });
     const begin = action("begin-card", "begin_card_play", "held-card");

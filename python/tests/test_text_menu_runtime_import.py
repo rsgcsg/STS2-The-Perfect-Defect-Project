@@ -68,6 +68,28 @@ def test_correlated_native_delivery_keeps_current_input_and_exact_request():
     assert report["outcomes"] == {"applied": 1}
 
 
+def test_verified_nonadmitted_terminal_observation_archives_without_training_row(
+    tmp_path, verified_fixture,
+):
+    directory = verified_fixture._text_evidence("text-observation-only")
+    events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+    snapshot = verified_fixture._game_over_intro(
+        events[1]["payload"]["snapshot"], "loss")
+    observation = {"schema": events[0]["schema"], "sequence": 2,
+                   "recorded_at": events[0]["recorded_at"],
+                   "kind": "text_observation_not_admitted",
+                   "payload": {"reason": "unsupported_interaction_kind", "snapshot": snapshot}}
+    verified_fixture._rewrite_events(directory, [events[0], observation])
+    target = store(tmp_path)
+    evidence, source, report = publish_verified_text_menu_run(
+        target, directory, PRODUCER, admit_agent=True)
+    assert source is None
+    assert report["rows"] == 0
+    assert report["outcomes"] == {}
+    archived = load_verified_agent_run_events(target, evidence.artifact_id)
+    assert archived.events[1]["kind"] == "text_observation_not_admitted"
+
+
 def test_dispatch_without_result_is_diagnostic_and_never_a_label():
     rows, report = _trace_rows(_events(outcome=False), "agent-run", "evidence-content")
     assert rows == ()

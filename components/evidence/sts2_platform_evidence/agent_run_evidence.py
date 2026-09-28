@@ -368,6 +368,7 @@ _EVENT_KINDS = {
     "runtime_tainted",
     "stopped",
     "text_decision_input",
+    "text_observation_not_admitted",
     "text_menu_dispatch_attempt",
     "menu_navigation",
     "text_native_delivery",
@@ -449,6 +450,20 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 raise AgentRunEvidenceError("text_input_incomplete", "text decision requires a complete executable menu", _EVENTS_FILE)
             text_inputs[decision_id] = snapshot
             pending_text_input = decision_id
+        elif kind == "text_observation_not_admitted":
+            if environment is None:
+                raise AgentRunEvidenceError("environment_identity_order", "nonadmitted text observation requires environment admission", _EVENTS_FILE)
+            _exact_keys(payload, {"reason", "snapshot"}, "text_observation_not_admitted payload")
+            reason = _text(payload, "reason", _EVENTS_FILE)
+            snapshot = _object(payload["snapshot"], "nonadmitted text snapshot")
+            _verify_text_snapshot(snapshot, environment, "nonadmitted text snapshot")
+            if snapshot["status"] == "settling":
+                raise AgentRunEvidenceError("text_observation_admission", "settling observations are not recorded as rejection events", _EVENTS_FILE)
+            if snapshot["status"] != "interactive":
+                if reason != f"snapshot_{snapshot['status']}":
+                    raise AgentRunEvidenceError("text_observation_admission", "noninteractive observation reason differs from status", _EVENTS_FILE)
+            elif reason not in {"snapshot_incomplete", "complete_catalog_required", "duplicate_action_id", "unsupported_interaction_kind", "unsupported_action_verb"}:
+                raise AgentRunEvidenceError("text_observation_admission", "interactive observation has an invalid rejection reason", _EVENTS_FILE)
         elif kind == "environment_admitted":
             environment = _verify_environment_admission(payload, manifest)
         elif kind == "stale_whole_bundle_discarded":

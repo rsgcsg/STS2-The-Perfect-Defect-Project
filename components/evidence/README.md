@@ -3,6 +3,16 @@
 This component verifies typed immutable artifacts and moves their bytes without
 owning gameplay, Human action, or research semantics.
 
+Evidence `0.1.0-rc.18` verifies the additive
+`text_observation_not_admitted` Agent-run event against a prior admitted
+environment and the strict text-menu snapshot contract. Its reason and snapshot
+are observation evidence only, with no decision, delivery or successor binding.
+The reason is a Runtime-reported diagnostic, not an independently recomputed
+admission decision. Verification does not grant action authority.
+Older finalized runs remain readable. A verifier pinned to an earlier strict
+Evidence version rejects runs containing this new event, so consumers must pin
+the rc.18 candidate before claiming verification of such runs.
+
 ```text
 producer bundle
   -> typed verifier
