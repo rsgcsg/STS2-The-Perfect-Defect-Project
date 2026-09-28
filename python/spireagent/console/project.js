@@ -433,7 +433,7 @@ window.SpireProject = (() => {
       evaluation_id:state.evaluation?.evaluation_id});
   }
   const modelWatchNeeded = (state) => state?.operation?.status === "pending" ||
-    (state?.loaded === true && ["auto", "shadow", "one_step"].includes(state.runtime?.mode));
+    (state?.loaded === true && state.runtime?.lifecycle === "running");
   function scheduleModelWatch(watch) {
     if (modelWatch !== watch || !live(watch.ctx)) return;
     if (watch.remaining === 0 || Date.now() >= watch.deadlineAt) {
@@ -446,6 +446,10 @@ window.SpireProject = (() => {
     watch.timer = null;
     const ctx = watch.ctx;
     if (modelWatch !== watch || !live(ctx)) return;
+    if (watch.remaining === 0 || Date.now() >= watch.deadlineAt) {
+      scheduleModelWatch(watch);
+      return;
+    }
     watch.remaining--;
     let next;
     try {
@@ -487,7 +491,7 @@ window.SpireProject = (() => {
     watch.budgetHost = budgetHost;
     watch.timer = null;
     modelWatch = watch;
-    if (watch.remaining > 0) scheduleModelWatch(watch);
+    scheduleModelWatch(watch);
   }
   function fields(rows) {
     const list = el("dl", null, "fact-list");
@@ -3967,7 +3971,8 @@ window.SpireProject = (() => {
   }
   return {
     reload: async () => {},
-    refresh: async view => view === "datasets" ? refreshDataset() : false,
+    refresh: async view => view === "datasets" ? refreshDataset() :
+      view === "local-models" && current?.view === view && live(current),
     openDatasetLibrary() {
       drafts.set("dataset-tab", "library");
       if (window.SpireProject.navigate) window.SpireProject.navigate("datasets");
@@ -3989,6 +3994,7 @@ window.SpireProject = (() => {
         datasetReads.clear(); datasetReadEpoch++;
       }
       const ctx = {
+        view,
         account,
         key: `${account}:${view}:${location.search}`,
         identity,
