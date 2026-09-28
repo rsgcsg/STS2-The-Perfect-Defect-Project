@@ -184,6 +184,89 @@ def test_one_slot_across_profiles_and_unknown_restart(tmp_path: Path, monkeypatc
         contender.start("a" * 64)
 
 
+@pytest.mark.parametrize("terminal", ["completed", "failed", "pending", "corrupt", "missing"])
+def test_status_rechecks_journal_after_parent_releases_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str,
+) -> None:
+    config, dataset_id, _, store = _ready(tmp_path, monkeypatch)
+    owner = configured_owner(config)
+    service = LocalTrainingService(config)
+    entered, finish = threading.Event(), threading.Event()
+    launches = []
+
+    def finish_operation(held, path, identity, _owner, _store):
+        launches.append(identity)
+        try:
+            entered.set()
+            assert finish.wait(10)
+            if terminal == "completed":
+                service._advance(path, identity, status="completed", stage="completed",
+                                 run_id="a" * 64, result_id="b" * 64,
+                                 model_id="c" * 64, evaluation_id="d" * 64)
+            elif terminal == "failed":
+                service._advance(path, identity, status="failed",
+                                 error_code="synthetic_preparation_failed")
+            elif terminal == "corrupt":
+                path.write_bytes(b"{incomplete")
+            elif terminal == "missing":
+                path.unlink()
+        finally:
+            held.__exit__(None, None, None)
+
+    monkeypatch.setattr(service, "_run", finish_operation)
+    started = service.start(dataset_id)["operation"]
+    try:
+        assert entered.wait(5)
+        original_read = service._read
+        first_read = True
+
+        def read_before_parent_finishes(path, identity):
+            nonlocal first_read
+            value = original_read(path, identity)
+            if first_read:
+                first_read = False
+                assert value["status"] == "pending"
+                # The observer has read pending. The real supervising lock is
+                # released only after the terminal journal write, before its probe.
+                finish.set()
+                assert service._thread is not None
+                service._thread.join(timeout=10)
+                assert not service._thread.is_alive()
+            return value
+
+        monkeypatch.setattr(service, "_read", read_before_parent_finishes)
+        manifests_before = tuple(store.manifest_ids())
+        observed = service.status()
+        journal = owner.path.parent / OPERATION_FILE
+        durable = journal.read_bytes() if journal.exists() else None
+        if terminal in {"corrupt", "missing"}:
+            assert observed["availability"] == "recovery_required", observed
+            assert observed["reason"] == "operation_recovery_required"
+        else:
+            operation = observed["operation"]
+            assert operation["operation_id"] == started["operation_id"]
+            if terminal == "pending":
+                assert operation["status"] == "interrupted_unknown"
+                assert operation["error_code"] == "previous_training_outcome_unknown"
+                assert json.loads(durable)["status"] == "pending"
+            else:
+                assert operation["status"] == terminal, observed
+                if terminal == "completed":
+                    assert operation["result_id"] == "b" * 64
+                else:
+                    assert operation["error_code"] == "synthetic_preparation_failed"
+        if terminal != "missing":
+            assert service.status() == observed
+        assert (journal.read_bytes() if journal.exists() else None) == durable
+        assert tuple(store.manifest_ids()) == manifests_before
+        assert launches == [started["operation_id"]]
+    finally:
+        finish.set()
+        if service._thread is not None:
+            service._thread.join(timeout=10)
+            assert not service._thread.is_alive()
+
+
 def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -370,7 +453,7 @@ def test_http_explicit_start_tracks_exact_completed_run_without_get_replay(
             if current["status"] != "pending":
                 break
             time.sleep(0.05)
-        assert current["status"] == "completed", current
+        assert current["status"] == "completed", json.dumps(current, sort_keys=True)
         assert current["operation_id"] == operation_id
         result = store.get_manifest(current["result_id"])
         assert result.parent("run") == current["run_id"]

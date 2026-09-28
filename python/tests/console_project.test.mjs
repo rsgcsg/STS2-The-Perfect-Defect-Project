@@ -3117,7 +3117,12 @@ test("cloud export links are fixed same-origin file identities and malformed ide
 function modelHandler(url, options) {
   if (url === "/api/local-models")
     return {
-      policies: [{ selection_id: "audited-cpu", label: "Reviewed CPU" }],
+      policies: [{ selection_id: "audited-cpu", label: "Reviewed CPU",
+        default_run_profile:"short", run_profiles:[
+          {id:"short", label:"短局", limits:{max_submissions:16, max_policy_calls:32, deadline_ms:60000}},
+          {id:"extended", label:"较长局（最多 30 分钟）", limits:{max_submissions:2000,
+            max_policy_calls:4000, deadline_ms:1800000}},
+        ]}],
       downloaded_models: [],
       evaluations: [],
     };
@@ -3153,8 +3158,122 @@ test("runtime prepares one trusted selection with optional diagnosis and no impl
   assert.match(text(page), /不代表模型已经加载/);
   await action(page, "model-start-audited-cpu").onclick();
   assert.equal(post(env.calls)[0].url, "/api/local-models/prepare");
-  assert.deepEqual(body(post(env.calls)[0]), { selection_id: "audited-cpu" });
+  assert.deepEqual(body(post(env.calls)[0]), { selection_id: "audited-cpu", run_profile:"short" });
   assert.match(text(env.notice), /尚需完成实际加载/);
+});
+
+test("run profile is bound to the exact selection before load and never starts Auto", async () => {
+  const profiles = modelHandler("/api/local-models", {method:"GET"}).policies[0];
+  let status = {status:"idle", loaded:false, operation:null};
+  const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) => {
+    if (url === "/api/local-models") return {policies:[
+      {...profiles, selection_id:"audited-cpu", label:"Same model"},
+      {...profiles, selection_id:"second-cpu", label:"Same model"},
+    ], downloaded_models:[], evaluations:[]};
+    if (url === "/api/local-models/status") return status;
+    if (url === "/api/local-models/prepare") {
+      status = {status:"loading", loaded:false, selection_id:"second-cpu",
+        run_profile:"extended", operation:{id:"prepare-2", action:"prepare-and-load", status:"pending"}};
+      return status;
+    }
+    return emptyList();
+  }});
+  let page = await env.render();
+  assert.equal(field(page, "model-run-profile-audited-cpu").value, "short");
+  const chosen = field(page, "model-run-profile-second-cpu");
+  chosen.value = "extended"; chosen.onchange();
+  page = await env.render();
+  assert.equal(field(page, "model-run-profile-audited-cpu").value, "short");
+  assert.equal(field(page, "model-run-profile-second-cpu").value, "extended");
+  await action(page, "model-start-second-cpu").onclick();
+  assert.deepEqual(body(post(env.calls)[0]), {selection_id:"second-cpu", run_profile:"extended"});
+  assert.equal(post(env.calls).length, 1);
+  assert.equal(action(env.livePage, "model-command-auto").disabled, true);
+  status = {status:"loaded", loaded:true, selection_id:"second-cpu", run_profile:"extended",
+    operation:{id:"prepare-2", action:"prepare-and-load", status:"completed"},
+    runtime:{run_id:"run-2", lifecycle:"running", mode:"human", controller:"released",
+      tainted:false, errors:[]}};
+  await env.advanceTimer();
+  assert.equal(field(env.livePage, "model-run-profile-second-cpu").disabled, true);
+  assert.match(text(env.livePage), /较长局/);
+  assert.equal(post(env.calls).length, 1, "loading and read-only convergence cannot enter Auto");
+});
+
+test("unknown run profile cannot become a prepare command or leak its label", async () => {
+  const env = setup({view:"local-models", handler:(url, options) => {
+    if (url === "/api/local-models") return {policies:[{selection_id:"audited-cpu",
+      label:"Reviewed CPU", default_run_profile:"future-secret",
+      run_profiles:[{id:"future-secret", label:"/private/secret", limits:null}]}],
+      downloaded_models:[], evaluations:[]};
+    return modelHandler(url, options);
+  }});
+  const page = await env.render();
+  assert.equal(action(page, "model-start-audited-cpu").disabled, true);
+  assert.doesNotMatch(text(page), /\/private\/secret/);
+  await action(page, "model-start-audited-cpu").onclick();
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("a legacy short-only choice and an unknown loaded profile stay distinct", async () => {
+  const env = setup({view:"local-models", handler:(url, options) => {
+    if (url === "/api/local-models") return {policies:[{selection_id:"legacy-cpu",
+      label:"Old model", default_run_profile:"short", run_profile_unavailable_reason:
+        "extended_requires_text_menu_runtime", run_profiles:[{id:"short", label:"默认短局", limits:null}]}],
+      downloaded_models:[], evaluations:[]};
+    if (url === "/api/local-models/status") return {status:"loaded", loaded:true,
+      selection_id:"legacy-cpu", run_profile:"/private/secret", operation:null,
+      runtime:{run_id:"run-1", lifecycle:"running", mode:"human", controller:"released",
+        tainted:false, errors:[]}};
+    return modelHandler(url, options);
+  }});
+  const page = await env.render();
+  assert.match(text(page), /运行配置未能核对/);
+  assert.match(text(page), /较长局需要文本菜单运行环境/);
+  assert.equal(field(page, "model-run-profile-legacy-cpu").disabled, true);
+  assert.equal(action(page, "model-start-legacy-cpu").disabled, true);
+  assert.doesNotMatch(text(page), /\/private\/secret/);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("verified report shows action, delivery and budget facts without claiming a game outcome", async () => {
+  const evaluation = {evaluation_id:id("e"), selection_id:"audited-cpu", run_id:"run-1",
+    evidence_verification:"pass", event_count:12, game_outcome:"not_measured",
+    recorded_action_verbs:{select:5, confirm:2}, native_submission_attempts:7,
+    delivery_counts:{delivered:6, unknown:1}, budget_end_reason:"submission_attempt_limit",
+    terminal_screen_observation:{status:"observed", result:"win", observation_count:1,
+      first_event_sequence:11, last_event_sequence:11},
+    budget_summary:{state:"exhausted", max_submissions:16, submissions_used:16,
+      max_policy_calls:32, policy_calls_used:20, deadline_ms:60000, elapsed_ms:45000,
+      exhausted_reason:"submission_attempt_limit", ended_reason:null}};
+  const env = setup({view:"evaluations", handler:url =>
+    url === "/api/local-models" ? {evaluations:[evaluation]} : emptyList()});
+  const page = await env.render();
+  assert.match(text(page), /select\s+5/);
+  assert.match(text(page), /delivered\s+6/);
+  assert.match(text(page), /自主提交次数已到限额/);
+  assert.match(text(page), /本次记录观察到的结局页\s+胜利/);
+  assert.match(text(page), /游戏结果\s+未测量/);
+  assert.match(text(page), /不证明模型从开局完成整局/);
+  evaluation.budget_end_reason = "/private/secret";
+  evaluation.recorded_action_verbs = null;
+  evaluation.terminal_screen_observation = {status:"ambiguous", result:null,
+    observation_count:2, first_event_sequence:11, last_event_sequence:12};
+  const unknown = await env.render();
+  assert.match(text(unknown), /未从已验证证据确认/);
+  assert.match(text(unknown), /本次记录观察到的结局页\s+信息冲突/);
+  assert.doesNotMatch(text(unknown), /\/private\/secret/);
+  delete evaluation.terminal_screen_observation;
+  assert.match(text(await env.render()), /旧报告未提供此项观测/);
+  evaluation.terminal_screen_observation = null;
+  assert.match(text(await env.render()), /本次记录观察到的结局页\s+未观察到/);
+  evaluation.evidence_verification = "failed";
+  evaluation.recorded_action_verbs = {select:5};
+  evaluation.budget_end_reason = "deadline";
+  evaluation.terminal_screen_observation = {status:"observed", result:"loss",
+    observation_count:1, first_event_sequence:12, last_event_sequence:12};
+  const failed = text(await env.render());
+  assert.match(failed, /证据未通过核验/);
+  assert.doesNotMatch(failed, /select\s+5|自主运行时间已到限额|本次记录观察到的结局页\s+失败/);
 });
 
 test("accepted model load converges from pending by read-only status without another click", async () => {
@@ -4277,6 +4396,8 @@ test("active budget with Human mode or stopped lifecycle is unknown without affe
 });
 
 test("old or unrecognized Runtime budget data is not replaced with a default or echoed", async () => {
+  const budgetText = page => text(find(page, node => node.tagName === "SECTION" &&
+    node.children[0]?.textContent === "本次自主操作预算"));
   const state = {
     status: "loaded", loaded: true,
     runtime: {lifecycle: "running", mode: "human", controller: "released",
@@ -4285,8 +4406,8 @@ test("old or unrecognized Runtime budget data is not replaced with a default or 
   const env = setup({view: "local-models", handler: url =>
     url === "/api/local-models/status" ? state : modelHandler(url)});
   let page = await env.render();
-  assert.match(text(page), /此 Runtime 未提供预算信息/);
-  assert.doesNotMatch(text(page), /16|32|60 秒/);
+  assert.match(budgetText(page), /此 Runtime 未提供预算信息/);
+  assert.doesNotMatch(budgetText(page), /16|32|60 秒/);
 
   state.runtime.autonomy_budget = {state: "private-path-leak", submissions_used: 999};
   page = await env.render();

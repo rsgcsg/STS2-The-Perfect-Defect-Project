@@ -122,7 +122,13 @@ def test_loopback_models_and_member_actions_need_correct_credential(tmp_path, mo
     monkeypatch.setattr(
         app.models,
         "prepare_and_load",
-        lambda selection: calls.append("prepare:" + selection) or {"status": "pending"},
+        lambda selection, profile="short": calls.append("prepare:" + selection + ":" + profile)
+        or {"status": "pending"},
+    )
+    monkeypatch.setattr(
+        app.models, "start",
+        lambda selection, profile="short": calls.append("start:" + selection + ":" + profile)
+        or {"status": "pending"},
     )
     monkeypatch.setattr(
         app.evaluation_sharing,
@@ -159,6 +165,8 @@ def test_loopback_models_and_member_actions_need_correct_credential(tmp_path, mo
         assert calls == ["human"]
         for route, body in [
             ("prepare", {"selection_id": "audited"}),
+            ("prepare", {"selection_id": "audited", "run_profile": "extended"}),
+            ("start", {"selection_id": "audited", "run_profile": "extended"}),
             ("share", {"evaluation_id": "a" * 64, "authorized": True}),
         ]:
             with pytest.raises(HTTPError) as denied:
@@ -178,7 +186,16 @@ def test_loopback_models_and_member_actions_need_correct_credential(tmp_path, mo
                 )
             ) as response:
                 assert json.load(response)["status"] in {"pending", "preparing"}
-        assert calls == ["human", "prepare:audited", ("a" * 64, True)]
+        assert calls == ["human", "prepare:audited:short", "prepare:audited:extended",
+                         "start:audited:extended",
+                         ("a" * 64, True)]
+        with pytest.raises(HTTPError) as invalid:
+            client.open(Request(
+                root + "/api/local-models/prepare",
+                data=b'{"selection_id":"audited","run_profile":"short","extra":1}',
+                headers=headers,
+            ))
+        assert invalid.value.code == 409
         cli = build_opener()
         with cli.open(
             Request(

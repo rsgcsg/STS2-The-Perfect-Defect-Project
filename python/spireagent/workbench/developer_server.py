@@ -634,12 +634,18 @@ def create_server(app: Application) -> ThreadingHTTPServer:
             return body
 
         def model_action(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-            if path == "/api/local-models/prepare" and set(body) == {"selection_id"}:
-                return app.models.prepare_and_load(body["selection_id"])
+            if path == "/api/local-models/prepare" and set(body) in (
+                {"selection_id"}, {"selection_id", "run_profile"}
+            ):
+                return app.models.prepare_and_load(
+                    body["selection_id"], body.get("run_profile", "short")
+                )
             if path == "/api/local-models/share" and set(body) == {"evaluation_id", "authorized"}:
                 return app.evaluation_sharing.share(body["evaluation_id"], body["authorized"])
-            if path == "/api/local-models/start" and set(body) == {"selection_id"}:
-                return app.models.start(body["selection_id"])
+            if path == "/api/local-models/start" and set(body) in (
+                {"selection_id"}, {"selection_id", "run_profile"}
+            ):
+                return app.models.start(body["selection_id"], body.get("run_profile", "short"))
             if path == "/api/local-models/download" and set(body) == {"artifact_id"}:
                 return app.models.prepare(body["artifact_id"])
             if path == "/api/local-models/command" and set(body) == {"action"}:

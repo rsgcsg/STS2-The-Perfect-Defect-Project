@@ -6,6 +6,7 @@ import io
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 
@@ -217,6 +218,20 @@ def test_runtime_client_accepts_current_environment_and_binds_exact_identity(run
     assert client.request("/status")["status"]["environment"]["loaded_mod_ids"] == ["STS2_PLATFORM"]
     state["run_id"] = "replacement-runtime"
     with pytest.raises(BoundaryError, match="identity_drift"):
+        client.request("/status")
+
+
+def test_runtime_status_budget_identity_checked_when_startup_records_it(runtime_http):
+    client, state, requests = runtime_http
+    client.startup["autonomy_budget"] = {
+        "maxSubmissions": 2000, "maxPolicyCalls": 4000, "deadlineMs": 1800000,
+    }
+    state["autonomy_budget"] = {
+        "max_submissions": 2000, "max_policy_calls": 4000, "deadline_ms": 1800000,
+    }
+    client.request("/status")
+    state["autonomy_budget"]["deadline_ms"] = 60000
+    with pytest.raises(BoundaryError, match="runtime_status_unavailable_or_identity_drift"):
         client.request("/status")
     assert all(body is None for _, body in requests)
 
@@ -1239,6 +1254,273 @@ def test_text_runtime_profile_is_explicit_and_never_falls_back_to_legacy(
     assert service._runtime_package(entry["id"]) == {"version": "checked"}
     assert seen == [(directory / "runtime/node_modules", pin, service._connector_pin())]
     assert service.registry()["runtime_package"] == shipped
+
+
+def test_run_profiles_are_fixed_per_selection_and_legacy_extended_is_rejected(
+    service, text_runtime_profile,
+):
+    entry, _ = text_runtime_profile
+    for shipped in service.registry()["policies"]:
+        if shipped["id"] == entry["id"]:
+            continue
+        source = local_models.ROOT / shipped["manifest"]
+        destination = service.root / shipped["manifest"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+    policies = {item["selection_id"]: item for item in service.catalog()["policies"]}
+    text = policies[entry["id"]]
+    assert text["default_run_profile"] == "short"
+    assert [profile["id"] for profile in text["run_profiles"]] == ["short", "extended"]
+    assert [profile["label"] for profile in text["run_profiles"]] == [
+        "短时检查", "较长尝试（每次自主授权最多 30 分钟）",
+    ]
+    assert text["run_profiles"][1]["limits"] == {
+        "max_submissions": 2000, "max_policy_calls": 4000, "deadline_ms": 1800000,
+    }
+    legacy = policies["s1-human-combat-v4"]
+    assert legacy["run_profiles"] == [{"id": "short", "label": "默认运行", "limits": None}]
+    assert legacy["run_profile_unavailable_reason"] == "extended_requires_text_menu_runtime"
+    for bad in ("extended",):
+        with pytest.raises(BoundaryError, match="extended_requires_text_menu_runtime"):
+            service.start("s1-human-combat-v4", bad)
+    for bad in (None, "forever", 2000):
+        with pytest.raises(BoundaryError, match="unsupported_run_profile"):
+            service.start(entry["id"], bad)
+    assert service.process is None
+
+
+def test_terminal_screen_projection_requires_exact_text_game_over_context():
+    snapshot = {
+        "schema": "sts2.player-environment/text-menu-snapshot-1",
+        "input_profile": "text-menu-v1",
+        "interaction": {
+            "kind": "game_over",
+            "content": {
+                "surface": {"kind": "game_over"},
+                "context": {"kind": "game_over", "result": "win"},
+            },
+        },
+    }
+    assert local_models._terminal_screen(snapshot) == "win"
+    for path, value in (
+        (("schema",), "other"),
+        (("input_profile",), "compact-v2"),
+        (("interaction", "kind"), "combat_turn"),
+        (("interaction", "content", "surface", "kind"), "combat_turn"),
+        (("interaction", "content", "context", "kind"), "combat_turn"),
+        (("interaction", "content", "context", "result"), "maybe"),
+        (("interaction", "content", "context", "result"), ["win"]),
+    ):
+        invalid = copy.deepcopy(snapshot)
+        cursor = invalid
+        for key in path[:-1]:
+            cursor = cursor[key]
+        cursor[path[-1]] = value
+        assert local_models._terminal_screen(invalid) is None
+    assert local_models._terminal_screen({}) is None
+
+
+def test_recorded_budget_projection_is_narrow_and_unknown_on_old_payloads():
+    value = {
+        "state": "exhausted", "max_submissions": 16, "submissions_used": 16,
+        "max_policy_calls": 32, "policy_calls_used": 16, "deadline_ms": 60000,
+        "elapsed_ms": 20000, "remaining_ms": 40000,
+        "exhausted_reason": "submission_attempt_limit", "ended_reason": None,
+        "private_data": "excluded",
+    }
+    projected = local_models._recorded_budget(value)
+    assert projected is not None
+    assert projected["exhausted_reason"] == "submission_attempt_limit"
+    assert "private_data" not in projected and "remaining_ms" not in projected
+    for invalid in ({}, {**value, "state": ["active"]},
+                    {**value, "deadline_ms": True},
+                    {**value, "exhausted_reason": ["deadline"]}):
+        assert local_models._recorded_budget(invalid) is None
+
+
+def test_verified_finalized_budget_is_projected_without_game_outcome(service):
+    from agent_evaluation_fixture import evidence, sha
+
+    from spireagent.live_evaluation import FILES
+
+    directory, expected = evidence(service.directory / "agent-runs")
+    event_path = directory / "events.jsonl"
+    event = json.loads(event_path.read_text())
+    event["payload"] = {"autonomy_budget": {
+        "state": "exhausted", "max_submissions": 16, "submissions_used": 16,
+        "max_policy_calls": 32, "policy_calls_used": 16, "deadline_ms": 60000,
+        "elapsed_ms": 20000, "remaining_ms": 40000,
+        "exhausted_reason": "submission_attempt_limit", "ended_reason": None,
+    }, "controller": "released"}
+    event_path.write_text(canonical_json(event) + "\n")
+    evidence_path = directory / "evidence-manifest.json"
+    manifest = json.loads(evidence_path.read_text())
+    for item in manifest["files"]:
+        if item["path"] == "events.jsonl":
+            item.update(bytes=len(event_path.read_bytes()), sha256=sha(event_path.read_bytes()))
+    manifest["manifest_sha256"] = sha(canonical_json({
+        "run_id": manifest["run_id"], "files": manifest["files"],
+    }).encode())
+    evidence_path.write_text(canonical_json(manifest) + "\n")
+    (directory / "checksums.sha256").write_text("".join(
+        sha((directory / name).read_bytes()) + "  " + name + "\n"
+        for name in FILES if name != "checksums.sha256"
+    ))
+    service.state.update(startup=expected, selection_id="s1-human-combat-v4")
+    service._evaluation_handoff()
+    report = service.evaluations()[0]
+    assert report["evidence_verification"] == "pass"
+    assert report["budget_summary"]["submissions_used"] == 16
+    assert report["budget_end_reason"] == "submission_attempt_limit"
+    assert report["recorded_action_verbs"] is None
+    assert report["native_submission_attempts"] is None
+    assert report["terminal_screen_observation"] is None
+    assert report["game_outcome"] == "not_measured"
+
+
+def test_verified_event_projection_counts_attempts_and_marks_conflicting_terminal_pages(
+    service, monkeypatch,
+):
+    """The event projector is exercised behind a stubbed verifier; its gate is tested above."""
+    import sts2_platform_evidence
+    from agent_evaluation_fixture import evidence
+
+    directory, expected = evidence(service.directory / "agent-runs")
+    page = {
+        "schema": "sts2.player-environment/text-menu-snapshot-1",
+        "input_profile": "text-menu-v1",
+        "interaction": {"kind": "game_over", "content": {
+            "surface": {"kind": "game_over"},
+            "context": {"kind": "game_over", "result": "win"},
+        }},
+    }
+    loss = copy.deepcopy(page)
+    loss["interaction"]["content"]["context"]["result"] = "loss"
+    budget = {
+        "state": "exhausted", "max_submissions": 16, "submissions_used": 1,
+        "max_policy_calls": 32, "policy_calls_used": 1, "deadline_ms": 60000,
+        "elapsed_ms": 1000, "exhausted_reason": "policy_call_limit", "ended_reason": None,
+    }
+    items = [
+        ("text_decision_input", {"snapshot": page}),
+        ("text_menu_dispatch_attempt", {"effect_domain": "text_menu"}),
+        ("menu_navigation", {"result": {
+            "effect_domain": "text_menu", "native_delivery": None,
+            "action": {"verb": "open_information"}, "successor": None,
+        }}),
+        ("text_menu_dispatch_attempt", {"effect_domain": "native_input"}),
+        ("text_native_delivery", {"result": {
+            "effect_domain": "native_input", "native_delivery": "delivered",
+            "action": {"verb": "open_combat_draw_pile"},
+        }}),
+        ("text_observed_successor", {"successor": loss}),
+        ("stopped", {"autonomy_budget": budget}),
+    ]
+    (directory / "events.jsonl").write_text("".join(
+        canonical_json({"kind": kind, "payload": payload, "sequence": sequence}) + "\n"
+        for sequence, (kind, payload) in enumerate(items, 1)
+    ))
+    monkeypatch.setattr(sts2_platform_evidence, "verify_agent_run_evidence", lambda *_: (
+        SimpleNamespace(status="pass", findings=[], value=SimpleNamespace(
+            content_id="a" * 64, event_count=len(items)
+        ))
+    ))
+    service.state.update(startup=expected, selection_id="s1-human-combat-v4")
+    service._evaluation_handoff()
+    report = service.evaluations()[0]
+    assert report["native_submission_attempts"] == 1
+    assert report["recorded_action_verbs"] == {
+        "open_information": 1, "open_combat_draw_pile": 1,
+    }
+    assert report["delivery_counts"] == {"delivered": 1}
+    assert report["budget_end_reason"] == "policy_call_limit"
+    assert report["budget_summary"]["submissions_used"] == 1
+    assert report["terminal_screen_observation"] == {
+        "status": "ambiguous", "result": None, "observation_count": 2,
+        "first_event_sequence": 1, "last_event_sequence": 6,
+    }
+    assert report["game_outcome"] == "not_measured"
+
+
+@pytest.mark.parametrize("profile,attestation", [
+    ("short", "correct"), ("extended", "correct"),
+    ("extended", "startup_ignored"), ("extended", "status_ignored"),
+])
+def test_text_run_profile_cli_and_both_budget_attestations(
+    service, text_runtime_profile, monkeypatch, profile, attestation,
+):
+    entry, _ = text_runtime_profile
+    monkeypatch.setattr(local_models, "_check_runtime_port", lambda _: None)
+    monkeypatch.setattr(service, "readiness", lambda _: {"status": "ready_to_load"})
+    monkeypatch.setattr(service, "_runtime_package", lambda _: {
+        "version": "0.1.0-rc.10", "code_sha256": "b" * 64,
+    })
+    monkeypatch.setattr(service, "start_observer", lambda: None)
+    manifest = json.loads((service.root / entry["manifest"]).read_text())
+    limits = local_models.RUN_PROFILES[profile]
+    startup_budget = {
+        "maxSubmissions": limits["max_submissions"],
+        "maxPolicyCalls": limits["max_policy_calls"],
+        "deadlineMs": limits["deadline_ms"],
+    }
+    if attestation == "startup_ignored":
+        startup_budget = {"maxSubmissions": 16, "maxPolicyCalls": 32, "deadlineMs": 60000}
+    observed_startup = {
+        "schema": "sts2.policy-runtime/startup-1", "mode": "human",
+        "manifest_id": manifest["manifest_id"],
+        "policy_artifact_sha256": manifest["artifact"]["sha256"],
+        "policy_manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
+        "runtime_version": "0.1.0-rc.10", "runtime_code_sha256": "b" * 64,
+        "address": "http://127.0.0.1:15527",
+        "run_id": "run-00000000-0000-0000-0000-000000000000",
+        "autonomy_budget": startup_budget,
+    }
+    commands = []
+
+    class Process:
+        stopped = False
+
+        def __init__(self, command, **_):
+            commands.append(command)
+            self.stdout = io.BytesIO(json.dumps(observed_startup).encode() + b"\n")
+
+        def terminate(self):
+            self.stopped = True
+
+        def wait(self, timeout):
+            return 0
+
+        def poll(self):
+            return 0 if self.stopped else None
+
+    class Client:
+        def __init__(self, *_):
+            pass
+
+        def request(self, route):
+            assert route == "/status"
+            actual = dict(limits)
+            if attestation == "status_ignored":
+                actual["deadline_ms"] = 60000
+            return {"status": {"autonomy_budget": actual}}
+
+    monkeypatch.setattr(local_models.subprocess, "Popen", Process)
+    monkeypatch.setattr(local_models, "RuntimeClient", Client)
+    service.start(entry["id"], profile)
+    result = finished(service)
+    command = commands[0]
+    for flag, value in (("--max-auto-submissions", limits["max_submissions"]),
+                        ("--max-policy-calls", limits["max_policy_calls"]),
+                        ("--auto-deadline-ms", limits["deadline_ms"])):
+        assert command[command.index(flag) + 1] == str(value)
+    if attestation == "correct":
+        assert result["status"] == "loaded" and result["run_profile"] == profile
+    else:
+        assert result["error_code"] == "runtime_load_or_attestation_failed"
+        assert service.process.stopped
+    # The fake child has no service endpoint; prevent fixture teardown from issuing Stop.
+    service.client = None
+    service.process.terminate()
 
 
 @pytest.mark.parametrize("profile", ["unreviewed", "../runtime", None])
