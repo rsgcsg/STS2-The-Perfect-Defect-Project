@@ -241,6 +241,8 @@ def _declared_bundle(
     current["information_policy"]["scope"] = "current_page"
     current["menu_actions"]["ordering_semantics"] = "native_order_with_fixed_information_groups"
     current["menu_actions"]["actions"][1]["verb"] = verb
+    if verb == "end_turn":
+        current["menu_actions"]["actions"][1]["subject_referent_id"] = None
     artifact = {"product": "fixture", "version": "1", "source_revision": "b" * 40,
                 "source_digest_sha256": "a" * 64, "sha256": "a" * 64,
                 "module_version_id": "11111111-1111-1111-1111-111111111111"}
@@ -268,7 +270,10 @@ def _declared_bundle(
         "native_mechanism": mechanism,
         "disposition": "accepted_input", "external_controller_active": False,
     }
-    if verb != "begin_card_play":
+    if verb == "end_turn":
+        row["native_owner_witness_id"] = row["native_subject_witness_id"] = "button-1"
+        row["native_carrier_witness_id"] = "request-1"
+    elif verb != "begin_card_play":
         row["native_owner_witness_id"] = row["native_carrier_witness_id"]
     stream = raw / "human-text-inputs.jsonl"
     stream.write_bytes(json_bytes(row))
@@ -289,6 +294,7 @@ def _declared_bundle(
     ("controller_canceled_input_signal", "cancel_card_play"),
     ("controller_target_finish_input", "confirm_target"),
     ("controller_target_canceled_input", "cancel_card_play"),
+    ("end_turn_exact_request_submitted", "end_turn"),
 ])
 def test_declared_bundle_archive_is_reverified_when_source_loads(tmp_path, mechanism, verb) -> None:
     bundle, row, stream = _declared_bundle(tmp_path, mechanism, verb)

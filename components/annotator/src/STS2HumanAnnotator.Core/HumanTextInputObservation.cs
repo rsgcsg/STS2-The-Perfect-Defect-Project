@@ -22,6 +22,7 @@ public static class HumanTextInputObservationContract
     public const string MouseCanceledInputSignal = "mouse_canceled_input_signal";
     public const string MouseTargetFinishInput = "mouse_target_finish_input";
     public const string MouseTargetCanceledInput = "mouse_target_canceled_input";
+    public const string EndTurnRequestSubmitted = "end_turn_exact_request_submitted";
 
     public static string? VerbForMechanism(string mechanism) => mechanism switch
     {
@@ -30,6 +31,7 @@ public static class HumanTextInputObservationContract
         ControllerCanceledInputSignal or ControllerTargetCanceledInput
             or MouseCanceledInputSignal or MouseTargetCanceledInput => "cancel_card_play",
         ControllerTargetFinishInput or MouseTargetFinishInput => "confirm_target",
+        EndTurnRequestSubmitted => "end_turn",
         _ => null
     };
 }
@@ -38,6 +40,17 @@ public static class HumanTextInputObservationContract
 /// infer an input from a later card-play continuation or a changed game state.</summary>
 public static class HumanTextInputNativeProof
 {
+    public static string ClassifyEndTurnInput(bool captureAvailable, bool exactMenu,
+        bool oneNativeRequest, bool callbackReturned, bool runAssigned)
+    {
+        if (!captureAvailable) return HumanTextInputObservationContract.CaptureFailed;
+        if (!exactMenu) return HumanTextInputObservationContract.NotMapped;
+        if (!oneNativeRequest || !callbackReturned)
+            return HumanTextInputObservationContract.RejectedOrCancelled;
+        return runAssigned ? HumanTextInputObservationContract.AcceptedInput
+            : HumanTextInputObservationContract.NotMapped;
+    }
+
     /// <summary>A mouse release with no hovered node may start a cancellation
     /// candidate only on the exact mouse-card carrier. Native finish proof is
     /// still required before this observation can be accepted.</summary>
@@ -148,9 +161,12 @@ public static class HumanTextInputObservationValidator
             || value.MappingBasis != HumanTextInputObservationContract.ExactMappingBasis
             || string.IsNullOrWhiteSpace(value.NativeCarrierWitnessId)))
             errors.Add("text_input_exact_mapping_missing");
-        if (accepted && expectedVerb != "begin_card_play"
+        if (accepted && expectedVerb is not ("begin_card_play" or "end_turn")
             && value.NativeOwnerWitnessId != value.NativeCarrierWitnessId)
             errors.Add("text_input_continuation_owner_mismatch");
+        if (accepted && expectedVerb == "end_turn"
+            && value.NativeOwnerWitnessId != value.NativeSubjectWitnessId)
+            errors.Add("text_input_end_turn_button_witness_mismatch");
 
         if (value.Snapshot is null)
         {
@@ -217,7 +233,13 @@ public static class HumanTextInputObservationValidator
                 || String(chosen, "effect_domain") != "native_input"
                 || String(chosen, "verb") != expectedVerb
                 || string.IsNullOrWhiteSpace(String(chosen, "action_id"))
-                || string.IsNullOrWhiteSpace(String(chosen, "subject_referent_id"))
+                || (expectedVerb != "end_turn"
+                    && string.IsNullOrWhiteSpace(String(chosen, "subject_referent_id")))
+                || (expectedVerb == "end_turn"
+                    && (!chosen.ContainsKey("subject_referent_id")
+                        || chosen["subject_referent_id"] is not null
+                        || chosen["arguments"] is not JsonArray endTurnArguments
+                        || endTurnArguments.Count != 0))
                 || chosen["arguments"] is not JsonArray
                 || actions.OfType<JsonObject>().Count(action =>
                     EvidenceIdentity.Sha256Json(action) == EvidenceIdentity.Sha256Json(chosen)) != 1)

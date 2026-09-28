@@ -37,6 +37,18 @@ dispositions rather than gaining a positive label. A later cancellation does
 not erase the fact that the Human began the interaction. The frozen observation
 and mapping are not replaced by later frames.
 
+The `end_turn` text input uses the existing complete combat root menu action.
+Connector adds only a process-local witness for the exact current
+`NEndTurnButton`; the action ID, label and delivery path stay Connector-owned.
+The recorder freezes that menu at `CallReleaseLogic` entry and accepts a Human
+input row only when the same callback requests exactly one
+`EndPlayerTurnAction` and returns normally. A missing exact menu is
+`not_mapped`; the native Undo branch, absent request or exception is not an
+accepted end-turn input. External controller activity is excluded. This row
+attests the native input request, not queue admission, Commit, turn effects or
+a causal successor. The separate FTUE `SecretEndTurnLogicViaFtue` callback is
+outside this text-input slice.
+
 Controller-held card input can add `confirm_card`, `confirm_target`, and
 `cancel_card_play` rows in this stream. The public text-menu verbs are
 device-neutral; `native_mechanism` records private Human evidence provenance,

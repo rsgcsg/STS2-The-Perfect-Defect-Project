@@ -33,6 +33,40 @@ public sealed class ProcessLocalTextMenuWitnessTests
     }
 
     [Fact]
+    public void EndTurnControlRequiresItsExactFrozenButtonReference()
+    {
+        var dispatches = new DispatchCounter();
+        object button = new();
+        TextMenuFrame card = Frame(new(), new(), new(), dispatches);
+        TextMenuLeaf unchanged = card.Leaves[0] with
+        {
+            Key = "current-end-turn", Verb = "end_turn",
+            SubjectReferentId = null,
+            Arguments = Array.Empty<PlayerEnvironmentBoundActionArgument>(),
+            NativeWitness = null
+        };
+        Assert.Same(unchanged, NativeTextMenuFrameBuilder.WithEndTurnWitness(
+            unchanged, null, true));
+        Assert.Same(unchanged, NativeTextMenuFrameBuilder.WithEndTurnWitness(
+            unchanged, button, false));
+        TextMenuLeaf endTurn = NativeTextMenuFrameBuilder.WithEndTurnWitness(
+            unchanged, button, true);
+        Assert.Equal(JsonSerializer.Serialize(unchanged), JsonSerializer.Serialize(endTurn));
+        var frozen = new ProcessLocalTextMenuWitnessFrame(card with
+        { Leaves = card.Leaves.Append(endTurn).ToArray() },
+            Capabilities(), "source", false);
+        var exact = frozen.Resolve(new ProcessLocalObservedTextMenuAction(
+            "end_turn", button, null,
+            new Dictionary<string, object>(StringComparer.Ordinal)));
+        Assert.Equal("exact_unique", exact.Status);
+        Assert.Null(exact.Action!.SubjectReferentId);
+        Assert.Equal("zero", frozen.Resolve(new ProcessLocalObservedTextMenuAction(
+            "end_turn", new object(), null,
+            new Dictionary<string, object>(StringComparer.Ordinal))).Status);
+        Assert.Equal(0, dispatches.Calls);
+    }
+
+    [Fact]
     public void ExactNativeReferencesSelectOneSameNamedCardWithoutDispatch()
     {
         var dispatches = new DispatchCounter();
