@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Collections.Generic;
 using System.Reflection;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Extensions;
@@ -9,6 +10,7 @@ using STS2Connector.LiveHost.Contracts;
 using STS2Connector.NativeUi;
 using STS2Platform.NativeFoundation;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Cards;
 
 namespace STS2Connector.LiveHost;
 
@@ -46,8 +48,8 @@ internal static class PotionPopupSurfaceReader
         var surface = new PotionPopupSurface("potion_popup", entities.GetId(popup, "screen"),
             entities.GetId(potion, "potion"), potion.Id.Entry, potion.Title.GetFormattedText(), slot,
             use.IsEnabled && ConnectorMod.IsNodeVisible(use), discard.IsEnabled && ConnectorMod.IsNodeVisible(discard));
-        NativeSemanticAction[] nativeUses = NativePotionUseDecisionProvider.Capture(entities).Actions
-            .Where(action => action.Verb == "use" && ReferenceEquals(action.NativeSubject, potion)).ToArray();
+        NativeSemanticAction[] nativeUses = DirectUseActions(potion,
+            NativePotionUseDecisionProvider.Capture(entities).Actions);
         surface = surface with { DirectCombatUse = nativeUses.Length > 0,
             UseTargetEntityIds = nativeUses.SelectMany(action => action.Operands).Where(operand => operand.Role == "target")
                 .Select(operand => operand.ReferentId).Distinct().ToArray() };
@@ -63,6 +65,15 @@ internal static class PotionPopupSurfaceReader
                 ? active.TopOverlay : null
         };
     }
+    // Execution semantic membership is not permission to bypass a native
+    // target-node interaction. Keep FoulPotion's merchant selection staged.
+    internal static NativeSemanticAction[] DirectUseActions(
+        PotionModel potion, IEnumerable<NativeSemanticAction> actions) =>
+        potion.TargetType == TargetType.TargetedNoCreature
+            ? Array.Empty<NativeSemanticAction>()
+            : actions.Where(action => action.Verb == "use"
+                && ReferenceEquals(action.NativeSubject, potion)).ToArray();
+
     internal static NativeInputResult Start(
         NativeEntityRegistry entities, PotionPopupSurface expected, string operation,
         string? targetId = null, string? expectedControlId = null)
@@ -79,6 +90,9 @@ internal static class PotionPopupSurfaceReader
         }
         if (operation == "use_potion" && expected.DirectCombatUse)
         {
+            if (potion.TargetType == TargetType.TargetedNoCreature)
+                return NativeInputResult.Rejected("native_potion_target_selection_required",
+                    "This potion must use its native target-node selection.");
             var useButton = popup.GetNodeOrNull<NPotionPopupButton>("%UseButton");
             if (useButton == null || !useButton.IsEnabled)
                 return NativeInputResult.Rejected("potion_popup_control_unavailable", "Native use control is disabled.");

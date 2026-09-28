@@ -29,6 +29,7 @@ public sealed class NativeFoundationContractTests
         Assert.Same(creature, Assert.Single(action.Operands).NativeValue);
         Assert.Equal("exact_once", NativeSemanticActionCatalog.Describe(catalog.Actions, "UsePotionAction", "use", juice,
             new Dictionary<string, object> { ["target"] = creature }).Membership);
+        Assert.Same(action, Assert.Single(PotionPopupSurfaceReader.DirectUseActions(juice, catalog.Actions)));
         // EnqueueManualUse sets IsQueued before execution: this is not loss
         // of native semantic membership, although a second UI input is blocked.
         SetField(juice, "<IsQueued>k__BackingField", true, typeof(MegaCrit.Sts2.Core.Models.PotionModel));
