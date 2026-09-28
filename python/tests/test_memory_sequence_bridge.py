@@ -59,11 +59,24 @@ def view(*items: ObservedInput) -> ObservedInputView:
                              tuple(items))
 
 
+def agent_observed(event: str, sequence: int, *, reset: bool = False,
+                   action: str | None = None) -> ObservedInput:
+    """Shape of a verified Agent decision input, which may choose navigation."""
+    return replace(
+        observed(event, sequence, reset=reset, action=action),
+        stream_id="agent:content:run", source_kind="agent_decision_inputs",
+        delivery_status="not_applicable" if action == "opaque-nav" else "not_attempted",
+        source_events=(SourceEventRef(sequence, "text_decision_input", event),),
+    )
+
+
 def test_full_prefix_retains_unlabelled_observation_and_exact_catalog_binding():
     subject = model()
-    items = (observed("cue", 1, reset=True, action=None),
-             observed("choice", 2, action="opaque-nav", unknown=True))
-    result = project_memory_windows(view(*items), tokenizer(), subject)
+    items = (agent_observed("cue", 1, reset=True),
+             agent_observed("choice", 2, action="opaque-nav"))
+    agent_view = ObservedInputView("verified-agent-fixture-source",
+                                   "verified_agent_observed_inputs", False, items)
+    result = project_memory_windows(agent_view, tokenizer(), subject)
     assert not result.diagnostics
     (window,) = result.windows
     assert window.valid_mask == (True, True)
