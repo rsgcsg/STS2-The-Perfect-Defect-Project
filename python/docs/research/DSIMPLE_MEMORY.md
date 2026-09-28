@@ -154,6 +154,7 @@ its 64/32-step limits remain separate.
 The episode bridge normally rejects a settling page. An explicit
 `max_settling_events` allowance permits only source-visible pages marked
 `status=settling` with the current text-menu profile, complete public facts,
+an explicit `includes_hidden_information=False`, no interaction capabilities,
 an unavailable empty executable catalog, no selected action, and the same
 runtime/environment identity as interactive observations on both sides.
 Such a page retains its event ID in the ordered source mapping but produces

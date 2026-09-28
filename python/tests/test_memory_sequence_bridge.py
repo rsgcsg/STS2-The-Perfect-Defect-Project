@@ -329,6 +329,7 @@ def session_observed(
         "runtime_instance_id": "verified-runtime",
         "environment_fingerprint": "verified-environment",
     }
+    page["interaction"]["capabilities"] = []
     if status == "settling":
         page["status"] = "settling"
         page["menu_actions"].update(
@@ -346,6 +347,12 @@ def test_opted_in_verified_settling_keeps_event_provenance_without_model_step():
         session_observed("settling-2", 3, status="settling"),
         session_observed("ready-2", 4),
     )
+    page = deepcopy(items[1].snapshot)
+    assert page is not None
+    # Wire permits an unavailable catalog to retain a nonzero known total.
+    page["menu_actions"]["total_count"] = 3
+    page["menu_actions"]["ordering_semantics"] = "native_order"
+    items = (items[0], replace(items[1], snapshot=page), *items[2:])
     with patch.object(subject.core, "contextualize") as compute:
         result = project_memory_episodes(
             view(*items), tokenizer(), subject,
@@ -371,11 +378,19 @@ def test_opted_in_verified_settling_keeps_event_provenance_without_model_step():
         ("too_many", "episode_settling_limit"),
         ("schema", "invalid_settling_observation"),
         ("profile", "invalid_settling_observation"),
+        ("hidden_true", "invalid_settling_observation"),
+        ("hidden_missing", "invalid_settling_observation"),
+        ("hidden_wrong_type", "invalid_settling_observation"),
         ("identity_missing", "settling_identity_unverified"),
         ("identity", "settling_identity_drift"),
         ("choice", "invalid_settling_observation"),
         ("catalog", "invalid_settling_observation"),
         ("catalog_status", "invalid_settling_observation"),
+        ("catalog_total_negative", "invalid_settling_observation"),
+        ("catalog_total_wrong_type", "invalid_settling_observation"),
+        ("catalog_order_missing", "invalid_settling_observation"),
+        ("catalog_materialized_wrong_type", "invalid_settling_observation"),
+        ("capabilities", "invalid_settling_observation"),
         ("incomplete", "invalid_settling_observation"),
         ("status", "complete_current_menu_required"),
         ("other_invalid", "complete_current_menu_required"),
@@ -410,6 +425,16 @@ def test_settling_opt_in_rejects_unproved_skips(mutation: str, reason: str):
         else:
             page["session"].pop("runtime_instance_id")
         middle = replace(middle, snapshot=page)
+    elif mutation in {"hidden_true", "hidden_missing", "hidden_wrong_type"}:
+        page = deepcopy(middle.snapshot)
+        assert page is not None
+        if mutation == "hidden_true":
+            page["information_policy"]["includes_hidden_information"] = True
+        elif mutation == "hidden_missing":
+            page["information_policy"].pop("includes_hidden_information")
+        else:
+            page["information_policy"]["includes_hidden_information"] = "false"
+        middle = replace(middle, snapshot=page)
     elif mutation == "choice":
         middle = replace(middle, selected_action_id="opaque-play", choice_mask=True)
     elif mutation == "catalog":
@@ -422,6 +447,25 @@ def test_settling_opt_in_rejects_unproved_skips(mutation: str, reason: str):
         page = deepcopy(middle.snapshot)
         assert page is not None
         page["menu_actions"]["status"] = "complete"
+        middle = replace(middle, snapshot=page)
+    elif mutation in {"catalog_total_negative", "catalog_total_wrong_type",
+                      "catalog_order_missing", "catalog_materialized_wrong_type"}:
+        page = deepcopy(middle.snapshot)
+        assert page is not None
+        catalog = page["menu_actions"]
+        if mutation == "catalog_total_negative":
+            catalog["total_count"] = -1
+        elif mutation == "catalog_total_wrong_type":
+            catalog["total_count"] = "0"
+        elif mutation == "catalog_order_missing":
+            catalog.pop("ordering_semantics")
+        else:
+            catalog["materialized_count"] = False
+        middle = replace(middle, snapshot=page)
+    elif mutation == "capabilities":
+        page = deepcopy(middle.snapshot)
+        assert page is not None
+        page["interaction"]["capabilities"] = [{"verb": "play"}]
         middle = replace(middle, snapshot=page)
     elif mutation == "incomplete":
         page = deepcopy(middle.snapshot)

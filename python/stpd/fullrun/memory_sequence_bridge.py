@@ -235,16 +235,27 @@ def _projectable_episode_items(
             assert isinstance(snapshot, dict)
             completeness = snapshot.get("completeness")
             catalog = snapshot.get("menu_actions")
+            policy = snapshot.get("information_policy")
+            interaction = snapshot.get("interaction")
             if (
                 snapshot.get("schema") != SNAPSHOT_SCHEMA
                 or snapshot.get("input_profile") != INPUT_PROFILE
                 or snapshot.get("status") != "settling"
+                or not isinstance(policy, dict)
+                or policy.get("includes_hidden_information") is not False
                 or not isinstance(completeness, dict)
                 or completeness.get("status") != "complete"
+                or not isinstance(interaction, dict)
+                or interaction.get("capabilities") != []
                 or not isinstance(catalog, dict)
                 or catalog.get("status") != "unavailable"
                 or catalog.get("actions") != []
-                or catalog.get("materialized_count") != 0
+                or type(catalog.get("materialized_count")) is not int
+                or catalog["materialized_count"] != 0
+                or type(catalog.get("total_count")) is not int
+                or catalog["total_count"] < 0
+                or not isinstance(catalog.get("ordering_semantics"), str)
+                or not catalog["ordering_semantics"]
                 or item.choice_mask is not False
                 or item.selected_action_id is not None
                 or item.delivery_mask is not False
