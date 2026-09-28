@@ -84,8 +84,8 @@ separate.
 - Runtime rc.10 passed 121 component tests and installed synthetic smoke before
   its separate local install/load. Exact identities are in the journey receipt;
   no public package release or tracked legacy rc.6 consumer-pin change.
-- Fill untargeted/native continuation and full-scene coverage through exact owner
-  evidence. Commit is not a causal successor; input labels cannot fill missing
+- Prioritize full-scene system/model connections over learned-policy quality.
+  Fill untargeted/native continuation coverage through exact owner evidence. Commit is not a causal successor; input labels cannot fill missing
   canonical edges. Preserve unknowns rather than repairing them from later polls.
 - Continue the report/analysis/archive journey using existing owners, then team
   sharing and configuration/distribution. Keep everyday use simple; detailed

@@ -107,15 +107,28 @@ The final state is stopped/unloaded/Human/released, untainted, errors=[];
 The existing Native Foundation records the ActChange semantic chain
 `SetLocalPlayerReady -> RequestEnqueue`, then `VoteToMoveToNextActAction.ExecuteAction
 -> OnPlayerReady`, then conditional `all_ready -> EnterNextAct -> ActEntered`.
-Enqueue is not Commit/successor. The available local partial native-source tree
-does not include the synchronizer/vote implementation or a verifiable build
-identity; single-player automatic readiness versus an explicit post-Boss control
-is therefore unresolved. No speculative Connector action was added.
+Enqueue is not Commit/successor. The first partial-source inspection left
+single-player readiness unresolved. A later read-only inspection of the installed
+ARM64 v0.111.0 / 41cef1ea assembly resolved the static path: SHA-256
+`9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4`,
+MVID `57785517-0b16-42b9-8b36-bad6fb28384b`.
+`NRewardsScreen.OnProceedButtonPressed` calls `SetLocalPlayerReady` on the terminal
+Boss reward route (with the separate second-boss branch retained); single-player
+readiness is satisfied by that explicit Proceed interaction. Connector already
+exposes `proceed_rewards` in `NativeTextMenuRewardPages`, routed through
+`RewardClaimSurfaceReader.StartProceed` to the exact enabled native button.
+No separate speculative act-change page is needed. Decompiled source remains
+private. This source trace is not a live cross-act execution receipt.
 
-Remaining work: representative non-combat data/strategy, independent native-run
-identity, whole-run continuity and exact native cross-act continuation. Increasing
-budget alone cannot solve the observed policy loop. Memory/control comparisons
-remain separately defined experiments, not a presumed cure or action filtering.
+The engineering priority is whole-game **connection support**, independently of
+learned strategy quality: complete current-page/menu -> model scores -> exact
+binding/dispatch -> next observation and eventual terminal state. A capable model
+must be able to use that route; the current tiny model need not win or avoid loops
+for an individual connection to be verified. Clearly labelled scripted synthetic
+or native test drivers may isolate those connections, never qualify learned play.
+Training, memory and Human-label coverage remain separate work, not prerequisites
+for proving interface support. Increasing budget or filtering legal actions is
+not a remedy for weak strategy.
 
 ## Candidate local checks and review
 
@@ -138,3 +151,24 @@ These are local checks, not new hosted results or activation. The associated PR
 records its exact candidate, selected gate and actual CI state separately. The
 actual short gameplay attempt above used the previous installed application, not
 this new profile/report candidate. No extended native run has been performed.
+
+## Hosted failure and deterministic journal-race regression
+
+Candidate `a25682db1716289fe0c98fd7f992e15d366cde7a` run
+[36371244510](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36371244510)
+attempt 1 failed on Windows: 1 failed, 1479 passed, 40 skipped, 21 subtests passed.
+The HTTP local-training test observed `interrupted_unknown` instead of completion;
+Linux passed. The original failure truncates the operation error code, so it does
+not independently prove a unique cause.
+
+Source inspection found a deterministic race: status read pending, the supervisor
+wrote its terminal journal and released the OS lock, then status acquired the lock
+and classified the old pending record as unknown. The new regression forces that
+ordering with the real lock and a controlled supervising thread. Old production
+with completed/failed/pending/corrupt cases yielded 3 failures and 1 pass. The fix
+re-reads under the lock; completed/failed remain their actual results, still-pending
+remains unknown, and invalid or disappearing journals require recovery. An added
+missing-journal case also guards the fix. GET never writes a terminal result or
+relaunches work. The original HTTP test retains all assertions and now prints its
+full public operation on failure. Updated hosted checks must qualify the new head;
+no old green result is reused as its Windows pass.

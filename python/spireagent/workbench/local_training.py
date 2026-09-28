@@ -106,8 +106,19 @@ class LocalTrainingService:
                 if not lock_path.is_file() or lock_path.is_symlink():
                     raise BoundaryError("local_training", "operation_lock_missing")
                 with instance_lock(lock_path):
-                    operation = {**operation, "status": "interrupted_unknown",
-                                 "error_code": "previous_training_outcome_unknown"}
+                    # The supervisor may have written its terminal record and
+                    # released the lock after our first read. Re-read under the
+                    # lock before classifying an apparently unfinished operation.
+                    try:
+                        operation = self._read(path, owner.identity)
+                        if operation["status"] == "idle":
+                            raise BoundaryError("local_training", "operation_recovery_required")
+                    except BoundaryError as error:
+                        return {"schema": SCHEMA, "availability": "recovery_required",
+                                "reason": error.code, "operation": {"status": "idle"}}
+                    if operation["status"] == "pending":
+                        operation = {**operation, "status": "interrupted_unknown",
+                                     "error_code": "previous_training_outcome_unknown"}
             except BoundaryError as error:
                 if error.code != "already_running":
                     operation = {**operation, "status": "interrupted_unknown",
