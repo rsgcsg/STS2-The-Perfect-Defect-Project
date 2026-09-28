@@ -472,10 +472,11 @@ class LocalModelService:
         for entry in self.registry()["policies"]:
             manifest = _object_file(_inside(self.root, entry["manifest"]))
             text_menu = entry.get("runtime_profile") == "text-menu-v1"
-            profiles = [{"id": "short", "label": "短局" if text_menu else "默认短局",
+            profiles = [{"id": "short", "label": "短时检查" if text_menu else "默认运行",
                          "limits": RUN_PROFILES["short"] if text_menu else None}]
             if text_menu:
-                profiles.append({"id": "extended", "label": "较长局（最多 30 分钟）",
+                profiles.append({"id": "extended",
+                                 "label": "较长尝试（每次自主授权最多 30 分钟）",
                                  "limits": RUN_PROFILES["extended"]})
             entries.append(
                 {

@@ -1271,11 +1271,14 @@ def test_run_profiles_are_fixed_per_selection_and_legacy_extended_is_rejected(
     text = policies[entry["id"]]
     assert text["default_run_profile"] == "short"
     assert [profile["id"] for profile in text["run_profiles"]] == ["short", "extended"]
+    assert [profile["label"] for profile in text["run_profiles"]] == [
+        "短时检查", "较长尝试（每次自主授权最多 30 分钟）",
+    ]
     assert text["run_profiles"][1]["limits"] == {
         "max_submissions": 2000, "max_policy_calls": 4000, "deadline_ms": 1800000,
     }
     legacy = policies["s1-human-combat-v4"]
-    assert legacy["run_profiles"] == [{"id": "short", "label": "默认短局", "limits": None}]
+    assert legacy["run_profiles"] == [{"id": "short", "label": "默认运行", "limits": None}]
     assert legacy["run_profile_unavailable_reason"] == "extended_requires_text_menu_runtime"
     for bad in ("extended",):
         with pytest.raises(BoundaryError, match="extended_requires_text_menu_runtime"):
