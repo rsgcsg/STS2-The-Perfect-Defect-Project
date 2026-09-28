@@ -74,7 +74,7 @@ const modelRegistrationStatus = (model, status = "not_registered", extra = {}) =
   status,
   loaded:false,
   runtime_profile:"text-menu-v1",
-  ...(status === "not_registered" ? {csrf_token:"registration-csrf"} : {}),
+  csrf_token:"registration-csrf",
   ...extra,
 });
 const uploadId = "a".repeat(32);
@@ -1621,8 +1621,8 @@ test("completed local model export registers only on one explicit click and link
   assert.equal(writes[0].url, "/api/local-model-registrations/register");
   assert.deepEqual(body(writes[0]), {model_id:model});
   assert.equal(writes[0].options.headers["X-CSRF-Token"], "registration-csrf");
-  assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), false,
-    "a confirmed registration replaces the action with the exact selection link");
+  assert.equal(action(env.livePage, "register-local-model").textContent, "重新核对登记",
+    "a confirmed registration exposes an explicit recheck, never an automatic one");
   const selectionLink = find(env.livePage, element => element.tagName === "A"
     && element.href === `?view=local-models&id=${selection}`);
   assert.equal(selectionLink.textContent, "打开此模型选择");
@@ -1780,7 +1780,7 @@ test("registered selection link focuses only its local model row without invokin
     },
   });
   const detail = await env.render();
-  assert.match(text(detail), /登记本身不会加载模型；当前运行状态请到模型页查看/);
+  assert.match(text(detail), /登记本身不会加载模型/);
   assert.ok(find(detail, element => element.tagName === "A"
     && element.href === `?view=local-models&id=${selection}`));
   env.navigate("local-models", `&id=${selection}`);
@@ -1790,6 +1790,46 @@ test("registered selection link focuses only its local model row without invokin
   assert.equal(env.calls.some(call => call.url.startsWith("/api/local-models/readiness")), false);
   assert.equal(env.calls.some(call => call.url === "/api/local-models/prepare"
     || call.url === "/api/local-models/start"), false);
+});
+
+test("registered model can be explicitly rechecked while preserving the old selection", async () => {
+  const model = id("f"), oldSelection = "text-model-old", newSelection = "text-model-current";
+  let registration = modelRegistrationStatus(model, "registered", {selection_id:oldSelection});
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    renderOnReload:true,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return textMenuScratchModel(model);
+      if (url === "/api/local-model-exports/status")
+        return modelExportStatus({status:"completed", model_id:model});
+      if (url === `/api/local-model-registrations/status?model_id=${model}`) return registration;
+      if (url === "/api/local-model-registrations/register") {
+        assert.equal(options.method, "POST");
+        assert.deepEqual(JSON.parse(options.body), {model_id:model},
+          "recheck submits the source identity only; the old selection is never rewritten");
+        registration = modelRegistrationStatus(model, "registered", {selection_id:newSelection});
+        return registration;
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /当前兼容性会在加载条件检查时确认/);
+  assert.match(text(page), /登记本身不会加载模型/);
+  assert.ok(find(page, element => element.tagName === "A"
+    && element.href === `?view=local-models&id=${oldSelection}`));
+  assert.equal(action(page, "register-local-model").textContent, "重新核对登记");
+  assert.equal(post(env.calls).length, 0, "registered status render preserves the old entry and performs no POST");
+
+  await action(page, "register-local-model").onclick();
+  assert.equal(post(env.calls).length, 1, "only the explicit recheck click writes");
+  assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"], "registration-csrf");
+  assert.ok(walk(env.livePage).some(element => element.tagName === "A"
+    && element.href === `?view=local-models&id=${newSelection}`));
+  assert.equal(post(env.calls).length, 1, "refresh reads the current binding without an extra write");
 });
 
 test("late or unknown registration response reconciles by GET without replay or stale-model display", async () => {
