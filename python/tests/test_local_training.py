@@ -122,6 +122,30 @@ def test_exact_synthetic_public_bc_dsimple_subprocess(tmp_path: Path, monkeypatc
                           (completed["operation_id"],)).fetchone() == (source,)
     assert service.start(dataset_id)["operation"]["operation_id"] == completed["operation_id"]
     assert LocalTrainingService(config).status()["operation"] == completed
+    launched = service.start(
+        dataset_id, after_completed_operation_id=completed["operation_id"]
+    )["operation"]
+    assert launched["status"] == "pending"
+    assert launched["operation_id"] != completed["operation_id"]
+    assert launched["previous_completed"] == {
+        key: completed[key] for key in ("operation_id", "dataset_id", "result_id",
+                                        "model_id", "evaluation_id")
+    }
+    with pytest.raises(BoundaryError):
+        service.start(dataset_id, after_completed_operation_id=completed["operation_id"])
+    second = _settle(service)
+    assert second["status"] == "completed", second
+    assert second["operation_id"] == launched["operation_id"]
+    assert second["result_id"] != completed["result_id"]
+    assert second["previous_completed"] == launched["previous_completed"]
+    assert store.get_manifest(completed["result_id"]) == result
+    assert store.get_manifest(completed["model_id"]) == model
+    assert store.get_manifest(completed["evaluation_id"]) == report
+    with pytest.raises(BoundaryError):
+        service.start(dataset_id, after_completed_operation_id=completed["operation_id"])
+    with pytest.raises(BoundaryError):
+        service.start("f" * 64, after_completed_operation_id=second["operation_id"])
+    assert service.start(dataset_id)["operation"]["operation_id"] == second["operation_id"]
 
 
 def test_insufficient_independent_components_never_reserves_use(
@@ -183,6 +207,51 @@ def test_one_slot_across_profiles_and_unknown_restart(tmp_path: Path, monkeypatc
     assert contender.status()["operation"]["status"] == "interrupted_unknown"
     with pytest.raises(BoundaryError, match="previous_training_outcome_unknown"):
         contender.start("a" * 64)
+
+
+def test_new_experiment_requires_exact_completed_predecessor_under_one_lock(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    owner = configured_owner(config)
+    old = {
+        "schema": "stpd/local-training-operation-v1", "status": "completed",
+        "stage": "completed", "operation_id": "1" * 32, "dataset_id": dataset_id,
+        "run_id": "2" * 64, "result_id": "3" * 64,
+        "model_id": "4" * 64, "evaluation_id": "5" * 64,
+        "_owner": list(owner.identity),
+    }
+    (owner.path.parent / OPERATION_FILE).write_text(json.dumps(old))
+    service = LocalTrainingService(config)
+    entered, release = threading.Event(), threading.Event()
+
+    def held(lock, _path, _identity, _owner, _store):
+        try:
+            entered.set()
+            assert release.wait(10)
+        finally:
+            lock.__exit__(None, None, None)
+
+    monkeypatch.setattr(service, "_run", held)
+    with pytest.raises(BoundaryError):
+        service.start(dataset_id, after_completed_operation_id="6" * 32)
+    with pytest.raises(BoundaryError):
+        service.start("f" * 64, after_completed_operation_id=old["operation_id"])
+    assert service.start(dataset_id)["operation"]["operation_id"] == old["operation_id"]
+    assert not entered.is_set()
+    try:
+        new = service.start(dataset_id, after_completed_operation_id=old["operation_id"])
+        assert entered.wait(5)
+        assert new["operation"]["status"] == "pending"
+        assert new["operation"]["operation_id"] != old["operation_id"]
+        assert new["operation"]["previous_completed"]["result_id"] == old["result_id"]
+        with pytest.raises(BoundaryError):
+            service.start(dataset_id, after_completed_operation_id=old["operation_id"])
+    finally:
+        release.set()
+        if service._thread is not None:
+            service._thread.join(timeout=10)
+            assert not service._thread.is_alive()
 
 
 @pytest.mark.parametrize("terminal", ["completed", "failed", "pending", "corrupt", "missing"])
@@ -395,6 +464,19 @@ def test_http_readonly_status_and_exact_browser_write(tmp_path: Path) -> None:
                             headers=headers), timeout=3)
         assert unavailable.value.code == 409
         assert json.load(unavailable.value)["error"] == "running_instance_unavailable"
+        with pytest.raises(HTTPError) as new_unavailable:
+            urlopen(Request(url + "/api/local-training/start",
+                            data=json.dumps({"dataset_id": "a" * 64,
+                                             "after_completed_operation_id": "b" * 32}).encode(),
+                            headers=headers), timeout=3)
+        assert new_unavailable.value.code == 409
+        assert json.load(new_unavailable.value)["error"] == "running_instance_unavailable"
+        with pytest.raises(HTTPError) as malformed_precondition:
+            urlopen(Request(url + "/api/local-training/start",
+                            data=json.dumps({"dataset_id": "a" * 64,
+                                             "after_completed_operation_id": None}).encode(),
+                            headers=headers), timeout=3)
+        assert malformed_precondition.value.code == 400
         with pytest.raises(HTTPError) as unknown:
             urlopen(Request(url + "/api/local-training/start",
                             data=json.dumps({"dataset_id": "a" * 64, "extra": 1}).encode(),
@@ -465,6 +547,34 @@ def test_http_explicit_start_tracks_exact_completed_run_without_get_replay(
         second = status()["operation"]
         assert second == current
         assert tuple(store.manifest_ids()) == manifest_ids
+        new_body = json.dumps({
+            "dataset_id": dataset_id, "after_completed_operation_id": operation_id,
+        }).encode()
+        with urlopen(Request(url + "/api/local-training/start", data=new_body,
+                             headers=headers), timeout=5) as response:
+            new_started = json.load(response)["operation"]
+        assert new_started["status"] == "pending"
+        assert new_started["operation_id"] != operation_id
+        assert new_started["previous_completed"]["result_id"] == current["result_id"]
+        with pytest.raises(HTTPError) as repeated:
+            urlopen(Request(url + "/api/local-training/start", data=new_body,
+                            headers=headers), timeout=5)
+        assert repeated.value.code == 409
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            new_current = status()["operation"]
+            if new_current["status"] != "pending":
+                break
+            time.sleep(0.05)
+        assert new_current["status"] == "completed", new_current
+        assert new_current["operation_id"] == new_started["operation_id"]
+        with pytest.raises(HTTPError) as stale:
+            urlopen(Request(url + "/api/local-training/start", data=new_body,
+                            headers=headers), timeout=5)
+        assert stale.value.code == 409
+        with urlopen(Request(url + "/api/local-workspace/artifacts/" + current["result_id"],
+                             headers={"Cookie": cookie}), timeout=5) as response:
+            assert json.load(response)["artifact_id"] == current["result_id"]
         public = json.dumps({"start": started, "completed": second})
         assert app.control_token not in public and app.account.cookie not in public
         assert str(owner.store_dir) not in public
