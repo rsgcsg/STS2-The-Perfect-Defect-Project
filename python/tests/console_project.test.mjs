@@ -3180,7 +3180,9 @@ test("accepted model load converges from pending by read-only status without ano
   await env.advanceTimer();
   assert.equal(env.reloads, before + 1);
   assert.match(text(env.livePage), /服务报告已加载/);
-  assert.equal(env.timerCount, 0);
+  assert.equal(env.timerCount, 1, "a loaded Human page can observe another client changing mode");
+  await env.advanceTimer();
+  assert.equal(env.reloads, before + 1);
   assert.equal(post(env.calls).length, 1);
 });
 
@@ -3212,7 +3214,9 @@ test("accepted Auto reaches budget handoff by status reads and never restarts it
   await env.advanceTimer();
   assert.match(text(env.livePage), /自主提交次数已到限额/);
   assert.match(text(env.livePage), /已释放/);
-  assert.equal(env.timerCount, 0);
+  assert.equal(env.timerCount, 1, "released Human status remains observable within the bound");
+  await env.advanceTimer();
+  assert.equal(env.timerCount, 1);
   assert.equal(post(env.calls).length, 1);
 });
 
@@ -3296,6 +3300,53 @@ test("unchanged pending status stops automatic checks at the finite limit", asyn
   assert.equal(env.timerCount, 0);
   assert.match(text(env.notice), /自动状态检查已暂停/);
   assert.equal(post(env.calls).length, 0);
+});
+
+test("a status change on the final allowed read still reports observation paused", async () => {
+  let status = {status:"loading", loaded:false,
+    operation:{id:"prepare-1", action:"prepare-and-load", status:"pending"}};
+  const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) =>
+    url === "/api/local-models/status" ? status : modelHandler(url, options)});
+  await env.render();
+  for (let index = 0; index < 99; index++) await env.advanceTimer();
+  status = {...status, error_code:"temporary_diagnostic"};
+  await env.advanceTimer();
+  assert.equal(env.reloads, 1);
+  assert.equal(env.timerCount, 0);
+  assert.match(text(env.notice), /自动状态检查已暂停/);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("model page owns automatic refresh even after its bounded watcher pauses", async () => {
+  const status = {status:"loaded", loaded:true,
+    runtime:{run_id:"run-1", lifecycle:"running", mode:"human", controller:"released",
+      tainted:false, errors:[]}};
+  const env = setup({view:"local-models", query:"&id=audited-cpu", handler:(url, options) =>
+    url === "/api/local-models/status" ? status : modelHandler(url, options)});
+  await env.render();
+  assert.equal(await env.ui.refresh("local-models"), true);
+  assert.equal(env.timerCount, 1);
+  for (let index = 0; index < 100; index++) await env.advanceTimer();
+  assert.equal(env.timerCount, 0);
+  assert.equal(await env.ui.refresh("local-models"), true);
+  assert.equal(env.timerCount, 0);
+  env.navigate("statistics");
+  assert.equal(await env.ui.refresh("local-models"), false);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("a late timer after the model observation deadline performs no status GET", async () => {
+  const status = {status:"loading", loaded:false,
+    operation:{id:"prepare-1", action:"prepare-and-load", status:"pending"}};
+  const env = setup({view:"local-models", handler:(url, options) =>
+    url === "/api/local-models/status" ? status : modelHandler(url, options)});
+  await env.render();
+  const reads = env.calls.filter(call => call.url === "/api/local-models/status").length;
+  env.context.Date = {now:() => Date.now() + 6 * 60 * 1000};
+  await env.advanceTimer();
+  assert.equal(env.calls.filter(call => call.url === "/api/local-models/status").length, reads);
+  assert.equal(env.timerCount, 0);
+  assert.match(text(env.notice), /自动状态检查已暂停/);
 });
 
 test("failed status reads stop after a bound and manual refresh stays read-only", async () => {
