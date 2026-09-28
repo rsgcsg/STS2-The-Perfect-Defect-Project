@@ -2886,7 +2886,8 @@ window.SpireProject = (() => {
     return value?.kind === "model" && hex(value.artifact_id)
       && parameters.schema === "stpd/stage1a-model-v1"
       && parameters.qualification === "engineering_only"
-      && config.recipe === "stage1a.b.s.v2" && config.device === "cpu"
+      && ["stage1a.b.s.v2", "stage1a.dsimple.s.v1"].includes(config.recipe)
+      && config.device === "cpu"
       && backbone.kind === "scratch"
       && Object.keys(serializer).length === serializerKeys.length
       && serializerKeys.every(key => Object.hasOwn(serializer, key))
@@ -3214,7 +3215,7 @@ window.SpireProject = (() => {
       reserving: "登记训练任务",
       allocating: "固定训练数据分配",
       public_view: "准备训练视图",
-      tokenizing: "准备小 B 输入",
+      tokenizing: "准备模型输入",
       preparing_run: "准备训练运行",
       training: "正在训练",
       verifying_result: "核对训练结果",
@@ -3225,8 +3226,8 @@ window.SpireProject = (() => {
 
   async function localTrainingCard(ctx, dataset) {
     const card = panel(
-      "本机小 B 短训练",
-      "固定使用 B v2 scratch、CPU 2 线程和 3 步；本机服务会核对训练用途与来源资格。不下载 Qwen 权重，也不会操作游戏。这是工程流程验证，不代表模型策略质量。",
+      "本机短训练",
+      "从此入口新启动的任务固定使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。本机服务会核对训练用途与来源资格。不下载 Qwen 权重，也不会操作游戏。这是工程流程验证，不代表模型策略质量。",
     );
     let data;
     try {

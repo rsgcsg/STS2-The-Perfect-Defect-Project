@@ -69,7 +69,7 @@ def _eligible(model: Manifest) -> None:
             or info.get("qualification") != "engineering_only"
             or info.get("serializer") != TEXT_MENU_IDENTITY
             or not isinstance(config, dict)
-            or config.get("recipe") != "stage1a.b.s.v2"
+            or config.get("recipe") not in {"stage1a.b.s.v2", "stage1a.dsimple.s.v1"}
             or config.get("device") != "cpu"
             or not isinstance(backbone, dict) or backbone.get("kind") != "scratch"):
         raise BoundaryError("local_model_export", "unsupported_model_for_offline_export")

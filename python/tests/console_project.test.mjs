@@ -41,12 +41,12 @@ const action = (node, name) =>
   find(node, (element) => element.dataset?.action === name);
 const field = (node, name) => find(node, (element) => element.name === name);
 const id = (digit) => digit.repeat(64);
-const textMenuScratchModel = (artifactId = id("a")) => ({
+const textMenuScratchModel = (artifactId = id("a"), recipe = "stage1a.b.s.v2") => ({
   artifact_id: artifactId,
   kind: "model",
   parameters: {
     schema: "stpd/stage1a-model-v1",
-    config: {recipe:"stage1a.b.s.v2", steps:3, device:"cpu"},
+    config: {recipe, steps:3, device:"cpu"},
     backbone: {kind:"scratch"},
     serializer: {
       version:"stpd-text-menu-current-page-v1",
@@ -1157,8 +1157,8 @@ test("local training appears only on a fixed training dataset and starts once on
     },
   });
   const page = await env.render();
-  assert.match(text(page), /本机小 B 短训练/);
-  assert.match(text(page), /B v2 scratch、CPU 2 线程和 3 步/);
+  assert.match(text(page), /本机短训练/);
+  assert.match(text(page), /新启动的任务固定使用 D-Simple-S v1、CPU 2 线程和 3 步/);
   assert.match(text(page), /不代表模型策略质量/);
   assert.doesNotMatch(text(page), /training-csrf/);
   assert.equal(env.calls.filter(call => call.url === "/api/local-training/status").length, 1);
@@ -1186,7 +1186,7 @@ test("local training hides for non-training purposes and unsupported dataset sch
   ]) {
     const env = localTrainingEnv({kind, parameters});
     const page = await env.render();
-    assert.doesNotMatch(text(page), /本机小 B 短训练/);
+    assert.doesNotMatch(text(page), /本机短训练/);
     assert.equal(env.calls.some(call => call.url === "/api/local-training/status"), false);
     assert.equal(post(env.calls).length, 0);
   }
@@ -1203,6 +1203,8 @@ test("local training state gates pending and unknown outcomes, and links only co
       schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf", operation,
     }});
     const page = await env.render();
+    assert.match(text(page), /既有任务的配方以其模型记录为准/);
+    assert.doesNotMatch(text(page), /本机 D-Simple 短训练/);
     assert.equal(walk(page).some(element => element.dataset?.action === "start-local-training"), false);
     assert.equal(post(env.calls).length, 0);
     if (operation.status === "pending") {
@@ -1589,6 +1591,45 @@ test("local model export stays unavailable for unsupported models and changed wo
   assert.equal(action(pendingPage, "start-local-model-export").disabled, true,
     "an old unresolved operation still protects the shared export slot");
   assert.equal(post(previousPending.calls).length, 0);
+});
+
+test("text-menu D-Simple and legacy B expose export; PF and other inputs do not", async () => {
+  const model = id("a");
+  const cases = [
+    {recipe:"stage1a.dsimple.s.v1", allowed:true, label:/D-Simple v1/},
+    {recipe:"stage1a.b.s.v2", allowed:true, label:/B v2/},
+    {recipe:"stage1a.dsimple.pf.v1", allowed:false, modify:value => {
+      value.parameters.backbone = {kind:"pf"};
+    }},
+    {recipe:"stage1a.dsimple.s.v1", allowed:false, modify:value => {
+      value.parameters.serializer.profile = "public_compact";
+    }},
+  ];
+  for (const scenario of cases) {
+    let statusReads = 0;
+    const env = setup({
+      identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+        };
+        if (url === `/api/local-workspace/artifacts/${model}`) {
+          const value = textMenuScratchModel(model, scenario.recipe);
+          scenario.modify?.(value);
+          return value;
+        }
+        if (url === "/api/local-model-exports/status") {
+          statusReads++;
+          return modelExportStatus({status:"idle"});
+        }
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    if (scenario.label) assert.match(text(page), scenario.label);
+    assert.equal(walk(page).some(element => element.dataset?.action === "start-local-model-export"), scenario.allowed);
+    assert.equal(statusReads, scenario.allowed ? 1 : 0);
+  }
 });
 
 test("completed local model export registers only on one explicit click and links the exact selection", async () => {

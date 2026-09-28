@@ -272,9 +272,9 @@ class LocalTrainingService:
 
             torch.set_num_threads(2)
             inputs = load_token_inputs(store, inputs_manifest.artifact_id)
-            config = TokenConfig.text_menu_small_b(width=48, layers=1, heads=2,
-                                                   feedforward=96, steps=3,
-                                                   device="cpu", max_tokens=16384)
+            config = TokenConfig(recipe="stage1a.dsimple.s.v1", width=48, layers=1,
+                                 heads=2, feedforward=96, dropout=0.0, steps=3,
+                                 device="cpu", max_tokens=16384)
             run = prepare_token_run(store, inputs, config, producer,
                                     replicate="local-" + identity)
             self._advance(path, identity, stage="training", run_id=run.artifact_id)
