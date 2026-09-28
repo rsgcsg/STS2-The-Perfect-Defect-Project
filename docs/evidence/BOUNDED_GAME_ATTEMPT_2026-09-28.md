@@ -26,7 +26,10 @@ window, not an automatic extension.
 
 After existing Evidence verification, reports distinguish recorded action verbs,
 internal menu navigation, native submission attempts and delivery classifications.
-They expose budget exhaustion and an optional observed terminal page. The latter
+Action-verb counts summarize result events, not every unresolved dispatch; native
+attempts remain separate. The top-level budget reason describes exhaustion only;
+normal Human/Stop end reasons remain in the typed budget summary. Reports expose
+budget exhaustion and an optional observed terminal page. The latter
 requires a complete text-menu snapshot with both context/surface `game_over` and
 public `win`/`loss`; conflicting results are ambiguous. An observed terminal page
 is not a from-start model game: there is no attested native-game-run identity here.
@@ -113,3 +116,25 @@ Remaining work: representative non-combat data/strategy, independent native-run
 identity, whole-run continuity and exact native cross-act continuation. Increasing
 budget alone cannot solve the observed policy loop. Memory/control comparisons
 remain separately defined experiments, not a presumed cure or action filtering.
+
+## Candidate local checks and review
+
+On the integrated application tree (private locked Python 3.11 environment):
+
+- `node --test python/tests/console_project.test.mjs`: 149 passed, 0 failed/skipped.
+- `python -m pytest -q -ra tests/test_local_models.py tests/test_member_http.py`
+  from `python/`: 131 passed, exit0 (23.36s in this run).
+- Scoped Ruff on the two production Python files and two changed Python tests:
+  passed. Author's Mypy of the two production files passed before integration.
+- A local compatibility check copied the four sealed evidence files above to a
+  temporary directory and called the candidate's real `_evaluation_handoff`.
+  It verified and projected exactly 1 native attempt, 8 open-information + 7 back
+  result events, 1 native return, submission-limit exhaustion and no terminal page.
+  The original evidence/report was not rewritten; temporary files were removed.
+- Independent source reviews covered the UI and backend separately. Root reviewed
+  the integrated diff and clarified that verb counts describe result events.
+
+These are local checks, not new hosted results or activation. The associated PR
+records its exact candidate, selected gate and actual CI state separately. The
+actual short gameplay attempt above used the previous installed application, not
+this new profile/report candidate. No extended native run has been performed.

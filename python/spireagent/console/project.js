@@ -2421,7 +2421,7 @@ window.SpireProject = (() => {
       ]),
     );
     box.append(el("p", "仅已验证记录才显示动作类型与结局页；投递尝试不等于游戏接受，结局页不证明模型从开局完成整局。", "small muted"));
-    box.append(actions ? table(["已记录动作类型", "次数"],
+    box.append(actions ? table(["已记录结果的动作类型", "次数"],
       actions.map(([kind, total]) => [kind, count(total)])) :
       el("p", "动作类型：未从已验证证据确认。", "small muted"));
     box.append(deliveries ? table(["投递结果", "次数"],
