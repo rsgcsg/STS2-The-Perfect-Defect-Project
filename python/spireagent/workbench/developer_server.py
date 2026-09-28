@@ -185,6 +185,7 @@ class Application:
         from spireagent.workbench.evaluation_sharing import EvaluationSharing
         from spireagent.workbench.inplace_curation import InplaceCurationPreparation
         from spireagent.workbench.local_dataset import LocalDatasetService
+        from spireagent.workbench.local_model_export import LocalModelExport
         from spireagent.workbench.local_recording_import import LocalRecordingImporter
         from spireagent.workbench.local_recording_preview import LocalRecordingPreview
         from spireagent.workbench.local_recordings import LocalRecordingCatalog
@@ -216,6 +217,7 @@ class Application:
         self.local_recording_preview = LocalRecordingPreview(self.local_research_workspace)
         self.local_datasets = LocalDatasetService(config)
         self.local_training = LocalTrainingService(config)
+        self.local_model_export = LocalModelExport(config)
         self.local_curation_preparation = InplaceCurationPreparation(config)
         self.evaluation_sharing = EvaluationSharing(self.models, self.members)
         self.delivery_error: str | None = None
@@ -534,6 +536,20 @@ class Application:
             raise BoundaryError("local_training", "running_configuration_mismatch")
         return self.local_training.start(dataset_id)
 
+    def start_local_model_export(self, model_id: object) -> dict[str, Any]:
+        if self.config_path is None:
+            raise BoundaryError("local_model_export", "running_instance_unavailable")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("local_model_export", "running_instance_unavailable") from error
+        if (not isinstance(runtime, dict) or current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_model_export", "running_configuration_mismatch")
+        return self.local_model_export.start(model_id)
+
     def close(self) -> None:
         self.evaluation_sharing.close()
         self.members.close()
@@ -750,6 +766,18 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 value = {**app.local_training.status(), "csrf_token": app.account.csrf}
                 self.respond(200, json.dumps(value).encode())
+            elif parsed.path == "/api/local-model-exports/status":
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                if parsed.query:
+                    self.respond(400, b'{"error":"invalid_local_model_export_request"}')
+                    return
+                try:
+                    value = {**app.local_model_export.status(), "csrf_token": app.account.csrf}
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
             elif parsed.path == "/api/local-workspace/curation":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -1032,6 +1060,24 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_local_training_request"}')
+                return
+            if self.path.startswith("/api/local-model-exports/"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                if self.path != "/api/local-model-exports/start":
+                    self.respond(404, b'{"error":"route_not_found"}')
+                    return
+                try:
+                    body = self.json_body(maximum=128)
+                    if set(body) != {"model_id"}:
+                        raise ValueError
+                    value = app.start_local_model_export(body["model_id"])
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_local_model_export_request"}')
                 return
             if self.path.startswith("/api/local-workspace/managed/"):
                 if not self.browser_write():

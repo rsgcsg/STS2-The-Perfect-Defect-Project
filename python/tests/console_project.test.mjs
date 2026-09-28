@@ -41,6 +41,33 @@ const action = (node, name) =>
   find(node, (element) => element.dataset?.action === name);
 const field = (node, name) => find(node, (element) => element.name === name);
 const id = (digit) => digit.repeat(64);
+const textMenuScratchModel = (artifactId = id("a")) => ({
+  artifact_id: artifactId,
+  kind: "model",
+  parameters: {
+    schema: "stpd/stage1a-model-v1",
+    config: {recipe:"stage1a.b.s.v2", steps:3, device:"cpu"},
+    backbone: {kind:"scratch"},
+    serializer: {
+      version:"stpd-text-menu-current-page-v1",
+      profile:"text_menu_current_page",
+      source_schema:"sts2.player-environment/text-menu-snapshot-1",
+      input_profile:"text-menu-v1",
+      status:"provisional",
+    },
+    steps:3,
+    qualification:"engineering_only",
+  },
+  parents:[],
+  payloads:[],
+});
+const modelExportStatus = (operation, extra = {}) => ({
+  schema:"stpd/local-model-export-operation-v1",
+  availability:"ready",
+  operation,
+  csrf_token:"export-csrf",
+  ...extra,
+});
 const uploadId = "a".repeat(32);
 const enrollmentId = "e".repeat(32);
 const memberId = "f".repeat(32);
@@ -1307,6 +1334,271 @@ test("unknown model schemas keep metadata fallback and do not invent a model ove
   assert.match(text(page), /future\/model-v9/);
   assert.match(text(page), /recipe[\s\S]*unknown/);
   assert.equal(walk(page).some(element => element.tagName === "A" && element.href.includes("not-a-hash")), false);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("local model export status is read-only until one explicit export click", async () => {
+  const model = id("a");
+  let status = modelExportStatus({status:"idle"});
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    renderOnReload:true,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return textMenuScratchModel(model);
+      if (url === "/api/local-model-exports/status") return status;
+      if (url === "/api/local-model-exports/start") {
+        assert.equal(options.method, "POST");
+        status = modelExportStatus({status:"pending", model_id:model});
+        return status;
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.equal(action(page, "start-local-model-export").disabled, false);
+  assert.match(text(page), /导出并校验/);
+  assert.doesNotMatch(text(page), /export-csrf/);
+  assert.equal(env.calls.some(call => call.url === "/api/local-model-exports/status"
+    && call.options.method === "GET"), true);
+  assert.equal(post(env.calls).length, 0, "render only reads export status");
+
+  const button = action(page, "start-local-model-export");
+  await Promise.all([button.onclick(), button.onclick()]);
+  const writes = post(env.calls);
+  assert.equal(writes.length, 1, "a double click issues one explicit start request");
+  assert.equal(writes[0].url, "/api/local-model-exports/start");
+  assert.deepEqual(body(writes[0]), {model_id:model});
+  assert.equal(writes[0].options.headers["X-CSRF-Token"], "export-csrf");
+  assert.equal(action(env.livePage, "start-local-model-export").disabled, true,
+    "replacement render preserves backend pending eligibility");
+});
+
+test("late model export completion refreshes current same-profile status without showing the old model result", async () => {
+  const model = id("a"), other = id("b");
+  let state = modelExportStatus({status:"idle"});
+  let resolveStart, announceStart;
+  const startStarted = new Promise(resolve => { announceStart = resolve; });
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    renderOnReload:true,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      const artifact = url.match(/^\/api\/local-workspace\/artifacts\/([a-f0-9]{64})$/);
+      if (artifact) return textMenuScratchModel(artifact[1]);
+      if (url === "/api/local-model-exports/status") return state;
+      if (url === "/api/local-model-exports/start") {
+        assert.deepEqual(JSON.parse(options.body), {model_id:model});
+        announceStart();
+        return new Promise(resolve => { resolveStart = resolve; });
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const firstPage = await env.render();
+  const pendingClick = action(firstPage, "start-local-model-export").onclick();
+  await startStarted;
+  env.navigate("local-workspace", `&id=${other}`);
+  const otherPage = await env.render();
+  assert.equal(action(otherPage, "start-local-model-export").disabled, true,
+    "the existing account-wide command lock blocks another model while the POST is in flight");
+  state = modelExportStatus({status:"pending", model_id:model});
+  resolveStart(state);
+  await pendingClick;
+  assert.equal(action(env.livePage, "start-local-model-export").disabled, true,
+    "after the old POST settles, a fresh GET preserves the other-model busy state");
+  assert.doesNotMatch(text(env.livePage), /导出校验完成|尚未登记为游戏模型/,
+    "the old model result is never shown on the new model detail");
+  assert.equal(post(env.calls).length, 1);
+});
+
+test("local model export only reports the matching model and safely handles shared operations", async () => {
+  const model = id("a"), other = id("b");
+  const scenarios = [
+    {
+      operation:{status:"completed", model_id:model, payload_bytes:2048,
+        error_code:"/private/local/secret", export_path:"/private/local/secret"},
+      success:/导出校验完成；尚未登记为游戏模型，也未加载/,
+      enabled:true,
+      hidden:/\/private\/local\/secret|export-csrf/,
+    },
+    {
+      operation:{status:"completed", model_id:other, payload_bytes:9999},
+      success:/最近的导出记录属于另一模型/,
+      enabled:true,
+      hidden:/导出校验完成|9999 B/,
+    },
+    {
+      operation:{status:"pending", model_id:other},
+      success:/另一模型的导出正在进行/,
+      enabled:false,
+    },
+    {
+      operation:{status:"failed", model_id:model, error_code:"/private/diagnostic/path"},
+      success:/上次导出未完成。你可以明确再次发起/,
+      enabled:true,
+      hidden:/\/private\/diagnostic\/path/,
+    },
+    {
+      operation:{status:"interrupted", model_id:model},
+      success:/结果尚未确认。再次点击会明确核对此模型/,
+      enabled:true,
+    },
+    {
+      operation:{status:"interrupted", model_id:other},
+      success:/另一模型的导出结果尚未确认/,
+      enabled:false,
+    },
+  ];
+  for (const scenario of scenarios) {
+    const env = setup({
+      identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+        };
+        if (url === `/api/local-workspace/artifacts/${model}`) return textMenuScratchModel(model);
+        if (url === "/api/local-model-exports/status") return modelExportStatus(scenario.operation);
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    assert.match(text(page), scenario.success);
+    if (scenario.hidden) assert.doesNotMatch(text(page), scenario.hidden);
+    assert.equal(action(page, "start-local-model-export").disabled, !scenario.enabled);
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
+test("local model export stays unavailable for unsupported models and changed workspaces", async () => {
+  const model = id("a"), other = id("b");
+  let exportStatusReads = 0;
+  const unsupported = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) {
+        const value = textMenuScratchModel(model);
+        value.parameters.serializer.status = "future";
+        return value;
+      }
+      if (url === "/api/local-model-exports/status") exportStatusReads++;
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const unsupportedPage = await unsupported.render();
+  assert.equal(exportStatusReads, 0, "unsupported metadata does not query export status");
+  assert.equal(walk(unsupportedPage).some(element => element.dataset?.action === "start-local-model-export"), false);
+
+  const extraIdentity = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) {
+        const value = textMenuScratchModel(model);
+        value.parameters.serializer.unrecognized = true;
+        return value;
+      }
+      if (url === "/api/local-model-exports/status") exportStatusReads++;
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const extraIdentityPage = await extraIdentity.render();
+  assert.equal(exportStatusReads, 0, "serializer identity must match the known fields exactly");
+  assert.equal(walk(extraIdentityPage).some(element => element.dataset?.action === "start-local-model-export"), false);
+
+  let changedStatus = modelExportStatus(
+    {status:"completed", model_id:model, payload_bytes:123},
+    {availability:"workspace_changed"},
+  );
+  const changed = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    renderOnReload:true,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return textMenuScratchModel(model);
+      if (url === "/api/local-model-exports/status") return changedStatus;
+      if (url === "/api/local-model-exports/start") {
+        changedStatus = modelExportStatus({status:"pending", model_id:model});
+        return changedStatus;
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const changedPage = await changed.render();
+  assert.match(text(changedPage), /上次记录来自之前的本机资料空间/);
+  assert.match(text(changedPage), /为当前资料空间重新导出并校验/);
+  assert.doesNotMatch(text(changedPage), /导出校验完成|123 B/);
+  assert.equal(action(changedPage, "start-local-model-export").disabled, false,
+    "a historical terminal result does not block an explicit export in the current workspace");
+  assert.equal(post(changed.calls).length, 0);
+  await action(changedPage, "start-local-model-export").onclick();
+  assert.equal(post(changed.calls).length, 1, "the current model can be explicitly re-exported after the old terminal result");
+  assert.equal(action(changed.livePage, "start-local-model-export").disabled, true);
+
+  const previousPending = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return textMenuScratchModel(model);
+      if (url === "/api/local-model-exports/status") return modelExportStatus(
+        {status:"pending", model_id:other}, {availability:"workspace_changed"},
+      );
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const pendingPage = await previousPending.render();
+  assert.match(text(pendingPage), /之前本机资料空间的导出仍在处理中/,
+    JSON.stringify(previousPending.calls.map(call => call.url)));
+  assert.equal(action(pendingPage, "start-local-model-export").disabled, true,
+    "an old unresolved operation still protects the shared export slot");
+  assert.equal(post(previousPending.calls).length, 0);
+});
+
+test("late export status for a previous model cannot repaint the current model detail", async () => {
+  const first = id("a"), second = id("b");
+  let resolveFirst, markFirstStarted;
+  const firstStarted = new Promise(resolve => { markFirstStarted = resolve; });
+  let statusReads = 0;
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${first}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      const artifact = url.match(/^\/api\/local-workspace\/artifacts\/([a-f0-9]{64})$/);
+      if (artifact) return textMenuScratchModel(artifact[1]);
+      if (url === "/api/local-model-exports/status") {
+        statusReads++;
+        if (statusReads === 1) return new Promise(resolve => {
+          resolveFirst = resolve;
+          markFirstStarted();
+        });
+        return modelExportStatus({status:"idle"});
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const previousPage = env.render();
+  await firstStarted;
+  env.navigate("local-workspace", `&id=${second}`);
+  const currentPage = await env.render();
+  resolveFirst(modelExportStatus({status:"completed", model_id:first, payload_bytes:777}));
+  await previousPage;
+  assert.doesNotMatch(text(currentPage), /导出校验完成|777 B/);
+  assert.match(text(currentPage), /尚无导出结果/);
   assert.equal(post(env.calls).length, 0);
 });
 
