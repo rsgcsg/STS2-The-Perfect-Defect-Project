@@ -136,7 +136,15 @@ function setup({
     generation = 0,
     reloads = 0,
     livePage = null;
+  const timers = new Map();
+  let nextTimer = 1;
   const context = vm.createContext({
+    setTimeout: (callback) => {
+      const id = nextTimer++;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id),
     document: {
       body: { dataset: { mode, cloudUrl: "https://hub.example.test" } },
       getElementById: () => notice,
@@ -208,6 +216,13 @@ function setup({
       return page;
     },
     get livePage() { return livePage; },
+    get timerCount() { return timers.size; },
+    advanceTimer: async () => {
+      const first = timers.entries().next().value;
+      assert.ok(first, "expected scheduled status read");
+      timers.delete(first[0]);
+      await first[1]();
+    },
     scope: (value) => {
       selectedScope = value;
       generation++;
@@ -3142,6 +3157,168 @@ test("runtime prepares one trusted selection with optional diagnosis and no impl
   assert.match(text(env.notice), /尚需完成实际加载/);
 });
 
+test("accepted model load converges from pending by read-only status without another click", async () => {
+  let status = {status:"idle", loaded:false, operation:null};
+  const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) => {
+    if (url === "/api/local-models/status") return status;
+    if (url === "/api/local-models/prepare" && options.method === "POST") {
+      status = {status:"loading", loaded:false,
+        operation:{id:"prepare-1", action:"prepare-and-load", status:"pending"}};
+      return status;
+    }
+    return modelHandler(url, options);
+  }});
+  const page = await env.render();
+  await action(page, "model-start-audited-cpu").onclick();
+  assert.match(text(env.livePage), /服务处理中/);
+  assert.equal(env.timerCount, 1);
+  status = {status:"loaded", loaded:true,
+    operation:{id:"prepare-1", action:"prepare-and-load", status:"completed"},
+    runtime:{run_id:"run-1", lifecycle:"running", mode:"human", controller:"released",
+      tainted:false, errors:[], last_receipt:null}};
+  const before = env.reloads;
+  await env.advanceTimer();
+  assert.equal(env.reloads, before + 1);
+  assert.match(text(env.livePage), /服务报告已加载/);
+  assert.equal(env.timerCount, 0);
+  assert.equal(post(env.calls).length, 1);
+});
+
+test("accepted Auto reaches budget handoff by status reads and never restarts itself", async () => {
+  const budget = (state, reason = null) => ({state, max_submissions:16, submissions_used:16,
+    max_policy_calls:32, policy_calls_used:20, deadline_ms:60000, elapsed_ms:45000,
+    remaining_ms:15000, exhausted_reason:reason, ended_reason:null});
+  let status = {status:"loaded", loaded:true, operation:null,
+    runtime:{run_id:"run-1", lifecycle:"running", mode:"human", controller:"released",
+      tainted:false, errors:[], last_receipt:null}};
+  const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) => {
+    if (url === "/api/local-models/status") return status;
+    if (url === "/api/local-models/command" && options.method === "POST") {
+      status = {...status, operation:{id:"auto-1", action:"auto", status:"pending"}};
+      return status;
+    }
+    return modelHandler(url, options);
+  }});
+  const page = await env.render();
+  await action(page, "model-command-auto").onclick();
+  assert.equal(env.timerCount, 1);
+  status = {...status, operation:{id:"auto-1", action:"auto", status:"completed"},
+    runtime:{...status.runtime, mode:"auto", controller:"held", autonomy_budget:budget("active")}};
+  await env.advanceTimer();
+  assert.match(text(env.livePage), /正在使用/);
+  assert.equal(env.timerCount, 1);
+  status = {...status, runtime:{...status.runtime, mode:"human", controller:"released",
+    autonomy_budget:budget("exhausted", "submission_attempt_limit")}};
+  await env.advanceTimer();
+  assert.match(text(env.livePage), /自主提交次数已到限额/);
+  assert.match(text(env.livePage), /已释放/);
+  assert.equal(env.timerCount, 0);
+  assert.equal(post(env.calls).length, 1);
+});
+
+test("unchanged autonomous status updates budget without repeatedly reloading the page", async () => {
+  let status = {status:"loaded", loaded:true,
+    operation:{id:"auto-1", action:"auto", status:"completed"},
+    runtime:{run_id:"run-1", lifecycle:"running", mode:"auto", controller:"held",
+      tainted:false, errors:[], autonomy_budget:{state:"active", max_submissions:16,
+        submissions_used:1, max_policy_calls:32, policy_calls_used:2, deadline_ms:60000,
+        elapsed_ms:1000, remaining_ms:59000, exhausted_reason:null, ended_reason:null}}};
+  const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) =>
+    url === "/api/local-models/status" ? status : modelHandler(url, options)});
+  await env.render();
+  status = {...status, runtime:{...status.runtime,
+    autonomy_budget:{...status.runtime.autonomy_budget, submissions_used:2,
+      elapsed_ms:3000, remaining_ms:57000}}};
+  await env.advanceTimer();
+  assert.equal(env.reloads, 0);
+  assert.match(text(env.livePage), /2 \/ 16/);
+  assert.equal(env.timerCount, 1);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("late model status after leaving page cannot redraw or restart a command", async () => {
+  let resolveStatus;
+  let reads = 0;
+  const status = {status:"loading", loaded:false,
+    operation:{id:"prepare-1", action:"prepare-and-load", status:"pending"}};
+  const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) => {
+    if (url === "/api/local-models/status") {
+      reads++;
+      return reads === 1 ? status : new Promise((resolve) => { resolveStatus = resolve; });
+    }
+    return modelHandler(url, options);
+  }});
+  await env.render();
+  const lateRead = env.advanceTimer();
+  assert.equal(typeof resolveStatus, "function");
+  env.navigate("statistics");
+  await env.render();
+  resolveStatus({...status, status:"loaded", loaded:true,
+    operation:{...status.operation, status:"completed"}});
+  await lateRead;
+  assert.equal(env.reloads, 0);
+  assert.equal(env.timerCount, 0);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("old instance status cannot replace a newly selected instance", async () => {
+  let resolveStatus;
+  let reads = 0;
+  const status = {status:"loading", loaded:false,
+    operation:{id:"prepare-1", action:"prepare-and-load", status:"pending"}};
+  const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) => {
+    if (url === "/api/local-models/status") {
+      reads++;
+      return reads === 2 ? new Promise((resolve) => { resolveStatus = resolve; }) : status;
+    }
+    return modelHandler(url, options);
+  }});
+  await env.render();
+  const lateRead = env.advanceTimer();
+  env.scope("another-device");
+  await env.render();
+  resolveStatus({...status, status:"loaded", loaded:true,
+    operation:{...status.operation, status:"completed"}});
+  await lateRead;
+  assert.equal(env.reloads, 0);
+  assert.match(text(env.livePage), /服务处理中/);
+  assert.equal(env.timerCount, 1);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("unchanged pending status stops automatic checks at the finite limit", async () => {
+  const status = {status:"loading", loaded:false,
+    operation:{id:"prepare-1", action:"prepare-and-load", status:"pending"}};
+  const env = setup({view:"local-models", handler:(url, options) =>
+    url === "/api/local-models/status" ? status : modelHandler(url, options)});
+  await env.render();
+  for (let index = 0; index < 100; index++) await env.advanceTimer();
+  assert.equal(env.timerCount, 0);
+  assert.match(text(env.notice), /自动状态检查已暂停/);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("failed status reads stop after a bound and manual refresh stays read-only", async () => {
+  let fail = false;
+  const status = {status:"loading", loaded:false,
+    operation:{id:"prepare-1", action:"prepare-and-load", status:"pending"}};
+  const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) =>
+    url === "/api/local-models/status" ? (fail ? {httpStatus:503} : status)
+      : modelHandler(url, options)});
+  await env.render();
+  fail = true;
+  await env.advanceTimer();
+  await env.advanceTimer();
+  await env.advanceTimer();
+  assert.equal(env.timerCount, 0);
+  assert.match(text(env.notice), /自动状态检查暂不可用/);
+  fail = false;
+  await action(env.livePage, "model-refresh-status").onclick();
+  assert.equal(env.reloads, 1);
+  assert.equal(env.timerCount, 1);
+  assert.equal(post(env.calls).length, 0);
+});
+
 test("unknown or stale runtime state permits explicit recovery but never another game decision", async () => {
   for (const state of [
     {status:"loading", loaded:false, operation:{status:"pending", action:"prepare-and-load"}},
@@ -3941,6 +4118,140 @@ test("runtime environment rejection remains historical until an explicit fresh s
   await action(page, "model-command-auto").onclick();
   assert.equal(post(env.calls).length, 1);
   assert.deepEqual(body(post(env.calls)[0]), { action: "auto" });
+});
+
+test("local Runtime autonomy budget is read-only, bounded and separate from game completion", async () => {
+  const base = {
+    status: "loaded", loaded: true, error_code: null,
+    runtime: {
+      lifecycle: "running", mode: "human", controller: "released",
+      tainted: false, errors: [], last_receipt: null,
+    },
+  };
+  const values = [
+    [{ state: "exhausted", max_submissions: 16, submissions_used: 16,
+      max_policy_calls: 32, policy_calls_used: 20, deadline_ms: 60000,
+      elapsed_ms: 45000, remaining_ms: 15000, exhausted_reason: "submission_attempt_limit", ended_reason: null },
+    /自主提交次数已到限额/],
+    [{ state: "exhausted", max_submissions: 16, submissions_used: 4,
+      max_policy_calls: 32, policy_calls_used: 32, deadline_ms: 60000,
+      elapsed_ms: 25000, remaining_ms: 35000, exhausted_reason: "policy_call_limit", ended_reason: null },
+    /模型评分次数已到限额/],
+    [{ state: "exhausted", max_submissions: 16, submissions_used: 2,
+      max_policy_calls: 32, policy_calls_used: 7, deadline_ms: 60000,
+      elapsed_ms: 60000, remaining_ms: 0, exhausted_reason: "deadline", ended_reason: null },
+    /自主运行时间已到限额/],
+    [{ state: "inactive", max_submissions: 16, submissions_used: 2,
+      max_policy_calls: 32, policy_calls_used: 4, deadline_ms: 60000,
+      elapsed_ms: 8000, remaining_ms: 52000, exhausted_reason: null, ended_reason: "human_recovery" },
+    /因人工接管结束/],
+    [{ state: "inactive", max_submissions: 16, submissions_used: 2,
+      max_policy_calls: 32, policy_calls_used: 4, deadline_ms: 60000,
+      elapsed_ms: 8000, remaining_ms: 52000, exhausted_reason: null, ended_reason: "mode_changed" },
+    /因运行模式变更结束/],
+    [{ state: "inactive", max_submissions: 16, submissions_used: 2,
+      max_policy_calls: 32, policy_calls_used: 4, deadline_ms: 60000,
+      elapsed_ms: 8000, remaining_ms: 52000, exhausted_reason: null, ended_reason: "stopped" },
+    /随 Runtime 停止结束/],
+  ];
+  for (const [autonomy_budget, expected] of values) {
+    const state = structuredClone(base);
+    state.runtime.autonomy_budget = autonomy_budget;
+    const env = setup({view: "local-models", handler: url =>
+      url === "/api/local-models/status" ? state : modelHandler(url)});
+    let page = await env.render();
+    assert.match(text(page), expected);
+    assert.match(text(page), /不代表这一局已经结束或结果已确认/);
+    assert.match(text(page), /提交/);
+    assert.match(text(page), /模型评分/);
+    assert.equal(action(page, "model-command-auto").disabled, false);
+    page = await env.render();
+    assert.match(text(page), expected);
+    assert.equal(post(env.calls).length, 0, "GET and redraw do not send commands");
+    await action(page, "model-command-auto").onclick();
+    assert.equal(post(env.calls).length, 1, "existing command still needs its explicit click");
+    assert.deepEqual(body(post(env.calls)[0]), {action: "auto"});
+  }
+});
+
+test("active local Runtime budget requires a running autonomous mode without changing controls", async () => {
+  const activeBudget = {state: "active", max_submissions: 16, submissions_used: 3,
+    max_policy_calls: 32, policy_calls_used: 5, deadline_ms: 60000,
+    elapsed_ms: 12000, remaining_ms: 48000, exhausted_reason: null, ended_reason: null};
+  for (const [mode, controller] of [["auto", "held"], ["shadow", "released"], ["one_step", "released"]]) {
+    const state = {
+      status: "loaded", loaded: true,
+      runtime: {lifecycle: "running", mode, controller, tainted: false,
+        errors: [], last_receipt: null, autonomy_budget: activeBudget},
+    };
+    const env = setup({view: "local-models", handler: url =>
+      url === "/api/local-models/status" ? state : modelHandler(url)});
+    const page = await env.render();
+    assert.match(text(page), /正在使用/);
+    assert.match(text(page), /3 \/ 16/);
+    assert.match(text(page), /5 \/ 32/);
+    assert.match(text(page), /12 秒 \/ 60 秒（剩余 48 秒）/);
+    assert.equal(action(page, "model-command-auto").disabled, true, mode);
+    assert.equal(action(page, "model-command-human").disabled, false, mode);
+    assert.equal(action(page, "model-command-stop").disabled, false, mode);
+    assert.equal(post(env.calls).length, 0, mode);
+  }
+});
+
+test("active budget with Human mode or stopped lifecycle is unknown without affecting command guards", async () => {
+  const activeBudget = {state: "active", max_submissions: 16, submissions_used: 3,
+    max_policy_calls: 32, policy_calls_used: 5, deadline_ms: 60000,
+    elapsed_ms: 12000, remaining_ms: 48000, exhausted_reason: null, ended_reason: null};
+  const cases = [
+    {lifecycle: "running", mode: "human", controller: "released", tainted: false},
+    {lifecycle: "stopped", mode: "auto", controller: "released", tainted: false},
+  ];
+  for (const runtime of cases) {
+    const render = async (budget) => {
+      const state = {status: "loaded", loaded: true,
+        runtime: {...runtime, errors: [], last_receipt: null, ...(budget ? {autonomy_budget: budget} : {})}};
+      const env = setup({view: "local-models", handler: url =>
+        url === "/api/local-models/status" ? state : modelHandler(url)});
+      return {page: await env.render(), env};
+    };
+    const baseline = await render(null);
+    const {page, env} = await render(activeBudget);
+    assert.match(text(page), /预算状态未提供或格式无法识别/);
+    assert.doesNotMatch(text(page), /正在使用|3 \/ 16|5 \/ 32/);
+    for (const actionName of ["auto", "human", "stop"])
+      assert.equal(action(page, `model-command-${actionName}`).disabled,
+        action(baseline.page, `model-command-${actionName}`).disabled, actionName);
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
+test("old or unrecognized Runtime budget data is not replaced with a default or echoed", async () => {
+  const state = {
+    status: "loaded", loaded: true,
+    runtime: {lifecycle: "running", mode: "human", controller: "released",
+      tainted: false, errors: [], last_receipt: null},
+  };
+  const env = setup({view: "local-models", handler: url =>
+    url === "/api/local-models/status" ? state : modelHandler(url)});
+  let page = await env.render();
+  assert.match(text(page), /此 Runtime 未提供预算信息/);
+  assert.doesNotMatch(text(page), /16|32|60 秒/);
+
+  state.runtime.autonomy_budget = {state: "private-path-leak", submissions_used: 999};
+  page = await env.render();
+  assert.match(text(page), /预算状态未提供或格式无法识别/);
+  assert.doesNotMatch(text(page), /private-path-leak|999/);
+  assert.equal(action(page, "model-command-auto").disabled, false);
+  assert.equal(post(env.calls).length, 0);
+
+  state.runtime.mode = "human";
+  state.runtime.autonomy_budget = {state: "inactive", max_submissions: 16, submissions_used: 3,
+    max_policy_calls: 32, policy_calls_used: 5, deadline_ms: 60000,
+    elapsed_ms: 12000, remaining_ms: 48000, exhausted_reason: "deadline", ended_reason: "human_recovery"};
+  page = await env.render();
+  assert.match(text(page), /预算状态未提供或格式无法识别/);
+  assert.doesNotMatch(text(page), /自主运行时间已到限额|因人工接管结束/);
+  assert.equal(post(env.calls).length, 0);
 });
 
 test("retained local precondition diagnostics do not block an explicit fresh start", async () => {
