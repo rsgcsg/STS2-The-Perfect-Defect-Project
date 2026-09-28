@@ -9,17 +9,13 @@ separate.
 
 ## Implemented and observed
 
-- **Native game:** last verified Game Mod rc.17 / Annotator rc.13 installation
-  comes from `94d76ffd5a56727e344813e31bc14ed4a7a16aeb`. Its closed mouse canary
-  has 9 input labels and 3 canonical decisions; its narrow cancellation evidence
-  and unknowns remain in [PR #63's receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/63#issuecomment-5856320923).
-  This is not full-game qualification. The later owner check found the same
-  loaded rc.17 artifact. Two later owner-attested recording fragments were closed,
-  imported and verified: 31 accepted input labels and 23 canonical decisions,
-  with two close-before-successor endpoints retained as unknown. The exact
-  Defense+ binding/Commit/successor is proved; a Human mouse untargeted-confirm
-  label remains unproved. [The bounded receipt](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
-  separates these facts and does not establish two independent full games.
+- **Native game:** Game Mod rc.17 / Annotator rc.13 remains loaded from the
+  installation at `94d76ffd5a56727e344813e31bc14ed4a7a16aeb`.
+  [PR #63's receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/63#issuecomment-5856320923)
+  retains its 9-label/3-decision mouse canary. The [two later fragments](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
+  contain 31 accepted input labels and 23 canonical decisions, with two
+  close-before-successor endpoints unknown. Human mouse untargeted-confirm and
+  two independent full games remain unproved; exact bounds stay in those receipts.
 - **Active Workbench:** clean application source
   `7a7312b504526e0edf5086f1a9f816b84939abdf` is active in its own locked
   environment; PR #76 merged with the same tree. Python Linux/Windows/portable
