@@ -68,6 +68,15 @@ const modelExportStatus = (operation, extra = {}) => ({
   csrf_token:"export-csrf",
   ...extra,
 });
+const modelRegistrationStatus = (model, status = "not_registered", extra = {}) => ({
+  schema:"stpd/local-model-registration-v1",
+  model_id:model,
+  status,
+  loaded:false,
+  runtime_profile:"text-menu-v1",
+  ...(status === "not_registered" ? {csrf_token:"registration-csrf"} : {}),
+  ...extra,
+});
 const uploadId = "a".repeat(32);
 const enrollmentId = "e".repeat(32);
 const memberId = "f".repeat(32);
@@ -1422,7 +1431,7 @@ test("local model export only reports the matching model and safely handles shar
     {
       operation:{status:"completed", model_id:model, payload_bytes:2048,
         error_code:"/private/local/secret", export_path:"/private/local/secret"},
-      success:/导出校验完成；尚未登记为游戏模型，也未加载/,
+      success:/导出校验完成；尚未加载/,
       enabled:true,
       hidden:/\/private\/local\/secret|export-csrf/,
     },
@@ -1565,6 +1574,297 @@ test("local model export stays unavailable for unsupported models and changed wo
   assert.equal(action(pendingPage, "start-local-model-export").disabled, true,
     "an old unresolved operation still protects the shared export slot");
   assert.equal(post(previousPending.calls).length, 0);
+});
+
+test("completed local model export registers only on one explicit click and links the exact selection", async () => {
+  const model = id("a"), selection = "text-model-a";
+  let registration = modelRegistrationStatus(model);
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    renderOnReload:true,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return textMenuScratchModel(model);
+      if (url === "/api/local-model-exports/status")
+        return modelExportStatus({status:"completed", model_id:model, payload_bytes:2048});
+      if (url === `/api/local-model-registrations/status?model_id=${model}`) {
+        assert.equal(options.method, "GET");
+        return registration;
+      }
+      if (url === "/api/local-model-registrations/register") {
+        assert.equal(options.method, "POST");
+        assert.deepEqual(JSON.parse(options.body), {model_id:model});
+        registration = modelRegistrationStatus(model, "registered", {
+          selection_id:selection, private_path:"/private/model/secret",
+        });
+        return registration;
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /登记会依据本机文本菜单运行环境/);
+  assert.match(text(page), /不会安装运行组件、加载模型或进入游戏/);
+  assert.equal(action(page, "register-local-model").disabled, false);
+  assert.equal(post(env.calls).length, 0, "detail render only reads registration state");
+  assert.equal(env.calls.some(call => call.url === "/api/local-models/prepare"), false);
+
+  await Promise.all([
+    action(page, "register-local-model").onclick(),
+    action(page, "register-local-model").onclick(),
+  ]);
+  const writes = post(env.calls);
+  assert.equal(writes.length, 1, "a double click creates one registration request");
+  assert.equal(writes[0].url, "/api/local-model-registrations/register");
+  assert.deepEqual(body(writes[0]), {model_id:model});
+  assert.equal(writes[0].options.headers["X-CSRF-Token"], "registration-csrf");
+  assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), false,
+    "a confirmed registration replaces the action with the exact selection link");
+  const selectionLink = find(env.livePage, element => element.tagName === "A"
+    && element.href === `?view=local-models&id=${selection}`);
+  assert.equal(selectionLink.textContent, "打开此模型选择");
+  assert.doesNotMatch(text(env.livePage), /\/private\/model\/secret|registration-csrf/);
+  assert.equal(post(env.calls).length, 1, "status refresh does not prepare or load a model");
+  assert.equal(env.calls.some(call => call.url === "/api/local-models/prepare"
+    || call.url === "/api/local-models/start"), false);
+});
+
+test("registration precondition failures need another explicit click and do not strand the control", async () => {
+  const model = id("d"), selection = "text-model-d";
+  let status = modelRegistrationStatus(model), attempts = 0;
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    renderOnReload:true,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return textMenuScratchModel(model);
+      if (url === "/api/local-model-exports/status")
+        return modelExportStatus({status:"completed", model_id:model});
+      if (url === `/api/local-model-registrations/status?model_id=${model}`) return status;
+      if (url === "/api/local-model-registrations/register") {
+        attempts++;
+        if (attempts === 1) return {httpStatus:409, error:"text_menu_capabilities_unavailable"};
+        status = modelRegistrationStatus(model, "registered", {selection_id:selection});
+        return status;
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  const register = action(page, "register-local-model");
+  await register.onclick();
+  assert.equal(attempts, 1);
+  assert.equal(register.disabled, false, "a known precondition failure leaves a deliberate retry available");
+  assert.match(text(env.notice), /请打开游戏后刷新，再明确重试/);
+  assert.equal(post(env.calls).length, 1, "a precondition failure does not automatically replay POST");
+  await register.onclick();
+  assert.equal(attempts, 2, "the next attempt requires a second explicit click");
+  assert.ok(walk(env.livePage).some(element => element.tagName === "A"
+    && element.href === `?view=local-models&id=${selection}`));
+});
+
+test("current registration integrity blockers are reconciled by GET and disable another attempt", async () => {
+  const model = id("e");
+  let status = modelRegistrationStatus(model), statusReads = 0;
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    renderOnReload:true,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return textMenuScratchModel(model);
+      if (url === "/api/local-model-exports/status")
+        return modelExportStatus({status:"completed", model_id:model});
+      if (url === `/api/local-model-registrations/status?model_id=${model}`) {
+        statusReads++;
+        return status;
+      }
+      if (url === "/api/local-model-registrations/register") {
+        status = modelRegistrationStatus(model, "unavailable", {reason_code:"registration_metadata_invalid"});
+        return {httpStatus:409, error:"registration_metadata_invalid"};
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  await action(page, "register-local-model").onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.ok(statusReads >= 2, "a current integrity blocker triggers read-only status reconciliation");
+  assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), false);
+  assert.match(text(env.livePage), /本机模型登记资料无法安全确认/);
+  assert.equal(post(env.calls).length, 1, "reconciliation does not replay the rejected POST");
+});
+
+test("registration only appears for the matching completed export and unavailable reasons stay bounded", async () => {
+  const model = id("a"), other = id("b");
+  const cases = [
+    {export:modelExportStatus({status:"pending", model_id:model}), registration:null, action:false, request:false},
+    {export:modelExportStatus({status:"completed", model_id:other}), registration:null, action:false, request:false},
+    {export:modelExportStatus({status:"completed", model_id:model}, {availability:"workspace_changed"}), registration:null, action:false, request:false},
+    {
+      export:modelExportStatus({status:"completed", model_id:model}),
+      registration:modelRegistrationStatus(model, "unavailable", {
+        reason_code:"registration_metadata_invalid", private_path:"/secret/path",
+      }),
+      action:false, request:true,
+      message:/本机模型登记资料无法安全确认/,
+      hidden:/registration_metadata_invalid|\/secret\/path/,
+    },
+    {
+      export:modelExportStatus({status:"completed", model_id:model}),
+      registration:modelRegistrationStatus(model, "unavailable", {reason_code:"future_private_reason"}),
+      action:false, request:true,
+      message:/当前无法完成登记/,
+      hidden:/future_private_reason/,
+    },
+  ];
+  for (const scenario of cases) {
+    let registrationReads = 0;
+    const env = setup({
+      identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+        };
+        if (url === `/api/local-workspace/artifacts/${model}`) return textMenuScratchModel(model);
+        if (url === "/api/local-model-exports/status") return scenario.export;
+        if (url === `/api/local-model-registrations/status?model_id=${model}`) {
+          registrationReads++;
+          return scenario.registration;
+        }
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    assert.equal(registrationReads > 0, scenario.request);
+    assert.equal(walk(page).some(element => element.dataset?.action === "register-local-model"), scenario.action);
+    if (scenario.message) assert.match(text(page), scenario.message);
+    if (scenario.hidden) assert.doesNotMatch(text(page), scenario.hidden);
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
+test("registered selection link focuses only its local model row without invoking model commands", async () => {
+  const model = id("a"), selection = "text-model-a";
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return textMenuScratchModel(model);
+      if (url === "/api/local-model-exports/status")
+        return modelExportStatus({status:"completed", model_id:model});
+      if (url === `/api/local-model-registrations/status?model_id=${model}`)
+        return modelRegistrationStatus(model, "registered", {selection_id:selection});
+      if (url === "/api/local-models") return {
+        policies:[
+          {selection_id:selection, label:"Text menu model", artifact_sha256:model},
+          {selection_id:"other-model", label:"Other", artifact_sha256:id("b")},
+        ], downloaded_models:[],
+      };
+      if (url === "/api/local-models/status") return {status:"idle", loaded:false};
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const detail = await env.render();
+  assert.ok(find(detail, element => element.tagName === "A"
+    && element.href === `?view=local-models&id=${selection}`));
+  env.navigate("local-models", `&id=${selection}`);
+  const page = await env.render();
+  assert.match(text(page), /刚登记的模型选择/);
+  assert.equal(post(env.calls).length, 0, "deep-link preselection is read-only");
+  assert.equal(env.calls.some(call => call.url.startsWith("/api/local-models/readiness")), false);
+  assert.equal(env.calls.some(call => call.url === "/api/local-models/prepare"
+    || call.url === "/api/local-models/start"), false);
+});
+
+test("late or unknown registration response reconciles by GET without replay or stale-model display", async () => {
+  const model = id("a"), other = id("b"), selection = "text-model-a";
+  let resolveRegistration, notifyRegistration, modelState = modelRegistrationStatus(model);
+  const started = new Promise(resolve => { notifyRegistration = resolve; });
+  let statusReads = 0, currentArtifact = model;
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    renderOnReload:true,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      const artifact = url.match(/^\/api\/local-workspace\/artifacts\/([a-f0-9]{64})$/);
+      if (artifact) {
+        currentArtifact = artifact[1];
+        return textMenuScratchModel(artifact[1]);
+      }
+      if (url === "/api/local-model-exports/status")
+        return modelExportStatus({status:"completed", model_id:currentArtifact});
+      const status = url.match(/^\/api\/local-model-registrations\/status\?model_id=([a-f0-9]{64})$/);
+      if (status) {
+        statusReads++;
+        return status[1] === model ? modelState : modelRegistrationStatus(other);
+      }
+      if (url === "/api/local-model-registrations/register") {
+        assert.deepEqual(JSON.parse(options.body), {model_id:model});
+        notifyRegistration();
+        return new Promise(resolve => { resolveRegistration = () => {
+          modelState = modelRegistrationStatus(model, "registered", {selection_id:selection});
+          resolve(modelState);
+        }; });
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const first = await env.render();
+  const click = action(first, "register-local-model").onclick();
+  await started;
+  env.navigate("local-workspace", `&id=${other}`);
+  const second = await env.render();
+  assert.equal(action(second, "register-local-model").disabled, true,
+    "the account-wide command lock blocks another registration while the POST is pending");
+  resolveRegistration();
+  await click;
+  assert.ok(statusReads >= 3, "late completion refreshes the current detail by GET");
+  assert.equal(action(env.livePage, "register-local-model").disabled, false,
+    "the new model keeps its own eligibility after the previous request settles");
+  assert.doesNotMatch(text(env.livePage), /打开此模型选择/,
+    "the previous model's selection result is not shown on the new detail");
+  assert.equal(post(env.calls).length, 1);
+
+  const unknownModel = id("c"), unknownSelection = "text-model-c";
+  let unknownState = modelRegistrationStatus(unknownModel), unknownPosts = 0, unknownReads = 0;
+  const unknown = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${unknownModel}`,
+    renderOnReload:true,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${unknownModel}`) return textMenuScratchModel(unknownModel);
+      if (url === "/api/local-model-exports/status")
+        return modelExportStatus({status:"completed", model_id:unknownModel});
+      if (url === `/api/local-model-registrations/status?model_id=${unknownModel}`) {
+        unknownReads++;
+        return unknownState;
+      }
+      if (url === "/api/local-model-registrations/register") {
+        unknownPosts++;
+        unknownState = modelRegistrationStatus(unknownModel, "registered", {selection_id:unknownSelection});
+        throw new Error("connection_lost_after_dispatch");
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const unknownPage = await unknown.render();
+  await action(unknownPage, "register-local-model").onclick();
+  assert.equal(unknownPosts, 1, "an uncertain registration is never automatically replayed");
+  assert.ok(unknownReads >= 2, "uncertain outcome uses only a read-only GET reconciliation");
+  assert.ok(walk(unknown.livePage).some(element => element.tagName === "A"
+    && element.href === `?view=local-models&id=${unknownSelection}`));
 });
 
 test("late export status for a previous model cannot repaint the current model detail", async () => {
