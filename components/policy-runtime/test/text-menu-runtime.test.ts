@@ -59,9 +59,9 @@ describe("text menu Runtime opt-in", () => {
         : kind === "reward_claim" ? { kind, screen_entity_id: "reward-screen", rewards: [{ entity_id: "reward-a", kind: "gold", label: "Gold", description: "Gold", enabled: true }], potion_slots_full: false, discardable_potions: [], can_proceed: true, proceed_skips_remaining_rewards: false }
         : { kind, screen_entity_id: "map-screen", travel_enabled: status === "interactive", traveling: false, drawing_mode: "none", next_options: actions.map((item, index) => ({ entity_id: item.subject_referent_id, col: index, row: 1, point_type: "combat" })), annotation_input_entity_id: null, can_exit_annotation: false };
       const context = kind === "game_over" ? { kind, result: "loss", game_mode: "standard", score: 0, floor_reached: 9, ascension: 0 }
-        : kind === "combat_turn" ? { kind, encounter_type: "normal", round: 1, turn_owner: "player", is_play_phase: true, player: {}, enemies: [] }
-        : kind === "reward_claim" ? { kind, reward_kind: "room" }
-        : { kind, act_index: 1, current_position: null, visited: [], nodes: [] };
+        : kind === "combat_turn" ? { kind: "combat", encounter_type: "normal", round: 1, turn_owner: "player", is_play_phase: true, player: {}, enemies: [] }
+        : kind === "reward_claim" ? { kind: "reward_flow", reward_kind: "room_rewards" }
+        : { kind: "map", act_index: 1, current_position: null, visited: [], nodes: [] };
       return decodeTextMenuSnapshot({ ...base, status, referents,
         interaction: { ...base.interaction, interaction_id: `interaction-${sequence}`, kind, stage: status === "interactive" ? "ready" : status, content_schema: `sts2.player-environment/surface/${kind}-1`,
           content: { surface, context },
