@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Reviewed source
-anchor: `develop@889aa980015ed68543b1cb63fd34c276b7e30e2b` (through PR #77).
+anchor: `develop@4739c3501c050cd598fc4e394fc86c6f2001a50a` (through PR #78).
 Resolve live GitHub refs and deployed identities before work; current source and
 runtime authorities override this file. This bounded handoff is not the
 running-version owner. Platform, application, Human and research evidence remain
@@ -56,9 +56,6 @@ separate.
 
 ## Current work and next boundaries
 
-- PRs #71–#74 are merged: library filters, command recovery, offline export and
-  explicit registration. The active application/Runtime exercise is recorded
-  above; each PR retains its exact source and CI receipts.
 - Saving a Human source does not establish train/dev readiness. Immutable Human
   v1/v2 keep their original split semantics; v2 joins sessions sharing visible
   input and can collapse all groups. More recordings alone do not guarantee an
@@ -75,9 +72,10 @@ separate.
   records one predeclared 260-step CPU diagnostic on the same train26/dev5:
   Top-1 0/5 to 1/5, but NLL worsened. No learned-quality conclusion or further
   dev-based tuning; old models/data remain. Source/CI/activation stay separate.
-- The installed Runtime rc.10 passed 121 component tests and installed synthetic smoke before
-  its separate local install/load. Exact identities are in the journey receipt;
-  no public package release or tracked legacy rc.6 consumer-pin change.
+- Installed Runtime remains rc.10. The [non-admission report repair](../evidence/NONADMITTED_OBSERVATION_2026-09-28.md)
+  proposes Runtime rc.11 / Evidence rc.18: record a rejected page before Human,
+  report its observed terminal result, and produce no training label. Component
+  checks are synthetic; activation and native qualification remain separate.
 - Latest native/consumer check: the small-B short run delivered an untargeted card
   confirmation, then reached its submission limit and released control. The native
   discard selector was subsequently observed; a separate one-selection engineering
