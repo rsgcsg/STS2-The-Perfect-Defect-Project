@@ -16,9 +16,9 @@
     },
     "host_runtime": {
       "version": "1.1.0-rc.8",
-      "source_revision": "fec3705af38f81eb9c478ad14eececb85be06059",
-      "component_tree_revision": "9c9cd19793d0582bc9b0e322d592b2fc806e5025",
-      "component_source_digest_sha256": "bf3d9f459c622b46094784ad19ca665535050a71566b5790a1f553587011d9bc"
+      "source_revision": "bfe7bf7573e5af0ddb7e0dfe49890beac06ce897",
+      "component_tree_revision": "72321c8253481dedba2d97b325ebe63cbff66bfe",
+      "component_source_digest_sha256": "94f3eb92dffe3305f0dabc3d1c579fb02470fcac89115a173954aff3589a7ebd"
     },
     "annotator": {
       "version": "0.3.0-rc.14",
@@ -46,9 +46,9 @@
     },
     "live_ui": {
       "version": "0.1.0-rc.6",
-      "source_revision": "b05264d0cde28f94a9cc3123abb8ead53aebd364",
-      "component_tree_revision": "10cc6ce2bec833cf2678c9afd3f8eb3de7d15093",
-      "component_source_digest_sha256": "eadc51ba518db510edad0a4401950bdb1fc222417284e361169457387862b0af"
+      "source_revision": "573262af29cc5bdccb69eac42e3f916612e0cc15",
+      "component_tree_revision": "7e0a326ea3e2551e6dc2458995adfc71ebad92a7",
+      "component_source_digest_sha256": "5fe9cbb77336be291a4a824dbd067b3215c89d5c2ff157b368508bda4d05131a"
     },
     "game_mod": {
       "version": "0.2.0-rc.18",
@@ -900,8 +900,8 @@
     "live_ui": {
       "source_revision": "305a2cac80f0bd3126d66cfc5818477c583a8ce5",
       "source_digest_sha256": "c2a75214cb69678913fceb965ae4d41784a6cb1580311b53a2cc5b4c0c4cb1c4",
-      "current_component_source_revision": "b05264d0cde28f94a9cc3123abb8ead53aebd364",
-      "current_component_source_digest_sha256": "eadc51ba518db510edad0a4401950bdb1fc222417284e361169457387862b0af",
+      "current_component_source_revision": "573262af29cc5bdccb69eac42e3f916612e0cc15",
+      "current_component_source_digest_sha256": "5fe9cbb77336be291a4a824dbd067b3215c89d5c2ff157b368508bda4d05131a",
       "source_relation": "loaded_ui_source_precedes_current_component",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b"

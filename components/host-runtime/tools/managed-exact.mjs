@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseWorkerCounts } from "../src/capacity-benchmark.mjs";
@@ -29,6 +29,14 @@ import {
   createShippedReferenceHostDriver
 } from "../src/cross-host-driver.mjs";
 import { runCrossHostDifferential } from "../src/semantic-differential.mjs";
+import { runManagedRepeatability } from "../src/managed-repeatability.mjs";
+import {
+  createValidatedManagedScenarioDriver,
+  getManagedScenario,
+  listManagedScenarios,
+  resolveManagedRepeatabilitySelection
+} from "../src/managed-scenario-catalog.mjs";
+import { validateScenarioDescriptor } from "../src/host-driver.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const LOCAL = path.join(ROOT, ".local");
@@ -54,6 +62,26 @@ function safeTimestamp() {
 
 async function main() {
   const [command = "help", ...args] = process.argv.slice(2);
+  if (command === "scenarios") {
+    const [operation, ...scenarioArgs] = args;
+    if (operation === "list") {
+      console.log(JSON.stringify(listManagedScenarios(), null, 2));
+      return;
+    }
+    if (operation === "show") {
+      const scenarioId = option(scenarioArgs, "--scenario-id", scenarioArgs[0] ?? null);
+      const scenario = getManagedScenario(scenarioId);
+      if (scenario == null) throw new Error(`Unknown managed scenario ID: ${scenarioId ?? "(missing)"}`);
+      console.log(JSON.stringify(scenario, null, 2));
+      return;
+    }
+    throw new Error("scenarios requires list or show [--scenario-id <id>].");
+  }
+  // Resolve built-in IDs and contradictory overrides before game discovery or
+  // candidate inspection so invalid requests are cheap and side-effect-free.
+  const repeatabilitySelection = command === "repeatability"
+    ? resolveManagedRepeatabilitySelection(args)
+    : null;
   if (command === "prepare") {
     const result = await prepareManagedCandidate({
       root: ROOT,
@@ -70,7 +98,7 @@ async function main() {
     return;
   }
   const candidateDirectory = option(args, "--candidate");
-  if (["audit", "probe", "pe-probe", "pe-profile", "pe-capacity", "pe-sharded-capacity", "engine-lab", "native-gates", "recovery", "capacity", "cross-host"].includes(command)
+  if (["audit", "probe", "pe-probe", "pe-profile", "pe-capacity", "pe-sharded-capacity", "engine-lab", "native-gates", "recovery", "capacity", "cross-host", "repeatability"].includes(command)
       && !candidateDirectory) {
     throw new Error(`${command} requires --candidate <prepared-directory>.`);
   }
@@ -350,6 +378,74 @@ async function main() {
     process.exitCode = result.comparison.verdict === "cross_host_semantic_match" ? 0 : 10;
     return;
   }
+  if (command === "repeatability") {
+    const scenario = repeatabilitySelection.kind === "builtin"
+      ? repeatabilitySelection.definition.scenario
+      : JSON.parse(readFileSync(path.resolve(repeatabilitySelection.file), "utf8"));
+    const scenarioErrors = validateScenarioDescriptor(scenario);
+    if (scenarioErrors.length > 0) throw new Error(`Invalid scenario: ${scenarioErrors.join(", ")}`);
+    if (typeof scenario.start_interaction_kind !== "string" || scenario.start_interaction_kind.length === 0) {
+      throw new Error("Managed repeatability scenarios require start_interaction_kind.");
+    }
+    const exactGame = diskIdentity();
+    const semanticTarget = {
+      schema: "sts2.headless/semantic-target-1",
+      target_id: "sts2-v0.111.0-player-visible-zhs-v1",
+      protocol_version: "1.0.0",
+      game_build: {
+        version: exactGame.release.version,
+        commit: exactGame.release.commit,
+        main_assembly_hash: exactGame.runtime_main_assembly_hash
+      },
+      content_policy_id: "vanilla_singleplayer_v1",
+      information_policy_id: "player_visible_v1",
+      presentation_language: option(args, "--language", "zhs")
+    };
+    let selectedManifest = null;
+    if (repeatabilitySelection.kind === "builtin") {
+      const loaded = loadManagedCandidateManifest(ROOT).manifest;
+      selectedManifest = selectManagedCandidateManifest(loaded, exactGame);
+    }
+    const createDriver = () => createManagedExactHostDriver({
+      root: ROOT,
+      candidateDirectory,
+      diskIdentity: exactGame,
+      semanticTarget,
+      character: repeatabilitySelection.kind === "builtin"
+        ? repeatabilitySelection.definition.character
+        : option(args, "--character", "Ironclad"),
+      requestTimeoutMs: Number(option(args, "--timeout-ms", "10000")),
+      scenarioTimeoutMs: Number(option(args, "--scenario-timeout-ms",
+        String(repeatabilitySelection.kind === "builtin"
+          ? repeatabilitySelection.definition.scenario_timeout_ms
+          : 120_000)))
+    });
+    const driver = repeatabilitySelection.kind === "builtin"
+      ? await createValidatedManagedScenarioDriver({
+        definition: repeatabilitySelection.definition,
+        actualGame: exactGame,
+        semanticTarget,
+        candidateManifest: selectedManifest,
+        createDriver
+      })
+      : await createDriver();
+    const result = await runManagedRepeatability({ driver, scenario });
+    const directory = path.join(LOCAL, "evidence", `managed-repeatability-${safeTimestamp()}`);
+    mkdirSync(directory, { recursive: true });
+    const reportFile = path.join(directory, "report.json");
+    writeFileSync(reportFile, `${JSON.stringify({ generated_at: new Date().toISOString(), ...result }, null, 2)}\n`);
+    console.log(JSON.stringify({
+      status: result.verdict,
+      report_file: reportFile,
+      runtime_instance_ids: result.runtime_instance_ids,
+      actual_seeds: result.actual_seeds,
+      exact_candidate_artifact: result.exact_candidate_artifact,
+      errors: result.errors,
+      first_divergence: result.comparison?.first_divergence ?? null
+    }, null, 2));
+    process.exitCode = result.verdict === "managed_repeatability_pass" ? 0 : 10;
+    return;
+  }
   if (command === "capacity") {
     const result = await runManagedCandidateCapacity({
       root: ROOT,
@@ -368,6 +464,8 @@ async function main() {
   console.log(`Managed exact candidate (experimental, unqualified)
 
 Commands:
+  scenarios list
+  scenarios show --scenario-id ID
   prepare [--candidate DIR]
   audit --candidate DIR
   probe --candidate DIR [--seed SEED] [--episodes N] [--max-actions N] [--reset-at card_select,card_reward]
@@ -380,6 +478,7 @@ Commands:
   native-gates --candidate DIR [--seed SEED]
   recovery --candidate DIR [--seed SEED]
   cross-host --candidate DIR [--seed SEED] [--start-kind KIND] [--discovery-actions N] [--max-actions N] [--template ID]
+  repeatability --candidate DIR (--scenario scenario.json | --scenario-id ID) [--scenario-timeout-ms N]
   capacity --candidate DIR [--workers 1,2,4] [--episodes N] [--max-actions N]
 
 The raw candidate protocol is not the canonical Player Environment. pe-probe

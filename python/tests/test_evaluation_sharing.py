@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -27,14 +28,21 @@ def sharing(api, tmp_path):
     _, expected = evidence(models.directory / "agent-runs")
     models.state.update(startup=expected, selection_id="s1-human-combat-v4")
     models._evaluation_handoff()
-    session = {"token": "personal-synthetic", "lost": False}
+    session = {"token": "personal-synthetic", "lost": False,
+               "request_entered": threading.Event(), "publish_finished": threading.Event(),
+               "worker_finished": threading.Event(), "receipts": []}
     calls = []
 
     def request(route, *, body, token):
         calls.append((route, body, token))
         assert route == "/v1/identity/member/live-evaluations"
         assert token == "personal-synthetic"
-        receipt = owner.publish(member, body)
+        session["request_entered"].set()
+        try:
+            receipt = owner.publish(member, body)
+        finally:
+            session["publish_finished"].set()
+        session["receipts"].append(receipt)
         if session["lost"]:
             raise BoundaryError("identity", "request_unknown")
         return receipt
@@ -42,12 +50,35 @@ def sharing(api, tmp_path):
     account = SimpleNamespace(device=lambda: {"device_id": "one"}, request=request)
     members = SimpleNamespace(account=account, token=lambda: session["token"])
     result = EvaluationSharing(models, members)
+    real_share = result._share
+
+    def observed_share(*args):
+        try:
+            real_share(*args)
+        finally:
+            session["worker_finished"].set()
+
+    result._share = observed_share
     return result, models.evaluations()[0]["evaluation_id"], session, calls, service
 
 
 def finish(sharer):
     assert sharer.thread is not None
     sharer.thread.join(timeout=5)
+    assert not sharer.thread.is_alive()
+    return sharer.status()
+
+
+def finish_after_real_publish(sharer, session):
+    """Observe real verifier/store phases within one bounded attempt."""
+    deadline = time.monotonic() + 30
+    assert session["request_entered"].wait(timeout=30), "share never reached Hub publish"
+    remaining = max(0, deadline - time.monotonic())
+    assert session["publish_finished"].wait(timeout=remaining), "Hub publish did not finish"
+    remaining = max(0, deadline - time.monotonic())
+    assert session["worker_finished"].wait(timeout=remaining), "share worker did not finish"
+    assert sharer.thread is not None
+    sharer.thread.join(timeout=1)
     assert not sharer.thread.is_alive()
     return sharer.status()
 
@@ -67,20 +98,64 @@ def test_share_is_explicit_and_receipt_is_durable_and_idempotent(sharing):
 
 def test_lost_response_is_unknown_no_auto_retry_manual_retry_same_manifest(sharing):
     sharer, identity, session, calls, service = sharing
-    session["lost"] = True
-    sharer.share(identity, True)
-    assert finish(sharer)["status"] == "unknown"
-    assert len(calls) == 1
-    session["lost"] = False
-    sharer.share(identity, True)
-    assert finish(sharer)["status"] == "shared"
-    with service.operations.transaction() as db:
-        assert (
-            db.execute(
+    try:
+        session["lost"] = True
+        sharer.share(identity, True)
+        assert finish_after_real_publish(sharer, session)["status"] == "unknown"
+        assert len(calls) == 1
+        with service.operations.transaction() as db:
+            assert db.execute(
                 "SELECT COUNT(*) FROM events WHERE operation='live_evaluation_shared'"
-            ).fetchone()[0]
-            == 1
-        )
+            ).fetchone()[0] == 1
+        session["request_entered"].clear()
+        session["publish_finished"].clear()
+        session["worker_finished"].clear()
+        session["lost"] = False
+        sharer.share(identity, True)
+        assert finish_after_real_publish(sharer, session)["status"] == "shared"
+        assert len(calls) == 2, "the second upload requires an explicit manual share"
+        assert session["receipts"][0]["artifact_id"] == session["receipts"][1]["artifact_id"]
+        with service.operations.transaction() as db:
+            assert db.execute(
+                "SELECT COUNT(*) FROM events WHERE operation='live_evaluation_shared'"
+            ).fetchone()[0] == 1
+    finally:
+        sharer.close()
+        if sharer.thread is not None:
+            sharer.thread.join(timeout=5)
+
+
+def test_real_hub_publish_must_return_before_share_can_finish(sharing, monkeypatch):
+    sharer, identity, session, calls, service = sharing
+    real_publish = LiveEvaluations.publish
+    committed, release = threading.Event(), threading.Event()
+
+    def held_return(owner, principal, body):
+        receipt = real_publish(owner, principal, body)
+        committed.set()
+        assert release.wait(timeout=10)
+        return receipt
+
+    monkeypatch.setattr(LiveEvaluations, "publish", held_return)
+    try:
+        sharer.share(identity, True)
+        assert committed.wait(timeout=30), "real Hub verification/publication did not finish"
+        assert session["request_entered"].is_set()
+        assert not session["publish_finished"].is_set()
+        assert not session["worker_finished"].is_set()
+        assert sharer.status()["status"] == "uploading"
+        assert len(calls) == 1
+        release.set()
+        assert finish_after_real_publish(sharer, session)["status"] == "shared"
+        with service.operations.transaction() as db:
+            assert db.execute(
+                "SELECT COUNT(*) FROM events WHERE operation='live_evaluation_shared'"
+            ).fetchone()[0] == 1
+    finally:
+        release.set()
+        sharer.close()
+        if sharer.thread is not None:
+            sharer.thread.join(timeout=5)
 
 
 def test_account_switch_before_post_cancels_and_hides_previous_operation(sharing, monkeypatch):

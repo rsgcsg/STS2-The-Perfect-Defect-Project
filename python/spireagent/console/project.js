@@ -3299,6 +3299,19 @@ window.SpireProject = (() => {
       if (hex(operation.evaluation_id))
         card.append(link("查看开发集结果", route("local-workspace", operation.evaluation_id)));
     }
+    const previousCompleted = operation.previous_completed;
+    if (previousCompleted && typeof previousCompleted === "object" && !Array.isArray(previousCompleted)
+        && previousCompleted.dataset_id === dataset.artifact_id
+        && hex(previousCompleted.operation_id, 32)
+        && hex(previousCompleted.result_id) && hex(previousCompleted.model_id)
+        && hex(previousCompleted.evaluation_id)) {
+      card.append(el("p", "上一次已完成训练的结果仍可打开。", "small muted"));
+      for (const [field, label] of [
+        ["result_id", "查看上一次训练结果"],
+        ["model_id", "查看上一次本机模型"],
+        ["evaluation_id", "查看上一次开发集结果"],
+      ]) card.append(link(label, route("local-workspace", previousCompleted[field])));
+    }
     const runId = hex(operation.run_id) ? operation.run_id : null;
     const checkpointId = hex(operation.checkpoint_id) ? operation.checkpoint_id : null;
     if (taskId) card.append(technical({operation_id:taskId, run_id:runId,
@@ -3323,6 +3336,19 @@ window.SpireProject = (() => {
           await request(ctx, "/api/local-training/start", {dataset_id:dataset.artifact_id}, csrfToken);
           await reload(ctx);
         }, startOptions));
+    }
+    if (currentForDataset && operation.status === "completed" && taskId && hasCsrf
+        && hex(operation.run_id) && hex(operation.result_id)
+        && hex(operation.model_id) && hex(operation.evaluation_id)) {
+      const newOptions = {type:"secondary"};
+      card.append(command(ctx, "start-local-training-new", "新建一次短训练", async () => {
+        if (!live(ctx) || newOptions.disabled || !hex(dataset.artifact_id)) return;
+        newOptions.disabled = true;
+        await request(ctx, "/api/local-training/start", {
+          dataset_id:dataset.artifact_id, after_completed_operation_id:taskId,
+        }, csrfToken);
+        await reload(ctx);
+      }, newOptions));
     }
     card.append(command(ctx, "refresh-local-training-status", "刷新训练状态", async () => {
       await reload(ctx);

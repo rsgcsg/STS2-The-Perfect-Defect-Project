@@ -30,6 +30,8 @@ OPERATION_FILE = "local-training-operation.json"
 LOCK_FILE = ".local-training.lock"
 IDS = ("allocation_id", "view_id", "input_id", "run_id", "checkpoint_id",
        "result_id", "model_id", "evaluation_id")
+PREVIOUS_COMPLETED_IDS = ("operation_id", "dataset_id", "result_id", "model_id",
+                          "evaluation_id")
 STAGES = frozenset({"reserving", "allocating", "public_view", "tokenizing",
                     "preparing_run", "training", "verifying_result", "completed"})
 
@@ -71,6 +73,13 @@ class LocalTrainingService:
                 value.get(key) for key in ("run_id", "result_id", "model_id", "evaluation_id")
             ):
                 raise ValueError
+            if "previous_completed" in value:
+                previous = value["previous_completed"]
+                if not isinstance(previous, dict) or set(previous) != set(PREVIOUS_COMPLETED_IDS):
+                    raise ValueError
+                digest(previous["operation_id"], "local_training.previous_operation", length=32)
+                for key in PREVIOUS_COMPLETED_IDS[1:]:
+                    digest(previous[key], "local_training.previous_" + key)
             if value["status"] in {"failed", "interrupted_unknown"} and not isinstance(
                 value.get("error_code"), str
             ):
@@ -81,7 +90,8 @@ class LocalTrainingService:
 
     @staticmethod
     def _public(value: dict[str, Any]) -> dict[str, Any]:
-        keys = {"status", "stage", "operation_id", "dataset_id", "error_code", *IDS}
+        keys = {"status", "stage", "operation_id", "dataset_id", "error_code",
+                "previous_completed", *IDS}
         return {key: item for key, item in value.items() if key in keys}
 
     def status(self) -> dict[str, Any]:
@@ -133,8 +143,12 @@ class LocalTrainingService:
             raise BoundaryError("local_training", "operation_superseded")
         atomic_json(path, {**current, **updates})
 
-    def start(self, dataset_id: object) -> dict[str, Any]:
+    def start(self, dataset_id: object, *,
+              after_completed_operation_id: object | None = None) -> dict[str, Any]:
         dataset_id = digest(dataset_id, "local_training.dataset_id")
+        after_completed = (None if after_completed_operation_id is None else
+                           digest(after_completed_operation_id,
+                                  "local_training.after_completed_operation_id", length=32))
         owner, store, _ = self._selected()
         path, lock_path = self._paths(owner)
         if lock_path.is_symlink():
@@ -144,6 +158,8 @@ class LocalTrainingService:
             held.__enter__()
         except BoundaryError as error:
             if error.code == "already_running":
+                if after_completed is not None:
+                    raise BoundaryError("local_training", "operation_in_progress") from error
                 operation = self._read(path, owner.identity)
                 if operation.get("dataset_id") == dataset_id and operation["status"] == "pending":
                     return self.status()
@@ -155,12 +171,22 @@ class LocalTrainingService:
                 previous["status"] == "failed" and previous.get("run_id")
             ):
                 raise BoundaryError("local_training", "previous_training_outcome_unknown")
-            if previous["status"] == "completed" and previous["dataset_id"] == dataset_id:
+            if after_completed is not None and (
+                previous["status"] != "completed" or previous["dataset_id"] != dataset_id
+                or previous["operation_id"] != after_completed
+            ):
+                raise BoundaryError("local_training", "new_experiment_precondition_failed")
+            if (previous["status"] == "completed" and previous["dataset_id"] == dataset_id
+                    and after_completed is None):
                 return self.status()
             identity = uuid.uuid4().hex
             operation = {"schema": SCHEMA, "status": "pending", "stage": "reserving",
                          "operation_id": identity, "dataset_id": dataset_id,
                          "_owner": list(owner.identity)}
+            if previous["status"] == "completed":
+                operation["previous_completed"] = {
+                    key: previous[key] for key in PREVIOUS_COMPLETED_IDS
+                }
             atomic_json(path, operation)
             thread = threading.Thread(target=self._run, args=(held, path, identity, owner, store),
                                       name="local-small-b-training", daemon=True)

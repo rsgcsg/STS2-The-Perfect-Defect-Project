@@ -106,16 +106,23 @@ async function runManagedScenario({
   semanticTarget,
   character,
   requestTimeoutMs,
+  scenarioTimeoutMs,
   scenario
 }) {
   const startKind = scenarioStartKind(scenario);
+  const deadline = Date.now() + scenarioTimeoutMs;
+  const operationTimeout = () => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error(`Managed scenario exceeded ${scenarioTimeoutMs}ms deadline.`);
+    return Math.min(requestTimeoutMs, remaining);
+  };
   const started = await startManagedPlayerEnvironmentSession({
     root,
     candidateDirectory,
     diskIdentity,
     character,
     language: managedLanguage(semanticTarget.presentation_language),
-    requestTimeoutMs
+    requestTimeoutMs: Math.min(requestTimeoutMs, scenarioTimeoutMs)
   });
   const events = [];
   let snapshot = null;
@@ -125,8 +132,8 @@ async function runManagedScenario({
   let runIdentity = null;
   let exit = null;
   try {
-    snapshot = await started.session.mount({ seed: scenario.seed, timeoutMs: requestTimeoutMs });
-    runIdentity = await started.runtime.process.request({ cmd: "run_identity" }, requestTimeoutMs);
+    snapshot = await started.session.mount({ seed: scenario.seed, timeoutMs: operationTimeout() });
+    runIdentity = await started.runtime.process.request({ cmd: "run_identity" }, operationTimeout());
     if (runIdentity?.type !== "run_identity"
         || runIdentity.active !== true
         || runIdentity.seed !== scenario.seed) {
@@ -142,7 +149,7 @@ async function runManagedScenario({
         requestId: `cross-host-managed-discovery-${String(index + 1).padStart(6, "0")}-${randomUUID()}`,
         expectedSnapshotId: snapshot.snapshot_id,
         boundActionId: action.bound_action_id,
-        timeoutMs: requestTimeoutMs
+        timeoutMs: operationTimeout()
       });
       if (receipt.delivery === "unknown") {
         unknownCount += 1;
@@ -158,13 +165,16 @@ async function runManagedScenario({
     }
     const readKinds = new Set();
     for (let index = 0; index < scenario.max_actions; index += 1) {
+      operationTimeout();
       if (scenario.read_policy === "advertised_once") {
         for (const descriptor of snapshot.reads) {
           if (readKinds.has(descriptor.kind)) continue;
+          operationTimeout();
           const value = started.session.read({
             readId: descriptor.read_id,
             expectedSnapshotId: snapshot.snapshot_id
           });
+          operationTimeout();
           readKinds.add(descriptor.kind);
           events.push({
             type: "read",
@@ -198,7 +208,7 @@ async function runManagedScenario({
         requestId: `cross-host-managed-${String(index + 1).padStart(6, "0")}-${randomUUID()}`,
         expectedSnapshotId: snapshot.snapshot_id,
         boundActionId: action.bound_action_id,
-        timeoutMs: requestTimeoutMs
+        timeoutMs: operationTimeout()
       });
       events.push({
         type: "action",
@@ -220,6 +230,7 @@ async function runManagedScenario({
       snapshot = receipt.successor;
     }
     if (terminal === "not_started") terminal = "action_limit";
+    if (Date.now() > deadline) throw new Error(`Managed scenario exceeded ${scenarioTimeoutMs}ms deadline.`);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
     terminal = "scenario_error";
@@ -276,8 +287,12 @@ export async function createManagedExactHostDriver({
   diskIdentity,
   semanticTarget,
   character = "Ironclad",
-  requestTimeoutMs = 10_000
+  requestTimeoutMs = 10_000,
+  scenarioTimeoutMs = 120_000
 }) {
+  if (!Number.isSafeInteger(scenarioTimeoutMs) || scenarioTimeoutMs < 1) {
+    throw new TypeError("scenarioTimeoutMs must be a positive integer.");
+  }
   const { manifest: loadedManifest } = loadManagedCandidateManifest(root);
   const manifest = selectManagedCandidateManifest(loadedManifest, diskIdentity);
   const build = await inspectManagedCandidateBuild({ root, candidateDirectory, manifest });
@@ -297,6 +312,7 @@ export async function createManagedExactHostDriver({
       semanticTarget,
       character,
       requestTimeoutMs,
+      scenarioTimeoutMs,
       scenario
     })
   });
