@@ -8,6 +8,23 @@ window.SpireProject = (() => {
     new RegExp(`^[a-f0-9]{${length}}$`).test(value);
   const selectionId = (value) =>
     typeof value === "string" && /^[a-z0-9-]{1,80}$/.test(value);
+  const runProfileIds = new Set(["short", "extended"]);
+  function runProfiles(item) {
+    if (!Array.isArray(item?.run_profiles)) return [];
+    return item.run_profiles.filter(profile =>
+      profile && runProfileIds.has(profile.id) &&
+      typeof profile.label === "string" && profile.label.length <= 80 &&
+      profile.label.length > 0 && !/[\/\\\x00-\x1f]/.test(profile.label) &&
+      (profile.limits === null && profile.id === "short" ||
+        profile.limits && typeof profile.limits === "object" &&
+        ["max_submissions", "max_policy_calls", "deadline_ms"].every(key =>
+          Number.isSafeInteger(profile.limits[key]) && profile.limits[key] > 0)));
+  }
+  function runProfileTitle(profile) {
+    const limits = profile.limits;
+    return limits ? `${profile.label} · ${count(limits.max_submissions)} 次提交 / ${count(limits.max_policy_calls)} 次评分 / ${count(Math.ceil(limits.deadline_ms / 1000))} 秒`
+      : `${profile.label} · 限额以运行器状态为准`;
+  }
   const supported = new Set([
     "members",
     "statistics",
@@ -2123,17 +2140,25 @@ window.SpireProject = (() => {
     );
     return box;
   }
-  function localStatus(ctx, data, onBudgetHost) {
+  function localStatus(ctx, data, onBudgetHost, catalog) {
     const box = panel(
       "本机运行状态",
       "状态来自本机服务与其管理的唯一 Runtime。操作请求已接收与执行成功分开显示。",
     );
     const runtime = data.runtime,
       operation = data.operation;
+    const selectedPolicy = Array.isArray(catalog?.policies) ?
+      catalog.policies.find(item => item.selection_id === data.selection_id) : null;
+    const selectedProfile = runProfiles(selectedPolicy).find(
+      profile => profile.id === data.run_profile);
+    const profileStatus = data.run_profile === undefined
+      ? (data.loaded || operation?.status === "pending" ? "旧会话未记录或尚未确认" : "尚未选择")
+      : selectedProfile ? runProfileTitle(selectedProfile) : "运行配置未能核对";
     box.append(
       fields([
         ["本机服务", show(data.status)],
         ["模型加载", data.loaded === true ? "服务报告已加载" : "尚未确认加载"],
+        ["运行配置", profileStatus],
         ["Runtime 模式", runtime ? show(runtime.mode) : "尚无 Runtime 观测"],
         [
           "控制器",
@@ -2345,12 +2370,48 @@ window.SpireProject = (() => {
       "本机已封装的评估记录",
       "这是有界 Runtime 操作与证据检查结果，不是游戏胜率或训练准入。",
     );
+    const verified = value.evidence_verification === "pass";
+    const recordedCounts = (counts) => {
+      if (!counts || typeof counts !== "object" || Array.isArray(counts)) return null;
+      const entries = Object.entries(counts);
+      if (entries.length > 32 || entries.some(([kind, total]) =>
+        !/^[a-z][a-z0-9_]{0,63}$/.test(kind) ||
+        !Number.isSafeInteger(total) || total < 0)) return null;
+      return entries.sort(([left], [right]) => left.localeCompare(right));
+    };
+    const actions = verified ? recordedCounts(value.recorded_action_verbs) : null;
+    const deliveries = verified ? recordedCounts(value.delivery_counts) : null;
+    const budgetReasons = {
+      submission_attempt_limit:"自主提交次数已到限额",
+      policy_call_limit:"模型评分次数已到限额",
+      deadline:"自主运行时间已到限额",
+    };
+    const budget = value.budget_summary;
+    const budgetCounts = verified && budget && typeof budget === "object" &&
+      ["inactive", "active", "exhausted"].includes(budget.state) &&
+      ["max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used",
+        "deadline_ms", "elapsed_ms"].every(key =>
+        Number.isSafeInteger(budget[key]) && budget[key] >= 0);
+    const terminal = value.terminal_screen_observation;
+    const terminalLabel = !verified ? "证据未通过核验"
+      : !Object.hasOwn(value, "terminal_screen_observation")
+      ? "旧报告未提供此项观测"
+      : terminal === null ? "未观察到"
+        : terminal?.status === "ambiguous" ? "信息冲突"
+          : terminal?.status === "observed" && terminal.result === "win" ? "胜利"
+            : terminal?.status === "observed" && terminal.result === "loss" ? "失败"
+              : "未能核对";
     box.append(
       fields([
         ["模型选择", value.selection_id],
         ["run ID", value.run_id],
         ["证据验证", value.evidence_verification || "未提供"],
         ["事件数", count(value.event_count)],
+        ["原生投递尝试", verified && Number.isSafeInteger(value.native_submission_attempts) &&
+          value.native_submission_attempts >= 0 ? count(value.native_submission_attempts) : "未确认"],
+        ["预算耗尽原因", verified && Object.hasOwn(budgetReasons, value.budget_end_reason)
+          ? budgetReasons[value.budget_end_reason] : "未从已验证证据确认"],
+        ["本次记录观察到的结局页", terminalLabel],
         [
           "游戏结果",
           value.game_outcome === "not_measured"
@@ -2358,8 +2419,25 @@ window.SpireProject = (() => {
             : value.game_outcome || "未知",
         ],
       ]),
-      technical(value),
     );
+    box.append(el("p", "仅已验证记录才显示动作类型与结局页；投递尝试不等于游戏接受，结局页不证明模型从开局完成整局。", "small muted"));
+    box.append(actions ? table(["已记录动作类型", "次数"],
+      actions.map(([kind, total]) => [kind, count(total)])) :
+      el("p", "动作类型：未从已验证证据确认。", "small muted"));
+    box.append(deliveries ? table(["投递结果", "次数"],
+      deliveries.map(([kind, total]) => [kind, count(total)])) :
+      el("p", "投递结果：未从已验证证据确认。", "small muted"));
+    if (budgetCounts) box.append(fields([
+      ["预算提交", `${count(budget.submissions_used)} / ${count(budget.max_submissions)}`],
+      ["预算评分", `${count(budget.policy_calls_used)} / ${count(budget.max_policy_calls)}`],
+    ]));
+    box.append(technical({
+      evaluation_id:hex(value.evaluation_id) ? value.evaluation_id : null,
+      evidence_content_id:hex(value.evidence_content_id) ? value.evidence_content_id : null,
+      model_sha256:hex(value.model_sha256) ? value.model_sha256 : null,
+      policy_manifest_sha256:hex(value.policy_manifest_sha256) ? value.policy_manifest_sha256 : null,
+      runtime_code_sha256:hex(value.runtime_code_sha256) ? value.runtime_code_sha256 : null,
+    }, "查看报告身份"));
     return box;
   }
   async function localModels(ctx) {
@@ -2381,7 +2459,7 @@ window.SpireProject = (() => {
     if (replies[0].status === "fulfilled") catalog = replies[0].value;
     if (replies[1].status === "fulfilled") state = replies[1].value;
     let budgetHost = null;
-    if (state) box.append(localStatus(ctx, state, (node) => { budgetHost = node; }));
+    if (state) box.append(localStatus(ctx, state, (node) => { budgetHost = node; }, catalog));
     else
       box.append(empty(
           "本机 Runtime 状态暂不可用",
@@ -2425,6 +2503,30 @@ window.SpireProject = (() => {
           claims: item.claims,
         }),
       );
+      const profiles = runProfiles(item);
+      const profileKey = `model-run-profile:${ctx.scope}:${item.selection_id}`;
+      const savedProfile = profiles.some(profile => profile.id === drafts.get(profileKey))
+        ? drafts.get(profileKey) : null;
+      const currentProfile = state?.loaded && state.selection_id === item.selection_id
+        ? state.run_profile : savedProfile || item.default_run_profile;
+      const selectedProfile = profiles.some(profile => profile.id === currentProfile)
+        ? currentProfile : "";
+      const profileChoice = select(row, "本次运行配置", `model-run-profile-${item.selection_id}`,
+        profiles.map(profile => [profile.id, runProfileTitle(profile)]), selectedProfile);
+      profileChoice.disabled = !state || state.loaded === true ||
+        state.operation?.status === "pending" ||
+        ["command_unknown", "recovery_required"].includes(state.status) ||
+        !selectedProfile;
+      profileChoice.onchange = () => {
+        if (profiles.some(profile => profile.id === profileChoice.value))
+          drafts.set(profileKey, profileChoice.value);
+      };
+      if (!selectedProfile)
+        row.append(el("p", state?.loaded && state.selection_id === item.selection_id
+          ? "本次已加载配置未能核对；不会改写当前运行。"
+          : "本机服务未提供可核对的运行配置；暂不能请求加载。", "small muted"));
+      if (item.run_profile_unavailable_reason === "extended_requires_text_menu_runtime")
+        row.append(el("p", "这项旧模型选择仅支持默认短局；较长局需要文本菜单运行环境。", "small muted"));
       const report = readiness.get(item.selection_id);
       const actions = el("div", null, "project-actions");
       actions.append(
@@ -2450,8 +2552,11 @@ window.SpireProject = (() => {
           `model-start-${item.selection_id}`,
           "准备并加载",
           async () => {
+            if (!profiles.some(profile => profile.id === profileChoice.value))
+              throw new Error("invalid_run_profile");
             await request(ctx, "/api/local-models/prepare", {
               selection_id: item.selection_id,
+              run_profile: profileChoice.value,
             });
             note(
               ctx,
@@ -2463,6 +2568,7 @@ window.SpireProject = (() => {
             primary: true,
             disabled:
               !state ||
+              !selectedProfile ||
               state.loaded === true ||
               state.operation?.status === "pending" ||
               ["command_unknown", "recovery_required"].includes(state.status),
