@@ -36,8 +36,7 @@ from stpd.token_policy_installation import validate
 pytest_plugins = ["test_local_model_export"]
 
 
-@pytest.fixture
-def registration(tmp_path: Path, completed, monkeypatch):
+def _registration(tmp_path: Path, completed, monkeypatch):
     config = _config(tmp_path, completed)
     exported = LocalModelExport(config)
     exported.start(completed[3])
@@ -66,6 +65,11 @@ def registration(tmp_path: Path, completed, monkeypatch):
     service = LocalModelRegistration(config, exported, models)
     monkeypatch.setattr(service, "_capabilities", lambda _sdk: _caps())
     return service, config, completed[3], root, models
+
+
+@pytest.fixture
+def registration(tmp_path: Path, completed, monkeypatch):
+    return _registration(tmp_path, completed, monkeypatch)
 
 
 def _caps() -> dict:
@@ -103,7 +107,20 @@ def test_exact_export_binds_existing_policy_contract_and_is_idempotent(registrat
     assert manifest["requirements"]["environment"]["host_kind"] == "test"
     assert manifest["support"]["action_verbs"] == list(VERBS)
     assert manifest["claims"]["full_run"] is False
+    assert manifest["policy"]["architecture"] == "stage1a.dsimple.s.v1"
+    assert entry["label"] == "本机文字菜单 D-Simple " + model_id[:8]
     assert len(json.loads((root / REGISTRY).read_bytes())["policies"]) == 1
+
+
+def test_existing_b_model_registration_preserves_its_architecture(
+    tmp_path: Path, completed_b, monkeypatch,
+) -> None:
+    service, _, model_id, root, models = _registration(tmp_path, completed_b, monkeypatch)
+    result = service.register(model_id)
+    entry = models.selection(result["selection_id"])
+    _, manifest = validate(root, root / entry["config"], root / entry["manifest"])
+    assert manifest["policy"]["architecture"] == "stage1a.b.s.v2"
+    assert entry["label"] == "本机文字菜单 B " + model_id[:8]
 
 
 def test_changed_environment_and_source_append_without_rewriting_old(registration,

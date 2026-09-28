@@ -1,4 +1,4 @@
-"""Synthetic verified recording through the exact local B v2 training owner."""
+"""Synthetic verified recording through the exact local D-Simple training owner."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def _settle(service: LocalTrainingService, timeout: float = 180) -> dict:
     return service.status()["operation"]
 
 
-def test_exact_synthetic_public_bc_small_b_subprocess(tmp_path: Path, monkeypatch) -> None:
+def test_exact_synthetic_public_bc_dsimple_subprocess(tmp_path: Path, monkeypatch) -> None:
     config, dataset_id, source, store = _ready(tmp_path, monkeypatch)
     owner = configured_owner(config)
     service = LocalTrainingService(config)
@@ -100,7 +100,8 @@ def test_exact_synthetic_public_bc_small_b_subprocess(tmp_path: Path, monkeypatc
         "profile": "public_compact", "status": "provisional",
         "version": "stpd-public-snapshot-compact-v2",
     }
-    assert model.parameters.value()["config"]["recipe"] == "stage1a.b.s.v2"
+    assert model.parameters.value()["config"]["recipe"] == "stage1a.dsimple.s.v1"
+    assert model.parameters.value()["graph"] == "dsimple.vector.v1"
     assert model.parameters.value()["config"]["steps"] == 3
     assert model.parameters.value()["config"]["dropout"] == 0.0
     assert model.parameters.value()["config"]["max_tokens"] == 16384

@@ -15,7 +15,8 @@ import uuid
 from pathlib import Path
 from typing import Any, cast
 
-from spireagent.json_boundary import BoundaryError, digest
+from spireagent.artifact_contracts import Manifest
+from spireagent.json_boundary import BoundaryError, digest, json_bytes
 from spireagent.package_identity import PackageIdentityError
 from spireagent.policy_files import _inside, _object_file
 from spireagent.workbench.developer import ProjectConfig, atomic_json
@@ -31,6 +32,7 @@ from stpd.token_policy_installation import bind_text_menu_export, code_digest, v
 
 SCHEMA = "stpd/local-model-registration-v1"
 PROFILE = "text-menu-v1"
+RECIPE_LABELS = {"stage1a.b.s.v2": "B", "stage1a.dsimple.s.v1": "D-Simple"}
 REGISTRY = ".local/token-policies-v1.json"
 LOCK = ".local/token-policies-v1.lock"
 REGISTRATIONS = ".local/model-registrations"
@@ -224,9 +226,18 @@ class LocalModelRegistration:
                                 "text_menu_capabilities_unavailable") from error
 
     def register(self, model_id: object) -> dict[str, Any]:
+        from stpd.policy.token_decision import check_model
+
         identity = digest(model_id, "local_model_registration.model_id")
         # Weight/scorer verification and current-store binding are explicit POST work.
         export = self.export.verified_for_registration(identity)
+        envelope = _object_file(export / "model.json")
+        if envelope.get("model_id") != identity:
+            raise BoundaryError("local_model_registration", "export_identity_mismatch")
+        artifact = Manifest.from_bytes(json_bytes(envelope.get("model")), identity)
+        recipe = check_model(artifact)[0].recipe
+        if recipe not in RECIPE_LABELS:
+            raise BoundaryError("local_model_registration", "unsupported_model_recipe")
         try:
             directory, pin = self.models.text_runtime_profile()
             node_modules = directory / "runtime" / "node_modules"
@@ -268,11 +279,12 @@ class LocalModelRegistration:
                     self.models.root, export, config_path, manifest_path,
                     manifest_id=selection,
                     policy={"id": selection, "version": "1.0.0", "provider": "stpd",
-                            "architecture": "stage1a.b.s.v2"},
+                            "architecture": recipe},
                     requirements=requirements, support=support,
                 )
                 entries = self._entries()
-                entry = {"id": selection, "label": "本机文字菜单 B " + identity[:8],
+                entry = {"id": selection,
+                         "label": "本机文字菜单 " + RECIPE_LABELS[recipe] + " " + identity[:8],
                          "adapter": "token-v1", "runtime_profile": PROFILE,
                          "manifest": manifest_path.relative_to(self.models.root).as_posix(),
                          "config": config_path.relative_to(self.models.root).as_posix()}

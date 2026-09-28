@@ -45,9 +45,8 @@ from stpd.workers.token_ranking import TokenConfig
 from stpd.workers.token_worker import execute_tokens, prepare_token_run
 
 
-@pytest.fixture(scope="module")
-def completed(tmp_path_factory):
-    folder = tmp_path_factory.mktemp("completed-text-menu-model")
+def _completed(tmp_path_factory, recipe: str):
+    folder = tmp_path_factory.mktemp("completed-text-menu-" + recipe.split(".")[1])
     archive = store(folder / "store")
     original_threads = torch.get_num_threads()
     torch.set_num_threads(1)
@@ -57,8 +56,9 @@ def completed(tmp_path_factory):
         view = publish_text_menu_bc_view(archive, source.artifact_id, PRODUCER)
         tokens = publish_token_inputs(archive, view.artifact_id, "s", PRODUCER,
                                       max_tokens=4096)
-        config = TokenConfig.text_menu_small_b(
-            steps=1, width=16, heads=2, layers=1, feedforward=32, max_tokens=4096,
+        config = TokenConfig(
+            recipe=recipe, steps=1, width=16, heads=2, layers=1,
+            feedforward=32, dropout=0.0, max_tokens=4096,
         )
         run = prepare_token_run(archive, load_token_inputs(archive, tokens.artifact_id),
                                 config, PRODUCER)
@@ -70,6 +70,16 @@ def completed(tmp_path_factory):
     registry_path = folder / "registry.sqlite"
     sync_registry(archive, SQLiteRegistry(registry_path))
     return folder / "store", registry_path, archive, model_id
+
+
+@pytest.fixture(scope="module")
+def completed(tmp_path_factory):
+    return _completed(tmp_path_factory, "stage1a.dsimple.s.v1")
+
+
+@pytest.fixture(scope="module")
+def completed_b(tmp_path_factory):
+    return _completed(tmp_path_factory, "stage1a.b.s.v2")
 
 
 def _config(tmp_path: Path, completed):
@@ -110,7 +120,12 @@ def test_exact_completed_model_exports_once_and_rechecks_standalone_bytes(
     destination = config.state_dir / EXPORT_ROOT / model_id
     scorer = TokenDecisionScorer(destination)
     assert scorer.artifact == model
-    assert set(scorer.score_snapshot(row("one")["snapshot"])) == {
+    assert scorer.config.recipe == "stage1a.dsimple.s.v1"
+    scores = scorer.score_snapshot(row("one")["snapshot"])
+    assert list(scores) == [
+        item["action_id"] for item in row("one")["snapshot"]["menu_actions"]["actions"]
+    ]
+    assert set(scores) == {
         item["action_id"] for item in row("one")["snapshot"]["menu_actions"]["actions"]
     }
     assert archive.manifest_ids() == before_manifests
@@ -128,6 +143,21 @@ def test_exact_completed_model_exports_once_and_rechecks_standalone_bytes(
     assert invalid["status"] == "failed"
     assert invalid["error_code"] in {"payload_size_mismatch", "payload_digest_mismatch"}
     assert (destination / "weights.safetensors").read_bytes() == b"tampered"
+
+
+def test_existing_b_text_menu_model_still_exports_and_scores(
+    tmp_path: Path, completed_b,
+) -> None:
+    config = _config(tmp_path, completed_b)
+    service = LocalModelExport(config)
+    service.start(completed_b[3])
+    assert _settle(service)["status"] == "completed"
+    scorer = TokenDecisionScorer(config.state_dir / EXPORT_ROOT / completed_b[3])
+    assert scorer.config.recipe == "stage1a.b.s.v2"
+    snapshot = row("one")["snapshot"]
+    assert list(scorer.score_snapshot(snapshot)) == [
+        item["action_id"] for item in snapshot["menu_actions"]["actions"]
+    ]
 
 
 def test_restart_pending_is_read_only_and_requires_explicit_same_model(
@@ -176,6 +206,13 @@ def test_unsupported_metadata_and_unsafe_paths_never_export(
     archive.publish(pf)
     with pytest.raises(BoundaryError, match="unsupported_model_for_offline_export"):
         service.start(pf.artifact_id)
+    old_recipe = replace(model, parameters=FrozenObject.of({
+        **model.parameters.value(),
+        "config": {**model.parameters.value()["config"], "recipe": "stage1a.b.s.v1"},
+    }))
+    archive.publish(old_recipe)
+    with pytest.raises(BoundaryError, match="unsupported_model_for_offline_export"):
+        service.start(old_recipe.artifact_id)
     assert not (config.state_dir / EXPORT_ROOT).exists()
     (config.state_dir / ".local-model-export.lock").symlink_to(tmp_path / "outside")
     with pytest.raises(BoundaryError, match="operation_recovery_required"):
