@@ -1,14 +1,22 @@
 # Current project context, 2026-09-29
 
 The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Current
-develop anchor: `34f4d99491ad1ee4a2c5520769208b624daea576`, integrating the
-D-Simple default application chain (#82) and standalone M2 computation (#83).
+develop anchor: `30fd5f7bcd7fae146e850046313907d957aa546f`, integrating #86's
+Workbench entry, Managed scenario/repeatability and M2 offline sequence increments.
 Source, installed application, native Human, data,
 training and scientific evidence remain separate. Resolve live refs and exact
 identities before making later claims. Resolve live GitHub refs before each
 change; current source and runtime authorities override this file.
 
 ## Implemented and observed
+
+- **New full-run recording:** the [2026-09-29 audit](../evidence/FULL_RUN_POTION_EXECUTION_2026-09-29.md)
+  confirms a native fresh start through defeat, with no recorder pause/resume.
+  It retains 722 canonical transitions and 537 accepted Human text inputs as
+  separate views. Three non-combat potion projections failed and the final
+  successor remains unknown: verified packaging is not zero-failure gameplay
+  qualification, a 10k dataset, or training. The owning source correction and
+  new native runtime qualification remain separate from this sealed evidence.
 
 - **Native Human input:** [PR #80's receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/80#issuecomment-5864511251)
   records an exact bounded canary with Game Mod rc.18, Annotator rc.14 and
@@ -30,17 +38,18 @@ change; current source and runtime authorities override this file.
   option. The saved dataset page can only view the prior B model, completed
   training result and report under their original identities. The activation
   only refreshed status; it did not start another run. The independent
-  `ed260dad` task-entry fix is not published or enabled.
+  `ed260dad` task-entry fix is integrated by #86, but not enabled in that
+  running Workbench.
 - **D-Simple M2:** PR #83 integrates the standalone M2 computation and synthetic
   tests alongside #82's default application chain. M2 is not the live
   short-training recipe and is not online in the active model path. Synthetic
   cue-mechanism training exists; this activation provides no real-data training
   or strategy-quality result.
-  The sequence-training candidate is separate in [PR #87](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/87);
-  the environment/Workbench candidate is separate in [PR #86](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/86).
-  At the dated closeout read, #87's own full gate passed; #86's earlier
-  combination had a Windows failure. The new combined candidate needs its own
-  gate; neither result establishes deployed M2 or whole-1a acceptance.
+  [PR #86](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/86)
+  normally integrated #84/#85/#87 after full run 36452246795 passed on its exact
+  head. Merge run 36457033124 passed using a verified same-tree execution receipt
+  and fresh guards; it did not repeat both OS suites. The old Windows failure
+  remains recorded. This establishes source/test integration, not deployed M2.
 
 ## Data and evaluation boundary
 
@@ -75,7 +84,7 @@ probe does not close this difference. Environment lifecycle and scene
 management remain a distinct 1a task, not a model capability.
 
 The Managed Host environment line is independent of model work. The current
-text-menu gap and local application UI task-entry gap are bounded remaining
+text-menu gap and local application UI task-entry activation are bounded remaining
 items, not the entire Stage1a queue. Source merge, CI and local activation
 remain distinct evidence levels.
 

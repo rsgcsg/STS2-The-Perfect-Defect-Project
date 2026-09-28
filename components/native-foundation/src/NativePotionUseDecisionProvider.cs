@@ -39,10 +39,24 @@ public static class NativePotionUseDecisionProvider
                     player.CanUseOrRemovePotions, player.Creature.IsDead,
                     potion.PassesCustomUsabilityCheck))
                 continue;
+            // NPotionHolder.TargetNode passes null for NMerchantButton;
+            // UsePotionAction also preserves null for TargetedNoCreature.
+            // Native custom usability owns the current room/target availability.
+            // This execution catalog does not authorize bypassing UI targeting.
+            if (potion.TargetType == TargetType.TargetedNoCreature)
+            {
+                if (potion.IsValidTarget(null))
+                {
+                    string subjectId = identities.GetId(potion, "potion");
+                    actions.Add(new(NativeSemanticActionCatalog.BuildKey("use", subjectId,
+                            new Dictionary<string, string>()), "use", subjectId, potion,
+                        Array.Empty<NativeSemanticOperand>(),
+                        "current_potion_slot+AnyTime+CanUseOrRemovePotions+PassesCustomUsabilityCheck+IsValidTarget(null)"));
+                }
+                continue;
+            }
             // NPotionHolder.UsePotion cannot throw at another player outside
             // combat (CanThrowAtAlly); EnqueueManualUse binds null to self.
-            // TargetedNoCreature needs a separate exact native target-node
-            // witness. A null Creature alone must not advertise that decision.
             if (potion.TargetType is not (TargetType.AnyPlayer or TargetType.Self)
                 || !potion.IsValidTarget(player.Creature))
                 continue;
