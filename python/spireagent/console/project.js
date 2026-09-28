@@ -2067,6 +2067,7 @@ window.SpireProject = (() => {
         ],
       ]),
     );
+    box.append(localAutonomyBudget(runtime));
     const currentFailure = data.error_code;
     if (currentFailure) {
       const explanation = currentFailure === "environment_modset_fingerprint_drift"
@@ -2174,6 +2175,68 @@ window.SpireProject = (() => {
         ),
       );
     if (data.evaluation) box.append(evaluationPanel(data.evaluation));
+    return box;
+  }
+  function localAutonomyBudget(runtime) {
+    const budget = runtime?.autonomy_budget;
+    const box = panel(
+      "本次自主操作预算",
+      "预算只约束当前自主授权，不是对局计时或结果。",
+    );
+    if (budget === undefined || budget === null) {
+      box.append(el("p", "此 Runtime 未提供预算信息。", "small muted"));
+      return box;
+    }
+    const states = new Set(["active", "exhausted", "inactive"]);
+    const exhaustion = {
+      submission_attempt_limit: "自主提交次数已到限额",
+      policy_call_limit: "模型评分次数已到限额",
+      deadline: "自主运行时间已到限额",
+    };
+    const ended = {
+      human_recovery: "因人工接管结束",
+      mode_changed: "因运行模式变更结束",
+      stopped: "随 Runtime 停止结束",
+    };
+    const counters = [
+      "max_submissions", "submissions_used", "max_policy_calls",
+      "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms",
+    ];
+    const validCounters = budget && typeof budget === "object" &&
+      counters.every((key) => Number.isSafeInteger(budget[key]) && budget[key] >= 0) &&
+      budget.max_submissions > 0 && budget.max_policy_calls > 0 && budget.deadline_ms > 0 &&
+      budget.submissions_used <= budget.max_submissions &&
+      budget.policy_calls_used <= budget.max_policy_calls &&
+      budget.elapsed_ms <= budget.deadline_ms && budget.remaining_ms <= budget.deadline_ms;
+    const stateKnown = budget && states.has(budget.state);
+    const reasonKnown = budget.state === "exhausted"
+      ? Object.hasOwn(exhaustion, budget.exhausted_reason)
+      : budget.state === "inactive"
+        ? budget.ended_reason === null || Object.hasOwn(ended, budget.ended_reason)
+        : budget.exhausted_reason === null && budget.ended_reason === null;
+    if (!validCounters || !stateKnown || !reasonKnown) {
+      box.append(el("p", "预算状态未提供或格式无法识别，暂不作判断。", "small muted"));
+      return box;
+    }
+    const duration = (milliseconds) => `${Math.ceil(milliseconds / 1000).toLocaleString("zh-CN")} 秒`;
+    const stateText = budget.state === "active"
+      ? "正在使用"
+      : budget.state === "exhausted"
+        ? `已到限额：${exhaustion[budget.exhausted_reason]}`
+        : budget.ended_reason
+          ? `已结束：${ended[budget.ended_reason]}`
+          : "尚未开始";
+    box.append(fields([
+      ["状态", stateText],
+      ["自主提交", `${count(budget.submissions_used)} / ${count(budget.max_submissions)}`],
+      ["模型评分", `${count(budget.policy_calls_used)} / ${count(budget.max_policy_calls)}`],
+      ["时间", `${duration(budget.elapsed_ms)} / ${duration(budget.deadline_ms)}（剩余 ${duration(budget.remaining_ms)}）`],
+    ]));
+    if (budget.state === "exhausted") {
+      box.append(el("p", "预算耗尽表示当前自主授权到限；不代表这一局已经结束或结果已确认。控制器是否释放请以上方状态为准。", "small muted"));
+    } else if (budget.state === "inactive" && budget.ended_reason) {
+      box.append(el("p", "预算结束不代表这一局已经结束或结果已确认；控制器是否释放请以上方状态为准。", "small muted"));
+    }
     return box;
   }
   function evaluationPanel(value) {

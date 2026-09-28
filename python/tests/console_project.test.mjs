@@ -3943,6 +3943,89 @@ test("runtime environment rejection remains historical until an explicit fresh s
   assert.deepEqual(body(post(env.calls)[0]), { action: "auto" });
 });
 
+test("local Runtime autonomy budget is read-only, bounded and separate from game completion", async () => {
+  const base = {
+    status: "loaded", loaded: true, error_code: null,
+    runtime: {
+      lifecycle: "running", mode: "human", controller: "released",
+      tainted: false, errors: [], last_receipt: null,
+    },
+  };
+  const values = [
+    [{ state: "active", max_submissions: 16, submissions_used: 3,
+      max_policy_calls: 32, policy_calls_used: 5, deadline_ms: 60000,
+      elapsed_ms: 12000, remaining_ms: 48000, exhausted_reason: null, ended_reason: null },
+    /正在使用/],
+    [{ state: "exhausted", max_submissions: 16, submissions_used: 16,
+      max_policy_calls: 32, policy_calls_used: 20, deadline_ms: 60000,
+      elapsed_ms: 45000, remaining_ms: 15000, exhausted_reason: "submission_attempt_limit", ended_reason: null },
+    /自主提交次数已到限额/],
+    [{ state: "exhausted", max_submissions: 16, submissions_used: 4,
+      max_policy_calls: 32, policy_calls_used: 32, deadline_ms: 60000,
+      elapsed_ms: 25000, remaining_ms: 35000, exhausted_reason: "policy_call_limit", ended_reason: null },
+    /模型评分次数已到限额/],
+    [{ state: "exhausted", max_submissions: 16, submissions_used: 2,
+      max_policy_calls: 32, policy_calls_used: 7, deadline_ms: 60000,
+      elapsed_ms: 60000, remaining_ms: 0, exhausted_reason: "deadline", ended_reason: null },
+    /自主运行时间已到限额/],
+    [{ state: "inactive", max_submissions: 16, submissions_used: 2,
+      max_policy_calls: 32, policy_calls_used: 4, deadline_ms: 60000,
+      elapsed_ms: 8000, remaining_ms: 52000, exhausted_reason: null, ended_reason: "human_recovery" },
+    /因人工接管结束/],
+    [{ state: "inactive", max_submissions: 16, submissions_used: 2,
+      max_policy_calls: 32, policy_calls_used: 4, deadline_ms: 60000,
+      elapsed_ms: 8000, remaining_ms: 52000, exhausted_reason: null, ended_reason: "mode_changed" },
+    /因运行模式变更结束/],
+    [{ state: "inactive", max_submissions: 16, submissions_used: 2,
+      max_policy_calls: 32, policy_calls_used: 4, deadline_ms: 60000,
+      elapsed_ms: 8000, remaining_ms: 52000, exhausted_reason: null, ended_reason: "stopped" },
+    /随 Runtime 停止结束/],
+  ];
+  for (const [autonomy_budget, expected] of values) {
+    const state = structuredClone(base);
+    state.runtime.autonomy_budget = autonomy_budget;
+    const env = setup({view: "local-models", handler: url =>
+      url === "/api/local-models/status" ? state : modelHandler(url)});
+    let page = await env.render();
+    assert.match(text(page), expected);
+    if (autonomy_budget.state === "active") {
+      assert.match(text(page), /不是对局计时或结果/);
+      assert.match(text(page), /3 \/ 16|16 \/ 16|4 \/ 16|2 \/ 16/);
+    } else {
+      assert.match(text(page), /不代表这一局已经结束或结果已确认/);
+    }
+    assert.match(text(page), /提交/);
+    assert.match(text(page), /模型评分/);
+    assert.equal(action(page, "model-command-auto").disabled, false);
+    page = await env.render();
+    assert.match(text(page), expected);
+    assert.equal(post(env.calls).length, 0, "GET and redraw do not send commands");
+    await action(page, "model-command-auto").onclick();
+    assert.equal(post(env.calls).length, 1, "existing command still needs its explicit click");
+    assert.deepEqual(body(post(env.calls)[0]), {action: "auto"});
+  }
+});
+
+test("old or unrecognized Runtime budget data is not replaced with a default or echoed", async () => {
+  const state = {
+    status: "loaded", loaded: true,
+    runtime: {lifecycle: "running", mode: "human", controller: "released",
+      tainted: false, errors: [], last_receipt: null},
+  };
+  const env = setup({view: "local-models", handler: url =>
+    url === "/api/local-models/status" ? state : modelHandler(url)});
+  let page = await env.render();
+  assert.match(text(page), /此 Runtime 未提供预算信息/);
+  assert.doesNotMatch(text(page), /16|32|60 秒/);
+
+  state.runtime.autonomy_budget = {state: "private-path-leak", submissions_used: 999};
+  page = await env.render();
+  assert.match(text(page), /预算状态未提供或格式无法识别/);
+  assert.doesNotMatch(text(page), /private-path-leak|999/);
+  assert.equal(action(page, "model-command-auto").disabled, false);
+  assert.equal(post(env.calls).length, 0);
+});
+
 test("retained local precondition diagnostics do not block an explicit fresh start", async () => {
   for (const error_code of [
     "connector_identity_unavailable",
