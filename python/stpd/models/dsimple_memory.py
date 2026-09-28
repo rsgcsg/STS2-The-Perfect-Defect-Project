@@ -143,13 +143,13 @@ class ExperimentalDSimpleM2(nn.Module):
         encoded = self.core.contextualize(
             torch.cat(parts, dim=0), causal=not self.core.supports_bidirectional,
         )
-        proposal = self.write_norm(encoded[-self.slots:])
+        proposal: Tensor = self.write_norm(encoded[-self.slots:])
         if proposal.shape != memory.shape or not bool(torch.isfinite(proposal).all()):
             raise ValueError("invalid memory write")
         if self.memory_gate is None:
             return proposal
         keep = torch.sigmoid(self.memory_gate(torch.cat((old, proposal), dim=-1)))
-        updated = keep * old + (1 - keep) * proposal
+        updated: Tensor = keep * old + (1 - keep) * proposal
         if not bool(torch.isfinite(updated).all()):
             raise ValueError("invalid gated memory write")
         return updated
