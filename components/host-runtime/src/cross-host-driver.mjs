@@ -165,13 +165,16 @@ async function runManagedScenario({
     }
     const readKinds = new Set();
     for (let index = 0; index < scenario.max_actions; index += 1) {
+      operationTimeout();
       if (scenario.read_policy === "advertised_once") {
         for (const descriptor of snapshot.reads) {
           if (readKinds.has(descriptor.kind)) continue;
+          operationTimeout();
           const value = started.session.read({
             readId: descriptor.read_id,
             expectedSnapshotId: snapshot.snapshot_id
           });
+          operationTimeout();
           readKinds.add(descriptor.kind);
           events.push({
             type: "read",

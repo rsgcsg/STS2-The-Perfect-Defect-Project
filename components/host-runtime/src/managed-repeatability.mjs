@@ -35,10 +35,15 @@ function identityErrors(first, second) {
 }
 
 function complete(run) {
-  return run?.report?.verdict?.integrity?.verdict === "integrity_pass"
+  const events = run?.events;
+  const integrity = run?.report?.verdict?.integrity;
+  return Array.isArray(events)
+    && integrity?.verdict === "integrity_pass"
+    && integrity.unknown_deliveries === 0
     && run?.report?.episode_provenance?.verdict === "provenance_pass"
     && run?.report?.episode_provenance?.actual_seed === run?.scenario?.seed
-    && run?.events?.some((event) => event?.type === "action" || event?.type === "read");
+    && events.some((event) => event?.type === "action" && event?.delivery === "delivered")
+    && !events.some((event) => event?.type === "unknown" || event?.delivery === "unknown");
 }
 
 export async function runManagedRepeatability({ driver, scenario }) {
