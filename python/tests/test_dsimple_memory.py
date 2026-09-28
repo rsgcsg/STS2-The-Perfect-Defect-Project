@@ -61,6 +61,12 @@ def test_two_observations_preserve_gradient_through_old_memory(slots: int, gated
     assert scorer.write_queries.grad.abs().sum() > 0
     assert scorer.action_encoder.conv.weight.grad is not None
     assert scorer.action_encoder.conv.weight.grad.abs().sum() > 0
+    if gated:
+        assert scorer.memory_gate is not None
+        for parameter in scorer.memory_gate.parameters():
+            assert parameter.grad is not None
+            assert torch.isfinite(parameter.grad).all()
+            assert parameter.grad.abs().sum() > 0
 
 
 def test_reset_control_has_same_parameters_but_discards_previous_memory():

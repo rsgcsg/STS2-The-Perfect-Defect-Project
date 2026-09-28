@@ -20,8 +20,8 @@ Each candidate is encoded independently by its own embedding, width-preserving
 kernel-3 convolution, GELU, mean pooling, projection, and layer normalization.
 An action-conditioned dot attention reads the fixed `K` memory slots. The
 readout is `normalize(memory_read + MLP([memory_read, candidate]))`, followed by
-a score MLP. The
-page Transformer is called once per `advance`, regardless of candidate count;
+a score MLP. The page Transformer is called once per `advance`, regardless of
+candidate count;
 `score` reads memory without writing it or calling the page Transformer.
 Candidate work grows with the complete menu and fixed `K`; this does not claim
 constant cost in candidate count or game-level speed.
@@ -44,5 +44,12 @@ With the test-only width-8, one-layer scratch core and vocab 32, measured
 parameter counts are 2,305 for `K=1`, 2,361 for `K=8`; enabling the optional
 gate adds 136 to either. The core itself has 872 parameters. These counts and
 the synthetic gradient/permutation tests establish the computation graph only.
+More generally, beyond a supplied core, the ungated module has
+`2 × V × d + 12 × d² + (K + 18) × d + 1` parameters, with vocabulary size `V`
+and width `d`; the gate adds `2 × d² + d`. The separate action and feedback
+embedding tables account for `2 × V × d`, which is expensive at a large Qwen
+vocabulary and width. This is only a small-vocabulary prototype. A future Qwen
+integration would need its own measured memory/cost study and perhaps a
+narrower embedding design; neither is implemented here.
 No real-data training, policy quality, native independence, or runtime
 qualification has been measured.
