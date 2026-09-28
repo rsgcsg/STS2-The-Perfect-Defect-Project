@@ -1146,7 +1146,7 @@ wheels = [
 
 [[package]]
 name = "rsgcsg-sts2-platform-evidence"
-version = "0.1.0rc18"
+version = "0.1.0rc19"
 source = { git = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git?subdirectory=components%2Fevidence&rev=1b037dbfbc8c12d62901eaafaf8ca8bb5075f0ff#1b037dbfbc8c12d62901eaafaf8ca8bb5075f0ff" }
 
 [[package]]
