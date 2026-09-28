@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Reviewed source
-anchor: `develop@6c2f4166e52dfad08a78123ac858a5b63900d9a1` (through PR #74).
+anchor: `develop@bc47ad294b35f7bd68b0d8dc9b7dedc3364b1159` (through PR #75).
 Resolve live GitHub refs and deployed identities before work; current source and
 runtime authorities override this file. This bounded handoff is not the
 running-version owner. Platform, application, Human and research evidence remain
@@ -21,19 +21,17 @@ separate.
   label remains unproved. [The bounded receipt](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
   separates these facts and does not establish two independent full games.
 - **Active Workbench:** clean application source
-  `d81e69569330540d9e0067b51e674e3989cd14d3` is active in its own locked
-  environment; PR #74 merged with the same tree. Its Python-scope CI passed both
-  OSes/portable, followed by verified same-tree reuse on develop. The profile and
-  all 353 artifact IDs/file count/total bytes matched across owner stop/start;
-  SQLite stat metadata changed. Old source/environment remain for rollback.
-  The private Runtime rc.10 candidate was installed and loaded separately;
-  Game Mod rc.17 was unchanged. [The exact local journey receipt](../evidence/LOCAL_MODEL_RUNTIME_JOURNEY_2026-09-28.md)
-  records explicit registration/load, Shadow/Human/Stop and one bounded Auto run.
-  Auto reported 16 delivered actions, mostly repeated draw-pile navigation,
-  then submission-limit Human/release; both reports were verified and sealed.
-  This is not useful-play/full-game proof. Current public state and OS capture
-  differed; the window tool could not activate the window, so the final native
-  rendering is not independently confirmed. This policy was stopped.
+  `ec9b6d1c07baa97c6538aa935f3d95dbaf9c7f07` is active in its own locked
+  environment; PR #75 merged with the same tree. Python Linux/Windows/portable
+  passed, followed by verified same-tree reuse on develop. Its status observer
+  reports budget handoff without manual refresh and fences late GET across Stop.
+  The profile, 353 artifact IDs and file count/bytes matched across activation;
+  SQLite stat metadata changed. [The activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/75#issuecomment-5862077699)
+  preserves old failures and rollback. Runtime rc.10 and Game Mod rc.17 were not
+  replaced. Explicit Shadow/Human/Stop passed with no native submissions.
+  Later, the fixed 260-step model completed one short Auto attempt, then Stop:
+  one native information-page return plus 15 internal menu navigations; automatic
+  submission-limit Human/release. It still loops, not useful-play/full-game proof.
 - **Local data/worker:** PRs #61–#70 connect explicit local verified recording
   import, sample preview, in-place use ledger, immutable purpose-bound dataset,
   three-step CPU small-B worker, dev report and model detail. No login is needed.
@@ -48,7 +46,7 @@ separate.
   the offline evaluation. Dev Top-1=0/5: engineering connectivity, not strategy
   quality. Root-tool-observed Safari displayed the real model/report and
   later exported it on0401ebf: 538877 payload bytes, completed. No Gold/team use
-  change or additional tuning run. The 23 canonical transitions were not added
+  change in that run. The 23 canonical transitions were not added
   as extra input labels. This source is not a full-run corpus.
 - **Synthetic journey:** [the Safari receipt](../evidence/HUMAN_INPUT_LOCAL_WORKBENCH_BROWSER_2026-09-28.md)
   records two synthetic sources → save → actual three-step worker → report/model.
@@ -76,12 +74,13 @@ separate.
 - Registration binds current typed capabilities and a finite in-run support
   template; Runtime keeps complete-menu/identity/delivery admission. One page
   does not qualify all scenes; old registrations/manifests stay immutable.
-- Current source candidate PR #75 combines budget display and two actual-use
-  fixes: bounded read-only model-state observation and fencing late Runtime GET
-  responses across Stop/new intent. Source regressions and independent review
-  are separate from candidate CI and activation. The active d81e application
-  does not yet contain those fixes; its original false observation-error receipt
-  remains retained. No automatic command replay or safety-guard removal.
+- Current work: explicit pre-load short/extended bounded-run choices and verified
+  action/budget/terminal-page summaries. Loading stays Human; no automatic budget
+  renewal. An observed terminal page does not prove from-start whole-game play.
+  [The bounded-attempt receipt](../evidence/BOUNDED_GAME_ATTEMPT_2026-09-28.md)
+  records one predeclared 260-step CPU diagnostic on the same train26/dev5:
+  Top-1 0/5 to 1/5, but NLL worsened. No learned-quality conclusion or further
+  dev-based tuning; old models/data remain. Source/CI/activation stay separate.
 - Runtime rc.10 passed 121 component tests and installed synthetic smoke before
   its separate local install/load. Exact identities are in the journey receipt;
   no public package release or tracked legacy rc.6 consumer-pin change.
