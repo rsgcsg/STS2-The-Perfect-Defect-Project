@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Reviewed source
-anchor: `develop@69e01acf8e8ee10416fe3133b041f842cdf5365e` (through PR #72).
+anchor: `develop@34c6fca858fdb95a29c1831033a9e17f6b53981c` (through PR #73).
 Resolve live GitHub refs and deployed identities before work; current source and
 runtime authorities override this file. This bounded handoff is not the
 running-version owner. Platform, application, Human and research evidence remain
@@ -20,26 +20,29 @@ separate.
   Defense+ binding/Commit/successor is proved; a Human mouse untargeted-confirm
   label remains unproved. [The bounded receipt](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
   separates these facts and does not establish two independent full games.
-- **Active Workbench:** exact application source
-  `9bb9e22f7849cc74df2f53f1b38f038bc6a36d09` was deliberately activated in an
-  independent private runtime checkout, using the same profile and existing
-  library. The prior runtime is retained for rollback. Artifact IDs/payload
-  descriptors matched; SQLite sidecar metadata changed. No package/pin changed.
-  [PR #70 activation/integration receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/70#issuecomment-5858556193)
-  owns the exact application evidence.
+- **Active Workbench:** clean application source
+  `0401ebf14715eacee9516970305309afbf10a789` is activated in its own locked
+  Python environment. The original profile and all 353 artifact IDs, file count
+  and total bytes matched across the owner stop/start; SQLite stat metadata
+  changed. The prior source/environment remains for rollback. PR #73's
+  [activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/73#issuecomment-5861133764)
+  separates application activation from unchanged Game Mod rc.17.
 - **Local data/worker:** PRs #61–#70 connect explicit local verified recording
   import, sample preview, in-place use ledger, immutable purpose-bound dataset,
   three-step CPU small-B worker, dev report and model detail. No login is needed.
   Canonical decisions and Human input labels are distinct data modes. Both reuse
   original sources; no second legacy library or raw-recording relocation.
-- **Actual local data:** the earlier three-canonical-decision training dataset
-  remains; separately, an explicit owner API preview/publication selected two
-  previously attested recordings into one Human source: 14 accepted labels and
-  2 rejected/cancelled rows retained, no new payload copy. The resulting library
-  then had 330 manifests; importing the two newer fragments brings it to 332.
-  The earlier dataset's training-purpose binding was read back; split remains
-  `not_checked_for_training`, and no real-data worker was started. This was an
-  API exercise; only opening the saved detail was additionally observed in Safari.
+- **Actual local data:** old datasets and the earlier 14-label source remain.
+  The two newer fragments provided 31 accepted input labels, divided by the
+  existing Human v2 session/duplicate-input rule into train26/dev5. Native-run
+  independence is unknown. One fixed three-step CPU B.s.v2 run completed on
+  application9bb9e22; model `0ad03dfd233fbb37404ce9cf9e0790b2f651f7ee3a4683799ed9f1111df97819`
+  binds checkpoint/model_view/run/training_input; the completed run result links
+  the offline evaluation. Dev Top-1=0/5: engineering connectivity, not strategy
+  quality. Root-tool-observed Safari displayed the real model/report and
+  later exported it on0401ebf: 538877 payload bytes, completed. No Gold/team use
+  change or additional tuning run. The 23 canonical transitions were not added
+  as extra input labels. This source is not a full-run corpus.
 - **Synthetic journey:** [the Safari receipt](../evidence/HUMAN_INPUT_LOCAL_WORKBENCH_BROWSER_2026-09-28.md)
   covers two synthetic sources → save → actual three-step worker → report → model.
   The real worker result also passed standalone export/scorer binding checks.
@@ -57,21 +60,13 @@ separate.
 
 ## Current work and next boundaries
 
-- PR #71 is merged: recording/dataset/model/report/all filters use existing
-  metadata and retain search and recording selections. Independent review,
-  focused tests and isolated Safari navigation passed. Its exact
-  [Python CI](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36340133989)
-  passed Linux, Windows and portable; docs were unselected. It is not yet active
-  in the installed application source named above.
-- PR #72 is merged and fixes command-triggered re-render leaving replacement
-  buttons disabled after client pending ends. Independent review and integrated
-  Node tests passed (119 tests). An isolated Safari search re-render left the
-  new search control enabled; further query entry hit an automation clipboard
-  timeout, so broader browser coverage is not claimed. Current owner-disabled
-  conditions and duplicate-command protection remain; page refresh never starts
-  or retries work. Its exact Python run
-  [36355739691](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36355739691)
-  passed Linux/Windows and portable. This is not application activation.
+- PRs #71–#73 are merged and active: existing-library category filters,
+  command re-render recovery and explicit offline model export. Source tests,
+  independent review, actual Safari and exact candidate CI are recorded in
+  their PRs. PR #73 full36357149773 passed both OSes/portable; develop36361129002
+  used its verified identical-tree receipt plus fresh guards, not a new full.
+  Export verifies files/scorer; it does not register/load a policy or claim game
+  compatibility. Refresh does not issue model/export commands.
 - Saving a Human source does not establish train/dev readiness. Immutable Human
   v1/v2 keep their original split semantics; v2 joins sessions sharing visible
   input and can collapse all groups. More recordings alone do not guarantee an
@@ -83,15 +78,14 @@ separate.
   a game; registering a selectable policy requires honest environment/support
   facts and separately qualified Runtime loading. One observed page cannot stand
   for all scenes. Do not fabricate package URLs or reuse historical identities.
-- The offline-export candidate adds one explicit model-detail action for CPU
-  scratch small B in the current text-menu format. It reuses existing artifact
-  export and standalone scorer verification, preserves pending/unknown outcomes,
-  and permits a new explicit check after a completed operation's workspace changes.
-  It does not register a policy, start Runtime, train, or imply game compatibility.
-  Candidate source/checks and the active application identity remain distinct.
-  [An isolated Safari export](../evidence/LOCAL_MODEL_EXPORT_BROWSER_2026-09-28.md)
-  used a previously completed synthetic model and observed the completed result;
-  it did not train or export any private-recording model.
+- Next application packet connects explicit registration of the verified
+  text-menu small-B export to the existing model catalog. Binding uses fresh
+  typed Connector capabilities and a finite source-reviewed in-run support
+  template; complete menus and execution-time Runtime checks stay authoritative.
+  Registration, installed Runtime, load and gameplay are separate facts.
+  The prepared private Runtime rc.10 package (source60d97f7, archive16e825fb)
+  passed 121 component tests and installed synthetic smoke; it is not yet
+  production-installed or loaded. The legacy rc.6 consumer pin stays unchanged.
 - Fill untargeted/native continuation and full-scene coverage through exact owner
   evidence. Commit is not a causal successor; input labels cannot fill missing
   canonical edges. Preserve unknowns rather than repairing them from later polls.

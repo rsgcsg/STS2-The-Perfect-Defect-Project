@@ -1,0 +1,290 @@
+"""Explicit local text-menu policy registration from a verified offline export.
+
+Registration records a reviewed engineering scope. Runtime readiness and loading
+remain separate, and the current Connector remains the environment authority.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import uuid
+from pathlib import Path
+from typing import Any, cast
+
+from spireagent.json_boundary import BoundaryError, digest
+from spireagent.package_identity import PackageIdentityError
+from spireagent.policy_files import _inside, _object_file
+from spireagent.workbench.developer import ProjectConfig, atomic_json
+from spireagent.workbench.developer_server import instance_lock
+from spireagent.workbench.local_model_export import LocalModelExport, _ordinary
+from spireagent.workbench.local_models import LocalModelService, _loopback
+from spireagent.workbench.runtime_install import (
+    CONNECTOR_PACKAGE,
+    RUNTIME_PACKAGE,
+    validate_runtime_install,
+)
+from stpd.token_policy_installation import bind_text_menu_export, code_digest, validate
+
+SCHEMA = "stpd/local-model-registration-v1"
+PROFILE = "text-menu-v1"
+REGISTRY = ".local/token-policies-v1.json"
+LOCK = ".local/token-policies-v1.lock"
+REGISTRATIONS = ".local/model-registrations"
+# Source-reviewed engineering support: LiveObservationReader registrations,
+# SnapshotBuilder/providers and NativeTextMenu overrides. This is not native
+# or full-run qualification; Runtime remains the current-menu authority.
+KINDS = (
+    "deck_enchant_selection", "combat_hand_card_selection", "card_bundle_selection",
+    "card_reward_selection", "reward_claim", "map_navigation", "combat_turn",
+    "shop_inventory", "shop_room", "treasure_room", "event_dialogue", "event_option",
+    "native_generated_card_choice", "native_boss_relic_selection",
+    "native_simple_card_selection", "deck_upgrade_selection", "deck_transform_selection",
+    "native_combat_pile_selection", "native_deck_card_selection", "rest_site",
+    "potion_popup", "potion_targeting", "combat_card_operation", "native_map",
+    "run_deck", "combat_draw_pile", "combat_discard_pile", "combat_exhaust_pile",
+    "inspect_card", "relic_inspect", "relic_tips", "card_tips", "power_tips",
+    "intent_tips", "orb_tips", "topbar_tips",
+)
+# Global text-menu capabilities from PlayerEnvironmentService.GetCapabilities.
+VERBS = (
+    "activate", "select", "deselect", "confirm", "cancel", "play", "target",
+    "use", "end_turn", "skip", "open", "close", "purchase", "navigate",
+    "begin_card_play", "cancel_card_play", "focus_target", "confirm_target",
+    "confirm_card", "open_potion_popup", "choose_potion_use", "discard_potion",
+    "close_potion_popup", "select_potion_target", "cancel_potion_target",
+    "claim_reward", "claim_linked_reward", "proceed_rewards", "skip_rewards",
+    "open_information", "open_relic_inspect", "open_relic_tips", "open_card_tips",
+    "open_power_tips", "open_intent_tips", "open_orb_tips", "open_topbar_tips", "back",
+    "show_relic_tips", "show_card_tips", "show_power_tips", "show_intent_tips",
+    "show_orb_tips", "show_topbar_tips", "open_run_deck", "open_native_map",
+    "inspect_relic", "open_combat_draw_pile", "open_combat_discard_pile",
+    "open_combat_exhaust_pile", "return_native_information", "return_native_map",
+    "return_relic_inspect", "return_native_tips", "inspect_deck_card",
+    "inspect_bundle_card", "return_card_inspect", "previous_inspect_card",
+    "next_inspect_card", "toggle_card_upgrade_preview", "previous_relic", "next_relic",
+)
+_SDK_SCRIPT = """
+const {PlayerEnvironmentRestClient} = await import(process.argv[1]);
+const result = await new PlayerEnvironmentRestClient(process.argv[2], 5000)
+  .textMenuCapabilities();
+process.stdout.write(JSON.stringify(result.data));
+"""
+
+
+def _public(model_id: str, status: str, *, selection_id: str | None = None,
+            reason_code: str | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {"schema": SCHEMA, "model_id": model_id, "status": status,
+                              "loaded": False, "runtime_profile": PROFILE}
+    if selection_id is not None:
+        result["selection_id"] = selection_id
+    if reason_code is not None:
+        result["reason_code"] = reason_code
+    return result
+
+
+def _requirements(value: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Project only typed SDK capabilities; never derive support from a page."""
+    try:
+        if (not isinstance(value, dict) or value["input_profile"] != PROFILE
+                or value["snapshot_schema"] != "sts2.player-environment/text-menu-snapshot-1"
+                or value["receipt_schema"] != "sts2.player-environment/text-menu-action-result-1"
+                or value["execution_available"] is not True
+                or value["single_controller"] is not True
+                or not isinstance(value["verbs"], list)
+                or not set(VERBS) <= set(value["verbs"])):
+            raise ValueError
+        host, game = value["host"], value["game"]
+        implementation, modset = host["implementation"], game["modset"]
+        fields = (value["protocol_version"], host["host_kind"], host["version"],
+                  implementation["source_revision"], implementation["artifact_sha256"],
+                  implementation["module_version_id"], game["version"], game["commit"],
+                  modset["status"], modset["fingerprint"])
+        if (not all(isinstance(item, str) and item for item in fields)
+                or not re.fullmatch(r"[a-f0-9]{64}", implementation["artifact_sha256"])
+                or not isinstance(modset["loaded_mod_ids"], list)
+                or not all(isinstance(item, str) and item for item in modset["loaded_mod_ids"])
+                or len(set(modset["loaded_mod_ids"])) != len(modset["loaded_mod_ids"])):
+            raise ValueError
+        environment = {"host_kind": host["host_kind"],
+                       "connector_version": host["version"],
+                       "connector_source_revision": implementation["source_revision"],
+                       "connector_artifact_sha256": implementation["artifact_sha256"],
+                       "connector_module_version_id": implementation["module_version_id"],
+                       "modset_status": modset["status"],
+                       "modset_fingerprint": modset["fingerprint"],
+                       "loaded_mod_ids": modset["loaded_mod_ids"]}
+        requirements = {"connector_protocol_version": value["protocol_version"],
+                        "environment": environment, "reads": [],
+                        "whole_decision_admission": True,
+                        "candidate_order_digest": "sha256-json-menu-action-id-order",
+                        "score_count_matches_candidate_count": True,
+                        "selected_index": True, "successor_required": True}
+        support = {"game_versions": [game["version"]],
+                   "game_commits": [game["commit"]],
+                   "interaction_kinds": list(KINDS), "action_verbs": list(VERBS)}
+        return requirements, support
+    except (KeyError, TypeError, ValueError) as error:
+        raise BoundaryError(
+            "local_model_registration", "text_menu_capabilities_incompatible",
+        ) from error
+
+
+class LocalModelRegistration:
+    def __init__(self, config: ProjectConfig, export: LocalModelExport,
+                 models: LocalModelService) -> None:
+        self.config, self.export, self.models = config, export, models
+
+    def _entries(self) -> list[dict[str, Any]]:
+        # LocalModelService validates the shipped and private catalog together.
+        self.models.registry()
+        path = self.models.root / REGISTRY
+        if not path.exists() and not path.is_symlink():
+            return []
+        value = _object_file(path)
+        if value.get("schema") != "stpd/local-token-policies-v1" or not isinstance(
+            value.get("policies"), list
+        ):
+            raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+        return cast(list[dict[str, Any]], value["policies"])
+
+    def _matching(self, model_id: str, export: Path,
+                  requirements: dict[str, Any] | None = None,
+                  support: dict[str, Any] | None = None) -> tuple[str | None, bool]:
+        stale = False
+        current_code = code_digest(self.models.root)
+        for entry in reversed(self._entries()):
+            if entry.get("runtime_profile") != PROFILE:
+                continue
+            try:
+                config = _object_file(_inside(self.models.root, entry["config"]))
+                if config.get("model_id") != model_id or config.get("export_path") != str(
+                    export.resolve()
+                ):
+                    continue
+                manifest = _object_file(_inside(self.models.root, entry["manifest"]))
+                if manifest.get("adapter", {}).get("code_sha256") != current_code:
+                    stale = True
+                    continue
+                validate(self.models.root, _inside(self.models.root, entry["config"]),
+                         _inside(self.models.root, entry["manifest"]))
+                if (requirements is not None and manifest.get("requirements") != requirements
+                        or support is not None and manifest.get("support") != support):
+                    continue
+                return entry["id"], stale
+            except (AttributeError, BoundaryError, KeyError, TypeError, ValueError) as error:
+                raise BoundaryError("local_model_registration",
+                                    "registration_metadata_invalid") from error
+        return None, stale
+
+    def status(self, model_id: object) -> dict[str, Any]:
+        identity = digest(model_id, "local_model_registration.model_id")
+        observed = self.export.status()
+        operation = observed["operation"]
+        if observed.get("availability") == "workspace_changed":
+            return _public(identity, "unavailable", reason_code="workspace_changed")
+        if (observed.get("availability") != "ready"
+                or operation.get("status") != "completed"
+                or operation.get("model_id") != identity):
+            return _public(identity, "unavailable", reason_code="verified_export_required")
+        try:
+            export = self.config.state_dir / "model-exports" / identity
+            found, stale = self._matching(identity, export)
+            if found is not None:
+                return _public(identity, "registered", selection_id=found)
+            if stale:
+                return _public(identity, "not_registered", reason_code="source_binding_changed")
+            return _public(identity, "not_registered")
+        except (BoundaryError, OSError, ValueError):
+            return _public(identity, "unavailable", reason_code="registration_metadata_invalid")
+
+    def _capabilities(self, sdk: Path) -> dict[str, Any]:
+        node = shutil.which("node")
+        if node is None:
+            raise BoundaryError("local_model_registration", "text_menu_capabilities_unavailable")
+        endpoint = _loopback(self.config.platform_url or "http://127.0.0.1:15526")
+        environment = {key: value for key, value in os.environ.items() if key in
+                       {"PATH", "SYSTEMROOT", "SystemRoot", "TMPDIR", "TEMP", "TMP"}}
+        try:
+            result = subprocess.run(
+                [node, "--input-type=module", "-e", _SDK_SCRIPT, sdk.as_uri(), endpoint],
+                capture_output=True, check=False, timeout=12, env=environment,
+            )
+            if result.returncode or len(result.stdout) > 65536:
+                raise ValueError
+            value = json.loads(result.stdout)
+            if not isinstance(value, dict):
+                raise ValueError
+            return value
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            raise BoundaryError("local_model_registration",
+                                "text_menu_capabilities_unavailable") from error
+
+    def register(self, model_id: object) -> dict[str, Any]:
+        identity = digest(model_id, "local_model_registration.model_id")
+        # Weight/scorer verification and current-store binding are explicit POST work.
+        export = self.export.verified_for_registration(identity)
+        try:
+            directory, pin = self.models.text_runtime_profile()
+            node_modules = directory / "runtime" / "node_modules"
+            validate_runtime_install(node_modules, pin, self.models._connector_pin())
+        except (BoundaryError, OSError, PackageIdentityError, ValueError) as error:
+            raise BoundaryError("local_model_registration",
+                                "text_runtime_local_install_required") from error
+        sdk = (node_modules / RUNTIME_PACKAGE / "node_modules" / CONNECTOR_PACKAGE
+               / "dist" / "index.js")
+        requirements, support = _requirements(self._capabilities(sdk))
+        private = self.models.root / ".local"
+        if private.exists() or private.is_symlink():
+            if not _ordinary(private, directory=True):
+                raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+        else:
+            private.mkdir(mode=0o700)
+        lock_path = self.models.root / LOCK
+        if lock_path.is_symlink() or (lock_path.exists()
+                                      and not _ordinary(lock_path, directory=False)):
+            raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+        try:
+            with instance_lock(lock_path):
+                found, _ = self._matching(identity, export, requirements, support)
+                if found is not None:
+                    return _public(identity, "registered", selection_id=found)
+                folder = self.models.root / REGISTRATIONS
+                if folder.exists() or folder.is_symlink():
+                    if not _ordinary(folder, directory=True):
+                        raise BoundaryError(
+                            "local_model_registration", "registration_metadata_invalid",
+                        )
+                else:
+                    folder.mkdir(mode=0o700)
+                selection = "local-text-b-" + uuid.uuid4().hex
+                target = folder / selection
+                target.mkdir(mode=0o700)
+                config_path, manifest_path = target / "config.json", target / "manifest.json"
+                bind_text_menu_export(
+                    self.models.root, export, config_path, manifest_path,
+                    manifest_id=selection,
+                    policy={"id": selection, "version": "1.0.0", "provider": "stpd",
+                            "architecture": "stage1a.b.s.v2"},
+                    requirements=requirements, support=support,
+                )
+                entries = self._entries()
+                entry = {"id": selection, "label": "本机文字菜单 B " + identity[:8],
+                         "adapter": "token-v1", "runtime_profile": PROFILE,
+                         "manifest": manifest_path.relative_to(self.models.root).as_posix(),
+                         "config": config_path.relative_to(self.models.root).as_posix()}
+                atomic_json(self.models.root / REGISTRY,
+                            {"schema": "stpd/local-token-policies-v1",
+                             "policies": [*entries, entry]})
+                return _public(identity, "registered", selection_id=selection)
+        except BoundaryError as error:
+            if error.code == "already_running":
+                raise BoundaryError(
+                    "local_model_registration", "registration_in_progress",
+                ) from error
+            raise
+        except OSError as error:
+            raise BoundaryError("local_model_registration", "registration_write_failed") from error
