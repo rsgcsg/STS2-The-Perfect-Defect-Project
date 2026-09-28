@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from spireagent.json_boundary import BoundaryError, digest
+from spireagent.package_identity import PackageIdentityError
 from spireagent.policy_files import _inside, _object_file
 from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
@@ -230,7 +231,7 @@ class LocalModelRegistration:
             directory, pin = self.models.text_runtime_profile()
             node_modules = directory / "runtime" / "node_modules"
             validate_runtime_install(node_modules, pin, self.models._connector_pin())
-        except (BoundaryError, OSError, ValueError) as error:
+        except (BoundaryError, OSError, PackageIdentityError, ValueError) as error:
             raise BoundaryError("local_model_registration",
                                 "text_runtime_local_install_required") from error
         sdk = (node_modules / RUNTIME_PACKAGE / "node_modules" / CONNECTOR_PACKAGE

@@ -16,6 +16,7 @@ from test_artifact_store_v1 import store
 from test_local_model_export import _config, _settle
 
 from spireagent.json_boundary import BoundaryError
+from spireagent.package_identity import PackageIdentityError
 from spireagent.storage.registry import SQLiteRegistry, sync_registry
 from spireagent.storage.store import copy_artifact
 from spireagent.workbench import local_model_registration as registration_module
@@ -230,8 +231,10 @@ def test_unsafe_registry_does_not_authorize_registration(registration, tmp_path:
     assert not (tmp_path / "outside").exists()
 
 
-def test_http_exact_body_browser_guard_and_live_instance(registration, tmp_path: Path):
-    service, config, model_id, _, _ = registration
+def test_http_exact_body_browser_guard_and_live_instance(
+    registration, tmp_path: Path, monkeypatch,
+):
+    service, config, model_id, model_root, _ = registration
     config_path = tmp_path / "project.json"
     atomic_json(config_path, config.to_dict())
     app = Application(config, config_path=config_path)
@@ -279,6 +282,18 @@ def test_http_exact_body_browser_guard_and_live_instance(registration, tmp_path:
         atomic_json(config.state_dir / "runtime.json", {
             "instance_id": app.instance_id, "configuration_id": configuration_id(config),
         })
+        original_validate = registration_module.validate_runtime_install
+
+        def drifted_install(*_args):
+            raise PackageIdentityError("synthetic missing Runtime package")
+
+        monkeypatch.setattr(registration_module, "validate_runtime_install", drifted_install)
+        with pytest.raises(HTTPError) as missing:
+            post({"model_id": model_id}, csrf=before["csrf_token"])
+        assert missing.value.code == 409
+        assert json.load(missing.value)["error"] == "text_runtime_local_install_required"
+        assert not (model_root / REGISTRY).exists()
+        monkeypatch.setattr(registration_module, "validate_runtime_install", original_validate)
         with post({"model_id": model_id}, csrf=before["csrf_token"]) as response:
             registered = json.load(response)
         assert registered["status"] == "registered"
