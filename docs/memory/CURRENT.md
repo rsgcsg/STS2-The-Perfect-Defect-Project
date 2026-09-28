@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Reviewed source
-anchor: `develop@bc47ad294b35f7bd68b0d8dc9b7dedc3364b1159` (through PR #75).
+anchor: `develop@889aa980015ed68543b1cb63fd34c276b7e30e2b` (through PR #77).
 Resolve live GitHub refs and deployed identities before work; current source and
 runtime authorities override this file. This bounded handoff is not the
 running-version owner. Platform, application, Human and research evidence remain
@@ -21,17 +21,15 @@ separate.
   label remains unproved. [The bounded receipt](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
   separates these facts and does not establish two independent full games.
 - **Active Workbench:** clean application source
-  `ec9b6d1c07baa97c6538aa935f3d95dbaf9c7f07` is active in its own locked
-  environment; PR #75 merged with the same tree. Python Linux/Windows/portable
-  passed, followed by verified same-tree reuse on develop. Its status observer
-  reports budget handoff without manual refresh and fences late GET across Stop.
-  The profile, 353 artifact IDs and file count/bytes matched across activation;
-  SQLite stat metadata changed. [The activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/75#issuecomment-5862077699)
-  preserves old failures and rollback. Runtime rc.10 and Game Mod rc.17 were not
-  replaced. Explicit Shadow/Human/Stop passed with no native submissions.
-  Later, the fixed 260-step model completed one short Auto attempt, then Stop:
-  one native information-page return plus 15 internal menu navigations; automatic
-  submission-limit Human/release. It still loops, not useful-play/full-game proof.
+  `7a7312b504526e0edf5086f1a9f816b84939abdf` is active in its own locked
+  environment; PR #76 merged with the same tree. Python Linux/Windows/portable
+  passed, followed by verified same-tree reuse on develop. The [PR #76 activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/76#issuecomment-5862933104)
+  records the current application and explicit model re-registration; loading
+  stayed Human with no automatic start. The earlier [PR #75 receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/75#issuecomment-5862077699)
+  retains that activation's inventory comparison and Shadow/Human/Stop evidence.
+  Runtime rc.10 and Game Mod rc.17 were not replaced. The earlier fixed model's
+  information-menu loop and the later bounded card run remain separate attempts;
+  neither proves useful-play or full-game capability.
 - **Local data/worker:** PRs #61–#70 connect explicit local verified recording
   import, sample preview, in-place use ledger, immutable purpose-bound dataset,
   three-step CPU small-B worker, dev report and model detail. No login is needed.
@@ -74,16 +72,25 @@ separate.
 - Registration binds current typed capabilities and a finite in-run support
   template; Runtime keeps complete-menu/identity/delivery admission. One page
   does not qualify all scenes; old registrations/manifests stay immutable.
-- Current work: explicit pre-load short/extended bounded-run choices and verified
+- PR #76 supplies explicit pre-load short/extended bounded-run choices and verified
   action/budget/terminal-page summaries. Loading stays Human; no automatic budget
   renewal. An observed terminal page does not prove from-start whole-game play.
   [The bounded-attempt receipt](../evidence/BOUNDED_GAME_ATTEMPT_2026-09-28.md)
   records one predeclared 260-step CPU diagnostic on the same train26/dev5:
   Top-1 0/5 to 1/5, but NLL worsened. No learned-quality conclusion or further
   dev-based tuning; old models/data remain. Source/CI/activation stay separate.
-- Runtime rc.10 passed 121 component tests and installed synthetic smoke before
+- The installed Runtime rc.10 passed 121 component tests and installed synthetic smoke before
   its separate local install/load. Exact identities are in the journey receipt;
   no public package release or tracked legacy rc.6 consumer-pin change.
+- Latest native/consumer check: the small-B short run delivered an untargeted card
+  confirmation, then reached its submission limit and released control. The native
+  discard selector was subsequently observed; a separate one-selection engineering
+  check delivered successfully and observed return to combat with that card in hand.
+  The same complete selector input passed the existing model NDJSON port (11 finite
+  scores, matching bindings). See [the bounded receipt](../evidence/NATIVE_PILE_CONTINUATION_2026-09-28.md).
+  This is not Human training data, causal successor proof or full-game qualification.
+  PR #77 adds a separate synthetic Auto combat/reward/map/terminal regression,
+  accepted by full CI; its test-only source does not change the installed Runtime.
 - Prioritize full-scene system/model connections over learned-policy quality.
   Fill untargeted/native continuation coverage through exact owner evidence. Commit is not a causal successor; input labels cannot fill missing
   canonical edges. Preserve unknowns rather than repairing them from later polls.
