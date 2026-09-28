@@ -42,6 +42,56 @@ SCHEMA = "stpd/local-models-v1"
 RUNTIME_PACKAGE = "@rsgcsg/sts2-policy-runtime"
 MODES = frozenset({"human", "shadow", "one_step", "auto"})
 JSON_LIMIT = 1024 * 1024
+RUN_PROFILES = {
+    "short": {"max_submissions": 16, "max_policy_calls": 32, "deadline_ms": 60_000},
+    "extended": {"max_submissions": 2_000, "max_policy_calls": 4_000,
+                 "deadline_ms": 1_800_000},
+}
+_BUDGET_STATES = frozenset({"inactive", "active", "exhausted"})
+_BUDGET_EXHAUSTION = frozenset({"submission_attempt_limit", "policy_call_limit", "deadline"})
+_BUDGET_END = frozenset({"human_recovery", "mode_changed", "stopped"})
+
+
+def _recorded_budget(value: object) -> dict[str, Any] | None:
+    """Project only typed Runtime counters from verified event bytes."""
+    if (not isinstance(value, dict) or not isinstance(value.get("state"), str)
+            or value["state"] not in _BUDGET_STATES):
+        return None
+    fields = ("max_submissions", "submissions_used", "max_policy_calls",
+              "policy_calls_used", "deadline_ms", "elapsed_ms")
+    if any(type(value.get(key)) is not int or value[key] < 0 for key in fields):
+        return None
+    exhausted = value.get("exhausted_reason")
+    ended = value.get("ended_reason")
+    if (exhausted is not None and (
+            not isinstance(exhausted, str) or exhausted not in _BUDGET_EXHAUSTION)
+            or ended is not None and (
+                not isinstance(ended, str) or ended not in _BUDGET_END)):
+        return None
+    return {key: value[key] for key in fields} | {
+        "state": value["state"], "exhausted_reason": exhausted, "ended_reason": ended,
+    }
+
+
+def _terminal_screen(value: object) -> str | None:
+    """An exact text-menu Game Over page observation, not a game outcome claim."""
+    if not isinstance(value, dict) or (
+        value.get("schema") != "sts2.player-environment/text-menu-snapshot-1"
+        or value.get("input_profile") != "text-menu-v1"
+    ):
+        return None
+    interaction = value.get("interaction")
+    if not isinstance(interaction, dict) or interaction.get("kind") != "game_over":
+        return None
+    content = interaction.get("content")
+    if not isinstance(content, dict):
+        return None
+    surface, context = content.get("surface"), content.get("context")
+    if (not isinstance(surface, dict) or surface.get("kind") != "game_over"
+            or not isinstance(context, dict) or context.get("kind") != "game_over"):
+        return None
+    result = context.get("result")
+    return result if isinstance(result, str) and result in {"win", "loss"} else None
 
 
 
@@ -210,6 +260,21 @@ class RuntimeClient:
             or runtime.get("code_sha256") != self.startup["runtime_code_sha256"]
         ):
             raise ValueError
+        startup_budget = self.startup.get("autonomy_budget")
+        if isinstance(startup_budget, dict) and all(
+            type(startup_budget.get(key)) is int
+            for key in ("maxSubmissions", "maxPolicyCalls", "deadlineMs")
+        ):
+            current_budget = status.get("autonomy_budget")
+            if not isinstance(current_budget, dict) or any(
+                current_budget.get(status_key) != startup_budget[startup_key]
+                for startup_key, status_key in (
+                    ("maxSubmissions", "max_submissions"),
+                    ("maxPolicyCalls", "max_policy_calls"),
+                    ("deadlineMs", "deadline_ms"),
+                )
+            ):
+                raise ValueError
 
 
 class LocalModelService:
@@ -406,6 +471,12 @@ class LocalModelService:
         entries = []
         for entry in self.registry()["policies"]:
             manifest = _object_file(_inside(self.root, entry["manifest"]))
+            text_menu = entry.get("runtime_profile") == "text-menu-v1"
+            profiles = [{"id": "short", "label": "短局" if text_menu else "默认短局",
+                         "limits": RUN_PROFILES["short"] if text_menu else None}]
+            if text_menu:
+                profiles.append({"id": "extended", "label": "较长局（最多 30 分钟）",
+                                 "limits": RUN_PROFILES["extended"]})
             entries.append(
                 {
                     "selection_id": entry["id"],
@@ -414,6 +485,12 @@ class LocalModelService:
                     "claims": manifest.get("claims"),
                     "artifact_sha256": manifest.get("artifact", {}).get("sha256"),
                     "readiness": "check_required",
+                    "default_run_profile": "short",
+                    "run_profiles": profiles,
+                    "run_profile_unavailable_reason": (
+                        None if text_menu
+                        else "extended_requires_text_menu_runtime"
+                    ),
                 }
             )
         downloads = []
@@ -606,21 +683,32 @@ class LocalModelService:
 
         return self._begin("download", download)
 
-    def start(self, identity: str) -> dict[str, Any]:
-        self.selection(identity)
+    def _run_profile(self, identity: str, profile: str) -> bool:
+        if not isinstance(profile, str) or profile not in RUN_PROFILES:
+            raise BoundaryError("local_model", "unsupported_run_profile")
+        text_menu = self.selection(identity).get("runtime_profile") == "text-menu-v1"
+        if profile == "extended" and not text_menu:
+            raise BoundaryError("local_model", "extended_requires_text_menu_runtime")
+        return text_menu
+
+    def start(self, identity: str, run_profile: str = "short") -> dict[str, Any]:
+        self._run_profile(identity, run_profile)
         with self.lock:
             if self.process is not None and self.process.poll() is None:
                 raise BoundaryError("local_model", "runtime_already_running")
             intent = self.intent_generation
-        return self._begin("start", lambda: self._start(identity, intent))
+        return self._begin(
+            "start", lambda: self._start(identity, intent) if run_profile == "short"
+            else self._start(identity, intent, run_profile)
+        )
 
-    def prepare_and_load(self, identity: str) -> dict[str, Any]:
+    def prepare_and_load(self, identity: str, run_profile: str = "short") -> dict[str, Any]:
         """Prepare a reviewed selection, then load in Human mode; never fetch model weights.
 
         Only the existing bounded, hash-pinned Runtime installer is automatic.
         Adapter/weights/backend requirements remain explicit owning readiness checks.
         """
-        self.selection(identity)
+        self._run_profile(identity, run_profile)
         with self.lock:
             if self.client is not None or (
                 self.process is not None and self.process.poll() is None
@@ -658,7 +746,10 @@ class LocalModelService:
             with self.lock:
                 self._require_intent(intent)
                 self.state["preparation_stage"] = "loading"
-            self._start(identity, intent)
+            if run_profile == "short":
+                self._start(identity, intent)
+            else:
+                self._start(identity, intent, run_profile)
             with self.lock:
                 self.state["preparation_stage"] = "ready"
 
@@ -688,13 +779,16 @@ class LocalModelService:
             self._require_intent(intent)
             return value
 
-    def _start(self, identity: str, intent: int | None = None) -> None:
+    def _start(self, identity: str, intent: int | None = None,
+               run_profile: str = "short") -> None:
+        text_menu = self._run_profile(identity, run_profile)
         if intent is None:
             intent = self.intent_generation
         report = self.readiness(identity)
         with self.lock:
             self._require_intent(intent)
-            self.state.update(selection_id=identity, readiness=report)
+            self.state.update(selection_id=identity, readiness=report,
+                              run_profile=run_profile)
         if report["status"] != "ready_to_load":
             raise BoundaryError("local_model", "model_readiness_blocked")
         entry = self.selection(identity)
@@ -722,6 +816,11 @@ class LocalModelService:
             "--mode",
             "human",
         ]
+        if text_menu:
+            limits = RUN_PROFILES[run_profile]
+            command.extend(("--max-auto-submissions", str(limits["max_submissions"]),
+                            "--max-policy-calls", str(limits["max_policy_calls"]),
+                            "--auto-deadline-ms", str(limits["deadline_ms"])))
         environment = dict(os.environ)
         environment.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
         for name in tuple(environment):
@@ -777,8 +876,18 @@ class LocalModelService:
                 startup.get(key) != value for key, value in expected.items()
             ) or not re.fullmatch(r"run-[a-f0-9-]{36}", startup.get("run_id", "")):
                 raise ValueError
+            if text_menu and startup.get("autonomy_budget") != {
+                "maxSubmissions": limits["max_submissions"],
+                "maxPolicyCalls": limits["max_policy_calls"],
+                "deadlineMs": limits["deadline_ms"],
+            }:
+                raise ValueError
             client = RuntimeClient(startup["address"], startup)
             runtime = client.request("/status")["status"]
+            if text_menu and (not isinstance(runtime.get("autonomy_budget"), dict)
+                              or any(runtime["autonomy_budget"].get(key) != value
+                                     for key, value in limits.items())):
+                raise ValueError
             with self.lock:
                 self._require_intent(intent)
                 if self.closed:
@@ -1123,6 +1232,11 @@ class LocalModelService:
             "game_outcome": "not_measured",
             "scientific_verdict": "not_claimed",
             "training_admission": "not_claimed",
+            "recorded_action_verbs": None,
+            "native_submission_attempts": None,
+            "budget_summary": None,
+            "budget_end_reason": None,
+            "terminal_screen_observation": None,
         }
         if result.value is not None:
             report.update(
@@ -1130,25 +1244,100 @@ class LocalModelService:
             )
             counts: Counter[str] = Counter()
             deliveries: Counter[str] = Counter()
+            verbs: Counter[str] = Counter()
+            native_submissions: int | None = None
+            budget_summary: dict[str, Any] | None = None
+            budget_end_reason: str | None = None
+            terminal_results: set[str] = set()
+            terminal_count = 0
+            first_terminal_sequence: int | None = None
+            last_terminal_sequence: int | None = None
             # Only read events after the owning verifier accepted exact bytes and
             # their relationship to this model/runtime. Counts are operational.
             with (directory / "events.jsonl").open(encoding="utf-8") as events:
                 for line in events:
                     event = json.loads(line)
                     counts[event["kind"]] += 1
+                    payload = event["payload"]
+                    snapshot = None
+                    if event["kind"] == "text_decision_input":
+                        snapshot = payload.get("snapshot")
+                    elif event["kind"] == "text_observed_successor":
+                        snapshot = payload.get("successor")
+                    elif event["kind"] == "menu_navigation":
+                        result = payload.get("result")
+                        if isinstance(result, dict):
+                            snapshot = result.get("successor")
+                    terminal = _terminal_screen(snapshot)
+                    if terminal is not None:
+                        terminal_results.add(terminal)
+                        terminal_count += 1
+                        sequence = event.get("sequence")
+                        if type(sequence) is int and sequence > 0:
+                            if first_terminal_sequence is None:
+                                first_terminal_sequence = sequence
+                            last_terminal_sequence = sequence
+                    if (event["kind"] == "text_menu_dispatch_attempt"
+                            and payload.get("effect_domain") in {"native_input", "text_menu"}):
+                        native_submissions = (native_submissions or 0) + (
+                            payload["effect_domain"] == "native_input"
+                        )
+                    if event["kind"] in {"menu_navigation", "text_native_delivery",
+                                         "text_native_unknown", "text_menu_not_applied"}:
+                        outcome = payload.get("result")
+                        action = outcome.get("action") if isinstance(outcome, dict) else None
+                        verb = action.get("verb") if isinstance(action, dict) else None
+                        if isinstance(verb, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", verb):
+                            verbs[verb] += 1
                     if event["kind"] == "receipt":
-                        deliveries[event["payload"]["receipt"]["delivery"]] += 1
+                        receipt = payload.get("receipt")
+                        action = receipt.get("action") if isinstance(receipt, dict) else None
+                        verb = action.get("verb") if isinstance(action, dict) else None
+                        if isinstance(verb, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", verb):
+                            verbs[verb] += 1
+                    if event["kind"] in {"stopped", "mode_changed", "one_step_completed",
+                                         "autonomy_budget_exhausted"}:
+                        candidate = _recorded_budget(payload.get(
+                            "budget" if event["kind"] == "autonomy_budget_exhausted"
+                            else "autonomy_budget"
+                        ))
+                        if candidate is not None:
+                            budget_summary = candidate
+                            budget_end_reason = candidate["exhausted_reason"]
+                    if event["kind"] == "receipt":
+                        receipt = payload.get("receipt")
+                        delivery = receipt.get("delivery") if isinstance(receipt, dict) else None
+                        if isinstance(delivery, str) and delivery in {
+                            "delivered", "not_delivered", "unknown",
+                        }:
+                            deliveries[delivery] += 1
                     elif event["kind"] in {
                         "text_native_delivery", "text_native_unknown", "text_menu_not_applied",
                     }:
-                        outcome = event["payload"]["result"]
+                        outcome = payload.get("result")
                         # Navigation has no native delivery. Rejected/mismatched
                         # replies are diagnostics, not a correlated outcome.
-                        if outcome["effect_domain"] == "native_input" and (
-                            delivery := outcome["native_delivery"]
-                        ) is not None:
+                        if (isinstance(outcome, dict)
+                                and outcome.get("effect_domain") == "native_input"
+                                and isinstance(delivery := outcome.get("native_delivery"), str)
+                                and delivery in {"delivered", "not_delivered", "unknown"}):
                             deliveries[delivery] += 1
-            report.update(event_counts=dict(counts), delivery_counts=dict(deliveries))
+            report.update(
+                event_counts=dict(counts), delivery_counts=dict(deliveries),
+                recorded_action_verbs=dict(verbs) if verbs else None,
+                native_submission_attempts=native_submissions,
+                budget_summary=budget_summary, budget_end_reason=budget_end_reason,
+                terminal_screen_observation=(
+                    {
+                        "status": "observed" if len(terminal_results) == 1 else "ambiguous",
+                        "result": next(iter(terminal_results)) if len(terminal_results) == 1
+                        else None,
+                        "observation_count": terminal_count,
+                        "first_event_sequence": first_terminal_sequence,
+                        "last_event_sequence": last_terminal_sequence,
+                    } if terminal_count else None
+                ),
+            )
         identity = hashlib.sha256(canonical_json(report).encode()).hexdigest()
         report["evaluation_id"] = identity
         target = self.directory / "evaluations" / (identity + ".json")
