@@ -27,7 +27,8 @@ change; current source and runtime authorities override this file.
   additive.
 - **Workbench activation:** The [PR #83 activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/83#issuecomment-5873889101)
   documents a clean local Workbench source at `c8b0871a6884e4cbf89bacbd7e4917268fcbe62b`,
-  whose tree matches this develop anchor. Read-only before/after checks found
+  whose tree matches the earlier develop `34f4d99491ad1ee4a2c5520769208b624daea576`,
+  before #86 integration. Read-only before/after checks found
   the same config digest, all three completed-operation file digests and all
   four API status responses. The model remained idle/unloaded; the existing
   training, export and dataset operations were not repeated. Doctor passed.
