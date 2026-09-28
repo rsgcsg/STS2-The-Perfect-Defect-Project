@@ -1431,7 +1431,7 @@ test("local model export only reports the matching model and safely handles shar
     {
       operation:{status:"completed", model_id:model, payload_bytes:2048,
         error_code:"/private/local/secret", export_path:"/private/local/secret"},
-      success:/导出校验完成；尚未加载/,
+      success:/导出校验本身不会加载模型；当前运行状态请到模型页查看/,
       enabled:true,
       hidden:/\/private\/local\/secret|export-csrf/,
     },
@@ -1607,6 +1607,7 @@ test("completed local model export registers only on one explicit click and link
   const page = await env.render();
   assert.match(text(page), /登记会依据本机文本菜单运行环境/);
   assert.match(text(page), /不会安装运行组件、加载模型或进入游戏/);
+  assert.doesNotMatch(text(page), /尚未加载/);
   assert.equal(action(page, "register-local-model").disabled, false);
   assert.equal(post(env.calls).length, 0, "detail render only reads registration state");
   assert.equal(env.calls.some(call => call.url === "/api/local-models/prepare"), false);
@@ -1722,6 +1723,12 @@ test("registration only appears for the matching completed export and unavailabl
       message:/当前无法完成登记/,
       hidden:/future_private_reason/,
     },
+    {
+      export:modelExportStatus({status:"completed", model_id:model}),
+      registration:modelRegistrationStatus(model, "not_registered", {reason_code:"source_binding_changed"}),
+      action:true, request:true,
+      message:/运行源码已变化；旧选择保留。可明确重新登记并生成新选择/,
+    },
   ];
   for (const scenario of cases) {
     let registrationReads = 0;
@@ -1773,6 +1780,7 @@ test("registered selection link focuses only its local model row without invokin
     },
   });
   const detail = await env.render();
+  assert.match(text(detail), /登记本身不会加载模型；当前运行状态请到模型页查看/);
   assert.ok(find(detail, element => element.tagName === "A"
     && element.href === `?view=local-models&id=${selection}`));
   env.navigate("local-models", `&id=${selection}`);
