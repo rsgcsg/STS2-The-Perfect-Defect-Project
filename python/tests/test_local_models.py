@@ -366,6 +366,90 @@ def test_recovered_exact_observation_clears_only_observation_error(
     assert all(body is None for _, body in requests)
 
 
+def test_confirmed_stop_retires_only_transient_status_failure(service, monkeypatch):
+    handoff_entered, finish_handoff = threading.Event(), threading.Event()
+    running = status()
+    terminal = {**running, "lifecycle": "stopped"}
+    runtime_errors = [{"code": "historical_runtime_diagnostic"}]
+    terminal["errors"] = runtime_errors
+    closed = False
+
+    class Runtime:
+        def request(self, route, body=None):
+            nonlocal closed
+            if route == "/stop":
+                closed = True
+                return {"status": terminal}
+            if route == "/status" and not closed:
+                return {"status": running}
+            raise BoundaryError("local_model", "runtime_status_unavailable_or_identity_drift")
+
+    def handoff():
+        handoff_entered.set()
+        assert finish_handoff.wait(timeout=3)
+
+    monkeypatch.setattr(service, "_evaluation_handoff", handoff)
+    service.client = Runtime()
+    service.state.update(status="loaded", loaded=True, runtime=running)
+    service.command("stop")
+    try:
+        assert handoff_entered.wait(timeout=2)
+        assert "observation_error" not in service.status()
+        # An earlier live GET may already have recorded this transient diagnostic.
+        with service.lock:
+            service.state["observation_error"] = "runtime_status_unavailable_or_identity_drift"
+    finally:
+        finish_handoff.set()
+    ended = finished(service)
+    assert ended["status"] == "stopped" and ended["loaded"] is False
+    assert ended["runtime"]["lifecycle"] == "stopped"
+    assert ended["runtime"]["errors"] == runtime_errors
+    assert "observation_error" not in ended
+
+
+def test_late_status_reply_cannot_replace_confirmed_stop_runtime(service, monkeypatch):
+    read_entered, finish_read = threading.Event(), threading.Event()
+    handoff_entered, finish_handoff = threading.Event(), threading.Event()
+    running = status()
+    terminal = {**running, "lifecycle": "stopped"}
+    report: list[dict] = []
+
+    class Runtime:
+        def request(self, route, body=None):
+            if route == "/stop":
+                return {"status": terminal}
+            if route == "/status" and threading.current_thread().name == "late-status":
+                read_entered.set()
+                assert finish_read.wait(timeout=3)
+                return {"status": running}
+            return {"status": running}
+
+    def handoff():
+        handoff_entered.set()
+        assert finish_handoff.wait(timeout=3)
+
+    monkeypatch.setattr(service, "_evaluation_handoff", handoff)
+    service.client = Runtime()
+    service.state.update(status="loaded", loaded=True, runtime=running)
+    reader = threading.Thread(target=lambda: report.append(service.status()), name="late-status")
+    reader.start()
+    try:
+        assert read_entered.wait(timeout=2)
+        service.command("stop")
+        assert handoff_entered.wait(timeout=2)
+        finish_read.set()
+        reader.join(timeout=2)
+        assert not reader.is_alive()
+    finally:
+        finish_read.set()
+        finish_handoff.set()
+        reader.join(timeout=2)
+    ended = finished(service)
+    assert len(report) == 1
+    assert ended["status"] == "stopped" and ended["loaded"] is False
+    assert ended["runtime"]["lifecycle"] == "stopped"
+
+
 @pytest.mark.parametrize(
     "address",
     ["http://public.example:15527", "https://127.0.0.1:15527", "http://127.0.0.1:15527/path"],
