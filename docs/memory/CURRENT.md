@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Reviewed source
-anchor: `develop@34c6fca858fdb95a29c1831033a9e17f6b53981c` (through PR #73).
+anchor: `develop@6c2f4166e52dfad08a78123ac858a5b63900d9a1` (through PR #74).
 Resolve live GitHub refs and deployed identities before work; current source and
 runtime authorities override this file. This bounded handoff is not the
 running-version owner. Platform, application, Human and research evidence remain
@@ -21,12 +21,19 @@ separate.
   label remains unproved. [The bounded receipt](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
   separates these facts and does not establish two independent full games.
 - **Active Workbench:** clean application source
-  `0401ebf14715eacee9516970305309afbf10a789` is activated in its own locked
-  Python environment. The original profile and all 353 artifact IDs, file count
-  and total bytes matched across the owner stop/start; SQLite stat metadata
-  changed. The prior source/environment remains for rollback. PR #73's
-  [activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/73#issuecomment-5861133764)
-  separates application activation from unchanged Game Mod rc.17.
+  `d81e69569330540d9e0067b51e674e3989cd14d3` is active in its own locked
+  environment; PR #74 merged with the same tree. Its Python-scope CI passed both
+  OSes/portable, followed by verified same-tree reuse on develop. The profile and
+  all 353 artifact IDs/file count/total bytes matched across owner stop/start;
+  SQLite stat metadata changed. Old source/environment remain for rollback.
+  The private Runtime rc.10 candidate was installed and loaded separately;
+  Game Mod rc.17 was unchanged. [The exact local journey receipt](../evidence/LOCAL_MODEL_RUNTIME_JOURNEY_2026-09-28.md)
+  records explicit registration/load, Shadow/Human/Stop and one bounded Auto run.
+  Auto reported 16 delivered actions, mostly repeated draw-pile navigation,
+  then submission-limit Human/release; both reports were verified and sealed.
+  This is not useful-play/full-game proof. Current public state and OS capture
+  differed; the window tool could not activate the window, so the final native
+  rendering is not independently confirmed. This policy was stopped.
 - **Local data/worker:** PRs #61–#70 connect explicit local verified recording
   import, sample preview, in-place use ledger, immutable purpose-bound dataset,
   three-step CPU small-B worker, dev report and model detail. No login is needed.
@@ -73,19 +80,21 @@ separate.
   independent split. A future alternative needs its own versioned protocol and
   explicit leakage accounting; do not choose partitions after seeing metrics or
   rewrite old data. Reports retain unknown native-run independence.
-- Next model-runtime work should consume current typed text-menu capabilities and
-  snapshot identity before binding a manifest. Offline export is possible without
-  a game; registering a selectable policy requires honest environment/support
-  facts and separately qualified Runtime loading. One observed page cannot stand
-  for all scenes. Do not fabricate package URLs or reuse historical identities.
-- Next application packet connects explicit registration of the verified
-  text-menu small-B export to the existing model catalog. Binding uses fresh
-  typed Connector capabilities and a finite source-reviewed in-run support
-  template; complete menus and execution-time Runtime checks stay authoritative.
-  Registration, installed Runtime, load and gameplay are separate facts.
-  The prepared private Runtime rc.10 package (source60d97f7, archive16e825fb)
-  passed 121 component tests and installed synthetic smoke; it is not yet
-  production-installed or loaded. The legacy rc.6 consumer pin stays unchanged.
+- PR #74 now connects explicit verified text-menu small-B registration to the
+  existing local catalog. It uses current typed Connector capabilities, an
+  immutable explicit binding and finite source-reviewed in-run support, while
+  Runtime keeps actual complete-menu/identity/delivery admission. One observed
+  page does not qualify all scenes. Old registrations/manifests are retained.
+- Current source candidate PR #75 combines budget display and two actual-use
+  fixes: bounded read-only model-state observation and fencing late Runtime GET
+  responses across Stop/new intent. Source regressions and independent review
+  are separate from candidate CI and activation. The active d81e application
+  does not yet contain those fixes; its original false observation-error receipt
+  remains retained. No automatic command replay or safety-guard removal.
+- Runtime rc.10's exact private package passed 121 component tests and installed
+  synthetic smoke, and was then installed/loaded for the separate local journey.
+  Its exact identities are in that receipt; no new public asset was released and
+  the tracked legacy rc.6 consumer pin is unchanged.
 - Fill untargeted/native continuation and full-scene coverage through exact owner
   evidence. Commit is not a causal successor; input labels cannot fill missing
   canonical edges. Preserve unknowns rather than repairing them from later polls.
