@@ -41,6 +41,7 @@ window.SpireProject = (() => {
   const datasetSnapshots = new WeakMap();
   const datasetReads = new Map();
   let datasetReadEpoch = 0;
+  let modelWatch = null;
   const labels = {
     invited: "待首次登录",
     active: "已启用",
@@ -298,6 +299,7 @@ window.SpireProject = (() => {
   async function request(ctx, path, body, localCsrfToken) {
     if (!live(ctx)) throw new Error("context_changed");
     const mutation = body !== undefined;
+    if (mutation && modelWatch?.ctx === ctx) stopModelWatch();
     const csrfToken = local && typeof localCsrfToken === "string" && localCsrfToken
       ? localCsrfToken
       : ctx.identity?.csrf_token || "";
@@ -408,6 +410,84 @@ window.SpireProject = (() => {
   }
   async function reload(ctx) {
     if (live(ctx)) await window.SpireProject.reload();
+  }
+  function stopModelWatch() {
+    if (modelWatch?.timer !== null && modelWatch?.timer !== undefined)
+      clearTimeout(modelWatch.timer);
+    modelWatch = null;
+  }
+  function modelWatchKey(ctx) {
+    return `${ctx.key}:${ctx.scope}`;
+  }
+  function modelWatchSignature(state) {
+    const runtime = state.runtime || {};
+    const budget = runtime.autonomy_budget || {};
+    return JSON.stringify({status:state.status, loaded:state.loaded,
+      operation:state.operation && {id:state.operation.id, action:state.operation.action,
+        status:state.operation.status},
+      run_id:runtime.run_id, lifecycle:runtime.lifecycle, mode:runtime.mode,
+      controller:runtime.controller, tainted:runtime.tainted,
+      error_code:state.error_code, observation_error:state.observation_error,
+      runtime_error:runtime.errors?.at(-1), budget_state:budget.state,
+      budget_exhausted:budget.exhausted_reason, budget_ended:budget.ended_reason,
+      evaluation_id:state.evaluation?.evaluation_id});
+  }
+  const modelWatchNeeded = (state) => state?.operation?.status === "pending" ||
+    (state?.loaded === true && ["auto", "shadow", "one_step"].includes(state.runtime?.mode));
+  function scheduleModelWatch(watch) {
+    if (modelWatch !== watch || !live(watch.ctx)) return;
+    if (watch.remaining === 0 || Date.now() >= watch.deadlineAt) {
+      note(watch.ctx, "自动状态检查已暂停。需要时请点击“刷新运行状态”。", "warning");
+      return;
+    }
+    watch.timer = setTimeout(() => pollModelWatch(watch), 3000);
+  }
+  async function pollModelWatch(watch) {
+    watch.timer = null;
+    const ctx = watch.ctx;
+    if (modelWatch !== watch || !live(ctx)) return;
+    watch.remaining--;
+    let next;
+    try {
+      next = await request(ctx, "/api/local-models/status");
+      if (!next || typeof next !== "object") throw new Error("status_unavailable");
+    } catch (error) {
+      if (modelWatch !== watch || watch.ctx !== ctx || !live(ctx)) return;
+      watch.failures++;
+      if (watch.failures >= 3) {
+        stopModelWatch();
+        note(ctx, "自动状态检查暂不可用。请点击“刷新运行状态”重试；不会重新发送模型命令。", "warning");
+      } else scheduleModelWatch(watch);
+      return;
+    }
+    if (modelWatch !== watch || watch.ctx !== ctx || !live(ctx)) return;
+    watch.failures = 0;
+    if (modelWatchSignature(next) !== watch.signature) {
+      watch.signature = modelWatchSignature(next);
+      await reload(ctx);
+      if (modelWatch === watch && watch.ctx === ctx) scheduleModelWatch(watch);
+      return;
+    }
+    watch.budgetHost?.replaceChildren(localAutonomyBudget(next.runtime));
+    scheduleModelWatch(watch);
+  }
+  function watchLocalModel(ctx, state, budgetHost) {
+    if (!modelWatchNeeded(state)) {
+      stopModelWatch();
+      return;
+    }
+    const key = modelWatchKey(ctx);
+    const watch = modelWatch?.key === key ? modelWatch :
+      {key, remaining:100, deadlineAt:Date.now() + 5 * 60 * 1000,
+        failures:0, timer:null};
+    if (modelWatch && modelWatch !== watch) stopModelWatch();
+    if (watch.timer !== null) clearTimeout(watch.timer);
+    watch.ctx = ctx;
+    watch.signature = modelWatchSignature(state);
+    watch.budgetHost = budgetHost;
+    watch.timer = null;
+    modelWatch = watch;
+    if (watch.remaining > 0) scheduleModelWatch(watch);
   }
   function fields(rows) {
     const list = el("dl", null, "fact-list");
@@ -2039,7 +2119,7 @@ window.SpireProject = (() => {
     );
     return box;
   }
-  function localStatus(ctx, data) {
+  function localStatus(ctx, data, onBudgetHost) {
     const box = panel(
       "本机运行状态",
       "状态来自本机服务与其管理的唯一 Runtime。操作请求已接收与执行成功分开显示。",
@@ -2067,7 +2147,10 @@ window.SpireProject = (() => {
         ],
       ]),
     );
-    box.append(localAutonomyBudget(runtime));
+    const budgetHost = el("div");
+    budgetHost.append(localAutonomyBudget(runtime));
+    box.append(budgetHost);
+    onBudgetHost(budgetHost);
     const currentFailure = data.error_code;
     if (currentFailure) {
       const explanation = currentFailure === "environment_modset_fingerprint_drift"
@@ -2112,6 +2195,10 @@ window.SpireProject = (() => {
       ? "已收到动作回执，具体送达结果见下方记录。"
       : "尚无游戏动作送达记录。模型已加载不代表正在操作游戏。", "small"));
     const actions = el("div", null, "project-actions");
+    actions.append(command(ctx, "model-refresh-status", "刷新运行状态", async () => {
+      stopModelWatch();
+      await reload(ctx);
+    }));
     const recoverable = data.loaded === true || Boolean(data.previous_session) ||
       (operation?.status === "pending" && ["start", "prepare-and-load"].includes(operation.action));
     const changing = operation?.status === "pending";
@@ -2289,14 +2376,16 @@ window.SpireProject = (() => {
     ]);
     if (replies[0].status === "fulfilled") catalog = replies[0].value;
     if (replies[1].status === "fulfilled") state = replies[1].value;
-    if (state) box.append(localStatus(ctx, state));
+    let budgetHost = null;
+    if (state) box.append(localStatus(ctx, state, (node) => { budgetHost = node; }));
     else
-      box.append(
-        empty(
+      box.append(empty(
           "本机 Runtime 状态暂不可用",
           "执行控件保持关闭。请刷新状态，不要重复之前的命令。",
-        ),
-      );
+        ), command(ctx, "model-refresh-status", "刷新运行状态", async () => {
+          stopModelWatch();
+          await reload(ctx);
+        }));
     const requestedSelection = new URLSearchParams(ctx.search).get("id");
     const focusSelection = selectionId(requestedSelection) ? requestedSelection : null;
     const preparations = panel(
@@ -2464,6 +2553,7 @@ window.SpireProject = (() => {
       evaluations.append(link("查看与分享实战记录", route("evaluations")));
       box.append(evaluations);
     }
+    if (live(ctx)) watchLocalModel(ctx, state, budgetHost);
     return box;
   }
 
@@ -3906,6 +3996,11 @@ window.SpireProject = (() => {
         scope: scope(),
       };
       current = ctx;
+      if (modelWatch?.timer !== null && modelWatch?.timer !== undefined) {
+        clearTimeout(modelWatch.timer);
+        modelWatch.timer = null;
+      }
+      if (view !== "local-models") stopModelWatch();
       commandControls.clear();
       if (!(["local-models", "local-workspace", "evaluations"].includes(view) || (local && ["campaigns", "collection-overview"].includes(view))) && !signedIn(ctx)) return authNotice(ctx);
       try {
