@@ -51,11 +51,8 @@ separate.
   change or additional tuning run. The 23 canonical transitions were not added
   as extra input labels. This source is not a full-run corpus.
 - **Synthetic journey:** [the Safari receipt](../evidence/HUMAN_INPUT_LOCAL_WORKBENCH_BROWSER_2026-09-28.md)
-  covers two synthetic sources → save → actual three-step worker → report → model.
-  The real worker result also passed standalone export/scorer binding checks.
-  This does not establish real-data quality, inference registration or gameplay.
-  PR #70's full CI 36338745129 passed; merge check 36340064119 reused that
-  exact-tree receipt with fresh guards, not a second full execution.
+  records two synthetic sources → save → actual three-step worker → report/model.
+  It is engineering evidence, distinct from the real Runtime journey above.
 - **Models:** PR #49 provides shared-observation small B; candidate scoring grows
   linearly with action count at fixed input lengths. PR #59's observation-only
   GRU prototype/reset control is synthetic research code, not a registered M1
@@ -67,34 +64,27 @@ separate.
 
 ## Current work and next boundaries
 
-- PRs #71–#73 are merged and active: existing-library category filters,
-  command re-render recovery and explicit offline model export. Source tests,
-  independent review, actual Safari and exact candidate CI are recorded in
-  their PRs. PR #73 full36357149773 passed both OSes/portable; develop36361129002
-  used its verified identical-tree receipt plus fresh guards, not a new full.
-  Export verifies files/scorer; it does not register/load a policy or claim game
-  compatibility. Refresh does not issue model/export commands.
+- PRs #71–#74 are merged: library filters, command recovery, offline export and
+  explicit registration. The active application/Runtime exercise is recorded
+  above; each PR retains its exact source and CI receipts.
 - Saving a Human source does not establish train/dev readiness. Immutable Human
   v1/v2 keep their original split semantics; v2 joins sessions sharing visible
   input and can collapse all groups. More recordings alone do not guarantee an
   independent split. A future alternative needs its own versioned protocol and
   explicit leakage accounting; do not choose partitions after seeing metrics or
   rewrite old data. Reports retain unknown native-run independence.
-- PR #74 now connects explicit verified text-menu small-B registration to the
-  existing local catalog. It uses current typed Connector capabilities, an
-  immutable explicit binding and finite source-reviewed in-run support, while
-  Runtime keeps actual complete-menu/identity/delivery admission. One observed
-  page does not qualify all scenes. Old registrations/manifests are retained.
+- Registration binds current typed capabilities and a finite in-run support
+  template; Runtime keeps complete-menu/identity/delivery admission. One page
+  does not qualify all scenes; old registrations/manifests stay immutable.
 - Current source candidate PR #75 combines budget display and two actual-use
   fixes: bounded read-only model-state observation and fencing late Runtime GET
   responses across Stop/new intent. Source regressions and independent review
   are separate from candidate CI and activation. The active d81e application
   does not yet contain those fixes; its original false observation-error receipt
   remains retained. No automatic command replay or safety-guard removal.
-- Runtime rc.10's exact private package passed 121 component tests and installed
-  synthetic smoke, and was then installed/loaded for the separate local journey.
-  Its exact identities are in that receipt; no new public asset was released and
-  the tracked legacy rc.6 consumer pin is unchanged.
+- Runtime rc.10 passed 121 component tests and installed synthetic smoke before
+  its separate local install/load. Exact identities are in the journey receipt;
+  no public package release or tracked legacy rc.6 consumer-pin change.
 - Fill untargeted/native continuation and full-scene coverage through exact owner
   evidence. Commit is not a causal successor; input labels cannot fill missing
   canonical edges. Preserve unknowns rather than repairing them from later polls.
