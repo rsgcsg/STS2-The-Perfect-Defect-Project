@@ -3952,10 +3952,6 @@ test("local Runtime autonomy budget is read-only, bounded and separate from game
     },
   };
   const values = [
-    [{ state: "active", max_submissions: 16, submissions_used: 3,
-      max_policy_calls: 32, policy_calls_used: 5, deadline_ms: 60000,
-      elapsed_ms: 12000, remaining_ms: 48000, exhausted_reason: null, ended_reason: null },
-    /正在使用/],
     [{ state: "exhausted", max_submissions: 16, submissions_used: 16,
       max_policy_calls: 32, policy_calls_used: 20, deadline_ms: 60000,
       elapsed_ms: 45000, remaining_ms: 15000, exhausted_reason: "submission_attempt_limit", ended_reason: null },
@@ -3988,12 +3984,7 @@ test("local Runtime autonomy budget is read-only, bounded and separate from game
       url === "/api/local-models/status" ? state : modelHandler(url)});
     let page = await env.render();
     assert.match(text(page), expected);
-    if (autonomy_budget.state === "active") {
-      assert.match(text(page), /不是对局计时或结果/);
-      assert.match(text(page), /3 \/ 16|16 \/ 16|4 \/ 16|2 \/ 16/);
-    } else {
-      assert.match(text(page), /不代表这一局已经结束或结果已确认/);
-    }
+    assert.match(text(page), /不代表这一局已经结束或结果已确认/);
     assert.match(text(page), /提交/);
     assert.match(text(page), /模型评分/);
     assert.equal(action(page, "model-command-auto").disabled, false);
@@ -4003,6 +3994,57 @@ test("local Runtime autonomy budget is read-only, bounded and separate from game
     await action(page, "model-command-auto").onclick();
     assert.equal(post(env.calls).length, 1, "existing command still needs its explicit click");
     assert.deepEqual(body(post(env.calls)[0]), {action: "auto"});
+  }
+});
+
+test("active local Runtime budget requires a running autonomous mode without changing controls", async () => {
+  const activeBudget = {state: "active", max_submissions: 16, submissions_used: 3,
+    max_policy_calls: 32, policy_calls_used: 5, deadline_ms: 60000,
+    elapsed_ms: 12000, remaining_ms: 48000, exhausted_reason: null, ended_reason: null};
+  for (const [mode, controller] of [["auto", "held"], ["shadow", "released"], ["one_step", "released"]]) {
+    const state = {
+      status: "loaded", loaded: true,
+      runtime: {lifecycle: "running", mode, controller, tainted: false,
+        errors: [], last_receipt: null, autonomy_budget: activeBudget},
+    };
+    const env = setup({view: "local-models", handler: url =>
+      url === "/api/local-models/status" ? state : modelHandler(url)});
+    const page = await env.render();
+    assert.match(text(page), /正在使用/);
+    assert.match(text(page), /3 \/ 16/);
+    assert.match(text(page), /5 \/ 32/);
+    assert.match(text(page), /12 秒 \/ 60 秒（剩余 48 秒）/);
+    assert.equal(action(page, "model-command-auto").disabled, true, mode);
+    assert.equal(action(page, "model-command-human").disabled, false, mode);
+    assert.equal(action(page, "model-command-stop").disabled, false, mode);
+    assert.equal(post(env.calls).length, 0, mode);
+  }
+});
+
+test("active budget with Human mode or stopped lifecycle is unknown without affecting command guards", async () => {
+  const activeBudget = {state: "active", max_submissions: 16, submissions_used: 3,
+    max_policy_calls: 32, policy_calls_used: 5, deadline_ms: 60000,
+    elapsed_ms: 12000, remaining_ms: 48000, exhausted_reason: null, ended_reason: null};
+  const cases = [
+    {lifecycle: "running", mode: "human", controller: "released", tainted: false},
+    {lifecycle: "stopped", mode: "auto", controller: "released", tainted: false},
+  ];
+  for (const runtime of cases) {
+    const render = async (budget) => {
+      const state = {status: "loaded", loaded: true,
+        runtime: {...runtime, errors: [], last_receipt: null, ...(budget ? {autonomy_budget: budget} : {})}};
+      const env = setup({view: "local-models", handler: url =>
+        url === "/api/local-models/status" ? state : modelHandler(url)});
+      return {page: await env.render(), env};
+    };
+    const baseline = await render(null);
+    const {page, env} = await render(activeBudget);
+    assert.match(text(page), /预算状态未提供或格式无法识别/);
+    assert.doesNotMatch(text(page), /正在使用|3 \/ 16|5 \/ 32/);
+    for (const actionName of ["auto", "human", "stop"])
+      assert.equal(action(page, `model-command-${actionName}`).disabled,
+        action(baseline.page, `model-command-${actionName}`).disabled, actionName);
+    assert.equal(post(env.calls).length, 0);
   }
 });
 
@@ -4023,6 +4065,15 @@ test("old or unrecognized Runtime budget data is not replaced with a default or 
   assert.match(text(page), /预算状态未提供或格式无法识别/);
   assert.doesNotMatch(text(page), /private-path-leak|999/);
   assert.equal(action(page, "model-command-auto").disabled, false);
+  assert.equal(post(env.calls).length, 0);
+
+  state.runtime.mode = "human";
+  state.runtime.autonomy_budget = {state: "inactive", max_submissions: 16, submissions_used: 3,
+    max_policy_calls: 32, policy_calls_used: 5, deadline_ms: 60000,
+    elapsed_ms: 12000, remaining_ms: 48000, exhausted_reason: "deadline", ended_reason: "human_recovery"};
+  page = await env.render();
+  assert.match(text(page), /预算状态未提供或格式无法识别/);
+  assert.doesNotMatch(text(page), /自主运行时间已到限额|因人工接管结束/);
   assert.equal(post(env.calls).length, 0);
 });
 

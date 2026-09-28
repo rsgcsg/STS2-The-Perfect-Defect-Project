@@ -2202,6 +2202,16 @@ window.SpireProject = (() => {
       "max_submissions", "submissions_used", "max_policy_calls",
       "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms",
     ];
+    const autonomousModes = new Set(["auto", "shadow", "one_step"]);
+    const knownModes = new Set(["human", ...autonomousModes]);
+    const runtimeConsistent = runtime &&
+      ["running", "stopped"].includes(runtime.lifecycle) &&
+      knownModes.has(runtime.mode) &&
+      (budget.state === "active"
+        ? runtime.lifecycle === "running" && autonomousModes.has(runtime.mode) && runtime.tainted === false
+        : budget.state === "exhausted"
+          ? runtime.mode === "human"
+          : runtime.mode === "human");
     const validCounters = budget && typeof budget === "object" &&
       counters.every((key) => Number.isSafeInteger(budget[key]) && budget[key] >= 0) &&
       budget.max_submissions > 0 && budget.max_policy_calls > 0 && budget.deadline_ms > 0 &&
@@ -2210,11 +2220,11 @@ window.SpireProject = (() => {
       budget.elapsed_ms <= budget.deadline_ms && budget.remaining_ms <= budget.deadline_ms;
     const stateKnown = budget && states.has(budget.state);
     const reasonKnown = budget.state === "exhausted"
-      ? Object.hasOwn(exhaustion, budget.exhausted_reason)
+      ? Object.hasOwn(exhaustion, budget.exhausted_reason) && budget.ended_reason === null
       : budget.state === "inactive"
-        ? budget.ended_reason === null || Object.hasOwn(ended, budget.ended_reason)
+        ? budget.exhausted_reason === null && (budget.ended_reason === null || Object.hasOwn(ended, budget.ended_reason))
         : budget.exhausted_reason === null && budget.ended_reason === null;
-    if (!validCounters || !stateKnown || !reasonKnown) {
+    if (!validCounters || !stateKnown || !reasonKnown || !runtimeConsistent) {
       box.append(el("p", "预算状态未提供或格式无法识别，暂不作判断。", "small muted"));
       return box;
     }
