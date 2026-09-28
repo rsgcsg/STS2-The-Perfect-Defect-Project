@@ -38,7 +38,9 @@ change; current source and runtime authorities override this file.
   or strategy-quality result.
   The sequence-training candidate is separate in [PR #87](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/87);
   the environment/Workbench candidate is separate in [PR #86](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/86).
-  At the dated check below, #87 had Windows pending; #86 had a Windows failure.
+  At the dated closeout read, #87's own full gate passed; #86's earlier
+  combination had a Windows failure. The new combined candidate needs its own
+  gate; neither result establishes deployed M2 or whole-1a acceptance.
 
 ## Data and evaluation boundary
 

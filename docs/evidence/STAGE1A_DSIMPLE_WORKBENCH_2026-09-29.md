@@ -47,9 +47,10 @@ short-training recipe and was not used by the active model path. Synthetic
 cue-mechanism training exists; this activation has no real-data training or
 strategy-quality result.
 
-PR #87's sequence-training candidate remains separate. At a fresh check on
-2026-09-29, head `40331aab28e4ebf050113434c975c31de826b57a` had plan/Linux
-passing, Windows pending, and docs skipped in run
+PR #87's sequence-training source remains a separately identified candidate.
+At the 2026-09-29 (Australia/Brisbane) closeout read, head
+`40331aab28e4ebf050113434c975c31de826b57a` had completed full plan/Linux/Windows/
+portable successfully, with docs unselected, in attempt 1 of run
 [36447456643](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36447456643).
 PR #86 head `a45a1d92dc75d246949ea06c6da4cac1ffd80607` had Linux passing but
 Windows failed in run
@@ -59,7 +60,12 @@ The failing test was
 the second explicit retry's `finish` did not join within five seconds and its
 thread remained alive. The aggregate portable job failed because the selected
 Windows job failed. Linux passed; retain the failure as failed evidence, not
-as a pending job. Recheck both PR heads and CI before later status claims.
+as a pending job. The reviewed sequence candidate, explicit new-training entry
+and test-only sharing synchronization repair are being combined into PR #86;
+that new combination requires its own gate. The repair observes actual local
+verification/publication/worker completion rather than treating a five-second
+test join as a product deadline. It does not change production retry behavior.
+Recheck both PR heads and CI before later status claims.
 
 ## Human inputs and limits
 
