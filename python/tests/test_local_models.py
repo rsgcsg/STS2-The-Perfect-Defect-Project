@@ -1445,11 +1445,13 @@ def test_verified_event_projection_counts_attempts_and_marks_conflicting_termina
 def test_sealed_nonadmitted_game_over_is_reported_as_observation_only(service):
     import sys
     from pathlib import Path
+
     from spireagent.live_evaluation import EXPECTED
 
     sys.path.insert(0, str(Path(__file__).parents[2] / "components/evidence/tests"))
     from test_agent_run_evidence import (  # type: ignore[import-not-found]
-        TextMenuAgentRunEvidenceTests, canonical,
+        TextMenuAgentRunEvidenceTests,
+        canonical,
     )
 
     fixture = TextMenuAgentRunEvidenceTests(
@@ -1464,7 +1466,8 @@ def test_sealed_nonadmitted_game_over_is_reported_as_observation_only(service):
         manifest = json.loads(manifest_path.read_text())
         manifest.update(status="stopped", mode="human")
         manifest_path.write_bytes(canonical(manifest))
-        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events = [json.loads(line)
+                  for line in (directory / "events.jsonl").read_text().splitlines()]
         page = fixture._game_over_intro(events[1]["payload"]["snapshot"], "loss")
         observation = {"schema": events[0]["schema"], "sequence": 2,
                        "recorded_at": events[0]["recorded_at"],
@@ -1474,7 +1477,8 @@ def test_sealed_nonadmitted_game_over_is_reported_as_observation_only(service):
                    "payload": {"reason": "auto_surface_not_admitted"}}
         stopped = {**observation, "sequence": 4, "kind": "stopped", "payload": {}}
         fixture._rewrite_events(directory, [events[0], observation, handoff, stopped])
-        service.state.update(startup={key: manifest[key] for key in EXPECTED}, selection_id="fixture")
+        service.state.update(startup={key: manifest[key] for key in EXPECTED},
+                             selection_id="fixture")
         service._evaluation_handoff()
         report = service.evaluations()[0]
         assert report["evidence_verification"] == "pass"
