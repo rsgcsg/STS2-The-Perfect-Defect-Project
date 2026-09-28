@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Reviewed source
-anchor: `develop@34c6fca858fdb95a29c1831033a9e17f6b53981c` (through PR #73).
+anchor: `develop@6c2f4166e52dfad08a78123ac858a5b63900d9a1` (through PR #74).
 Resolve live GitHub refs and deployed identities before work; current source and
 runtime authorities override this file. This bounded handoff is not the
 running-version owner. Platform, application, Human and research evidence remain
@@ -21,12 +21,19 @@ separate.
   label remains unproved. [The bounded receipt](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
   separates these facts and does not establish two independent full games.
 - **Active Workbench:** clean application source
-  `0401ebf14715eacee9516970305309afbf10a789` is activated in its own locked
-  Python environment. The original profile and all 353 artifact IDs, file count
-  and total bytes matched across the owner stop/start; SQLite stat metadata
-  changed. The prior source/environment remains for rollback. PR #73's
-  [activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/73#issuecomment-5861133764)
-  separates application activation from unchanged Game Mod rc.17.
+  `d81e69569330540d9e0067b51e674e3989cd14d3` is active in its own locked
+  environment; PR #74 merged with the same tree. Its Python-scope CI passed both
+  OSes/portable, followed by verified same-tree reuse on develop. The profile and
+  all 353 artifact IDs/file count/total bytes matched across owner stop/start;
+  SQLite stat metadata changed. Old source/environment remain for rollback.
+  The private Runtime rc.10 candidate was installed and loaded separately;
+  Game Mod rc.17 was unchanged. [The exact local journey receipt](../evidence/LOCAL_MODEL_RUNTIME_JOURNEY_2026-09-28.md)
+  records explicit registration/load, Shadow/Human/Stop and one bounded Auto run.
+  Auto reported 16 delivered actions, mostly repeated draw-pile navigation,
+  then submission-limit Human/release; both reports were verified and sealed.
+  This is not useful-play/full-game proof. Current public state and OS capture
+  differed; the window tool could not activate the window, so the final native
+  rendering is not independently confirmed. This policy was stopped.
 - **Local data/worker:** PRs #61–#70 connect explicit local verified recording
   import, sample preview, in-place use ledger, immutable purpose-bound dataset,
   three-step CPU small-B worker, dev report and model detail. No login is needed.
@@ -44,11 +51,8 @@ separate.
   change or additional tuning run. The 23 canonical transitions were not added
   as extra input labels. This source is not a full-run corpus.
 - **Synthetic journey:** [the Safari receipt](../evidence/HUMAN_INPUT_LOCAL_WORKBENCH_BROWSER_2026-09-28.md)
-  covers two synthetic sources → save → actual three-step worker → report → model.
-  The real worker result also passed standalone export/scorer binding checks.
-  This does not establish real-data quality, inference registration or gameplay.
-  PR #70's full CI 36338745129 passed; merge check 36340064119 reused that
-  exact-tree receipt with fresh guards, not a second full execution.
+  records two synthetic sources → save → actual three-step worker → report/model.
+  It is engineering evidence, distinct from the real Runtime journey above.
 - **Models:** PR #49 provides shared-observation small B; candidate scoring grows
   linearly with action count at fixed input lengths. PR #59's observation-only
   GRU prototype/reset control is synthetic research code, not a registered M1
@@ -60,32 +64,27 @@ separate.
 
 ## Current work and next boundaries
 
-- PRs #71–#73 are merged and active: existing-library category filters,
-  command re-render recovery and explicit offline model export. Source tests,
-  independent review, actual Safari and exact candidate CI are recorded in
-  their PRs. PR #73 full36357149773 passed both OSes/portable; develop36361129002
-  used its verified identical-tree receipt plus fresh guards, not a new full.
-  Export verifies files/scorer; it does not register/load a policy or claim game
-  compatibility. Refresh does not issue model/export commands.
+- PRs #71–#74 are merged: library filters, command recovery, offline export and
+  explicit registration. The active application/Runtime exercise is recorded
+  above; each PR retains its exact source and CI receipts.
 - Saving a Human source does not establish train/dev readiness. Immutable Human
   v1/v2 keep their original split semantics; v2 joins sessions sharing visible
   input and can collapse all groups. More recordings alone do not guarantee an
   independent split. A future alternative needs its own versioned protocol and
   explicit leakage accounting; do not choose partitions after seeing metrics or
   rewrite old data. Reports retain unknown native-run independence.
-- Next model-runtime work should consume current typed text-menu capabilities and
-  snapshot identity before binding a manifest. Offline export is possible without
-  a game; registering a selectable policy requires honest environment/support
-  facts and separately qualified Runtime loading. One observed page cannot stand
-  for all scenes. Do not fabricate package URLs or reuse historical identities.
-- Next application packet connects explicit registration of the verified
-  text-menu small-B export to the existing model catalog. Binding uses fresh
-  typed Connector capabilities and a finite source-reviewed in-run support
-  template; complete menus and execution-time Runtime checks stay authoritative.
-  Registration, installed Runtime, load and gameplay are separate facts.
-  The prepared private Runtime rc.10 package (source60d97f7, archive16e825fb)
-  passed 121 component tests and installed synthetic smoke; it is not yet
-  production-installed or loaded. The legacy rc.6 consumer pin stays unchanged.
+- Registration binds current typed capabilities and a finite in-run support
+  template; Runtime keeps complete-menu/identity/delivery admission. One page
+  does not qualify all scenes; old registrations/manifests stay immutable.
+- Current source candidate PR #75 combines budget display and two actual-use
+  fixes: bounded read-only model-state observation and fencing late Runtime GET
+  responses across Stop/new intent. Source regressions and independent review
+  are separate from candidate CI and activation. The active d81e application
+  does not yet contain those fixes; its original false observation-error receipt
+  remains retained. No automatic command replay or safety-guard removal.
+- Runtime rc.10 passed 121 component tests and installed synthetic smoke before
+  its separate local install/load. Exact identities are in the journey receipt;
+  no public package release or tracked legacy rc.6 consumer-pin change.
 - Fill untargeted/native continuation and full-scene coverage through exact owner
   evidence. Commit is not a causal successor; input labels cannot fill missing
   canonical edges. Preserve unknowns rather than repairing them from later polls.

@@ -560,3 +560,24 @@ test('ordinary project reload reuses identity cache but explicit refresh still f
   await vm.runInContext('load(true)',context);
   assert.equal(refreshes.at(-1),true);
 });
+
+test('local model deep link delegates automatic ticks but explicit refresh still renders', async () => {
+  const {context, get, projectRenders} = pageSetup('local-models',
+    {status:'signed_out'}, undefined, '', 'local', '?view=local-models&id=audited-cpu', '');
+  await settled();
+  assert.equal(projectRenders(), 1);
+  const originalUpdated = get('updated').textContent;
+  const delegated = [];
+  context.window.SpireProject.refresh = async view => {
+    delegated.push(view);
+    return true;
+  };
+  await vm.runInContext('load()', context);
+  assert.deepEqual(delegated, ['local-models']);
+  assert.equal(projectRenders(), 1);
+  assert.equal(get('updated').textContent, originalUpdated,
+    'a handled tick does not claim that paused observation checked new status');
+  await vm.runInContext('load(true)', context);
+  assert.equal(projectRenders(), 2);
+  assert.deepEqual(delegated, ['local-models']);
+});

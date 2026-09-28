@@ -800,22 +800,36 @@ class LocalModelService:
     def status(self) -> dict[str, Any]:
         with self.lock:
             client = self.client
+            intent = self.intent_generation
             if (
                 self.process is not None
                 and self.process.poll() is not None
                 and self.state["status"] == "loaded"
             ):
                 self.state.update(status="runtime_exited", loaded=False)
+
+        def current_observation() -> bool:
+            operation = self.state.get("operation")
+            return (
+                not self.closed
+                and self.client is client
+                and self.intent_generation == intent
+                and self.state["status"] != "stopped"
+                and not (isinstance(operation, dict)
+                         and operation.get("action") == "stop"
+                         and operation.get("status") == "pending")
+            )
+
         if client is not None:
             try:
                 runtime = client.request("/status")["status"]
                 with self.lock:
-                    if self.client is client:
+                    if current_observation():
                         self.state["runtime"] = runtime
                         self.state.pop("observation_error", None)
             except BoundaryError as error:
                 with self.lock:
-                    if self.client is client:
+                    if current_observation():
                         self.state["observation_error"] = error.code
         with self.lock:
             return cast(dict[str, Any], json.loads(json.dumps(self.state)))
@@ -895,6 +909,7 @@ class LocalModelService:
                 self._evaluation_handoff()
                 with self.lock:
                     self.state.update(status="stopped", loaded=False)
+                    self.state.pop("observation_error", None)
                     self.client = None
 
         return self._begin(action, execute, recovery=action in {"human", "stop"})

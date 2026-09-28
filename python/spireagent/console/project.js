@@ -41,6 +41,7 @@ window.SpireProject = (() => {
   const datasetSnapshots = new WeakMap();
   const datasetReads = new Map();
   let datasetReadEpoch = 0;
+  let modelWatch = null;
   const labels = {
     invited: "待首次登录",
     active: "已启用",
@@ -298,6 +299,7 @@ window.SpireProject = (() => {
   async function request(ctx, path, body, localCsrfToken) {
     if (!live(ctx)) throw new Error("context_changed");
     const mutation = body !== undefined;
+    if (mutation && modelWatch?.ctx === ctx) stopModelWatch();
     const csrfToken = local && typeof localCsrfToken === "string" && localCsrfToken
       ? localCsrfToken
       : ctx.identity?.csrf_token || "";
@@ -408,6 +410,88 @@ window.SpireProject = (() => {
   }
   async function reload(ctx) {
     if (live(ctx)) await window.SpireProject.reload();
+  }
+  function stopModelWatch() {
+    if (modelWatch?.timer !== null && modelWatch?.timer !== undefined)
+      clearTimeout(modelWatch.timer);
+    modelWatch = null;
+  }
+  function modelWatchKey(ctx) {
+    return `${ctx.key}:${ctx.scope}`;
+  }
+  function modelWatchSignature(state) {
+    const runtime = state.runtime || {};
+    const budget = runtime.autonomy_budget || {};
+    return JSON.stringify({status:state.status, loaded:state.loaded,
+      operation:state.operation && {id:state.operation.id, action:state.operation.action,
+        status:state.operation.status},
+      run_id:runtime.run_id, lifecycle:runtime.lifecycle, mode:runtime.mode,
+      controller:runtime.controller, tainted:runtime.tainted,
+      error_code:state.error_code, observation_error:state.observation_error,
+      runtime_error:runtime.errors?.at(-1), budget_state:budget.state,
+      budget_exhausted:budget.exhausted_reason, budget_ended:budget.ended_reason,
+      evaluation_id:state.evaluation?.evaluation_id});
+  }
+  const modelWatchNeeded = (state) => state?.operation?.status === "pending" ||
+    (state?.loaded === true && state.runtime?.lifecycle === "running");
+  function scheduleModelWatch(watch) {
+    if (modelWatch !== watch || !live(watch.ctx)) return;
+    if (watch.remaining === 0 || Date.now() >= watch.deadlineAt) {
+      note(watch.ctx, "自动状态检查已暂停。需要时请点击“刷新运行状态”。", "warning");
+      return;
+    }
+    watch.timer = setTimeout(() => pollModelWatch(watch), 3000);
+  }
+  async function pollModelWatch(watch) {
+    watch.timer = null;
+    const ctx = watch.ctx;
+    if (modelWatch !== watch || !live(ctx)) return;
+    if (watch.remaining === 0 || Date.now() >= watch.deadlineAt) {
+      scheduleModelWatch(watch);
+      return;
+    }
+    watch.remaining--;
+    let next;
+    try {
+      next = await request(ctx, "/api/local-models/status");
+      if (!next || typeof next !== "object") throw new Error("status_unavailable");
+    } catch (error) {
+      if (modelWatch !== watch || watch.ctx !== ctx || !live(ctx)) return;
+      watch.failures++;
+      if (watch.failures >= 3) {
+        stopModelWatch();
+        note(ctx, "自动状态检查暂不可用。请点击“刷新运行状态”重试；不会重新发送模型命令。", "warning");
+      } else scheduleModelWatch(watch);
+      return;
+    }
+    if (modelWatch !== watch || watch.ctx !== ctx || !live(ctx)) return;
+    watch.failures = 0;
+    if (modelWatchSignature(next) !== watch.signature) {
+      watch.signature = modelWatchSignature(next);
+      await reload(ctx);
+      if (modelWatch === watch && watch.ctx === ctx) scheduleModelWatch(watch);
+      return;
+    }
+    watch.budgetHost?.replaceChildren(localAutonomyBudget(next.runtime));
+    scheduleModelWatch(watch);
+  }
+  function watchLocalModel(ctx, state, budgetHost) {
+    if (!modelWatchNeeded(state)) {
+      stopModelWatch();
+      return;
+    }
+    const key = modelWatchKey(ctx);
+    const watch = modelWatch?.key === key ? modelWatch :
+      {key, remaining:100, deadlineAt:Date.now() + 5 * 60 * 1000,
+        failures:0, timer:null};
+    if (modelWatch && modelWatch !== watch) stopModelWatch();
+    if (watch.timer !== null) clearTimeout(watch.timer);
+    watch.ctx = ctx;
+    watch.signature = modelWatchSignature(state);
+    watch.budgetHost = budgetHost;
+    watch.timer = null;
+    modelWatch = watch;
+    scheduleModelWatch(watch);
   }
   function fields(rows) {
     const list = el("dl", null, "fact-list");
@@ -2039,7 +2123,7 @@ window.SpireProject = (() => {
     );
     return box;
   }
-  function localStatus(ctx, data) {
+  function localStatus(ctx, data, onBudgetHost) {
     const box = panel(
       "本机运行状态",
       "状态来自本机服务与其管理的唯一 Runtime。操作请求已接收与执行成功分开显示。",
@@ -2067,6 +2151,10 @@ window.SpireProject = (() => {
         ],
       ]),
     );
+    const budgetHost = el("div");
+    budgetHost.append(localAutonomyBudget(runtime));
+    box.append(budgetHost);
+    onBudgetHost(budgetHost);
     const currentFailure = data.error_code;
     if (currentFailure) {
       const explanation = currentFailure === "environment_modset_fingerprint_drift"
@@ -2111,6 +2199,10 @@ window.SpireProject = (() => {
       ? "已收到动作回执，具体送达结果见下方记录。"
       : "尚无游戏动作送达记录。模型已加载不代表正在操作游戏。", "small"));
     const actions = el("div", null, "project-actions");
+    actions.append(command(ctx, "model-refresh-status", "刷新运行状态", async () => {
+      stopModelWatch();
+      await reload(ctx);
+    }));
     const recoverable = data.loaded === true || Boolean(data.previous_session) ||
       (operation?.status === "pending" && ["start", "prepare-and-load"].includes(operation.action));
     const changing = operation?.status === "pending";
@@ -2176,6 +2268,78 @@ window.SpireProject = (() => {
     if (data.evaluation) box.append(evaluationPanel(data.evaluation));
     return box;
   }
+  function localAutonomyBudget(runtime) {
+    const budget = runtime?.autonomy_budget;
+    const box = panel(
+      "本次自主操作预算",
+      "预算只约束当前自主授权，不是对局计时或结果。",
+    );
+    if (budget === undefined || budget === null) {
+      box.append(el("p", "此 Runtime 未提供预算信息。", "small muted"));
+      return box;
+    }
+    const states = new Set(["active", "exhausted", "inactive"]);
+    const exhaustion = {
+      submission_attempt_limit: "自主提交次数已到限额",
+      policy_call_limit: "模型评分次数已到限额",
+      deadline: "自主运行时间已到限额",
+    };
+    const ended = {
+      human_recovery: "因人工接管结束",
+      mode_changed: "因运行模式变更结束",
+      stopped: "随 Runtime 停止结束",
+    };
+    const counters = [
+      "max_submissions", "submissions_used", "max_policy_calls",
+      "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms",
+    ];
+    const autonomousModes = new Set(["auto", "shadow", "one_step"]);
+    const knownModes = new Set(["human", ...autonomousModes]);
+    const runtimeConsistent = runtime &&
+      ["running", "stopped"].includes(runtime.lifecycle) &&
+      knownModes.has(runtime.mode) &&
+      (budget.state === "active"
+        ? runtime.lifecycle === "running" && autonomousModes.has(runtime.mode) && runtime.tainted === false
+        : budget.state === "exhausted"
+          ? runtime.mode === "human"
+          : runtime.mode === "human");
+    const validCounters = budget && typeof budget === "object" &&
+      counters.every((key) => Number.isSafeInteger(budget[key]) && budget[key] >= 0) &&
+      budget.max_submissions > 0 && budget.max_policy_calls > 0 && budget.deadline_ms > 0 &&
+      budget.submissions_used <= budget.max_submissions &&
+      budget.policy_calls_used <= budget.max_policy_calls &&
+      budget.elapsed_ms <= budget.deadline_ms && budget.remaining_ms <= budget.deadline_ms;
+    const stateKnown = budget && states.has(budget.state);
+    const reasonKnown = budget.state === "exhausted"
+      ? Object.hasOwn(exhaustion, budget.exhausted_reason) && budget.ended_reason === null
+      : budget.state === "inactive"
+        ? budget.exhausted_reason === null && (budget.ended_reason === null || Object.hasOwn(ended, budget.ended_reason))
+        : budget.exhausted_reason === null && budget.ended_reason === null;
+    if (!validCounters || !stateKnown || !reasonKnown || !runtimeConsistent) {
+      box.append(el("p", "预算状态未提供或格式无法识别，暂不作判断。", "small muted"));
+      return box;
+    }
+    const duration = (milliseconds) => `${Math.ceil(milliseconds / 1000).toLocaleString("zh-CN")} 秒`;
+    const stateText = budget.state === "active"
+      ? "正在使用"
+      : budget.state === "exhausted"
+        ? `已到限额：${exhaustion[budget.exhausted_reason]}`
+        : budget.ended_reason
+          ? `已结束：${ended[budget.ended_reason]}`
+          : "尚未开始";
+    box.append(fields([
+      ["状态", stateText],
+      ["自主提交", `${count(budget.submissions_used)} / ${count(budget.max_submissions)}`],
+      ["模型评分", `${count(budget.policy_calls_used)} / ${count(budget.max_policy_calls)}`],
+      ["时间", `${duration(budget.elapsed_ms)} / ${duration(budget.deadline_ms)}（剩余 ${duration(budget.remaining_ms)}）`],
+    ]));
+    if (budget.state === "exhausted") {
+      box.append(el("p", "预算耗尽表示当前自主授权到限；不代表这一局已经结束或结果已确认。控制器是否释放请以上方状态为准。", "small muted"));
+    } else if (budget.state === "inactive" && budget.ended_reason) {
+      box.append(el("p", "预算结束不代表这一局已经结束或结果已确认；控制器是否释放请以上方状态为准。", "small muted"));
+    }
+    return box;
+  }
   function evaluationPanel(value) {
     const box = panel(
       "本机已封装的评估记录",
@@ -2216,14 +2380,16 @@ window.SpireProject = (() => {
     ]);
     if (replies[0].status === "fulfilled") catalog = replies[0].value;
     if (replies[1].status === "fulfilled") state = replies[1].value;
-    if (state) box.append(localStatus(ctx, state));
+    let budgetHost = null;
+    if (state) box.append(localStatus(ctx, state, (node) => { budgetHost = node; }));
     else
-      box.append(
-        empty(
+      box.append(empty(
           "本机 Runtime 状态暂不可用",
           "执行控件保持关闭。请刷新状态，不要重复之前的命令。",
-        ),
-      );
+        ), command(ctx, "model-refresh-status", "刷新运行状态", async () => {
+          stopModelWatch();
+          await reload(ctx);
+        }));
     const requestedSelection = new URLSearchParams(ctx.search).get("id");
     const focusSelection = selectionId(requestedSelection) ? requestedSelection : null;
     const preparations = panel(
@@ -2391,6 +2557,7 @@ window.SpireProject = (() => {
       evaluations.append(link("查看与分享实战记录", route("evaluations")));
       box.append(evaluations);
     }
+    if (live(ctx)) watchLocalModel(ctx, state, budgetHost);
     return box;
   }
 
@@ -3804,7 +3971,8 @@ window.SpireProject = (() => {
   }
   return {
     reload: async () => {},
-    refresh: async view => view === "datasets" ? refreshDataset() : false,
+    refresh: async view => view === "datasets" ? refreshDataset() :
+      view === "local-models" && current?.view === view && live(current),
     openDatasetLibrary() {
       drafts.set("dataset-tab", "library");
       if (window.SpireProject.navigate) window.SpireProject.navigate("datasets");
@@ -3826,6 +3994,7 @@ window.SpireProject = (() => {
         datasetReads.clear(); datasetReadEpoch++;
       }
       const ctx = {
+        view,
         account,
         key: `${account}:${view}:${location.search}`,
         identity,
@@ -3833,6 +4002,11 @@ window.SpireProject = (() => {
         scope: scope(),
       };
       current = ctx;
+      if (modelWatch?.timer !== null && modelWatch?.timer !== undefined) {
+        clearTimeout(modelWatch.timer);
+        modelWatch.timer = null;
+      }
+      if (view !== "local-models") stopModelWatch();
       commandControls.clear();
       if (!(["local-models", "local-workspace", "evaluations"].includes(view) || (local && ["campaigns", "collection-overview"].includes(view))) && !signedIn(ctx)) return authNotice(ctx);
       try {
