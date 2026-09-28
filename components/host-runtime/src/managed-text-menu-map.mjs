@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL } from "@rsgcsg/sts2-connector-client";
 
 export const MANAGED_TEXT_MENU_PROFILE = "text-menu-v1";
 export const MANAGED_TEXT_MENU_SNAPSHOT_SCHEMA = "sts2.player-environment/text-menu-snapshot-1";
@@ -62,6 +63,8 @@ function project(snapshot, allowActions = true) {
 export class ManagedTextMenuMapSessionAdapter {
   #session;
   #bindings = new Map();
+  // Preserve request-ID replay semantics for this session, including unknown outcomes.
+  #requests = new Map();
 
   constructor(session) {
     if (session == null || typeof session.observe !== "function" || typeof session.submit !== "function") {
@@ -79,70 +82,104 @@ export class ManagedTextMenuMapSessionAdapter {
     const actions = new Map();
     if (snapshot.menu_actions.status === "complete") {
       for (const [index, action] of snapshot.menu_actions.actions.entries()) {
-        actions.set(action.action_id, source.bound_actions.actions[index].bound_action_id);
+        actions.set(action.action_id, {
+          boundActionId: source.bound_actions.actions[index].bound_action_id,
+          publicAction: action
+        });
       }
     }
+    // Only the latest page needs native bindings; older snapshot IDs fail closed.
+    this.#bindings.clear();
     this.#bindings.set(snapshot.snapshot_id, { nativeSnapshotId: source.snapshot_id, actions });
     return snapshot;
   }
 
   async submit({ request_id, expected_snapshot_id, action_id, input_profile, timeout_ms }) {
-    if (input_profile !== MANAGED_TEXT_MENU_PROFILE) {
-      throw new TypeError("Managed text-menu adapter requires input_profile text-menu-v1.");
-    }
     if (typeof request_id !== "string" || request_id.length === 0
         || typeof expected_snapshot_id !== "string" || expected_snapshot_id.length === 0
         || typeof action_id !== "string" || action_id.length === 0) {
       throw new TypeError("Text-menu submit requires request_id, expected_snapshot_id, and action_id.");
     }
-    const binding = this.#bindings.get(expected_snapshot_id);
-    const boundActionId = binding?.actions.get(action_id);
-    if (boundActionId == null) {
-      const current = this.observe();
-      return {
-        protocol_version: current.protocol_version,
-        schema: MANAGED_TEXT_MENU_RESULT_SCHEMA,
-        input_profile: MANAGED_TEXT_MENU_PROFILE,
-        request_id,
-        status: "not_applied",
-        effect_domain: "native_input",
-        native_delivery: "not_delivered",
-        action: null,
-        reason_code: "stale_or_unadvertised_action",
-        detail: "Only a current advertised map leaf can be submitted.",
-        retry: "reobserve",
-        successor: current,
-        attribution: null
-      };
+    const fingerprint = JSON.stringify({
+      input_profile, expected_snapshot_id, action_id
+    });
+    if (input_profile !== MANAGED_TEXT_MENU_PROFILE) {
+      return this.#result(request_id, {
+        status: "not_applied", effect_domain: null, native_delivery: null,
+        action: null, reason_code: "invalid_text_menu_request",
+        detail: "An exact text-menu-v1 profile is required.", retry: "reobserve", successor: null
+      });
     }
-    const publicAction = project(this.#session.observe()).menu_actions.actions
-      .find((action) => action.action_id === action_id) ?? null;
-    const receipt = await this.#session.submit({
+    const previous = this.#requests.get(request_id);
+    if (previous != null) {
+      return previous.fingerprint === fingerprint
+        ? previous.result ?? previous.promise
+        : this.#result(request_id, {
+          status: "not_applied", effect_domain: null, native_delivery: null,
+          action: null, reason_code: "request_id_conflict",
+          detail: "This request ID already belongs to another exact action or profile.",
+          retry: "reobserve", successor: null
+        });
+    }
+    const binding = this.#bindings.get(expected_snapshot_id);
+    const entry = binding?.actions.get(action_id);
+    if (entry == null) {
+      const current = this.observe();
+      return this.#save(request_id, fingerprint, this.#result(request_id, {
+        status: "not_applied", effect_domain: null, native_delivery: null,
+        action: null, reason_code: "stale_or_unadvertised_action",
+        detail: "Only a current advertised map leaf can be submitted.",
+        retry: "reobserve", successor: current
+      }));
+    }
+    const pending = this.#dispatch({
       requestId: request_id,
+      fingerprint,
+      binding,
+      entry,
+      timeoutMs: timeout_ms
+    });
+    this.#requests.set(request_id, { fingerprint, promise: pending });
+    return pending;
+  }
+
+  async #dispatch({ requestId, fingerprint, binding, entry, timeoutMs }) {
+    const receipt = await this.#session.submit({
+      requestId,
       expectedSnapshotId: binding.nativeSnapshotId,
-      boundActionId,
-      ...(timeout_ms == null ? {} : { timeoutMs: timeout_ms })
+      boundActionId: entry.boundActionId,
+      ...(timeoutMs == null ? {} : { timeoutMs })
     });
     const nativeDelivery = receipt.delivery === "delivered" ? "delivered"
       : receipt.delivery === "unknown" ? "unknown" : "not_delivered";
     const unknown = nativeDelivery === "unknown";
     const successor = receipt.successor == null ? null : this.#remember(receipt.successor);
     if (unknown) this.#bindings.clear();
-    return {
-      protocol_version: receipt.protocol_version,
-      schema: MANAGED_TEXT_MENU_RESULT_SCHEMA,
-      input_profile: MANAGED_TEXT_MENU_PROFILE,
-      request_id,
+    return this.#save(requestId, fingerprint, this.#result(requestId, {
       status: unknown ? "unknown" : nativeDelivery === "delivered" ? "applied" : "not_applied",
       effect_domain: "native_input",
       native_delivery: nativeDelivery,
-      action: publicAction,
+      action: entry.publicAction,
       reason_code: receipt.reason_code,
       detail: receipt.detail,
       retry: unknown ? "never" : nativeDelivery === "delivered" ? "never" : successor == null ? "never" : "reobserve",
-      successor,
+      successor
+    }));
+  }
+
+  #result(requestId, result) {
+    return {
+      protocol_version: SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL,
+      schema: MANAGED_TEXT_MENU_RESULT_SCHEMA,
+      input_profile: MANAGED_TEXT_MENU_PROFILE,
+      request_id: requestId,
+      ...result,
       attribution: null
     };
   }
 
+  #save(requestId, fingerprint, result) {
+    this.#requests.set(requestId, { fingerprint, result });
+    return result;
+  }
 }

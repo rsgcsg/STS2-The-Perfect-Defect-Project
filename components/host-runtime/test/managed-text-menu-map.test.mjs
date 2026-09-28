@@ -64,10 +64,12 @@ test("projects only the complete current map catalog and submits its exact hidde
   assert.equal(Object.hasOwn(snapshot, "bound_actions"), false);
   assert.equal(Object.hasOwn(snapshot, "reads"), false);
 
-  await assert.rejects(() => adapter.submit({
+  const wrongProfile = await adapter.submit({
     request_id: "wrong-profile", expected_snapshot_id: snapshot.snapshot_id,
     action_id: snapshot.menu_actions.actions[0].action_id, input_profile: "player-environment-v1"
-  }), /text-menu-v1/u);
+  });
+  assert.equal(wrongProfile.status, "not_applied");
+  assert.equal(wrongProfile.reason_code, "invalid_text_menu_request");
   assert.equal(rawAction, null);
   const result = await adapter.submit({
     request_id: "map-choice", expected_snapshot_id: snapshot.snapshot_id,
@@ -110,7 +112,8 @@ test("does not advertise non-map actions and stale map authority dispatches noth
     action_id: old.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE
   });
   assert.equal(rejected.status, "not_applied");
-  assert.equal(rejected.native_delivery, "not_delivered");
+  assert.equal(rejected.native_delivery, null);
+  assert.equal(rejected.effect_domain, null);
   assert.equal(rejected.successor.snapshot_id, newer.snapshot_id);
   assert.equal(calls, 0);
 
@@ -150,7 +153,40 @@ test("unknown map delivery is terminal and never retried", async () => {
   assert.equal(result.native_delivery, "unknown");
   assert.equal(result.retry, "never");
   assert.equal(adapter.observe().menu_actions.status, "unavailable");
+  assert.deepEqual(await adapter.submit(input), result);
+  const conflict = await adapter.submit({ ...input, action_id: "different-action" });
+  assert.equal(conflict.reason_code, "request_id_conflict");
   const refused = await adapter.submit({ ...input, request_id: "after-unknown" });
   assert.equal(refused.status, "not_applied");
+  assert.equal(actionCalls, 1);
+});
+
+test("serializes concurrent duplicate request IDs to one native delivery", async () => {
+  let actionCalls = 0;
+  let release;
+  const nativeResult = new Promise((resolve) => { release = resolve; });
+  const process = {
+    async request(request) {
+      if (request.cmd === "start_run") return mapDecision();
+      if (request.cmd === "get_map") return null;
+      actionCalls += 1;
+      return nativeResult;
+    }
+  };
+  const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+  await session.mount({ seed: "TMAP" });
+  const adapter = new ManagedTextMenuMapSessionAdapter(session);
+  const snapshot = adapter.observe();
+  const input = {
+    request_id: "concurrent-same-request", expected_snapshot_id: snapshot.snapshot_id,
+    action_id: snapshot.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE
+  };
+  const first = adapter.submit(input);
+  const duplicate = adapter.submit(input);
+  assert.equal(actionCalls, 1);
+  release(mapDecision());
+  const [result, replay] = await Promise.all([first, duplicate]);
+  assert.deepEqual(replay, result);
+  assert.equal(result.status, "applied");
   assert.equal(actionCalls, 1);
 });
