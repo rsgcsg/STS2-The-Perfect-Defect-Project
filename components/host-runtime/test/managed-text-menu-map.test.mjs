@@ -70,6 +70,15 @@ test("projects only the complete current map catalog and submits its exact hidde
   });
   assert.equal(wrongProfile.status, "not_applied");
   assert.equal(wrongProfile.reason_code, "invalid_text_menu_request");
+  assert.deepEqual(await adapter.submit({
+    request_id: "wrong-profile", expected_snapshot_id: snapshot.snapshot_id,
+    action_id: snapshot.menu_actions.actions[0].action_id, input_profile: "player-environment-v1"
+  }), wrongProfile);
+  const correctedProfile = await adapter.submit({
+    request_id: "wrong-profile", expected_snapshot_id: snapshot.snapshot_id,
+    action_id: snapshot.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE
+  });
+  assert.equal(correctedProfile.reason_code, "request_id_conflict");
   assert.equal(rawAction, null);
   const result = await adapter.submit({
     request_id: "map-choice", expected_snapshot_id: snapshot.snapshot_id,
@@ -183,10 +192,53 @@ test("serializes concurrent duplicate request IDs to one native delivery", async
   };
   const first = adapter.submit(input);
   const duplicate = adapter.submit(input);
+  await Promise.resolve();
   assert.equal(actionCalls, 1);
   release(mapDecision());
   const [result, replay] = await Promise.all([first, duplicate]);
   assert.deepEqual(replay, result);
   assert.equal(result.status, "applied");
   assert.equal(actionCalls, 1);
+});
+
+test("serializes distinct requests and rechecks page and taint before native dispatch", async () => {
+  for (const mode of ["delivered", "unknown"]) {
+    let actionCalls = 0;
+    let resolveNative;
+    let rejectNative;
+    const nativeResult = new Promise((resolve, reject) => {
+      resolveNative = resolve;
+      rejectNative = reject;
+    });
+    const process = {
+      async request(request) {
+        if (request.cmd === "start_run") return mapDecision();
+        if (request.cmd === "get_map") return null;
+        actionCalls += 1;
+        return nativeResult;
+      }
+    };
+    const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+    await session.mount({ seed: "TMAP" });
+    const adapter = new ManagedTextMenuMapSessionAdapter(session);
+    const snapshot = adapter.observe();
+    const actionId = snapshot.menu_actions.actions[0].action_id;
+    const first = adapter.submit({
+      request_id: `first-${mode}`, expected_snapshot_id: snapshot.snapshot_id,
+      action_id: actionId, input_profile: MANAGED_TEXT_MENU_PROFILE
+    });
+    const queued = adapter.submit({
+      request_id: `queued-${mode}`, expected_snapshot_id: snapshot.snapshot_id,
+      action_id: actionId, input_profile: MANAGED_TEXT_MENU_PROFILE
+    });
+    await Promise.resolve();
+    assert.equal(actionCalls, 1);
+    if (mode === "unknown") rejectNative(new Error("native delivery outcome lost"));
+    else resolveNative(mapDecision());
+    const [firstResult, queuedResult] = await Promise.all([first, queued]);
+    assert.equal(firstResult.status, mode === "unknown" ? "unknown" : "applied");
+    assert.equal(queuedResult.status, "not_applied");
+    assert.equal(queuedResult.reason_code, mode === "unknown" ? "runtime_tainted_after_unknown" : "stale_snapshot");
+    assert.equal(actionCalls, 1);
+  }
 });

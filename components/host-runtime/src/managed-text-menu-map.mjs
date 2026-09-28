@@ -65,6 +65,7 @@ export class ManagedTextMenuMapSessionAdapter {
   #bindings = new Map();
   // Preserve request-ID replay semantics for this session, including unknown outcomes.
   #requests = new Map();
+  #mutationTail = Promise.resolve();
 
   constructor(session) {
     if (session == null || typeof session.observe !== "function" || typeof session.submit !== "function") {
@@ -103,13 +104,6 @@ export class ManagedTextMenuMapSessionAdapter {
     const fingerprint = JSON.stringify({
       input_profile, expected_snapshot_id, action_id
     });
-    if (input_profile !== MANAGED_TEXT_MENU_PROFILE) {
-      return this.#result(request_id, {
-        status: "not_applied", effect_domain: null, native_delivery: null,
-        action: null, reason_code: "invalid_text_menu_request",
-        detail: "An exact text-menu-v1 profile is required.", retry: "reobserve", successor: null
-      });
-    }
     const previous = this.#requests.get(request_id);
     if (previous != null) {
       return previous.fingerprint === fingerprint
@@ -120,6 +114,13 @@ export class ManagedTextMenuMapSessionAdapter {
           detail: "This request ID already belongs to another exact action or profile.",
           retry: "reobserve", successor: null
         });
+    }
+    if (input_profile !== MANAGED_TEXT_MENU_PROFILE) {
+      return this.#save(request_id, fingerprint, this.#result(request_id, {
+        status: "not_applied", effect_domain: null, native_delivery: null,
+        action: null, reason_code: "invalid_text_menu_request",
+        detail: "An exact text-menu-v1 profile is required.", retry: "reobserve", successor: null
+      }));
     }
     const binding = this.#bindings.get(expected_snapshot_id);
     const entry = binding?.actions.get(action_id);
@@ -132,18 +133,39 @@ export class ManagedTextMenuMapSessionAdapter {
         retry: "reobserve", successor: current
       }));
     }
-    const pending = this.#dispatch({
+    const pending = this.#mutationTail.then(() => this.#dispatch({
       requestId: request_id,
       fingerprint,
       binding,
       entry,
       timeoutMs: timeout_ms
-    });
+    }));
+    this.#mutationTail = pending.catch(() => undefined);
     this.#requests.set(request_id, { fingerprint, promise: pending });
     return pending;
   }
 
   async #dispatch({ requestId, fingerprint, binding, entry, timeoutMs }) {
+    const current = this.#session.observe();
+    if (this.#session.tainted === true) {
+      const successor = this.#remember(current);
+      return this.#save(requestId, fingerprint, this.#result(requestId, {
+        status: "not_applied", effect_domain: null, native_delivery: null,
+        action: null, reason_code: "runtime_tainted_after_unknown",
+        detail: "Unknown native delivery closed mutation authority for this Managed session.",
+        retry: "reobserve", successor
+      }));
+    }
+    if (current.snapshot_id !== binding.nativeSnapshotId
+        || !current.bound_actions?.actions.some((action) => action.bound_action_id === entry.boundActionId)) {
+      const successor = this.#remember(current);
+      return this.#save(requestId, fingerprint, this.#result(requestId, {
+        status: "not_applied", effect_domain: null, native_delivery: null,
+        action: null, reason_code: "stale_snapshot",
+        detail: "The Managed page changed before this queued action could execute.",
+        retry: "reobserve", successor
+      }));
+    }
     const receipt = await this.#session.submit({
       requestId,
       expectedSnapshotId: binding.nativeSnapshotId,
