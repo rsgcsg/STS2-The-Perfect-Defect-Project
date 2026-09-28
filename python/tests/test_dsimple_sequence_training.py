@@ -11,18 +11,20 @@ import torch
 
 from stpd.models.dsimple_memory import ExperimentalDSimpleM2
 from stpd.models.dsimple_sequence_training import (
+    MemorySequenceEpisode,
     MemorySequenceStep,
     MemorySequenceWindow,
     memory_sequence_loss,
+    train_memory_episode,
     train_memory_window,
 )
 from stpd.models.token_core import ScratchShape, ScratchTokenCore
 
 
 @pytest.fixture(autouse=True)
-def single_cpu_thread():
+def bounded_cpu_threads():
     previous = torch.get_num_threads()
-    torch.set_num_threads(1)
+    torch.set_num_threads(2)
     yield
     torch.set_num_threads(previous)
 
@@ -380,3 +382,166 @@ def test_balanced_two_cue_task_only_persistent_memory_can_fit_history():
             tokens(1, 5), (tokens(6), tokens(7)), first_b, previous_actual_action=tokens(8)
         )
     torch.testing.assert_close(scores_a, scores_b, atol=0, rtol=0)
+
+
+def episode(*, length: int = 65, name: str = "long") -> MemorySequenceEpisode:
+    return MemorySequenceEpisode(
+        name,
+        tuple(
+            MemorySequenceStep(
+                name, index, tokens(1, 3 if index == 0 else 4),
+                ("A", "B"), (tokens(6), tokens(7)),
+                "B" if index in (31, length - 1) else None,
+                reset_before=index == 0,
+            )
+            for index in range(length)
+        ),
+    )
+
+
+def train_episode(subject: ExperimentalDSimpleM2, item: MemorySequenceEpisode) -> float:
+    return train_memory_episode(
+        subject, torch.optim.AdamW(subject.parameters(), lr=0.001), item,
+        max_observations=128, max_input_tokens=512,
+    )
+
+
+def test_long_episode_trains_and_preserves_memory_value_across_detached_chunks():
+    subject = model()
+    boundary: dict[str, torch.Tensor] = {}
+    original_step = subject.step
+    original_advance = subject.advance
+
+    def step_capture(*args, **kwargs):
+        scores, updated = original_step(*args, **kwargs)
+        if torch.equal(args[0], tokens(1, 4)) and "end" not in boundary:
+            # The first label is at step 31, the last observation in chunk one.
+            boundary["end"] = updated
+        return scores, updated
+
+    def advance_capture(*args, **kwargs):
+        if "end" in boundary and "start" not in boundary:
+            boundary["start"] = args[1]
+        return original_advance(*args, **kwargs)
+
+    before = deepcopy(subject.state_dict())
+    with patch.object(subject, "step", side_effect=step_capture), patch.object(
+        subject, "advance", side_effect=advance_capture
+    ):
+        loss = train_episode(subject, episode())
+    assert torch.isfinite(torch.tensor(loss))
+    assert any(not torch.equal(before[key], value) for key, value in subject.state_dict().items())
+    torch.testing.assert_close(boundary["start"], boundary["end"], atol=0, rtol=0)
+    assert boundary["end"].grad_fn is not None
+    assert boundary["start"].grad_fn is None
+    assert boundary["start"].data_ptr() == boundary["end"].data_ptr()
+
+
+def test_long_episode_reset_control_has_same_structure_and_separate_optimizer():
+    persistent, reset = model(), model(reset=True)
+    assert persistent.state_dict().keys() == reset.state_dict().keys()
+    assert all(
+        torch.equal(a, b) and a.data_ptr() != b.data_ptr()
+        for a, b in zip(persistent.parameters(), reset.parameters(), strict=True)
+    )
+    a = torch.optim.AdamW(persistent.parameters(), lr=0.001)
+    b = torch.optim.AdamW(reset.parameters(), lr=0.001)
+    item = episode()
+    assert torch.isfinite(torch.tensor(train_memory_episode(
+        persistent, a, item, max_observations=65, max_input_tokens=325,
+    )))
+    assert torch.isfinite(torch.tensor(train_memory_episode(
+        reset, b, item, max_observations=65, max_input_tokens=325,
+    )))
+    assert a is not b and a.state and b.state
+    with pytest.raises(ValueError, match="optimizer"):
+        train_memory_episode(persistent, b, item, max_observations=65, max_input_tokens=325)
+
+
+def test_unlabelled_chunk_writes_memory_without_optimizer_update():
+    subject = model()
+    item = episode()
+    item = replace(item, steps=tuple(
+        replace(step, label_key=None) if step.position == 31 else step
+        for step in item.steps
+    ))
+    optimizer = torch.optim.AdamW(subject.parameters(), lr=0.001)
+    incoming: list[torch.Tensor] = []
+    original = subject.advance
+
+    def observe(*args, **kwargs):
+        incoming.append(args[1])
+        return original(*args, **kwargs)
+
+    with patch.object(subject, "advance", side_effect=observe), patch.object(
+        optimizer, "step", wraps=optimizer.step
+    ) as update:
+        train_memory_episode(subject, optimizer, item, max_observations=65, max_input_tokens=325)
+    assert len(incoming) == 65
+    assert update.call_count == 1
+    assert torch.count_nonzero(incoming[32]) > 0
+    assert incoming[32].grad_fn is None
+
+
+def test_each_new_episode_resets_memory_and_keeps_binding_permutation():
+    subject = model()
+    item = episode(length=3, name="first")
+    second = episode(length=3, name="second")
+    optimizer = torch.optim.AdamW(subject.parameters(), lr=0)
+    starts: list[torch.Tensor] = []
+    original = subject.advance
+
+    def observe(*args, **kwargs):
+        if kwargs["reset_before"]:
+            starts.append(args[1].clone())
+        return original(*args, **kwargs)
+
+    with patch.object(subject, "advance", side_effect=observe):
+        train_memory_episode(subject, optimizer, item, max_observations=3, max_input_tokens=20)
+        train_memory_episode(subject, optimizer, second, max_observations=3, max_input_tokens=20)
+    assert len(starts) == 2
+    torch.testing.assert_close(starts[0], starts[1], atol=0, rtol=0)
+    final = item.steps[-1]
+    permuted = replace(item, steps=(*item.steps[:-1], replace(
+        final, action_keys=final.action_keys[::-1], actions=final.actions[::-1],
+    )))
+    loss_a = train_memory_episode(
+        subject, optimizer, item, max_observations=3, max_input_tokens=20,
+    )
+    loss_b = train_memory_episode(
+        subject, optimizer, permuted, max_observations=3, max_input_tokens=20,
+    )
+    assert loss_a == pytest.approx(loss_b, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    "bad", ["last_binding", "total_steps", "total_tokens", "chunk_tokens", "no_labels"]
+)
+def test_long_episode_preflights_all_input_before_mutating_model_or_optimizer(bad: str):
+    subject = model()
+    item = episode()
+    optimizer = torch.optim.AdamW(subject.parameters(), lr=0.001)
+    train_memory_window(subject, optimizer, window())  # Populate optimizer state.
+    kwargs = {"max_observations": 65, "max_input_tokens": 325}
+    if bad == "last_binding":
+        item = replace(item, steps=(*item.steps[:-1], replace(item.steps[-1], label_key="lost")))
+    elif bad == "total_steps":
+        kwargs["max_observations"] = 64
+    elif bad == "total_tokens":
+        kwargs["max_input_tokens"] = 259
+    elif bad == "chunk_tokens":
+        kwargs["max_chunk_input_tokens"] = 3
+    else:
+        item = replace(item, steps=tuple(replace(step, label_key=None) for step in item.steps))
+    before_model = deepcopy(subject.state_dict())
+    before_optimizer = deepcopy(optimizer.state_dict())
+    with patch.object(subject.core, "contextualize", wraps=subject.core.contextualize) as compute:
+        with pytest.raises(ValueError):
+            train_memory_episode(subject, optimizer, item, **kwargs)
+        compute.assert_not_called()
+    assert all(torch.equal(before_model[key], value) for key, value in subject.state_dict().items())
+    after_optimizer = optimizer.state_dict()
+    assert before_optimizer["param_groups"] == after_optimizer["param_groups"]
+    for key, state in before_optimizer["state"].items():
+        assert all(torch.equal(value, after_optimizer["state"][key][name])
+                   for name, value in state.items())

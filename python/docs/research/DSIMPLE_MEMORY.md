@@ -95,6 +95,38 @@ module proves execution, event continuity, episode identity, or eligibility.
 The tiny synthetic cue regression checks only the computation and optimizer
 path; it is not a policy-quality or generalization result.
 
+### Bounded long-episode TBPTT
+
+`train_memory_episode` accepts a caller-owned `MemorySequenceEpisode` with all
+observations from position 0 in order and an explicit initial reset. It
+preflights the **entire** episode, including every candidate binding and token,
+before the first optimizer step. The caller must set positive total observation
+and input-token ceilings; chunk ceilings default to 32 observations and 65,536
+input tokens and may be lowered. A step that cannot fit its chunk, an exceeded
+total ceiling, a missing initial reset, any later reset, or an episode without
+labels is rejected rather than shortened. This path does not change the older
+64-position full-prefix loss and one-update API or its bounds.
+
+Each chunk reads the carried memory value and writes every observation in
+order. An unlabelled observation still writes memory; only labelled steps score
+the complete supplied candidate catalog and contribute listwise loss. Chunks
+without labels write under `no_grad` and do not update parameters. After each
+chunk, memory is detached; a labelled chunk makes one optimizer update. The
+returned scalar is the mean of the losses seen at all labelled observations,
+measured as training proceeded. There is no gradient across a chunk boundary,
+and memory carried after an update was computed with the preceding weights.
+This is the usual TBPTT approximation, **not** exact replay or full-history
+gradient descent. Every call begins with zero memory, so episodes are isolated.
+The `reset_each_step=True` comparison uses the same model structure with its
+own optimizer and initial weights.
+
+This is only a local synthetic compute path. It does not resolve incomplete
+or settling pages, admission of the observed source, split independence,
+real-data training, export, runtime registration, or policy quality. The
+observed-source bridge remains the owner of its existing bounded prefix
+projection; this function does not automatically convert its windows into
+whole episodes.
+
 ## Observed-source bridge (experimental)
 
 `stpd.fullrun.memory_sequence_bridge.project_memory_windows` converts a
