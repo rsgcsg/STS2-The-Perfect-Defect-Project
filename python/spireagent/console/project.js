@@ -2664,9 +2664,42 @@ window.SpireProject = (() => {
       card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
       return card;
     }
+    const csrf = typeof status.csrf_token === "string" && status.csrf_token.length > 0
+      ? status.csrf_token : "";
+    const registerAction = (label) => command(ctx, "register-local-model", label, async () => {
+      if (!live(ctx) || !supportsLocalModelExport(model)) return;
+      try {
+        const result = await request(ctx, "/api/local-model-registrations/register", {model_id:model.artifact_id}, csrf);
+        if (result.schema !== "stpd/local-model-registration-v1"
+            || result.model_id !== model.artifact_id || result.status !== "registered"
+            || result.loaded !== false || result.runtime_profile !== "text-menu-v1"
+            || !selectionId(result.selection_id))
+          throw new Error("local_model_registration_invalid");
+      } catch (error) {
+        if (error.message === "request_unknown") {
+          if (live(ctx)) await reload(ctx);
+          else if (current?.account === ctx.account && current?.scope === ctx.scope)
+            await window.SpireProject.reload();
+          return;
+        }
+        if (["verified_export_required", "workspace_changed", "registration_metadata_invalid", "source_binding_changed"].includes(error.message)) {
+          if (live(ctx)) await reload(ctx);
+          else if (current?.account === ctx.account && current?.scope === ctx.scope)
+            await window.SpireProject.reload();
+          return;
+        }
+        throw error;
+      }
+      if (live(ctx)) await reload(ctx);
+      else if (current?.account === ctx.account && current?.scope === ctx.scope)
+        await window.SpireProject.reload();
+    }, {primary:true, disabled:!csrf});
+    if (!csrf && status.status !== "unavailable")
+      card.append(el("p", "本机浏览器保护令牌暂不可用；刷新状态后再试。", "small muted"));
     if (status.status === "registered") {
-      card.append(el("p", "此模型已登记到本机模型列表。登记本身不会加载模型；当前运行状态请到模型页查看。", "small muted"));
+      card.append(el("p", "此模型已登记到本机模型列表；当前兼容性会在加载条件检查时确认。登记本身不会加载模型，当前运行状态请到模型页查看。", "small muted"));
       card.append(link("打开此模型选择", route("local-models", status.selection_id)));
+      card.append(registerAction("重新核对登记"));
     } else if (status.status === "unavailable") {
       card.append(el("p", localModelRegistrationReason(status.reason_code), "small muted"));
       card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
@@ -2674,37 +2707,7 @@ window.SpireProject = (() => {
       card.append(el("p", status.reason_code === "source_binding_changed"
         ? localModelRegistrationReason(status.reason_code)
         : "登记只建立本机模型选择项，不会自动检查加载条件或执行游戏。", "small muted"));
-      const csrf = typeof status.csrf_token === "string" && status.csrf_token.length > 0
-        ? status.csrf_token : "";
-      if (!csrf) card.append(el("p", "本机浏览器保护令牌暂不可用；刷新状态后再试。", "small muted"));
-      card.append(command(ctx, "register-local-model", "登记到模型列表", async () => {
-        if (!live(ctx) || !supportsLocalModelExport(model)) return;
-        try {
-          const result = await request(ctx, "/api/local-model-registrations/register", {model_id:model.artifact_id}, csrf);
-          if (result.schema !== "stpd/local-model-registration-v1"
-              || result.model_id !== model.artifact_id || result.status !== "registered"
-              || result.loaded !== false || result.runtime_profile !== "text-menu-v1"
-              || !selectionId(result.selection_id))
-            throw new Error("local_model_registration_invalid");
-        } catch (error) {
-          if (error.message === "request_unknown") {
-            if (live(ctx)) await reload(ctx);
-            else if (current?.account === ctx.account && current?.scope === ctx.scope)
-              await window.SpireProject.reload();
-            return;
-          }
-          if (["verified_export_required", "workspace_changed", "registration_metadata_invalid", "source_binding_changed"].includes(error.message)) {
-            if (live(ctx)) await reload(ctx);
-            else if (current?.account === ctx.account && current?.scope === ctx.scope)
-              await window.SpireProject.reload();
-            return;
-          }
-          throw error;
-        }
-        if (live(ctx)) await reload(ctx);
-        else if (current?.account === ctx.account && current?.scope === ctx.scope)
-          await window.SpireProject.reload();
-      }, {primary:true, disabled:!csrf}));
+      card.append(registerAction("登记到模型列表"));
       card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
     }
     return card;
