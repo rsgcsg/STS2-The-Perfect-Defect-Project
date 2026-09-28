@@ -1,7 +1,7 @@
 # Current project context, 2026-09-28
 
 The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Reviewed source
-anchor: `develop@4739c3501c050cd598fc4e394fc86c6f2001a50a` (through PR #78).
+anchor: `develop@4dfc72cf6ca13e9808eedbb4a4b8cee55a4f2e98` (through PR #79).
 Resolve live GitHub refs and deployed identities before work; current source and
 runtime authorities override this file. This bounded handoff is not the
 running-version owner. Platform, application, Human and research evidence remain
@@ -16,16 +16,15 @@ separate.
   contain 31 accepted input labels and 23 canonical decisions, with two
   close-before-successor endpoints unknown. Human mouse untargeted-confirm and
   two independent full games remain unproved; exact bounds stay in those receipts.
-- **Active Workbench:** clean application source
-  `7a7312b504526e0edf5086f1a9f816b84939abdf` is active in its own locked
-  environment; PR #76 merged with the same tree. Python Linux/Windows/portable
-  passed, followed by verified same-tree reuse on develop. The [PR #76 activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/76#issuecomment-5862933104)
-  records the current application and explicit model re-registration; loading
-  stayed Human with no automatic start. The earlier [PR #75 receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/75#issuecomment-5862077699)
-  retains that activation's inventory comparison and Shadow/Human/Stop evidence.
-  Runtime rc.10 and Game Mod rc.17 were not replaced. The earlier fixed model's
-  information-menu loop and the later bounded card run remain separate attempts;
-  neither proves useful-play or full-game capability.
+- **Active Workbench:** clean application `207bc035b475e2906c4c3467d5ca67915531ff4e`
+  and paired Evidence rc.18 / Runtime rc.11 are active. PR #79's full Linux,
+  Windows and portable gates passed; develop used verified same-tree execution
+  reuse. [Activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/79#issuecomment-5864107979)
+  preserves a failed post-start mtime assertion, its subsequent read-only
+  verification, and explicit registration/load/Auto/Stop canary. On the already
+  visible loss page: zero policy calls/submissions, Human/released, five sealed
+  verified events and the loss observation displayed in Workbench. This is not
+  from-start model play. Game Mod rc.17 was unchanged by that activation.
 - **Local data/worker:** PRs #61–#70 connect explicit local verified recording
   import, sample preview, in-place use ledger, immutable purpose-bound dataset,
   three-step CPU small-B worker, dev report and model detail. No login is needed.
@@ -72,10 +71,11 @@ separate.
   records one predeclared 260-step CPU diagnostic on the same train26/dev5:
   Top-1 0/5 to 1/5, but NLL worsened. No learned-quality conclusion or further
   dev-based tuning; old models/data remain. Source/CI/activation stay separate.
-- Installed Runtime remains rc.10. The [non-admission report repair](../evidence/NONADMITTED_OBSERVATION_2026-09-28.md)
-  proposes Runtime rc.11 / Evidence rc.18: record a rejected page before Human,
-  report its observed terminal result, and produce no training label. Component
-  checks are synthetic; activation and native qualification remain separate.
+- [Human end-turn input candidate](../evidence/HUMAN_TEXT_END_TURN_2026-09-28.md):
+  capture the exact pre-input menu and native end-turn request. The model already
+  has this legal action; recording an input is not Commit or successor. Connector
+  rc.5 / Annotator rc.14 / Evidence rc.19 / Game Mod rc.18 are source candidates;
+  install/load/Human evidence is not inherited. Runtime rc.11 is unchanged.
 - Latest native/consumer check: the small-B short run delivered an untargeted card
   confirmation, then reached its submission limit and released control. The native
   discard selector was subsequently observed; a separate one-selection engineering
