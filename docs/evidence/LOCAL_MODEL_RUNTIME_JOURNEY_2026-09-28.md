@@ -4,6 +4,8 @@ This receipt separates an actual local exercise from the later source fix. It
 does not establish full-game completion, Human origin for Agent actions or
 strategy quality. Raw observations, recordings, weights and private configuration
 stay local; the identifiers below locate their independently verified summaries.
+The [post-merge receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/74#issuecomment-5861694802)
+records the local activation and exercise separately from source CI.
 
 ## Exact active combination
 
