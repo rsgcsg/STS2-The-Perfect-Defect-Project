@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import type { TextMenuAction, TextMenuActionResult, TextMenuCapabilities, TextMenuSnapshot } from "@rsgcsg/sts2-connector-client";
+import { decodeTextMenuSnapshot } from "@rsgcsg/sts2-connector-client";
 import { PolicyRuntime } from "../src/runtime.js";
+import { startPolicyRuntimeHttpServer } from "../src/server.js";
 import { type PolicyConnector, type PolicyManifest } from "../src/contracts.js";
 
 const nav: TextMenuAction = { action_id: "nav-information", kind: "system_navigation", verb: "open_information", label: "Information", subject_referent_id: null, arguments: [], effect_domain: "text_menu" };
@@ -46,6 +49,103 @@ function result(requestId: string, action: TextMenuAction, successor: TextMenuSn
 }
 
 describe("text menu Runtime opt-in", () => {
+  it("drives complete combat, reward and map menus through Auto and hands observed game over to Human", async () => {
+    const action = (actionId: string, verb: string, subject: string | null = null): TextMenuAction => ({ ...native, action_id: actionId, verb, label: actionId, subject_referent_id: subject });
+    const scene = (sequence: number, kind: string, actions: TextMenuAction[], status: TextMenuSnapshot["status"] = "interactive"): TextMenuSnapshot => {
+      const base = frame(sequence, "root", actions);
+      const referents = actions.filter(item => item.subject_referent_id !== null).map(item => ({ referent_id: item.subject_referent_id!, role: kind === "combat_turn" ? "card" : kind === "reward_claim" ? "reward" : "map_point", kind: "entity" as const, label: item.label, state: { visible: true, enabled: true, observation_basis: "native_visible_fact" as const } }));
+      const surface = kind === "game_over" ? { kind, stage: "summary", screen_entity_id: "game-over-screen", return_destination: "main_menu", can_advance_summary: false, can_return: true, other_controls: [] }
+        : kind === "combat_turn" ? { kind, room_entity_id: `combat-room-${sequence}`, can_end_turn: status === "interactive", playable_cards: actions.filter(item => item.verb === "begin_card_play").map(item => ({ entity_id: item.subject_referent_id, name: item.label, target_entity_ids: [] })), usable_potions: [] }
+        : kind === "reward_claim" ? { kind, screen_entity_id: "reward-screen", rewards: [{ entity_id: "reward-a", kind: "gold", label: "Gold", description: "Gold", enabled: true }], potion_slots_full: false, discardable_potions: [], can_proceed: true, proceed_skips_remaining_rewards: false }
+        : { kind, screen_entity_id: "map-screen", travel_enabled: status === "interactive", traveling: false, drawing_mode: "none", next_options: actions.map((item, index) => ({ entity_id: item.subject_referent_id, col: index, row: 1, point_type: "combat" })), annotation_input_entity_id: null, can_exit_annotation: false };
+      const context = kind === "game_over" ? { kind, result: "loss", game_mode: "standard", score: 0, floor_reached: 9, ascension: 0 }
+        : kind === "combat_turn" ? { kind: "combat", encounter_type: "normal", round: 1, turn_owner: "player", is_play_phase: true, player: {}, enemies: [] }
+        : kind === "reward_claim" ? { kind: "reward_flow", reward_kind: "room_rewards" }
+        : { kind: "map", act_index: 1, current_position: null, visited: [], nodes: [] };
+      return decodeTextMenuSnapshot({ ...base, status, referents,
+        interaction: { ...base.interaction, interaction_id: `interaction-${sequence}`, kind, stage: status === "interactive" ? "ready" : status, content_schema: `sts2.player-environment/surface/${kind}-1`,
+          content: { surface, context },
+          capabilities: status === "interactive" ? actions.map(item => ({ verb: item.verb, subject_role: item.subject_referent_id === null ? null : "subject", arguments: [], availability_basis: "exact_current_text_menu" })) : [] },
+        menu: { ...base.menu, native_snapshot_id: `native-${sequence}` },
+        menu_actions: { ...base.menu_actions, status: status === "interactive" ? "complete" : "unavailable", ordering_semantics: "native_order_with_fixed_information_groups" }
+      }).data;
+    };
+    const combat = scene(1, "combat_turn", [action("end-combat-turn", "end_turn"), action("begin-card", "begin_card_play", "card-a")]);
+    const settling = scene(2, "combat_turn", [], "settling");
+    const reward = scene(3, "reward_claim", [action("claim-reward", "claim_reward", "reward-a"), action("proceed-rewards", "proceed_rewards")]);
+    const map = scene(4, "map_navigation", [action("travel-left", "navigate", "map-left"), action("travel-right", "navigate", "map-right")]);
+    const mapSettling = scene(5, "map_navigation", [], "settling");
+    const nextCombat = scene(6, "combat_turn", [action("end-next-turn", "end_turn"), action("begin-next-card", "begin_card_play", "card-b")]);
+    const gameOver = scene(7, "game_over", [], "observed");
+    const pages = [combat, reward, map, nextCombat];
+    const selected = ["end-combat-turn", "proceed-rewards", "travel-right", "end-next-turn"];
+    const expectedNext = [reward, map, nextCombat, gameOver];
+    let current = combat;
+    let pending: TextMenuSnapshot[] = [];
+    const observations: string[] = [];
+    const submissions: Array<{ snapshotId: string; actionId: string; requestId: string }> = [];
+    const events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    const scoreInputs: Array<{ snapshotId: string; actionIds: string[]; count: number; digest: string }> = [];
+    const connector: PolicyConnector = {
+      capabilities: async () => ({ ...capabilities(), verbs: ["end_turn", "begin_card_play", "claim_reward", "proceed_rewards", "navigate"] }),
+      observeBundle: async () => {
+        current = pending.shift() ?? current;
+        observations.push(current.snapshot_id);
+        return { observation: current, reads: [] };
+      },
+      acquireController: vi.fn(async () => {}),
+      releaseController: vi.fn(async () => {}),
+      submit: vi.fn(async input => {
+        const index = submissions.length;
+        expect(input).toMatchObject({ expectedSnapshotId: pages[index]?.snapshot_id, boundActionId: selected[index], inputProfile: "text-menu-v1" });
+        submissions.push({ snapshotId: input.expectedSnapshotId, actionId: input.boundActionId, requestId: input.requestId });
+        const chosen = pages[index]!.menu_actions.actions.find(candidate => candidate.action_id === input.boundActionId)!;
+        pending = index === 0 ? [settling, expectedNext[index]!] : index === 2 ? [mapSettling, expectedNext[index]!] : [expectedNext[index]!];
+        return result(input.requestId, chosen, pending[0]!);
+      })
+    };
+    const supported = manifest();
+    supported.support.interaction_kinds.push("combat_turn", "reward_claim", "map_navigation");
+    supported.support.action_verbs.push("begin_card_play", "claim_reward", "proceed_rewards", "navigate");
+    const runtime = new PolicyRuntime({ manifest: supported, connector, mode: "auto", runId: "whole-flow-run",
+      autoBudget: { maxSubmissions: 8, maxPolicyCalls: 8, deadlineMs: 10_000 }, successorPoll: { maxAttempts: 2, baseBackoffMs: 0 }, sleep: async () => {},
+      evidence: { append: async (kind: string, payload: Record<string, unknown>) => { events.push({ kind, payload }); } } as never,
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) },
+      policy: input => {
+        const snapshot = input.bundle.observation as TextMenuSnapshot;
+        const actionIds = snapshot.menu_actions.actions.map(candidate => candidate.action_id);
+        scoreInputs.push({ snapshotId: snapshot.snapshot_id, actionIds, count: input.candidate_count, digest: input.candidate_digest });
+        const index = pages.findIndex(page => page.snapshot_id === snapshot.snapshot_id);
+        expect(index).toBeGreaterThanOrEqual(0);
+        return { candidate_digest: input.candidate_digest, scores: actionIds.map(id => id === selected[index] ? 1 : 0), selected_index: actionIds.indexOf(selected[index]!) };
+      }
+    });
+    const service = await startPolicyRuntimeHttpServer(runtime, { port: 0, autoDrive: true, deferAutoDrive: true, autoIdleMs: 0 });
+    try {
+      service.startDriving();
+      await vi.waitFor(() => expect(runtime.status().mode).toBe("human"), { timeout: 2_000 });
+      const response = await fetch(`${service.address}/status`);
+      expect(response.status).toBe(200);
+      expect((await response.json()).status).toMatchObject({ mode: "human", controller: "released", tainted: false, last_snapshot: { snapshot_id: gameOver.snapshot_id, status: "observed" } });
+      expect(observations).toEqual([combat.snapshot_id, settling.snapshot_id, reward.snapshot_id, reward.snapshot_id, map.snapshot_id, map.snapshot_id, mapSettling.snapshot_id, nextCombat.snapshot_id, nextCombat.snapshot_id, gameOver.snapshot_id, gameOver.snapshot_id]);
+      expect(scoreInputs).toEqual(pages.map(page => {
+        const actionIds = page.menu_actions.actions.map(candidate => candidate.action_id);
+        return { snapshotId: page.snapshot_id, actionIds, count: actionIds.length, digest: createHash("sha256").update(JSON.stringify(actionIds), "utf8").digest("hex") };
+      }));
+      expect(submissions.map(({ snapshotId, actionId }) => [snapshotId, actionId])).toEqual(pages.map((page, index) => [page.snapshot_id, selected[index]]));
+      expect(new Set(submissions.map(item => item.requestId)).size).toBe(4);
+      expect(connector.releaseController).toHaveBeenCalledTimes(1);
+      expect(events.filter(event => event.kind === "text_decision_input").map(event => (event.payload.snapshot as TextMenuSnapshot).snapshot_id)).toEqual(pages.map(page => page.snapshot_id));
+      const deliveries = events.filter(event => event.kind === "text_native_delivery");
+      expect(deliveries).toHaveLength(4);
+      expect((deliveries[0]?.payload.result as TextMenuActionResult).successor).toEqual(settling);
+      expect(events.filter(event => event.kind === "text_observed_successor").map(event => event.payload.successor)).toEqual(expectedNext);
+      expect(events.filter(event => event.kind === "text_decision_input" || event.kind === "decision")).toHaveLength(8);
+      expect(events.find(event => event.kind === "handoff_to_human")?.payload).toEqual({ reason: "auto_surface_not_admitted" });
+      expect(events.some(event => event.kind === "text_decision_input" && (event.payload.snapshot as TextMenuSnapshot).snapshot_id === gameOver.snapshot_id)).toBe(false);
+    } finally { await service.close(); }
+  });
+
   it("scores each complete current menu once, navigates without a native receipt, and counts both dispatches in the finite wallet", async () => {
     const root = frame(1, "root", [nav]);
     const information = frame(2, "information", [native]);
