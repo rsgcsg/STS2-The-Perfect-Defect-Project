@@ -310,20 +310,26 @@ class LocalModelService:
                 "sts2.player-environment/text-menu-snapshot-1"
             ):
                 raise BoundaryError("local_model", "text_runtime_requires_text_model")
-            profile = _object_file(_inside(self.root, ".local/text-menu-runtime-v1.json"))
-            object_fields(profile, {"schema", "runtime_package"}, "local_model.runtime_profile")
-            pin = profile["runtime_package"]
-            if (profile["schema"] != "stpd/local-text-runtime-v1"
-                    or not isinstance(pin, dict)
-                    or pin.get("dependency_layout") != "bundled_source_candidate"):
-                raise BoundaryError("local_model", "unsupported_runtime_profile")
-            directory = self.directory / "text-menu-v1"
-            if directory.is_symlink():
-                raise BoundaryError("local_model", "runtime_install_path_unsafe")
+            directory, pin = self.text_runtime_profile()
         else:
             directory, pin = self.directory, self.registry()["runtime_package"]
         if not isinstance(pin, dict) or pin.get("package") != RUNTIME_PACKAGE:
             raise BoundaryError("local_model", "runtime_package_not_pinned")
+        return directory, pin
+
+    def text_runtime_profile(self) -> tuple[Path, dict[str, Any]]:
+        """Resolve the exact private text profile before a selection exists."""
+        profile = _object_file(_inside(self.root, ".local/text-menu-runtime-v1.json"))
+        object_fields(profile, {"schema", "runtime_package"}, "local_model.runtime_profile")
+        pin = profile["runtime_package"]
+        if (profile["schema"] != "stpd/local-text-runtime-v1"
+                or not isinstance(pin, dict)
+                or pin.get("dependency_layout") != "bundled_source_candidate"
+                or pin.get("package") != RUNTIME_PACKAGE):
+            raise BoundaryError("local_model", "unsupported_runtime_profile")
+        directory = self.directory / "text-menu-v1"
+        if directory.is_symlink():
+            raise BoundaryError("local_model", "runtime_install_path_unsafe")
         return directory, pin
 
     def _runtime_package(self, identity: str | None = None) -> dict[str, Any]:

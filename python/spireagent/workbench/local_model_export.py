@@ -181,6 +181,23 @@ class LocalModelExport:
                 result["reason"] = error.code
             return result
 
+    def verified_for_registration(self, model_id: object) -> Path:
+        """Explicitly recheck the completed export against the selected store."""
+        identity = digest(model_id, "local_model_export.model_id")
+        with self.lock:
+            operation = self._read()
+            if operation.get("status") != "completed" or operation.get("model_id") != identity:
+                raise BoundaryError("local_model_export", "verified_export_required")
+            workspace = self._workspace()
+            root = getattr(getattr(workspace.store, "blobs", None), "root", None)
+            if not isinstance(root, Path) or operation["store_root"] != str(root):
+                raise BoundaryError("local_model_export", "workspace_changed")
+            model = workspace.store.get_manifest(identity)
+            _eligible(model)
+            destination = self.config.state_dir / EXPORT_ROOT / identity
+            _verify_export(workspace.store, model, destination)
+            return destination
+
     def _finish(self, operation_id: str, **updates: Any) -> None:
         current = self._read()
         if (current.get("operation_id") != operation_id
