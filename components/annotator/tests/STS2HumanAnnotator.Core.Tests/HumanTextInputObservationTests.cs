@@ -8,6 +8,21 @@ namespace STS2HumanAnnotator.Core.Tests;
 public sealed class HumanTextInputObservationTests
 {
     [Theory]
+    [InlineData(true, true, true, true, true, HumanTextInputObservationContract.AcceptedInput)]
+    [InlineData(true, false, true, true, true, HumanTextInputObservationContract.NotMapped)]
+    [InlineData(false, false, true, true, true, HumanTextInputObservationContract.CaptureFailed)]
+    [InlineData(true, true, false, true, true, HumanTextInputObservationContract.RejectedOrCancelled)]
+    [InlineData(true, true, true, false, true, HumanTextInputObservationContract.RejectedOrCancelled)]
+    [InlineData(true, true, true, true, false, HumanTextInputObservationContract.NotMapped)]
+    public void EndTurnNeedsExactPreInputMenuAndOneReturnedNativeRequest(
+        bool captured, bool exactMenu, bool oneRequest, bool returned,
+        bool runAssigned, string expected)
+    {
+        Assert.Equal(expected, HumanTextInputNativeProof.ClassifyEndTurnInput(
+            captured, exactMenu, oneRequest, returned, runAssigned));
+    }
+
+    [Theory]
     [InlineData(true, true, true, true, true)]
     [InlineData(false, true, true, true, false)] // controller/non-mouse input
     [InlineData(true, false, true, true, false)] // not a left-button release
@@ -144,6 +159,58 @@ public sealed class HumanTextInputObservationTests
         Assert.Contains("text_input_native_mechanism_invalid",
             HumanTextInputObservationValidator.Validate(row with
             { NativeMechanism = "inferred_from_later_state" }));
+    }
+
+    [Fact]
+    public void EndTurnInputUsesTheExactSubjectlessMenuActionAndNativeRequest()
+    {
+        HumanTextInputObservation card = Accepted();
+        JsonObject snapshot = (JsonObject)card.Snapshot!.DeepClone();
+        JsonObject chosen = (JsonObject)card.ChosenAction!.DeepClone();
+        chosen["verb"] = "end_turn";
+        chosen["subject_referent_id"] = null;
+        snapshot["menu_actions"]!["actions"]![0] = chosen.DeepClone();
+        HumanTextInputObservation endTurn = card with
+        {
+            Snapshot = snapshot,
+            SnapshotSha256 = EvidenceIdentity.Sha256Json(snapshot),
+            ChosenAction = chosen,
+            NativeMechanism = HumanTextInputObservationContract.EndTurnRequestSubmitted,
+            NativeOwnerWitnessId = "button-1",
+            NativeSubjectWitnessId = "button-1",
+            NativeCarrierWitnessId = "request-1"
+        };
+        Assert.Empty(HumanTextInputObservationValidator.Validate(endTurn));
+        JsonObject omittedSubject = (JsonObject)chosen.DeepClone();
+        omittedSubject.Remove("subject_referent_id");
+        JsonObject omittedSnapshot = (JsonObject)snapshot.DeepClone();
+        omittedSnapshot["menu_actions"]!["actions"]![0] = omittedSubject.DeepClone();
+        Assert.Contains("text_input_chosen_action_not_unique",
+            HumanTextInputObservationValidator.Validate(endTurn with
+        {
+            Snapshot = omittedSnapshot,
+            SnapshotSha256 = EvidenceIdentity.Sha256Json(omittedSnapshot),
+            ChosenAction = omittedSubject
+        }));
+        Assert.Contains("text_input_native_verb_mechanism_mismatch",
+            HumanTextInputObservationValidator.Validate(endTurn with
+            { ChosenAction = (JsonObject)card.ChosenAction.DeepClone() }));
+        Assert.Contains("text_input_exact_mapping_missing",
+            HumanTextInputObservationValidator.Validate(endTurn with
+            { NativeCarrierWitnessId = null }));
+        Assert.Contains("text_input_end_turn_button_witness_mismatch",
+            HumanTextInputObservationValidator.Validate(endTurn with
+            { NativeSubjectWitnessId = "other-button" }));
+        JsonObject wrongSubject = (JsonObject)chosen.DeepClone();
+        wrongSubject["subject_referent_id"] = "card-1";
+        Assert.Contains("text_input_chosen_action_not_unique",
+            HumanTextInputObservationValidator.Validate(endTurn with
+            { ChosenAction = wrongSubject }));
+        JsonObject nonStringSubject = (JsonObject)chosen.DeepClone();
+        nonStringSubject["subject_referent_id"] = 42;
+        Assert.Contains("text_input_chosen_action_not_unique",
+            HumanTextInputObservationValidator.Validate(endTurn with
+            { ChosenAction = nonStringSubject }));
     }
 
     [Fact]

@@ -572,6 +572,45 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
                 self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
                                  "human_text_input_native_verb_mechanism_mismatch")
 
+    def test_end_turn_input_requires_subjectless_exact_menu_choice_and_request(self) -> None:
+        bundle = self._bundle()
+        row = self._text_row(bundle)
+        row["native_mechanism"] = "end_turn_exact_request_submitted"
+        row["native_owner_witness_id"] = "button-1"
+        row["native_subject_witness_id"] = "button-1"
+        row["native_carrier_witness_id"] = "request-1"
+        row["chosen_action"]["verb"] = "end_turn"
+        row["chosen_action"]["subject_referent_id"] = None
+        row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
+        self._declare_text(bundle, [row])
+        result = verify_human_session_bundle(bundle)
+        self.assertTrue(result.passed, result.findings)
+        self.assertEqual(result.require_value().human_text_inputs[0]["chosen_action"]["verb"], "end_turn")
+        self.assertEqual(result.require_value().canonical_count, 1)
+
+        row["native_subject_witness_id"] = "other-button"
+        self._declare_text(bundle, [row])
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_end_turn_button_witness_mismatch")
+        row["native_subject_witness_id"] = "button-1"
+
+        row["chosen_action"].pop("subject_referent_id")
+        row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
+        self._declare_text(bundle, [row])
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_chosen_action_not_unique")
+
+        row["chosen_action"]["subject_referent_id"] = "card-1"
+        row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
+        self._declare_text(bundle, [row])
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_chosen_action_not_unique")
+        row["chosen_action"]["subject_referent_id"] = 42
+        row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
+        self._declare_text(bundle, [row])
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_catalog_incomplete")
+
     def test_unrecognized_native_input_provenance_is_not_an_accepted_label(self) -> None:
         bundle = self._bundle()
         row = self._text_row(bundle)

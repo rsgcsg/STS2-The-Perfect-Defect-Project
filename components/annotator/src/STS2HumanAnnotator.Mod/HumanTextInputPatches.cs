@@ -3,10 +3,37 @@ using HarmonyLib;
 using Godot;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 
 namespace STS2HumanAnnotator.Mod;
+
+// CallReleaseLogic is the native mouse/controller/long-press input helper.
+// Its body can also submit UndoEndPlayerTurnAction, so the callback alone is
+// never evidence that the player submitted end_turn.
+[HarmonyPatch(typeof(NEndTurnButton), nameof(NEndTurnButton.CallReleaseLogic))]
+internal static class HumanTextEndTurnPatch
+{
+    private static void Prefix(NEndTurnButton __instance,
+        out RecorderRuntime.HumanTextEndTurnScope? __state) =>
+        __state = RecorderRuntime.BeginHumanTextEndTurnInput(__instance);
+
+    private static Exception? Finalizer(
+        RecorderRuntime.HumanTextEndTurnScope? __state, Exception? __exception) =>
+        NativeNestedCallbackSafety.Finalize("human_text_input.end_turn", __exception,
+            () => RecorderRuntime.FinishHumanTextEndTurnInput(__state, __exception));
+}
+
+[HarmonyPatch(typeof(ActionQueueSynchronizer), nameof(ActionQueueSynchronizer.RequestEnqueue),
+    new[] { typeof(GameAction) })]
+internal static class HumanTextEndTurnRequestPatch
+{
+    private static void Prefix([HarmonyArgument(0)] GameAction action) =>
+        NativeNestedCallbackSafety.Run("human_text_input.end_turn_request", () =>
+            RecorderRuntime.ObserveHumanTextEndTurnRequest(action));
+}
 
 /// <summary>Independent read-only Human text input side stream. The existing
 /// card-play scope, semantic tracker and native method keep their behavior.</summary>

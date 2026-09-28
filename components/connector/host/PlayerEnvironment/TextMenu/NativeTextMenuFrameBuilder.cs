@@ -255,7 +255,7 @@ internal static class NativeTextMenuFrameBuilder
                 owner, Array.Empty<TextMenuLeaf>());
         }
 
-        if (legacy.HostObservation.Surface is CombatTurnSurface
+        if (legacy.HostObservation.Surface is CombatTurnSurface combatTurn
             && hand != null && room != null)
         {
             // The opt-in text profile replaces the old final play/use pair.
@@ -266,7 +266,11 @@ internal static class NativeTextMenuFrameBuilder
                          action => action.Verb == "end_turn"))
                 if (legacy.Bindings.TryGetValue(action.BoundActionId,
                         out PlayerEnvironmentNativeBinding? binding))
-                    leaves.Add(FromLegacy(action, binding, executeLegacy));
+                    leaves.Add(WithEndTurnWitness(
+                        FromLegacy(action, binding, executeLegacy),
+                        room.Ui.EndTurnButton,
+                        string.Equals(combatTurn.RoomEntityId,
+                            entities.GetId(room, "room"), StringComparison.Ordinal)));
 
             foreach (var holder in hand.ActiveHolders)
             {
@@ -431,6 +435,19 @@ internal static class NativeTextMenuFrameBuilder
         new(action.BoundActionId, "root", action.Verb, action.Label,
             action.SubjectReferentId, action.Arguments,
             () => executeLegacy(binding));
+
+    internal static TextMenuLeaf WithEndTurnWitness(
+        TextMenuLeaf leaf, object? button, bool exactRoom) =>
+        exactRoom && button != null
+            ? leaf with
+            {
+                // The already-authorized action remains byte-for-byte the
+                // same; this reference never enters the text snapshot.
+                NativeWitness = new TextMenuNativeWitnessBinding(
+                    button, null,
+                    new Dictionary<string, object>(StringComparer.Ordinal))
+            }
+            : leaf;
 
     private static TextMenuLeaf Leaf(
         string key, string verb, string label, string? subject,

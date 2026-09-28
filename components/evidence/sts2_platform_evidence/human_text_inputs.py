@@ -29,6 +29,7 @@ MECHANISM_VERBS = {
     "mouse_canceled_input_signal": "cancel_card_play",
     "mouse_target_finish_input": "confirm_target",
     "mouse_target_canceled_input": "cancel_card_play",
+    "end_turn_exact_request_submitted": "end_turn",
 }
 MAPPING_BASIS = "text_menu_native_reference_equality"
 DISPOSITIONS = {"accepted_input", "not_mapped", "capture_failed", "rejected_or_cancelled"}
@@ -183,9 +184,12 @@ def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
                and row.get("mapping_basis") == MAPPING_BASIS
                and _nonempty(row.get("native_carrier_witness_id")),
                "human_text_input_exact_mapping_missing")
-        if MECHANISM_VERBS[mechanism] != "begin_card_play":
+        if MECHANISM_VERBS[mechanism] not in {"begin_card_play", "end_turn"}:
             _check(row.get("native_owner_witness_id") == row.get("native_carrier_witness_id"),
                    "human_text_input_continuation_owner_mismatch")
+        if MECHANISM_VERBS[mechanism] == "end_turn":
+            _check(row.get("native_owner_witness_id") == row.get("native_subject_witness_id"),
+                   "human_text_input_end_turn_button_witness_mismatch")
     snapshot = row.get("snapshot")
     if snapshot is None:
         _check(not accepted and disposition == "capture_failed"
@@ -273,7 +277,11 @@ def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
            and chosen.get("effect_domain") == "native_input"
            and chosen.get("verb") == MECHANISM_VERBS[mechanism]
            and _nonempty(chosen.get("action_id"))
-           and _nonempty(chosen.get("subject_referent_id"))
+           and ((_nonempty(chosen.get("subject_referent_id"))
+                 if MECHANISM_VERBS[mechanism] != "end_turn"
+                 else ("subject_referent_id" in chosen
+                       and chosen["subject_referent_id"] is None
+                       and chosen.get("arguments") == [])))
            and isinstance(chosen.get("arguments"), list)
            and sum(action == chosen for action in catalog["actions"]) == 1,
            "human_text_input_chosen_action_not_unique")
