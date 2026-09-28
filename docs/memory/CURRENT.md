@@ -1,136 +1,62 @@
 # Current project context, 2026-09-29
 
-The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Current
-develop anchor: `185737cc230b856f03476b97cb71212732f2d197`, integrating #86's
-Workbench/sequence increments and #88's non-combat potion correction.
-Source, installed application, native Human, data,
-training and scientific evidence remain separate. Resolve live refs and exact
-identities before making later claims. Resolve live GitHub refs before each
-change; current source and runtime authorities override this file.
+Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Develop anchor:
+`185737cc230b856f03476b97cb71212732f2d197`, after #86 and #88.
+Resolve live GitHub refs before work; current authorities override this file. Source, CI, installation, Human evidence and scientific results are
+separate. No complete Stage1a or policy-quality qualification is claimed.
 
-## Implemented and observed
+## Observed state
 
-- **New full-run recording:** the [2026-09-29 audit](../evidence/FULL_RUN_POTION_EXECUTION_2026-09-29.md)
-  confirms a native fresh start through defeat, with no recorder pause/resume.
-  It retains 722 canonical transitions and 537 accepted Human text inputs as
-  separate views. Three non-combat potion projections failed and the final
-  successor remains unknown: verified packaging is not zero-failure gameplay
-  qualification, a 10k dataset, or training. The owning source correction and
-  new native runtime qualification remain separate from this sealed evidence.
-  The [import receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/88#issuecomment-5875446132)
-  records verified local import and preview; raw recording hashes were unchanged.
-  The local dataset owner subsequently created a training-purpose Human source
-  with 537 labels. Its split remains unchecked; this is not a new training run
-  or an independent-run evaluation set.
+- **Full-run recording:** [dated audit](../evidence/FULL_RUN_POTION_EXECUTION_2026-09-29.md)
+  confirms fresh native start through defeat without recorder pause/resume.
+  There are 537 accepted Human inputs and 722 canonical transitions: separate,
+  non-additive views. Three potion projections failed; the final successor is
+  unknown. Verified import/preview preserved raw hashes. The dataset owner then
+  saved the 537-label source for training; its split is unchecked and it has
+  not trained a model. Two recorded run IDs do not prove two independent games.
+- **Potion correction:** #88 merged at the anchor above. Candidate full run
+  [36459424937](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36459424937)
+  passed. Merge run 36463472731 reused verified same-tree execution plus fresh
+  guards; it did not repeat both OS suites. The
+  [installation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/88#issuecomment-5875712254)
+  proves exact build/install/cold load, not a new live potion action. Old failed
+  evidence remains unchanged.
+- **Local application:** [actual workflow receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/86#issuecomment-5875711849)
+  records Workbench source `01320f4f53f2ddba44e3870b7245ca59c21b9346`, tree equal
+  to develop `30fd5f7bcd7fae146e850046313907d957aa546f`. Safari completed a new
+  D-Simple-S v1 three-step CPU training, export, registration, Human-mode load
+  and Stop. It used the old 31-label source (26 train/5 dev), not the full run
+  or M2; dev Top-1 was 0/5, native-run independence unknown. Runtime made zero
+  policy calls/submissions. A missing private Runtime profile required operator
+  recovery, so one-click installation remains unproved. Matching CollectionTool
+  registration and Workbench restart retained artifacts; model idle/unloaded.
 
-- **Potion correction:** #88 normally merged as the anchor above. Its full
-  [candidate run](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36459424937)
-  passed; [merge run](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36463472731)
-  reused the verified same-tree execution and ran fresh guards. The
-  [local installation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/88#issuecomment-5875712254)
-  records clean build/install/cold load and exact identity. A targeted live
-  non-combat potion action has not yet been observed; the old recording's
-  failures remain unchanged.
+## Research and environment candidates
 
-- **Native Human input:** [PR #80's receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/80#issuecomment-5864511251)
-  records an exact bounded canary with Game Mod rc.18, Annotator rc.14 and
-  Evidence rc.19: 9 input labels and 7 separately verified canonical decisions.
-  It records no native run start/end. The earlier [two-fragment report](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
-  remains distinct: 31 accepted input labels and 23 canonical decisions, with
-  two close-before-successor endpoints unknown. These data views are not
-  additive.
-- **Earlier Workbench activation:** The [PR #83 activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/83#issuecomment-5873889101)
-  documents a clean local Workbench source at `c8b0871a6884e4cbf89bacbd7e4917268fcbe62b`,
-  whose tree matches the earlier develop `34f4d99491ad1ee4a2c5520769208b624daea576`,
-  before #86 integration. Read-only before/after checks found
-  the same config digest, all three completed-operation file digests and all
-  four API status responses. The model remained idle/unloaded; the existing
-  training, export and dataset operations were not repeated. Doctor passed.
-  The local activation packet is retained separately by the owner under
-  `stage1a-dsimple-workbench-activation-20260929`.
-- **Current local application:** The [actual D-Simple journey receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/86#issuecomment-5875711849)
-  records Workbench source `01320f4f53f2ddba44e3870b7245ca59c21b9346`, whose
-  tree matches develop `30fd5f7bcd7fae146e850046313907d957aa546f`. Safari
-  completed new short training on the existing 31-label source, export,
-  registration, Human-mode load and Stop. Runtime reported zero policy calls
-  and zero submissions. This used D-Simple-S v1, three CPU steps, not M2 or the
-  new full-run source; dev Top-1 was 0/5. A missing private Runtime profile
-  needed operator recovery, so this does not prove an ordinary-user one-click
-  installer. A matching CollectionTool was then registered and the same
-  Workbench source reopened, preserving artifacts; the model was idle/unloaded.
-- **D-Simple M2:** PR #83 integrates the standalone M2 computation and synthetic
-  tests alongside #82's default application chain. M2 is not the live
-  short-training recipe and is not online in the active model path. Synthetic
-  cue-mechanism training exists; this activation provides no real-data training
-  or strategy-quality result.
-  [PR #86](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/86)
-  normally integrated #84/#85/#87 after full run 36452246795 passed on its exact
-  head. Merge run 36457033124 passed using a verified same-tree execution receipt
-  and fresh guards; it did not repeat both OS suites. The old Windows failure
-  remains recorded. This establishes source/test integration, not deployed M2.
-  The experimental observed-source bridge converts caller-verified sequences
-  into bounded complete-prefix windows. It does not grant ledger admission,
-  create independent splits, or provide an M2 worker/export/runtime path.
+D-Simple is the default application recipe. [M2 computation and sequence
+notes](../../python/docs/research/DSIMPLE_MEMORY.md) describe a separate
+experimental model, not a live recipe. The observed-source bridge in #90 turns
+caller-verified sequences into bounded complete-prefix windows; ledger admission,
+independent splits, a real-data worker, export and runtime are still separate.
+Synthetic cue tests do not prove game strategy or memory generalization.
 
-## Data and evaluation boundary
+Connector uses `text-menu-v1`. The Managed session still exposes the legacy
+Player Environment contract; #89 adds an opt-in in-process map-only text adapter.
+Its current CI and head must be read from the PR. It is not a public multi-client
+service, all-scene support or cross-Host equivalence. Source merges do not update
+running processes automatically.
 
-The existing 31 accepted Human input labels were divided train 26/dev 5 by the
-current Human v2 session/duplicate-input grouping rule. Native-run independence
-is unknown. The earlier 14-label source and older datasets retain their own
-identities and purposes; do not merge counts or reinterpret their history.
-The 23 canonical transitions are a separate view, not extra input labels.
-Prior bounded CPU runs are engineering plumbing only; the documented dev score
-was 0/5 and a later diagnostic worsened NLL. No strategy-quality conclusion is
-supported.
+## Remaining Platform non-claims
 
-The approximately 10,000 decision/interaction target is not ready; it does not
-prescribe Human-only data. Current small Human input samples do not establish a
-qualified large corpus or independent-run split. This work establishes no Gold
-qualification and does not change existing data-use or historical exposure
-rules. Teacher choices are not Gold labels. See the dated
-[Stage1a Workbench and M2 evidence](../evidence/STAGE1A_DSIMPLE_WORKBENCH_2026-09-29.md)
-and [local training guide](../../python/docs/research/LOCAL_TRAINING_WORKBENCH.md).
+Follow the [Stage1a order](../plans/STAGE1A_TASKS.zh-CN.md) and
+[environment/scenario plan](../plans/ENVIRONMENT_AND_SCENARIOS.zh-CN.md): finish
+native scene/continuation coverage, Managed text and repeatable scenarios,
+M2/Reset paired data and runtime, the bounded roughly-10k experiment, Qwen/Z/O
+comparisons, and the local/team/distribution product journey. No Gold or
+independent-run corpus qualification is established. Preserve old model/data
+identities, pending/unknown evidence, active runtime worktrees and rollback.
 
-## Environment and text-contract boundary
-
-Connector's current public profile is `text-menu-v1`, using
-`sts2.player-environment/text-menu-snapshot-1`, `menu` and `menu_actions`.
-The existing Managed Host projection in
-`components/host-runtime/src/managed-player-environment.mjs` still emits the
-legacy `sts2.player-environment/snapshot-1` / `bound_actions` contract. Schema
-compatibility and equivalent fair-player behavior across the real and Managed
-Hosts have not been proved. The Managed path must be checked against the current
-text-menu contract and its native leaf bindings; a previous Player Environment
-probe does not close this difference. Environment lifecycle and scene
-management remain a distinct 1a task, not a model capability.
-
-The Managed Host environment line is independent of model work. The current
-text-menu gap and ordinary-user environment preparation are bounded remaining
-items, not the entire Stage1a queue. Source merge, CI and local activation
-remain distinct evidence levels.
-
-## Remaining Platform non-claims and work
-
-Continue the independent environment/Managed Host and scene-management line
-([environment plan](../plans/ENVIRONMENT_AND_SCENARIOS.zh-CN.md)); D-Simple
-M2/Reset/control research, sequence training and later Qwen frozen/LoRA
-comparisons ([Stage1a task order](../plans/STAGE1A_TASKS.zh-CN.md),
-[M2 note](../../python/docs/research/DSIMPLE_MEMORY.md)); and the remaining
-product, team and distribution journey in that same task order. Current
-receipts do not establish complete 1a, a qualified 10,000-row dataset,
-independent native runs, Gold qualification, M2 real-data training,
-cross-Host equivalence, full-game coverage or learned policy quality.
-
-## Retained history
-
-Older receipts remain valid only for their recorded source and scope. In
-particular, the [PR #79 activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/79#issuecomment-5864107979)
-describes the earlier application and its visible loss-page canary; its old
-Mod/Workbench identities are not current. The [bounded-attempt receipt](../evidence/BOUNDED_GAME_ATTEMPT_2026-09-28.md),
-[native pile-continuation receipt](../evidence/NATIVE_PILE_CONTINUATION_2026-09-28.md),
-and [Human text end-turn report](../evidence/HUMAN_TEXT_END_TURN_2026-09-28.md)
-retain their original limitations and are not updated by this activation. The
-[PR #63 Human canary receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/63#issuecomment-5856320923),
-[synthetic Workbench journey](../evidence/HUMAN_INPUT_LOCAL_WORKBENCH_BROWSER_2026-09-28.md),
-and [PR #77 synthetic Auto regression](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/77)
-also retain their original, bounded scope.
+Earlier [Workbench/M2 evidence](../evidence/STAGE1A_DSIMPLE_WORKBENCH_2026-09-29.md)
+and [two-fragment evidence](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
+retain their original source and limitations; they are not current activation
+or full-game proof. Exact installation and runtime receipts outrank this summary.
