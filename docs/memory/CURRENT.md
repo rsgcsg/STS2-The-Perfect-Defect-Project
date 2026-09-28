@@ -1,8 +1,9 @@
 # Current project context, 2026-09-29
 
 The active repository is `rsgcsg/STS2-The-Perfect-Defect-Project`. Current
-develop anchor: `34f4d99491ad1ee4a2c5520769208b624daea576`, integrating D-Simple
-M2 computation (#83). Source, installed application, native Human, data,
+develop anchor: `34f4d99491ad1ee4a2c5520769208b624daea576`, integrating the
+D-Simple default application chain (#82) and standalone M2 computation (#83).
+Source, installed application, native Human, data,
 training and scientific evidence remain separate. Resolve live refs and exact
 identities before making later claims. Resolve live GitHub refs before each
 change; current source and runtime authorities override this file.
@@ -12,11 +13,10 @@ change; current source and runtime authorities override this file.
 - **Native Human input:** [PR #80's receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/80#issuecomment-5864511251)
   records an exact bounded canary with Game Mod rc.18, Annotator rc.14 and
   Evidence rc.19: 9 input labels and 7 separately verified canonical decisions.
-  It records no native run start/end. It is not a Full Run or two independent
-  games. The earlier [two-fragment report](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
+  It records no native run start/end. The earlier [two-fragment report](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
   remains distinct: 31 accepted input labels and 23 canonical decisions, with
   two close-before-successor endpoints unknown. These data views are not
-  additive, and none establishes broad scene coverage or Human Gold.
+  additive.
 - **Workbench activation:** The [PR #83 activation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/83#issuecomment-5873889101)
   documents a clean local Workbench source at `c8b0871a6884e4cbf89bacbd7e4917268fcbe62b`,
   whose tree matches this develop anchor. Read-only before/after checks found
@@ -25,18 +25,20 @@ change; current source and runtime authorities override this file.
   training, export and dataset operations were not repeated. Doctor passed.
   The local activation packet is retained separately by the owner under
   `stage1a-dsimple-workbench-activation-20260929`.
-- **Current training UI:** Safari showed the saved 31-label dataset offering a
-  new D-Simple-S v1, CPU, two-thread, three-step short task. The prior B model,
-  completed training result and report remain linked under their original
-  identities. The activation only refreshed training status; it did not start
-  another run. The new-recipe task entry is still incomplete, so the displayed
-  option is not evidence that D-Simple training works end to end.
+- **Current training UI:** Safari showed the default recipe description as
+  D-Simple-S v1, CPU, two-thread, three steps, but no clickable new-training
+  option. The saved dataset page can only view the prior B model, completed
+  training result and report under their original identities. The activation
+  only refreshed status; it did not start another run. The independent
+  `ed260dad` task-entry fix is not published or enabled.
 - **D-Simple M2:** PR #83 integrates the standalone M2 computation and synthetic
-  tests. M2 is not the live short-training recipe and is not online in the
-  active model path. It has no real-data training or learned-memory result.
+  tests alongside #82's default application chain. M2 is not the live
+  short-training recipe and is not online in the active model path. Synthetic
+  cue-mechanism training exists; this activation provides no real-data training
+  or strategy-quality result.
   The sequence-training candidate is separate in [PR #87](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/87);
   the environment/Workbench candidate is separate in [PR #86](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/86).
-  Their exact current CI states remain attached to their own heads.
+  At the dated check below, #87 had Windows pending; #86 had a Windows failure.
 
 ## Data and evaluation boundary
 
@@ -49,11 +51,11 @@ Prior bounded CPU runs are engineering plumbing only; the documented dev score
 was 0/5 and a later diagnostic worsened NLL. No strategy-quality conclusion is
 supported.
 
-The approximately 10,000 accepted decision/interaction target is not ready.
-Current small Human input samples do not establish a qualified large corpus,
-independent train/dev runs, Full-Run coverage or Human Gold. Human Gold remains
-unavailable; teacher choices are not Gold labels. Existing data-use and
-historical exposure boundaries remain in force. See the dated
+The approximately 10,000 decision/interaction target is not ready; it does not
+prescribe Human-only data. Current small Human input samples do not establish a
+qualified large corpus or independent-run split. This work establishes no Gold
+qualification and does not change existing data-use or historical exposure
+rules. Teacher choices are not Gold labels. See the dated
 [Stage1a Workbench and M2 evidence](../evidence/STAGE1A_DSIMPLE_WORKBENCH_2026-09-29.md)
 and [local training guide](../../python/docs/research/LOCAL_TRAINING_WORKBENCH.md).
 
@@ -70,17 +72,22 @@ text-menu contract and its native leaf bindings; a previous Player Environment
 probe does not close this difference. Environment lifecycle and scene
 management remain a distinct 1a task, not a model capability.
 
-The whole 1a journey is incomplete: full real-game scene coverage, text-menu
-Human data at target scale, independent-run split evidence, Managed Host parity,
-and the integrated Workbench short-training/sequence path remain open. Source
-merge, portable CI, local application activation and bounded Human evidence do
-not promote one another to whole-1a, full-game or scientific acceptance.
+The Managed Host environment line is independent of model work. The current
+text-menu gap and local application UI task-entry gap are bounded remaining
+items, not the entire Stage1a queue. Source merge, CI and local activation
+remain distinct evidence levels.
 
-## Remaining Platform non-claims
+## Remaining Platform non-claims and work
 
-No claim of complete 1a, a qualified 10,000-row dataset, independent native
-runs, Human Gold, D-Simple-S/M2 real-data training, cross-Host equivalence,
-full-game coverage or learned policy quality is supported by these receipts.
+Continue the independent environment/Managed Host and scene-management line
+([environment plan](../plans/ENVIRONMENT_AND_SCENARIOS.zh-CN.md)); D-Simple
+M2/Reset/control research, sequence training and later Qwen frozen/LoRA
+comparisons ([Stage1a task order](../plans/STAGE1A_TASKS.zh-CN.md),
+[M2 note](../../python/docs/research/DSIMPLE_MEMORY.md)); and the remaining
+product, team and distribution journey in that same task order. Current
+receipts do not establish complete 1a, a qualified 10,000-row dataset,
+independent native runs, Gold qualification, D-Simple-S/M2 real-data training,
+cross-Host equivalence, full-game coverage or learned policy quality.
 
 ## Retained history
 
@@ -94,5 +101,4 @@ retain their original limitations and are not updated by this activation. The
 [PR #63 Human canary receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/63#issuecomment-5856320923),
 [synthetic Workbench journey](../evidence/HUMAN_INPUT_LOCAL_WORKBENCH_BROWSER_2026-09-28.md),
 and [PR #77 synthetic Auto regression](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/77)
-also retain their original, bounded scope. None supplies missing run boundaries,
-Human Gold or whole-1a qualification.
+also retain their original, bounded scope.

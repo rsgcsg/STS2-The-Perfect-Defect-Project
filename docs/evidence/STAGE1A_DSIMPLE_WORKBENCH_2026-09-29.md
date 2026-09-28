@@ -6,8 +6,9 @@ new training receipt.
 
 ## Source and validation anchor
 
-`develop@34f4d99491ad1ee4a2c5520769208b624daea576` integrates PR #83's
-standalone D-Simple M2 computation. The hosted full run
+`develop@34f4d99491ad1ee4a2c5520769208b624daea576` integrates PR #82's
+default D-Simple application chain and PR #83's standalone M2 computation.
+The hosted full run
 [36442293932](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36442293932)
 and develop integration run
 [36445816685](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36445816685)
@@ -34,21 +35,31 @@ Workbench instance while the game runtime identity stayed the same and the
 recording remained closed. No new training, export, data import, model load,
 gameplay request, team upload or cloud action occurred.
 
-Safari's current training page showed the 31-label Human dataset and offered a
-new D-Simple-S v1 CPU two-thread, three-step task. The old B training result,
-model and report remained linked. Only status was refreshed. The UI task-entry
-gap for the new recipe remains unresolved; the offer does not prove that this
-recipe can be launched or completed from Workbench.
+Safari's current training page showed the default recipe description
+"D-Simple-S v1 CPU, 2 threads, 3 steps", but did not show a clickable new
+training option. The saved dataset page can only view the old B training
+result, model and report, which remain linked. Only status was refreshed. The
+independent task-entry fix `ed260dad` is implemented but not published or
+enabled; the D-Simple-S task therefore remains unavailable through this page.
 
-M2 computation is present in source after PR #83, but it is not the default
-short-training recipe and was not used by the active model path. It has no
-real-data training result. PR #87's sequence-training candidate is a separate
-increment. As observed on 2026-09-29, PR #87 head
-`40331aab28e4ebf050113434c975c31de826b57a` had plan/Linux checks pass and
-Windows pending. PR #86 head
-`a45a1d92dc75d246949ea06c6da4cac1ffd80607` likewise had plan/Linux pass and
-Windows pending. Their source and check identities must be revisited before
-later status claims.
+M2 computation is present in source after PR #83, but is not the default
+short-training recipe and was not used by the active model path. Synthetic
+cue-mechanism training exists; this activation has no real-data training or
+strategy-quality result.
+
+PR #87's sequence-training candidate remains separate. At a fresh check on
+2026-09-29, head `40331aab28e4ebf050113434c975c31de826b57a` had plan/Linux
+passing, Windows pending, and docs skipped in run
+[36447456643](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36447456643).
+PR #86 head `a45a1d92dc75d246949ea06c6da4cac1ffd80607` had Linux passing but
+Windows failed in run
+[36446841904](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36446841904).
+The failing test was
+[`test_lost_response_is_unknown_no_auto_retry_manual_retry_same_manifest`](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36446841904/job/109011346165):
+the second explicit retry's `finish` did not join within five seconds and its
+thread remained alive. The aggregate portable job failed because the selected
+Windows job failed. Linux passed; retain the failure as failed evidence, not
+as a pending job. Recheck both PR heads and CI before later status claims.
 
 ## Human inputs and limits
 
@@ -58,14 +69,15 @@ actions have unknown successors. The [PR #80 native canary receipt](https://gith
 records Game Mod rc.18, Annotator rc.14 and Evidence rc.19 with 9 input labels
 and 7 canonical decisions, but no native run start/end. Do not add the two
 views together or call these full games. Human native run independence remains
-unknown. Human Gold is unavailable and no Gold label is inferred from a
-recorded choice.
+unknown. These observations establish no Gold qualification and no Gold label
+is inferred from a recorded choice.
 
 The 31-label set used by the earlier fixed three-step CPU B v2 run had
 train 26/dev 5 under its then-current Human v2 grouping rule. That run is
 historical and is not rewritten as M2 or D-Simple-S v1. Its dev Top-1 was 0/5.
-The local activation did not run either recipe. The approximate 10,000-row
-Stage1a target is not ready; its data and split qualifications remain open.
+The local activation did not run either recipe. The approximate 10,000
+decision/interaction Stage1a target is not ready; it does not prescribe
+Human-only data, and its data and split qualifications remain open.
 
 ## Real and Managed Host text interface
 
