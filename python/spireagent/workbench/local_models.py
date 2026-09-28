@@ -1263,6 +1263,8 @@ class LocalModelService:
                     snapshot = None
                     if event["kind"] == "text_decision_input":
                         snapshot = payload.get("snapshot")
+                    elif event["kind"] == "text_observation_not_admitted":
+                        snapshot = payload.get("snapshot")
                     elif event["kind"] == "text_observed_successor":
                         snapshot = payload.get("successor")
                     elif event["kind"] == "menu_navigation":

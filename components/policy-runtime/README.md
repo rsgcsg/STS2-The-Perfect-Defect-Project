@@ -16,9 +16,17 @@ host kind, Connector version/source revision/artifact SHA-256/module version ID,
 Modset status/fingerprint, and the complete ordered list of loaded Mod IDs. Any
 field drift fails closed before Snapshot observation or policy scoring.
 
+For a text-menu Auto page that fails whole-decision admission after exact
+environment and profile checks, Runtime records one
+`text_observation_not_admitted` event with the admission reason and full current
+snapshot before handing control to Human. Settling observations do not generate
+this event. The record is an observation only: it has no decision, delivery or
+causal successor association, and it does not expand the policy's supported
+interactions. A failed event write triggers the existing fail-closed handoff.
+
 ## Standalone consumer package
 
-Version `0.1.0-rc.10` provides a candidate package for external consumers. Build
+Version `0.1.0-rc.11` provides a candidate package for external consumers. Build
 from a committed component checkout with the checked-in lockfile:
 
 ```bash
@@ -27,7 +35,7 @@ npm --prefix components/policy-runtime run check
 npm --prefix components/policy-runtime run package -- --output /absolute/package-output
 ```
 
-The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.10.tgz`,
+The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.11.tgz`,
 `policy-runtime-package.json` and `checksums.sha256`. It requires committed
 component source and does not publish anything. The package contains compiled
 JavaScript/declarations, CLI entries, license, a component identity record and

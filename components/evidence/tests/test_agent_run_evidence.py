@@ -498,6 +498,57 @@ if __name__ == "__main__":
     unittest.main()
 
 class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
+    def _game_over_intro(self, snapshot: dict[str, Any], result: str) -> dict[str, Any]:
+        page = json.loads(json.dumps(snapshot))
+        page["interaction"].update(
+            interaction_id="game-over", kind="game_over", stage="intro",
+            content_schema="sts2.player-environment/surface/game_over-1",
+            content={"surface": {"kind": "game_over", "stage": "intro",
+                                 "screen_entity_id": "game-over-screen",
+                                 "return_destination": None,
+                                 "can_advance_summary": True, "can_return": False,
+                                 "other_controls": []},
+                     "context": {"kind": "game_over", "result": result,
+                                 "game_mode": "standard", "score": None,
+                                 "floor_reached": None, "ascension": None}},
+            capabilities=[{"verb": "activate", "subject_role": None,
+                           "arguments": [], "availability_basis": "exact_current_text_menu"}],
+        )
+        page["menu_actions"]["actions"] = [{
+            "action_id": "game-over-advance", "kind": "native_input",
+            "verb": "activate", "label": "Continue", "subject_referent_id": None,
+            "arguments": [], "effect_domain": "native_input",
+        }]
+        return page
+
+    def test_nonadmitted_text_observation_is_verified_without_decision_association(self) -> None:
+        directory = self._text_evidence("text-nonadmitted")
+        original = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        page = self._game_over_intro(original[1]["payload"]["snapshot"], "win")
+        observation = {"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 2,
+                       "recorded_at": "2026-08-25T00:00:02.000Z", "kind": "text_observation_not_admitted",
+                       "payload": {"reason": "unsupported_interaction_kind", "snapshot": page}}
+        self._rewrite_events(directory, [original[0], observation])
+        verifier = AgentRunEvidenceVerifier()
+        self.assertTrue(verifier.verify(directory).passed)
+
+        invalid = (
+            ({"decision_id": "decision-1"}, "schema_keys"),
+            ({"reason": "snapshot_observed"}, "text_observation_admission"),
+            ({"snapshot": {**page, "session": {**page["session"], "environment_fingerprint": "foreign"}}}, "runtime_association"),
+            ({"snapshot": {**page, "input_profile": "other"}}, "schema_literal"),
+        )
+        for change, expected_code in invalid:
+            with self.subTest(change=change):
+                altered = json.loads(json.dumps(observation))
+                altered["payload"].update(change)
+                self._rewrite_events(directory, [original[0], altered])
+                result = verifier.verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, expected_code)
+        self._rewrite_events(directory, [{**observation, "sequence": 1}])
+        self.assertEqual(verifier.verify(directory).findings[0].code, "environment_identity_order")
+
     def _text_snapshot(self, snapshot_id: str, sequence: int, action: dict[str, Any], cursor: str = "root") -> dict[str, Any]:
         snapshot = self._snapshot(snapshot_id, sequence)
         snapshot.pop("bound_actions")
