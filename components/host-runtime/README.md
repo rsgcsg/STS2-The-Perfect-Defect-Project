@@ -150,6 +150,14 @@ Headless owns process lifecycle and identity. Connector owns the fair-player
 gameplay contract. A consumer owns policy. Future training adapters may encode
 observations, masks, and rewards, but those do not become STS2 truth.
 
+The experimental `ManagedTextMenuMapSessionAdapter` is an in-process opt-in
+projection of a complete current Managed map catalog to `text-menu-v1`. It
+keeps each exact Managed native binding private and reuses the current map
+action revalidation. Other pages, including combat and card-selection stages,
+remain unavailable. This adapter is not a public Connector service: Managed
+has no text-menu HTTP route or controller-lease/attribution owner, and this
+projection does not qualify Connector text-menu compatibility.
+
 ## Documentation
 
 - [Document map](docs/DOCUMENT_MAP.md)
