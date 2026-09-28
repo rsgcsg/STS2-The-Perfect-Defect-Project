@@ -121,11 +121,10 @@ The `reset_each_step=True` comparison uses the same model structure with its
 own optimizer and initial weights.
 
 This is only a local synthetic compute path. It does not resolve incomplete
-or settling pages, admission of the observed source, split independence,
+pages, admission of the observed source, split independence,
 real-data training, export, runtime registration, or policy quality. The
-observed-source bridge remains the owner of its existing bounded prefix
-projection; this function does not automatically convert its windows into
-whole episodes.
+observed-source bridge owns its bounded prefix and whole-episode projections;
+the TBPTT function does not convert windows into episodes.
 
 ## Observed-source bridge (experimental)
 
@@ -143,6 +142,28 @@ source, may contribute loss. An unlabelled but observed page still writes
 memory. A witnessed Human input, navigation and an unknown delivery never
 become `previous_actual_action` or `public_feedback`; both optional inputs
 remain `None` in this bridge.
+
+`project_memory_episodes` reuses the same caller-verified view, current-page
+projection, fixed tokenizer, ordered reset-origin segments, exact choice
+binding and source-event IDs. It emits whole `MemorySequenceEpisode` values
+for bounded TBPTT. The caller explicitly sets total model-observation and
+input-token ceilings; a whole segment over either limit is diagnosed without
+shortening the history or candidate catalog. The older window projection and
+its 64/32-step limits remain separate.
+
+The episode bridge normally rejects a settling page. An explicit
+`max_settling_events` allowance permits only source-visible pages marked
+`status=settling` with the current text-menu profile, complete public facts,
+an unavailable empty executable catalog, no selected action, and the same
+runtime/environment identity as interactive observations on both sides.
+Such a page retains its event ID in the ordered source mapping but produces
+no model step, score, token input, memory write or reset. `step_event_ids`
+aligns one-to-one with model steps; `settling_event_ids` names only verified
+skips. The allowance is per episode and defaults to zero. Missing observations,
+other unprojectable pages and identity drift cannot use this skip. Numeric
+source-sequence gaps alone never prove settling or authorize a skip. The
+episode bridge still neither proves a causal successor nor invents previous
+executed actions or feedback.
 
 The bridge does **not** establish source trust, training purpose, ledger
 authorization, independent-run splits or real-data admission. In particular,
