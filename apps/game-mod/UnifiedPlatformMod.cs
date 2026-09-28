@@ -11,7 +11,7 @@ namespace STS2Platform.GameMod;
 [ModInitializer("Initialize")]
 public static class UnifiedPlatformMod
 {
-    public const string Version = "0.2.0-rc.17";
+    public const string Version = "0.2.0-rc.18";
 
     public static void Initialize()
     {
