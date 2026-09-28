@@ -29,7 +29,25 @@ npm run experiment:managed -- engine-lab --candidate .local/candidates/<candidat
 npm run experiment:managed -- pe-profile --candidate .local/candidates/<candidate> --profile qualification --episodes 5
 npm run experiment:managed -- pe-profile --candidate .local/candidates/<candidate> --profile training --episodes 5
 npm run experiment:managed -- pe-capacity --candidate .local/candidates/<candidate> --workers 1,2,4,8 --episodes 3 --max-actions 600
+npm run experiment:managed -- repeatability --candidate .local/candidates/<candidate> --scenario scenario.json
 ```
+
+`repeatability` accepts an existing `sts2.headless/scenario-1` JSON descriptor
+with `start_interaction_kind` and starts two sequential, independent Managed
+processes against the same exact candidate. Its report records each runtime
+instance ID, game-reported seed, candidate artifact identity, common semantic
+event comparison, and first divergence. The cooperative scenario deadline
+defaults to 120 seconds and can be changed with `--scenario-timeout-ms`;
+operation timeout is controlled by `--timeout-ms`. The driver checks remaining
+time at asynchronous transport boundaries and before and after synchronous
+reads.
+Candidate process startup/runtime identity and shutdown retain their own finite
+existing bounds, so `--scenario-timeout-ms` is not a strict end-to-end wall
+clock. Incomplete evidence, unknown delivery, a trajectory without a delivered
+action, or changed candidate/runtime identity cannot pass. This
+tests same-candidate repeatability only; it does not establish native Connector
+text-menu coverage or full-game determinism. Synthetic driver tests validate
+the comparator and are not native runtime qualification.
 
 `probe` and `capacity` exercise the upstream-shaped raw protocol and cannot
 support Player Environment claims. `pe-probe` and `pe-capacity` use the strict
