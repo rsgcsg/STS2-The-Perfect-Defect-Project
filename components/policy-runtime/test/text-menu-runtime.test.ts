@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import type { TextMenuAction, TextMenuActionResult, TextMenuCapabilities, TextMenuSnapshot } from "@rsgcsg/sts2-connector-client";
-import { decodeTextMenuSnapshot } from "@rsgcsg/sts2-connector-client";
+import { decodeTextMenuActionResult, decodeTextMenuSnapshot } from "@rsgcsg/sts2-connector-client";
 import { PolicyRuntime } from "../src/runtime.js";
 import { startPolicyRuntimeHttpServer } from "../src/server.js";
 import { type PolicyConnector, type PolicyManifest } from "../src/contracts.js";
@@ -49,6 +49,95 @@ function result(requestId: string, action: TextMenuAction, successor: TextMenuSn
 }
 
 describe("text menu Runtime opt-in", () => {
+  it("continues a confirmed card through a complete native pile selector and back to combat", async () => {
+    const action = (id: string, verb: string, subject: string | null = null): TextMenuAction => ({ ...native, action_id: id, verb, label: id, subject_referent_id: subject });
+    const begin = action("begin-card", "begin_card_play", "held-card");
+    const confirm = action("confirm-card", "confirm_card", "held-card");
+    const selectA = action("select-pile-a", "select", "pile-card-a");
+    const selectB = action("select-pile-b", "select", "pile-card-b");
+    const endTurn = action("end-turn", "end_turn");
+    const card = (id: string) => ({ entity_id: id, definition_id: "fixture-card", name: "Fixture card", type: "skill", cost: "1", description: "Fixture", rarity: "common", is_upgraded: false, is_selected: false, existing_enchantment: null });
+    const snapshot = (sequence: number, kind: string, stage: string, actions: TextMenuAction[], status: TextMenuSnapshot["status"] = "interactive"): TextMenuSnapshot => {
+      const base = frame(sequence, "root", actions);
+      const referentIds = [...new Set(actions.map(item => item.subject_referent_id).filter((id): id is string => id !== null))];
+      const surface = kind === "native_combat_pile_selection" ? {
+        kind, stage, prompt: "Choose one card", pile_type: "discard", min_select: 1, max_select: 1, selected_count: 0,
+        selected_card_entity_ids: [], selectable_card_entity_ids: ["pile-card-a", "pile-card-b"], deselectable_card_entity_ids: [],
+        cancelable: false, can_cancel: false, can_confirm: false, cards: [card("pile-card-a"), card("pile-card-b")], visible_hover_tips: []
+      } : kind === "combat_card_operation" ? {
+        kind, stage, held_card_referent_id: "held-card", displayed_title: "Fixture card", displayed_cost: "1", displayed_description: "Fixture"
+      } : { kind, room_entity_id: "fixture-room", can_end_turn: status === "interactive", playable_cards: actions.filter(item => item.verb === "begin_card_play").map(item => ({ entity_id: item.subject_referent_id, name: "Fixture card", target_entity_ids: [] })), usable_potions: [] };
+      return decodeTextMenuSnapshot({ ...base, status,
+        interaction: { ...base.interaction, interaction_id: `interaction-${sequence}`, kind, stage,
+          content_schema: `sts2.player-environment/surface/${kind === "combat_card_operation" ? "combat_card_operation_text_menu" : kind}-1`,
+          content: { surface, context: { kind: "combat", encounter_type: "normal", round: 1, turn_owner: "player", is_play_phase: true, player: {}, enemies: [] } },
+          capabilities: status === "interactive" ? actions.map(item => ({ verb: item.verb, subject_role: item.subject_referent_id === null ? null : "subject", arguments: [], availability_basis: "exact_current_text_menu" })) : [] },
+        referents: referentIds.map(id => ({ referent_id: id, role: "card", kind: "entity", label: id, state: { visible: true, enabled: true, observation_basis: "native_visible_fact" } })),
+        menu: { ...base.menu, native_snapshot_id: `native-${sequence}` },
+        menu_actions: { ...base.menu_actions, status: status === "interactive" ? "complete" : "unavailable", ordering_semantics: "native_order_with_fixed_information_groups" }
+      }).data;
+    };
+    const combat = snapshot(1, "combat_turn", "ready", [endTurn, begin]);
+    const held = snapshot(2, "combat_card_operation", "card_confirm", [action("cancel-card", "cancel_card_play", "held-card"), confirm]);
+    const settling = snapshot(3, "combat_card_operation", "card_confirm", [], "settling");
+    const selector = snapshot(4, "native_combat_pile_selection", "selecting", [selectA, selectB]);
+    const resumed = snapshot(5, "combat_turn", "ready", [endTurn, action("begin-next-card", "begin_card_play", "next-card")]);
+    const pages = [combat, held, selector, resumed];
+    const selected = [begin.action_id, confirm.action_id, selectB.action_id];
+    let current = combat;
+    let pending: TextMenuSnapshot[] = [];
+    const observed: string[] = [];
+    const scores: Array<{ snapshotId: string; ids: string[]; digest: string }> = [];
+    const submissions: Array<{ snapshotId: string; actionId: string; requestId: string }> = [];
+    const events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    const connector: PolicyConnector = {
+      capabilities: async () => ({ ...capabilities(), verbs: ["end_turn", "begin_card_play", "cancel_card_play", "confirm_card", "select"] }),
+      observeBundle: async () => { current = pending.shift() ?? current; observed.push(current.snapshot_id); return { observation: current, reads: [] }; },
+      acquireController: vi.fn(async () => {}), releaseController: vi.fn(async () => {}),
+      submit: vi.fn(async input => {
+        const index = submissions.length;
+        expect(input).toMatchObject({ expectedSnapshotId: pages[index]?.snapshot_id, boundActionId: selected[index], inputProfile: "text-menu-v1" });
+        submissions.push({ snapshotId: input.expectedSnapshotId, actionId: input.boundActionId, requestId: input.requestId });
+        pending = index === 1 ? [settling, selector] : [pages[index + 1]!];
+        const chosen = pages[index]!.menu_actions.actions.find(item => item.action_id === input.boundActionId)!;
+        return decodeTextMenuActionResult(result(input.requestId, chosen, pending[0]!)).data;
+      })
+    };
+    const supported = manifest();
+    supported.support.interaction_kinds.push("combat_turn", "combat_card_operation", "native_combat_pile_selection");
+    supported.support.action_verbs.push("begin_card_play", "cancel_card_play", "confirm_card", "select");
+    const runtime = new PolicyRuntime({ manifest: supported, connector, mode: "auto", runId: "pile-continuation-run",
+      autoBudget: { maxSubmissions: 6, maxPolicyCalls: 6, deadlineMs: 10_000 }, successorPoll: { maxAttempts: 2, baseBackoffMs: 0 }, sleep: async () => {},
+      evidence: { append: async (kind: string, payload: Record<string, unknown>) => { events.push({ kind, payload }); } } as never,
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) },
+      policy: input => {
+        const page = input.bundle.observation as TextMenuSnapshot;
+        const ids = page.menu_actions.actions.map(item => item.action_id);
+        scores.push({ snapshotId: page.snapshot_id, ids, digest: input.candidate_digest });
+        const index = pages.findIndex(item => item.snapshot_id === page.snapshot_id);
+        expect(index).toBeGreaterThanOrEqual(0);
+        return { candidate_digest: input.candidate_digest, scores: ids.map(id => id === selected[index] ? 1 : 0), selected_index: index === 3 ? null : ids.indexOf(selected[index]!) };
+      }
+    });
+    const service = await startPolicyRuntimeHttpServer(runtime, { port: 0, autoDrive: true, deferAutoDrive: true, autoIdleMs: 0 });
+    try {
+      service.startDriving();
+      await vi.waitFor(() => expect(runtime.status().mode).toBe("human"), { timeout: 2_000 });
+      expect(runtime.status()).toMatchObject({ controller: "released", tainted: false, last_snapshot: { snapshot_id: resumed.snapshot_id } });
+      expect(observed).toEqual([combat.snapshot_id, held.snapshot_id, held.snapshot_id, settling.snapshot_id, selector.snapshot_id, selector.snapshot_id, resumed.snapshot_id, resumed.snapshot_id]);
+      expect(scores).toEqual(pages.map(page => {
+        const ids = page.menu_actions.actions.map(item => item.action_id);
+        return { snapshotId: page.snapshot_id, ids, digest: createHash("sha256").update(JSON.stringify(ids), "utf8").digest("hex") };
+      }));
+      expect(submissions.map(item => [item.snapshotId, item.actionId])).toEqual(pages.slice(0, 3).map((page, index) => [page.snapshot_id, selected[index]]));
+      expect(new Set(submissions.map(item => item.requestId)).size).toBe(3);
+      expect((events.filter(item => item.kind === "text_native_delivery")[1]?.payload.result as TextMenuActionResult).successor).toEqual(settling);
+      expect(events.filter(item => item.kind === "text_observed_successor").map(item => item.payload.successor)).toEqual([held, selector, resumed]);
+      expect(events.find(item => item.kind === "handoff_to_human")?.payload).toEqual({ reason: "policy_abstained" });
+      expect(connector.releaseController).toHaveBeenCalledTimes(1);
+    } finally { await service.close(); }
+  });
+
   it("drives complete combat, reward and map menus through Auto and hands observed game over to Human", async () => {
     const action = (actionId: string, verb: string, subject: string | null = null): TextMenuAction => ({ ...native, action_id: actionId, verb, label: actionId, subject_referent_id: subject });
     const scene = (sequence: number, kind: string, actions: TextMenuAction[], status: TextMenuSnapshot["status"] = "interactive"): TextMenuSnapshot => {
