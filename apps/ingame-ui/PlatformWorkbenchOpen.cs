@@ -103,13 +103,20 @@ public static class PlatformWorkbenchOpenClient
 
     public static async Task<PlatformWorkbenchOpenResult> CheckAsync(
         HttpClient client,
+        CancellationToken cancellationToken = default) =>
+        await CheckWithTimeProviderAsync(client, TimeProvider.System, cancellationToken);
+
+    internal static async Task<PlatformWorkbenchOpenResult> CheckWithTimeProviderAsync(
+        HttpClient client,
+        TimeProvider timeProvider,
         CancellationToken cancellationToken = default)
     {
         bool checkingWorkbenchHealth = false;
         try
         {
-            using var linkedTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            linkedTimeout.CancelAfter(TimeSpan.FromSeconds(2));
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2), timeProvider);
+            using var linkedTimeout = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken, deadline.Token);
             using HttpResponseMessage statusResponse = await client.GetAsync(
                 GameStatusUrl,
                 HttpCompletionOption.ResponseHeadersRead,
@@ -137,8 +144,9 @@ public static class PlatformWorkbenchOpenClient
                 return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.Unavailable);
 
             checkingWorkbenchHealth = true;
-            using var healthTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            healthTimeout.CancelAfter(TimeSpan.FromSeconds(2));
+            using var healthDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(2), timeProvider);
+            using var healthTimeout = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken, healthDeadline.Token);
             using HttpResponseMessage healthResponse = await client.GetAsync(
                 new Uri(new Uri(url, UriKind.Absolute), "health"),
                 HttpCompletionOption.ResponseHeadersRead,
