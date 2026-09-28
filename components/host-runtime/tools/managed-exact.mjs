@@ -30,6 +30,12 @@ import {
 } from "../src/cross-host-driver.mjs";
 import { runCrossHostDifferential } from "../src/semantic-differential.mjs";
 import { runManagedRepeatability } from "../src/managed-repeatability.mjs";
+import {
+  createValidatedManagedScenarioDriver,
+  getManagedScenario,
+  listManagedScenarios,
+  resolveManagedRepeatabilitySelection
+} from "../src/managed-scenario-catalog.mjs";
 import { validateScenarioDescriptor } from "../src/host-driver.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -56,6 +62,26 @@ function safeTimestamp() {
 
 async function main() {
   const [command = "help", ...args] = process.argv.slice(2);
+  if (command === "scenarios") {
+    const [operation, ...scenarioArgs] = args;
+    if (operation === "list") {
+      console.log(JSON.stringify(listManagedScenarios(), null, 2));
+      return;
+    }
+    if (operation === "show") {
+      const scenarioId = option(scenarioArgs, "--scenario-id", scenarioArgs[0] ?? null);
+      const scenario = getManagedScenario(scenarioId);
+      if (scenario == null) throw new Error(`Unknown managed scenario ID: ${scenarioId ?? "(missing)"}`);
+      console.log(JSON.stringify(scenario, null, 2));
+      return;
+    }
+    throw new Error("scenarios requires list or show [--scenario-id <id>].");
+  }
+  // Resolve built-in IDs and contradictory overrides before game discovery or
+  // candidate inspection so invalid requests are cheap and side-effect-free.
+  const repeatabilitySelection = command === "repeatability"
+    ? resolveManagedRepeatabilitySelection(args)
+    : null;
   if (command === "prepare") {
     const result = await prepareManagedCandidate({
       root: ROOT,
@@ -353,9 +379,9 @@ async function main() {
     return;
   }
   if (command === "repeatability") {
-    const scenarioFile = option(args, "--scenario");
-    if (!scenarioFile) throw new Error("repeatability requires --scenario <scenario.json>.");
-    const scenario = JSON.parse(readFileSync(path.resolve(scenarioFile), "utf8"));
+    const scenario = repeatabilitySelection.kind === "builtin"
+      ? repeatabilitySelection.definition.scenario
+      : JSON.parse(readFileSync(path.resolve(repeatabilitySelection.file), "utf8"));
     const scenarioErrors = validateScenarioDescriptor(scenario);
     if (scenarioErrors.length > 0) throw new Error(`Invalid scenario: ${scenarioErrors.join(", ")}`);
     if (typeof scenario.start_interaction_kind !== "string" || scenario.start_interaction_kind.length === 0) {
@@ -375,15 +401,34 @@ async function main() {
       information_policy_id: "player_visible_v1",
       presentation_language: option(args, "--language", "zhs")
     };
-    const driver = await createManagedExactHostDriver({
+    let selectedManifest = null;
+    if (repeatabilitySelection.kind === "builtin") {
+      const loaded = loadManagedCandidateManifest(ROOT).manifest;
+      selectedManifest = selectManagedCandidateManifest(loaded, exactGame);
+    }
+    const createDriver = () => createManagedExactHostDriver({
       root: ROOT,
       candidateDirectory,
       diskIdentity: exactGame,
       semanticTarget,
-      character: option(args, "--character", "Ironclad"),
+      character: repeatabilitySelection.kind === "builtin"
+        ? repeatabilitySelection.definition.character
+        : option(args, "--character", "Ironclad"),
       requestTimeoutMs: Number(option(args, "--timeout-ms", "10000")),
-      scenarioTimeoutMs: Number(option(args, "--scenario-timeout-ms", "120000"))
+      scenarioTimeoutMs: Number(option(args, "--scenario-timeout-ms",
+        String(repeatabilitySelection.kind === "builtin"
+          ? repeatabilitySelection.definition.scenario_timeout_ms
+          : 120_000)))
     });
+    const driver = repeatabilitySelection.kind === "builtin"
+      ? await createValidatedManagedScenarioDriver({
+        definition: repeatabilitySelection.definition,
+        actualGame: exactGame,
+        semanticTarget,
+        candidateManifest: selectedManifest,
+        createDriver
+      })
+      : await createDriver();
     const result = await runManagedRepeatability({ driver, scenario });
     const directory = path.join(LOCAL, "evidence", `managed-repeatability-${safeTimestamp()}`);
     mkdirSync(directory, { recursive: true });
@@ -419,6 +464,8 @@ async function main() {
   console.log(`Managed exact candidate (experimental, unqualified)
 
 Commands:
+  scenarios list
+  scenarios show --scenario-id ID
   prepare [--candidate DIR]
   audit --candidate DIR
   probe --candidate DIR [--seed SEED] [--episodes N] [--max-actions N] [--reset-at card_select,card_reward]
@@ -431,7 +478,7 @@ Commands:
   native-gates --candidate DIR [--seed SEED]
   recovery --candidate DIR [--seed SEED]
   cross-host --candidate DIR [--seed SEED] [--start-kind KIND] [--discovery-actions N] [--max-actions N] [--template ID]
-  repeatability --candidate DIR --scenario scenario.json [--scenario-timeout-ms N]
+  repeatability --candidate DIR (--scenario scenario.json | --scenario-id ID) [--scenario-timeout-ms N]
   capacity --candidate DIR [--workers 1,2,4] [--episodes N] [--max-actions N]
 
 The raw candidate protocol is not the canonical Player Environment. pe-probe

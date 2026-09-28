@@ -29,7 +29,10 @@ npm run experiment:managed -- engine-lab --candidate .local/candidates/<candidat
 npm run experiment:managed -- pe-profile --candidate .local/candidates/<candidate> --profile qualification --episodes 5
 npm run experiment:managed -- pe-profile --candidate .local/candidates/<candidate> --profile training --episodes 5
 npm run experiment:managed -- pe-capacity --candidate .local/candidates/<candidate> --workers 1,2,4,8 --episodes 3 --max-actions 600
+npm run experiment:managed -- scenarios list
+npm run experiment:managed -- scenarios show --scenario-id managed-engineering-map-combat-six-v1
 npm run experiment:managed -- repeatability --candidate .local/candidates/<candidate> --scenario scenario.json
+npm run experiment:managed -- repeatability --candidate .local/candidates/<candidate> --scenario-id managed-engineering-map-combat-six-v1
 ```
 
 `repeatability` accepts an existing `sts2.headless/scenario-1` JSON descriptor
@@ -48,6 +51,25 @@ action, or changed candidate/runtime identity cannot pass. This
 tests same-candidate repeatability only; it does not establish native Connector
 text-menu coverage or full-game determinism. Synthetic driver tests validate
 the comparator and are not native runtime qualification.
+
+The built-in `managed-engineering-map-combat-six-v1` entry is named `工程重复性`.
+It is metadata for the previously measured same-seed map-to-combat six-action
+engineering scenario, bound to its exact game, semantic target, Managed
+candidate artifact, Ironclad character, `read_policy: none`, and fixed action
+and discovery limits. The saved report records game/candidate identity and the
+scenario, but not character; Ironclad is pinned because that CLI path defaulted
+to Ironclad. This is not Defect-character evidence, model evaluation, or a
+gameplay qualification. `scenarios list` and `scenarios show` only print
+committed metadata and do not discover a game or inspect a candidate. Built-in
+repeatability refuses unknown IDs, contradictory overrides, and game/target/
+candidate identity mismatches before starting a Managed runtime. A custom
+`--scenario scenario.json` remains supported and is never replaced by a
+built-in fallback.
+
+The built-in catalog is not a save library. Managed manifest entries such as
+`load_save` and `write_continue_save` do not provide Host save listing, copying,
+branching, replay, or restoration. Native run saves remain game-owned; profile
+templates represent user-data configuration and are not run checkpoints.
 
 `probe` and `capacity` exercise the upstream-shaped raw protocol and cannot
 support Player Environment claims. `pe-probe` and `pe-capacity` use the strict
