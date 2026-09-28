@@ -1228,6 +1228,56 @@ test("local training state gates pending and unknown outcomes, and links only co
   assert.equal(post(done.calls).length, 0);
 });
 
+test("completed training offers one explicit new experiment with exact prior identity", async () => {
+  const dataset = id("a"), operationId = "1".repeat(32);
+  const result = id("b"), model = id("c"), evaluation = id("d");
+  let finishStart;
+  const env = localTrainingEnv({artifact:dataset, trainingStatus:{
+    schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf",
+    operation:{status:"completed", operation_id:operationId, dataset_id:dataset,
+      run_id:id("e"), result_id:result, model_id:model, evaluation_id:evaluation},
+  }, trainingHandler:async (url, options) => {
+    if (url === "/api/local-training/start" && options.method === "POST")
+      return new Promise(resolve => { finishStart = () => resolve({
+        schema:"stpd/local-training-operation-v1", availability:"ready",
+        operation:{status:"pending", operation_id:"2".repeat(32), dataset_id:dataset},
+      }); });
+    throw new Error(`unexpected route ${url}`);
+  }});
+  const page = await env.render();
+  assert.equal(post(env.calls).length, 0, "render never starts another experiment");
+  await action(page, "refresh-local-training-status").onclick();
+  assert.equal(post(env.calls).length, 0, "refresh remains read only");
+  const button = action(page, "start-local-training-new");
+  assert.equal(button.disabled, false);
+  const first = button.onclick(), duplicate = button.onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.deepEqual(body(post(env.calls)[0]), {
+    dataset_id:dataset, after_completed_operation_id:operationId,
+  });
+  finishStart();
+  await Promise.all([first, duplicate]);
+  assert.equal(button.disabled, true);
+  for (const artifact of [result, model, evaluation])
+    assert.ok(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${artifact}`));
+});
+
+test("pending new training preserves completed result links without another start", async () => {
+  const dataset = id("a"), result = id("b"), model = id("c"), evaluation = id("d");
+  const env = localTrainingEnv({artifact:dataset, trainingStatus:{
+    schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf",
+    operation:{status:"pending", dataset_id:dataset, stage:"training", previous_completed:{
+      operation_id:"1".repeat(32), dataset_id:dataset, result_id:result,
+      model_id:model, evaluation_id:evaluation,
+    }},
+  }});
+  const page = await env.render();
+  for (const artifact of [result, model, evaluation])
+    assert.ok(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${artifact}`));
+  assert.equal(post(env.calls).length, 0);
+  assert.equal(walk(page).some(element => element.dataset?.action === "start-local-training-new"), false);
+});
+
 test("local training surfaces preparation and failed reasons without guessing retryability", async () => {
   const prepared = localTrainingEnv({trainingStatus:{
     schema:"stpd/local-training-operation-v1", availability:"preparation_required",
