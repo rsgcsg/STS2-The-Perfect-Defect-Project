@@ -19,7 +19,8 @@ zero, retaining exactly the same parameter structure as persistent M2.
 Each candidate is encoded independently by its own embedding, width-preserving
 kernel-3 convolution, GELU, mean pooling, projection, and layer normalization.
 An action-conditioned dot attention reads the fixed `K` memory slots. The
-readout is `normalize(candidate + MLP([candidate, memory_read]))`, followed by a score MLP. The
+readout is `normalize(memory_read + MLP([memory_read, candidate]))`, followed by
+a score MLP. The
 page Transformer is called once per `advance`, regardless of candidate count;
 `score` reads memory without writing it or calling the page Transformer.
 Candidate work grows with the complete menu and fixed `K`; this does not claim

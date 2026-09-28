@@ -125,6 +125,28 @@ def test_scoring_is_read_only_permutation_equivariant_and_candidate_isolated():
     assert torch.equal(memory, before)
 
 
+def test_zero_transition_keeps_memory_read_as_residual_anchor():
+    scorer = model(slots=1)
+    with torch.no_grad():
+        for parameter in scorer.transition.parameters():
+            parameter.zero_()
+        scorer.memory_value.weight.copy_(torch.eye(8))
+        scorer.memory_value.bias.zero_()
+        scorer.score_head[0].weight.copy_(torch.eye(8))
+        scorer.score_head[0].bias.zero_()
+        scorer.score_head[2].weight.zero_()
+        scorer.score_head[2].weight[0, 0] = 1
+        scorer.score_head[2].bias.zero_()
+    actions = (tokens(1), tokens(2, 3))
+    memory_a = torch.eye(8)[0:1]
+    memory_b = torch.eye(8)[1:2]
+    scores_a = scorer.score(memory_a, actions)
+    scores_b = scorer.score(memory_b, actions)
+    torch.testing.assert_close(scores_a[0], scores_a[1], rtol=0, atol=0)
+    torch.testing.assert_close(scores_b[0], scores_b[1], rtol=0, atol=0)
+    assert not torch.allclose(scores_a, scores_b)
+
+
 def test_candidate_count_does_not_add_page_calls_or_memory_writes():
     scorer = model(slots=8)
     page = tokens(1, 2)

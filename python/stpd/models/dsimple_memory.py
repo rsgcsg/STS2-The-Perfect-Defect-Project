@@ -165,8 +165,8 @@ class ExperimentalDSimpleM2(nn.Module):
         attention = torch.softmax(query @ keys.T / math.sqrt(self.core.width), dim=-1)
         memory_read = attention @ values
         future = F.normalize(
-            action_vectors + self.transition(
-                torch.cat((action_vectors, memory_read), dim=-1),
+            memory_read + self.transition(
+                torch.cat((memory_read, action_vectors), dim=-1),
             ),
             p=2, dim=-1,
         )
