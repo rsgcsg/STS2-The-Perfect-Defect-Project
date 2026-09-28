@@ -3226,8 +3226,8 @@ window.SpireProject = (() => {
 
   async function localTrainingCard(ctx, dataset) {
     const card = panel(
-      "本机 D-Simple 短训练",
-      "固定使用 D-Simple-S v1、CPU 2 线程和 3 步；本机服务会核对训练用途与来源资格。不下载 Qwen 权重，也不会操作游戏。这是工程流程验证，不代表模型策略质量。",
+      "本机短训练",
+      "从此入口新启动的任务固定使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。本机服务会核对训练用途与来源资格。不下载 Qwen 权重，也不会操作游戏。这是工程流程验证，不代表模型策略质量。",
     );
     let data;
     try {

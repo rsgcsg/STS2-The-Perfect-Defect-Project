@@ -1157,8 +1157,8 @@ test("local training appears only on a fixed training dataset and starts once on
     },
   });
   const page = await env.render();
-  assert.match(text(page), /本机 D-Simple 短训练/);
-  assert.match(text(page), /D-Simple-S v1、CPU 2 线程和 3 步/);
+  assert.match(text(page), /本机短训练/);
+  assert.match(text(page), /新启动的任务固定使用 D-Simple-S v1、CPU 2 线程和 3 步/);
   assert.match(text(page), /不代表模型策略质量/);
   assert.doesNotMatch(text(page), /training-csrf/);
   assert.equal(env.calls.filter(call => call.url === "/api/local-training/status").length, 1);
@@ -1186,7 +1186,7 @@ test("local training hides for non-training purposes and unsupported dataset sch
   ]) {
     const env = localTrainingEnv({kind, parameters});
     const page = await env.render();
-    assert.doesNotMatch(text(page), /本机 D-Simple 短训练/);
+    assert.doesNotMatch(text(page), /本机短训练/);
     assert.equal(env.calls.some(call => call.url === "/api/local-training/status"), false);
     assert.equal(post(env.calls).length, 0);
   }
@@ -1203,6 +1203,8 @@ test("local training state gates pending and unknown outcomes, and links only co
       schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf", operation,
     }});
     const page = await env.render();
+    assert.match(text(page), /既有任务的配方以其模型记录为准/);
+    assert.doesNotMatch(text(page), /本机 D-Simple 短训练/);
     assert.equal(walk(page).some(element => element.dataset?.action === "start-local-training"), false);
     assert.equal(post(env.calls).length, 0);
     if (operation.status === "pending") {
