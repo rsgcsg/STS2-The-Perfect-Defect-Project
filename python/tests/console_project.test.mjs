@@ -1817,7 +1817,7 @@ test("registered model can be explicitly rechecked while preserving the old sele
     },
   });
   const page = await env.render();
-  assert.match(text(page), /当前兼容性会在加载条件检查时确认/);
+  assert.match(text(page), /Runtime 会在决策前重新检查/);
   assert.match(text(page), /登记本身不会加载模型/);
   assert.ok(find(page, element => element.tagName === "A"
     && element.href === `?view=local-models&id=${oldSelection}`));

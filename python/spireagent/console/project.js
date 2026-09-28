@@ -2697,7 +2697,7 @@ window.SpireProject = (() => {
     if (!csrf && status.status !== "unavailable")
       card.append(el("p", "本机浏览器保护令牌暂不可用；刷新状态后再试。", "small muted"));
     if (status.status === "registered") {
-      card.append(el("p", "此模型已登记到本机模型列表；当前兼容性会在加载条件检查时确认。登记本身不会加载模型，当前运行状态请到模型页查看。", "small muted"));
+      card.append(el("p", "此模型已登记到本机模型列表；这条登记不保证当前游戏环境兼容，Runtime 会在决策前重新检查。登记本身不会加载模型，当前运行状态请到模型页查看。", "small muted"));
       card.append(link("打开此模型选择", route("local-models", status.selection_id)));
       card.append(registerAction("重新核对登记"));
     } else if (status.status === "unavailable") {
