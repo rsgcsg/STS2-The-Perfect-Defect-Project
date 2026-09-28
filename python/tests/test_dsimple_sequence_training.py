@@ -27,7 +27,9 @@ def single_cpu_thread():
     torch.set_num_threads(previous)
 
 
-def model(*, reset: bool = False, width: int = 8, seed: int = 47) -> ExperimentalDSimpleM2:
+def model(
+    *, reset: bool = False, width: int = 8, seed: int = 47, max_tokens: int = 16
+) -> ExperimentalDSimpleM2:
     torch.manual_seed(seed)
     return ExperimentalDSimpleM2(
         ScratchTokenCore(
@@ -38,7 +40,7 @@ def model(*, reset: bool = False, width: int = 8, seed: int = 47) -> Experimenta
                 heads=2,
                 feedforward=2 * width,
                 dropout=0,
-                max_tokens=16,
+                max_tokens=max_tokens,
             )
         ),
         slots=1,
@@ -168,6 +170,65 @@ def test_whole_window_preflight_rejects_bad_late_input_before_compute_or_update(
         compute.assert_not_called()
     assert all(torch.equal(before[key], after) for key, after in subject.state_dict().items())
     assert optimizer.state == {}
+
+
+@pytest.mark.parametrize("invalid", ["unlabeled_action", "burn_in_action", "missing_page"])
+def test_mandatory_page_and_actions_fail_before_any_compute_or_update(invalid: str):
+    subject = model()
+    base = window(burn=invalid == "burn_in_action")
+    first, final = base.steps
+    assert first is not None and final is not None
+    changed = (
+        replace(first, page=None)
+        if invalid == "missing_page"
+        else replace(first, actions=(None, tokens(9)))
+    )
+    broken = replace(base, steps=(changed, final))
+    optimizer = torch.optim.AdamW(subject.parameters(), lr=0.001)
+    before = deepcopy(subject.state_dict())
+    with patch.object(subject.core, "contextualize", wraps=subject.core.contextualize) as compute:
+        with pytest.raises(ValueError, match="token"):
+            train_memory_window(subject, optimizer, broken)
+        compute.assert_not_called()
+    assert all(torch.equal(before[key], value) for key, value in subject.state_dict().items())
+    assert optimizer.state == {}
+
+
+def test_learn_span_limit_rejects_valid_full_catalog_before_compute():
+    subject = model()
+    first, final = window().steps
+    assert first is not None and final is not None
+    steps = (
+        first,
+        *(replace(first, position=index, reset_before=False) for index in range(1, 32)),
+        replace(final, position=32),
+    )
+    oversized = MemorySequenceWindow(
+        "episode", steps, (True,) * 33, (False,) * 33, (False,) * 32 + (True,)
+    )
+    with patch.object(subject.core, "contextualize", wraps=subject.core.contextualize) as compute:
+        with pytest.raises(ValueError, match="learn span exceeds limit"):
+            memory_sequence_loss(subject, oversized)
+        compute.assert_not_called()
+
+
+def test_aggregate_input_token_limit_rejects_complete_catalog_before_compute():
+    subject = model(max_tokens=8192)
+    long_action = tokens(*(6 for _ in range(8192)))
+    first = MemorySequenceStep(
+        "episode",
+        0,
+        tokens(1, 3),
+        tuple(f"A{index}" for index in range(9)),
+        (long_action,) * 9,
+        "A0",
+        reset_before=True,
+    )
+    oversized = MemorySequenceWindow("episode", (first,), (True,), (False,), (True,))
+    with patch.object(subject.core, "contextualize", wraps=subject.core.contextualize) as compute:
+        with pytest.raises(ValueError, match="input token limit exceeded"):
+            memory_sequence_loss(subject, oversized)
+        compute.assert_not_called()
 
 
 def test_padding_label_masks_and_complete_prefix_rules():

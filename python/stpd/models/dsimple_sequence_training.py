@@ -126,13 +126,23 @@ def validate_memory_window(model: ExperimentalDSimpleM2, window: MemorySequenceW
             and step.label_key not in step.action_keys
         ):
             raise ValueError("invalid complete-catalog key binding")
-        for ids in (step.page, *step.actions, step.previous_actual_action, step.public_feedback):
-            if ids is None:
-                continue
+        for ids in (step.page, *step.actions):
             if not isinstance(ids, Tensor) or ids.device != model.write_queries.device:
                 raise ValueError("invalid token tensor or device")
             model.core.validate_tokens(ids)
             input_tokens += ids.numel()
+            if input_tokens > MAX_WINDOW_INPUT_TOKENS:
+                raise ValueError("memory window input token limit exceeded")
+        for optional_ids in (step.previous_actual_action, step.public_feedback):
+            if optional_ids is None:
+                continue
+            if (
+                not isinstance(optional_ids, Tensor)
+                or optional_ids.device != model.write_queries.device
+            ):
+                raise ValueError("invalid token tensor or device")
+            model.core.validate_tokens(optional_ids)
+            input_tokens += optional_ids.numel()
             if input_tokens > MAX_WINDOW_INPUT_TOKENS:
                 raise ValueError("memory window input token limit exceeded")
         length = (
