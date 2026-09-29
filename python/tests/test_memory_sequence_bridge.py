@@ -135,6 +135,37 @@ def test_identity_change_requires_reset_and_never_carries_previous_action():
                for window in result.windows)
 
 
+@pytest.mark.parametrize("projection", [project_memory_windows, project_memory_episodes])
+@pytest.mark.parametrize("sequence", [10, 4], ids=["duplicate", "backwards"])
+@pytest.mark.parametrize("interleaved", [False, True], ids=["same_stream", "return_to_stream"])
+def test_memory_reset_does_not_reset_the_recorded_stream_clock(
+    projection, sequence, interleaved,
+):
+    items = [observed("first", 10, reset=True)]
+    if interleaved:
+        items.append(observed("other", 1, stream="human:other:timeline:run", reset=True))
+    items.append(observed("reset", sequence, reset=True))
+    kwargs = ({"max_observations": 8, "max_input_tokens": 4096}
+              if projection is project_memory_episodes else {})
+    with pytest.raises(ValueError, match="invalid observed event order"):
+        projection(view(*items), tokenizer(), model(), **kwargs)
+
+
+@pytest.mark.parametrize("projection", [project_memory_windows, project_memory_episodes])
+def test_memory_reset_and_distinct_stream_clocks_keep_valid_order(projection):
+    items = (observed("first", 10, reset=True),
+             observed("reset", 11, reset=True),
+             observed("other", 1, stream="human:other:timeline:run", reset=True),
+             observed("return", 12, reset=True))
+    kwargs = ({"max_observations": 8, "max_input_tokens": 4096}
+              if projection is project_memory_episodes else {})
+    result = projection(view(*items), tokenizer(), model(), **kwargs)
+    assert not result.diagnostics
+    assert [source.event_ids for source in result.sources] == [
+        ("first",), ("reset",), ("other",), ("return",),
+    ]
+
+
 def test_wrong_label_duplicate_event_and_oversized_prefix_fail_closed():
     bad = observed("bad", 1, reset=True, action="absent")
     result = project_memory_windows(view(bad), tokenizer(), model())

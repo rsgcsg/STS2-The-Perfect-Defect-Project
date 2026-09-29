@@ -94,7 +94,7 @@ def _segments(
     segment: list[ObservedInput] = []
     broken = False
     seen: set[str] = set()
-    last_sequence: int | None = None
+    stream_sequences: dict[str, int] = {}
     last_stream: str | None = None
 
     def diagnose(item: ObservedInput, reason: str) -> None:
@@ -108,16 +108,17 @@ def _segments(
         seen.add(item.event_id)
         if type(item.source_sequence) is not int or item.source_sequence < 1:
             raise ValueError("invalid observed event order")
+        # A memory reset changes the model episode, never the source clock.
+        # Remember each stream even if another stream was observed in between.
+        if item.source_sequence <= stream_sequences.get(item.stream_id, 0):
+            raise ValueError("invalid observed event order")
+        stream_sequences[item.stream_id] = item.source_sequence
         if item.stream_id != last_stream or item.reset_before:
             if segment:
                 segments.append(tuple(segment))
                 segment = []
             broken = not item.reset_before
-            last_sequence = None
-        elif last_sequence is not None and item.source_sequence <= last_sequence:
-            raise ValueError("invalid observed event order")
         last_stream = item.stream_id
-        last_sequence = item.source_sequence
         if broken:
             diagnose(item, "reset_required")
             continue
