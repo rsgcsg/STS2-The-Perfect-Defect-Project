@@ -200,7 +200,10 @@ def wait_status(service: LocalEnvironmentService, expected: str) -> dict[str, An
     deadline = time.monotonic() + 4
     while time.monotonic() < deadline:
         value = service.status()
-        if value["session"]["status"] == expected:
+        if value["session"]["status"] == expected and (
+            expected not in {"failed", "stopped", "stopped_outcome_unknown"}
+            or value["session"].get("report_artifact_id")
+        ):
             return value
         time.sleep(0.01)
     raise AssertionError(f"expected {expected}, observed {service.status()}")
@@ -498,6 +501,232 @@ def test_known_delivery_with_mismatched_observation_retains_receipt(tmp_path: Pa
     assert final["status"] == "stopped_outcome_unknown"
     event_id = final["events"][0]["event_artifact_id"]
     assert service.event(event_id)["result"]["native_delivery"] == "delivered"
+
+
+def test_start_active_journal_failure_closes_child_before_failure_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    client = PublicClientFixture(audit)
+    service = LocalEnvironmentService(
+        config,
+        audit=checked,
+        client_factory=lambda _command, _host, _pin: client,
+    )
+    save = service._save
+    failed_once = False
+
+    def fail_active_write() -> None:
+        nonlocal failed_once
+        if service.record["status"] == "active" and not failed_once:
+            failed_once = True
+            raise OSError("active journal write failed")
+        save()
+
+    monkeypatch.setattr(service, "_save", fail_active_write)
+    service.start(SCENARIO["id"])
+    failed = wait_status(service, "failed")["session"]
+    assert failed_once and client.closed and client.force_closed
+    assert failed["error_code"] == "session_persistence_failed"
+    assert failed["report_artifact_id"]
+    assert json.loads((config.state_dir / JOURNAL_FILE).read_text())["status"] == "failed"
+
+
+def test_initial_start_intent_write_failure_restores_idle_without_spawning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    constructed = 0
+
+    def construct(_command: list[str], _host: Path, _pin: dict[str, Any]) -> PublicClientFixture:
+        nonlocal constructed
+        constructed += 1
+        return PublicClientFixture(audit)
+
+    service = LocalEnvironmentService(config, audit=checked, client_factory=construct)
+    save = service._save
+    failed_once = False
+
+    def fail_intent_write() -> None:
+        nonlocal failed_once
+        if service.record["status"] == "starting" and not failed_once:
+            failed_once = True
+            raise OSError("intent write failed")
+        save()
+
+    monkeypatch.setattr(service, "_save", fail_intent_write)
+    with pytest.raises(BoundaryError, match="session_persistence_failed"):
+        service.start(SCENARIO["id"])
+    assert failed_once and constructed == 0 and service.client is None
+    assert service.status()["session"]["status"] == "idle"
+    assert LocalEnvironmentService(config).status()["session"]["status"] == "idle"
+    service.start(SCENARIO["id"])
+    assert wait_status(service, "active")["session"]["status"] == "active"
+    service.close()
+
+
+def test_submit_preoffer_journal_failure_closes_without_native_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    client = PublicClientFixture(audit)
+    service = LocalEnvironmentService(
+        config,
+        audit=checked,
+        client_factory=lambda _command, _host, _pin: client,
+    )
+    service.start(SCENARIO["id"])
+    session_id = wait_status(service, "active")["session"]["session_id"]
+    save = service._save
+    failed_once = False
+
+    def fail_preoffer_write() -> None:
+        nonlocal failed_once
+        if service.record["status"] == "submitting" and not failed_once:
+            failed_once = True
+            raise OSError("pending journal write failed")
+        save()
+
+    monkeypatch.setattr(service, "_save", fail_preoffer_write)
+    with pytest.raises(BoundaryError, match="session_persistence_failed_before_offer"):
+        service.submit(session_id, "action-0", "page-0", "episode-1")
+    assert failed_once and client.closed and client.submits == 0
+    assert service.status()["session"]["status"] == "unknown"
+    assert json.loads((config.state_dir / JOURNAL_FILE).read_text())["status"] == "unknown"
+    assert service.stop(session_id)["session"]["status"] == "stopped_outcome_unknown"
+
+
+def test_submit_postnative_journal_failure_preserves_event_and_closes_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    client = PublicClientFixture(audit)
+    service = LocalEnvironmentService(
+        config,
+        audit=checked,
+        client_factory=lambda _command, _host, _pin: client,
+    )
+    service.start(SCENARIO["id"])
+    session_id = wait_status(service, "active")["session"]["session_id"]
+    save = service._save
+    failed_once = False
+
+    def fail_result_write() -> None:
+        nonlocal failed_once
+        if service.record["status"] == "active" and service.record["events"] and not failed_once:
+            failed_once = True
+            raise OSError("result journal write failed")
+        save()
+
+    monkeypatch.setattr(service, "_save", fail_result_write)
+    service.submit(session_id, "action-0", "page-0", "episode-1")
+    unknown = wait_status(service, "unknown")["session"]
+    assert failed_once and client.submits == 1 and client.closed
+    assert unknown["error_code"] == "session_persistence_failed"
+    event_id = unknown["events"][0]["event_artifact_id"]
+    assert service.event(event_id)["result"]["native_delivery"] == "delivered"
+    assert json.loads((config.state_dir / JOURNAL_FILE).read_text())["status"] == "unknown"
+
+
+def test_stop_journal_failure_still_closes_child_and_publishes_final(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    client = PublicClientFixture(audit)
+    service = LocalEnvironmentService(
+        config,
+        audit=checked,
+        client_factory=lambda _command, _host, _pin: client,
+    )
+    service.start(SCENARIO["id"])
+    session_id = wait_status(service, "active")["session"]["session_id"]
+    save = service._save
+    failed_once = False
+
+    def fail_stop_write() -> None:
+        nonlocal failed_once
+        if service.record["status"] == "stopping" and not failed_once:
+            failed_once = True
+            raise OSError("stop journal write failed")
+        save()
+
+    monkeypatch.setattr(service, "_save", fail_stop_write)
+    final = service.stop(session_id)["session"]
+    assert failed_once and client.closed
+    assert final["status"] == "stopped" and final["report_artifact_id"]
+    assert json.loads((config.state_dir / JOURNAL_FILE).read_text())["status"] == "stopped"
+
+
+def test_confirmed_close_with_event_writer_pending_stays_stopping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    client = PublicClientFixture(audit)
+    service = LocalEnvironmentService(
+        config,
+        audit=checked,
+        client_factory=lambda _command, _host, _pin: client,
+    )
+    service.start(SCENARIO["id"])
+    session_id = wait_status(service, "active")["session"]["session_id"]
+    entered = threading.Event()
+    release = threading.Event()
+    publish = service._publish_event
+
+    def held_publish(value: dict[str, Any], sid: str, request_id: str) -> str:
+        entered.set()
+        assert release.wait(timeout=5)
+        return publish(value, sid, request_id)
+
+    monkeypatch.setattr(service, "_publish_event", held_publish)
+    service.submit(session_id, "action-0", "page-0", "episode-1")
+    assert entered.wait(timeout=2)
+    intermediate = service.stop(session_id)["session"]
+    assert client.closed and intermediate["status"] == "stopping"
+    assert intermediate["error_code"] == "event_finalization_pending"
+    release.set()
+    final = wait_status(service, "stopped_outcome_unknown")["session"]
+    assert final["error_code"] == "action_or_observation_unknown"
+    assert final["report_artifact_id"]
+
+
+def test_confirmed_stop_final_write_failure_retains_report_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    client = PublicClientFixture(audit)
+    service = LocalEnvironmentService(
+        config,
+        audit=checked,
+        client_factory=lambda _command, _host, _pin: client,
+    )
+    service.start(SCENARIO["id"])
+    session_id = wait_status(service, "active")["session"]["session_id"]
+    save = service._save
+    failed_once = False
+
+    def fail_terminal_write() -> None:
+        nonlocal failed_once
+        if service.record["status"] == "stopped" and not failed_once:
+            failed_once = True
+            raise OSError("terminal journal write failed")
+        save()
+
+    monkeypatch.setattr(service, "_save", fail_terminal_write)
+    pending = service.stop(session_id)["session"]
+    assert client.closed and failed_once
+    assert pending["status"] == "stopped" and not pending.get("report_artifact_id")
+    assert json.loads((config.state_dir / JOURNAL_FILE).read_text())["status"] == "stopping"
+    final = service.stop(session_id)["session"]
+    assert final["report_artifact_id"]
+    assert json.loads((config.state_dir / JOURNAL_FILE).read_text())["status"] == "stopped"
 
 
 def test_failed_start_waits_for_cleanup_before_report_or_next_start(tmp_path: Path) -> None:

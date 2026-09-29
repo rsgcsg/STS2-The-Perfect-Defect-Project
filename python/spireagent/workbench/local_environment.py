@@ -292,9 +292,13 @@ class LocalEnvironmentService:
             return {"status": "interrupted_unknown", "error_code": "journal_invalid"}
         try:
             value = decode_json(path.read_bytes())
-            if not isinstance(value, dict) or value.get("schema") != SCHEMA or (
-                value.get("status") not in ACTIVE | UNRESOLVED | TERMINAL
-            ) or not isinstance(value.get("session_id"), str):
+            if not isinstance(value, dict) or value.get("schema") != SCHEMA:
+                raise ValueError
+            if value.get("status") == "idle" and set(value) == {"schema", "status"}:
+                return {"status": "idle"}
+            if value.get("status") not in ACTIVE | UNRESOLVED | TERMINAL or (
+                not isinstance(value.get("session_id"), str)
+            ):
                 raise ValueError
             if value["status"] in ACTIVE:
                 return {**value, "status": "interrupted_unknown",
@@ -305,6 +309,14 @@ class LocalEnvironmentService:
 
     def _save(self) -> None:
         atomic_json(self.config.state_dir / JOURNAL_FILE, self.record)
+
+    def _try_save(self) -> bool:
+        """Cleanup paths must continue even when the journal cannot be written."""
+        try:
+            self._save()
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def _public_client(command: list[str], host_root: Path, pin: dict[str, Any]) -> Any:
@@ -465,6 +477,7 @@ class LocalEnvironmentService:
             profile = _read_profile(self.config)
             producer = self._producer()
             session_id = uuid.uuid4().hex
+            previous = self.record
             self.record = {"schema": SCHEMA, "status": "starting", "session_id": session_id,
                            "scenario_id": scenario_id, "seed": SCENARIO["seed"],
                            "input_profile": profile["input_profile"],
@@ -473,7 +486,13 @@ class LocalEnvironmentService:
             self.stopping = False
             self.cleanup_confirmed = False
             self.stop_outcome_unknown = False
-            self._save()
+            if not self._try_save():
+                self.record = (previous if previous["status"] != "idle"
+                               else {"schema": SCHEMA, "status": "idle"})
+                if not self._try_save():
+                    self.record = {"status": "interrupted_unknown",
+                                   "error_code": "journal_restore_failed"}
+                raise BoundaryError("local_environment", "session_persistence_failed")
             self.worker = threading.Thread(target=self._start_worker,
                                            args=(session_id, profile), daemon=True)
             self.worker.start()
@@ -484,6 +503,7 @@ class LocalEnvironmentService:
         error_code = None
         factory_entered = False
         constructor_cleanup_confirmed = False
+        active_saved = False
         try:
             host_root = Path(profile["host_package_directory"])
             pin = profile["host_package_pin"]
@@ -525,13 +545,20 @@ class LocalEnvironmentService:
                 if self.stopping or self.record.get("session_id") != session_id:
                     return
                 self.record.update(status="active", context=context, episode_identity=identity)
-                self._save()
+                try:
+                    self._save()
+                except Exception as error:
+                    raise BoundaryError(
+                        "local_environment", "session_persistence_failed"
+                    ) from error
+                active_saved = True
         except Exception as error:
             error_code = error.code if isinstance(error, BoundaryError) else "managed_start_failed"
             constructor_cleanup_confirmed = getattr(error, "cleanup_confirmed", None) is True
         finally:
             with self.lock:
-                keep = self.client is client and self.record.get("status") == "active"
+                keep = (active_saved and self.client is client
+                        and self.record.get("status") == "active")
             # A public constructor can start a child before it raises. Without
             # a returned handle, this owner cannot prove that child was closed.
             close_failed = (factory_entered and client is None
@@ -557,8 +584,8 @@ class LocalEnvironmentService:
                     )
                     if not close_failed:
                         self.client = None
-                    self._save()
-                    if not close_failed:
+                    saved = self._try_save()
+                    if not close_failed and saved:
                         self._publish()
 
     @staticmethod
@@ -608,16 +635,27 @@ class LocalEnvironmentService:
             request_id = uuid.uuid4().hex
             before_context = decode_json(json_bytes(context))
             self.record.update(status="submitting", pending_request_id=request_id)
-            self._save()
             client = self.client
-            self.worker = threading.Thread(
-                target=self._submit_worker,
-                args=(self.record["session_id"], client, action_id, snapshot_id,
-                      continuity_id, request_id, self.record["input_profile"],
-                      before_context), daemon=True,
-            )
-            self.worker.start()
-            return self.status()
+            if self._try_save():
+                self.worker = threading.Thread(
+                    target=self._submit_worker,
+                    args=(self.record["session_id"], client, action_id, snapshot_id,
+                          continuity_id, request_id, self.record["input_profile"],
+                          before_context), daemon=True,
+                )
+                self.worker.start()
+                return self.status()
+            self.record.pop("pending_request_id", None)
+            self.record.update(status="unknown",
+                               error_code="session_persistence_failed_before_offer")
+            self._try_save()
+        try:
+            client.close(force=True)
+        except Exception:
+            with self.lock:
+                self.record.update(status="cleanup_unknown", error_code="host_cleanup_unknown")
+                self._try_save()
+        raise BoundaryError("local_environment", "session_persistence_failed_before_offer")
 
     def _submit_worker(self, session_id: str, client: Any, action_id: str,
                        snapshot_id: str, continuity_id: str, request_id: str,
@@ -672,14 +710,21 @@ class LocalEnvironmentService:
             self.record["events"].append(summary)
             self.record.pop("pending_request_id", None)
             if self.stopping:
-                self._save()
+                if error_code is not None:
+                    self.record["error_code"] = error_code
+                if not self._try_save():
+                    self.stop_outcome_unknown = True
+                    self.record["error_code"] = "session_persistence_failed"
                 self._finish_stop()
                 return
             if error_code is None:
                 self.record.update(status="active", context=context)
             else:
                 self.record.update(status="unknown", error_code=error_code)
-            self._save()
+            if not self._try_save():
+                error_code = "session_persistence_failed"
+                self.record.update(status="unknown", error_code=error_code)
+                self._try_save()
         if error_code is not None:
             try:
                 client.close(force=True)
@@ -688,7 +733,7 @@ class LocalEnvironmentService:
                     if self.record.get("session_id") == session_id:
                         self.record.update(status="cleanup_unknown",
                                            error_code="host_cleanup_unknown")
-                        self._save()
+                        self._try_save()
 
     def _finish_stop(self) -> None:
         """Call under lock after close; a live worker keeps cleanup unresolved."""
@@ -696,17 +741,25 @@ class LocalEnvironmentService:
         worker_done = worker is None or not worker.is_alive() or (
             worker is threading.current_thread()
         )
-        if not self.cleanup_confirmed or not worker_done:
+        if not self.cleanup_confirmed:
             self.record.update(status="cleanup_unknown", error_code="host_cleanup_unknown")
-            self._save()
+            self._try_save()
+            return
+        if not worker_done:
+            self.record.update(status="stopping", error_code="event_finalization_pending")
+            self._try_save()
             return
         self.record["status"] = (
             "stopped_outcome_unknown" if self.stop_outcome_unknown else "stopped"
         )
+        if self.record.get("error_code") == "event_finalization_pending":
+            self.record.pop("error_code")
         if self.stop_outcome_unknown:
-            self.record["error_code"] = "action_or_observation_unknown"
+            self.record.setdefault("error_code", "action_or_observation_unknown")
         self.client = None
-        self._save()
+        if not self._try_save():
+            self.record["error_code"] = "session_persistence_failed"
+            return
         self._publish()
 
     def stop(self, session_id: object) -> dict[str, Any]:
@@ -715,6 +768,8 @@ class LocalEnvironmentService:
                 raise BoundaryError("local_environment", "session_not_found")
             state = self.record["status"]
             if state in TERMINAL:
+                if not self._try_save():
+                    raise BoundaryError("local_environment", "session_persistence_failed")
                 if not self.record.get("report_artifact_id"):
                     self._publish()
                 return self.status()
@@ -725,7 +780,8 @@ class LocalEnvironmentService:
                                   "interrupted_unknown", "cleanup_unknown"}
             self.stop_outcome_unknown = uncertain
             self.record["status"] = "stopping"
-            self._save()
+            if not self._try_save():
+                self.record["error_code"] = "session_persistence_failed"
             client = self.client
             worker = self.worker
         close_failed = False
