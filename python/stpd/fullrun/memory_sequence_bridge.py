@@ -7,6 +7,7 @@ window for training. A Human choice is never treated as an executed action.
 
 from __future__ import annotations
 
+import heapq
 from dataclasses import dataclass
 
 import torch
@@ -192,10 +193,29 @@ def _project_segment(
     episode_id = semantic_hash([view.source_id, first.stream_id, first.event_id])
     steps: list[MemorySequenceStep] = []
     input_tokens = 0
-    consumed: set[str] = set()
+    # A source result may complete well after its observed input. Keep pending
+    # candidates by their source completion clock; insert the current choice
+    # only after projecting this step so its label can never enter its memory.
+    pending: list[tuple[int, int, ObservedInput]] = []
+    agent_ready: tuple[int, int, ObservedInput] | None = None
+    previous_agent_snapshot: dict | None = None
     for position, item in enumerate(segment):
         if not isinstance(item.snapshot, dict):
             raise BoundaryError("memory_bridge", "missing_observation")
+        if input_profile in HISTORY_PROFILES and item.source_kind == "agent_decision_inputs":
+            if previous_agent_snapshot is not None:
+                prior_sequence = previous_agent_snapshot.get("sequence")
+                current_sequence = item.snapshot.get("sequence")
+                if (item.snapshot.get("snapshot_id") ==
+                        previous_agent_snapshot.get("snapshot_id")
+                        or type(prior_sequence) is not int
+                        or type(current_sequence) is not int
+                        or current_sequence <= prior_sequence):
+                    # Online caches an exact reread without a model write; this
+                    # step-based training engine has no no-write step. Reject
+                    # the episode instead of silently changing its memory path.
+                    raise BoundaryError("memory_bridge", "agent_observation_replay_unsupported")
+            previous_agent_snapshot = item.snapshot
         public = project_memory_profile_snapshot(item.snapshot, input_profile)
         selected = item.selected_action_id
         if item.choice_mask != (selected is not None):
@@ -204,31 +224,42 @@ def _project_segment(
             raise BoundaryError("memory_bridge", "choice_binding_mismatch")
         previous_text: str | None = None
         if input_profile in HISTORY_PROFILES:
-            eligible = []
-            for prior in segment[:position]:
-                if (prior.event_id in consumed or not prior.choice_mask
-                        or prior.selected_action_id is None
-                        or prior.confirmed_at_sequence is None
-                        or prior.confirmed_effect_domain is None):
-                    continue
-                if item.source_kind == "human_input_stream":
-                    if (prior.capture_ordinal is None or item.capture_ordinal is None
-                            or prior.capture_ordinal >= item.capture_ordinal
-                            or item.completed_append_watermark is None
-                            or prior.physical_sequence is None
-                            or prior.physical_sequence > item.completed_append_watermark):
-                        continue
-                    order = prior.physical_sequence
-                else:
-                    if prior.confirmed_at_sequence >= item.source_sequence:
-                        continue
-                    order = prior.confirmed_at_sequence
-                eligible.append((order, prior))
-            if eligible:
-                # All already visible older witnesses retire together. Only the
-                # latest completed known interaction occupies the single slot.
-                _, previous = max(eligible, key=lambda candidate: candidate[0])
-                consumed.update(prior.event_id for _, prior in eligible)
+            latest: tuple[int, int, ObservedInput] | None = None
+            if item.source_kind == "human_input_stream":
+                watermark = (item.completed_append_watermark if item.capture_ordinal
+                             is not None else None)
+                while pending and watermark is not None and pending[0][0] <= watermark:
+                    candidate = heapq.heappop(pending)
+                    if latest is None or candidate[:2] > latest[:2]:
+                        latest = candidate
+            else:
+                while pending and pending[0][0] < item.source_sequence:
+                    candidate = heapq.heappop(pending)
+                    if latest is None or candidate[:2] > latest[:2]:
+                        latest = candidate
+                if item.source_kind == "agent_decision_inputs":
+                    if latest is not None and (agent_ready is None or
+                                               latest[:2] > agent_ready[:2]):
+                        agent_ready = latest
+                    latest = agent_ready
+                    if latest is not None:
+                        prior_snapshot = latest[2].snapshot
+                        prior_sequence = (prior_snapshot.get("sequence") if
+                                          isinstance(prior_snapshot, dict) else None)
+                        current_sequence = item.snapshot.get("sequence")
+                        if (not isinstance(prior_snapshot, dict)
+                                or prior_snapshot.get("snapshot_id") ==
+                                item.snapshot.get("snapshot_id")
+                                or type(prior_sequence) is not int
+                                or type(current_sequence) is not int
+                                or current_sequence <= prior_sequence):
+                            latest = None
+                        else:
+                            agent_ready = None
+            if latest is not None:
+                # All results available at this observation retire together;
+                # only the greatest completed source sequence occupies memory.
+                _, _, previous = latest
                 if not isinstance(previous.snapshot, dict):
                     raise BoundaryError("memory_bridge", "history_snapshot_missing")
                 assert previous.selected_action_id is not None
@@ -270,6 +301,16 @@ def _project_segment(
         if input_tokens > max_input_tokens:
             raise BoundaryError("memory_bridge", limit_code)
         steps.append(step)
+        if (input_profile in HISTORY_PROFILES and item.choice_mask
+                and selected is not None and item.confirmed_at_sequence is not None
+                and item.confirmed_effect_domain is not None):
+            if item.source_kind == "human_input_stream":
+                if item.capture_ordinal is None or item.physical_sequence is None:
+                    raise BoundaryError("memory_bridge", "human_history_order_missing")
+                order = item.physical_sequence
+            else:
+                order = item.confirmed_at_sequence
+            heapq.heappush(pending, (order, position, item))
     return episode_id, tuple(steps)
 
 

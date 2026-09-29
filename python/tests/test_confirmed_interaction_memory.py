@@ -104,11 +104,14 @@ def test_row1_and_agent_late_result_never_use_future_or_unconfirmed_choice():
         observed("legacy-a", 1, reset=True), observed("legacy-b", 2))))
     first = replace(observed("agent-a", 1, reset=True),
                     stream_id="agent:run", source_kind="agent_decision_inputs",
+                    snapshot=page("agent-a", 1),
                     confirmed_at_sequence=7, confirmed_effect_domain="native_input")
     middle = replace(observed("agent-b", 5, action=None),
-                     stream_id="agent:run", source_kind="agent_decision_inputs")
+                     stream_id="agent:run", source_kind="agent_decision_inputs",
+                     snapshot=page("agent-b", 2))
     last = replace(observed("agent-c", 9),
-                   stream_id="agent:run", source_kind="agent_decision_inputs")
+                   stream_id="agent:run", source_kind="agent_decision_inputs",
+                   snapshot=page("agent-c", 3))
     agent = ObservedInputView("agent-source", "verified_agent_observed_inputs", False,
                               (first, middle, last))
     result = project_memory_episodes(
@@ -118,6 +121,138 @@ def test_row1_and_agent_late_result_never_use_future_or_unconfirmed_choice():
     assert not result.diagnostics
     assert [step.previous_actual_action is None for step in result.episodes[0].steps] == [
         True, True, False]
+
+
+def test_agent_result_from_before_reset_cannot_enter_new_episode():
+    prior = replace(observed("before-reset", 1, reset=True),
+                    stream_id="agent:run", source_kind="agent_decision_inputs",
+                    confirmed_at_sequence=4, confirmed_effect_domain="native_input")
+    after = replace(observed("after-reset", 5, reset=True),
+                    stream_id="agent:run", source_kind="agent_decision_inputs",
+                    reset_reason="handoff_to_human")
+    agent = ObservedInputView("agent-source", "verified_agent_observed_inputs", False,
+                              (prior, after))
+    result = project_memory_episodes(
+        agent, tokenizer(), _model(), max_observations=8, max_input_tokens=100000,
+        max_settling_events=64,
+        projection_config=history_episode_projection_config(HISTORY_INPUT_PROFILE))
+    assert not result.diagnostics and len(result.episodes) == 2
+    assert all(episode.steps[0].previous_actual_action is None
+               for episode in result.episodes)
+
+
+@pytest.mark.parametrize(("slots", "reset_each_step"), [
+    (1, False), (1, True), (8, False), (8, True),
+])
+def test_unique_agent_pages_bridge_tokens_memory_and_scores_match_online(
+    slots: int, reset_each_step: bool,
+):
+    token = tokenizer()
+    model = ExperimentalDSimpleM2(
+        ScratchTokenCore(ScratchShape(32, 8, 1, 2, 16, 0.0, 512)),
+        slots=slots, reset_each_step=reset_each_step).eval()
+    config = MemoryConfig(
+        vocab_size=32, episode_count=1, slots=slots,
+        reset_each_step=reset_each_step, max_tokens=512,
+        max_episode_observations=8, max_episode_input_tokens=100000,
+        max_total_input_tokens=100000, cpu_threads=1)
+    pages = tuple(page(f"agent-{index}", index) for index in (1, 2, 3))
+    chosen = ("opaque-nav", "opaque-play", "opaque-nav")
+    items = tuple(replace(
+        observed(f"agent-{index}", 2 * index - 1, reset=index == 1,
+                 action=chosen[index - 1]),
+        stream_id="agent:run", source_kind="agent_decision_inputs",
+        snapshot=pages[index - 1],
+        confirmed_at_sequence=2 * index if index < 3 else None,
+        confirmed_effect_domain=("text_menu" if index == 1 else
+                                 "native_input" if index == 2 else None),
+    ) for index in (1, 2, 3))
+    agent = ObservedInputView("agent-source", "verified_agent_observed_inputs", False,
+                              items)
+    bridge = project_memory_episodes(
+        agent, token, model, max_observations=8, max_input_tokens=100000,
+        max_settling_events=64,
+        projection_config=history_episode_projection_config(HISTORY_INPUT_PROFILE))
+    assert not bridge.diagnostics
+    steps = bridge.episodes[0].steps
+    assert [step.previous_actual_action is None for step in steps] == [True, False, False]
+    online = OnlineM2Scorer(model, token, config, input_profile=HISTORY_INPUT_PROFILE)
+    memory = model.initial_memory()
+    with torch.inference_mode():
+        for index, (snapshot, step) in enumerate(zip(pages, steps, strict=True)):
+            public = project_memory_profile_snapshot(snapshot, HISTORY_INPUT_PROFILE)
+            interaction = None
+            if index:
+                prior = pages[index - 1]
+                prior_public = project_memory_profile_snapshot(
+                    prior, HISTORY_INPUT_PROFILE)
+                interaction = {
+                    "decision_id": f"decision-{index}",
+                    "snapshot_id": prior["snapshot_id"],
+                    "candidate_digest": prior_public.candidate_digest,
+                    "action_id": chosen[index - 1],
+                    "request_id": f"request-{index}",
+                    "effect_domain": ("text_menu" if index == 1 else "native_input"),
+                    "result_kind": ("menu_applied" if index == 1 else
+                                    "native_input_delivered"),
+                }
+            actual = online.observe_and_score(
+                continuity_token="agent", snapshot_bytes=json_bytes(snapshot),
+                expected_candidate_digest=public.candidate_digest,
+                expected_candidate_count=len(public.action_ids),
+                previous_interaction=interaction)
+            expected, memory = model.step(
+                step.page, step.actions, memory,
+                previous_actual_action=step.previous_actual_action,
+                reset_before=step.reset_before)
+            assert actual.action_ids == step.action_keys
+            assert actual.scores == tuple(float(value) for value in expected.tolist())
+            torch.testing.assert_close(online._memory, memory)
+
+
+def test_agent_same_snapshot_replay_is_explicitly_unsupported_offline_and_cached_online():
+    first, third = page("first", 1), page("third", 2)
+    items = (
+        replace(observed("first", 1, reset=True, action="opaque-nav"),
+                stream_id="agent:run", source_kind="agent_decision_inputs",
+                snapshot=first, confirmed_at_sequence=2,
+                confirmed_effect_domain="text_menu"),
+        replace(observed("reread", 3, action=None),
+                stream_id="agent:run", source_kind="agent_decision_inputs",
+                snapshot=first),
+        replace(observed("third", 5),
+                stream_id="agent:run", source_kind="agent_decision_inputs",
+                snapshot=third),
+    )
+    agent = ObservedInputView("agent-source", "verified_agent_observed_inputs", False,
+                              items)
+    bridge = project_memory_episodes(
+        agent, tokenizer(), _model(), max_observations=8, max_input_tokens=100000,
+        max_settling_events=64,
+        projection_config=history_episode_projection_config(HISTORY_INPUT_PROFILE))
+    assert not bridge.episodes
+    assert bridge.diagnostics[0].reason == "agent_observation_replay_unsupported"
+
+    model = _model()
+    online = OnlineM2Scorer(
+        model, tokenizer(), MemoryConfig(vocab_size=32, episode_count=1,
+                                         max_tokens=512, cpu_threads=1),
+        input_profile=HISTORY_INPUT_PROFILE)
+    with patch.object(online._model, "step", wraps=online._model.step) as step:
+        first_score = online.observe_and_score(
+            continuity_token="agent", snapshot_bytes=json_bytes(first))
+        assert online.observe_and_score(
+            continuity_token="agent", snapshot_bytes=json_bytes(first)) == first_score
+        assert step.call_count == 1
+        first_public = project_memory_profile_snapshot(first, HISTORY_INPUT_PROFILE)
+        interaction = {"decision_id": "decision", "snapshot_id": first["snapshot_id"],
+                       "candidate_digest": first_public.candidate_digest,
+                       "action_id": "opaque-nav", "request_id": "request",
+                       "effect_domain": "text_menu", "result_kind": "menu_applied"}
+        online.observe_and_score(
+            continuity_token="agent", snapshot_bytes=json_bytes(third),
+            previous_interaction=interaction)
+        assert step.call_count == 2
 
 
 def test_cancelled_dispatch_is_not_unknown_or_confirmed(monkeypatch):
@@ -201,7 +336,7 @@ def test_online_offline_three_step_tokens_memory_scores_and_binding(exported):
                                  previous_interaction=changed)
 
 
-def test_same_snapshot_new_history_writes_once_and_reordered_menu_cannot_bind(exported):
+def test_history_requires_new_observation_before_write_and_reorder_cannot_bind(exported):
     weights, config, token_bytes = exported
     online = OnlineM2Scorer.from_export(
         weights, config, token_bytes, input_profile=HISTORY_INPUT_PROFILE)
@@ -214,17 +349,43 @@ def test_same_snapshot_new_history_writes_once_and_reordered_menu_cannot_bind(ex
                        "candidate_digest": public.candidate_digest,
                        "action_id": "opaque-nav", "request_id": "request",
                        "effect_domain": "text_menu", "result_kind": "menu_applied"}
+        original_memory = online._memory.clone()
+        with pytest.raises(BoundaryError, match="history_requires_new_observation"):
+            online.observe_and_score(
+                continuity_token="same", snapshot_bytes=json_bytes(snapshot),
+                previous_interaction=interaction)
+        assert step.call_count == 1
+        torch.testing.assert_close(online._memory, original_memory)
+        assert online.observe_and_score(
+            continuity_token="same", snapshot_bytes=json_bytes(snapshot)) == first
+        assert step.call_count == 1
+        same_sequence = page("same", 1)
+        same_sequence["snapshot_id"] = "different-id-same-sequence"
+        with pytest.raises(BoundaryError, match="observation_order_reversed"):
+            online.observe_and_score(
+                continuity_token="same", snapshot_bytes=json_bytes(same_sequence),
+                previous_interaction=interaction)
+        lower_sequence = page("same", 0)
+        lower_sequence["snapshot_id"] = "different-id-lower-sequence"
+        with pytest.raises(BoundaryError, match="observation_order_reversed"):
+            online.observe_and_score(
+                continuity_token="same", snapshot_bytes=json_bytes(lower_sequence),
+                previous_interaction=interaction)
+        assert step.call_count == 1
+        torch.testing.assert_close(online._memory, original_memory)
+        successor = page("same", 2)
+        successor["snapshot_id"] = "same-page-new-observation"
         second = online.observe_and_score(
-            continuity_token="same", snapshot_bytes=json_bytes(snapshot),
+            continuity_token="same", snapshot_bytes=json_bytes(successor),
             previous_interaction=interaction)
         assert step.call_count == 2
         assert second.action_ids == first.action_ids
         assert online.observe_and_score(
-            continuity_token="same", snapshot_bytes=json_bytes(snapshot)) == second
+            continuity_token="same", snapshot_bytes=json_bytes(successor)) == second
         assert step.call_count == 2
     reordered = page("reordered", 2)
     reordered["menu_actions"]["actions"].reverse()
-    wrong = dict(interaction, request_id="new",
+    wrong = dict(interaction, snapshot_id=successor["snapshot_id"], request_id="new",
                  candidate_digest=project_memory_profile_snapshot(
                      reordered, HISTORY_INPUT_PROFILE).candidate_digest,
                  action_id="opaque-play",

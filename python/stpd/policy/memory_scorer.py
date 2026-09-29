@@ -198,15 +198,15 @@ class OnlineM2Scorer:
             if snapshot_id == self._snapshot_id:
                 if sequence != self._sequence or digest != self._snapshot_digest:
                     raise BoundaryError("online_m2", "snapshot_identity_reused")
-                if history_text is None:
-                    assert self._cached is not None
-                    if (expected_candidate_digest is not None
-                            or expected_candidate_count is not None):
-                        self._check_candidate_binding(self._cached, expected_candidate_digest,
-                                                      expected_candidate_count)
-                    return self._cached
-            if sequence < self._sequence or (sequence == self._sequence
-                                             and snapshot_id != self._snapshot_id):
+                if history_text is not None:
+                    raise BoundaryError("online_m2", "history_requires_new_observation")
+                assert self._cached is not None
+                if (expected_candidate_digest is not None
+                        or expected_candidate_count is not None):
+                    self._check_candidate_binding(self._cached, expected_candidate_digest,
+                                                  expected_candidate_count)
+                return self._cached
+            if sequence <= self._sequence:
                 raise BoundaryError("online_m2", "observation_order_reversed")
 
         # Catalog and per-page encoding limits precede any memory write. Training
