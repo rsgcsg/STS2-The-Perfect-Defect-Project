@@ -151,6 +151,66 @@ class CurationLedger:
             db.execute("UPDATE curation_sources SET complete=1 WHERE id=?", (source,))
             db.execute("INSERT OR IGNORE INTO curation_exact_source_index VALUES(?)", (source,))
 
+    def reserve_managed_observed_source(
+        self, store: Any, source: str, purpose: str, *, expected: Any,
+    ) -> str:
+        """Index a typed Managed stream and reserve its existing ledger purpose.
+
+        This does not create a training-use record. All sessions with the same
+        seed and exact candidate/game identity share one split component.
+        """
+        from stpd.fullrun.managed_text_menu_import import (
+            ManagedImportExpectation,
+            load_managed_text_menu_source,
+        )
+
+        if purpose not in {"training", "test"}:
+            raise BoundaryError("curation", "managed_purpose_invalid")
+        if not isinstance(expected, ManagedImportExpectation):
+            raise BoundaryError("curation", "managed_expectation_required")
+        verified = load_managed_text_menu_source(store, source, expected=expected)
+        run = verified.split_run_id
+        archive = verified.report_id
+        fingerprint = run.removeprefix("managed:")
+        with self.operations.transaction() as db:
+            previous = db.execute(
+                "SELECT archive,complete FROM curation_sources WHERE id=?", (source,)
+            ).fetchone()
+            if previous is not None and previous[0] != archive:
+                raise BoundaryError("curation", "source_identity_conflict")
+            existing = db.execute(
+                "SELECT purpose,artifact FROM curation_claims WHERE id=?", (source,)
+            ).fetchone()
+            if existing is not None and tuple(existing) != (purpose, source):
+                raise BoundaryError("curation", "reservation_identity_conflict")
+            related = self._groups(db, {run})
+            if self._claim_guard is not None:
+                self._claim_guard(db, purpose, related)
+            if any(kind != purpose for kind, _ in self._claims(db, related).values()):
+                raise BoundaryError("curation", "managed_split_purpose_overlap")
+            if purpose == "test" and (
+                db.execute("SELECT 1 FROM curation_source_uses WHERE source=? "
+                           "AND kind='training'", (source,)).fetchone()
+                or any(db.execute(
+                    "SELECT 1 FROM curation_uses WHERE run=? AND kind='training' UNION "
+                    "SELECT 1 FROM curation_source_uses u JOIN curation_source_runs r "
+                    "ON r.source=u.source WHERE r.run=? AND u.kind='training'",
+                    (related_run, related_run),
+                ).fetchone() for related_run in related)
+            ):
+                raise BoundaryError("curation", "managed_test_previously_used_for_training")
+            if previous is None:
+                db.execute("INSERT INTO curation_sources VALUES(?,?,0)", (source, archive))
+            db.execute("INSERT OR IGNORE INTO curation_source_runs VALUES(?,?)", (source, run))
+            db.execute("INSERT OR IGNORE INTO curation_fingerprints VALUES(?,?)",
+                       (fingerprint, run))
+            db.execute("INSERT OR IGNORE INTO curation_exact_source_index VALUES(?)", (source,))
+            db.execute("UPDATE curation_sources SET complete=1 WHERE id=?", (source,))
+            db.execute("INSERT OR IGNORE INTO curation_claims VALUES(?,?,?,?)",
+                       (source, purpose, source, time.time()))
+            db.execute("INSERT OR IGNORE INTO curation_claim_runs VALUES(?,?)", (source, run))
+        return run
+
     @staticmethod
     def _groups(db: sqlite3.Connection, runs: Iterable[str]) -> set[str]:
         # Temp seeds avoid SQLite's parameter limit on a large dataset. UNION terminates

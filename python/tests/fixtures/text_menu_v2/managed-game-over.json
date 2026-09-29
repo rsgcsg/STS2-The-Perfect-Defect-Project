@@ -1,0 +1,119 @@
+{
+  "protocol_version": "1.0.0",
+  "schema": "sts2.player-environment/text-menu-snapshot-2",
+  "snapshot_id": "managed_tm2_6759eb99c245bee94ec2c557f384fb41",
+  "sequence": 1,
+  "observed_at": "2026-09-29T14:25:09.695Z",
+  "status": "observed",
+  "persistent": {
+    "content_schema": "sts2.player-environment/persistent/run-player-1",
+    "content": {
+      "scope": "active_single_player_run",
+      "run": {
+        "act": 1,
+        "act_definition_id": "OVERGROWTH",
+        "act_name": "Overgrowth",
+        "floor": 2,
+        "ascension": 0,
+        "bosses": [],
+        "modifiers": []
+      },
+      "player": {
+        "entity_id": "player_fdd148e999c43fde7c00e53b",
+        "character_definition_id": "DEFECT",
+        "character_name": "The Defect",
+        "hp": 70,
+        "max_hp": 70,
+        "gold": 99,
+        "relics": [],
+        "potions": [],
+        "max_potion_slots": 3
+      },
+      "completeness": {
+        "player_visible_semantics": "complete_for_strategy_relevant_persistent_single_player_hud",
+        "sources": [
+          "RunState.CurrentActIndex+Act+TotalFloor+AscensionLevel+Modifiers",
+          "NTopBar+NTopBarBossIcon+NTopBarFloorIcon+NTopBarHp+NTopBarGold",
+          "NRelicInventory+NPotionContainer+LocalContext.GetMe"
+        ],
+        "missing": []
+      }
+    }
+  },
+  "interaction": {
+    "interaction_id": "interaction_runtime-a_s6_5eb86e6605197be8d496fdacbde4ba76250114973a524e142aaf5fd77ae51382",
+    "kind": "game_over",
+    "stage": "complete",
+    "prompt": null,
+    "content_schema": "sts2.player-environment/surface/game_over-1",
+    "content": {
+      "surface": {
+        "kind": "game_over",
+        "stage": "complete",
+        "victory": false
+      },
+      "context": {
+        "kind": "terminal",
+        "run": {
+          "act": 1,
+          "act_index": 0,
+          "act_definition_id": "OVERGROWTH",
+          "act_name": "Overgrowth",
+          "floor": 2,
+          "total_floor": 2,
+          "ascension": 0,
+          "room_type": "Combat",
+          "bosses": [],
+          "modifiers": []
+        },
+        "player": {
+          "name": "The Defect",
+          "character_id": "DEFECT",
+          "hp": 70,
+          "max_hp": 70,
+          "gold": 99,
+          "max_potion_slots": 3,
+          "relics": [],
+          "potions": []
+        }
+      }
+    },
+    "capabilities": []
+  },
+  "referents": [],
+  "completeness": {
+    "status": "complete",
+    "visible_information": "contract_complete_for_current_native_interaction",
+    "interaction_discovery": "derived_from_same_current_native_interaction_as_execution",
+    "missing": [],
+    "hidden_by_policy": [
+      "hidden_rng",
+      "future_rewards",
+      "future_events"
+    ]
+  },
+  "session": {
+    "runtime_instance_id": "runtime-a",
+    "environment_fingerprint": "4444444444444444444444444444444444444444444444444444444444444444"
+  },
+  "information_policy": {
+    "id": "player_visible_v1",
+    "scope": "Information currently presented by, or normally inspectable through, the local player's game UI.",
+    "includes_hidden_information": false,
+    "unknown_field_behavior": "omit_and_mark_incomplete"
+  },
+  "input_profile": "text-menu-v2",
+  "menu": {
+    "cursor": "root",
+    "revision": 1,
+    "native_snapshot_id": "managed_runtime-a_s6_5eb86e6605197be8d496fdacbde4ba76250114973a524e142aaf5fd77ae51382",
+    "selection": []
+  },
+  "menu_actions": {
+    "status": "complete",
+    "materialized_count": 0,
+    "total_count": 0,
+    "ordering_semantics": "native_order_with_text_card_selection",
+    "actions": []
+  }
+}
