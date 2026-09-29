@@ -219,3 +219,36 @@ installed content digest `f56978fd016834e5eef2b5afd5c81b8ad94d5c005e0dc36d6b0363
 the changed tests/fixture are excluded from its distributable file list. Earlier
 private installed canaries retain their original source/pin identity; this test
 commit does not relabel those installations or historical reports.
+
+## Cleanup-failure contract correction, 2026-09-30 AEST
+
+The subsequent [full run 36581810948/1](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36581810948)
+for head `2fcded9f5deaa7b43886d0709f67799f9f59d7d9`, checkout
+`3a7dc580e9301e9d85ac8e8b3006460195427b9f`, failed on Windows job
+[109451720191](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36581810948/job/109451720191).
+The child did not produce the added EOF marker. The preceding workaround's
+local pass therefore did not establish Windows portability; its receipt above
+is retained as historical evidence, not the final solution.
+
+Final test-source `7cfcaecc96c432d2f50f48ab9638f03fa4ecac70` tests the actual
+owner guarantee: fake `session.close()` writes a marker immediately before
+rejecting; the driver must report that original cleanup-unconfirmed error,
+exit with code 1, and emit no success/late response. The test waits for child
+`close`, including completed stdio, before checking stderr. It no longer assumes
+that a rejected cleanup proves the child survived, or that Windows delivers a
+particular stdin EOF callback. Positive close/EOF/signal cases still verify
+actual owned-child reaping. Finally cleanup still targets only its own PID.
+No production implementation, checks, skips or dependency versions changed.
+
+All five focused shutdown cases passed. Two separate temporary copies of the
+production driver loop deliberately hid the failed exit or its diagnostic;
+the same negative test failed respectively with expected exit 1 / actual 0,
+and missing original cleanup diagnostic (both exit 1). These mutations are not
+committed fixes. Full Host component check again passed 237 Node / four exact-game
+skips, 17 Python and temporary installed-package smoke (exit 0).
+
+Final component tree is `c233cf5f0866578667195b093a069b345ac4c025`, source digest
+`262bc5dcf21b965e92a08105896cbe2c7908078d1c3433fe350ec493230b9c5d`.
+Contract, rc.20 version and installed package content digest remain unchanged.
+A new current-head hosted run must still pass; neither earlier failed run is
+relabelled, and no production installation or earlier canary pin was rewritten.
