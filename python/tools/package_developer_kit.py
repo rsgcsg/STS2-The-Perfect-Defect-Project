@@ -23,6 +23,12 @@ from sts2_platform_evidence.collection_tool import CollectionTool
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes
 from spireagent.source import source_identity
 from spireagent.workbench.developer import combination
+from spireagent.workbench.kit_runtime import (
+    TEXT_RUNTIME_ARCHIVE,
+    TEXT_RUNTIME_PROFILE,
+    text_runtime_pin,
+)
+from spireagent.workbench.runtime_install import install_runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 README = """# SpireAgent developer kit
@@ -123,6 +129,8 @@ def package(
     tool_release_id: str,
     output: Path,
     root: Path = ROOT,
+    text_runtime_profile: PinnedFile | None = None,
+    text_runtime_archive: PinnedFile | None = None,
 ) -> dict[str, Any]:
     """Verify with the owning tool contract, then publish one immutable deterministic ZIP."""
     if output.exists() or output.is_symlink():
@@ -130,6 +138,8 @@ def package(
     producer = source_identity(root)
     project = combination(root)
     project_raw = (root / "configs/developer/combination-v1.json").read_bytes()
+    if (text_runtime_profile is None) != (text_runtime_archive is None):
+        raise BoundaryError("developer_kit", "text_runtime_profile_and_archive_required")
     files = {
         "README.md": README.encode(),
         "mod/STS2_PLATFORM.dll": mod_dll.read(),
@@ -137,6 +147,25 @@ def package(
         "platform-bom.json": platform_bom.read(),
         "developer-combination.json": project_raw,
     }
+    if text_runtime_profile is not None and text_runtime_archive is not None:
+        profile_raw = text_runtime_profile.read()
+        archive_raw = text_runtime_archive.read()
+        pin = text_runtime_pin(profile_raw, archive_raw)
+        connector = next(
+            (p for p in project["node_packages"]
+             if p.get("package") == "@rsgcsg/sts2-connector-client"), None
+        )
+        if connector is None:
+            raise BoundaryError("developer_kit", "connector_pin_required")
+        # The profile is externally pinned; the ordinary installer verifies the
+        # complete bundled closure in a disposable private directory.
+        with tempfile.TemporaryDirectory(prefix=".kit-runtime-", dir=output.parent) as temp:
+            candidate = Path(temp) / "runtime.tgz"
+            candidate.write_bytes(archive_raw)
+            install_runtime(Path(temp) / "models/text-menu-v1", pin, connector,
+                            archive=candidate)
+        files[TEXT_RUNTIME_PROFILE] = profile_raw
+        files[TEXT_RUNTIME_ARCHIVE] = archive_raw
     owner = CollectionTool(collection_tool, tool_release_id)
     tool_manifest = owner.manifest
     tool_manifest_raw = read_regular(collection_tool / "collection-tool.json")
@@ -187,6 +216,11 @@ def package(
         "platform_bom_sha256": platform_bom.sha256,
         "files": {name: sha256(raw) for name, raw in sorted(files.items())},
     }
+    if text_runtime_profile is not None and text_runtime_archive is not None:
+        manifest["text_runtime"] = {
+            "profile_sha256": text_runtime_profile.sha256,
+            "archive_sha256": text_runtime_archive.sha256,
+        }
     files["combination.json"] = json_bytes(manifest)
     # ZIP_STORED avoids zlib-version variance. The small developer kit favors reproducibility.
     with tempfile.TemporaryDirectory(prefix=".developer-kit-", dir=output.parent) as directory:
@@ -223,6 +257,10 @@ def main() -> int:
         parser.add_argument(f"--{name}-sha256", required=True)
     parser.add_argument("--collection-tool", required=True, type=Path)
     parser.add_argument("--tool-release-id", required=True)
+    parser.add_argument("--text-runtime-profile", type=Path)
+    parser.add_argument("--text-runtime-profile-sha256")
+    parser.add_argument("--text-runtime-archive", type=Path)
+    parser.add_argument("--text-runtime-archive-sha256")
     parser.add_argument(
         "--output",
         required=True,
@@ -231,6 +269,10 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
+        if ((args.text_runtime_profile is None) != (args.text_runtime_profile_sha256 is None)
+                or (args.text_runtime_archive is None)
+                != (args.text_runtime_archive_sha256 is None)):
+            raise BoundaryError("developer_kit", "text_runtime_path_and_hash_required")
         receipt = package(
             mod_dll=PinnedFile(args.mod_dll, args.mod_dll_sha256),
             mod_manifest=PinnedFile(args.mod_manifest, args.mod_manifest_sha256),
@@ -238,6 +280,12 @@ def main() -> int:
             collection_tool=args.collection_tool,
             tool_release_id=args.tool_release_id,
             output=args.output,
+            text_runtime_profile=(PinnedFile(args.text_runtime_profile,
+                                             args.text_runtime_profile_sha256)
+                                  if args.text_runtime_profile is not None else None),
+            text_runtime_archive=(PinnedFile(args.text_runtime_archive,
+                                             args.text_runtime_archive_sha256)
+                                  if args.text_runtime_archive is not None else None),
         )
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         code = error.code if isinstance(error, BoundaryError) else type(error).__name__

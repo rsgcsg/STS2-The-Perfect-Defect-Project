@@ -97,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="explicit local pinned Runtime archive; close workbench first",
     )
+    parser.add_argument("--runtime-profile", choices=("text-menu-v1",),
+                        help="approved local Runtime profile for offline installation")
     parser.add_argument(
         "--action",
         default="catalog",
@@ -131,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result: Any
+        if args.runtime_profile is not None and args.command != "model":
+            raise BoundaryError("local_model", "runtime_profile_requires_model_command")
         if args.command == "setup":
             result = setup(
                 args.config.resolve(),
@@ -161,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
                     selection=args.selection,
                     artifact=args.artifact,
                     runtime_archive=args.runtime_archive,
+                    runtime_profile=args.runtime_profile,
                 )
             elif args.command == "collection-upgrade":
                 from spireagent.workbench.collection_upgrade import upgrade

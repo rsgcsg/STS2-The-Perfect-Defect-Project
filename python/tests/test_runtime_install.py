@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import socket
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import Request
@@ -13,6 +14,7 @@ import pytest
 from spireagent.json_boundary import BoundaryError
 from spireagent.package_identity import PackageIdentityError, directory_sha256
 from spireagent.workbench import runtime_install
+from tools.install_developer_kit import run as run_program
 
 
 def package(root, name, *, runtime=False):
@@ -184,9 +186,10 @@ def test_offline_install_promotes_bundled_candidate_without_sibling_connector(
     archive.write_bytes(b"synthetic bundled candidate")
     pin["release_asset_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
     actual_run = runtime_install.subprocess.run
+    npm_executable = runtime_install.shutil.which("npm")
 
     def npm_or_node(command, **kwargs):
-        if command[0] == "npm":
+        if command[0] == npm_executable:
             runtime_install.shutil.copytree(node_modules, kwargs["cwd"] / "node_modules")
             return SimpleNamespace(returncode=0)
         return actual_run(command, **kwargs)
@@ -199,6 +202,22 @@ def test_offline_install_promotes_bundled_candidate_without_sibling_connector(
     assert result["status"] == "runtime_installed"
     assert not (target / "runtime/node_modules" / runtime_install.CONNECTOR_PACKAGE).exists()
     runtime_install.validate_runtime_install(target / "runtime/node_modules", pin, {})
+
+
+def test_real_npm_pack_install_validates_bundled_closure(tmp_path, bundled_release,
+                                                        isolated_port):
+    """Exercise npm tarball extraction and the same closure check used by kit packaging."""
+    node_modules, root, pin = bundled_release
+    output = run_program(["npm", "pack", "--ignore-scripts", "--pack-destination",
+                          str(tmp_path)], root)
+    archive = tmp_path / output.strip().splitlines()[-1]
+    pin["release_asset_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
+    target = tmp_path / "models/text-menu-v1"
+    receipt = runtime_install.install_runtime(target, pin, {}, archive=archive)
+    assert receipt["status"] == "runtime_installed"
+    assert receipt["loaded"] is False
+    runtime_install.validate_runtime_install(target / "runtime/node_modules", pin, {})
+    assert (node_modules / runtime_install.RUNTIME_PACKAGE).exists()
 
 
 @pytest.fixture
@@ -274,7 +293,7 @@ def test_install_uses_fixed_command_private_env_and_verifies_promoted_content(
     assert result["loaded"] is False and result["activated"] is False
     command, kwargs = calls[0]
     assert command == [
-        "npm",
+        "/trusted/npm",
         "install",
         "--ignore-scripts",
         "--omit=dev",
@@ -289,6 +308,66 @@ def test_install_uses_fixed_command_private_env_and_verifies_promoted_content(
     ).write_text("{}")
     with pytest.raises(PackageIdentityError):
         runtime_install.validate_runtime_install(directory / "runtime/node_modules", pin, connector)
+
+
+def test_install_uses_resolved_windows_batch_path(tmp_path, monkeypatch, release):
+    pin, connector, archive, source = release
+    npm = "C:/Program Files/nodejs/npm.cmd"
+    monkeypatch.setattr(runtime_install.shutil, "which", lambda _: npm)
+    calls = []
+
+    def install(command, **kwargs):
+        calls.append((command, kwargs))
+        runtime_install.shutil.copytree(source, kwargs["cwd"] / "node_modules")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(runtime_install.subprocess, "run", install)
+    receipt = runtime_install.install_runtime(tmp_path / "state", pin, connector,
+                                               archive=archive)
+    assert receipt["status"] == "runtime_installed"
+    command, kwargs = calls[0]
+    assert command == [
+        npm, "install", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund",
+    ]
+    assert kwargs["timeout"] == 300
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows batch execution")
+def test_windows_npm_batch_with_spaces_receives_fixed_arguments(
+    tmp_path, monkeypatch, release
+):
+    pin, connector, archive, _ = release
+    directory = tmp_path / "node install"
+    directory.mkdir()
+    npm = directory / "npm.cmd"
+    received = directory / "received.json"
+    (directory / "recorder.py").write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "Path(__file__).with_name('received.json').write_text(json.dumps(sys.argv[1:]))\n",
+        encoding="ascii",
+    )
+    npm.write_text(
+        f'@echo off\n"{sys.executable}" "%~dp0recorder.py" %*\n',
+        encoding="ascii",
+    )
+    monkeypatch.setattr(runtime_install.shutil, "which", lambda _: str(npm))
+    monkeypatch.setattr(runtime_install, "validate_runtime_install", lambda *_: pin)
+
+    receipt = runtime_install.install_runtime(tmp_path / "state", pin, connector,
+                                               archive=archive)
+    assert receipt["status"] == "runtime_installed"
+    assert json.loads(received.read_text()) == [
+        "install", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund",
+    ]
+
+    destination = tmp_path / "pack output"
+    destination.mkdir()
+    run_program(["npm", "pack", "--ignore-scripts", "--pack-destination",
+                 str(destination)], tmp_path)
+    assert json.loads(received.read_text()) == [
+        "pack", "--ignore-scripts", "--pack-destination", str(destination),
+    ]
 
 
 def test_failed_npm_preserves_previous_runtime(tmp_path, monkeypatch, release):
@@ -354,6 +433,39 @@ def test_offline_cli_archive_never_becomes_an_http_path(tmp_path, monkeypatch):
         local_model_cli.model_command(
             config, "install-runtime", runtime_archive=Path("/private/archive")
         )
+
+
+def test_offline_text_runtime_profile_needs_no_selection_and_rejects_mismatch(
+    tmp_path, monkeypatch
+):
+    from spireagent.workbench import local_model_cli
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.local_models import LocalModelService
+
+    config = ProjectConfig(tmp_path, "", "", None, combination())
+    monkeypatch.setattr(local_model_cli, "running", lambda _: None)
+    expected = (tmp_path / "models/text-menu-v1", {"package": runtime_install.RUNTIME_PACKAGE})
+    monkeypatch.setattr(LocalModelService, "text_runtime_profile", lambda _: expected)
+    monkeypatch.setattr(LocalModelService, "_connector_pin", lambda _: {})
+    monkeypatch.setattr(runtime_install, "install_runtime", lambda *a, **k: {
+        "status": "runtime_installed", "directory": str(a[0])})
+    archive = tmp_path / "runtime.tgz"
+    assert local_model_cli.model_command(
+        config, "install-runtime", runtime_archive=archive, runtime_profile="text-menu-v1"
+    )["directory"] == str(expected[0])
+    monkeypatch.setattr(LocalModelService, "selection", lambda *a: {"runtime_profile": None})
+    with pytest.raises(BoundaryError, match="selection_runtime_profile_mismatch"):
+        local_model_cli.model_command(config, "install-runtime", selection="legacy",
+                                      runtime_archive=archive, runtime_profile="text-menu-v1")
+    with pytest.raises(BoundaryError, match="runtime_profile_requires_offline_install"):
+        local_model_cli.model_command(config, "status", runtime_profile="text-menu-v1")
+
+
+def test_runtime_profile_cli_flag_is_only_for_model_install(capsys):
+    from spireagent.workbench.developer_cli import main
+
+    assert main(["status", "--runtime-profile", "text-menu-v1"]) == 1
+    assert "runtime_profile_requires_model_command" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("spelling", ["Pefect", "Perfect"])
