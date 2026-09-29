@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -22,11 +23,21 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("managed candidate manifest freezes one exact operational baseline", () => {
+test("managed candidate source and measured build identity match the manifest", () => {
   const { manifest } = loadManagedCandidateManifest(ROOT);
-  assert.equal(manifest.status, "stpd_v0_operational_baseline");
-  assert.equal(manifest.expected_build.artifact_sha256.length, 64);
-  assert.match(manifest.expected_build.artifact_mvid, /^[0-9a-f-]{36}$/u);
+  assert.equal(manifest.status, "candidate_built_unqualified");
+  assert.deepEqual(Object.keys(manifest.expected_build), [
+    "source_patch_sha256", "artifact_sha256", "artifact_mvid"
+  ]);
+  const sourcePatch = readFileSync(path.join(ROOT, "experiments", "managed-exact", manifest.source_patch));
+  assert.equal(
+    createHash("sha256").update(sourcePatch).digest("hex"),
+    manifest.expected_build.source_patch_sha256
+  );
+  assert.equal(manifest.expected_build.artifact_sha256, "9a1d9445971d54f471701a84a6f95ed4984a2d60dc1319e1846f068eda1fd02b");
+  assert.equal(manifest.expected_build.artifact_mvid, "a75a426d-db7c-45a6-9d34-1179b2e35003");
+  assert.equal(manifest.last_measured_build.artifact_sha256, "dd4b10f22606203f8825569c2e0478626d96ac1166d2cd9430591be607d808a6");
+  assert.equal(manifest.last_measured_build.artifact_mvid, "61b5b737-724e-4887-a0a4-6664a3c9daea");
   assert.equal(manifest.admission.forbidden_claims.includes("formal H1.0 qualification"), true);
   assert.ok(manifest.semantic_shims.some((entry) => entry.risk === "critical"));
   assert.equal(manifest.platform_baselines.length, 1);
@@ -60,6 +71,9 @@ test("managed candidate patch keeps normal actions on native identity and commit
     assert.equal(additions.includes(forbidden), false, `normal action patch must not add ${forbidden}`);
   }
   assert.match(additions, /TryManualPlay\(target\)/u);
+  assert.match(additions, /NativePlayWindowAdmission\.IsOpen/u);
+  assert.match(additions, /ActionSynchronizerCombatState\.PlayPhase/u);
+  assert.match(additions, /Cannot play a card while a native selection is pending/u);
   assert.match(additions, /EnqueueManualUse\(target\)/u);
   assert.match(additions, /ActionQueueSynchronizer\.RequestEnqueue/u);
   assert.match(additions, /NativeObjectIdentity\.Get/u);
@@ -77,7 +91,10 @@ test("fresh candidate preparation admits added source files into the audited dif
   assert.deepEqual(addedPatchPaths(patch), [
     "src/Sts2Headless/DeckUpgradeCallScope.cs",
     "src/Sts2Headless/DeckUpgradeSelection.cs",
-    "src/Sts2Headless/PerformanceLab.cs"
+    "src/Sts2Headless/NativePlayWindowAdmission.cs",
+    "src/Sts2Headless/PerformanceLab.cs",
+    "tests/NativePlayWindowAdmissionTests.csproj",
+    "tests/Program.cs"
   ]);
   assert.equal(source.includes('["add", "--intent-to-add"'), true);
   assert.equal(source.includes("stpd-managed-candidate.patch"), true);
@@ -106,7 +123,7 @@ test("managed candidate selects Windows as separate provenance without changing 
     "0d8c916365f0a64a0ed5cfc706186811e33708c841fef82e1f73c6a33dcfcc4d"
   );
   assert.equal(manifest.exact_game.platform, "darwin");
-  assert.equal(manifest.expected_build.artifact_mvid, "61b5b737-724e-4887-a0a4-6664a3c9daea");
+  assert.equal(manifest.last_measured_build.artifact_mvid, "61b5b737-724e-4887-a0a4-6664a3c9daea");
 });
 
 test("managed setup converts drive-qualified Windows paths for Git Bash", () => {

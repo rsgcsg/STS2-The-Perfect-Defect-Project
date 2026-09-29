@@ -9,6 +9,17 @@ import {
 import { startManagedCandidateRuntime } from "./managed-candidate.mjs";
 
 const ACTION_LIMIT = 512;
+// Pinned native TargetType values supported by the current Managed combat
+// inputs. AnyAlly lacks a complete published single-player target domain.
+// Potion values must also agree with the exact native binding switch; its
+// TargetedNoCreature case needs a non-creature target referent not projected here.
+const SUPPORTED_MANAGED_CARD_TARGET_TYPES = new Set([
+  "None", "Self", "AnyEnemy", "AllEnemies", "RandomEnemy", "AnyPlayer",
+  "AllAllies", "TargetedNoCreature", "Osty"
+]);
+const SUPPORTED_MANAGED_POTION_TARGET_TYPES = new Set([
+  "None", "Self", "AnyEnemy", "AllEnemies", "RandomEnemy", "AllAllies"
+]);
 const INFORMATION_POLICY = Object.freeze({
   id: "player_visible_v1",
   scope: "Information currently presented by, or normally inspectable through, the local player's game UI.",
@@ -33,6 +44,14 @@ function digest(value) {
 
 function stableId(prefix, ...parts) {
   return `${prefix}_${digest(parts).slice(0, 24)}`;
+}
+
+function supportsManagedCardTargetType(targetType) {
+  return SUPPORTED_MANAGED_CARD_TARGET_TYPES.has(targetType);
+}
+
+function supportsManagedPotionTargetType(targetType) {
+  return SUPPORTED_MANAGED_POTION_TARGET_TYPES.has(targetType);
 }
 
 function definitionId(value) {
@@ -1096,9 +1115,10 @@ function currentSurface(state, ctx) {
         && [...rawHand, ...rawEnemies, ...rawPotions].every((item) =>
           typeof item?.native_ref === "string" && item.native_ref.length > 0);
       const unsupportedCardTarget = rawHand.some((card) =>
-        card.can_play === true && card.target_type === "AnyAlly");
+        card.can_play === true && !supportsManagedCardTargetType(card.target_type));
       const unsupportedPotionTarget = rawPotions.some((potion) =>
-        potion.can_use === true && potion.binding_supported !== true);
+        potion.binding_supported !== true || !supportsManagedPotionTargetType(potion.target_type));
+      const playWindowOpen = state.is_play_phase === true;
       const semanticFactsComplete = typeof state.encounter_type === "string"
         && typeof state.turn_owner === "string"
         && typeof state.is_play_phase === "boolean"
@@ -1188,7 +1208,7 @@ function currentSurface(state, ctx) {
               }
             });
           }
-        } else if (card.target_type !== "AnyAlly") {
+        } else if (supportsManagedCardTargetType(card.target_type)) {
           ctx.action({
             verb: "play",
             subject: referent,
@@ -1241,7 +1261,7 @@ function currentSurface(state, ctx) {
                 }
               });
             }
-          } else {
+          } else if (supportsManagedPotionTargetType(potion.target_type)) {
             ctx.action({
               verb: "use",
               subject: potionReferent,
@@ -1301,18 +1321,22 @@ function currentSurface(state, ctx) {
         && !unsupportedCardTarget
         && !unsupportedPotionTarget;
       const actionComplete = identityComplete
+        && playWindowOpen
         && !unsupportedCardTarget
         && !unsupportedPotionTarget;
       return {
         kind: "combat_turn",
-        stage: "ready",
+        stage: playWindowOpen ? "ready" : "settling",
         prompt: null,
         surface: {
           kind: "combat_turn",
-          can_end_turn: true,
-          playable_cards: handEntries.filter((entry) => entry.raw.can_play === true)
-            .map((entry) => entry.option),
-          usable_potions: rawPotions.filter((potion) => potion.can_use === true)
+          can_end_turn: playWindowOpen,
+          playable_cards: playWindowOpen
+            ? handEntries.filter((entry) => entry.raw.can_play === true)
+              .map((entry) => entry.option)
+            : [],
+          usable_potions: playWindowOpen
+            ? rawPotions.filter((potion) => potion.can_use === true)
             .map((potion) => ({
               entity_id: ctx.id("potion", ctx.snapshotId, potion.native_ref),
               name: potion.name ?? null,
@@ -1320,6 +1344,7 @@ function currentSurface(state, ctx) {
                 .map((nativeRef) => enemyReferentByNative.get(nativeRef)?.referent_id)
                 .filter(Boolean)
             }))
+            : []
         },
         context: {
           kind: "combat",
@@ -1335,8 +1360,9 @@ function currentSurface(state, ctx) {
         missing: [
           ...(identityComplete ? [] : ["native_combat_operand_identity"]),
           ...(semanticFactsComplete ? [] : ["complete_visible_combat_context"]),
-          ...(unsupportedCardTarget ? ["native_any_ally_card_targeting"] : []),
-          ...(unsupportedPotionTarget ? ["native_potion_target_binding"] : [])
+          ...(playWindowOpen ? [] : ["native_combat_play_window_closed"]),
+          ...(unsupportedCardTarget ? ["native_unsupported_card_target_type"] : []),
+          ...(unsupportedPotionTarget ? ["native_unsupported_potion_target_type_or_binding"] : [])
         ],
         visibleInformation: "contract_complete_for_immediate_combat_turn_including_visible_companions; pile contents available through a separate read-only Player Environment Read",
         interactionDiscovery: "derived_from_same_validator_as_execution",

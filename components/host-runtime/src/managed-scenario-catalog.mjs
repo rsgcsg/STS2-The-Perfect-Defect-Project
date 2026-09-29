@@ -41,9 +41,9 @@ const ENGINEERING_SCENARIO = Object.freeze({
   candidate: Object.freeze({
     candidate_id: "wuhao21-sts2-cli-d11aa88-v01110",
     upstream_revision: "d11aa883b582dd68bd39b331f3370746b30d447e",
-    source_patch_sha256: "56af273801537d4ff3968a8e513c072ec94d3b17e0e771868ede2002e120c770",
-    artifact_sha256: "dd4b10f22606203f8825569c2e0478626d96ac1166d2cd9430591be607d808a6",
-    artifact_mvid: "61b5b737-724e-4887-a0a4-6664a3c9daea"
+    source_patch_sha256: "40d2e4cde715954c75125c12f30cc31cdf2b08dffd619bf95ca28f9913e7e030",
+    artifact_sha256: "9a1d9445971d54f471701a84a6f95ed4984a2d60dc1319e1846f068eda1fd02b",
+    artifact_mvid: "a75a426d-db7c-45a6-9d34-1179b2e35003"
   })
 });
 
