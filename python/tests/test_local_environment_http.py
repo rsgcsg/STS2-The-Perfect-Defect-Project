@@ -36,12 +36,15 @@ def test_local_environment_http_is_browser_scoped_exact_and_get_only_reads(
     thread.start()
     root = f"http://127.0.0.1:{server.server_port}"
     client = build_opener(HTTPCookieProcessor(CookieJar()))
-    starts: list[str] = []
+    starts: list[tuple[str, str | None]] = []
     stops: list[str] = []
+    saved: list[str] = []
+    compared: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(
         app.local_environment,
         "start",
-        lambda identity: starts.append(identity) or {"status": "starting"},
+        lambda identity, *, scene_artifact_id=None:
+            starts.append((identity, scene_artifact_id)) or {"status": "starting"},
     )
     monkeypatch.setattr(
         app.local_environment,
@@ -57,6 +60,16 @@ def test_local_environment_http_is_browser_scoped_exact_and_get_only_reads(
             "event_artifact_id": identity,
         },
     )
+    monkeypatch.setattr(app.local_environment, "scenes", lambda: {"items": []})
+    monkeypatch.setattr(app.local_environment, "scene", lambda identity: {"artifact_id": identity})
+    monkeypatch.setattr(app.local_environment, "comparisons", lambda: {"items": []})
+    monkeypatch.setattr(app.local_environment, "comparison",
+                        lambda identity: {"artifact_id": identity})
+    monkeypatch.setattr(app.local_environment, "save_scene",
+                        lambda name: saved.append(name) or {"name": name})
+    monkeypatch.setattr(app.local_environment, "compare",
+                        lambda scene, reports: compared.append((scene, reports)) or
+                        {"scene_artifact_id": scene, "report_artifact_ids": reports})
 
     def post(path: str, body: dict[str, str], *, csrf: bool = True):
         return client.open(
@@ -83,6 +96,15 @@ def test_local_environment_http_is_browser_scoped_exact_and_get_only_reads(
         assert value["csrf_token"] == app.account.csrf
         with client.open(root + "/api/local-environment/reports") as response:
             assert json.load(response)["items"] == []
+        with client.open(root + "/api/local-environment/scenes") as response:
+            assert json.load(response)["items"] == []
+        with client.open(root + "/api/local-environment/scenes/" + "d" * 64) as response:
+            assert json.load(response)["artifact_id"] == "d" * 64
+        with client.open(root + "/api/local-environment/comparisons") as response:
+            assert json.load(response)["items"] == []
+        with client.open(root + "/api/local-environment/comparisons/" + "e" * 64) as response:
+            assert json.load(response)["artifact_id"] == "e" * 64
+        assert saved == [] and compared == []
         with client.open(root + "/api/local-environment/events/" + "e" * 64) as response:
             assert json.load(response)["result"]["status"] == "applied"
         with pytest.raises(HTTPError) as malformed_event:
@@ -101,10 +123,33 @@ def test_local_environment_http_is_browser_scoped_exact_and_get_only_reads(
                 },
             )
         assert path_attempt.value.code == 400
+        with pytest.raises(HTTPError) as seed_attempt:
+            post("/api/local-environment/scenes/save", {
+                "name": "A0", "seed": "other-seed",
+            })
+        assert seed_attempt.value.code == 400
+        with pytest.raises(HTTPError) as scene_seed_attempt:
+            post("/api/local-environment/start", {
+                "scenario_id": SCENARIO["id"], "scene_artifact_id": "d" * 64,
+                "seed": "other-seed",
+            })
+        assert scene_seed_attempt.value.code == 400
         assert starts == []
         with post("/api/local-environment/start", {"scenario_id": SCENARIO["id"]}) as response:
             assert json.load(response)["status"] == "starting"
-        assert starts == [SCENARIO["id"]]
+        with post("/api/local-environment/start", {
+            "scenario_id": SCENARIO["id"], "scene_artifact_id": "d" * 64,
+        }) as response:
+            assert json.load(response)["status"] == "starting"
+        assert starts == [(SCENARIO["id"], None), (SCENARIO["id"], "d" * 64)]
+        with post("/api/local-environment/scenes/save", {"name": "Start A"}) as response:
+            assert json.load(response)["name"] == "Start A"
+        with post("/api/local-environment/compare", {
+            "scene_artifact_id": "d" * 64,
+            "report_artifact_ids": ["a" * 64, "b" * 64],
+        }) as response:
+            assert json.load(response)["report_artifact_ids"] == ["a" * 64, "b" * 64]
+        assert saved == ["Start A"] and compared == [("d" * 64, ["a" * 64, "b" * 64])]
         atomic_json(
             state / "runtime.json",
             {

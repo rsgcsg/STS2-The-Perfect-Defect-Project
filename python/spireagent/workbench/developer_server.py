@@ -733,8 +733,14 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(200, json.dumps(_safe_value(app.snapshot())).encode())
             elif parsed.path == "/api/local-environment" or parsed.path == (
                 "/api/local-environment/reports"
+            ) or parsed.path == (
+                "/api/local-environment/scenes"
+            ) or parsed.path == (
+                "/api/local-environment/comparisons"
             ) or parsed.path.startswith(("/api/local-environment/reports/",
-                                          "/api/local-environment/events/")):
+                                          "/api/local-environment/events/",
+                                          "/api/local-environment/scenes/",
+                                          "/api/local-environment/comparisons/")):
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
@@ -748,6 +754,24 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         }
                     elif parsed.path == "/api/local-environment/reports":
                         value = app.local_environment.reports()
+                    elif parsed.path == "/api/local-environment/scenes":
+                        value = app.local_environment.scenes()
+                    elif parsed.path == "/api/local-environment/comparisons":
+                        value = app.local_environment.comparisons()
+                    elif parsed.path.startswith("/api/local-environment/comparisons/"):
+                        match = re.fullmatch(
+                            r"/api/local-environment/comparisons/([a-f0-9]{64})", parsed.path
+                        )
+                        if match is None:
+                            raise BoundaryError("local_environment", "artifact_not_found")
+                        value = app.local_environment.comparison(match[1])
+                    elif parsed.path.startswith("/api/local-environment/scenes/"):
+                        match = re.fullmatch(
+                            r"/api/local-environment/scenes/([a-f0-9]{64})", parsed.path
+                        )
+                        if match is None:
+                            raise BoundaryError("local_environment", "artifact_not_found")
+                        value = app.local_environment.scene(match[1])
                     elif parsed.path.startswith("/api/local-environment/events/"):
                         match = re.fullmatch(
                             r"/api/local-environment/events/([a-f0-9]{64})", parsed.path
@@ -764,7 +788,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         value = app.local_environment.report(match[1])
                     self.respond(200, json.dumps(value, ensure_ascii=False).encode())
                 except BoundaryError as error:
-                    status = 404 if error.code in {"report_not_found", "event_not_found"} else 409
+                    status = 404 if error.code in {"report_not_found", "event_not_found",
+                                                   "artifact_not_found"} else 409
                     self.respond(status, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, KeyError):
                     self.respond(400, b'{"error":"invalid_local_environment_request"}')
@@ -1116,6 +1141,25 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     }:
                         app.check_environment_instance()
                         value = app.local_environment.start(body["scenario_id"])
+                    elif self.path == "/api/local-environment/start" and set(body) == {
+                        "scenario_id", "scene_artifact_id"
+                    }:
+                        app.check_environment_instance()
+                        value = app.local_environment.start(
+                            body["scenario_id"], scene_artifact_id=body["scene_artifact_id"]
+                        )
+                    elif self.path == "/api/local-environment/scenes/save" and set(body) == {
+                        "name"
+                    }:
+                        app.check_environment_instance()
+                        value = app.local_environment.save_scene(body["name"])
+                    elif self.path == "/api/local-environment/compare" and set(body) == {
+                        "scene_artifact_id", "report_artifact_ids"
+                    }:
+                        app.check_environment_instance()
+                        value = app.local_environment.compare(
+                            body["scene_artifact_id"], body["report_artifact_ids"]
+                        )
                     elif self.path == "/api/local-environment/submit" and set(body) == {
                         "session_id", "action_id", "expected_snapshot_id",
                         "expected_game_continuity_id"

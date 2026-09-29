@@ -61,6 +61,7 @@ window.SpireProject = (() => {
   const datasetReads = new Map();
   let datasetReadEpoch = 0;
   let modelWatch = null;
+  let environmentSnapshot = null;
   const labels = {
     invited: "待首次登录",
     active: "已启用",
@@ -4043,6 +4044,25 @@ window.SpireProject = (() => {
     return {section, selectors};
   }
 
+  async function refreshEnvironment() {
+    const saved = environmentSnapshot;
+    if (!saved || !live(saved.ctx)) return false;
+    let values;
+    try {
+      values = await Promise.all([
+        "/api/local-environment", "/api/local-environment/scenes",
+        "/api/local-environment/reports", "/api/local-environment/comparisons",
+      ].map(path => request(saved.ctx, path)));
+    } catch (error) {
+      if (environmentSnapshot === saved) environmentSnapshot = null;
+      throw error;
+    }
+    // Preserve the mounted view while owner facts are unchanged. In particular,
+    // polling must not discard expanded immutable reports or unfinished forms.
+    return environmentSnapshot === saved && live(saved.ctx) &&
+      JSON.stringify(values) === saved.signature;
+  }
+
   async function localEnvironment(ctx) {
     const box = el("div", null, "project-page");
     const data = await request(ctx, "/api/local-environment");
@@ -4056,6 +4076,31 @@ window.SpireProject = (() => {
       : "环境未准备。请由本机环境维护者完成受信任的精确包与候选配置；此页面不接受文件路径或命令。");
     box.append(setup);
     const csrf = typeof data.csrf_token === "string" && data.csrf_token ? data.csrf_token : "";
+    const savedScenes = await request(ctx, "/api/local-environment/scenes");
+    const sceneLibrary = panel("已保存的固定种子起点", "每次启动都会新建独立 Managed 实例；保存的是当前固定种子、输入格式与构建身份，不是游戏存档。");
+    const draftKey = `environment:${ctx.scope}`;
+    const sceneName = input(sceneLibrary, "起点名称", "environment-scene-name",
+      drafts.get(`${draftKey}:name`) ?? "故障机器人 A0 固定种子");
+    sceneName.maxLength = 80;
+    sceneName.oninput = () => {
+      if (live(ctx)) drafts.set(`${draftKey}:name`, sceneName.value);
+    };
+    sceneLibrary.append(command(ctx, "environment-scene-save", "保存当前开局配置", async () => {
+      await request(ctx, "/api/local-environment/scenes/save", {name:sceneName.value.trim()}, csrf);
+      await reload(ctx);
+    }, {disabled:!ready || !csrf}));
+    for (const item of savedScenes.items || []) {
+      if (!hex(item.artifact_id)) continue;
+      const row = panel(item.name, `${item.input_profile} · 种子 ${item.seed} · ${item.artifact_id.slice(0, 12)}`);
+      row.append(command(ctx, `environment-scene-start-${item.artifact_id}`, "从此起点新开一局", async () => {
+        await request(ctx, "/api/local-environment/start", {
+          scenario_id:data.scenarios[0].id, scene_artifact_id:item.artifact_id,
+        }, csrf);
+        await reload(ctx);
+      }, {disabled:!ready || !csrf || !["idle", "stopped", "stopped_outcome_unknown", "failed"].includes(data.session.status)}));
+      sceneLibrary.append(row);
+    }
+    box.append(sceneLibrary);
     const sessionId = typeof session.session_id === "string" && /^[a-f0-9]{32}$/.test(session.session_id)
       ? session.session_id : null;
     const currentStatus = session.status;
@@ -4273,6 +4318,63 @@ window.SpireProject = (() => {
       }
     }
     box.append(archive);
+    const comparisonDetail = el("div");
+    const showComparison = (result, open = true) => {
+      if (!live(ctx)) return;
+      const saved = {result, open};
+      drafts.set(`${draftKey}:comparison`, saved);
+      const detail = technical(result, "比较结果与来源");
+      detail.open = open;
+      detail.dataset.preserve = `environment-comparison-${result.artifact_id}`;
+      detail.ontoggle = () => { if (live(ctx)) saved.open = detail.open; };
+      comparisonDetail.replaceChildren(detail);
+    };
+    const savedComparison = drafts.get(`${draftKey}:comparison`);
+    if (savedComparison) showComparison(savedComparison.result, savedComparison.open);
+    const comparisonSelect = (form, label, name, choices, initial) => {
+      const saved = drafts.get(`${draftKey}:${name}`);
+      const control = select(form, label, name, choices,
+        choices.some(([key]) => key === saved) ? saved : initial);
+      control.onchange = () => {
+        if (live(ctx)) drafts.set(`${draftKey}:${name}`, control.value);
+      };
+      return control;
+    };
+    if ((savedScenes.items || []).length && (reports.items || []).length >= 2) {
+      const compare = panel("比较两次独立开局", "只核对同一保存起点下两份已关闭报告的种子、实例身份、首屏菜单和动作数量；不判断策略或轨迹相同。");
+      const sceneChoice = comparisonSelect(compare, "保存的起点", "environment-compare-scene",
+        savedScenes.items.filter(item => hex(item.artifact_id)).map(item => [item.artifact_id, item.name]),
+        savedScenes.items[0].artifact_id);
+      const choices = reports.items.filter(item => hex(item.artifact_id)).map(item =>
+        [item.artifact_id, `${item.status} · ${item.artifact_id.slice(0, 12)}`]);
+      const first = comparisonSelect(compare, "第一份报告", "environment-compare-first", choices, choices[0][0]);
+      const second = comparisonSelect(compare, "第二份报告", "environment-compare-second", choices, choices[1][0]);
+      compare.append(command(ctx, "environment-compare-save", "保存并查看比较", async () => {
+        const result = await request(ctx, "/api/local-environment/compare", {
+          scene_artifact_id:sceneChoice.value,
+          report_artifact_ids:[first.value, second.value],
+        }, csrf);
+        showComparison(result);
+      }, {disabled:!csrf}));
+      box.append(compare);
+    }
+    const comparisons = await request(ctx, "/api/local-environment/comparisons");
+    if ((comparisons.items || []).length) {
+      const history = panel("已保存的开局比较", "每份比较都有不可变起点和两份运行报告作为来源。");
+      for (const item of comparisons.items) {
+        if (!hex(item.artifact_id)) continue;
+        history.append(command(ctx, `environment-comparison-${item.artifact_id}`,
+          `查看比较 · ${item.artifact_id.slice(0, 12)}`, async () => {
+            const result = await request(ctx, `/api/local-environment/comparisons/${item.artifact_id}`);
+            showComparison(result);
+          }));
+      }
+      box.append(history);
+    }
+    box.append(comparisonDetail);
+    if (live(ctx)) environmentSnapshot = {
+      ctx, signature:JSON.stringify([data, savedScenes, reports, comparisons]),
+    };
     return box;
   }
 
@@ -4620,6 +4722,7 @@ window.SpireProject = (() => {
   return {
     reload: async () => {},
     refresh: async view => view === "datasets" ? refreshDataset() :
+      view === "local-environment" ? refreshEnvironment() :
       view === "local-models" && current?.view === view && live(current),
     openDatasetLibrary() {
       drafts.set("dataset-tab", "library");

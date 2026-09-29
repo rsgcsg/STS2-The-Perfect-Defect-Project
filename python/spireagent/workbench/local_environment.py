@@ -28,6 +28,8 @@ SCHEMA = "stpd/local-managed-environment-v1"
 PROFILE_SCHEMA = "stpd/local-managed-host-profile-v1"
 REPORT_SCHEMA = "stpd/local-managed-environment-report-v1"
 EVENT_SCHEMA = "stpd/local-managed-environment-event-v1"
+SCENE_SCHEMA = "stpd/local-managed-fixed-seed-start-v1"
+COMPARISON_SCHEMA = "stpd/local-managed-start-comparison-v1"
 PROFILE_FILE = "managed-host-profile-v1.json"
 JOURNAL_FILE = "managed-environment-session-v1.json"
 REPORT_ROOT = "managed-environment-reports"
@@ -338,6 +340,160 @@ class LocalEnvironmentService:
             return None
         return ManifestArtifactStore(LocalBlobStore(root, create=create, readonly=not create))
 
+    def _artifact(self, artifact_id: object, schema: str, role: str) -> dict[str, Any]:
+        if not isinstance(artifact_id, str) or re.fullmatch(r"[0-9a-f]{64}", artifact_id) is None:
+            raise BoundaryError("local_environment", "artifact_not_found")
+        store = self._report_store(create=False)
+        if store is None:
+            raise BoundaryError("local_environment", "artifact_not_found")
+        try:
+            manifest = store.get_manifest(artifact_id)
+            if manifest.kind != "analysis" or manifest.parameters.value().get("schema") != schema:
+                raise ValueError
+            value = decode_json(store.bytes(manifest.payload(role), maximum=8 * 1024 * 1024))
+            if not isinstance(value, dict) or value.get("schema") != schema:
+                raise ValueError
+            return value
+        except (OSError, KeyError, ValueError, BoundaryError) as error:
+            raise BoundaryError("local_environment", "artifact_not_found") from error
+
+    def scenes(self) -> dict[str, Any]:
+        store = self._report_store(create=False)
+        if store is None:
+            return {"schema": SCENE_SCHEMA, "items": []}
+        items = []
+        for artifact_id in store.manifest_ids():
+            manifest = store.get_manifest(artifact_id)
+            if manifest.parameters.value().get("schema") == SCENE_SCHEMA:
+                scene = self._artifact(artifact_id, SCENE_SCHEMA, "scene")
+                items.append({"artifact_id": artifact_id, "name": scene["name"],
+                              "seed": scene["seed"], "input_profile": scene["input_profile"]})
+        return {"schema": SCENE_SCHEMA, "items": items[-20:]}
+
+    def scene(self, artifact_id: object) -> dict[str, Any]:
+        return self._artifact(artifact_id, SCENE_SCHEMA, "scene")
+
+    def comparisons(self) -> dict[str, Any]:
+        store = self._report_store(create=False)
+        if store is None:
+            return {"schema": COMPARISON_SCHEMA, "items": []}
+        items = []
+        for artifact_id in store.manifest_ids():
+            manifest = store.get_manifest(artifact_id)
+            if manifest.parameters.value().get("schema") == COMPARISON_SCHEMA:
+                value = self._artifact(artifact_id, COMPARISON_SCHEMA, "comparison")
+                items.append({"artifact_id": artifact_id,
+                              "scene_artifact_id": value["scene_artifact_id"],
+                              "report_artifact_ids": value["report_artifact_ids"]})
+        return {"schema": COMPARISON_SCHEMA, "items": items[-20:]}
+
+    def comparison(self, artifact_id: object) -> dict[str, Any]:
+        return self._artifact(artifact_id, COMPARISON_SCHEMA, "comparison")
+
+    def save_scene(self, name: object) -> dict[str, Any]:
+        if not isinstance(name, str) or not (1 <= len(name.strip()) <= 80) or (
+            name != name.strip() or any(ord(char) < 32 for char in name)
+        ):
+            raise BoundaryError("local_environment", "scene_name_invalid")
+        with self.lock:
+            profile = _read_profile(self.config)
+            # The artifact is a fixed-seed start recipe, never a prior process snapshot.
+            scene = {"schema": SCENE_SCHEMA, "name": name, "scenario_id": SCENARIO["id"],
+                     "seed": SCENARIO["seed"], "character": SCENARIO["character"],
+                     "input_profile": profile["input_profile"],
+                     "host_package_pin": profile["host_package_pin"],
+                     "candidate_build": profile["audit"],
+                     "restoration": "fresh_managed_fixed_seed_new_run"}
+            producer_info = self._producer()
+            producer = Producer(REPOSITORY, producer_info["source_revision"],
+                                producer_info["uv_lock_sha256"])
+            store = self._report_store(create=True)
+            assert store is not None
+            payload = store.put_bytes("scene", json_bytes(scene))
+            manifest = Manifest("analysis", producer, payloads=(payload,),
+                                parameters=FrozenObject.of({"schema": SCENE_SCHEMA,
+                                                            "name": name}))
+            return {"artifact_id": store.publish(manifest), **scene}
+
+    def _validate_scene_start(self, scene_id: object, profile: dict[str, Any]) -> None:
+        scene = self.scene(scene_id)
+        if (scene.get("scenario_id") != SCENARIO["id"] or scene.get("seed") != SCENARIO["seed"]
+                or scene.get("character") != SCENARIO["character"]
+                or scene.get("restoration") != "fresh_managed_fixed_seed_new_run"
+                or scene.get("input_profile") != profile["input_profile"]
+                or scene.get("host_package_pin") != profile["host_package_pin"]
+                or scene.get("candidate_build") != profile["audit"]):
+            raise BoundaryError("local_environment", "scene_profile_mismatch")
+
+    @staticmethod
+    def _start_proof(
+        report: dict[str, Any], scene_id: str, scene: dict[str, Any]
+    ) -> dict[str, Any]:
+        identity = report.get("episode_identity")
+        provenance = identity.get("episode_provenance") if isinstance(identity, dict) else None
+        context = report.get("initial_context")
+        snapshot = context.get("snapshot") if isinstance(context, dict) else None
+        menu = snapshot.get("menu_actions") if isinstance(snapshot, dict) else None
+        if (report.get("scene_artifact_id") != scene_id
+                or report.get("status") != "stopped" or report.get("error_code") is not None
+                or report.get("input_profile") != scene["input_profile"]
+                or report.get("host_package_pin") != scene["host_package_pin"]
+                or not isinstance(identity, dict)
+                or identity.get("candidate_build") != scene["candidate_build"]
+                or not isinstance(provenance, dict)
+                or provenance.get("verdict") != "provenance_pass"
+                or provenance.get("requested_seed") != scene["seed"]
+                or provenance.get("actual_seed") != scene["seed"]
+                or not isinstance(provenance.get("runtime_instance_id"), str)
+                or not provenance["runtime_instance_id"]
+                or not isinstance(menu, dict) or menu.get("status") != "complete"
+                or not isinstance(menu.get("actions"), list)
+                or menu.get("materialized_count") != len(menu["actions"])
+                or menu.get("total_count") != len(menu["actions"])):
+            raise BoundaryError("local_environment", "repeatability_proof_unavailable")
+        events = report.get("events")
+        if not isinstance(events, list) or any(not isinstance(event, dict) or
+            event.get("error_code") is not None for event in events):
+            raise BoundaryError("local_environment", "repeatability_proof_unavailable")
+        return {"session_id": report["session_id"],
+                "runtime_instance_id": provenance["runtime_instance_id"],
+                "actual_seed": provenance["actual_seed"],
+                "input_profile": report["input_profile"],
+                "candidate_build": identity["candidate_build"],
+                "initial_menu_count": menu["total_count"],
+                "initial_menu_complete": True, "action_count": len(events),
+                "terminal_status": report["status"], "error_code": report.get("error_code")}
+
+    def compare(self, scene_id: object, report_ids: object) -> dict[str, Any]:
+        if (not isinstance(scene_id, str) or not isinstance(report_ids, list)
+                or len(report_ids) != 2 or report_ids[0] == report_ids[1]):
+            raise BoundaryError("local_environment", "comparison_inputs_invalid")
+        with self.lock:
+            scene = self.scene(scene_id)
+            reports = [self.report(report_id) for report_id in report_ids]
+            runs = [self._start_proof(report, scene_id, scene) for report in reports]
+            if runs[0]["runtime_instance_id"] == runs[1]["runtime_instance_id"] or (
+                runs[0]["session_id"] == runs[1]["session_id"]
+            ):
+                raise BoundaryError("local_environment", "same_runtime_instance")
+            result = {"schema": COMPARISON_SCHEMA, "scene_artifact_id": scene_id,
+                      "report_artifact_ids": report_ids, "status": "verified_fixed_seed_starts",
+                      "runs": runs,
+                      "scope": "two_independent_closed_fixed_seed_starts; "
+                               "no trajectory or policy equivalence"}
+            source = self._producer()
+            producer = Producer(REPOSITORY, source["source_revision"], source["uv_lock_sha256"])
+            store = self._report_store(create=True)
+            assert store is not None
+            payload = store.put_bytes("comparison", json_bytes(result))
+            manifest = Manifest("analysis", producer,
+                                parents=(Parent("scene", scene_id),
+                                         Parent("report-0", report_ids[0]),
+                                         Parent("report-1", report_ids[1])),
+                                payloads=(payload,),
+                                parameters=FrozenObject.of({"schema": COMPARISON_SCHEMA}))
+            return {"artifact_id": store.publish(manifest), **result}
+
     def _publish(self) -> None:
         if self.record["status"] not in TERMINAL:
             raise BoundaryError("local_environment", "report_not_terminal")
@@ -476,7 +632,9 @@ class LocalEnvironmentService:
         return {"source_revision": identity["source_revision"],
                 "uv_lock_sha256": identity["uv_lock_sha256"]}
 
-    def start(self, scenario_id: object) -> dict[str, Any]:
+    def start(
+        self, scenario_id: object, *, scene_artifact_id: object | None = None
+    ) -> dict[str, Any]:
         if scenario_id != SCENARIO["id"]:
             raise BoundaryError("local_environment", "scenario_unknown")
         with self.lock:
@@ -487,6 +645,8 @@ class LocalEnvironmentService:
             if self.record["status"] in TERMINAL and not self.record.get("report_artifact_id"):
                 raise BoundaryError("local_environment", "report_recovery_required")
             profile = _read_profile(self.config)
+            if scene_artifact_id is not None:
+                self._validate_scene_start(scene_artifact_id, profile)
             producer = self._producer()
             session_id = uuid.uuid4().hex
             previous = self.record
@@ -498,7 +658,8 @@ class LocalEnvironmentService:
                            # report reads must not reconstruct it from a later profile.
                            "host_package_pin": dict(profile["host_package_pin"]),
                            "producer": producer, "events": [], "context": None,
-                           "episode_identity": None}
+                           "initial_context": None, "episode_identity": None,
+                           "scene_artifact_id": scene_artifact_id}
             self.stopping = False
             self.cleanup_confirmed = False
             self.stop_outcome_unknown = False
@@ -560,7 +721,8 @@ class LocalEnvironmentService:
             with self.lock:
                 if self.stopping or self.record.get("session_id") != session_id:
                     return
-                self.record.update(status="active", context=context, episode_identity=identity)
+                self.record.update(status="active", context=context, initial_context=context,
+                                   episode_identity=identity)
                 try:
                     self._save()
                 except Exception as error:
