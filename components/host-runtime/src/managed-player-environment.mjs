@@ -1117,8 +1117,7 @@ function currentSurface(state, ctx) {
       const unsupportedCardTarget = rawHand.some((card) =>
         card.can_play === true && !supportsManagedCardTargetType(card.target_type));
       const unsupportedPotionTarget = rawPotions.some((potion) =>
-        potion.can_use === true
-          && (potion.binding_supported !== true || !supportsManagedPotionTargetType(potion.target_type)));
+        potion.binding_supported !== true || !supportsManagedPotionTargetType(potion.target_type));
       const playWindowOpen = state.is_play_phase === true;
       const semanticFactsComplete = typeof state.encounter_type === "string"
         && typeof state.turn_owner === "string"

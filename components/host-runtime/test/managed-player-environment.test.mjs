@@ -648,14 +648,23 @@ test("combat projection fails closed for target types without an exact current b
   const base = {
     type: "decision",
     decision: "combat_play",
-    context: { act: 1, floor: 2, room_type: "Combat" },
+    context: {
+      act: 1, act_index: 0, act_definition_id: "OVERGROWTH", act_name: "Overgrowth",
+      floor: 2, total_floor: 2, ascension: 0, room_type: "Combat",
+      bosses: [{ id: "VANTOM_BOSS", name: "Vantom", order: 0 }], modifiers: []
+    },
+    encounter_type: "normal", turn_owner: "player", round: 1,
     is_play_phase: true,
+    exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [], player_statuses: [],
     hand: [{
       index: 0, native_ref: "card-a", id: "CARD.STRIKE", name: "Strike", can_play: true,
       target_type: "AnyEnemy", valid_target_refs: ["enemy-a"]
     }],
-    enemies: [{ index: 0, native_ref: "enemy-a", name: "Enemy A", hp: 10, max_hp: 10 }],
-    player: { ...player(), native_ref: "player-a", potions: [] }
+    enemies: [{
+      index: 0, native_ref: "enemy-a", id: "MONSTER.CULTIST", combat_id: 1,
+      name: "Enemy A", hp: 10, max_hp: 10, block: 0, statuses: [], intents: []
+    }],
+    player: { ...player(), native_ref: "player-a", character_id: "IRONCLAD", max_potion_slots: 3, potions: [] }
   };
 
   for (const targetType of ["AnyAlly", "FutureUnknownTarget"]) {
@@ -687,6 +696,31 @@ test("combat projection fails closed for target types without an exact current b
     assert.equal(projection.snapshot.bound_actions.status, "complete", targetType);
     assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.verb), ["end_turn", "use"]);
   }
+
+  const supportedButUnavailable = projectManagedCandidateDecision({
+    state: { ...base, hand: [], player: { ...base.player, potions: [{
+      index: 0, slot: 0, native_ref: "potion-unavailable", id: "POTION.TEST", name: "Test Potion",
+      can_use: false, can_discard: true, binding_supported: true, target_type: "Self",
+      hover_facts_complete: true, keywords: [], card_previews: []
+    }] } }, ...projectionIdentity
+  });
+  assert.equal(supportedButUnavailable.snapshot.completeness.status, "complete");
+  assert.equal(supportedButUnavailable.snapshot.bound_actions.status, "complete");
+  assert.deepEqual(supportedButUnavailable.snapshot.bound_actions.actions.map((action) => action.verb), ["end_turn", "activate"]);
+
+  const unavailableUnknownTarget = projectManagedCandidateDecision({
+    state: { ...base, hand: [], player: { ...base.player, potions: [{
+      index: 0, slot: 0, native_ref: "potion-unbound", id: "POTION.TEST", name: "Test Potion",
+      can_use: false, can_discard: true, binding_supported: false, target_type: "FutureUnknownTarget",
+      hover_facts_complete: true, keywords: [], card_previews: []
+    }] } }, ...projectionIdentity
+  });
+  assert.equal(unavailableUnknownTarget.snapshot.completeness.status, "partial");
+  assert.equal(unavailableUnknownTarget.snapshot.bound_actions.status, "unavailable");
+  assert.deepEqual(unavailableUnknownTarget.snapshot.bound_actions.actions, []);
+  assert.equal(unavailableUnknownTarget.bindings.size, 0);
+  assert.ok(unavailableUnknownTarget.snapshot.completeness.missing.includes(
+    "native_unsupported_potion_target_type_or_binding"));
 
   const potion = {
     ...base,
