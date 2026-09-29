@@ -51,6 +51,45 @@ public sealed class TextMenuV2Tests
     }
 
     [Fact]
+    public void StagingLabelsUsePublicObjectNamesAndDisambiguateSameNamedTargets()
+    {
+        TextMenuFrame frame = Frame(targeted: true);
+        frame = frame with
+        {
+            Page = frame.Page with
+            {
+                Referents = frame.Page.Referents.Concat(new[]
+                {
+                    new PlayerEnvironmentReferent("enemy-b", "enemy", "entity", "Jaw Worm",
+                        new(true, true, false, false, "native_visible_fact"), null, null)
+                }).ToArray()
+            },
+            CardPlays = frame.CardPlays.Concat(new[]
+            {
+                frame.CardPlays.Single() with
+                {
+                    Key = "second-exact-play",
+                    Label = "Play Strike -> Jaw Worm",
+                    Arguments = new[] { new PlayerEnvironmentBoundActionArgument("target", "enemy-b") }
+                }
+            }).ToArray()
+        };
+        var executor = Executor(() => frame);
+        TextMenuV2Snapshot root = executor.Observe();
+        TextMenuAction card = root.MenuActions.Actions.Single(action => action.Verb == "select_card");
+        Assert.Equal("Choose card Strike", card.Label);
+        Assert.DoesNotContain("Jaw Worm", card.Label);
+        TextMenuV2Snapshot targets = executor.Submit(Request(root, "select_card", "card-label"))
+            .Successor!;
+        TextMenuAction[] options = targets.MenuActions.Actions
+            .Where(action => action.Verb == "select_target").ToArray();
+        Assert.Equal(new[] { "Choose target Jaw Worm (1 of 2 shown)",
+            "Choose target Jaw Worm (2 of 2 shown)" }, options.Select(action => action.Label));
+        Assert.Equal(new[] { "enemy-a", "enemy-b" },
+            options.Select(action => action.SubjectReferentId));
+    }
+
+    [Fact]
     public void TargetedCardStagesOnlyTextBeforeOneExactNativePlay()
     {
         int calls = 0;
