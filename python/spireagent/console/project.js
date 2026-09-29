@@ -280,6 +280,11 @@ window.SpireProject = (() => {
       local_model_registration_invalid: "本机模型登记状态格式未知；未发起模型操作。请刷新状态。",
       text_runtime_profile_required: "本机文本菜单运行环境尚未准备；请先完成本机运行环境设置。",
       text_runtime_local_install_required: "本机文本菜单运行组件尚未准备；请检查运行环境状态。",
+      trusted_text_runtime_kit_unavailable: "当前工作台没有已选定且可验证的开发者工具包；请先使用已批准的发行包准备本机环境。",
+      trusted_text_runtime_kit_invalid: "当前开发者工具包校验失败；请检查发行包和源码状态，不能使用本地散文件替代。",
+      trusted_text_runtime_kit_changed: "开发者工具包文件在校验后发生变化；未安装运行组件，请核对发行包后明确重试。",
+      trusted_text_runtime_asset_not_bundled: "这份已验证发行包没有附带该文本运行组件；当前没有可用的固定下载资产。",
+      private_profile_collision: "现有本机 Runtime pin 与发行包不同；不会自动改绑，请核对后处理。",
       text_menu_capabilities_unavailable: "暂时无法核对当前游戏的文本菜单能力。请打开游戏后刷新，再明确重试。",
       text_menu_capabilities_incompatible: "当前游戏环境不符合此模型的文本菜单要求；尚未登记。",
       registration_metadata_invalid: "本机模型登记资料无法安全确认；请检查恢复状态。",
@@ -2471,6 +2476,26 @@ window.SpireProject = (() => {
           stopModelWatch();
           await reload(ctx);
         }));
+    const runtimeSetup = panel(
+      "准备本机模型环境",
+      "若当前工作台来自已验证发行包，可准备固定文本 Runtime；已有精确安装会直接复用。此操作不会登记或加载模型。",
+    );
+    const lastSetup = state?.last_text_runtime_preparation;
+    if (lastSetup?.status === "ready")
+      runtimeSetup.append(el("p", `上次${lastSetup.runtime_profile === "text-menu-m2-v1" ? "记忆模型" : "文本菜单"}运行组件准备已通过核验；实际加载仍会重新检查。`, "small muted"));
+    const canPrepareRuntime = state && !state.loaded &&
+      state.operation?.status !== "pending" &&
+      !["command_unknown", "recovery_required"].includes(state.status);
+    for (const [profile, label] of [
+      ["text-menu-v1", "准备文本菜单运行环境"],
+      ["text-menu-m2-v1", "准备记忆模型运行环境"],
+    ])
+      runtimeSetup.append(command(ctx, `prepare-runtime-${profile}`, label, async () => {
+        await request(ctx, "/api/local-models/prepare-text-runtime", {runtime_profile: profile});
+        note(ctx, "本机服务已接收准备请求；请以操作状态和安装回执为准。尚未登记或加载模型。");
+        await reload(ctx);
+      }, {disabled: !canPrepareRuntime}));
+    box.append(runtimeSetup);
     const requestedSelection = new URLSearchParams(ctx.search).get("id");
     const focusSelection = selectionId(requestedSelection) ? requestedSelection : null;
     const preparations = panel(
@@ -2656,16 +2681,23 @@ window.SpireProject = (() => {
       downloads.append(downloaded);
     }
     box.append(downloads);
-    if (catalog?.evaluations?.length) {
-      const evaluations = panel(
-        "本机评估历史",
-        "最多保留展示 100 条已校验的本地评估记录；不会自动上传。",
-      );
-      for (const value of catalog.evaluations)
-        evaluations.append(evaluationPanel(value));
-      evaluations.append(link("查看与分享实战记录", route("evaluations")));
-      box.append(evaluations);
+    const evaluations = panel("本机评估历史",
+      "这里只概览本次返回的本机记录（至多 100 条）；完整报告在评估结果页，不会自动上传。");
+    if (Array.isArray(catalog?.evaluations)) {
+      const records = catalog.evaluations;
+      const passed = records.filter(value => value?.evidence_verification === "pass").length;
+      const failed = records.filter(value => ["fail", "failed"].includes(value?.evidence_verification)).length;
+      evaluations.append(fields([
+        ["本次展示", count(records.length)],
+        ["证据核验通过", count(passed)],
+        ["证据核验未通过", count(failed)],
+        ["核验状态未知或未提供", count(records.length - passed - failed)],
+      ]));
+    } else {
+      evaluations.append(el("p", "本机评估历史暂不可用；未按空记录处理。", "small muted"));
     }
+    evaluations.append(link("查看本机实战记录与完整报告", route("evaluations")));
+    box.append(evaluations);
     if (live(ctx)) watchLocalModel(ctx, state, budgetHost);
     return box;
   }
@@ -2842,8 +2874,8 @@ window.SpireProject = (() => {
           : variant === "reset" ? "Reset-K1（每步重置，独立训练对照）" : "未知（模型结构不受支持）"],
         ["结果类型", variant ? "训练产物；开发集评估请在下方单独查看或启动"
           : "训练产物；模型结构未识别，暂不开放后续操作"],
-        ["运行状态", variant
-          ? "需先具备固定的记忆模型运行包与当前环境能力，才能登记或加载"
+        ["加载条件说明", variant
+          ? "登记与加载时分别核验本机运行组件和当前环境；此处不表示实时状态"
           : "模型结构不受支持；不能从此页导出、登记或评估"],
       ]));
       return overview;
@@ -3010,6 +3042,8 @@ window.SpireProject = (() => {
       card.append(registerAction("重新核对登记"));
     } else if (status.status === "unavailable") {
       card.append(el("p", localModelRegistrationReason(status.reason_code), "small muted"));
+      if (["text_runtime_profile_required", "text_runtime_local_install_required"].includes(status.reason_code))
+        card.append(link("准备本机模型环境", route("local-models")));
       card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
     } else {
       card.append(el("p", status.reason_code === "source_binding_changed"

@@ -246,6 +246,11 @@ processes running as the same OS user; separate OS accounts provide that boundar
 | 成员管理（管理员） | invitation, quotas and revocation |
 | 设置与诊断 | detailed source/readiness, maintenance and administrator collection explanation settings |
 
+The local model page summarizes only the evaluation records returned in its current catalog
+read (at most 100), with passed, failed and unconfirmed verification kept separate. Open
+**评估结果** for each full local report and its explicit sharing control; the model-page
+summary does not imply a complete history, a latest result or a game outcome.
+
 Existing view URLs remain usable. Secondary statistics/download/detail views belong to these
 main tasks. See [the unified member flow](UNIFIED_TASK_FLOW.zh-CN.md) for first-use and daily use.
 
@@ -360,6 +365,37 @@ package inventory; collectors do not need model dependencies merely to record or
 Readiness checks artifact/config/source hashes, the installed Runtime/Connector, Node, required
 checkpoint evidence and backend. Model weights are checked during loading; native compatibility
 is checked by the Runtime before decisions. A download or `ready_to_load` does not prove either.
+
+The reviewed source checkout owns shipped adapter code and its code digest. The private
+`state_dir/models` directory owns text Runtime profiles, local selections and new registration
+bindings. Switching to a checkout with identical adapter source preserves a private selection;
+changed source blocks its old binding until an explicit verified export registration creates a
+new selection. An explicit offline Runtime install can stage its kit-verified profile into this
+private directory. A missing private profile is reported separately from a missing or drifted
+Runtime install.
+
+The local **准备本机模型环境** panel has two fixed actions: text-menu v1 and M2.
+Each explicit request reuses an exact installed private Runtime and pin when both
+still validate. Otherwise it requires the Workbench to be running from the selected
+developer-kit release, invokes that kit owner's full `status` verifier, checks the
+fixed staged pair against its verified inventory hashes, publishes a missing pin
+under `state_dir/models`, and uses the existing pinned Runtime installer. A
+development checkout with no selected kit can only reuse an already verified
+private install. A kit without the requested pair, or a changed/colliding pin,
+blocks preparation; the browser cannot choose a source path or invent a release
+download. The action does not migrate old checkout records, register a model, load
+weights, start Runtime or operate the game. Status reads do not prepare anything.
+
+For checkout-era metadata, close the Workbench and use
+`python -m spireagent.workbench project migrate-model-state --config /ABS/project.json --legacy-python-root /ABS/old-checkout/python`.
+The same explicit operation is available to a setup/prepare control through the owning
+`migrate_legacy_model_state(config, legacy_python_root)` API after the operator selects that
+old checkout; catalog and readiness reads never run it.
+This validates the old profile against the current exact local Runtime/Connector install,
+archives old private records without changing them, and imports only matching profile pins.
+Old selections remain historical and non-loadable; export verification and explicit registration
+create a current selection. Repeating the same migration is idempotent; divergent private pins
+or unsafe paths block it. The command does not move weights or search other checkouts.
 
 The registered executable selection is the retained **S1 Defect A0 ordinary-combat** lane, bounded
 by its exact policy support manifest (`combat_turn`, play/end-turn; no selector or Full Run).
