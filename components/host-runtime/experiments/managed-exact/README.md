@@ -93,7 +93,10 @@ The event-option text page is admitted only when the current native event room,
 event instance, and every ordered option have exact private identities and
 lock facts. Locked options remain visible without an executable action. The
 native choice rechecks room, event, option, index, and unlocked state before
-calling the game's `Chosen()` method. Event completion uses the existing native
+calling the game's `Chosen()` method, including inside the delayed callback;
+that callback uses the captured validated option object. A callback failure
+after dispatch remains an unknown delivery without automatic retry. Event
+completion uses the existing native
 proceed/map presentation branch; a same-index replacement or missing identity
 does not fall back to an ordinal-only mutation. This is a Managed source/build
 candidate, not native UI parity or a full-run qualification.

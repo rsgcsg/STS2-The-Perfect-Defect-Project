@@ -161,8 +161,10 @@ native bindings private and rechecks the current page before dispatch.
 Event options retain the game's visible order and locked options remain visible
 but non-executable. An executable event choice carries the current native room,
 event, and option identities as private operands; the native handler rechecks
-those identities, the index, and unlocked state before calling the game's
-choice. An unfinished event with no options is unsupported. Rest-site option
+those identities, the index, and unlocked state inside the delayed callback
+immediately before calling the game's choice. A callback failure after dispatch
+has unknown delivery and closes mutation authority for that session. An unfinished
+event with no options is unsupported. Rest-site option
 submission carries the observed native option identity for
 execute-time validation. Deck-upgrade selection carries the exact native
 invocation preferences and original card references: selection enters a

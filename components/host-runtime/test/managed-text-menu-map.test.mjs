@@ -144,14 +144,44 @@ test("event text menu keeps every visible option and exact current private bindi
     { ...eventDecision(), options: [{ ...eventDecision().options[0], native_ref: null }] },
     { ...eventDecision(), options: [{ ...eventDecision().options[0], index: 1 }] },
     { ...eventDecision(), options: [{ ...eventDecision().options[0], is_locked: null }] },
+    { ...eventDecision(), options: [null, eventDecision().options[1]] },
+    { ...eventDecision(), options: [eventDecision().options[0],
+      { ...eventDecision().options[1], native_ref: "native-option-a" }] },
     { ...eventDecision(), options: [] }
   ]) {
     const unavailable = projectManagedCandidateDecision({ state: bad, ...identity }).snapshot;
     assert.equal(unavailable.bound_actions.status, "unavailable");
+    assert.equal(unavailable.interaction.content.surface.options.length, bad.options.length);
     assert.equal(new ManagedTextMenuSessionAdapter({ observe: () => unavailable,
       async submit() { throw new Error("incomplete event dispatched"); } }).observe().menu_actions.status,
     "unavailable");
   }
+});
+
+test("event callback failure after dispatch remains unknown and cannot be retried", async () => {
+  let nativeCalls = 0;
+  const process = { async request(request) {
+    if (request.cmd === "start_run") return eventDecision();
+    nativeCalls += 1;
+    return { type: "error", message: "The bound event option changed before native invocation." };
+  } };
+  const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+  await session.mount({ seed: "EVENT-UNKNOWN" });
+  const adapter = new ManagedTextMenuSessionAdapter(session);
+  const page = adapter.observe();
+  const request = { request_id: "event-callback-unknown", expected_snapshot_id: page.snapshot_id,
+    action_id: page.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE };
+  const first = await adapter.submit(request);
+  assert.equal(first.status, "unknown");
+  assert.equal(first.native_delivery, "unknown");
+  assert.equal(first.retry, "never");
+  assert.equal(first.successor, null);
+  assert.equal(session.tainted, true);
+  assert.deepEqual(await adapter.submit(request), first);
+  assert.equal(nativeCalls, 1);
+  const later = await adapter.submit({ ...request, request_id: "event-callback-later" });
+  assert.equal(later.status, "not_applied");
+  assert.equal(nativeCalls, 1);
 });
 
 test("reward text menu preserves every current callback choice and native binding", async () => {

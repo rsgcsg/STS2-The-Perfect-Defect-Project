@@ -34,8 +34,8 @@ test("managed candidate source and measured build identity match the manifest", 
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "b223141f4bde996d06b86960e32bbd14e69e3fdf74894b4c35fe58c0edc662bd");
-  assert.equal(manifest.expected_build.artifact_mvid, "29167d9c-6a36-4753-8215-608722a062f2");
+  assert.equal(manifest.expected_build.artifact_sha256, "813cb77d3ee9c896cfbfb0ef601e262b0f0fd2389f40c0946e06336e34e94151");
+  assert.equal(manifest.expected_build.artifact_mvid, "2585772e-1c62-4d61-8568-d39809bf5bec");
   assert.equal(manifest.previous_accepted_build.artifact_sha256, "ca5f16ce98fbaab2e24a49927d7faec03c04fbaa73df549fa69adf17e8d5a260");
   assert.equal(manifest.previous_accepted_build.artifact_mvid, "46fba5f2-1db0-4d90-ad83-29d05e3d2139");
   assert.equal(manifest.last_measured_build.artifact_sha256, "dd4b10f22606203f8825569c2e0478626d96ac1166d2cd9430591be607d808a6");
