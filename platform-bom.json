@@ -269,9 +269,9 @@
       "source_revision": "e19b30315015664a5647ab351cdcefb09417f275",
       "source_digest_sha256": "d227321727d07edd2d4c67928edec439c26f156494dd9cfab98d2bac4debf346",
       "version": "0.1.0-rc.1",
-      "current_component_source_revision": "134059925730ccb76d2080271acb921542276e62",
-      "current_component_source_digest_sha256": "f3cb50c4b34115516596c0ca729bbee7db9628af74a6f5d744fe56d10a0f8d3b",
-      "current_component_version": "0.1.0-rc.13",
+      "current_component_source_revision": "e1944a40e92427ecb568b9308cd473b715d6df07",
+      "current_component_source_digest_sha256": "8b2e11f195a84e23e26fa8d4d3fe87ec9b8f1abc8ec37626fd44bf7e0e63f8e4",
+      "current_component_version": "0.1.0-rc.14",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
     "annotator": {

@@ -29,9 +29,9 @@ port3在以下已有owner边界同步旋转记忆和history：Human/模式切换
 
 新增明确history projection/profile身份贯通训练输入、模型manifest/portable package/adapter/Workbench recipe。现有六个engine实现hash文件不变；底层 previous_actual_action tensor 已有轻量动作编码入口，feedback仍None。原有observation-only包仍用port2，新history包才用port3。
 
-共享纯函数从原snapshot完整菜单按action_id取得动作语义，冻结token IDs而非旧embedding；按结果basis/domain做明确轻量表示。STPD adapter/scorer缓存最多一份已评分菜单及token IDs，Runtime只持有模型中立结果绑定元数据。绑定不匹配拒绝，不能按当前菜单位置/同名动作猜测。decision_id在Runtime收到模型响应后才生成，adapter不能声称与先前模型请求中不存在的decision_id独立核对；它作为Runtime来源的关联ID，仅校验格式并随结果记录。adapter独立核对snapshot_id、candidate_digest、action_id、effect_domain及一次性消费。缓存和模型memory在同一成功边界提交；同页但history变化不能复用旧scores。
+共享纯函数从原snapshot完整菜单按action_id取得动作语义，冻结token IDs而非旧embedding；按结果basis/domain做明确轻量表示。STPD adapter/scorer缓存最多一份已评分菜单及token IDs，Runtime只持有模型中立结果绑定元数据。绑定不匹配拒绝，不能按当前菜单位置/同名动作猜测。decision_id在Runtime收到模型响应后才生成，adapter不能声称与先前模型请求中不存在的decision_id独立核对；它作为Runtime来源的关联ID，仅校验格式并随结果记录。adapter独立核对snapshot_id、candidate_digest、action_id、effect_domain及一次性消费。缓存和模型memory在同一成功边界提交；同页携带非空history明确拒绝，无history的同页重读保持缓存幂等。
 
-离线只消费当前观察前已可用、未消费的交互：Agent持久化outcome序号<当前input序号；Managed严格已验证顺序；Human row2使用capture C、completed-append W、source physical S，basis=last_known_human_input_witness；row1为unknown/null。Human不是全局完整输入流。C/W只解决录制可用顺序，不把每次独立Witness菜单sequence=1改成在线持续会话序号。
+离线只消费当前观察前已可用、未消费的交互：Agent必须使用当前input保存的observation_context精确引用此前持久化outcome，按真实continuity_token分段；缺少该元数据的旧档案不支持新history profile。Managed严格已验证顺序；Human row2使用capture C、completed-append W、source physical S，basis=last_known_human_input_witness；row1为unknown/null。Human不是全局完整输入流。C/W只解决录制可用顺序，不把每次独立Witness菜单sequence=1改成在线持续会话序号。
 
 Human单槽的明确规则：同段同运行身份内，选择C_i < C_current且S_i <= W_current的首次可用accepted witness中最大已完成S，称最后完成的已知输入见证；本次水位覆盖的其余旧候选同时退休，不能在后续观察逐条冒充新交互。无法定位、跨段或身份不符保持null并保守断开连续段。此定义不声称全局立即上一动作。单个已知见证只能第一次可用时进入记忆一次；后续被动新观察没有新交互则None。当前label永不进入当前步记忆。旧记录原字节不变、旧训练结果不回写、旧权重不重新贴标签。
 
@@ -43,7 +43,7 @@ STPD新profile：Human嵌套C/W/S排除未来、原row1为null；菜单重排不
 
 六个engine文件原字节仅保留旧权重engine身份，不代表adapter源码改变后旧code_sha256仍匹配；新adapter安装/绑定必须显式生成并照常严格核验。旧port2 exact-key/completion/continuity/同页缓存不改义，Human事件与在线缓存写入次数差异不静默抹平。
 
-Runtime与STPD分别由单owner实现，共用上述合同；Evidence只核验已有事件与新版adapter身份，不决定模型记忆或训练准入。最终以真实NDJSON输入、导出包与已验证事件进行合成端到端检查。源码、测试、临时安装、真实游戏和模型质量各自记录，本文不代替这些证据。
+Runtime与STPD分别由单owner实现，共用上述合同；Evidence核验新版adapter身份、取消事件与observation_context的精确关联，不决定模型记忆或训练准入。最终以真实NDJSON输入、导出包与已验证事件进行合成端到端检查。源码、测试、临时安装、真实游戏和模型质量各自记录，本文不代替这些证据。
 
 ## 用户与模型看到什么
 
@@ -96,4 +96,4 @@ port 3 的 `text_decision_input.observation_context` 必须保存已验证 compl
 在线相同页面的无历史重复请求仍幂等返回缓存、不重复更新记忆。现有训练 step
 不表达这种缓存读取，不能默默丢标签或多写一次记忆假装等价。Human 独立见证帧
 仍按 capture/完成水位语义，不套用连续 Connector snapshot 序号规则。
-普通 dev evaluation 对新 profile 的资格需单独核验；旧 K8 指标不转移。
+普通 dev evaluation 尚不支持新 history profile；本包没有把它标为可用。下一项在 STPD evaluation owner 内沿用同一投影与 train/dev 隔离补齐，旧 K8 指标不转移。
