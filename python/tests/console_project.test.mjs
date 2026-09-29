@@ -144,6 +144,8 @@ function setup({
   curationStatus = {schema: "stpd/local-curation-preparation-v1", status: "not_applicable"},
   query = "",
   renderOnReload = false,
+  sceneData = {schema:"stpd/local-managed-fixed-seed-start-v1",items:[]},
+  comparisonData = {schema:"stpd/local-managed-start-comparison-v1",items:[]},
 } = {}) {
   const calls = [],
     notice = new Element("div"),
@@ -197,7 +199,11 @@ function setup({
       const body = url === "/api/local-recordings/import/status"
         ? importStatus
         : url === "/api/local-workspace/curation"
-          ? curationStatus : await handler(url, options);
+          ? curationStatus
+          : view === "local-environment" && url === "/api/local-environment/scenes"
+            ? sceneData
+            : view === "local-environment" && url === "/api/local-environment/comparisons"
+              ? comparisonData : await handler(url, options);
       return {
         ok: !(body?.httpStatus >= 400),
         status: body?.httpStatus || 200,
@@ -3381,7 +3387,8 @@ test("environment page explains missing setup without accepting browser paths", 
   assert.equal(action(page, "environment-start-managed-defect-a0-map-prefix-20260929").disabled, true);
   assert.equal(post(env.calls).length, 0);
   assert.deepEqual(env.calls.map(call => call.url),
-    ["/api/local-environment", "/api/local-environment/reports"]);
+    ["/api/local-environment", "/api/local-environment/scenes",
+      "/api/local-environment/reports", "/api/local-environment/comparisons"]);
   assert.doesNotMatch(text(page), /browser-csrf/);
 });
 
@@ -3411,6 +3418,51 @@ test("cold local environment starts from browser status CSRF without cloud ident
   assert.deepEqual(body(writes[0]), {scenario_id:scenarioId});
   assert.equal(writes[0].options.headers["X-CSRF-Token"], "browser-csrf");
   assert.equal(env.reloads, 1);
+});
+
+test("saved fixed-seed scene and comparison require explicit browser commands", async () => {
+  const scenarioId = "managed-defect-a0-map-prefix-20260929";
+  const sceneId = id("c"), firstReport = id("a"), secondReport = id("b");
+  const sceneData = {schema:"stpd/local-managed-fixed-seed-start-v1",items:[
+    {artifact_id:sceneId,name:"A0 start",seed:"M2H0ST20260929A",input_profile:"text-menu-v2"},
+  ]};
+  const env = setup({view:"local-environment",identity:{status:"local_only"},sceneData,
+    handler:async (url,options) => {
+      if (url === "/api/local-environment") return {
+        schema:"stpd/local-managed-environment-v1",availability:"configured",
+        input_profile:"text-menu-v2",csrf_token:"scene-csrf",
+        scenarios:[{id:scenarioId,label:"A0",seed:"M2H0ST20260929A",character:"Defect",scope:"固定种子"}],
+        session:{status:"idle"},
+      };
+      if (url === "/api/local-environment/reports") return {items:[
+        {artifact_id:firstReport,status:"stopped"},{artifact_id:secondReport,status:"stopped"},
+      ]};
+      if (url === "/api/local-environment/scenes/save") return {artifact_id:sceneId,name:body({options}).name};
+      if (url === "/api/local-environment/start") return {status:"starting"};
+      if (url === "/api/local-environment/compare") return {
+        artifact_id:id("d"),status:"verified_fixed_seed_starts",
+        scene_artifact_id:sceneId,report_artifact_ids:[firstReport,secondReport],
+      };
+      throw new Error(`unexpected ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.equal(post(env.calls).length,0);
+  assert.match(text(page),/不是游戏存档/);
+  field(page,"environment-scene-name").value = "A0 named";
+  await action(page,"environment-scene-save").onclick();
+  await action(page,`environment-scene-start-${sceneId}`).onclick();
+  await action(page,"environment-compare-save").onclick();
+  const writes = post(env.calls);
+  assert.deepEqual(writes.map(call => call.url),[
+    "/api/local-environment/scenes/save", "/api/local-environment/start",
+    "/api/local-environment/compare",
+  ]);
+  assert.deepEqual(body(writes[0]),{name:"A0 named"});
+  assert.deepEqual(body(writes[1]),{scenario_id:scenarioId,scene_artifact_id:sceneId});
+  assert.deepEqual(body(writes[2]),{scene_artifact_id:sceneId,
+    report_artifact_ids:[firstReport,secondReport]});
+  assert.ok(writes.every(call => call.options.headers["X-CSRF-Token"] === "scene-csrf"));
 });
 
 test("environment renders the complete current menu and submits one exact binding", async () => {
