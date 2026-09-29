@@ -88,17 +88,21 @@ class OnlineM2Scorer:
         return cls(model, tokenizer, config)
 
     def observe_and_score(self, *, continuity_token: str,
-                          snapshot_bytes: bytes) -> OnlineScores:
+                          snapshot_bytes: bytes, expected_candidate_digest: str | None = None,
+                          expected_candidate_count: int | None = None) -> OnlineScores:
         if not self._lock.acquire(blocking=False):
             raise BoundaryError("online_m2", "concurrent_observation")
         try:
             return self._observe_and_score(continuity_token=continuity_token,
-                                           snapshot_bytes=snapshot_bytes)
+                                           snapshot_bytes=snapshot_bytes,
+                                           expected_candidate_digest=expected_candidate_digest,
+                                           expected_candidate_count=expected_candidate_count)
         finally:
             self._lock.release()
 
     def _observe_and_score(self, *, continuity_token: str,
-                           snapshot_bytes: bytes) -> OnlineScores:
+                           snapshot_bytes: bytes, expected_candidate_digest: str | None,
+                           expected_candidate_count: int | None) -> OnlineScores:
         if (not isinstance(continuity_token, str) or not continuity_token
                 or not isinstance(snapshot_bytes, bytes)):
             raise BoundaryError("online_m2", "observation_identity_required")
@@ -117,7 +121,7 @@ class OnlineM2Scorer:
         sequence = snapshot.get("sequence")
         session = snapshot.get("session")
         if (not isinstance(snapshot_id, str) or not snapshot_id
-                or type(sequence) is not int or sequence < 1
+                or type(sequence) is not int or sequence < 0
                 or not isinstance(snapshot.get("observed_at"), str)
                 or not snapshot["observed_at"]
                 or not isinstance(session, dict)
@@ -140,6 +144,10 @@ class OnlineM2Scorer:
                 if sequence != self._sequence or digest != self._snapshot_digest:
                     raise BoundaryError("online_m2", "snapshot_identity_reused")
                 assert self._cached is not None
+                if (expected_candidate_digest is not None
+                        or expected_candidate_count is not None):
+                    self._check_candidate_binding(self._cached, expected_candidate_digest,
+                                                  expected_candidate_count)
                 return self._cached
             if sequence <= self._sequence:
                 raise BoundaryError("online_m2", "observation_order_reversed")
@@ -149,6 +157,10 @@ class OnlineM2Scorer:
         # The projector renders object insertion order. Normalize that order so
         # equivalent JSON spellings produce the same model input on first read.
         public = project_memory_snapshot(snapshot)
+        if (expected_candidate_digest is not None or expected_candidate_count is not None):
+            self._check_candidate_binding(
+                OnlineScores(public.action_ids, (), public.candidate_digest),
+                expected_candidate_digest, expected_candidate_count)
         if len(public.action_ids) > self._config.max_actions_per_step:
             raise BoundaryError("online_m2", "catalog_limit_no_truncation")
         row = encode_memory_texts(
@@ -188,3 +200,11 @@ class OnlineM2Scorer:
         self._snapshot_digest = digest
         self._cached = result
         return result
+
+    @staticmethod
+    def _check_candidate_binding(result: OnlineScores, digest: str | None,
+                                 count: int | None) -> None:
+        if (not isinstance(digest, str) or len(digest) != 64
+                or type(count) is not int or count != len(result.action_ids)
+                or digest != result.candidate_digest):
+            raise BoundaryError("online_m2", "candidate_binding_mismatch")

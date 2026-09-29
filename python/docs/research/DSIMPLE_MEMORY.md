@@ -65,6 +65,37 @@ does not determine what starts a game, whether Human intervened, or whether an
 action was executed. It is a synchronous research component, not a Policy
 Runtime adapter or a live service.
 
+The research-only `memory_export.export_memory_package` can now package a
+completed observed-input-v2 M2 run after the existing run loader replays its
+stored projection and verifies the completed checkpoint/model/result chain.
+The portable directory contains a bounded manifest, tokenizer, and tensor-tree
+weights. The manifest pins the canonical current-page renderer, OBS/ACT wrapper,
+projection configuration, source-map digest, artifact IDs and byte digests; it
+contains no source map, Human page, private source path, optimizer state, or
+active memory. It states `evaluation_status=not_run` and
+`qualification=engineering_only`. Local source-purpose and training-use
+admission belong to the caller's ledger owner; a copied package proves byte
+integrity and declared lineage, not permission, Human origin, quality, or an
+independent evaluation.
+
+`memory_policy_installation` binds such a package to caller-supplied environment
+and support facts with a code/config/package pin. `memory_port` is an opt-in
+decision-only NDJSON port-2 candidate: the request adds only an opaque
+`continuity_token` to the existing five input fields; the unchanged score
+output has a sibling completion receipt with that token, snapshot ID and
+sequence. The adapter checks the entire text-menu catalog, support and exact
+candidate binding before the scorer's observation write. It creates no native
+operands, delivery callback, game identity, or quality claim. No Workbench
+registration, Runtime profile/pin, Connector behavior, or live activation is
+part of this research package.
+The current observed-input-v2 bridge trains with
+`previous_actual_action=None` and `public_feedback=None`, and port-2 inference
+uses those same absent optional channels. The port does not reinterpret a
+selected index as an executed action or infer feedback from a later page. The
+exporter rejects any future stored input that uses either optional channel
+until a separately owned delivery/feedback contract and versioned inference
+format exist.
+
 One new, strictly ordered snapshot in the same continuity advances M2 once,
 with `previous_actual_action=None` and `feedback=None`, then scores every
 advertised candidate from the resulting memory. The page is encoded once and
