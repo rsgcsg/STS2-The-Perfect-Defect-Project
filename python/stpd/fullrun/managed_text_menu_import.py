@@ -191,7 +191,9 @@ def _ui_successor(action: dict[str, Any], before: dict[str, Any],
             valid = (next_menu["cursor"] == "card_targets"
                      and next_selection == selection[:1])
         else:
-            valid = next_menu["cursor"] in {"root", "information"} and next_selection == []
+            target = "information" if current["cursor"] not in {
+                "card_confirmation", "card_targets", "information"} else "root"
+            valid = next_menu["cursor"] == target and next_selection == []
     elif verb == "open_information":
         valid = current["cursor"] == "root" and next_menu["cursor"] == "information"
     else:
