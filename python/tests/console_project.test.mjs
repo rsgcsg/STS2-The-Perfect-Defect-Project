@@ -3529,6 +3529,87 @@ test("saved fixed-seed scene and comparison require explicit browser commands", 
   assert.ok(writes.every(call => call.options.headers["X-CSRF-Token"] === "scene-csrf"));
 });
 
+test("environment refresh preserves reading and form state without replaying commands", async () => {
+  const sceneId=id("c"), comparisonId=id("d"), first=id("a"), second=id("b");
+  const sceneData={items:[{artifact_id:sceneId,name:"Saved start",seed:"seed",input_profile:"text-menu-v2"}]};
+  const comparisonData={items:[{artifact_id:comparisonId}]};
+  let status="stopped";
+  const env=setup({view:"local-environment",identity:{status:"local_only"},sceneData,comparisonData,
+    handler:async url => {
+      if(url==="/api/local-environment") return {schema:"stpd/local-managed-environment-v1",
+        availability:"configured",csrf_token:"csrf",scenarios:[],session:{status}};
+      if(url==="/api/local-environment/reports") return {items:[{artifact_id:first,status:"stopped"},{artifact_id:second,status:"stopped"}]};
+      if(url===`/api/local-environment/comparisons/${comparisonId}`) return {
+        artifact_id:comparisonId,status:"verified_fixed_seed_starts",report_artifact_ids:[first,second]};
+      throw new Error(`unexpected ${url}`);
+    }});
+  const page=await env.render();
+  const name=field(page,"environment-scene-name"); name.value="My draft"; name.oninput?.();
+  const choice=field(page,"environment-compare-first"); choice.value=second; choice.onchange?.();
+  await action(page,`environment-comparison-${comparisonId}`).onclick();
+  assert.match(text(page),/verified_fixed_seed_starts/);
+  // The shell retains the actual DOM only when this refresh hook returns true.
+  assert.equal(await env.ui.refresh("local-environment"),true);
+  assert.equal(post(env.calls).length,0);
+  status="cleanup_unknown";
+  assert.equal(await env.ui.refresh("local-environment"),false);
+  const changed=await env.render();
+  assert.match(text(changed),/清理尚未确认/);
+  assert.equal(field(changed,"environment-scene-name").value,"My draft");
+  assert.equal(field(changed,"environment-compare-first").value,second);
+  assert.match(text(changed),/verified_fixed_seed_starts/);
+  assert.equal(action(changed,`environment-scene-start-${sceneId}`).disabled,true);
+  assert.equal(post(env.calls).length,0);
+  env.account(owner("member","other-person"));
+  const other=await env.render();
+  assert.doesNotMatch(text(other),/verified_fixed_seed_starts/);
+  assert.notEqual(field(other,"environment-scene-name").value,"My draft");
+});
+
+test("environment refresh failure cannot retain an error screen after recovery", async () => {
+  let fail=false;
+  const env=setup({view:"local-environment",identity:{status:"local_only"},handler:async url=>{
+    if(fail) return {httpStatus:503,error:"temporarily_unavailable"};
+    return url==="/api/local-environment" ? {schema:"stpd/local-managed-environment-v1",
+      availability:"configured",scenarios:[],session:{status:"stopped"}} : {items:[]};
+  }});
+  await env.render();
+  fail=true;
+  await assert.rejects(env.ui.refresh("local-environment"),/temporarily_unavailable/);
+  fail=false;
+  assert.equal(await env.ui.refresh("local-environment"),false);
+  await env.render();
+  assert.equal(await env.ui.refresh("local-environment"),true);
+  assert.equal(post(env.calls).length,0);
+});
+
+test("late environment refresh and comparison cannot retain the previous context", async () => {
+  const comparisonId=id("d");
+  let pendingRefresh, pendingDetail, hold=false;
+  const initial={schema:"stpd/local-managed-environment-v1",availability:"configured",scenarios:[],session:{status:"stopped"}};
+  const env=setup({view:"local-environment",identity:{status:"local_only"},comparisonData:{items:[{artifact_id:comparisonId}]},
+    handler:async url => {
+      if(url==="/api/local-environment") return hold ? new Promise(resolve=>{pendingRefresh=resolve;}) : initial;
+      if(url==="/api/local-environment/reports") return {items:[]};
+      if(url===`/api/local-environment/comparisons/${comparisonId}`) return new Promise(resolve=>{pendingDetail=resolve;});
+      throw new Error(`unexpected ${url}`);
+    }});
+  const page=await env.render();
+  const opening=action(page,`environment-comparison-${comparisonId}`).onclick();
+  hold=true;
+  const polling=env.ui.refresh("local-environment");
+  env.scope("other-device");
+  assert.equal(typeof pendingRefresh,"function");
+  pendingRefresh(initial);
+  pendingDetail({artifact_id:comparisonId,status:"OLD_DETAIL"});
+  assert.equal(await polling,false);
+  await opening;
+  hold=false;
+  const next=await env.render();
+  assert.doesNotMatch(text(next),/OLD_DETAIL/);
+  assert.equal(post(env.calls).length,0);
+});
+
 test("environment renders the complete current menu and submits one exact binding", async () => {
   const sessionId = "a".repeat(32);
   const actions = [{action_id:"first", verb:"select", label:"Choose monster at (3,0)", effect_domain:"native_input"},
