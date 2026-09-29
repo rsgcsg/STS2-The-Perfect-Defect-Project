@@ -46,7 +46,9 @@ test("exact candidate refuses raw treasure leave until native completion", async
 
     state = await request({ cmd: "enter_room", type: "shop" });
     assert.equal(state.decision, "shop");
-    assert.equal((await leave(undefined)).decision, "map_select");
+    assert.equal((await leave(undefined)).type, "error");
+    assert.equal((await leave({ room_ref: "stale-room" })).type, "error");
+    assert.equal((await leave({ room_ref: state.room_ref })).decision, "map_select");
   } finally {
     await started.session.close();
   }

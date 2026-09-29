@@ -115,6 +115,11 @@ The exact private raw-route regression checks cancellation, one confirmed
 purchase, stale and missing bindings, and duplicate rejection. This is a
 source/build and targeted scenario-control result, not a fair-player journey,
 native UI parity, Human evidence or all-selector coverage.
+The raw Host `leave_room` action in a merchant room delegates to the same
+`DoLeaveShop` owner as `leave_shop`: it requires the exact current room and
+refuses to open the map while a purchase operation or card selector is pending.
+The exact raw-route regression covers selection and preview, including missing,
+stale and current room references, then admits the completed shop exit.
 
 The Managed text adapter preserves a complete game-owned `game_over` observation
 as an observed terminal page with zero actions and the exact boolean victory
@@ -146,8 +151,8 @@ with no retry. This is source/build evidence for the Managed text path, not
 native UI parity, a complete journey, or Human qualification.
 The raw Host `leave_room` path now requires that exact treasure room and rejects
 exit until the native chest and relic stages have completed, including while a
-deferred operation or selection remains pending. Other room exits retain their
-existing contract. The proprietary exact-candidate regression exercises the
+deferred operation or selection remains pending. Event and other room exits retain
+their existing contract. The proprietary exact-candidate regression exercises the
 raw action path through pre-open, pending relic, and completed stages.
 
 The raw Managed combat action path and its Player Environment projection admit
