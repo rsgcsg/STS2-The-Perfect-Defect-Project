@@ -134,6 +134,10 @@ function textFrame(number, cursor, action) {
 }
 let textCurrent = textFrame(1, "root", textAction);
 let textPosts = 0;
+let v2Current = textFrame(10, "root", textAction);
+let v2GameId = "native-game-a";
+let v2ContextReads = 0;
+let legacySnapshotReads = 0;
 let controlClientInstanceId;
 let controlHeld = false;
 const controlLease = { controller_lease_id: "lease-1", controller_generation: 1, client_session_id: "client-1", expires_at: new Date(Date.now() + 60_000).toISOString() };
@@ -157,7 +161,11 @@ const textHost = createHttpServer(async (request, response) => {
       receipt_schema: text ? "sts2.player-environment/text-menu-action-result-1" : "sts2.player-environment/receipt-1",
       verbs: text ? ["open_information", "end_turn"] : ["end_turn"] };
     if (!text) delete output.input_profile;
+  } else if (url.pathname.endsWith("/text-menu/observation-context")) {
+    v2ContextReads++;
+    output = { schema: "sts2.player-environment/text-menu-observation-context-1", snapshot: v2Current, game_continuity_id: v2GameId };
   } else if (url.pathname.endsWith("/snapshot")) {
+    legacySnapshotReads++;
     assert.equal(url.searchParams.get("input_profile"), "text-menu-v1"); output = textCurrent;
   } else if (url.pathname.endsWith("/clients/register")) {
     controlClientInstanceId = body.client_instance_id;
@@ -201,6 +209,49 @@ try {
   assert.equal(textPosts, 2);
   assert.equal(controlHeld, false);
   await textRuntime.stop();
+
+  // The installed Runtime and bundled SDK use one atomic context GET per v2
+  // decision. A successful response is a model-observation watermark, not an
+  // action receipt; these synthetic decisions intentionally abstain.
+  const v2Manifest = structuredClone(textManifest);
+  v2Manifest.adapter.protocol = "sts2.policy-runtime/decision-only-ndjson-2";
+  const v2Tokens = [];
+  let badCompletion = false;
+  const v2Runtime = new PolicyRuntime({ manifest: v2Manifest, connector: textConnector,
+    mode: "one_step", runId: "installed-text-v2", statefulPolicy: input => {
+      v2Tokens.push(input.continuity_token);
+      return { output: { candidate_digest: input.candidate_digest,
+        scores: [1], selected_index: null }, completion: { continuity_token: input.continuity_token,
+        snapshot_id: badCompletion ? "wrong-page" : input.bundle.observation.snapshot_id,
+        sequence: input.bundle.observation.sequence } };
+    } });
+  const legacyBeforeV2 = legacySnapshotReads;
+  assert.equal((await v2Runtime.tick()).type, "not_executed");
+  v2Current = textFrame(11, "root", textAction);
+  await v2Runtime.setMode("one_step");
+  assert.equal((await v2Runtime.tick()).type, "not_executed");
+  assert.equal(v2Tokens[1], v2Tokens[0], "one game must keep the installed scorer token");
+  v2Current = textFrame(12, "root", textAction); v2GameId = "native-game-b";
+  await v2Runtime.setMode("one_step");
+  assert.equal((await v2Runtime.tick()).type, "not_executed");
+  assert.notEqual(v2Tokens[2], v2Tokens[1], "a changed native game must rotate the token");
+  v2Current = textFrame(13, "root", textAction); badCompletion = true;
+  await v2Runtime.setMode("one_step");
+  assert.equal((await v2Runtime.tick()).reason, "policy_failed");
+  assert.match(v2Runtime.status().errors.at(-1), /completion watermark mismatch/u);
+  await v2Runtime.stop();
+
+  const digestRuntime = new PolicyRuntime({ manifest: v2Manifest, connector: textConnector,
+    mode: "one_step", runId: "installed-text-v2-digest", statefulPolicy: input => ({
+      output: { candidate_digest: "0".repeat(64), scores: [1], selected_index: null },
+      completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
+        sequence: input.bundle.observation.sequence } }) });
+  assert.equal((await digestRuntime.tick()).reason, "policy_failed");
+  assert.match(digestRuntime.status().errors.at(-1), /digest/u);
+  await digestRuntime.stop();
+  assert.equal(v2ContextReads, 5);
+  assert.equal(legacySnapshotReads, legacyBeforeV2, "v2 must not fetch a separate v1 snapshot");
+  assert.equal(textPosts, 2, "v2 abstention must not submit native or menu actions");
 } finally { await new Promise(resolve => textHost.close(resolve)); }
 
 // Launch the actual installed CLI in Human mode. It never contacts a game.
@@ -239,4 +290,4 @@ try {
     child.kill("SIGTERM"); await childExit;
   }
 }
-console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, text_menu_http_sdk: true, text_menu_navigation_and_native_submissions: textPosts, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));
+console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, text_menu_http_sdk: true, text_menu_navigation_and_native_submissions: textPosts, installed_v2_atomic_context_reads: v2ContextReads, installed_v2_token_rotation_and_completion_validation: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));
