@@ -35,6 +35,8 @@ selection, and completion pages with exact room/relic bindings. Its build and
 non-claims are recorded in [Managed Exact Candidate](experiments/managed-exact/README.md).
 Its bounded shop card-removal path uses an exact staged deck selector while
 unscoped card selection remains unavailable.
+The adapter also preserves a complete observed native terminal page with no
+menu actions and its exact win/loss fact.
 
 See [Status](docs/STATUS.md), [Compatibility](docs/COMPATIBILITY.md), and
 [Evidence](docs/EVIDENCE.md) for exact scope.

@@ -116,6 +116,12 @@ purchase, stale and missing bindings, and duplicate rejection. This is a
 source/build and targeted scenario-control result, not a fair-player journey,
 native UI parity, Human evidence or all-selector coverage.
 
+The Managed text adapter preserves a complete game-owned `game_over` observation
+as an observed terminal page with zero actions and the exact boolean victory
+fact. A missing or non-boolean terminal fact is unsupported; the Host does not
+convert it into defeat. An empty nonterminal or unknown page remains
+unavailable. This mapping does not decide victory or add a native Commit.
+
 The event-option text page is admitted only when the current native event room,
 event instance, and every ordered option have exact private identities and
 lock facts. Locked options remain visible without an executable action. The

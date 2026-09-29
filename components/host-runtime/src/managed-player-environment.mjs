@@ -1520,9 +1520,12 @@ function currentSurface(state, ctx) {
         kind: "game_over",
         stage: "complete",
         prompt: null,
-        surface: { kind: "game_over", stage: "complete", victory: state.victory === true },
+        surface: { kind: "game_over", stage: "complete",
+          victory: typeof state.victory === "boolean" ? state.victory : null },
         context: { ...commonContext, kind: "terminal" },
-        ...supported
+        ...supported,
+        complete: typeof state.victory === "boolean",
+        missing: typeof state.victory === "boolean" ? [] : ["native_terminal_victory_fact"]
       };
     case "shop": {
       const rawCards = Array.isArray(state.cards) ? state.cards : [];
@@ -1857,7 +1860,7 @@ export function projectManagedCandidateDecision({
     observed_at: new Date().toISOString(),
     status: actionProjectionComplete && ctx.actions.length > 0
       ? "interactive"
-      : terminal ? "observed" : "visible_unsupported",
+      : terminal && contractComplete ? "observed" : "visible_unsupported",
     persistent: persistent.content,
     interaction: {
       interaction_id: ctx.interactionId,
