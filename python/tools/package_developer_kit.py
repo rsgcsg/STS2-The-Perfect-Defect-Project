@@ -62,9 +62,11 @@ The local home, fixed model environment and recorded reports work without team l
 If this approved kit contains a fixed text Runtime pair, initialize installs the
 locked `local-models` Python extra; a collection-only kit remains light. No model
 weights or Qwen/Transformers are downloaded by this step. For team collection and
-uploads, an administrator invites your email. Open the Workbench with the approved
-`--hub-url`, then use account/device setup to log in and approve the matching
-computer name and pairing code. Stop the Workbench, register the complete tool
+uploads, an administrator invites your email. Supply the approved `--hub-url`
+when first creating the private profile; an existing no-Hub profile requires the
+documented stopped, explicit replacement setup that preserves its other settings.
+Then use account/device setup to log in and approve the matching computer name
+and pairing code. Stop the Workbench, register the complete tool
 with its independently approved release ID, and reopen. Closing a browser tab
 alone does not release the registration lock.
 
