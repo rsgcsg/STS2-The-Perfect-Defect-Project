@@ -134,6 +134,8 @@ test("reward text menu preserves every current callback choice and native bindin
     { ...rewardDecision("card_reward"), cards: {} },
     { ...rewardDecision("card_reward"), cards: [null] },
     { ...rewardDecision("card_reward"), cards: [{ index: 0, native_ref: 42, name: "Strike" }] },
+    { ...rewardDecision("card_reward"), cards: [{ index: 0, native_ref: "creation-result-a", id: 42, name: "Strike" }] },
+    { ...rewardDecision("card_reward"), cards: [{ index: 0, native_ref: "creation-result-a", id: "CARD.STRIKE", name: {} }] },
     { ...rewardDecision("card_reward"), alternatives: [] , cards: [] },
     { ...rewardDecision("card_reward"), alternatives: [{ index: 0, id: "SACRIFICE", name: "Sacrifice" }] },
     { ...rewardDecision("card_reward"), alternatives: [{ index: 0, native_ref: "creation-result-a", id: "SACRIFICE", name: "Sacrifice" }] }

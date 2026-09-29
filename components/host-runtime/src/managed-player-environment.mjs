@@ -883,7 +883,9 @@ function currentSurface(state, ctx) {
           && option.native_ref.length > 0
           && Number.isSafeInteger(option.index)
           && option.index >= 0)
-        && rawCards.every((option, index) => option.index === index)
+        && rawCards.every((option, index) => option.index === index
+          && typeof option.id === "string" && option.id.length > 0
+          && typeof option.name === "string" && option.name.length > 0)
         && rawAlternatives.every((option, index) => option.index === index
           && typeof option.id === "string" && option.id.length > 0
           && typeof option.name === "string" && option.name.length > 0)
