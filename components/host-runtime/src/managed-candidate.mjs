@@ -549,10 +549,16 @@ export function chooseManagedCandidateAction(state) {
       }
       return state.can_skip === true ? { cmd: "action", action: "skip_rewards" } : null;
     }
-    case "card_reward":
-      return (state.cards ?? []).length === 0
-        ? { cmd: "action", action: "skip_card_reward" }
-        : { cmd: "action", action: "select_card_reward", args: { card_index: 0 } };
+    case "card_reward": {
+      const card = state.cards?.[0];
+      if (typeof card?.native_ref === "string")
+        return { cmd: "action", action: "select_card_reward", args: { card_ref: card.native_ref } };
+      const alternative = state.alternatives?.[0];
+      return typeof alternative?.native_ref === "string"
+        ? { cmd: "action", action: "select_card_reward_alternative",
+          args: { alternative_ref: alternative.native_ref } }
+        : null;
+    }
     case "combat_rewards_complete":
       return typeof state.room_ref === "string"
         ? { cmd: "action", action: "proceed", args: { room_ref: state.room_ref } }

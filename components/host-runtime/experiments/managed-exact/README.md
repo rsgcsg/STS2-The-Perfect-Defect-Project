@@ -89,6 +89,18 @@ This is a Headless input presentation for that command, not a native UI or
 Human-evidence claim. Method/signature or callback-order drift requires a new
 exact-build review and native differential probe.
 
+The event-option text page is admitted only when the current native event room,
+event instance, and every ordered option have exact private identities and
+lock facts. Locked options remain visible without an executable action. The
+native choice rechecks room, event, option, index, and unlocked state before
+calling the game's `Chosen()` method, including inside the delayed callback;
+that callback uses the captured validated option object. A callback failure
+after dispatch remains an unknown delivery without automatic retry. Event
+completion uses the existing native
+proceed/map presentation branch; a same-index replacement or missing identity
+does not fall back to an ordinal-only mutation. This is a Managed source/build
+candidate, not native UI parity or a full-run qualification.
+
 The raw Managed combat action path and its Player Environment projection admit
 play/end-turn mutations only while the exact current run, living player turn,
 CombatManager play phase, enabled-action state, not-ready-to-end state, and
@@ -111,6 +123,21 @@ information-read action. A direct semantic `play(card, target)` is not the
 Connector Live Godot sequence of holding a card and confirming a target, so
 cross-Host trajectory equality is not claimed. This is source/test coverage,
 not a native runtime, cross-Host, or full-game qualification.
+
+The same bounded adapter also admits complete current combat reward, card
+reward, and reward-completion leaves. Combat reward generation follows the
+native no-reward encounter flag and `RewardsSet.Offer`; a claimed card reward
+continues through the game's `CardReward.OnSelect` callback. That callback's
+current `CardCreationResult` options and `CardRewardAlternative` options retain
+their original order and private native bindings. Skip is available only when
+the callback actually offers it; reroll, sacrifice, and later alternatives
+return the exact callback object for the game to handle. Missing or changed
+choice identity makes the entire card-reward catalog unavailable. Proceed
+opens native map presentation, and the subsequent native map vote owns room
+exit and skipping any remaining combat rewards. The adapter does not claim
+native UI parity or a full-run qualification.
+The manifest's Windows tuple remains historical evidence for the previous patch;
+the changed source has no Windows build admission.
 
 `engine-lab` measures the exact in-process game-owned semantic loop without a
 Player Environment or consumer. `pe-profile` separates training overhead from
