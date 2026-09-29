@@ -8,6 +8,12 @@ from tokenizers import Tokenizer
 
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 
+from .memory_projection_config import (
+    RENDERER_IDENTITY as RENDERER_IDENTITY,
+)
+from .memory_projection_config import (
+    V2_RENDERER_IDENTITY as V2_RENDERER_IDENTITY,
+)
 from .text_menu_inputs import (
     INPUT_PROFILE,
     V2_INPUT_PROFILE,
@@ -15,17 +21,9 @@ from .text_menu_inputs import (
     project_text_menu_snapshot,
     project_text_menu_v2_snapshot,
 )
-from .text_menu_inputs import V2_VERSION as TEXT_MENU_V2_VERSION
-from .text_menu_inputs import VERSION as TEXT_MENU_VERSION
-from .token_inputs import FORMAT, TokenRow, input_texts
+from .token_inputs import TokenRow, input_texts
 
 MAX_TOKENIZER_BYTES = 16 * 1024 * 1024
-RENDERER_IDENTITY = {"id": "stpd/m2-canonical-current-page-v1",
-                     "text_menu_version": TEXT_MENU_VERSION,
-                     "wrapper": FORMAT}
-V2_RENDERER_IDENTITY = {"id": "stpd/m2-canonical-current-page-v2",
-                        "text_menu_version": TEXT_MENU_V2_VERSION,
-                        "wrapper": FORMAT}
 
 
 def renderer_identity_for_profile(input_profile: str) -> dict[str, str]:

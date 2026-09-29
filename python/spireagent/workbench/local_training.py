@@ -198,7 +198,6 @@ class LocalTrainingService:
                 or recipe not in {DEFAULT_RECIPE, *MEMORY_RECIPES}):
             raise BoundaryError("local_training", "unsupported_training_recipe")
         dataset_id = digest(dataset_id, "local_training.dataset_id")
-        require_local_models("local_training")
         after_completed = (None if after_completed_operation_id is None else
                            digest(after_completed_operation_id,
                                   "local_training.after_completed_operation_id", length=32))
@@ -237,6 +236,7 @@ class LocalTrainingService:
             if (previous["status"] == "completed" and previous["dataset_id"] == dataset_id
                     and after_completed is None):
                 raise BoundaryError("local_training", "new_experiment_precondition_failed")
+            require_local_models("local_training")
             identity = uuid.uuid4().hex
             operation = {"schema": (SCHEMA_V2 if recipe in MEMORY_RECIPES
                                     or previous.get("schema") == SCHEMA_V2 else SCHEMA),

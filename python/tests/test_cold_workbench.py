@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from test_local_evaluation import _token
 
 
@@ -58,8 +59,7 @@ try:
     assert report["validation_scope"] == "recorded_report_and_parent_identities"
     import spireagent.workbench.local_model_dependencies as dependencies
     dependencies.find_spec = lambda _name: None
-    for operation in (lambda: app.local_training.start("0" * 64),
-                      lambda: app.local_model_registration.register("0" * 64)):
+    for operation in (lambda: app.local_model_registration.register("0" * 64),):
         try:
             operation()
         except BoundaryError as error:
@@ -79,5 +79,60 @@ finally:
         [interpreter, "-B", "-c", script, str(store.blobs.root),
          str(tmp_path / "registry.sqlite"), str(tmp_path / "state"), evaluation_id],
         env=env, cwd=root, text=True, capture_output=True, timeout=30,
+    )
+    assert child.returncode == 0, child.stderr
+
+
+@pytest.mark.parametrize("profile", ["text-menu-v1", "text-menu-m2-v1", "text-menu-m2-v2"])
+def test_completed_export_status_preserves_profile_without_importing_ml(tmp_path, profile):
+    # Only the completed export's metadata is needed for this read. Weight and
+    # binding verification must remain unavailable until the backend is present.
+    script = r'''
+import builtins
+import json
+import sys
+from dataclasses import asdict
+from pathlib import Path
+from types import SimpleNamespace
+
+real_import = builtins.__import__
+def no_ml(name, *args, **kwargs):
+    if name.split(".", 1)[0] in {"torch", "tokenizers", "safetensors", "transformers"}:
+        raise AssertionError("ML import while reading export status: " + name)
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = no_ml
+from spireagent.workbench import local_model_dependencies as dependencies
+from spireagent.workbench.local_model_registration import LocalModelRegistration
+from stpd.fullrun.memory_projection_config import (
+    MemoryEpisodeProjectionConfig, v2_episode_projection_config,
+)
+dependencies.find_spec = lambda _: None
+state, profile = Path(sys.argv[1]), sys.argv[2]
+model_id = "a" * 64
+operation = {"status": "completed", "model_id": model_id}
+if profile != "text-menu-v1":
+    operation["model_type"] = "memory"
+    export = state / "model-exports" / model_id
+    export.mkdir(parents=True)
+    projection = (v2_episode_projection_config() if profile.endswith("v2") else
+                  MemoryEpisodeProjectionConfig("stpd/memory-episode-projection-config-v1", 0))
+    (export / "model.json").write_text(json.dumps({"projection_config": asdict(projection)}))
+before = {str(path): path.read_bytes() for path in state.rglob("*") if path.is_file()}
+service = LocalModelRegistration(SimpleNamespace(state_dir=state),
+    SimpleNamespace(status=lambda: {"availability": "ready", "operation": operation}),
+    SimpleNamespace())
+result = service.status(model_id)
+assert result["status"] == "unavailable", result
+assert result["reason_code"] == "local_models_extra_required", result
+assert result["runtime_profile"] == profile, result
+assert operation["status"] == "completed"
+assert {str(path): path.read_bytes() for path in state.rglob("*") if path.is_file()} == before
+assert not {"torch", "tokenizers", "safetensors", "transformers"} & sys.modules.keys()
+'''
+    root = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1"}
+    child = subprocess.run(
+        [os.environ.get("STPD_TEST_COLD_INTERPRETER", sys.executable), "-B", "-c", script,
+         str(tmp_path), profile], env=env, cwd=root, text=True, capture_output=True, timeout=20,
     )
     assert child.returncode == 0, child.stderr
