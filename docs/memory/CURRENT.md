@@ -1,7 +1,7 @@
 # Current project context, 2026-09-29
 
 Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; accepted develop
-anchor `ce56880990df0b518c22112e3b9c10db89bebca5` after PR90–98.
+anchor `4f36bfdf634b4baad62ce54e9030d529e78568b0` after PR99.
 Resolve live GitHub refs before work; current authorities override this file.
 Source, CI, installation, Human operation and scientific results are separate.
 No complete Stage1a or policy-quality qualification is claimed. See the
@@ -22,21 +22,24 @@ for exact PR/CI and candidate-runtime receipts.
   (26 train/5 dev). Dev Top-1 was 0/5; policy calls/submissions were zero.
   Manual profile recovery left one-click installation unproved.
 - Merged [PR96](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/96)
-  added explicit train-only Workbench M2-K1 experiments. Open
-  [PR99](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/99)
-  adds export, receipt, registration and an M2 Runtime profile. Its local
-  candidate used one admitted episode / 548 observations; revalidation,
-  registration and the initial Human load/Stop completed. A later bounded
-  native session recorded 20 decisions and 17 delivered actions across event,
-  reward, card choice, map and combat. Stop left Human/released. The installed
-  Evidence verifier rejected port-2 provenance; hash-correct sealing is not
-  typed Evidence verification. The owner fix remains under independent review.
-  Head `5eff996c` and
-  [CI run 36538202566](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36538202566)
-  remained an open Draft with selected full CI successful at 08:05 UTC. The
-  [later live receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/99#issuecomment-5886092505)
-  records bounded native decisions, not full-game or policy-quality proof.
-  Candidate installation does not make PR99 accepted develop or a release.
+  added train-only Workbench M2-K1. [PR99](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/99)
+  now adds verified export/registration and the fixed M2 Runtime profile.
+  Head `5a23d649` passed [full run 36541584661](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36541584661)
+  before normal merge; merge tree `fa5f343bd7a234df261c599c933e8a22aeba7c68`
+  matches that candidate. Its integration run is
+  [36544655447](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36544655447);
+  check the live terminal state rather than borrowing topic CI.
+  Evidence rc.20 now verifies port-2 with exact text input and attestation.
+  The earlier sealed 107-event native run passes a new typed verification;
+  the original rc.19 failure remains unchanged. A subsequent registered
+  Human load → Shadow → Stop passes normal Workbench evidence validation
+  with five events and zero submissions. The earlier 17 delivered actions
+  are bounded native coverage, not full-game or policy quality proof.
+- The [local dev evaluation receipt](../evidence/STAGE1A_M2_DEV_EVALUATION_2026-09-29.md)
+  records a candidate Workbench UI flow using the existing M2 model and the
+  separate 31-label source. It produced a report with 14/31 Top-1 matches.
+  This is a retrospective engineering dev result, not an independent-game
+  benchmark or a persistent-memory/Reset comparison. No new training occurred.
 - Merged [PR88](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/88)
   repaired potion staging; its installation did not prove a new live potion
   action. Old failed evidence remains.
@@ -54,7 +57,11 @@ strategy nor memory generalization.
 
 Managed text surfaces now cover map, rest, deck upgrade and bounded combat
 through PR89/93/94 and [PR98](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/98).
-Reward/event/unreviewed selectors and full-flow equivalence remain unproved.
+[PR100](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/100)
+adds a reviewed native reward candidate; its private text-to-native smoke
+progressed through card rewards, gold, map and combat, while its own hosted
+checks and source integration remain separate. Event/unreviewed selectors
+and full-flow equivalence remain unproved.
 Selected PR90–98 CI passed; PR97/98 develop integration reused verified
 same-tree OS execution with fresh guards, as detailed in the dated ledger.
 Source/test success is not gameplay qualification.

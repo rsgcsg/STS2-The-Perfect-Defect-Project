@@ -339,9 +339,59 @@ reprojects it with the persisted tokenizer/configuration, and checks the map and
 episodes against that result. The exact immutable training-input artifact is
 already in the run and checkpoint parent chain; the M2 engine input digest and
 v1 checkpoints are unchanged. Existing experimental-v1 inputs without a map
-remain readable and are never rewritten. Both forms are train-only and create
-no dev report. The map records observation projection only; it does not claim
+remain readable and are never rewritten. Both forms are train-only. The map
+records observation projection only; it does not claim
 Human execution, delivery, Commit, or causal successor evidence.
+
+### Separate observed-source dev evaluation
+
+`stpd.workers.memory_evaluation.evaluate_memory` accepts a completed V2 M2
+model trained from a verified Human observed-input source and a separate verified
+dev observed-input source. Its caller must establish
+dev purpose and prior-use eligibility with the existing local curation owner
+before calling it. This research API does not grant source admission. It rejects
+shared source or evidence ancestry and session/native-stream overlap. Identical
+rendered current pages plus complete catalogs across distinct sources are counted
+as distinct overlapping input patterns, a diagnostic; a naturally repeated
+public menu in separate runs is not itself proof of leakage. The protocol is
+`independent-source-retrospective-v1`, with `strict_deduplicated_benchmark=false`
+and `native_run_independence=false`. It is a separate engineering dev protocol
+from the fixed decision benchmark in ADR-0007: that benchmark and Gold/test
+claims still use the full duplicate-connected groups. It re-fits the tokenizer on the
+verified Human train source and requires exact saved bytes, then reprojects the
+train source against saved tensors and event map. Dev projection uses those same
+saved tokenizer bytes and never fits on dev. Arbitrary caller-tokenized V2
+models have no fit-origin proof and are excluded.
+
+Each dev episode starts from empty memory; unlabeled observations advance memory
+without a metric, and labeled decisions contribute candidate-aligned metrics.
+The frozen model runs in inference mode without an optimizer. Evaluation publishes
+an immutable `analysis` artifact with the `evaluation_input` parent role and an
+`offline_evaluation` with model, source, tokenizer, projection and event
+membership identities. `local_evaluation.summary` can display its recorded dev
+summary. This is an engineering retrospective, with native-run independence and
+scientific verdict unclaimed. A Reset result requires a separately trained
+`reset_each_step=True` model export; changing the config of an M2 export fails
+identity validation.
+
+The Workbench backend exposes an explicit model-detail operation at
+`POST /api/local-memory-evaluations/start` and a separate status read. The
+operation requires an exact completed M2 model lineage, with its immutable run,
+checkpoint, tokenizer and train source. It does not depend on which model the
+mutable Workbench training journal currently displays. The local curation owner
+compares typed, indexed native runs and evidence parents against the separate
+dev source, records semantic duplicate-group overlap, rejects Gold/test claims
+using those complete groups, and reserves an evaluation exposure before starting
+the private worker. A source's existing `training` publication purpose means
+developer data is eligible for local use; the model-specific `evaluation` use
+records that this model consumed it as dev data, not training data.
+That reservation is scoped to the model operation; another experiment may train
+on the source. A later local Gold claim cannot seal an exposed dev group. The
+`evaluate-memory` CLI command is the private child computation entry after
+this owner gate, not a source-admission command. Prior model-selection exposure
+has no durable source record in the existing ledger, so this first path reports
+that boundary as unknown and makes only an engineering dev claim.
+The train-only run is not retrospectively split into dev.
 
 After a run has been prepared with that Python API at the **same exact source
 identity**, the existing research CLI can execute it:
