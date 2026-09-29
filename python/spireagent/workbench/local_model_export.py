@@ -14,6 +14,7 @@ import threading
 import uuid
 from contextlib import AbstractContextManager
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from spireagent.artifact_contracts import Manifest
@@ -276,7 +277,8 @@ class LocalModelExport:
             _verify_export(workspace.store, model, destination)
             return destination
 
-    def verified_memory_for_registration(self, model_id: object) -> Path:
+    def verified_memory_for_registration(self, model_id: object, *,
+                                         deadline: float | None = None) -> Path:
         """Recheck an M2 export and its historical local training admission on POST."""
         identity = digest(model_id, "local_model_export.model_id")
         with self.lock:
@@ -300,9 +302,20 @@ class LocalModelExport:
                 raise BoundaryError("local_model_export", "verified_export_required")
             # The web process never adjusts global Torch thread identity. Replay and
             # checkpoint verification happen in the same isolated CLI as export.
-            result = self._memory_child(uuid.uuid4().hex, workspace.store, model,
-                                        destination, run_id, on_started=lambda: None,
-                                        verify_only=True)
+            remaining = deadline - monotonic() if deadline is not None else 15.0
+            if remaining <= 0:
+                raise BoundaryError("local_model_registration", "registration_timeout")
+            try:
+                result = self._memory_child(uuid.uuid4().hex, workspace.store, model,
+                                            destination, run_id, on_started=lambda: None,
+                                            verify_only=True,
+                                            timeout_seconds=min(15.0, remaining))
+            except BoundaryError as error:
+                if (error.code == "private_child_timeout" and deadline is not None
+                        and monotonic() >= deadline):
+                    raise BoundaryError("local_model_registration",
+                                        "registration_timeout") from error
+                raise
             for name, key in (("model.json", "package_sha256"),
                               ("weights.tensor-tree", "weights_sha256"),
                               ("tokenizer.json", "tokenizer_sha256")):
@@ -380,7 +393,8 @@ class LocalModelExport:
 
     def _memory_child(self, operation_id: str, store: Any, model: Manifest,
                       destination: Path, run_id: str, *,
-                      on_started: Any, verify_only: bool = False) -> dict[str, Any]:
+                      on_started: Any, verify_only: bool = False,
+                      timeout_seconds: float | None = None) -> dict[str, Any]:
         root = getattr(getattr(store, "blobs", None), "root", None)
         if not isinstance(root, Path):
             raise BoundaryError("local_model_export", "unsupported_workspace_store")
@@ -398,7 +412,7 @@ class LocalModelExport:
         log_path = self.config.state_dir / (log_prefix + operation_id + ".log")
         exit_code, captured = private_child(command, log_path, environment,
                                             on_started=on_started,
-                                            timeout_seconds=15 if verify_only else None)
+                                            timeout_seconds=timeout_seconds)
         if exit_code:
             raise BoundaryError("local_model_export", "memory_export_process_failed")
         try:

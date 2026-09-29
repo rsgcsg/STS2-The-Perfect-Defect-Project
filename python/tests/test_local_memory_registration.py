@@ -36,10 +36,10 @@ def test_m2_registration_requires_own_install_context_and_preserves_token_roster
     (root / ".local").mkdir()
     models.root = root
     service = LocalModelRegistration(config, exported, models)
-    monkeypatch.setattr(service, "_capabilities", lambda _sdk: _caps())
-    monkeypatch.setattr(service, "_context_available", lambda _sdk: None)
+    monkeypatch.setattr(service, "_capabilities", lambda _sdk, **_kwargs: _caps())
+    monkeypatch.setattr(service, "_context_available", lambda _sdk, **_kwargs: None)
     monkeypatch.setattr(service, "_m2_runtime_manifest_compatible",
-                        lambda _modules, _manifest: None)
+                        lambda _modules, _manifest, **_kwargs: None)
     monkeypatch.setattr(registration_module, "validate_runtime_install",
                         lambda *_: {"version": "synthetic"})
     with pytest.raises(BoundaryError, match="text_runtime_local_install_required"):
@@ -100,11 +100,12 @@ def test_m2_context_missing_blocks_before_roster_write(tmp_path: Path, monkeypat
     })
     models.root = root
     service = LocalModelRegistration(config, exported, models)
-    monkeypatch.setattr(service, "_capabilities", lambda _sdk: _caps())
+    monkeypatch.setattr(service, "_capabilities", lambda _sdk, **_kwargs: _caps())
     monkeypatch.setattr(registration_module, "validate_runtime_install",
                         lambda *_: {"version": "synthetic"})
-    monkeypatch.setattr(service, "_context_available", lambda _sdk: (_ for _ in ()).throw(
-        BoundaryError("local_model_registration", "observation_context_unavailable")))
+    monkeypatch.setattr(service, "_context_available", lambda _sdk, **_kwargs:
+                        (_ for _ in ()).throw(BoundaryError(
+                            "local_model_registration", "observation_context_unavailable")))
     with pytest.raises(BoundaryError, match="observation_context_unavailable"):
         service.register(model_id)
     assert not (root / ".local/token-policies-v1.json").exists()
