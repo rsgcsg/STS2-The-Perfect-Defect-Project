@@ -3197,6 +3197,18 @@ window.SpireProject = (() => {
     clean_checkout_required: "当前源码状态未满足本机工程训练条件。",
     insufficient_independent_components: "独立对局数量不足，尚不能启动这项训练。",
     human_observation_missing: "缺少符合要求的公开真人观察，不能准备这项训练。",
+    human_training_source_required: "M2 实验配方需要已发布并登记训练用途的 Human 观察来源。",
+    human_observed_source_required: "M2 实验配方只接收完整核对的 Human 观察来源。",
+    observed_sequence_limit_or_gap: "观察序列超出本机预算或存在缺口；不会裁剪后训练。",
+    memory_episode_limit: "M2 实验来源超过本机最多 8 个重置段的预算。",
+    episode_observation_limit: "M2 单个重置段超过 768 页预算；不会裁剪。",
+    episode_input_token_limit: "M2 单个重置段超过 4,194,304 输入 token 预算；不会裁剪。",
+    m2_limit_exceeded_no_truncation: "M2 页面超过 16,384 token 预算；不会截断。",
+    episode_settling_limit: "已核对的过渡页超过每段 64 页预算；不会丢弃后训练。",
+    projected_episode_count_mismatch: "M2 投影未保留完整重置段；请核对任务诊断。",
+    memory_preparation_process_failed: "M2 输入准备未完成；结果待核对，不会自动重试。",
+    unsupported_training_recipe: "训练配方不受支持。",
+    new_experiment_precondition_failed: "请从已完成任务明确新建实验，并核对当前配方。",
     previous_training_outcome_unknown: "上次训练结果未确认；为防止重复任务，本机拒绝再次启动。",
   };
 
@@ -3227,7 +3239,7 @@ window.SpireProject = (() => {
   async function localTrainingCard(ctx, dataset) {
     const card = panel(
       "本机短训练",
-      "从此入口新启动的任务固定使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。本机服务会核对训练用途与来源资格。不下载 Qwen 权重，也不会操作游戏。这是工程流程验证，不代表模型策略质量。",
+      "从此入口新启动的任务默认使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。可明确选择实验性 D-Simple M2-K1，仅训练、不做独立评估或开发集指标。本机服务会核对训练用途与来源资格；结果不代表模型策略质量。",
     );
     let data;
     try {
@@ -3240,7 +3252,7 @@ window.SpireProject = (() => {
     }
     if (!live(ctx)) return card;
     if (!data || typeof data !== "object" || Array.isArray(data)
-        || data.schema !== "stpd/local-training-operation-v1"
+        || !["stpd/local-training-operation-v1", "stpd/local-training-operation-v2"].includes(data.schema)
         || !data.operation || typeof data.operation !== "object") {
       card.append(el("p", "本机训练状态格式未知，当前不能启动训练。", "small muted"));
       card.append(technical({error_code:"unknown_local_training_status_schema"}, "查看状态格式错误"));
@@ -3258,6 +3270,10 @@ window.SpireProject = (() => {
     const operation = data.operation;
     const currentForDataset = operation.dataset_id === dataset.artifact_id;
     const taskId = hex(operation.operation_id, 32) ? operation.operation_id : null;
+    const memoryRecipe = "stage1a.dsimple.m2.k1.experimental.v1";
+    const defaultRecipe = "stage1a.dsimple.s.v1";
+    const recipeLabel = operation.recipe === memoryRecipe ? "实验性 D-Simple M2-K1" : "D-Simple-S v1";
+    if (operation.status !== "idle") card.append(el("p", `当前任务配方：${recipeLabel}。${operation.result_type === "train_only" ? "仅训练；未运行独立评估。" : ""}`, "small muted"));
     if (operation.status === "pending") {
       const stage = localTrainingStage(operation.stage);
       card.append(el("p", currentForDataset
@@ -3283,7 +3299,9 @@ window.SpireProject = (() => {
           card.append(link("打开待核对的数据集", route("local-workspace", operation.dataset_id)));
       }
     } else if (currentForDataset && operation.status === "completed") {
-      card.append(el("p", "本机训练已完成；这不表示模型已加载到游戏或具备已验证的策略质量。", "small muted"));
+      card.append(el("p", operation.result_type === "train_only"
+        ? "M2 训练已完成；没有独立评估或开发集指标，也没有加载到游戏。"
+        : "本机训练已完成；这不表示模型已加载到游戏或具备已验证的策略质量。", "small muted"));
     } else if (!(["idle", "completed", "failed"].includes(operation.status))) {
       card.append(el("p", "本机训练状态暂不支持启动；请查看诊断信息。", "small muted"));
       card.append(technical({status:"unsupported_operation_status"}, "查看训练状态"));
@@ -3304,13 +3322,13 @@ window.SpireProject = (() => {
         && previousCompleted.dataset_id === dataset.artifact_id
         && hex(previousCompleted.operation_id, 32)
         && hex(previousCompleted.result_id) && hex(previousCompleted.model_id)
-        && hex(previousCompleted.evaluation_id)) {
+        && (hex(previousCompleted.evaluation_id) || previousCompleted.result_type === "train_only")) {
       card.append(el("p", "上一次已完成训练的结果仍可打开。", "small muted"));
       for (const [field, label] of [
         ["result_id", "查看上一次训练结果"],
         ["model_id", "查看上一次本机模型"],
         ["evaluation_id", "查看上一次开发集结果"],
-      ]) card.append(link(label, route("local-workspace", previousCompleted[field])));
+      ]) if (hex(previousCompleted[field])) card.append(link(label, route("local-workspace", previousCompleted[field])));
     }
     const runId = hex(operation.run_id) ? operation.run_id : null;
     const checkpointId = hex(operation.checkpoint_id) ? operation.checkpoint_id : null;
@@ -3327,25 +3345,41 @@ window.SpireProject = (() => {
     if (!hasCsrf)
       card.append(el("p", "本机浏览器保护令牌暂不可用，请刷新后重试。", "small muted"));
     if (canStart) {
+      const form = el("div");
+      const recipe = select(form, "训练配方", "local-training-recipe", [
+        [defaultRecipe, "D-Simple-S v1（默认，短训练）"],
+        [memoryRecipe, "D-Simple M2-K1（实验，仅训练）"],
+      ], defaultRecipe);
+      card.append(form);
       const startOptions = {primary:true};
       card.append(command(ctx, "start-local-training",
         currentForDataset && operation.status === "failed" ? "重新尝试一次短训练" : "开始本机短训练",
         async () => {
           if (!live(ctx) || startOptions.disabled || !hex(dataset.artifact_id)) return;
           startOptions.disabled = true;
-          await request(ctx, "/api/local-training/start", {dataset_id:dataset.artifact_id}, csrfToken);
+          await request(ctx, "/api/local-training/start", {
+            dataset_id:dataset.artifact_id,
+            ...(recipe.value === memoryRecipe ? {recipe:memoryRecipe} : {}),
+          }, csrfToken);
           await reload(ctx);
         }, startOptions));
     }
     if (currentForDataset && operation.status === "completed" && taskId && hasCsrf
-        && hex(operation.run_id) && hex(operation.result_id)
-        && hex(operation.model_id) && hex(operation.evaluation_id)) {
+        && hex(operation.run_id) && hex(operation.result_id) && hex(operation.model_id)
+        && (hex(operation.evaluation_id) || operation.result_type === "train_only")) {
+      const form = el("div");
+      const recipe = select(form, "新实验配方", "local-training-new-recipe", [
+        [defaultRecipe, "D-Simple-S v1（默认，短训练）"],
+        [memoryRecipe, "D-Simple M2-K1（实验，仅训练）"],
+      ], operation.result_type === "train_only" ? memoryRecipe : defaultRecipe);
+      card.append(form);
       const newOptions = {type:"secondary"};
-      card.append(command(ctx, "start-local-training-new", "新建一次短训练", async () => {
+      card.append(command(ctx, "start-local-training-new", "新建一次训练", async () => {
         if (!live(ctx) || newOptions.disabled || !hex(dataset.artifact_id)) return;
         newOptions.disabled = true;
         await request(ctx, "/api/local-training/start", {
           dataset_id:dataset.artifact_id, after_completed_operation_id:taskId,
+          ...(recipe.value === memoryRecipe ? {recipe:memoryRecipe} : {}),
         }, csrfToken);
         await reload(ctx);
       }, newOptions));
