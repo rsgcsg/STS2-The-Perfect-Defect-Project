@@ -8,14 +8,33 @@ from tokenizers import Tokenizer
 
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 
+from .text_menu_inputs import (
+    INPUT_PROFILE,
+    V2_INPUT_PROFILE,
+    TextMenuInput,
+    project_text_menu_snapshot,
+    project_text_menu_v2_snapshot,
+)
+from .text_menu_inputs import V2_VERSION as TEXT_MENU_V2_VERSION
 from .text_menu_inputs import VERSION as TEXT_MENU_VERSION
-from .text_menu_inputs import TextMenuInput, project_text_menu_snapshot
 from .token_inputs import FORMAT, TokenRow, input_texts
 
 MAX_TOKENIZER_BYTES = 16 * 1024 * 1024
 RENDERER_IDENTITY = {"id": "stpd/m2-canonical-current-page-v1",
                      "text_menu_version": TEXT_MENU_VERSION,
                      "wrapper": FORMAT}
+V2_RENDERER_IDENTITY = {"id": "stpd/m2-canonical-current-page-v2",
+                        "text_menu_version": TEXT_MENU_V2_VERSION,
+                        "wrapper": FORMAT}
+
+
+def renderer_identity_for_profile(input_profile: str) -> dict[str, str]:
+    """Closed, explicit renderer lookup for future candidate manifests."""
+    if input_profile == INPUT_PROFILE:
+        return RENDERER_IDENTITY.copy()
+    if input_profile == V2_INPUT_PROFILE:
+        return V2_RENDERER_IDENTITY.copy()
+    raise BoundaryError("memory_tokens", "unknown_text_menu_profile")
 
 
 def project_memory_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:
@@ -25,6 +44,11 @@ def project_memory_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:
     this changes no historical four-graph renderer or stored token artifact.
     """
     return project_text_menu_snapshot(decode_json(json_bytes(snapshot)))
+
+
+def project_memory_v2_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:
+    """Explicit v2 renderer; existing M2 artifacts keep their v1 identity."""
+    return project_text_menu_v2_snapshot(decode_json(json_bytes(snapshot)))
 
 
 def encode_memory_texts(
