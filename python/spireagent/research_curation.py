@@ -183,22 +183,7 @@ class CurationLedger:
             ).fetchone()
             if existing is not None and tuple(existing) != (purpose, source):
                 raise BoundaryError("curation", "reservation_identity_conflict")
-            related = self._groups(db, {run})
-            if self._claim_guard is not None:
-                self._claim_guard(db, purpose, related)
-            if any(kind != purpose for kind, _ in self._claims(db, related).values()):
-                raise BoundaryError("curation", "managed_split_purpose_overlap")
-            if purpose == "test" and (
-                db.execute("SELECT 1 FROM curation_source_uses WHERE source=? "
-                           "AND kind='training'", (source,)).fetchone()
-                or any(db.execute(
-                    "SELECT 1 FROM curation_uses WHERE run=? AND kind='training' UNION "
-                    "SELECT 1 FROM curation_source_uses u JOIN curation_source_runs r "
-                    "ON r.source=u.source WHERE r.run=? AND u.kind='training'",
-                    (related_run, related_run),
-                ).fetchone() for related_run in related)
-            ):
-                raise BoundaryError("curation", "managed_test_previously_used_for_training")
+            self.check_managed_purpose(db, run, purpose, source=source)
             if previous is None:
                 db.execute("INSERT INTO curation_sources VALUES(?,?,0)", (source, archive))
             db.execute("INSERT OR IGNORE INTO curation_source_runs VALUES(?,?)", (source, run))
@@ -210,6 +195,37 @@ class CurationLedger:
                        (source, purpose, source, time.time()))
             db.execute("INSERT OR IGNORE INTO curation_claim_runs VALUES(?,?)", (source, run))
         return run
+
+    def check_managed_purpose(
+        self, db: sqlite3.Connection, run: str, purpose: str, *, source: str | None = None,
+    ) -> None:
+        """Check the existing split and use rules inside the caller's writer transaction.
+
+        The local owner uses this before marking an import pending. Reservation
+        calls it again after publication to reject any intervening writer.
+        """
+        if purpose not in {"training", "test"}:
+            raise BoundaryError("curation", "managed_purpose_invalid")
+        if not isinstance(run, str) or not run.startswith("managed:"):
+            raise BoundaryError("curation", "managed_run_invalid")
+        related = self._groups(db, {run})
+        if self._claim_guard is not None:
+            self._claim_guard(db, purpose, related)
+        if any(kind != purpose for kind, _ in self._claims(db, related).values()):
+            raise BoundaryError("curation", "managed_split_purpose_overlap")
+        if purpose == "test" and (
+            source is not None and db.execute(
+                "SELECT 1 FROM curation_source_uses WHERE source=? AND kind='training'",
+                (source,),
+            ).fetchone()
+            or any(db.execute(
+                "SELECT 1 FROM curation_uses WHERE run=? AND kind='training' UNION "
+                "SELECT 1 FROM curation_source_uses u JOIN curation_source_runs r "
+                "ON r.source=u.source WHERE r.run=? AND u.kind='training'",
+                (related_run, related_run),
+            ).fetchone() for related_run in related)
+        ):
+            raise BoundaryError("curation", "managed_test_previously_used_for_training")
 
     @staticmethod
     def _groups(db: sqlite3.Connection, runs: Iterable[str]) -> set[str]:

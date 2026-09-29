@@ -166,6 +166,18 @@ class LocalCurationOwner:
             db.execute("INSERT OR IGNORE INTO local_source_pending VALUES(?,NULL,'publishing')",
                        (candidate,))
 
+    def begin_managed_source(self, candidate: str, run: str, purpose: str, *,
+                             source: str | None = None) -> None:
+        """Purpose preflight and pending marker share one local writer transaction."""
+        digest(candidate, "local_curation.candidate")
+        if source is not None:
+            digest(source, "local_curation.managed_source")
+        ledger = self.ledger
+        with self.transaction() as db:
+            ledger.check_managed_purpose(db, run, purpose, source=source)
+            db.execute("INSERT OR IGNORE INTO local_source_pending VALUES(?,NULL,'publishing')",
+                       (candidate,))
+
     def published_source(self, candidate: str, artifact: str) -> None:
         digest(artifact, "local_curation.artifact")
         with self.transaction() as db:
