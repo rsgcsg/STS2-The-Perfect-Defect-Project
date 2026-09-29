@@ -26,6 +26,7 @@ function fixture() {
   let failReset = false;
   let unknownAction = false;
   let pendingAction = null;
+  let onActionEntered = null;
   const process = {
     async request(request) {
       calls.push(request);
@@ -37,6 +38,7 @@ function fixture() {
       if (request.cmd === "get_map") return decision(floor).visible_map;
       if (request.cmd === "run_identity") return { type: "run_identity", active: true, seed: "SEED" };
       if (request.cmd === "action") {
+        onActionEntered?.();
         if (pendingAction) await pendingAction;
         if (unknownAction) throw new Error("transport lost after native action");
         floor += 1;
@@ -55,7 +57,7 @@ function fixture() {
   return { driver, calls,
     failNextReset() { failReset = true; },
     makeActionUnknown() { unknownAction = true; },
-    holdAction(promise) { pendingAction = promise; }
+    holdAction(promise, entered) { pendingAction = promise; onActionEntered = entered; }
   };
 }
 
@@ -141,12 +143,20 @@ test("unknown text mutation is never retried or bypassed by raw step, including 
   await driver.handle({ command: "reset", seed: "SEED" });
   const page = await context(driver);
   let release;
-  holdAction(new Promise((resolve) => { release = resolve; }));
+  let entered;
+  const actionEntered = new Promise((resolve) => { entered = resolve; });
+  holdAction(new Promise((resolve) => { release = resolve; }), entered);
   makeActionUnknown();
   const pendingText = driver.handle(submit(page));
+  await actionEntered;
+  let rawSettled = false;
   const pendingRaw = driver.handle({ command: "step", mutation_request_id: "raw-after-unknown",
     expected_snapshot_id: page.snapshot.menu.native_snapshot_id,
     bound_action_id: "untrusted" });
+  pendingRaw.finally(() => { rawSettled = true; }).catch(() => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(rawSettled, false);
+  assert.equal(calls.filter((call) => call.cmd === "action").length, 1);
   release();
   const first = await pendingText;
   assert.equal(first.result.status, "unknown");
