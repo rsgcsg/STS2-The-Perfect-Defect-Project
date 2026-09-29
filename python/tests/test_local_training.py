@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import io
 import json
+import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -11,6 +12,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
+import test_local_human_dataset as human_fixture
 import test_local_recording_preview as recording_fixture
 
 from spireagent.json_boundary import BoundaryError
@@ -32,8 +34,14 @@ from spireagent.workbench.developer_server import (
     create_server,
 )
 from spireagent.workbench.inplace_curation import InplaceCurationPreparation, configured_owner
+from spireagent.workbench.local_curation import LocalLedger
 from spireagent.workbench.local_dataset import LocalDatasetService
-from spireagent.workbench.local_training import OPERATION_FILE, LocalTrainingService
+from spireagent.workbench.local_training import (
+    DEFAULT_RECIPE,
+    MEMORY_RECIPE,
+    OPERATION_FILE,
+    LocalTrainingService,
+)
 
 
 def _ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, runs: int = 3,
@@ -73,6 +81,59 @@ def _settle(service: LocalTrainingService, timeout: float = 180) -> dict:
     service._thread.join(timeout=timeout)
     assert not service._thread.is_alive()
     return service.status()["operation"]
+
+
+def test_private_child_drains_large_stderr_and_keeps_stdout_machine_record(tmp_path: Path):
+    script = ("import sys; sys.stderr.write('x' * 262144); "
+              "sys.stderr.flush(); sys.stdout.write('{\"run_id\":\"ok\"}\\n')")
+    log = tmp_path / "child.log"
+    exit_code, output = training_module._private_child(
+        [sys.executable, "-c", script], log, dict(os.environ))
+    assert exit_code == 0
+    assert json.loads(output) == {"run_id": "ok"}
+    assert log.stat().st_size == 128 * 1024
+
+
+def test_private_child_drains_after_log_write_failure(tmp_path: Path, monkeypatch) -> None:
+    script = ("import sys; sys.stderr.write('x' * 262144); "
+              "sys.stderr.flush(); sys.stdout.write('{\"run_id\":\"ok\"}\\n')")
+    real_fdopen = os.fdopen
+
+    class BrokenLog:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.stream.close()
+
+        def write(self, _chunk):
+            raise OSError("synthetic_log_failure")
+
+        def flush(self):
+            self.stream.flush()
+
+        def fileno(self):
+            return self.stream.fileno()
+
+    monkeypatch.setattr(training_module.os, "fdopen",
+                        lambda fd, mode: BrokenLog(real_fdopen(fd, mode)))
+    result = []
+
+    def invoke():
+        try:
+            training_module._private_child(
+                [sys.executable, "-c", script], tmp_path / "broken.log", dict(os.environ))
+        except OSError as error:
+            result.append(str(error))
+
+    thread = threading.Thread(target=invoke, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "child pipes must drain after the log write fails"
+    assert result == ["synthetic_log_failure"]
 
 
 def test_exact_synthetic_public_bc_dsimple_subprocess(tmp_path: Path, monkeypatch) -> None:
@@ -146,6 +207,167 @@ def test_exact_synthetic_public_bc_dsimple_subprocess(tmp_path: Path, monkeypatc
     with pytest.raises(BoundaryError):
         service.start("f" * 64, after_completed_operation_id=second["operation_id"])
     assert service.start(dataset_id)["operation"]["operation_id"] == second["operation_id"]
+
+
+def _human_ready(tmp_path: Path, monkeypatch):
+    datasets, _ = human_fixture._prepared(tmp_path)
+    config = datasets.config
+    owner = configured_owner(config)
+    store = ManifestArtifactStore(LocalBlobStore(owner.store_dir, create=False))
+    sources = [human_fixture._fresh_source(tmp_path, monkeypatch, store, owner, name)
+               for name in ("b", "c")]
+    monkeypatch.setattr(dataset_module, "source_identity",
+                        lambda _: store.get_manifest(sources[0]).producer)
+    datasets.start_human_preview(sources)
+    preview = human_fixture._settle(datasets)
+    assert preview["can_publish"]
+    datasets.start_publish(preview["preview_id"])
+    published = human_fixture._settle(datasets)
+    assert published["status"] == "completed", published
+    return config, published["result_artifact_id"], sources, store
+
+
+def test_claimed_human_m2_train_only_subprocess(tmp_path: Path, monkeypatch) -> None:
+    config, dataset_id, sources, store = _human_ready(tmp_path, monkeypatch)
+    owner = configured_owner(config)
+    service = LocalTrainingService(config)
+    started = service.start(dataset_id, recipe=MEMORY_RECIPE)["operation"]
+    assert started["recipe"] == MEMORY_RECIPE
+    with pytest.raises(BoundaryError, match="operation_in_progress"):
+        service.start(dataset_id)
+    completed = _settle(service)
+    assert completed["status"] == "completed", completed
+    assert completed["result_type"] == "train_only"
+    assert completed["evaluation_status"] == "not_run"
+    assert "evaluation_id" not in completed
+    run = store.get_manifest(completed["run_id"])
+    recipe_config = run.parameters.value()["config"]
+    assert {key: recipe_config[key] for key in (
+        "max_tokens", "max_total_input_tokens", "max_episode_input_tokens",
+        "max_episode_observations", "max_chunk_steps", "max_chunk_input_tokens",
+        "max_actions_per_step", "cpu_threads",
+    )} == {
+        "max_tokens": 16384, "max_total_input_tokens": 4194304,
+        "max_episode_input_tokens": 4194304, "max_episode_observations": 768,
+        "max_chunk_steps": 2, "max_chunk_input_tokens": 24576,
+        "max_actions_per_step": 256, "cpu_threads": 2,
+    }
+    training_input = store.get_manifest(completed["input_id"])
+    result = store.get_manifest(completed["result_id"])
+    model = store.get_manifest(completed["model_id"])
+    assert training_input.parent("source") == dataset_id
+    assert training_input.parameters.value()["schema"] == "stpd/experimental-m2-training-input-v2"
+    assert run.parent("training_input") == completed["input_id"]
+    assert result.parent("checkpoint") == completed["checkpoint_id"]
+    assert result.parent("model") == completed["model_id"]
+    assert model.parameters.value()["partition"] == "train"
+    assert SQLiteRegistry(config.research_workspace.registry_path, readonly=True).get(
+        model.artifact_id).to_bytes() == model.to_bytes()
+    with owner.transaction() as db:
+        assert {row[0] for row in db.execute(
+            "SELECT source FROM curation_source_uses WHERE reference=?",
+            (completed["operation_id"],))} == set(sources)
+    assert service.start(dataset_id, recipe=MEMORY_RECIPE)["operation"] == completed
+    with pytest.raises(BoundaryError, match="new_experiment_precondition_failed"):
+        service.start(dataset_id)
+    assert LocalTrainingService(config).status()["operation"] == completed
+    run_id = completed["run_id"]
+    assert (store.get_manifest(run_id).parameters.value()["operation_id"]
+            == completed["operation_id"])
+    next_operation = service.start(dataset_id, recipe=MEMORY_RECIPE,
+                                   after_completed_operation_id=completed["operation_id"])["operation"]
+    assert next_operation["status"] == "pending"
+    second = _settle(service)
+    assert second["status"] == "completed", second
+    assert second["run_id"] != run_id
+    assert second["previous_completed"]["result_id"] == completed["result_id"]
+    assert (store.get_manifest(second["run_id"]).parameters.value()["operation_id"]
+            == second["operation_id"])
+
+    # A later default experiment stays available with an explicit predecessor.
+    def parked(held, _path, _identity, _owner, _store):
+        held.__exit__(None, None, None)
+
+    monkeypatch.setattr(service, "_run", parked)
+    default = service.start(dataset_id,
+                            after_completed_operation_id=second["operation_id"])["operation"]
+    assert default["schema"] == "stpd/local-training-operation-v2"
+    assert default["recipe"] == "stage1a.dsimple.s.v1"
+    assert default["result_type"] == "evaluated"
+    assert default["evaluation_status"] == "pending"
+    assert default["previous_completed"]["result_type"] == "train_only"
+    assert service._thread is not None
+    service._thread.join(timeout=10)
+
+
+@pytest.mark.parametrize("broken", ["claim", "index"])
+def test_m2_rejects_unclaimed_or_unindexed_source_before_derivatives(
+    tmp_path: Path, monkeypatch, broken: str,
+) -> None:
+    config, dataset_id, _, store = _human_ready(tmp_path, monkeypatch)
+    owner = configured_owner(config)
+    before = set(store.manifest_ids())
+    if broken == "claim":
+        monkeypatch.setattr(LocalLedger, "dataset", lambda _self, _id: None)
+    else:
+        monkeypatch.setattr(LocalLedger, "source_runs", lambda _self, _id: None)
+    service = LocalTrainingService(config)
+    service.start(dataset_id, recipe=MEMORY_RECIPE)
+    failed = _settle(service)
+    assert failed["status"] == "failed", failed
+    assert failed["error_code"] == ("training_claim_mismatch" if broken == "claim"
+                                    else "source_index_incomplete")
+    assert "input_id" not in failed and "run_id" not in failed
+    assert set(store.manifest_ids()) == before
+    with owner.transaction() as db:
+        assert db.execute("SELECT count(*) FROM curation_uses WHERE reference=?",
+                          (failed["operation_id"],)).fetchone() == (0,)
+
+
+def test_m2_preparation_limit_error_is_durable_unknown_without_retry(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    config, dataset_id, _, store = _human_ready(tmp_path, monkeypatch)
+    before = set(store.manifest_ids())
+    calls = []
+
+    def reject(command, _log_path, _environment, *, on_started):
+        calls.append(command)
+        on_started()
+        return 2, b'{"error_code":"m2_limit_exceeded_no_truncation"}\n'
+
+    monkeypatch.setattr(training_module, "_private_child", reject)
+    service = LocalTrainingService(config)
+    service.start(dataset_id, recipe=MEMORY_RECIPE)
+    failed = _settle(service)
+    assert failed["status"] == "interrupted_unknown", failed
+    assert failed["error_code"] == "m2_limit_exceeded_no_truncation"
+    assert len(calls) == 1 and "prepare-workbench-memory" in calls[0]
+    assert set(store.manifest_ids()) == before
+    assert LocalTrainingService(config).status()["operation"]["status"] == "interrupted_unknown"
+    with pytest.raises(BoundaryError, match="previous_training_outcome_unknown"):
+        service.start(dataset_id, recipe=MEMORY_RECIPE)
+    assert len(calls) == 1
+
+
+def test_m2_pre_spawn_failure_is_retryable_failed_without_run(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    config, dataset_id, _, store = _human_ready(tmp_path, monkeypatch)
+    before = set(store.manifest_ids())
+
+    def cannot_spawn(_command, _log_path, _environment, *, on_started):
+        del on_started
+        raise OSError("synthetic_no_child")
+
+    monkeypatch.setattr(training_module, "_private_child", cannot_spawn)
+    service = LocalTrainingService(config)
+    service.start(dataset_id, recipe=MEMORY_RECIPE)
+    failed = _settle(service)
+    assert failed["status"] == "failed", failed
+    assert failed["error_code"] == "training_storage_or_process_error"
+    assert "run_id" not in failed
+    assert set(store.manifest_ids()) == before
 
 
 def test_insufficient_independent_components_never_reserves_use(
@@ -254,6 +476,47 @@ def test_new_experiment_requires_exact_completed_predecessor_under_one_lock(
             assert not service._thread.is_alive()
 
 
+def test_v1_completed_recipe_change_requires_explicit_new_experiment(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    owner = configured_owner(config)
+    old = {
+        "schema": "stpd/local-training-operation-v1", "status": "completed",
+        "stage": "completed", "operation_id": "1" * 32, "dataset_id": dataset_id,
+        "run_id": "2" * 64, "result_id": "3" * 64,
+        "model_id": "4" * 64, "evaluation_id": "5" * 64,
+        "_owner": list(owner.identity),
+    }
+    path = owner.path.parent / OPERATION_FILE
+    path.write_text(json.dumps(old))
+    service = LocalTrainingService(config)
+    assert service.status()["operation"]["evaluation_id"] == old["evaluation_id"]
+    with pytest.raises(BoundaryError, match="new_experiment_precondition_failed"):
+        service.start(dataset_id, recipe=MEMORY_RECIPE)
+    assert json.loads(path.read_text()) == old
+    broken = dict(old)
+    del broken["evaluation_id"]
+    path.write_text(json.dumps(broken))
+    assert service.status()["availability"] == "recovery_required"
+    path.write_text(json.dumps(old))
+
+    def parked(held, _path, _identity, _owner, _store):
+        held.__exit__(None, None, None)
+
+    monkeypatch.setattr(service, "_run", parked)
+    started = service.start(dataset_id, recipe=MEMORY_RECIPE,
+                            after_completed_operation_id=old["operation_id"])["operation"]
+    assert started["schema"] == "stpd/local-training-operation-v2"
+    assert started["recipe"] == MEMORY_RECIPE
+    assert started["previous_completed"] == {
+        key: old[key] for key in ("operation_id", "dataset_id", "result_id",
+                                 "model_id", "evaluation_id")
+    }
+    assert service._thread is not None
+    service._thread.join(timeout=10)
+
+
 @pytest.mark.parametrize("terminal", ["completed", "failed", "pending", "corrupt", "missing"])
 def test_status_rechecks_journal_after_parent_releases_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str,
@@ -343,25 +606,15 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
     config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
     producer = source_identity(ROOT)
 
-    class FailedChild:
-        stdout = io.BytesIO(b"synthetic private failure\n")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def wait(self):
-            return 7
-
     launches = []
 
-    def fail_child(command, **_kwargs):
+    def fail_child(command, log_path, _environment, *, on_started):
         launches.append(command)
-        return FailedChild()
+        on_started()
+        log_path.write_bytes(b"synthetic private failure\n")
+        return 7, b""
 
-    monkeypatch.setattr(training_module.subprocess, "Popen", fail_child)
+    monkeypatch.setattr(training_module, "_private_child", fail_child)
     monkeypatch.setattr(training_module, "source_identity", lambda _root: producer)
     service = LocalTrainingService(config)
     service.start(dataset_id)
@@ -482,6 +735,75 @@ def test_http_readonly_status_and_exact_browser_write(tmp_path: Path) -> None:
                             data=json.dumps({"dataset_id": "a" * 64, "extra": 1}).encode(),
                             headers=headers), timeout=3)
         assert unknown.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        app.close()
+
+
+@pytest.mark.parametrize("recipe", [DEFAULT_RECIPE, MEMORY_RECIPE])
+def test_http_explicit_new_recipe_accepts_bounded_body_and_rejects_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recipe: str,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    owner = configured_owner(config)
+    previous_id = "1" * 32
+    (owner.path.parent / OPERATION_FILE).write_text(json.dumps({
+        "schema": "stpd/local-training-operation-v1", "status": "completed",
+        "stage": "completed", "operation_id": previous_id,
+        "dataset_id": dataset_id, "run_id": "2" * 64,
+        "result_id": "3" * 64, "model_id": "4" * 64,
+        "evaluation_id": "5" * 64, "_owner": list(owner.identity),
+    }))
+    config_path = tmp_path / "project.json"
+    config_path.write_text(json.dumps(config.to_dict()))
+    app = Application(config, config_path=config_path)
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    (config.state_dir / "runtime.json").write_text(json.dumps({
+        "instance_id": app.instance_id, "configuration_id": configuration_id(config),
+        "port": server.server_port,
+    }))
+    headers = {
+        "Cookie": f"{app.account.cookie_name}={app.account.cookie}",
+        "Content-Type": "application/json", "Origin": url,
+        "X-CSRF-Token": app.account.csrf,
+    }
+    body = json.dumps({"dataset_id": dataset_id,
+                       "after_completed_operation_id": previous_id,
+                       "recipe": recipe}).encode()
+    assert len(body) <= 256
+
+    def parked(held, _path, _identity, _owner, _store):
+        held.__exit__(None, None, None)
+
+    monkeypatch.setattr(app.local_training, "_run", parked)
+    try:
+        def post(payload: bytes, request_headers: dict[str, str] = headers):
+            return urlopen(Request(url + "/api/local-training/start",
+                                   data=payload, headers=request_headers), timeout=5)
+
+        with pytest.raises(HTTPError) as forbidden:
+            post(body, {**headers, "Origin": "http://invalid.local"})
+        assert forbidden.value.code == 403
+        with pytest.raises(HTTPError) as wrong_recipe:
+            post(json.dumps({"dataset_id": dataset_id,
+                             "after_completed_operation_id": previous_id,
+                             "recipe": "unrecognized"}).encode())
+        assert wrong_recipe.value.code == 409
+        assert json.load(wrong_recipe.value)["error"] == "unsupported_training_recipe"
+        with pytest.raises(HTTPError) as oversized:
+            post(body + b" " * (257 - len(body)))
+        assert oversized.value.code == 400
+        with post(body) as response:
+            started = json.load(response)["operation"]
+        assert started["status"] == "pending"
+        assert started.get("recipe", DEFAULT_RECIPE) == recipe
+        assert started["previous_completed"]["operation_id"] == previous_id
+        assert app.local_training._thread is not None
+        app.local_training._thread.join(timeout=10)
     finally:
         server.shutdown()
         server.server_close()

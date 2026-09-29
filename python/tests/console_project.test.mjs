@@ -1158,7 +1158,7 @@ test("local training appears only on a fixed training dataset and starts once on
   });
   const page = await env.render();
   assert.match(text(page), /本机短训练/);
-  assert.match(text(page), /新启动的任务固定使用 D-Simple-S v1、CPU 2 线程和 3 步/);
+  assert.match(text(page), /新启动的任务默认使用 D-Simple-S v1、CPU 2 线程和 3 步/);
   assert.match(text(page), /不代表模型策略质量/);
   assert.doesNotMatch(text(page), /training-csrf/);
   assert.equal(env.calls.filter(call => call.url === "/api/local-training/status").length, 1);
@@ -1222,6 +1222,7 @@ test("local training state gates pending and unknown outcomes, and links only co
   }});
   const resultPage = await done.render();
   assert.match(text(resultPage), /这不表示模型已加载到游戏/);
+  assert.match(text(resultPage), /当前任务配方：以模型记录为准/);
   for (const [output, view] of [[runResult, "local-workspace"], [model, "local-workspace"], [evaluation, "local-workspace"]])
     assert.equal(find(resultPage, element => element.tagName === "A" && element.href === `?view=${view}&id=${output}`) !== null, true);
   assert.equal(walk(resultPage).some(element => element.dataset?.action === "start-local-training"), false);
@@ -1260,6 +1261,36 @@ test("completed training offers one explicit new experiment with exact prior ide
   assert.equal(button.disabled, true);
   for (const artifact of [result, model, evaluation])
     assert.ok(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${artifact}`));
+});
+
+test("experimental M2 is explicit and completed status has no invented evaluation", async () => {
+  const dataset = id("a"), result = id("b"), model = id("c");
+  const recipe = "stage1a.dsimple.m2.k1.experimental.v1";
+  const ready = localTrainingEnv({artifact:dataset, trainingStatus:{
+    schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf",
+    operation:{status:"idle"},
+  }});
+  const page = await ready.render();
+  assert.equal(post(ready.calls).length, 0);
+  const selection = find(page, element => element.tagName === "SELECT"
+    && element.name === "local-training-recipe");
+  assert.ok(selection);
+  selection.value = recipe;
+  await action(page, "start-local-training").onclick();
+  assert.deepEqual(body(post(ready.calls)[0]), {dataset_id:dataset, recipe});
+
+  const done = localTrainingEnv({artifact:dataset, trainingStatus:{
+    schema:"stpd/local-training-operation-v2", availability:"ready", csrf_token:"training-csrf",
+    operation:{status:"completed", operation_id:"1".repeat(32), dataset_id:dataset,
+      recipe, result_type:"train_only", evaluation_status:"not_run",
+      run_id:id("e"), checkpoint_id:id("f"), input_id:id("9"),
+      result_id:result, model_id:model},
+  }});
+  const completed = await done.render();
+  assert.match(text(completed), /没有独立评估或开发集指标/);
+  assert.equal(text(completed).includes("查看开发集结果"), false);
+  assert.equal(post(done.calls).length, 0);
+  assert.ok(action(completed, "start-local-training-new"));
 });
 
 test("pending new training preserves completed result links without another start", async () => {
