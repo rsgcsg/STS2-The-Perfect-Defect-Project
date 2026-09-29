@@ -151,12 +151,15 @@ gameplay contract. A consumer owns policy. Future training adapters may encode
 observations, masks, and rewards, but those do not become STS2 truth.
 
 The experimental `ManagedTextMenuSessionAdapter` is an in-process opt-in
-projection of complete current Managed map and rest-site option catalogs to
+projection of complete current Managed map, rest-site and exact deck-upgrade catalogs to
 `text-menu-v1`. The earlier `ManagedTextMenuMapSessionAdapter` import remains an
 alias. It keeps exact native bindings private and rechecks the current page
 before dispatch. Rest-site option submission also carries the observed native
-option identity for execute-time validation. Other pages, including combat and
-card-selection stages, remain unavailable. A completed rest option leaves the
+option identity for execute-time validation. Deck-upgrade selection carries the
+exact native invocation preferences and original card references: selection enters
+a preview, preview cancellation returns to selection, and confirmation completes
+the native wait. Exiting selection is offered only when native preferences allow it.
+Other pages, including combat and other card-selection sources, remain unavailable. A completed rest option leaves the
 room visible, may leave other options available, and advertises a separate
 room-bound Proceed input. A cancelled native option stays on the rest page;
 faults or unresolved native delivery taint the Managed session. This adapter
@@ -164,7 +167,7 @@ is not a public Connector service: Managed has no text-menu HTTP route or
 controller-lease/attribution owner, and this projection does not qualify
 Connector text-menu compatibility.
 
-The current rest patch has a new macOS build identity in the candidate manifest.
+The current rest/upgrade patch has a new macOS build identity in the candidate manifest.
 The separately retained Windows build tuple is historical; it does not admit
 this changed patch. Windows preparation remains fail-closed until its new
 exact build is measured. The source package candidate is not an installed

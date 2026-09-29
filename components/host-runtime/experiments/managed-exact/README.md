@@ -77,6 +77,18 @@ Connector SDK contract, snapshot-bound finite actions, Host-local operands,
 idempotent request ledger, stale refusal, and unknown-no-retry behavior. They
 remain partial until cross-Host differential and coverage gates pass.
 
+The bounded Managed text-menu deck-upgrade page uses only the pinned
+`CardSelectCmd.FromDeckForUpgrade(Player, CardSelectorPrefs)` test-selector
+seam. A scoped exact invocation carries the game's full preferences to the
+same synchronous selector callback, where the original card objects become
+private operands. The page exposes one-card selection, a separate preview
+confirmation, preview return, and selection cancellation only when the native
+preferences permit it. An unbound or changed selector stays unsupported; the
+Host never infers cancellation from `min_select` or enumerates card combinations.
+This is a Headless input presentation for that command, not a native UI or
+Human-evidence claim. Method/signature or callback-order drift requires a new
+exact-build review and native differential probe.
+
 `engine-lab` measures the exact in-process game-owned semantic loop without a
 Player Environment or consumer. `pe-profile` separates training overhead from
 strict qualification overhead. `pe-sharded-capacity` is retained as an
