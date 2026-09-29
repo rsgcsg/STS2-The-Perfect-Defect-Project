@@ -26,11 +26,23 @@ from ..models.dsimple_sequence_training import (
     _validate_step,
     validate_memory_window,
 )
+from .confirmed_interaction import (
+    HISTORY_INPUT_PROFILE,
+    HISTORY_PROFILES,
+    V2_HISTORY_INPUT_PROFILE,
+    confirmed_action_text,
+)
 from .memory_projection_config import (
     MemoryEpisodeProjectionConfig as MemoryEpisodeProjectionConfig,
 )
 from .memory_projection_config import (
     MemoryEpisodeProjectionConfigV2 as MemoryEpisodeProjectionConfigV2,
+)
+from .memory_projection_config import (
+    MemoryEpisodeProjectionConfigV3 as MemoryEpisodeProjectionConfigV3,
+)
+from .memory_projection_config import (
+    history_episode_projection_config as history_episode_projection_config,
 )
 from .memory_projection_config import (
     parse_episode_projection_config as parse_episode_projection_config,
@@ -180,6 +192,7 @@ def _project_segment(
     episode_id = semantic_hash([view.source_id, first.stream_id, first.event_id])
     steps: list[MemorySequenceStep] = []
     input_tokens = 0
+    consumed: set[str] = set()
     for position, item in enumerate(segment):
         if not isinstance(item.snapshot, dict):
             raise BoundaryError("memory_bridge", "missing_observation")
@@ -189,9 +202,53 @@ def _project_segment(
             raise BoundaryError("memory_bridge", "choice_mask_mismatch")
         if selected is not None and public.action_ids.count(selected) != 1:
             raise BoundaryError("memory_bridge", "choice_binding_mismatch")
+        previous_text: str | None = None
+        if input_profile in HISTORY_PROFILES:
+            eligible = []
+            for prior in segment[:position]:
+                if (prior.event_id in consumed or not prior.choice_mask
+                        or prior.selected_action_id is None
+                        or prior.confirmed_at_sequence is None
+                        or prior.confirmed_effect_domain is None):
+                    continue
+                if item.source_kind == "human_input_stream":
+                    if (prior.capture_ordinal is None or item.capture_ordinal is None
+                            or prior.capture_ordinal >= item.capture_ordinal
+                            or item.completed_append_watermark is None
+                            or prior.physical_sequence is None
+                            or prior.physical_sequence > item.completed_append_watermark):
+                        continue
+                    order = prior.physical_sequence
+                else:
+                    if prior.confirmed_at_sequence >= item.source_sequence:
+                        continue
+                    order = prior.confirmed_at_sequence
+                eligible.append((order, prior))
+            if eligible:
+                # All already visible older witnesses retire together. Only the
+                # latest completed known interaction occupies the single slot.
+                _, previous = max(eligible, key=lambda candidate: candidate[0])
+                consumed.update(prior.event_id for _, prior in eligible)
+                if not isinstance(previous.snapshot, dict):
+                    raise BoundaryError("memory_bridge", "history_snapshot_missing")
+                assert previous.selected_action_id is not None
+                assert previous.confirmed_effect_domain is not None
+                previous_text = confirmed_action_text(
+                    previous.snapshot, previous.selected_action_id,
+                    effect_domain=previous.confirmed_effect_domain,
+                    basis=("last_known_human_input_witness" if item.source_kind ==
+                           "human_input_stream" else "confirmed_connector_result"),
+                    profile=input_profile,
+                )
         row = encode_memory_texts(
             tokenizer, public.state_text, public.action_texts,
-            max_tokens=model.core.max_tokens, slots=model.slots)
+            max_tokens=model.core.max_tokens, slots=model.slots,
+            previous_actual_action=previous_text is not None)
+        previous_tokens = (tuple(tokenizer.encode(previous_text, add_special_tokens=False).ids)
+                           if previous_text is not None else None)
+        if (previous_tokens is not None and
+                (not previous_tokens or len(previous_tokens) > model.core.max_tokens)):
+            raise BoundaryError("memory_bridge", "history_token_limit")
         step = MemorySequenceStep(
             episode_id=episode_id,
             position=position,
@@ -204,7 +261,9 @@ def _project_segment(
             label_key=selected,
             reset_before=position == 0,
             # Neither a Human witness nor a chosen Agent label proves Commit.
-            previous_actual_action=None,
+            previous_actual_action=(torch.tensor(previous_tokens, dtype=torch.long,
+                                                 device=model.write_queries.device)
+                                    if previous_tokens is not None else None),
             public_feedback=None,
         )
         input_tokens += _validate_step(model, step, episode_id, position)
@@ -368,26 +427,36 @@ def project_memory_episodes(
     max_input_tokens: int,
     max_settling_events: int = 0,
     projection_config: (
-        MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2 | None
+        MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2 |
+        MemoryEpisodeProjectionConfigV3 | None
     ) = None,
 ) -> MemoryEpisodeBridgeResult:
     """Project bounded episodes; opted-in verified settling writes no model state."""
     _validate_bridge_input(view, tokenizer, model)
     if projection_config is not None and type(projection_config) not in {
         MemoryEpisodeProjectionConfig, MemoryEpisodeProjectionConfigV2,
+        MemoryEpisodeProjectionConfigV3,
     }:
         raise BoundaryError("memory_bridge", "projection_config_mismatch")
     input_profile = (INPUT_PROFILE if projection_config is None else
                      projection_input_profile(projection_config))
-    if input_profile == V2_INPUT_PROFILE:
-        if (view.stream_scope != "managed_engineering_control_inputs"
+    if input_profile in {V2_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE}:
+        allowed = ({"managed_engineering_control_inputs"} if input_profile ==
+                   V2_INPUT_PROFILE else {"managed_engineering_control_inputs",
+                                          "verified_agent_observed_inputs"})
+        if (view.stream_scope not in allowed
                 or any(not isinstance(item, ObservedInput)
-                       or item.source_kind != "managed_control_input_stream"
-                       for item in view.inputs)
+                       or item.source_kind != ("managed_control_input_stream" if
+                          view.stream_scope == "managed_engineering_control_inputs" else
+                          "agent_decision_inputs") for item in view.inputs)
                 or max_settling_events != 0):
             raise BoundaryError("memory_bridge", "v2_source_or_settling_mismatch")
-    elif (projection_config is not None
-          and max_settling_events != projection_config.max_settling_events):
+    elif (input_profile == HISTORY_INPUT_PROFILE
+          and view.stream_scope not in {"partial_human_input_stream",
+                                        "verified_agent_observed_inputs"}):
+        raise BoundaryError("memory_bridge", "history_source_profile_mismatch")
+    if (projection_config is not None
+            and max_settling_events != projection_config.max_settling_events):
         raise BoundaryError("memory_bridge", "projection_config_mismatch")
     if (type(max_observations) is not int or max_observations <= 0
             or type(max_input_tokens) is not int or max_input_tokens <= 0

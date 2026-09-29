@@ -12,6 +12,14 @@ V2_M2_K1_RECIPE = "stage1a.dsimple.m2.k1.experimental.v2"
 V2_RESET_K1_RECIPE = "stage1a.dsimple.reset.k1.experimental.v2"
 V2_M2_K8_RECIPE = "stage1a.dsimple.m2.k8.experimental.v2"
 V2_RESET_K8_RECIPE = "stage1a.dsimple.reset.k8.experimental.v2"
+HISTORY_M2_K1_RECIPE = "stage1a.dsimple.m2.k1.confirmed-interaction.v1"
+HISTORY_RESET_K1_RECIPE = "stage1a.dsimple.reset.k1.confirmed-interaction.v1"
+HISTORY_M2_K8_RECIPE = "stage1a.dsimple.m2.k8.confirmed-interaction.v1"
+HISTORY_RESET_K8_RECIPE = "stage1a.dsimple.reset.k8.confirmed-interaction.v1"
+V2_HISTORY_M2_K1_RECIPE = "stage1a.dsimple.m2.k1.confirmed-interaction.v2"
+V2_HISTORY_RESET_K1_RECIPE = "stage1a.dsimple.reset.k1.confirmed-interaction.v2"
+V2_HISTORY_M2_K8_RECIPE = "stage1a.dsimple.m2.k8.confirmed-interaction.v2"
+V2_HISTORY_RESET_K8_RECIPE = "stage1a.dsimple.reset.k8.confirmed-interaction.v2"
 
 
 @dataclass(frozen=True)
@@ -30,10 +38,18 @@ _RECIPES = {
     V2_RESET_K1_RECIPE: MemoryRecipeSettings(1, True, "text-menu-v2"),
     V2_M2_K8_RECIPE: MemoryRecipeSettings(8, False, "text-menu-v2"),
     V2_RESET_K8_RECIPE: MemoryRecipeSettings(8, True, "text-menu-v2"),
+    HISTORY_M2_K1_RECIPE: MemoryRecipeSettings(1, False, "text-menu-v1-confirmed-interaction"),
+    HISTORY_RESET_K1_RECIPE: MemoryRecipeSettings(1, True, "text-menu-v1-confirmed-interaction"),
+    HISTORY_M2_K8_RECIPE: MemoryRecipeSettings(8, False, "text-menu-v1-confirmed-interaction"),
+    HISTORY_RESET_K8_RECIPE: MemoryRecipeSettings(8, True, "text-menu-v1-confirmed-interaction"),
+    V2_HISTORY_M2_K1_RECIPE: MemoryRecipeSettings(1, False, "text-menu-v2-confirmed-interaction"),
+    V2_HISTORY_RESET_K1_RECIPE: MemoryRecipeSettings(1, True, "text-menu-v2-confirmed-interaction"),
+    V2_HISTORY_M2_K8_RECIPE: MemoryRecipeSettings(8, False, "text-menu-v2-confirmed-interaction"),
+    V2_HISTORY_RESET_K8_RECIPE: MemoryRecipeSettings(8, True, "text-menu-v2-confirmed-interaction"),
 }
 MEMORY_RECIPES = frozenset(_RECIPES)
 V2_MEMORY_RECIPES = frozenset(recipe for recipe, settings in _RECIPES.items()
-                              if settings.input_profile == "text-menu-v2")
+                              if settings.input_profile.startswith("text-menu-v2"))
 
 _CONFIG_KEYS = frozenset({
     "vocab_size", "episode_count", "slots", "reset_each_step", "gated", "seed",

@@ -70,6 +70,13 @@ class ObservedInput:
     reset_before: bool
     reset_reason: str | None
     source_events: tuple[SourceEventRef, ...]
+    # Optional, source-verified ordering facts for the opt-in history profile.
+    # Existing observed-input consumers retain their original interpretation.
+    confirmed_at_sequence: int | None = None
+    confirmed_effect_domain: str | None = None
+    capture_ordinal: int | None = None
+    completed_append_watermark: int | None = None
+    physical_sequence: int | None = None
 
 
 @dataclass(frozen=True)
@@ -138,6 +145,8 @@ def _managed_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
             reset_reason="stream_start" if item.sequence == 1 else None,
             source_events=(SourceEventRef(item.sequence, "managed_run_event",
                                           item.event_artifact_id),),
+            confirmed_at_sequence=item.sequence,
+            confirmed_effect_domain=result["effect_domain"],
         ))
     return ObservedInputView(source_id, "managed_engineering_control_inputs", False,
                              tuple(inputs))
@@ -148,6 +157,7 @@ def _agent_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
     events = verified.events
     decisions: dict[str, dict[str, Any]] = {}
     dispatches: dict[str, dict[str, Any]] = {}
+    cancellations: dict[str, dict[str, Any]] = {}
     outcomes: dict[str, dict[str, Any]] = {}
     successors: dict[str, dict[str, Any]] = {}
     for event in events:
@@ -157,11 +167,20 @@ def _agent_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
             decisions[decision["decision_id"]] = {"event": event, **payload}
         elif kind == "text_menu_dispatch_attempt":
             dispatches[payload["decision_id"]] = {"event": event, **payload}
+        elif kind == "text_menu_dispatch_cancelled":
+            cancellations[payload["decision_id"]] = {"event": event, **payload}
         elif kind in {"menu_navigation", "text_native_delivery", "text_native_unknown",
                       "text_menu_not_applied", "text_menu_result_rejected"}:
             outcomes[payload["decision_id"]] = {"event": event, **payload, "kind": kind}
         elif kind == "text_observed_successor":
             successors[payload["decision_id"]] = {"event": event, **payload}
+
+    for decision_id, cancellation in cancellations.items():
+        dispatch = dispatches.get(decision_id)
+        if (dispatch is None or decision_id in outcomes
+                or cancellation.get("reason") != "recovery_before_submit"
+                or cancellation["event"]["sequence"] <= dispatch["event"]["sequence"]):
+            raise BoundaryError("observed_input_sequence", "dispatch_cancellation_mismatch")
 
     stream_id = f"agent:{verified.content_id}:{verified.run_id}"
     pending_reset: str | None = "stream_start"
@@ -176,6 +195,7 @@ def _agent_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
         decision_id = payload["decision_id"]
         decision = decisions.get(decision_id)
         dispatch = dispatches.get(decision_id)
+        cancellation = cancellations.get(decision_id)
         outcome = outcomes.get(decision_id)
         successor = successors.get(decision_id)
         chosen = decision.get("resolved_bound_action_id") if decision else None
@@ -209,6 +229,10 @@ def _agent_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
                 relation = "none"
             else:
                 status, relation = "untrusted_result", "unknown"
+        elif cancellation:
+            # The recovery owner cancelled before Connector submit. An earlier
+            # dispatch intent does not make delivery unknown or confirmed.
+            status, relation = "not_attempted", "none"
         elif dispatch:
             status = "unknown"
 
@@ -225,6 +249,12 @@ def _agent_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
             item = dispatch["event"]
             refs.append(SourceEventRef(
                 item["sequence"], "text_menu_dispatch_attempt",
+                f"{verified.content_id}:{item['sequence']}",
+            ))
+        if cancellation:
+            item = cancellation["event"]
+            refs.append(SourceEventRef(
+                item["sequence"], "text_menu_dispatch_cancelled",
                 f"{verified.content_id}:{item['sequence']}",
             ))
         if outcome_event is not None and outcome is not None:
@@ -253,6 +283,13 @@ def _agent_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
             causal_successor_mask=False,
             reset_before=pending_reset is not None, reset_reason=pending_reset,
             source_events=tuple(refs),
+            confirmed_at_sequence=(outcome["event"]["sequence"] if outcome is not None
+                                   and outcome["kind"] in {"menu_navigation",
+                                                           "text_native_delivery"}
+                                   else None),
+            confirmed_effect_domain=(outcome["result"]["effect_domain"]
+                                     if outcome is not None and outcome["kind"] in {
+                                         "menu_navigation", "text_native_delivery"} else None),
         ))
         pending_reset = None
     return ObservedInputView(source_id, "verified_agent_observed_inputs", False,
@@ -374,6 +411,16 @@ def _human_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
             successor_observation_mask=False, causal_successor_mask=False,
             reset_before=pending_reset is not None, reset_reason=pending_reset,
             source_events=(SourceEventRef(row["sequence"], "human_text_input", row["record_id"]),),
+            confirmed_at_sequence=(row["sequence"] if row["schema_version"] == 2
+                                   and choice_mask else None),
+            confirmed_effect_domain=(selected["effect_domain"] if row["schema_version"] == 2
+                                     and choice_mask and isinstance(selected, dict) else None),
+            capture_ordinal=(row["observation_order"]["capture_ordinal"]
+                             if row["schema_version"] == 2 else None),
+            completed_append_watermark=(row["observation_order"]
+                                        ["completed_append_watermark"]
+                                        if row["schema_version"] == 2 else None),
+            physical_sequence=(row["sequence"] if row["schema_version"] == 2 else None),
         ))
         previous_observation = observation_mask
         pending_reset = "after_missing_observation" if not observation_mask else None
