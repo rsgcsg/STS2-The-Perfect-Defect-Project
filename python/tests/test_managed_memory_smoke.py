@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from test_text_menu_data import snapshot as text_snapshot
 
 from stpd.fullrun.memory_token_inputs import project_memory_snapshot
@@ -15,6 +17,8 @@ from stpd.managed_memory_smoke import SmokeLimits, run_managed_memory_smoke
 
 def page(name: str) -> dict:
     value = text_snapshot(name)
+    value["persistent"]["content"]["run"]["ascension"] = 0
+    value["persistent"]["content"]["player"]["character_definition_id"] = "DEFECT"
     value["session"] = {"runtime_instance_id": "managed-runtime",
                         "environment_fingerprint": "exact-candidate"}
     return value
@@ -119,6 +123,9 @@ def test_one_exact_native_leaf_and_terminal_release() -> None:
     assert environment.submissions[0][:3] == ("opaque-play", source["snapshot_id"], "game-0")
     assert report["qualification"] == "engineering_only"
     assert report["policy_runtime_http"] is False
+    assert report["requested_character"] == "Defect"
+    assert report["observed_character"] == "DEFECT"
+    assert report["requested_ascension"] == report["observed_ascension"] == 0
     assert environment.closed
 
 
@@ -262,11 +269,60 @@ def test_invalid_seed_closes_owned_child_and_cli_never_constructs_it(
     monkeypatch.setattr(cli, "validate_memory_package", lambda *args: (
         {"ids": {"model": "a" * 64}}, None, None,
         SimpleNamespace(reset_each_step=True)))
-    monkeypatch.setattr(sys, "argv", ["managed_memory_smoke.py", "--candidate", "/unused",
-                                     "--model-export", "/unused", "--seed", "invalid-seed"])
-    assert cli.main() == 2
+    for extra in (("--seed", "invalid-seed"),
+                  ("--seed", "SEED1", "--character", "not-a-character"),
+                  ("--seed", "SEED1", "--ascension", "1")):
+        monkeypatch.setattr(sys, "argv", ["managed_memory_smoke.py", "--candidate", "/unused",
+                                         "--model-export", "/unused", *extra])
+        assert cli.main() == 2
     assert constructed == []
     assert '"status": "unavailable"' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("character,extra", [
+    ("Defect", ()), ("Ironclad", ("--character", "Ironclad")),
+])
+def test_cli_passes_character_and_reports_observed_selection(
+    monkeypatch, capsys, character: str, extra: tuple[str, ...],
+) -> None:
+    script = Path(__file__).resolve().parents[1] / "tools" / "managed_memory_smoke.py"
+    spec = importlib.util.spec_from_file_location("managed_memory_smoke_cli_launch_test", script)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    started: list[tuple[list[str], Environment]] = []
+
+    class Child(Environment):
+        def __init__(self, command: list[str], **kwargs) -> None:
+            source, successor = page("before"), terminal("after")
+            for snapshot in (source, successor):
+                snapshot["persistent"]["content"]["player"]["character_definition_id"] = \
+                    character.upper()
+            super().__init__([source], successor=successor)
+            started.append((command, self))
+
+    monkeypatch.setitem(sys.modules, "sts2_headless",
+                        SimpleNamespace(ManagedPlayerEnvironment=Child))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(set_num_threads=lambda _: None))
+    monkeypatch.setattr(cli, "activate_host_runtime_client", lambda *args: None)
+    monkeypatch.setattr(cli, "load_host_runtime_pin", lambda *args: {})
+    monkeypatch.setattr(cli, "validate_memory_package", lambda *args: (
+        {"ids": {"model": "a" * 64}}, None, None,
+        SimpleNamespace(reset_each_step=True, cpu_threads=2)))
+    monkeypatch.setattr(cli.OnlineM2Scorer, "from_export", lambda *args: Scorer())
+    monkeypatch.setattr(cli, "driver_command", lambda *args: ["node", "/exact/driver.mjs"])
+    monkeypatch.setattr(sys, "argv", ["managed_memory_smoke.py", "--candidate", "/unused",
+                                     "--model-export", "/unused", "--seed", "SEED1", *extra])
+    assert cli.main() == 0
+    assert len(started) == 1
+    command, child = started[0]
+    assert command == ["node", "/exact/driver.mjs", "--character", character,
+                       "--timeout-ms", "5000"]
+    report = json.loads(capsys.readouterr().out)
+    assert report["requested_character"] == character
+    assert report["observed_character"] == character.upper()
+    assert report["requested_ascension"] == report["observed_ascension"] == 0
+    assert child.closed
 
 
 def test_missing_text_consumer_capability_never_uses_raw_fallback() -> None:
@@ -288,6 +344,30 @@ def test_seed_provenance_must_match_the_requested_episode() -> None:
     report = run(environment, Scorer())
     assert report["stop_reason"] == "episode_provenance_unverified"
     assert report["observations"] == report["submissions"] == 0
+    assert environment.closed
+
+
+def test_character_and_ascension_must_match_observed_page_before_scoring() -> None:
+    for field, value in (("character_definition_id", "IRONCLAD"), ("ascension", 1)):
+        source = page("before")
+        parent = source["persistent"]["content"]
+        parent["player" if field == "character_definition_id" else "run"][field] = value
+        environment = Environment([source])
+        scorer = Scorer()
+        report = run(environment, scorer)
+        assert report["stop_reason"] == "episode_configuration_mismatch"
+        assert report["observed_character"] == parent["player"]["character_definition_id"]
+        assert report["observed_ascension"] == parent["run"]["ascension"]
+        assert report["submissions"] == report["policy_calls"] == 0
+        assert scorer.tokens == []
+        assert environment.closed
+
+    missing = page("missing")
+    del missing["persistent"]["content"]["run"]["ascension"]
+    environment = Environment([missing])
+    report = run(environment, Scorer())
+    assert report["stop_reason"] == "episode_configuration_unverified"
+    assert report["submissions"] == report["policy_calls"] == 0
     assert environment.closed
 
 

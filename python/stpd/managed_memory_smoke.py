@@ -20,6 +20,7 @@ from .fullrun.memory_token_inputs import project_memory_snapshot
 CONTEXT_SCHEMA = "sts2.player-environment/text-menu-observation-context-1"
 RESULT_SCHEMA = "sts2.player-environment/text-menu-action-result-1"
 SNAPSHOT_SCHEMA = "sts2.player-environment/text-menu-snapshot-1"
+SUPPORTED_CHARACTERS = frozenset({"Ironclad", "Silent", "Defect", "Regent", "Necrobinder"})
 
 
 class SmokeBoundaryError(ValueError):
@@ -105,18 +106,35 @@ def _terminal(snapshot: dict[str, Any]) -> bool:
 
 
 def validate_smoke_request(seeds: tuple[str, ...], model_id: str,
-                           reset_each_step: bool) -> None:
+                           reset_each_step: bool, character: str = "Defect",
+                           ascension: int = 0) -> None:
     """Reject invalid experiment inputs before a CLI creates its child."""
     if (not 1 <= len(seeds) <= 2 or any(not isinstance(seed, str)
             or re.fullmatch(r"[A-Z0-9]{1,64}", seed) is None for seed in seeds)
             or not isinstance(model_id, str) or len(model_id) != 64
-            or type(reset_each_step) is not bool):
+            or type(reset_each_step) is not bool
+            or not isinstance(character, str) or character not in SUPPORTED_CHARACTERS
+            or type(ascension) is not int or ascension != 0):
         raise SmokeBoundaryError("invalid_smoke_request")
+
+
+def _observed_episode_configuration(snapshot: dict[str, Any]) -> tuple[str, int]:
+    persistent = snapshot.get("persistent")
+    if not isinstance(persistent, dict) or not isinstance(persistent.get("content"), dict):
+        raise SmokeBoundaryError("episode_configuration_unverified")
+    content = persistent["content"]
+    run, player = content.get("run"), content.get("player")
+    if (not isinstance(run, dict) or not isinstance(player, dict)
+            or not isinstance(player.get("character_definition_id"), str)
+            or type(run.get("ascension")) is not int):
+        raise SmokeBoundaryError("episode_configuration_unverified")
+    return player["character_definition_id"], run["ascension"]
 
 
 def run_managed_memory_smoke(
     environment: Any, scorer: Any, *, seeds: tuple[str, ...],
     model_id: str, reset_each_step: bool, limits: SmokeLimits | None = None,
+    character: str = "Defect", ascension: int = 0,
     clock: Any = time.monotonic,
 ) -> dict[str, Any]:
     """Run at most two explicit episodes, closing the dedicated child on every exit."""
@@ -126,6 +144,8 @@ def run_managed_memory_smoke(
         "model_id": model_id, "recipe": "reset-k1" if reset_each_step else "m2-k1",
         "qualification": "engineering_only", "policy_runtime_http": False,
         "status": "stopped", "stop_reason": "not_started",
+        "requested_character": character, "requested_ascension": ascension,
+        "observed_character": None, "observed_ascension": None,
         "episodes_started": 0, "observations": 0, "policy_calls": 0,
         "submissions": 0, "native_delivered": 0, "terminal_observed": 0,
     }
@@ -137,7 +157,7 @@ def run_managed_memory_smoke(
             raise SmokeBoundaryError("wall_budget_exhausted")
 
     try:
-        validate_smoke_request(seeds, model_id, reset_each_step)
+        validate_smoke_request(seeds, model_id, reset_each_step, character, ascension)
         if (not callable(getattr(environment, "observe_text_menu", None))
                 or not callable(getattr(environment, "submit_text_menu", None))):
             raise SmokeBoundaryError("text_menu_consumer_unavailable")
@@ -167,6 +187,13 @@ def run_managed_memory_smoke(
                         or not continuity):
                     raise SmokeBoundaryError("text_context_invalid")
                 if episode_continuity is None:
+                    observed_character, observed_ascension = _observed_episode_configuration(
+                        snapshot)
+                    report["observed_character"] = observed_character
+                    report["observed_ascension"] = observed_ascension
+                    if (observed_character != character.upper()
+                            or observed_ascension != ascension):
+                        raise SmokeBoundaryError("episode_configuration_mismatch")
                     if continuity == previous_continuity:
                         raise SmokeBoundaryError("continuity_reused_after_reset")
                     episode_continuity = continuity

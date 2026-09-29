@@ -241,7 +241,8 @@ uv run --locked python tools/managed_memory_smoke.py \
   --host-runtime-pin /ABS/exact-host-pin.json \
   --candidate /ABS/exact-managed-candidate \
   --model-export /ABS/verified-memory-export \
-  --seed M2SMOKE01 --max-policy-calls 4 --max-submissions 2 \
+  --seed M2SMOKE01 --character Defect --ascension 0 \
+  --max-policy-calls 4 --max-submissions 2 \
   --max-observations 8 --max-seconds 30
 ```
 
@@ -252,6 +253,12 @@ stops without retry; the dedicated child closes on all outcomes. The wall limit 
 checked around each synchronous client call, whose own response timeout is bounded;
 it is not a hard process-kill deadline. This is an engineering experiment, not a
 Policy Runtime HTTP, Human, full-game or model-quality result.
+The default is Defect at ascension 0. The Host driver accepts an explicit character
+but does not expose an ascension option, so this smoke rejects other ascensions before
+starting a child. The report distinguishes the requested character/ascension from
+the first text snapshot's observed run/player fields for each episode and stops
+before scoring if they disagree. The exported model package has no character or
+ascension admission claim; selecting Defect here is an experiment setting.
 
 The original operational environment patch baseline remains predecessor Headless `v1.0.1`, Managed
 Host `8dc622b0.../7228541c...`, Connector `v1.1.0-rc.1`

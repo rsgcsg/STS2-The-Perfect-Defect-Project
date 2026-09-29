@@ -35,6 +35,8 @@ def main() -> int:
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--model-export", type=Path, required=True)
     parser.add_argument("--seed", action="append", required=True)
+    parser.add_argument("--character", default="Defect")
+    parser.add_argument("--ascension", type=int, default=0)
     parser.add_argument("--max-policy-calls", type=int, default=4)
     parser.add_argument("--max-submissions", type=int, default=1)
     parser.add_argument("--max-observations", type=int, default=8)
@@ -52,19 +54,19 @@ def main() -> int:
             raise RuntimeError("text_menu_consumer_unavailable")
         package, weights, tokenizer, config = validate_memory_package(args.model_export)
         validate_smoke_request(tuple(args.seed), package["ids"]["model"],
-                               config.reset_each_step)
+                               config.reset_each_step, args.character, args.ascension)
         import torch
 
         torch.set_num_threads(config.cpu_threads)
         scorer = OnlineM2Scorer.from_export(weights, config, tokenizer)
         command = [*driver_command(host_runtime, args.candidate.resolve()),
-                   "--timeout-ms", "5000"]
+                   "--character", args.character, "--timeout-ms", "5000"]
         environment = ManagedPlayerEnvironment(
             command, response_timeout_seconds=min(limits.max_seconds, 10.0))
         report = run_managed_memory_smoke(
             environment, scorer, seeds=tuple(args.seed),
             model_id=package["ids"]["model"], reset_each_step=config.reset_each_step,
-            limits=limits,
+            limits=limits, character=args.character, ascension=args.ascension,
         )
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
         return 0 if report["status"] == "engineering_smoke_complete" else 2
