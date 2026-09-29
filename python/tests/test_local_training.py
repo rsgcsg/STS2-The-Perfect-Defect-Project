@@ -84,6 +84,19 @@ def _settle(service: LocalTrainingService, timeout: float = 180) -> dict:
     return service.status()["operation"]
 
 
+def test_missing_model_backend_preserves_valid_training_input(tmp_path, monkeypatch):
+    config, dataset_id, _, store = _ready(tmp_path, monkeypatch)
+    service = LocalTrainingService(config)
+    before = store.manifest_ids()
+    with monkeypatch.context() as missing:
+        missing.setattr("spireagent.workbench.local_model_dependencies.find_spec", lambda _: None)
+        with pytest.raises(BoundaryError, match="local_models_extra_required"):
+            service.start(dataset_id)
+    assert service.status()["operation"]["status"] == "idle"
+    assert service._thread is None
+    assert store.manifest_ids() == before
+
+
 def test_private_child_drains_large_stderr_and_keeps_stdout_machine_record(tmp_path: Path):
     script = ("import sys; sys.stderr.write('x' * 262144); "
               "sys.stderr.flush(); sys.stdout.write('{\"run_id\":\"ok\"}\\n')")

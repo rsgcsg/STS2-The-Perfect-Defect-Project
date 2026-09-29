@@ -98,6 +98,34 @@ def test_text_runtime_manifest_must_bind_both_profile_and_archive(tmp_path):
         check()
 
 
+def test_v2_partial_or_mismatched_pair_is_rejected(tmp_path):
+    path, _ = archive(tmp_path)
+    with zipfile.ZipFile(path) as z:
+        files = {name: z.read(name) for name in z.namelist()}
+    profile_name, archive_name, _, _, key, schema = install.KIT_RUNTIME_PAIRS[
+        "text-menu-m2-v2"]
+    payload = b"v2 archive"
+    profile = json.dumps({"schema": schema, "runtime_package": {
+        "package": "@rsgcsg/sts2-policy-runtime", "version": "0.1.0",
+        "source_revision": "a" * 40, "component_tree_revision": "b" * 40,
+        "release_asset_sha256": install.sha(payload),
+        "package_content_sha256": "c" * 64,
+        "dependency_layout": "bundled_source_candidate", "bundled_connector_pin": {},
+    }}).encode()
+    manifest = json.loads(files["combination.json"])
+    files[profile_name], files[archive_name] = profile, payload
+    manifest["files"].update({profile_name: install.sha(profile),
+                              archive_name: install.sha(payload)})
+    with pytest.raises(BoundaryError, match="inventory_incomplete"):
+        install.text_runtime_files(manifest, files, required_profile="text-menu-m2-v2")
+    manifest[key] = {"profile_sha256": "0" * 64,
+                     "archive_sha256": install.sha(payload)}
+    with pytest.raises(BoundaryError, match="inventory_mismatch"):
+        install.text_runtime_files(manifest, files, required_profile="text-menu-m2-v2")
+    manifest[key]["profile_sha256"] = install.sha(profile)
+    assert install.text_runtime_files(manifest, files, required_profile="text-menu-m2-v2")
+
+
 @pytest.mark.parametrize("extra", ["../outside", "/absolute", "C:/drive", "a\\b", "a/../b"])
 def test_unsafe_archive_names_fail_before_any_extraction(tmp_path, extra):
     path, expected = archive(tmp_path, extra=extra)

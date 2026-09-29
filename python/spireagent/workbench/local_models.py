@@ -36,10 +36,7 @@ from spireagent.policy_files import _inside, _object_file
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json, endpoint
 from spireagent.workbench.hub_client import HubClient, NoRedirect
 from spireagent.workbench.kit_runtime import (
-    M2_ARCHIVE_DESTINATION,
-    M2_RUNTIME_DESTINATION,
-    TEXT_ARCHIVE_DESTINATION,
-    TEXT_RUNTIME_DESTINATION,
+    KIT_RUNTIME_PAIRS,
     text_runtime_pin,
 )
 from spireagent.workbench.native_tasks import NativeTasks
@@ -68,12 +65,6 @@ TEXT_PROFILES = {"text-menu-v1": ("token-v1", ".local/text-menu-runtime-v1.json"
                  "text-menu-m2-v2": ("stpd-m2-decision-adapter",
                                      ".local/text-menu-m2-runtime-v2.json",
                                      "stpd/local-text-m2-runtime-v2", "text-menu-m2-v2")}
-KIT_TEXT_FILES = {
-    "text-menu-v1": (TEXT_RUNTIME_DESTINATION, TEXT_ARCHIVE_DESTINATION,
-                     "text_runtime", "text_runtime_identity"),
-    "text-menu-m2-v1": (M2_RUNTIME_DESTINATION, M2_ARCHIVE_DESTINATION,
-                        "m2_runtime", "m2_runtime_identity"),
-}
 _BUDGET_STATES = frozenset({"inactive", "active", "exhausted"})
 _BUDGET_EXHAUSTION = frozenset({"submission_attempt_limit", "policy_call_limit", "deadline"})
 _BUDGET_END = frozenset({"human_recovery", "mode_changed", "stopped"})
@@ -570,15 +561,14 @@ class LocalModelService:
 
     def _selected_kit_text_runtime(self, profile_id: str) -> tuple[bytes, Path, dict[str, Any]]:
         """Read one fixed pair from this process's already selected release only."""
-        if profile_id == "text-menu-m2-v2":
-            raise BoundaryError("local_model", "trusted_text_runtime_asset_not_bundled")
         source = self.root.parent
         release = source.parent
         if (self.root.name != "python" or source.name != "source"
                 or not re.fullmatch(r"[a-f0-9]{64}", release.name)
                 or release / "source/python" != self.root):
             raise BoundaryError("local_model", "trusted_text_runtime_kit_unavailable")
-        profile_name, archive_name, status_key, identity_key = KIT_TEXT_FILES[profile_id]
+        _, _, profile_name, archive_name, status_key, _ = KIT_RUNTIME_PAIRS[profile_id]
+        identity_key = status_key + "_identity"
         verifier = ROOT / "tools/install_developer_kit.py"
         environment = {key: value for key, value in os.environ.items()
                        if key in {"PATH", "HOME", "SYSTEMROOT", "SystemRoot",
@@ -613,7 +603,9 @@ class LocalModelService:
                 or hashlib.sha256(archive_raw).hexdigest() != identity["archive_sha256"]):
             raise BoundaryError("local_model", "trusted_text_runtime_kit_changed")
         pin = text_runtime_pin(profile_raw, archive_raw,
-                               memory=profile_id == "text-menu-m2-v1")
+                               **({"required_profile": profile_id}
+                                  if profile_id == "text-menu-m2-v2" else
+                                  {"memory": profile_id == "text-menu-m2-v1"}))
         return profile_raw, archive_path, pin
 
     def prepare_text_runtime(self, profile_id: str) -> dict[str, Any]:
@@ -666,7 +658,9 @@ class LocalModelService:
                 raise BoundaryError("local_model", "private_profile_collision")
             self._require_stopped_runtime()
             installed = install_runtime(directory, current_pin, self._connector_pin(),
-                                        archive=archive)
+                                        archive=archive,
+                                        **({"required_profile": profile_id}
+                                           if profile_id == "text-menu-m2-v2" else {}))
             with self.lock:
                 self._require_stopped_runtime()
                 self.state.update(status="idle", last_runtime_install=installed,
@@ -780,11 +774,19 @@ class LocalModelService:
                     else name + "_missing_or_drifted",
                 }
 
-        adapter = policy_support(entry["adapter"])
         if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter"}:
-            checks.update(adapter.inspect(self.root, entry, manifest, policy_config,
-                                          binding_root=self.entry_root(entry)))
+            from spireagent.workbench.local_model_dependencies import local_models_available
+
+            if local_models_available():
+                adapter = policy_support(entry["adapter"])
+                checks.update(adapter.inspect(self.root, entry, manifest, policy_config,
+                                              binding_root=self.entry_root(entry)))
+            else:
+                checks["policy_identity"] = {
+                    "status": "blocked", "code": "local_models_extra_required",
+                }
         else:
+            adapter = policy_support(entry["adapter"])
             checks.update(adapter.inspect(self.root, entry, manifest, policy_config))
         check("runtime_package", lambda: self._runtime_package(identity) and None)
         check("public_contract", lambda: self._public_manifest_contract(manifest_path, identity))

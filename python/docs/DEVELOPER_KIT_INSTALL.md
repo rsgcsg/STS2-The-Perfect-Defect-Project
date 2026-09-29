@@ -24,6 +24,13 @@ uv run --locked --extra cloud python tools/install_developer_kit.py initialize -
 source, verifies lock/combination/manifest, stages the published native bytes and
 publishes the directory. Dependencies initialize **after** placement so virtualenv
 paths remain stable. Neither step changes the game, profile, queues or cloud.
+The verified kit inventory selects the locked environment: collection-only kits
+install the `cloud` extra; a kit containing any fixed text Runtime pair also
+installs `local-models` (Torch, Tokenizers and Safetensors). It does not install
+Qwen/Transformers or download model weights. Opening the local Workbench later
+retains these installed optional dependencies. The local home, model setup and
+recorded-report reading do not require team login; team account pairing is
+optional until a member uses collection sharing or uploads.
 A kit may additionally contain an independently approved `text-runtime/profile.json`
 and `text-runtime/runtime.tgz`. Its inventory and external ZIP SHA256 bind both;
 the packager verifies the archive through the ordinary bundled Runtime installer in
@@ -46,6 +53,17 @@ staged-byte drift blocks that candidate. Neither optional pair is synthesized
 from the source checkout or a release URL; without an approved pair its profile
 remains unavailable. The M2 pair enables only later explicit model registration
 and readiness checks, not automatic model loading or qualification.
+An optional `m2-v2-runtime/profile.json` and `m2-v2-runtime/runtime.tgz` pair
+has its own inventory entry and `stpd/local-text-m2-runtime-v2` profile schema.
+The packager checks the exact archive and all five text-menu-v2 Connector SDK
+methods in a temporary installation before publishing the kit. `prepare` stages
+the pair under ignored `.local/`; the Workbench's explicit **检查 v2 记忆运行环境**
+action reads it only from the selected verified release and installs it into
+`models/text-menu-m2-v2`. A missing pair stays unavailable. `initialize` also
+installs an included v2 pair through the selected release's CLI and its same
+verified profile and archive. Existing v1 pairs keep their prior slots. The v2
+pair does not supply model weights or
+establish native or policy qualification.
 A prepared directory is never overwritten; `status --directory ...` rechecks its
 original archive, source, tool and staged bytes. Failed temporary preparation is
 removed; initialization can be retried in the same directory while its Workbench
@@ -58,11 +76,11 @@ provenance and calls the existing lifecycle, which checks source/artifact identi
 and retains rollback. It does not rebuild, launch or claim a loaded game. Use the
 cold-load commands below from that permanent source directory.
 
-After creating/logging into the private Workbench profile, stop it and run
+After creating the private Workbench profile, stop it and run
 `register --directory ... --config /ABS/project.json` through this entrypoint.
 The selected release's registration owner enforces the stopped-profile lock and
 refuses replacing a different registration. Daily consent and upload activation
-still require the member. For existing tools/queues use the existing explicit
+still require the member's team account. For existing tools/queues use the existing explicit
 collection-upgrade prepare/activate procedure: pending evidence is never rewritten.
 A Workbench-only change does not require Mod deployment when published Mod/tool
 bytes and their necessary contracts remain unchanged.

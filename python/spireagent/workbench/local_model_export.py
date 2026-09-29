@@ -23,6 +23,7 @@ from spireagent.package_identity import file_sha256
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.local_dataset import LocalDatasetService
+from spireagent.workbench.local_model_dependencies import require_local_models
 from spireagent.workbench.local_workspace import LocalWorkspace, open_registered_workspace
 from spireagent.workbench.memory_recipe import (
     V2_MEMORY_RECIPES,
@@ -477,6 +478,7 @@ class LocalModelExport:
                     and previous["store_root"] != str(root)):
                 raise BoundaryError("local_model_export", "workspace_changed")
             model = store.get_manifest(identity)
+            require_local_models("local_model_export")
             memory = model.parameters.value().get("schema") == "stpd/experimental-m2-model-v1"
             run_id = _memory_lineage(store, self._memory_owner(store), model) if memory else None
             if not memory:

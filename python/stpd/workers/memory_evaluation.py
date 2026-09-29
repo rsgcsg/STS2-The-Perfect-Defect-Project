@@ -42,10 +42,14 @@ from stpd.workers.memory_run import (
     _input_bytes,
     _payload_bytes,
 )
+from stpd.workers.report_schemas import (
+    MEMORY_EVALUATION_PROTOCOL as PROTOCOL,
+)
+from stpd.workers.report_schemas import (
+    MEMORY_EVALUATION_SCHEMA as EVALUATION_SCHEMA,
+)
 
 INPUT_SCHEMA = "stpd/experimental-m2-evaluation-input-v1"
-EVALUATION_SCHEMA = "stpd/experimental-m2-offline-evaluation-v1"
-PROTOCOL = "independent-source-retrospective-v1"
 MAX_METRICS_BYTES = 64 * 1024 * 1024
 
 

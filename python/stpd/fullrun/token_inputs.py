@@ -25,9 +25,9 @@ from .decision_training import VIEW_SCHEMA
 from .features import ModelSample, load_model_view
 from .public_bc import LEGACY_VIEW_SCHEMA
 from .public_bc import VIEW_SCHEMA as PUBLIC_BC_SCHEMA
+from .token_format import FORMAT as FORMAT
 
 SCHEMA = "stpd/stage1a-token-input-v1"
-FORMAT = "separate-obs-act-text-v1"
 MAX_TOKENS = 8192
 MAX_PAYLOAD = 256 * 1024**2
 

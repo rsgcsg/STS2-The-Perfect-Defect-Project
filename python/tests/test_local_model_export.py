@@ -98,7 +98,7 @@ def _settle(service: LocalModelExport) -> dict:
 
 
 def test_exact_completed_model_exports_once_and_rechecks_standalone_bytes(
-    tmp_path: Path, completed,
+    tmp_path: Path, completed, monkeypatch,
 ) -> None:
     config = _config(tmp_path, completed)
     _, registry_path, archive, model_id = completed
@@ -108,6 +108,13 @@ def test_exact_completed_model_exports_once_and_rechecks_standalone_bytes(
     assert service.status() == {"schema": SCHEMA, "operation": {"status": "idle"},
                                 "availability": "ready"}
     assert not (config.state_dir / OPERATION_FILE).exists()
+    with monkeypatch.context() as missing:
+        missing.setattr("spireagent.workbench.local_model_dependencies.find_spec", lambda _: None)
+        with pytest.raises(BoundaryError, match="local_models_extra_required"):
+            service.start(model_id)
+        assert service.thread is None
+        assert not (config.state_dir / OPERATION_FILE).exists()
+        assert archive.manifest_ids() == before_manifests
     assert not (config.state_dir / EXPORT_ROOT).exists()
     started = service.start(model_id)["operation"]
     assert started["status"] == "pending"

@@ -79,6 +79,21 @@ def test_m2_registration_requires_own_install_context_and_preserves_token_roster
     readiness = models.readiness(result["selection_id"])
     assert readiness["status"] == "ready_to_load"
     assert readiness["checks"]["policy_identity"] == {"status": "pass"}
+    with monkeypatch.context() as missing:
+        missing.setattr("spireagent.workbench.local_model_dependencies.find_spec", lambda _: None)
+
+        def no_adapter_import(_):
+            raise AssertionError("readiness imported model backend despite missing dependencies")
+
+        missing.setattr("spireagent.workbench.local_models.policy_support", no_adapter_import)
+        cold = models.readiness(result["selection_id"])
+        assert cold["status"] == "blocked"
+        assert cold["checks"]["policy_identity"] == {
+            "status": "blocked", "code": "local_models_extra_required",
+        }
+        for name in ("runtime_package", "public_contract", "node"):
+            assert cold["checks"][name] == readiness["checks"][name]
+        assert models.selection(result["selection_id"]) == entry
     assert models._run_profile(result["selection_id"], "extended") is True
     roster = (models.private_root / "token-policies-v1.json").read_bytes()
     journal_path = config.state_dir / OPERATION_FILE

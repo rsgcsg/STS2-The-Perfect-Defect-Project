@@ -24,6 +24,7 @@ from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
 from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.local_dataset import LocalDatasetService
+from spireagent.workbench.local_model_dependencies import require_local_models
 from spireagent.workbench.memory_recipe import (
     M2_K1_RECIPE,
     MEMORY_RECIPES,
@@ -235,6 +236,7 @@ class LocalTrainingService:
             if (previous["status"] == "completed" and previous["dataset_id"] == dataset_id
                     and after_completed is None):
                 raise BoundaryError("local_training", "new_experiment_precondition_failed")
+            require_local_models("local_training")
             identity = uuid.uuid4().hex
             operation = {"schema": (SCHEMA_V2 if recipe in MEMORY_RECIPES
                                     or previous.get("schema") == SCHEMA_V2 else SCHEMA),
