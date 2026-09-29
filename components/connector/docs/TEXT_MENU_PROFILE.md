@@ -32,6 +32,26 @@ route.
 
 The two JSON examples in `sdk/typescript/test/fixtures/text-menu-root.json` and `text-menu-system-result.json` are portable contract fixtures. They are synthetic and do not prove native behavior.
 
+## SDK-only v2 contract candidate
+
+The SDK also exports strict `text-menu-v2` decoders and synthetic card-selection
+fixtures. This is an opt-in decoding contract only: the current REST client and
+Host still request and advertise `text-menu-v1`. The v1 bytes and fixed
+operand-free navigation grammar remain unchanged. A v2 `system_selection`
+has `effect_domain=text_menu`; `select_card` and `select_target` bind a visible
+subject, while `cancel_selection` has no subject or arguments. The v2 menu
+records only staged card/optional target referents. Card-only native leaves
+reach confirmation without a fabricated target. A `native_input` leaf keeps
+the v1 delivered/not-delivered/unknown semantics; this term does not specify
+a Godot device input. A decoded result is not proof of native Commit, a causal
+successor, or Human origin.
+
+The SDK checks public referents, cursor/selection shape, complete current
+catalogs, and result-to-menu association when the previous Snapshot is
+supplied. Only a Host can prove its private complete leaf catalog and
+execute-time binding. These fixtures do not establish a v2 Host implementation,
+transport route, cross-Host equivalence, or runtime qualification.
+
 ## Semantic interaction versus native input device
 
 The public interaction describes the current game operation: a held card,

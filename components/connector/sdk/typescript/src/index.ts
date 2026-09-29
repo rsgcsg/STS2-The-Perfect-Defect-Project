@@ -5,5 +5,6 @@ export * from "./protocol.js";
 export * from "./rewardPage.js";
 export * from "./rewardPotionPage.js";
 export * from "./textMenu.js";
+export * from "./textMenuV2.js";
 export * from "./visibleState.js";
 export type { JsonObject, JsonValue } from "./json.js";
