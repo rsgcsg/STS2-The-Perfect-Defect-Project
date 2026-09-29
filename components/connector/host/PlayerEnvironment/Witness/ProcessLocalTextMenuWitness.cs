@@ -10,9 +10,11 @@ namespace STS2Connector.PlayerEnvironment
 {
     internal static partial class PlayerEnvironmentService
     {
+        private static long _textMenuWitnessCaptureOrdinal;
+
         internal static ProcessLocalTextMenuWitnessFrame CaptureTextMenuWitness()
         {
-            lock (SubmissionGate)
+            return CaptureTextMenuWitnessCore(ordinal =>
             {
                 SnapshotBuildResult native = BuildSnapshot(textMenuCapture: true);
                 TextMenuFrame frame = NativeTextMenuFrameBuilder.Capture(
@@ -21,7 +23,24 @@ namespace STS2Connector.PlayerEnvironment
                 return new ProcessLocalTextMenuWitnessFrame(
                     frame, GetCapabilities(TextMenuContract.Profile),
                     PlayerEnvironmentTextMenuWitness.SourceDigest(),
-                    PlayerEnvironmentTextMenuWitness.IsExternalControllerActive);
+                    PlayerEnvironmentTextMenuWitness.IsExternalControllerActive, ordinal);
+            });
+        }
+
+        // The same SubmissionGate encloses the native freeze and this successful
+        // witness sequence. A failed freeze consumes no ordinal. Snapshot.Sequence
+        // is a state revision, not a per-capture ordering fact.
+        internal static ProcessLocalTextMenuWitnessFrame CaptureTextMenuWitnessCore(
+            Func<long, ProcessLocalTextMenuWitnessFrame> freeze)
+        {
+            lock (SubmissionGate)
+            {
+                long ordinal = checked(_textMenuWitnessCaptureOrdinal + 1);
+                ProcessLocalTextMenuWitnessFrame result = freeze(ordinal);
+                if (result == null || result.CaptureOrdinal != ordinal)
+                    throw new InvalidOperationException("A frozen text-menu witness must retain its capture ordinal.");
+                _textMenuWitnessCaptureOrdinal = ordinal;
+                return result;
             }
         }
     }
@@ -50,10 +69,13 @@ namespace STS2Connector.PlayerEnvironment.Witness
 
         internal ProcessLocalTextMenuWitnessFrame(
             TextMenuFrame frame, PlayerEnvironmentCapabilitiesResponse capabilities,
-            string sourceDigest, bool externalControllerActive)
+            string sourceDigest, bool externalControllerActive, long captureOrdinal = 0)
         {
+            if (captureOrdinal < 0)
+                throw new ArgumentOutOfRangeException(nameof(captureOrdinal));
             TextMenuProjection projection = new TextMenuSession().Observe(frame);
             Snapshot = projection.Snapshot;
+            CaptureOrdinal = captureOrdinal;
             Capabilities = capabilities;
             SourceDigest = sourceDigest;
             ExternalControllerActive = externalControllerActive;
@@ -71,6 +93,8 @@ namespace STS2Connector.PlayerEnvironment.Witness
         }
 
         public TextMenuSnapshot Snapshot { get; }
+        /// <summary>Process-local successful freeze order; zero only for a directly constructed fixture.</summary>
+        public long CaptureOrdinal { get; }
         public PlayerEnvironmentCapabilitiesResponse Capabilities { get; }
         public string SourceDigest { get; }
         public bool ExternalControllerActive { get; }
