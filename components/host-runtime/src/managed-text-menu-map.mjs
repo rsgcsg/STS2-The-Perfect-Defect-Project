@@ -113,6 +113,10 @@ function project(snapshot, allowActions = true) {
   };
 }
 
+// The v2 Host projection reuses the reviewed completeness and public-field
+// projection without changing v1's action or result behavior.
+export { project as projectManagedTextMenuV1 };
+
 /** In-process projection of reviewed complete current Managed decision leaves. */
 export class ManagedTextMenuSessionAdapter {
   #session;

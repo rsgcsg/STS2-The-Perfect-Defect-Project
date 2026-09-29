@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { canonicalizeEpisodeSeed } from "./episode-provenance.mjs";
 import { ManagedTextMenuSessionAdapter, MANAGED_TEXT_MENU_PROFILE } from "./managed-text-menu-map.mjs";
+import { ManagedTextMenuV2SessionAdapter, MANAGED_TEXT_MENU_V2_PROFILE,
+  MANAGED_TEXT_MENU_V2_CONTEXT_SCHEMA } from "./managed-text-menu-v2.mjs";
 
 const TEXT_CONTEXT_SCHEMA = "sts2.player-environment/text-menu-observation-context-1";
 
@@ -8,6 +10,7 @@ const TEXT_CONTEXT_SCHEMA = "sts2.player-environment/text-menu-observation-conte
 export class ManagedPeDriverSession {
   #started;
   #text;
+  #textV2;
   #timeoutMs;
   #mountAttempted = false;
   #available = false;
@@ -26,6 +29,7 @@ export class ManagedPeDriverSession {
     }
     this.#started = started;
     this.#text = new ManagedTextMenuSessionAdapter(started.session);
+    this.#textV2 = new ManagedTextMenuV2SessionAdapter(started.session);
     this.#timeoutMs = requestTimeoutMs;
   }
 
@@ -66,6 +70,7 @@ export class ManagedPeDriverSession {
         this.#available = false;
         this.#gameContinuityId = null;
         this.#requestedSeed = null;
+        this.#textV2.resetSelection();
         const snapshot = await this.#started.session.mount({
           seed, reset, timeoutMs: this.#timeoutMs
         });
@@ -92,6 +97,7 @@ export class ManagedPeDriverSession {
             : "managed_session_tainted_after_unknown");
         }
         this.#claimMutationRoute(request.mutation_request_id, "raw");
+        this.#textV2.resetSelection();
         return { type: "step_result", request_id: requestId,
           receipt: await this.#started.session.submit({
             requestId: request.mutation_request_id,
@@ -101,15 +107,25 @@ export class ManagedPeDriverSession {
           }) };
       case "text_observe": {
         this.#requireEpisode();
+        const profile = request.input_profile ?? MANAGED_TEXT_MENU_PROFILE;
+        if (profile !== MANAGED_TEXT_MENU_PROFILE && profile !== MANAGED_TEXT_MENU_V2_PROFILE) {
+          throw new TypeError("Unsupported text-menu input_profile.");
+        }
         const context = {
-          schema: TEXT_CONTEXT_SCHEMA,
-          snapshot: this.#text.observe(),
+          schema: profile === MANAGED_TEXT_MENU_V2_PROFILE
+            ? MANAGED_TEXT_MENU_V2_CONTEXT_SCHEMA : TEXT_CONTEXT_SCHEMA,
+          snapshot: profile === MANAGED_TEXT_MENU_V2_PROFILE
+            ? this.#textV2.observe() : this.#text.observe(),
           game_continuity_id: this.#gameContinuityId
         };
         return { type: "text_observe_result", request_id: requestId, context };
       }
       case "text_submit": {
         this.#requireEpisode();
+        const profile = request.input_profile ?? MANAGED_TEXT_MENU_PROFILE;
+        if (profile !== MANAGED_TEXT_MENU_PROFILE && profile !== MANAGED_TEXT_MENU_V2_PROFILE) {
+          throw new TypeError("Unsupported text-menu input_profile.");
+        }
         if (request.expected_game_continuity_id !== this.#gameContinuityId) {
           throw new Error("stale_game_continuity");
         }
@@ -121,14 +137,14 @@ export class ManagedPeDriverSession {
         if (earlier != null && earlier !== this.#gameContinuityId) {
           throw new Error("text_request_id_conflict_across_episodes");
         }
-        this.#claimMutationRoute(mutationId, "text");
+        this.#claimMutationRoute(mutationId, profile);
         this.#textRequestContinuity.set(mutationId, this.#gameContinuityId);
         return { type: "text_submit_result", request_id: requestId,
-          result: await this.#text.submit({
+          result: await (profile === MANAGED_TEXT_MENU_V2_PROFILE ? this.#textV2 : this.#text).submit({
             request_id: mutationId,
             expected_snapshot_id: request.expected_snapshot_id,
             action_id: request.action_id,
-            input_profile: MANAGED_TEXT_MENU_PROFILE,
+            input_profile: profile,
             timeout_ms: this.#timeoutMs
           }) };
       }

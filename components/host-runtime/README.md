@@ -186,6 +186,23 @@ RunState attestation. The locked Connector SDK package has no text context
 decoder export yet; this driver emits its existing context shape while the
 real adapter and raw snapshot SDK retain their respective checks.
 
+An explicit `input_profile: "text-menu-v2"` on the same JSONL `text_observe`
+and `text_submit` commands selects the separate Managed v2 text adapter and
+the `*-2` context/Snapshot/result schemas. Omitting the profile preserves v1.
+On a complete ready combat page, v2 groups the existing exact `play` leaves
+into text-only card and optional target choices; a card without a target goes
+straight to card-only confirmation. Back and cancel change only this menu.
+The final `play` choice alone submits the current private BoundAction once,
+which the Managed native path revalidates. Other complete Managed pages retain
+their current native leaves under the v2 schema; unsupported or incomplete
+catalogs remain unavailable. A v1 observation does not reset a v2 selection.
+Raw mutation, reset, changed source/catalog, and unknown delivery invalidate it.
+Both profiles share the driver's episode and mutation-request fences. This
+JSONL opt-in does not expose a Connector HTTP/controller lease, add a Python
+v2 consumer, or turn historical v1 Human/model inputs into v2 data. The pinned
+Connector SDK remains at its older released version; Host's v2 wire shape is
+checked against the explicit Connector v2 contract fixture at source/test level.
+
 Event options retain the game's visible order and locked options remain visible
 but non-executable. An executable event choice carries the current native room,
 event, and option identities as private operands; the native handler rechecks

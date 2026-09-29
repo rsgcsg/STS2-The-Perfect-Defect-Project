@@ -194,3 +194,45 @@ test("delivered text action with rejected successor projection keeps Receipt and
   assert.equal(later.result.successor, null);
   assert.equal(calls.filter((call) => call.cmd === "action").length, 1);
 });
+
+test("v2 opt-in shares continuity and request fence without changing the v1 reader", async () => {
+  const { driver, calls } = fixture();
+  await driver.handle({ command: "reset", seed: "SEED" });
+  const v2 = (await driver.handle({ command: "text_observe", input_profile: "text-menu-v2" })).context;
+  assert.equal(v2.schema, "sts2.player-environment/text-menu-observation-context-2");
+  assert.equal(v2.snapshot.input_profile, "text-menu-v2");
+  assert.deepEqual(v2.snapshot.menu.selection, []);
+  const v1 = await context(driver);
+  assert.equal(v1.snapshot.input_profile, "text-menu-v1");
+  assert.equal((await driver.handle({ command: "text_observe", input_profile: "text-menu-v2" }))
+    .context.snapshot.snapshot_id, v2.snapshot.snapshot_id);
+  await assert.rejects(driver.handle({ command: "text_observe", input_profile: "text-menu-v3" }),
+    /Unsupported text-menu input_profile/);
+
+  const request = { command: "text_submit", input_profile: "text-menu-v2",
+    mutation_request_id: "v2-id", expected_game_continuity_id: v2.game_continuity_id,
+    expected_snapshot_id: v2.snapshot.snapshot_id,
+    action_id: v2.snapshot.menu_actions.actions[0].action_id };
+  const first = await driver.handle(request);
+  assert.equal(first.result.schema, "sts2.player-environment/text-menu-action-result-2");
+  assert.equal(first.result.status, "applied");
+  assert.deepEqual(await driver.handle(request), first);
+  await assert.rejects(driver.handle(submit(v1, "v2-id")),
+    /mutation_request_id_conflict_between_routes/);
+  assert.equal(calls.filter((call) => call.cmd === "action").length, 1);
+
+  const next = (await driver.handle({ command: "text_observe", input_profile: "text-menu-v2" })).context;
+  await assert.rejects(driver.handle({ command: "step", mutation_request_id: "v2-id",
+    expected_snapshot_id: next.snapshot.menu.native_snapshot_id,
+    bound_action_id: "untrusted" }), /mutation_request_id_conflict_between_routes/);
+  await driver.handle({ command: "reset", seed: "SEED" });
+  const episode = (await driver.handle({ command: "text_observe", input_profile: "text-menu-v2" })).context;
+  assert.notEqual(episode.game_continuity_id, v2.game_continuity_id);
+  await assert.rejects(driver.handle({ ...request, mutation_request_id: "fresh-id" }),
+    /stale_game_continuity/);
+  await assert.rejects(driver.handle({ ...request,
+    expected_game_continuity_id: episode.game_continuity_id,
+    expected_snapshot_id: episode.snapshot.snapshot_id,
+    action_id: episode.snapshot.menu_actions.actions[0].action_id }),
+  /text_request_id_conflict_across_episodes/);
+});
