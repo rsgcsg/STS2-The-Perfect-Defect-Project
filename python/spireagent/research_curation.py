@@ -294,6 +294,57 @@ class CurationLedger:
             }
         return row[1], runs
 
+    def require_training_use(self, artifact: str, sources: Iterable[str],
+                             runs: Iterable[str], reference: str) -> None:
+        """Read exact local training claim, complete indexes and prior exposure.
+
+        A caller independently verifies the source artifact and its run IDs. This
+        method owns the ledger relationship and creates no new use records.
+        """
+        digest(artifact, "curation.training_artifact")
+        digest(reference, "curation.training_reference", length=32)
+        source_ids, run_ids = set(sources), set(runs)
+        if not source_ids or not run_ids:
+            raise BoundaryError("curation", "training_use_identity_missing")
+        for source in source_ids:
+            digest(source, "curation.training_source")
+        with self.operations.transaction() as db:
+            claims = db.execute(
+                "SELECT id,purpose FROM curation_claims WHERE artifact=?", (artifact,)
+            ).fetchall()
+            if len(claims) != 1 or claims[0][1] != "training":
+                raise BoundaryError("curation", "training_claim_mismatch")
+            claimed = {row[0] for row in db.execute(
+                "SELECT run FROM curation_claim_runs WHERE claim=?", (claims[0][0],)
+            )}
+            if claimed != run_ids:
+                raise BoundaryError("curation", "training_claim_mismatch")
+            indexed: set[str] = set()
+            for source in source_ids:
+                ready = db.execute("SELECT complete FROM curation_sources WHERE id=?",
+                                   (source,)).fetchone()
+                if ready is None or ready[0] != 1 or not db.execute(
+                    "SELECT 1 FROM curation_exact_source_index WHERE source=?", (source,)
+                ).fetchone():
+                    raise BoundaryError("curation", "source_index_incomplete")
+                indexed.update(row[0] for row in db.execute(
+                    "SELECT run FROM curation_source_runs WHERE source=?", (source,)
+                ))
+                if not db.execute(
+                    "SELECT 1 FROM curation_source_uses "
+                    "WHERE source=? AND kind='training' AND reference=?",
+                    (source, reference),
+                ).fetchone():
+                    raise BoundaryError("curation", "training_source_use_missing")
+            if not run_ids <= indexed:
+                raise BoundaryError("curation", "source_run_identity_mismatch")
+            for run in run_ids:
+                if not db.execute(
+                    "SELECT 1 FROM curation_uses WHERE run=? AND kind='training' "
+                    "AND reference=?", (run, reference)
+                ).fetchone():
+                    raise BoundaryError("curation", "training_run_use_missing")
+
     def use(self, runs: Iterable[str], kind: str, reference: str) -> None:
         if kind not in {"training", "download"}:
             raise BoundaryError("curation", "invalid_use")
