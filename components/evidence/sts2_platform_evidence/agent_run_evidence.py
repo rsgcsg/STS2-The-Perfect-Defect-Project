@@ -283,6 +283,14 @@ def _verify_policy_provenance(directory: Path, manifest: Mapping[str, Any]) -> b
     artifact = _object(policy_manifest.get("artifact"), "policy manifest artifact")
     adapter = _object(policy_manifest.get("adapter"), "policy manifest adapter")
     _verify_adapter_identity(adapter, _POLICY_MANIFEST_FILE)
+    if adapter["protocol"] == "sts2.policy-runtime/decision-only-ndjson-2":
+        representation = _object(policy_manifest.get("representation"), "policy manifest representation")
+        if representation.get("input_schema") != "sts2.player-environment/text-menu-snapshot-1":
+            raise AgentRunEvidenceError(
+                "adapter_representation",
+                "decision-only-ndjson-2 requires text-menu-snapshot-1 representation",
+                _POLICY_MANIFEST_FILE,
+            )
 
     canonical_digest = _sha256_bytes(_canonical_json(policy_manifest).encode("utf-8"))
     if canonical_digest != manifest["policy_manifest_sha256"]:
