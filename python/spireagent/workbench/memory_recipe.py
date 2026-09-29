@@ -81,7 +81,7 @@ def recipe_for_memory_config(config: object, *,
             or any(type(config.get(key)) is not type(value) or config.get(key) != value
                    for key, value in _FIXED_CONFIG.items())):
         raise ValueError("unsupported_workbench_memory_config")
-    from stpd.fullrun.memory_sequence_bridge import (
+    from stpd.fullrun.memory_projection_config import (
         parse_episode_projection_config,
         projection_input_profile,
     )
