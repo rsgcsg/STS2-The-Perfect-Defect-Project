@@ -28,7 +28,8 @@ public static class RecordingSessionAuditor
             Add(errors, "invalidation_disposition_schema_mismatch");
         if (manifest?.ContinuousSchemaVersion is not (null or 1))
             Add(errors, "continuous_recording_schema_invalid");
-        if (manifest?.TextInputSchemaVersion is not (null or HumanTextInputObservationContract.SchemaVersion))
+        if (manifest?.TextInputSchemaVersion != null
+            && !HumanTextInputObservationContract.Supports(manifest.TextInputSchemaVersion))
             Add(errors, "human_text_input_schema_invalid");
         if (manifest?.CloseSchemaVersion is not (null or 1))
             Add(errors, "session_close_schema_invalid");
@@ -144,7 +145,7 @@ public static class RecordingSessionAuditor
         if (File.Exists(Path.Combine(directory, "human-text-input-failure.json")))
             Add(errors, "human_text_input_append_failure");
         string path = Path.Combine(directory, HumanTextInputObservationContract.FileName);
-        if (manifest?.TextInputSchemaVersion != HumanTextInputObservationContract.SchemaVersion)
+        if (manifest == null || !HumanTextInputObservationContract.Supports(manifest.TextInputSchemaVersion))
         {
             if (File.Exists(path)) Add(errors, "undeclared_human_text_input_stream");
             return;
@@ -164,6 +165,7 @@ public static class RecordingSessionAuditor
             }
         }
         long sequence = 0;
+        var order = new HumanTextInputOrderLedger();
         var ids = new HashSet<string>(StringComparer.Ordinal);
         var journalRuns = new HashSet<string>(StringComparer.Ordinal);
         string journalPath = Path.Combine(directory, "run-journal.jsonl");
@@ -195,9 +197,13 @@ public static class RecordingSessionAuditor
                 Add(errors, "human_text_input_json_invalid");
                 continue;
             }
-            foreach (string error in HumanTextInputObservationValidator.Validate(value))
-                Add(errors, error);
+            IReadOnlyList<string> rowErrors = HumanTextInputObservationValidator.Validate(value);
+            foreach (string error in rowErrors) Add(errors, error);
             if (value == null) continue;
+            if (value.SchemaVersion != manifest.TextInputSchemaVersion)
+                Add(errors, "human_text_input_declared_schema_mismatch");
+            if (rowErrors.Count == 0
+                && order.Observe(value) is { } orderError) Add(errors, orderError);
             if (value.SessionId != manifest.SessionId || value.TimelineId != manifest.TimelineId)
                 Add(errors, "human_text_input_manifest_mismatch");
             if (!journalRuns.Contains(value.RunId))

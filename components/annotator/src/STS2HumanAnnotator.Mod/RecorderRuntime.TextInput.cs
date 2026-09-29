@@ -15,7 +15,7 @@ internal static partial class RecorderRuntime
     {
         internal HumanTextCardScope(
             HumanTextCardScope? previous, RecordingSessionStore store,
-            string sessionId, string timelineId, string runId,
+            string sessionId, string timelineId, string runId, long completedAppendWatermark,
             NPlayerHand hand, NHandCardHolder holder)
         {
             Previous = previous;
@@ -23,6 +23,7 @@ internal static partial class RecorderRuntime
             SessionId = sessionId;
             TimelineId = timelineId;
             RunId = runId;
+            CompletedAppendWatermark = completedAppendWatermark;
             Hand = hand;
             Holder = holder;
             ObservedAt = DateTimeOffset.UtcNow;
@@ -33,6 +34,7 @@ internal static partial class RecorderRuntime
         internal string SessionId { get; }
         internal string TimelineId { get; }
         internal string RunId { get; }
+        internal long CompletedAppendWatermark { get; }
         internal NPlayerHand Hand { get; }
         internal NHandCardHolder Holder { get; }
         internal CardModel? Card { get; set; }
@@ -68,7 +70,7 @@ internal static partial class RecorderRuntime
                     return null;
                 scope = new HumanTextCardScope(
                     HumanTextCardCurrent.Value, _store, SessionId, TimelineId,
-                    _currentRunId, hand, holder);
+                    _currentRunId, _humanTextInputSequence, hand, holder);
                 _humanTextInputPendingScopes++;
             }
             HumanTextCardCurrent.Value = scope;
@@ -235,6 +237,13 @@ internal static partial class RecorderRuntime
                     || _lifecycle.State is RecordingLifecycleState.Ready
                         or RecordingLifecycleState.Closed)
                     return;
+                // A callback spanning a new run remains diagnostic evidence;
+                // it cannot be accepted as an input in that later run.
+                if (_currentRunId != scope.RunId && snapshot != null)
+                {
+                    disposition = HumanTextInputObservationContract.NotMapped;
+                    reason = "run_identity_changed_before_finish";
+                }
                 long sequence = _humanTextInputSequence + 1;
                 var observation = new HumanTextInputObservation(
                     HumanTextInputObservationContract.SchemaVersion,
@@ -251,7 +260,10 @@ internal static partial class RecorderRuntime
                     scope.Card == null ? null : NativeWitnessIdentity.Get(scope.Card, "text_card"),
                     scope.Carrier == null ? null : NativeWitnessIdentity.Get(scope.Carrier, "text_carrier"),
                     HumanTextInputObservationContract.NativeMechanism,
-                    disposition, reason, false);
+                    disposition, reason, false,
+                    new HumanTextInputObservationOrder(
+                        environment == null ? null : scope.Frame?.CaptureOrdinal,
+                        scope.CompletedAppendWatermark));
                 try
                 {
                     scope.Store.AppendHumanTextInputObservation(observation);

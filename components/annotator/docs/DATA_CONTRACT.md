@@ -13,8 +13,36 @@ ledger.
 
 ## Human text-menu input observations
 
-New recordings declare `text_input_schema_version: 1` and retain a separate
-`human-text-inputs.jsonl` stream. Historical manifests without this declaration
+New recordings declare `text_input_schema_version: 2` and retain a separate
+`human-text-inputs.jsonl` stream. `human-text-input-1` remains readable with its original
+physical append order. Version 2 adds a required `observation_order` object:
+
+- `capture_ordinal`: the successful process-local Connector witness freeze order,
+  allocated inside its existing submission gate. A later serialization failure
+  retains this known position even without usable snapshot data. It is null
+  only when the freeze/order identity is unavailable.
+- `completed_append_watermark`: the last successfully appended Human input row
+  when this native input scope began, frozen under the Recorder gate.
+
+The existing `sequence` remains physical append order. Nested native callbacks
+can freeze outer then inner observations but append inner then outer. Neither
+this sequence, a wall clock nor a stable snapshot revision proves capture order.
+The new ordinal is diagnostic metadata, never model page text or action authority.
+The watermark includes failed/unmapped rows and can span runs; only same-runtime
+capture ordinals are comparable. Validation retains old failure rows, rejects
+future append prefixes and duplicated capture ordinals, and checks the maximum
+capture ordinal in the entire completed prefix, not only its last row. Close
+counts and stream digests include both supported versions without rewriting old
+files. A callback spanning a run change is retained as not-mapped diagnostics.
+
+These fields describe a **partial Human input witness stream**. They do not
+prove the immediately previous global game action, delivery, Commit or causal
+successor. Research owns ordering/segmentation and whether a prior witnessed
+input may be used as history. An unlocated capture failure prevents claiming
+continuous observation history across its entire affected run/runtime; append
+order cannot safely place it between nested captures. A genuine witnessed cancel-card is an input;
+cancellation of an unsubmitted model request is a different fact.
+ Historical manifests without this declaration
 keep their original interpretation. The declared file may be empty; a missing
 file is not an empty capture. A durable close receipt binds its row count and
 exact file digest. This side stream does not increase canonical transition or
