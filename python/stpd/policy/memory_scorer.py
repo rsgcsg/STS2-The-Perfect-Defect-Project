@@ -16,8 +16,11 @@ from tokenizers import Tokenizer
 
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 
-from ..fullrun.memory_token_inputs import MAX_TOKENIZER_BYTES, encode_memory_texts
-from ..fullrun.text_menu_inputs import project_text_menu_snapshot
+from ..fullrun.memory_token_inputs import (
+    MAX_TOKENIZER_BYTES,
+    encode_memory_texts,
+    project_memory_snapshot,
+)
 from ..models.dsimple_memory import ExperimentalDSimpleM2
 from ..workers.memory_ranking import MemoryConfig, load_memory_export
 
@@ -145,7 +148,7 @@ class OnlineM2Scorer:
         # episode budgets do not govern a live continuity or autonomy duration.
         # The projector renders object insertion order. Normalize that order so
         # equivalent JSON spellings produce the same model input on first read.
-        public = project_text_menu_snapshot(decode_json(json_bytes(snapshot)))
+        public = project_memory_snapshot(snapshot)
         if len(public.action_ids) > self._config.max_actions_per_step:
             raise BoundaryError("online_m2", "catalog_limit_no_truncation")
         row = encode_memory_texts(

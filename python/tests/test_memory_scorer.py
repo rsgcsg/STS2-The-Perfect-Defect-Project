@@ -328,3 +328,40 @@ def test_raw_input_limits_reject_before_parsing_or_writing(exported):
         compute.assert_not_called()
     assert online._continuity is None and torch.equal(online._memory, original)
     assert len(online.observe_and_score(continuity_token="run", snapshot_bytes=raw).scores) == 2
+
+
+def test_observed_training_and_online_use_identical_tokens_for_object_key_orders(exported):
+    from test_memory_sequence_bridge import observed, view
+
+    from stpd.fullrun.memory_sequence_bridge import project_memory_episodes
+
+    def reverse_objects(value):
+        if isinstance(value, dict):
+            return {key: reverse_objects(item) for key, item in reversed(value.items())}
+        if isinstance(value, list):
+            return [reverse_objects(item) for item in value]
+        return value
+
+    baseline = None
+    for value in (page("first", 1), reverse_objects(page("first", 1))):
+        online = scorer(exported)
+        item = replace(observed("first", 1, reset=True), snapshot=value)
+        projected = project_memory_episodes(
+            view(item), online._tokenizer, online._model,
+            max_observations=1, max_input_tokens=4096)
+        assert not projected.diagnostics
+        (step,) = projected.episodes[0].steps
+        with patch.object(online._model, "step", wraps=online._model.step) as compute:
+            result = online.observe_and_score(
+                continuity_token="run", snapshot_bytes=json.dumps(value).encode())
+        args = compute.call_args.args
+        assert torch.equal(step.page, args[0])
+        assert len(step.actions) == len(args[1])
+        assert all(torch.equal(left, right)
+                   for left, right in zip(step.actions, args[1], strict=True))
+        assert step.action_keys == result.action_ids
+        if baseline is not None:
+            assert torch.equal(step.page, baseline.page)
+            assert all(torch.equal(left, right)
+                       for left, right in zip(step.actions, baseline.actions, strict=True))
+        baseline = step

@@ -26,9 +26,9 @@ from ..models.dsimple_sequence_training import (
     _validate_step,
     validate_memory_window,
 )
-from .memory_token_inputs import encode_memory_texts
+from .memory_token_inputs import encode_memory_texts, project_memory_snapshot
 from .observed_input_sequence import ObservedInput, ObservedInputView
-from .text_menu_inputs import INPUT_PROFILE, SNAPSHOT_SCHEMA, project_text_menu_snapshot
+from .text_menu_inputs import INPUT_PROFILE, SNAPSHOT_SCHEMA
 
 
 @dataclass(frozen=True)
@@ -178,7 +178,7 @@ def _project_segment(
     for position, item in enumerate(segment):
         if not isinstance(item.snapshot, dict):
             raise BoundaryError("memory_bridge", "missing_observation")
-        public = project_text_menu_snapshot(item.snapshot)
+        public = project_memory_snapshot(item.snapshot)
         selected = item.selected_action_id
         if item.choice_mask != (selected is not None):
             raise BoundaryError("memory_bridge", "choice_mask_mismatch")

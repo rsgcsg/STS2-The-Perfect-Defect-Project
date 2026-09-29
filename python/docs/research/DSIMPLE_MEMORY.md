@@ -178,7 +178,7 @@ the TBPTT function does not convert windows into episodes.
 
 `stpd.fullrun.memory_sequence_bridge.project_memory_windows` converts a
 **caller-verified** `ObservedInputView` with a fixed tokenizer into M2 windows.
-It uses the existing current-page text projection and `encode_texts`, retaining
+It uses the existing current-page text projection and `encode_memory_texts`, retaining
 the complete current catalog and exact action keys. Each output records its
 source, stream, reset reason and ordered event IDs separately from the tensor
 window. A window starts at an explicit observation reset and contains every
@@ -340,3 +340,17 @@ This is a resource rejection, never a truncated page or menu. No lifetime page
 count is imposed by training episode budgets. The exported config's complete
 catalog and single-observation token budget still apply; the eventual port and
 Runtime retain responsibility for streaming/framing and autonomy limits.
+
+Both M2 paths also share `project_memory_snapshot`: JSON object keys are rendered
+in canonical order, while all arrays retain their supplied order (including the
+native menu). This makes a verified observed source and the same live snapshot
+produce identical page/action token IDs. Opaque action bindings stay outside the
+model text. Existing four-graph rendering and historical stored tokens are not
+rewritten.
+
+`OnlineM2Scorer.from_export` validates compute weights/configuration/tokenizer;
+it is not an artifact admission service. The compute export identity does not
+certify text projection/source eligibility, and manually prepared v1 tensors are
+not thereby verified text-menu training data. A product loader must verify the
+model artifact's admitted source/projection lineage before registering a live
+recipe; this candidate provides neither that registration nor a Runtime port.

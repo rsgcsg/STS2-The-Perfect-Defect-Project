@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from tokenizers import Tokenizer
 
-from spireagent.json_boundary import BoundaryError
+from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 
+from .text_menu_inputs import TextMenuInput, project_text_menu_snapshot
 from .token_inputs import TokenRow, input_texts
 
 MAX_TOKENIZER_BYTES = 16 * 1024 * 1024
+
+
+def project_memory_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:
+    """One M2 rendering order for verified training sources and live bytes.
+
+    JSON object key order is not page information. Arrays retain native order;
+    this changes no historical four-graph renderer or stored token artifact.
+    """
+    return project_text_menu_snapshot(decode_json(json_bytes(snapshot)))
 
 
 def encode_memory_texts(
