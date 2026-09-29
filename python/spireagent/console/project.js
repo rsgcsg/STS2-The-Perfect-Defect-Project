@@ -2856,15 +2856,34 @@ window.SpireProject = (() => {
     return overview;
   }
 
+  const memoryRecipeViews = Object.freeze({
+    "stage1a.dsimple.m2.k1.experimental.v1": {name:"M2-K1", reset:false, profile:"text-menu-v1"},
+    "stage1a.dsimple.reset.k1.experimental.v1": {name:"Reset-K1", reset:true, profile:"text-menu-v1"},
+    "stage1a.dsimple.m2.k8.experimental.v1": {name:"M2-K8", reset:false, profile:"text-menu-v1"},
+    "stage1a.dsimple.reset.k8.experimental.v1": {name:"Reset-K8", reset:true, profile:"text-menu-v1"},
+    "stage1a.dsimple.m2.k1.experimental.v2": {name:"M2-K1", reset:false, profile:"text-menu-v2"},
+    "stage1a.dsimple.reset.k1.experimental.v2": {name:"Reset-K1", reset:true, profile:"text-menu-v2"},
+    "stage1a.dsimple.m2.k8.experimental.v2": {name:"M2-K8", reset:false, profile:"text-menu-v2"},
+    "stage1a.dsimple.reset.k8.experimental.v2": {name:"Reset-K8", reset:true, profile:"text-menu-v2"},
+  });
+
+  function memoryRecipeView(recipe) {
+    return typeof recipe === "string" && Object.hasOwn(memoryRecipeViews, recipe)
+      ? memoryRecipeViews[recipe] : null;
+  }
+
+  function memoryRecipeLabel(view) {
+    if (view.profile === "text-menu-v2")
+      return `text-menu-v2 ${view.name} ${view.reset ? "工程对照" : "工程训练"}`;
+    return view.reset ? `${view.name}（每步重置，独立训练对照）`
+      : `实验性 D-Simple ${view.name}`;
+  }
+
   function memoryModelVariant(value) {
     const parameters = value?.parameters;
     if (value?.kind !== "model" || !hex(value.artifact_id)
         || parameters?.schema !== "stpd/experimental-m2-model-v1") return null;
-    if (value.workbench_memory_recipe === "stage1a.dsimple.m2.k1.experimental.v1") return "m2";
-    if (value.workbench_memory_recipe === "stage1a.dsimple.reset.k1.experimental.v1") return "reset";
-    if (value.workbench_memory_recipe === "stage1a.dsimple.m2.k1.experimental.v2") return "m2";
-    if (value.workbench_memory_recipe === "stage1a.dsimple.reset.k1.experimental.v2") return "reset";
-    return null;
+    return memoryRecipeView(value.workbench_memory_recipe);
   }
 
   function localModelOverview(value) {
@@ -2874,11 +2893,12 @@ window.SpireProject = (() => {
       const variant = memoryModelVariant(value);
       const overview = panel("模型概览", "以下是本机模型清单中的训练记录；此处不读取权重或评估模型质量。");
       overview.append(fields([
-        ["训练配方", variant === "m2" ? "实验性 D-Simple M2-K1"
-          : variant === "reset" ? "Reset-K1（每步重置，独立训练对照）" : "未知（模型结构不受支持）"],
-        ["输入版本", value.workbench_memory_recipe?.endsWith(".v2")
+        ["训练配方", variant ? memoryRecipeLabel(variant) : "未知（模型结构不受支持）"],
+        ["输入版本", variant?.profile === "text-menu-v2"
           ? "text-menu-v2 · Managed 工程操作，actor 未验证" : "text-menu-v1"],
-        ["结果类型", variant ? "训练产物；开发集评估请在下方单独查看或启动"
+        ["结果类型", variant?.profile === "text-menu-v2"
+          ? "训练产物；此输入版本暂不支持独立 Human 开发集评估"
+          : variant ? "训练产物；开发集评估请在下方单独查看或启动"
           : "训练产物；模型结构未识别，暂不开放后续操作"],
         ["加载条件说明", variant
           ? "登记与加载时分别核验本机运行组件和当前环境；此处不表示实时状态"
@@ -3067,7 +3087,7 @@ window.SpireProject = (() => {
   async function localModelExportCard(ctx, model) {
     const variant = memoryModelVariant(model);
     const memory = variant !== null;
-    const memoryName = variant === "reset" ? "Reset-K1" : "M2-K1";
+    const memoryName = variant?.name;
     const card = panel("导出并校验", memory
       ? `导出只保存并检查实验性 ${memoryName} 训练模型；导出校验不包含评估结论。登记前需单独固定记忆模型运行包并核对环境；导出不会自动登记或加载。`
       : "导出只保存并检查本机模型文件；不会登记为游戏模型或加载，也不检查游戏兼容性。服务端会重新验证模型身份。");
@@ -3337,8 +3357,8 @@ window.SpireProject = (() => {
 
   async function localMemoryEvaluationCard(ctx, model) {
     const variant = memoryModelVariant(model);
-    const card = panel(`${variant === "reset" ? "Reset-K1" : "M2-K1"} 独立来源开发集评估`,
-      `仅对本机已登记的实验性 ${variant === "reset" ? "Reset-K1" : "M2-K1"} 训练模型与另一份 Human 观察来源做开发用途工程评估。须明确点击才会启动；不是 Gold、独立游戏局、记忆收益或科学质量证明。`);
+    const card = panel(`${variant.name} 独立来源开发集评估`,
+      `仅对本机已登记的实验性 ${variant.name} 训练模型与另一份 Human 观察来源做开发用途工程评估。须明确点击才会启动；不是 Gold、独立游戏局、记忆收益或科学质量证明。`);
     let status;
     try {
       status = await request(ctx, "/api/local-memory-evaluations/status");
@@ -3434,8 +3454,8 @@ window.SpireProject = (() => {
     const card = panel(
       "本机短训练",
       dataset.parameters?.schema === "stpd/managed-text-menu-observed-source-v1"
-        ? "此来源只可明确选择 text-menu-v2 M2-K1 或 Reset-K1 工程训练。操作者未验证；仅训练，不生成独立开发集指标，也不代表模型质量或记忆收益。"
-        : "从此入口新启动的任务默认使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。可明确选择实验性 M2-K1 或 Reset-K1（每步重置，独立训练对照）；二者仅训练、不做独立评估或开发集指标。本机服务会核对训练用途与来源资格；结果不代表模型策略质量或记忆收益。",
+        ? "此来源只可明确选择 text-menu-v2 M2 或 Reset 的 K1/K8 工程训练。操作者未验证；仅训练，不生成独立开发集指标，也不代表模型质量或记忆收益。"
+        : "从此入口新启动的任务默认使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。可明确选择实验性 M2 或 Reset 的 K1/K8 配方（Reset 每步重置，独立训练对照）；记忆配方仅训练、不做独立评估或开发集指标。本机服务会核对训练用途与来源资格；结果不代表模型策略质量或记忆收益。",
     );
     let data;
     try {
@@ -3466,17 +3486,16 @@ window.SpireProject = (() => {
     const operation = data.operation;
     const currentForDataset = operation.dataset_id === dataset.artifact_id;
     const taskId = hex(operation.operation_id, 32) ? operation.operation_id : null;
-    const memoryRecipe = "stage1a.dsimple.m2.k1.experimental.v1";
-    const resetRecipe = "stage1a.dsimple.reset.k1.experimental.v1";
     const v2MemoryRecipe = "stage1a.dsimple.m2.k1.experimental.v2";
-    const v2ResetRecipe = "stage1a.dsimple.reset.k1.experimental.v2";
     const managed = dataset.parameters?.schema === "stpd/managed-text-menu-observed-source-v1";
     const defaultRecipe = "stage1a.dsimple.s.v1";
-    const recipeLabel = operation.recipe === memoryRecipe ? "实验性 D-Simple M2-K1"
-      : operation.recipe === resetRecipe ? "Reset-K1（每步重置，独立训练对照）"
-      : operation.recipe === v2MemoryRecipe ? "text-menu-v2 M2-K1 工程训练"
-      : operation.recipe === v2ResetRecipe ? "text-menu-v2 Reset-K1 工程对照"
+    const memoryView = memoryRecipeView(operation.recipe);
+    const recipeLabel = memoryView ? memoryRecipeLabel(memoryView)
       : operation.recipe === defaultRecipe ? "D-Simple-S v1" : "以模型记录为准";
+    const choices = Object.entries(memoryRecipeViews)
+      .filter(([, view]) => view.profile === (managed ? "text-menu-v2" : "text-menu-v1"))
+      .map(([id, view]) => [id, `${memoryRecipeLabel(view)} · 仅训练`]);
+    if (!managed) choices.unshift([defaultRecipe, "D-Simple-S v1（默认，短训练）"]);
     if (operation.status !== "idle") card.append(el("p", `当前任务配方：${recipeLabel}。${operation.result_type === "train_only" ? "此训练任务不执行独立评估。" : ""}`, "small muted"));
     if (operation.status === "pending") {
       const stage = localTrainingStage(operation.stage);
@@ -3504,7 +3523,7 @@ window.SpireProject = (() => {
       }
     } else if (currentForDataset && operation.status === "completed") {
       card.append(el("p", operation.result_type === "train_only"
-        ? `${[resetRecipe, v2ResetRecipe].includes(operation.recipe) ? "Reset-K1" : [memoryRecipe, v2MemoryRecipe].includes(operation.recipe) ? "M2-K1" : "实验性"} 训练任务已完成；此任务不包含开发集评估指标，也没有加载到游戏。`
+        ? `${memoryView?.name || "实验性"} 训练任务已完成；此任务不包含开发集评估指标，也没有加载到游戏。`
         : "本机训练已完成；这不表示模型已加载到游戏或具备已验证的策略质量。", "small muted"));
     } else if (!(["idle", "completed", "failed"].includes(operation.status))) {
       card.append(el("p", "本机训练状态暂不支持启动；请查看诊断信息。", "small muted"));
@@ -3550,14 +3569,6 @@ window.SpireProject = (() => {
       card.append(el("p", "本机浏览器保护令牌暂不可用，请刷新后重试。", "small muted"));
     if (canStart) {
       const form = el("div");
-      const choices = managed ? [
-        [v2MemoryRecipe, "text-menu-v2 M2-K1（工程操作，仅训练）"],
-        [v2ResetRecipe, "text-menu-v2 Reset-K1（工程对照，仅训练）"],
-      ] : [
-        [defaultRecipe, "D-Simple-S v1（默认，短训练）"],
-        [memoryRecipe, "D-Simple M2-K1（实验，仅训练）"],
-        [resetRecipe, "Reset-K1（每步重置，独立训练对照，仅训练）"],
-      ];
       const recipe = select(form, "训练配方", "local-training-recipe", choices,
         managed ? v2MemoryRecipe : defaultRecipe);
       card.append(form);
@@ -3569,8 +3580,7 @@ window.SpireProject = (() => {
           startOptions.disabled = true;
           await request(ctx, "/api/local-training/start", {
             dataset_id:dataset.artifact_id,
-            ...([memoryRecipe, resetRecipe, v2MemoryRecipe, v2ResetRecipe]
-              .includes(recipe.value) ? {recipe:recipe.value} : {}),
+            ...(memoryRecipeView(recipe.value) ? {recipe:recipe.value} : {}),
           }, csrfToken);
           await reload(ctx);
         }, startOptions));
@@ -3579,14 +3589,6 @@ window.SpireProject = (() => {
         && hex(operation.run_id) && hex(operation.result_id) && hex(operation.model_id)
         && (hex(operation.evaluation_id) || operation.result_type === "train_only")) {
       const form = el("div");
-      const choices = managed ? [
-        [v2MemoryRecipe, "text-menu-v2 M2-K1（工程操作，仅训练）"],
-        [v2ResetRecipe, "text-menu-v2 Reset-K1（工程对照，仅训练）"],
-      ] : [
-        [defaultRecipe, "D-Simple-S v1（默认，短训练）"],
-        [memoryRecipe, "D-Simple M2-K1（实验，仅训练）"],
-        [resetRecipe, "Reset-K1（每步重置，独立训练对照，仅训练）"],
-      ];
       const recipe = select(form, "新实验配方", "local-training-new-recipe", choices,
         choices.some(([id]) => id === operation.recipe) ? operation.recipe
           : managed ? v2MemoryRecipe : defaultRecipe);
@@ -3597,8 +3599,7 @@ window.SpireProject = (() => {
         newOptions.disabled = true;
         await request(ctx, "/api/local-training/start", {
           dataset_id:dataset.artifact_id, after_completed_operation_id:taskId,
-          ...([memoryRecipe, resetRecipe, v2MemoryRecipe, v2ResetRecipe]
-            .includes(recipe.value) ? {recipe:recipe.value} : {}),
+          ...(memoryRecipeView(recipe.value) ? {recipe:recipe.value} : {}),
         }, csrfToken);
         await reload(ctx);
       }, newOptions));

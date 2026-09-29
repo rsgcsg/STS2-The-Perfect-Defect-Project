@@ -61,14 +61,12 @@ const textMenuScratchModel = (artifactId = id("a"), recipe = "stage1a.b.s.v2") =
   parents:[],
   payloads:[],
 });
-const memoryModel = (artifactId = id("a"), resetEachStep = false) => ({
+const memoryModel = (artifactId = id("a"), resetEachStep = false, slots = 1) => ({
   artifact_id:artifactId, kind:"model",
-  workbench_memory_recipe:resetEachStep
-    ? "stage1a.dsimple.reset.k1.experimental.v1"
-    : "stage1a.dsimple.m2.k1.experimental.v1",
+  workbench_memory_recipe:`stage1a.dsimple.${resetEachStep ? "reset" : "m2"}.k${slots}.experimental.v1`,
   parameters:{schema:"stpd/experimental-m2-model-v1", partition:"train",
     qualification:"engineering_only", episodes:1,
-    config:{vocab_size:128, episode_count:1, slots:1, gated:false,
+    config:{vocab_size:128, episode_count:1, slots, gated:false,
       reset_each_step:resetEachStep, seed:1701, width:48, layers:1, heads:2,
       feedforward:96, dropout:0, max_tokens:16384, learning_rate:0.001,
       weight_decay:0, gradient_clip:1, cpu_threads:2,
@@ -1279,9 +1277,9 @@ test("completed training offers one explicit new experiment with exact prior ide
     assert.ok(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${artifact}`));
 });
 
-test("experimental M2 is explicit and completed status has no invented evaluation", async () => {
+for (const slots of [1, 8]) test(`experimental M2-K${slots} is explicit and completed status has no invented evaluation`, async () => {
   const dataset = id("a"), result = id("b"), model = id("c");
-  const recipe = "stage1a.dsimple.m2.k1.experimental.v1";
+  const recipe = `stage1a.dsimple.m2.k${slots}.experimental.v1`;
   const ready = localTrainingEnv({artifact:dataset, trainingStatus:{
     schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf",
     operation:{status:"idle"},
@@ -1291,6 +1289,9 @@ test("experimental M2 is explicit and completed status has no invented evaluatio
   const selection = find(page, element => element.tagName === "SELECT"
     && element.name === "local-training-recipe");
   assert.ok(selection);
+  assert.equal(selection.value, "stage1a.dsimple.s.v1");
+  assert.ok(selection.children.some(option => option.value === recipe));
+  assert.equal(selection.children.some(option => option.value.endsWith(".v2")), false);
   selection.value = recipe;
   await action(page, "start-local-training").onclick();
   assert.deepEqual(body(post(ready.calls)[0]), {dataset_id:dataset, recipe});
@@ -1309,15 +1310,15 @@ test("experimental M2 is explicit and completed status has no invented evaluatio
   assert.ok(action(completed, "start-local-training-new"));
 });
 
-test("Reset-K1 is an explicit train-only recipe and starts once with its exact identity", async () => {
-  const dataset = id("a"), reset = "stage1a.dsimple.reset.k1.experimental.v1";
+for (const slots of [1, 8]) test(`Reset-K${slots} is an explicit train-only recipe and starts once with its exact identity`, async () => {
+  const dataset = id("a"), reset = `stage1a.dsimple.reset.k${slots}.experimental.v1`;
   const env = localTrainingEnv({artifact:dataset, trainingHandler:async url => {
     if (url === "/api/local-training/start") return {schema:"stpd/local-training-operation-v2",
       availability:"ready", operation:{status:"pending", recipe:reset}};
     throw new Error(`unexpected route ${url}`);
   }});
   const page = await env.render();
-  assert.match(text(page), /Reset-K1（每步重置，独立训练对照/);
+  assert.match(text(page), new RegExp(`Reset-K${slots}（每步重置，独立训练对照`));
   assert.equal(post(env.calls).length, 0);
   const recipe = field(page, "local-training-recipe");
   recipe.value = reset;
@@ -1339,8 +1340,8 @@ test("Reset-K1 is an explicit train-only recipe and starts once with its exact i
     throw new Error(`unexpected route ${url}`);
   }});
   const completed = await done.render();
-  assert.match(text(completed), /Reset-K1 训练任务已完成/);
-  assert.doesNotMatch(text(completed), /M2-K1 训练任务已完成/);
+  assert.match(text(completed), new RegExp(`Reset-K${slots} 训练任务已完成`));
+  assert.doesNotMatch(text(completed), /M2-K[18] 训练任务已完成/);
   assert.equal(field(completed, "local-training-new-recipe").value, reset);
   assert.equal(post(done.calls).length, 0);
   await action(completed, "start-local-training-new").onclick();
@@ -1701,13 +1702,14 @@ test("M2 export describes its own scope alongside a completed dev report and gua
   assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
 });
 
-test("Reset-K1 model identity drives overview, export, and neutral dev evaluation without an automatic write", async () => {
+for (const [slots, reset] of [[1, true], [8, false], [8, true]]) test(`${reset ? "Reset" : "M2"}-K${slots} model identity drives overview, export, and neutral dev evaluation without an automatic write`, async () => {
   const model = id("a");
+  const name = `${reset ? "Reset" : "M2"}-K${slots}`;
   const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
     handler:async url => {
       if (url === "/api/local-workspace/managed") return {
         schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready"};
-      if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model, true);
+      if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model, reset, slots);
       if (url === "/api/local-memory-evaluations/status") return {
         schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready",
         operation:{status:"idle"}, csrf_token:"memory-csrf"};
@@ -1722,13 +1724,15 @@ test("Reset-K1 model identity drives overview, export, and neutral dev evaluatio
       throw new Error(`unexpected route ${url}`);
     }});
   const page = await env.render();
-  assert.match(text(page), /Reset-K1（每步重置，独立训练对照）/);
+  assert.match(text(page), new RegExp(reset ? `${name}（每步重置，独立训练对照）`
+    : `实验性 D-Simple ${name}`));
   assert.match(text(page), /此处不表示实时状态/);
   assert.doesNotMatch(text(page), /需先具备固定的记忆模型运行包/);
-  assert.match(text(page), /Reset-K1 训练模型已导出并校验/);
-  assert.match(text(page), /Reset-K1 独立来源开发集评估/);
+  assert.match(text(page), new RegExp(`${name} 训练模型已导出并校验`));
+  assert.match(text(page), new RegExp(`${name} 独立来源开发集评估`));
   assert.match(text(page), /不是 Gold、独立游戏局、记忆收益或科学质量证明/);
-  assert.doesNotMatch(text(page), /D-Simple M2-K1|M2-K1 独立来源|M2 训练模型/);
+  if (slots === 8) assert.doesNotMatch(text(page), /M2-K1|Reset-K1/);
+  if (reset) assert.doesNotMatch(text(page), /D-Simple M2-K[18]|M2-K[18] 独立来源/);
   assert.equal(action(page, "start-local-model-export").disabled, false);
   assert.equal(post(env.calls).length, 0);
 });
@@ -3375,6 +3379,8 @@ test("Managed training source offers explicit v2 M2 and Reset without GET work",
   assert.deepEqual(recipe.children.map(option => option.value), [
     "stage1a.dsimple.m2.k1.experimental.v2",
     "stage1a.dsimple.reset.k1.experimental.v2",
+    "stage1a.dsimple.m2.k8.experimental.v2",
+    "stage1a.dsimple.reset.k8.experimental.v2",
   ]);
   await action(page, "start-local-training").onclick();
   assert.deepEqual(body(post(env.calls)[0]), {dataset_id:source,
@@ -3404,10 +3410,10 @@ test("Managed test source never offers training", async () => {
   assert.equal(walk(page).some(e => e.dataset?.action === "start-local-training"), false);
 });
 
-test("v2 memory model card keeps its profile and never starts evaluation or registration on GET", async () => {
+for (const [slots, reset] of [[1, false], [8, false], [8, true]]) test(`v2 ${reset ? "Reset" : "M2"}-K${slots} model card keeps its profile and never starts evaluation or registration on GET`, async () => {
   const modelId = id("a");
-  const model = memoryModel(modelId);
-  model.workbench_memory_recipe = "stage1a.dsimple.m2.k1.experimental.v2";
+  const model = memoryModel(modelId, reset, slots);
+  model.workbench_memory_recipe = `stage1a.dsimple.${reset ? "reset" : "m2"}.k${slots}.experimental.v2`;
   const env = setup({view:"local-workspace",query:`&id=${modelId}`,
     identity:{status:"local_only"},handler:async url => {
       if (url === "/api/local-workspace/managed") return {status:"ready"};
@@ -3425,6 +3431,9 @@ test("v2 memory model card keeps its profile and never starts evaluation or regi
   });
   const page = await env.render();
   assert.match(text(page), /text-menu-v2 · Managed 工程操作，actor 未验证/);
+  assert.match(text(page), new RegExp(`${reset ? "Reset" : "M2"}-K${slots} 训练模型已导出并校验`));
+  if (slots === 8) assert.doesNotMatch(text(page), /M2-K1|Reset-K1/);
+  assert.match(text(page), /此输入版本暂不支持独立 Human 开发集评估/);
   assert.ok(action(page, "register-local-model"));
   assert.equal(env.calls.some(call => call.url === "/api/local-memory-evaluations/status"), false);
   assert.equal(post(env.calls).length, 0);
