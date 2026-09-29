@@ -560,6 +560,7 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
                 self._rewrite_events(directory, events)
                 rejected = AgentRunEvidenceVerifier().verify(directory)
                 self.assertFalse(rejected.passed)
+                self.assertEqual(rejected.findings[0].code, "text_result_binding")
 
     def test_v3_adapter_rejects_legacy_snapshot_and_attestation_drift(self) -> None:
         directory = self._evidence(
