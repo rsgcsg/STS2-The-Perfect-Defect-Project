@@ -32,6 +32,7 @@ SOURCE_SCHEMA = "stpd/human-text-input-source-v1"
 LEGACY_VIEW_SCHEMA = "stpd/human-text-input-bc-view-v1"
 VIEW_SCHEMA = "stpd/human-text-input-bc-view-v2"
 ROW_SCHEMA = "sts2.human-annotator/human-text-input-1"
+ROW_SCHEMA_V2 = "sts2.human-annotator/human-text-input-2"
 MAX_BUNDLES = 256
 MAX_ROWS = 100000
 
@@ -49,7 +50,7 @@ def _verified(directory: Path) -> tuple[Any, tuple[dict, ...]]:
     if result.status != "pass" or result.value is None:
         raise BoundaryError("human_text_import", "bundle3_verification_failed")
     bundle = result.value
-    if bundle.text_input_schema_version != 1:
+    if bundle.text_input_schema_version not in (1, 2):
         raise BoundaryError("human_text_import", "declared_human_text_stream_required")
     raw = directory / "raw"
     recording = decode_json((raw / "recording-manifest.json").read_bytes())
@@ -63,7 +64,9 @@ def _verified(directory: Path) -> tuple[Any, tuple[dict, ...]]:
     if len(rows) > MAX_ROWS:
         raise BoundaryError("human_text_import", "human_text_row_limit")
     for row in rows:
-        if row.get("schema") != ROW_SCHEMA or row.get("schema_version") != 1:
+        if (row.get("schema"), row.get("schema_version")) not in {
+            (ROW_SCHEMA, 1), (ROW_SCHEMA_V2, 2),
+        }:
             raise BoundaryError("human_text_import", "human_text_schema_mismatch")
     return bundle, rows
 
