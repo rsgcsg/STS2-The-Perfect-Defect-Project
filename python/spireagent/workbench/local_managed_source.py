@@ -99,7 +99,10 @@ class LocalManagedSourceService:
             raise BoundaryError("local_managed_source", "managed_purpose_invalid")
         with self.lock:
             archive = self.environment.report_archive(identity)
-            expected = _expectation(self.environment.report(identity))
+            archived = self.environment.report(identity)
+            if archived.get("status") != "stopped" or archived.get("error_code") is not None:
+                raise BoundaryError("local_managed_source", "closed_report_required")
+            expected = _expectation(archived)
             owner, store, registry_path = self._selected()
             existing = []
             for artifact_id in store.manifest_ids():

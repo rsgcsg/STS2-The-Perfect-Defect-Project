@@ -196,6 +196,14 @@ def test_old_unpinned_report_and_related_test_split_are_rejected(
     report_store.publish(unpinned)
     with pytest.raises(BoundaryError, match="archived_identity_unavailable"):
         service.import_report(unpinned.artifact_id, "test")
+    not_stopped = environment.report(report_id)
+    not_stopped["status"] = "stopped_outcome_unknown"
+    failed = Manifest("analysis", original.producer, parents=original.parents,
+                      payloads=(report_store.put_bytes("report", json_bytes(not_stopped)),),
+                      parameters=original.parameters)
+    report_store.publish(failed)
+    with pytest.raises(BoundaryError, match="closed_report_required"):
+        service.import_report(failed.artifact_id, "test")
     another, related_id, _ = _archive(tmp_path / "related", session="later-session",
                                        scenario="renamed-scenario")
     copy_artifact(another, report_store, related_id)
@@ -203,3 +211,6 @@ def test_old_unpinned_report_and_related_test_split_are_rejected(
         service.import_report(related_id, "test")
     assert service.binding(first["artifact_id"])["status"] == "admitted"
     assert _uses(owner) == (0, 0)
+    with owner.transaction() as db:
+        pending = {row[0] for row in db.execute("SELECT candidate FROM local_source_pending")}
+    assert unpinned.artifact_id not in pending and failed.artifact_id not in pending
