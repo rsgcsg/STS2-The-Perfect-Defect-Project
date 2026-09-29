@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import socket
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import Request
@@ -201,6 +202,24 @@ def test_offline_install_promotes_bundled_candidate_without_sibling_connector(
     runtime_install.validate_runtime_install(target / "runtime/node_modules", pin, {})
 
 
+def test_real_npm_pack_install_validates_bundled_closure(tmp_path, bundled_release,
+                                                        isolated_port):
+    """Exercise npm tarball extraction and the same closure check used by kit packaging."""
+    node_modules, root, pin = bundled_release
+    result = subprocess.run(
+        ["npm", "pack", "--ignore-scripts", "--pack-destination", str(tmp_path)],
+        cwd=root, capture_output=True, text=True, check=True,
+    )
+    archive = tmp_path / result.stdout.strip().splitlines()[-1]
+    pin["release_asset_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
+    target = tmp_path / "models/text-menu-v1"
+    receipt = runtime_install.install_runtime(target, pin, {}, archive=archive)
+    assert receipt["status"] == "runtime_installed"
+    assert receipt["loaded"] is False
+    runtime_install.validate_runtime_install(target / "runtime/node_modules", pin, {})
+    assert (node_modules / runtime_install.RUNTIME_PACKAGE).exists()
+
+
 @pytest.fixture
 def isolated_port(monkeypatch):
     # Exercise a real bind without depending on the operator's live Runtime.
@@ -354,6 +373,39 @@ def test_offline_cli_archive_never_becomes_an_http_path(tmp_path, monkeypatch):
         local_model_cli.model_command(
             config, "install-runtime", runtime_archive=Path("/private/archive")
         )
+
+
+def test_offline_text_runtime_profile_needs_no_selection_and_rejects_mismatch(
+    tmp_path, monkeypatch
+):
+    from spireagent.workbench import local_model_cli
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.local_models import LocalModelService
+
+    config = ProjectConfig(tmp_path, "", "", None, combination())
+    monkeypatch.setattr(local_model_cli, "running", lambda _: None)
+    expected = (tmp_path / "models/text-menu-v1", {"package": runtime_install.RUNTIME_PACKAGE})
+    monkeypatch.setattr(LocalModelService, "text_runtime_profile", lambda _: expected)
+    monkeypatch.setattr(LocalModelService, "_connector_pin", lambda _: {})
+    monkeypatch.setattr(runtime_install, "install_runtime", lambda *a, **k: {
+        "status": "runtime_installed", "directory": str(a[0])})
+    archive = tmp_path / "runtime.tgz"
+    assert local_model_cli.model_command(
+        config, "install-runtime", runtime_archive=archive, runtime_profile="text-menu-v1"
+    )["directory"] == str(expected[0])
+    monkeypatch.setattr(LocalModelService, "selection", lambda *a: {"runtime_profile": None})
+    with pytest.raises(BoundaryError, match="selection_runtime_profile_mismatch"):
+        local_model_cli.model_command(config, "install-runtime", selection="legacy",
+                                      runtime_archive=archive, runtime_profile="text-menu-v1")
+    with pytest.raises(BoundaryError, match="runtime_profile_requires_offline_install"):
+        local_model_cli.model_command(config, "status", runtime_profile="text-menu-v1")
+
+
+def test_runtime_profile_cli_flag_is_only_for_model_install(capsys):
+    from spireagent.workbench.developer_cli import main
+
+    assert main(["status", "--runtime-profile", "text-menu-v1"]) == 1
+    assert "runtime_profile_requires_model_command" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("spelling", ["Pefect", "Perfect"])

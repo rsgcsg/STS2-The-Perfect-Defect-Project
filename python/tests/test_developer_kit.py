@@ -13,6 +13,21 @@ from spireagent import source as control
 from spireagent.json_boundary import BoundaryError
 from tools.package_developer_kit import PinnedFile, package, sha256
 
+pytest_plugins = ("test_runtime_install",)
+
+
+def synthetic_text_pin(archive: bytes) -> dict:
+    return {
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "version": "0.1.0",
+        "source_revision": "a" * 40,
+        "component_tree_revision": "b" * 40,
+        "release_asset_sha256": sha256(archive),
+        "package_content_sha256": "c" * 64,
+        "dependency_layout": "bundled_source_candidate",
+        "bundled_connector_pin": {},
+    }
+
 
 @pytest.fixture
 def inputs(tmp_path, monkeypatch):
@@ -29,10 +44,19 @@ def inputs(tmp_path, monkeypatch):
                 "platform_source_revision": "a" * 40,
                 "evidence_source_revision": "b" * 40,
                 "policy_mode": "existing-adapter-only",
-                "node_packages": [],
+                "node_packages": [{"package": "@rsgcsg/sts2-connector-client"}],
             }
         )
     )
+    (root / "python").mkdir()
+    (root / "python/uv.lock").write_bytes((root / "uv.lock").read_bytes())
+    nested_config = root / "python/configs/developer/combination-v1.json"
+    nested_config.parent.mkdir(parents=True)
+    nested_config.write_bytes(config.read_bytes())
+    native_manifest = root / "apps/game-mod/mod_manifest.json"
+    native_manifest.parent.mkdir(parents=True)
+    native_manifest.write_bytes(b"synthetic public mod_manifest")
+    (root / ".gitignore").write_text("**/bin/\npython/.local/\n")
     for command in (
         ["init", "-q"],
         ["config", "user.name", "Synthetic Test"],
@@ -50,7 +74,9 @@ def inputs(tmp_path, monkeypatch):
         explicit[name] = PinnedFile(path, sha256(path.read_bytes()))
     tool = tmp_path / "tool"
     tool.mkdir()
-    for name in ("sts2-human-annotator.dll", "platform-bom.json"):
+    for name in ("sts2-human-annotator.dll", "sts2-human-annotator.deps.json",
+                 "sts2-human-annotator.runtimeconfig.json", "STS2HumanAnnotator.Core.dll",
+                 "platform-bom.json"):
         (tool / name).write_bytes(f"synthetic tool {name}".encode())
     setup = "setup/apps/game-mod/collection-setup.mjs"
     provenance = "game-mod/build-provenance.json"
@@ -126,6 +152,9 @@ def test_deterministic_public_inventory_and_real_owner_verification(inputs, tmp_
             "collection-tool/collection-tool.json",
             "collection-tool/platform-bom.json",
             "collection-tool/sts2-human-annotator.dll",
+            "collection-tool/sts2-human-annotator.deps.json",
+            "collection-tool/sts2-human-annotator.runtimeconfig.json",
+            "collection-tool/STS2HumanAnnotator.Core.dll",
             "collection-tool/setup/apps/game-mod/collection-setup.mjs",
             "collection-tool/game-mod/build-provenance.json",
         }
@@ -145,6 +174,112 @@ def test_deterministic_public_inventory_and_real_owner_verification(inputs, tmp_
         # Only our generated archive, after exact path inventory verification.
         archive.extractall(extracted)
     CollectionTool(extracted / "collection-tool", inputs["tool_release_id"])
+
+
+def test_optional_runtime_requires_external_pins_and_fixed_inventory(inputs, tmp_path,
+                                                                     monkeypatch):
+    from tools import install_developer_kit as install
+
+    archive = tmp_path / "runtime.tgz"
+    archive.write_bytes(b"synthetic archive")
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({
+        "schema": "stpd/local-text-runtime-v1",
+        "runtime_package": synthetic_text_pin(archive.read_bytes()),
+    }))
+    with pytest.raises(BoundaryError, match="profile_and_archive_required"):
+        package(**{**inputs, "text_runtime_profile": PinnedFile(
+            profile, sha256(profile.read_bytes()))})
+    assert not inputs["output"].exists()
+    calls = []
+    monkeypatch.setattr("tools.package_developer_kit.install_runtime",
+                        lambda directory, pin, connector, archive: calls.append(
+                            (directory, pin, connector, archive.read_bytes())))
+    args = {**inputs,
+            "text_runtime_profile": PinnedFile(profile, sha256(profile.read_bytes())),
+            "text_runtime_archive": PinnedFile(archive, sha256(archive.read_bytes()))}
+    package(**args)
+    assert len(calls) == 1 and calls[0][3] == archive.read_bytes()
+    manifest, files = install.verified_archive(
+        inputs["output"], sha256(inputs["output"].read_bytes()))
+    assert manifest["text_runtime"]["profile_sha256"] == sha256(profile.read_bytes())
+    assert manifest["text_runtime"]["archive_sha256"] == sha256(archive.read_bytes())
+    assert files[install.TEXT_RUNTIME_PROFILE] == profile.read_bytes()
+    assert files[install.TEXT_RUNTIME_ARCHIVE] == archive.read_bytes()
+    assert "operator.env" not in files
+
+
+@pytest.mark.parametrize("mutation", ["archive", "profile", "closure"])
+def test_optional_runtime_invalid_inputs_never_publish(inputs, tmp_path, monkeypatch,
+                                                       mutation):
+    archive = tmp_path / "runtime.tgz"
+    archive.write_bytes(b"synthetic archive")
+    profile = tmp_path / "profile.json"
+    pin = synthetic_text_pin(archive.read_bytes())
+    if mutation == "archive":
+        pin["release_asset_sha256"] = "0" * 64
+    if mutation == "profile":
+        pin["dependency_layout"] = "flat"
+    profile.write_text(json.dumps({"schema": "stpd/local-text-runtime-v1",
+                                   "runtime_package": pin}))
+    def closure_check(*args, **kwargs):
+        raise BoundaryError("local_model", "pinned_runtime_install_verification_failed")
+    monkeypatch.setattr("tools.package_developer_kit.install_runtime", closure_check)
+    with pytest.raises(BoundaryError):
+        package(**{**inputs,
+                   "text_runtime_profile": PinnedFile(profile, sha256(profile.read_bytes())),
+                   "text_runtime_archive": PinnedFile(archive, sha256(archive.read_bytes()))})
+    assert not inputs["output"].exists()
+
+
+def test_optional_runtime_package_prepare_and_status_preserve_staged_bytes(
+    inputs, tmp_path, monkeypatch
+):
+    from tools import install_developer_kit as install
+
+    archive = tmp_path / "runtime.tgz"
+    archive.write_bytes(b"synthetic archive")
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"schema": "stpd/local-text-runtime-v1",
+                                   "runtime_package": synthetic_text_pin(archive.read_bytes())}))
+    # The closure's real extraction and install are exercised in test_runtime_install.
+    monkeypatch.setattr("tools.package_developer_kit.install_runtime", lambda *a, **k: None)
+    package(**{**inputs,
+               "text_runtime_profile": PinnedFile(profile, sha256(profile.read_bytes())),
+               "text_runtime_archive": PinnedFile(archive, sha256(archive.read_bytes()))})
+    monkeypatch.setattr(install, "REPOSITORY", str(inputs["root"]))
+    root = tmp_path / "releases"
+    expected = sha256(inputs["output"].read_bytes())
+    receipt = install.prepare(inputs["output"], expected, root)
+    target = root / expected
+    assert receipt["text_runtime"] == "bundled_installation_not_checked"
+    staged_profile = target / "source" / install.TEXT_RUNTIME_DESTINATION
+    staged_archive = target / "source" / install.TEXT_ARCHIVE_DESTINATION
+    assert staged_profile.read_bytes() == profile.read_bytes()
+    assert staged_archive.read_bytes() == archive.read_bytes()
+    assert install.status(target)["text_runtime"] == "bundled_installation_not_checked"
+    with pytest.raises(BoundaryError, match="release_exists"):
+        install.prepare(inputs["output"], expected, root)
+    staged_archive.write_bytes(b"changed")
+    with pytest.raises(BoundaryError, match="staged_text_runtime_changed"):
+        install.status(target)
+
+
+def test_packager_uses_real_npm_closure_validation(inputs, tmp_path, bundled_release):
+    _, runtime_root, pin = bundled_release
+    result = subprocess.run(
+        ["npm", "pack", "--ignore-scripts", "--pack-destination", str(tmp_path)],
+        cwd=runtime_root, capture_output=True, text=True, check=True,
+    )
+    archive = tmp_path / result.stdout.strip().splitlines()[-1]
+    pin["release_asset_sha256"] = sha256(archive.read_bytes())
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"schema": "stpd/local-text-runtime-v1",
+                                   "runtime_package": pin}))
+    package(**{**inputs,
+               "text_runtime_profile": PinnedFile(profile, sha256(profile.read_bytes())),
+               "text_runtime_archive": PinnedFile(archive, sha256(archive.read_bytes()))})
+    assert inputs["output"].exists()
 
 
 @pytest.mark.parametrize("change", ["old_tool", "mismatched_mod"])
