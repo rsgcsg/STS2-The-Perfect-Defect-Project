@@ -1,7 +1,7 @@
 # Current project context, 2026-09-29
 
 Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; accepted develop
-anchor `4f36bfdf634b4baad62ce54e9030d529e78568b0` after PR99.
+anchor `9732c44e678366dfb7fd337c20300f799622561a` after PR100.
 Resolve live GitHub refs before work; current authorities override this file.
 Source, CI, installation, Human operation and scientific results are separate.
 No complete Stage1a or policy-quality qualification is claimed. See the
@@ -28,7 +28,8 @@ for exact PR/CI and candidate-runtime receipts.
   before normal merge; merge tree `fa5f343bd7a234df261c599c933e8a22aeba7c68`
   matches that candidate. Its integration run is
   [36544655447](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36544655447);
-  check the live terminal state rather than borrowing topic CI.
+  completed successfully with router-verified same-tree reuse; fresh plan, docs
+  and portable guards passed. This was not a new OS execution.
   Evidence rc.20 now verifies port-2 with exact text input and attestation.
   The earlier sealed 107-event native run passes a new typed verification;
   the original rc.19 failure remains unchanged. A subsequent registered
@@ -38,8 +39,17 @@ for exact PR/CI and candidate-runtime receipts.
 - The [local dev evaluation receipt](../evidence/STAGE1A_M2_DEV_EVALUATION_2026-09-29.md)
   records a candidate Workbench UI flow using the existing M2 model and the
   separate 31-label source. It produced a report with 14/31 Top-1 matches.
-  This is a retrospective engineering dev result, not an independent-game
-  benchmark or a persistent-memory/Reset comparison. No new training occurred.
+  The evaluator was merged in [PR101](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/101)
+  after full run 36546048002 succeeded on exact head `b2ff83ec`; integration
+  run 36549296218 used verified same-tree reuse. This original receipt is a
+  retrospective engineering dev result, not an independent-game benchmark.
+- The [Reset-K1 candidate receipt](../evidence/STAGE1A_RESET_K1_CONTROL_2026-09-29.md)
+  adds a separately trained reset control through the Workbench. Verified
+  input bytes and recorded runtime match; configurations differ only by the
+  reset flag. Both models matched 14/31 dev labels, without a scientific
+  memory-benefit conclusion. The Reset model was exported and registered,
+  not loaded. Checkout-scoped runtime pins required explicit manual carryover;
+  durable application-owned configuration remains unfinished.
 - Merged [PR88](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/88)
   repaired potion staging; its installation did not prove a new live potion
   action. Old failed evidence remains.
@@ -57,11 +67,14 @@ strategy nor memory generalization.
 
 Managed text surfaces now cover map, rest, deck upgrade and bounded combat
 through PR89/93/94 and [PR98](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/98).
-[PR100](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/100)
-adds a reviewed native reward candidate; its private text-to-native smoke
-progressed through card rewards, gold, map and combat, while its own hosted
-checks and source integration remain separate. Event/unreviewed selectors
-and full-flow equivalence remain unproved.
+Merged [PR100](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/100)
+adds exact native reward and event bindings. Its current-head full run
+[36550296069](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36550296069)
+passed on `83d997b1`; the normal merge retained the same candidate tree.
+A private 105-action scripted smoke traversed card rewards, gold, map,
+combat and one event choice. It is not trained-model, Human, Windows native
+or full-flow evidence. Treasure, shop/selectors and typed text terminal
+handling have separate unpublished candidates and are not covered by PR100.
 Selected PR90–98 CI passed; PR97/98 develop integration reused verified
 same-tree OS execution with fresh guards, as detailed in the dated ledger.
 Source/test success is not gameplay qualification.

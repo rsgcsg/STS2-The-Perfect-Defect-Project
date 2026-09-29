@@ -22,6 +22,7 @@ from spireagent.workbench.local_model_export import (
     SCHEMA_V2,
     LocalModelExport,
 )
+from spireagent.workbench.memory_recipe import M2_K1_RECIPE, RESET_K1_RECIPE
 from spireagent.workbench.memory_training import prepare_workbench_memory
 from spireagent.workbench.research_process import private_child
 from stpd.fullrun.text_menu_human_import import load_verified_human_text_bundle
@@ -29,7 +30,7 @@ from stpd.policy.memory_export import validate_memory_package
 from stpd.workers.memory_run import execute_memory_run
 
 
-def _fixture(tmp_path: Path, monkeypatch):
+def _fixture(tmp_path: Path, monkeypatch, *, recipe: str = M2_K1_RECIPE):
     config, dataset_id, sources, store = _human_ready(tmp_path, monkeypatch)
     owner = configured_owner(config)
     runs: set[str] = set()
@@ -41,7 +42,7 @@ def _fixture(tmp_path: Path, monkeypatch):
         owner.ledger.use_source(source, "training", operation_id)
     owner.ledger.use(runs, "training", operation_id)
     producer = store.get_manifest(dataset_id).producer
-    run_id, _ = prepare_workbench_memory(store, dataset_id, producer, operation_id)
+    run_id, _ = prepare_workbench_memory(store, dataset_id, producer, operation_id, recipe)
     reporter = ObjectStoreRunReporter(store, store.blobs)
     outcome = execute_memory_run(store, reporter, run_id, producer)
     assert outcome.state == "completed" and outcome.result_id is not None
@@ -173,6 +174,24 @@ def test_registration_uses_completed_child_receipt_without_web_replay(
             torch.set_num_threads(previous)
     assert export_logs[0].read_bytes() == original_log
     assert not list(config.state_dir.glob("local-model-registration-verify-*.log"))
+
+
+def test_reset_k1_exports_and_retains_its_verified_recipe_identity(
+        tmp_path: Path, monkeypatch) -> None:
+    config, _owner, store, _dataset, _sources, _runs, run_id, model_id = _fixture(
+        tmp_path, monkeypatch, recipe=RESET_K1_RECIPE)
+    model = store.get_manifest(model_id)
+    assert model.parameters.value()["config"]["reset_each_step"] is True
+    service = LocalModelExport(config)
+    service.start(model_id)
+    done = _settle(service)
+    assert done["status"] == "completed", done
+    destination = config.state_dir / EXPORT_ROOT / model_id
+    package, _, _, _ = validate_memory_package(destination)
+    assert package["ids"]["run"] == run_id
+    assert package["config"]["reset_each_step"] is True
+    assert service.verified_memory_for_registration(model_id) == destination
+    assert service.verified_memory_recipe_for_registration(model_id) == RESET_K1_RECIPE
 
 
 def test_old_completed_m2_requires_explicit_reverify_for_receipt(

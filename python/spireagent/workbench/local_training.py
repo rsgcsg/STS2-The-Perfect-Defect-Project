@@ -24,12 +24,13 @@ from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
 from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.local_dataset import LocalDatasetService
+from spireagent.workbench.memory_recipe import M2_K1_RECIPE, MEMORY_RECIPES
 from spireagent.workbench.research_process import private_child as _private_child
 
 SCHEMA = "stpd/local-training-operation-v1"
 SCHEMA_V2 = "stpd/local-training-operation-v2"
 DEFAULT_RECIPE = "stage1a.dsimple.s.v1"
-MEMORY_RECIPE = "stage1a.dsimple.m2.k1.experimental.v1"
+MEMORY_RECIPE = M2_K1_RECIPE  # Preserve the existing recipe constant for callers.
 OPERATION_FILE = "local-training-operation.json"
 LOCK_FILE = ".local-training.lock"
 IDS = ("allocation_id", "view_id", "input_id", "run_id", "checkpoint_id",
@@ -71,9 +72,9 @@ class LocalTrainingService:
                 raise ValueError
             digest(value["operation_id"], "local_training.operation", length=32)
             digest(value["dataset_id"], "local_training.dataset")
-            memory = value.get("recipe") == MEMORY_RECIPE
+            memory = value.get("recipe") in MEMORY_RECIPES
             if schema == SCHEMA_V2:
-                if value.get("recipe") not in {DEFAULT_RECIPE, MEMORY_RECIPE}:
+                if value.get("recipe") not in {DEFAULT_RECIPE, *MEMORY_RECIPES}:
                     raise ValueError
                 if memory:
                     if (value.get("result_type") != "train_only"
@@ -111,7 +112,7 @@ class LocalTrainingService:
                         continue
                     digest(previous[key], "local_training.previous_" + key)
                 if "recipe" in previous:
-                    if previous["recipe"] == MEMORY_RECIPE:
+                    if previous["recipe"] in MEMORY_RECIPES:
                         if (set(previous) != typed or previous["result_type"] != "train_only"
                                 or previous["evaluation_status"] != "not_run"):
                             raise ValueError
@@ -187,7 +188,8 @@ class LocalTrainingService:
     def start(self, dataset_id: object, *,
               after_completed_operation_id: object | None = None,
               recipe: object = DEFAULT_RECIPE) -> dict[str, Any]:
-        if recipe not in {DEFAULT_RECIPE, MEMORY_RECIPE} or not isinstance(recipe, str):
+        if (not isinstance(recipe, str)
+                or recipe not in {DEFAULT_RECIPE, *MEMORY_RECIPES}):
             raise BoundaryError("local_training", "unsupported_training_recipe")
         dataset_id = digest(dataset_id, "local_training.dataset_id")
         after_completed = (None if after_completed_operation_id is None else
@@ -229,7 +231,7 @@ class LocalTrainingService:
                     and after_completed is None):
                 raise BoundaryError("local_training", "new_experiment_precondition_failed")
             identity = uuid.uuid4().hex
-            operation = {"schema": (SCHEMA_V2 if recipe == MEMORY_RECIPE
+            operation = {"schema": (SCHEMA_V2 if recipe in MEMORY_RECIPES
                                     or previous.get("schema") == SCHEMA_V2 else SCHEMA),
                          "status": "pending", "stage": "reserving",
                          "operation_id": identity, "dataset_id": dataset_id,
@@ -237,8 +239,8 @@ class LocalTrainingService:
             if operation["schema"] == SCHEMA_V2:
                 operation.update(
                     recipe=recipe,
-                    result_type="train_only" if recipe == MEMORY_RECIPE else "evaluated",
-                    evaluation_status="not_run" if recipe == MEMORY_RECIPE else "pending",
+                    result_type="train_only" if recipe in MEMORY_RECIPES else "evaluated",
+                    evaluation_status="not_run" if recipe in MEMORY_RECIPES else "pending",
                 )
             if previous["status"] == "completed":
                 if operation["schema"] == SCHEMA_V2 and previous["schema"] == SCHEMA:
@@ -302,7 +304,7 @@ class LocalTrainingService:
 
             operation = self._read(path, owner.identity)
             dataset_id = operation["dataset_id"]
-            memory = operation.get("recipe") == MEMORY_RECIPE
+            memory = operation.get("recipe") in MEMORY_RECIPES
             producer = source_identity(ROOT)
             manifest = store.get_manifest(dataset_id)
             info = manifest.parameters.value()
@@ -367,7 +369,8 @@ class LocalTrainingService:
                 prepare_command = [sys.executable, "-m", "spireagent.research_cli",
                                    "--store", str(owner.store_dir),
                                    "prepare-workbench-memory", "--source", dataset_id,
-                                   "--operation", identity]
+                                   "--operation", identity,
+                                   "--recipe", operation["recipe"]]
                 prepare_log = owner.path.parent / ("local-training-" + identity + "-prepare.log")
                 prepare_exit, captured = _private_child(prepare_command, prepare_log,
                                                         environment,

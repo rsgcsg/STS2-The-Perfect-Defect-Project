@@ -24,6 +24,7 @@ from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_workspace import LocalWorkspace, open_registered_workspace
+from spireagent.workbench.memory_recipe import recipe_for_memory_config
 from spireagent.workbench.research_process import private_child
 
 SCHEMA = "stpd/local-model-export-operation-v1"
@@ -111,6 +112,12 @@ def _memory_lineage(store: Any, owner: Any, model: Manifest) -> str:
     run_id = model.parent("run")
     run = store.get_manifest(run_id)
     run_info = run.parameters.value()
+    try:
+        recipe_for_memory_config(info.get("config"))
+    except ValueError as error:
+        raise BoundaryError("local_model_export", "unsupported_workbench_memory_config") from error
+    if info.get("config") != run_info.get("config"):
+        raise BoundaryError("local_model_export", "memory_lineage_mismatch")
     operation_id = digest(run_info.get("operation_id"),
                           "local_model_export.operation_id", length=32)
     training_input = store.get_manifest(model.parent("training_input"))
@@ -371,6 +378,42 @@ class LocalModelExport:
                     or receipt["payload_bytes"] != len(weights) + len(tokenizer)):
                 raise BoundaryError("local_model_export", "export_identity_mismatch")
             return destination
+
+    def verified_memory_recipe_for_registration(self, model_id: object, *,
+                                                 deadline: float | None = None) -> str:
+        """Read the recipe from the same verified immutable model/run lineage."""
+        identity = digest(model_id, "local_model_export.model_id")
+        with self.lock:
+            operation = self._read()
+            if (operation.get("schema") != SCHEMA_V2
+                    or operation.get("status") != "completed"
+                    or operation.get("model_id") != identity
+                    or operation.get("model_type") != "memory"
+                    or operation.get("verified_receipt") is None):
+                raise BoundaryError("local_model_export", "verified_export_required")
+            receipt = operation["verified_receipt"]
+            if (receipt.get("model_id") != identity
+                    or receipt.get("run_id") != operation.get("run_id")):
+                raise BoundaryError("local_model_export", "memory_lineage_mismatch")
+            workspace = self._workspace()
+            root = getattr(getattr(workspace.store, "blobs", None), "root", None)
+            if not isinstance(root, Path) or operation["store_root"] != str(root):
+                raise BoundaryError("local_model_export", "workspace_changed")
+            model = workspace.store.get_manifest(identity)
+            run = workspace.store.get_manifest(operation["run_id"])
+            if (model.kind != "model" or model.parent("run") != run.artifact_id
+                    or run.kind != "run"
+                    or model.parameters.value().get("config")
+                    != run.parameters.value().get("config")):
+                raise BoundaryError("local_model_export", "memory_lineage_mismatch")
+            if deadline is not None and monotonic() >= deadline:
+                raise BoundaryError("local_model_registration", "registration_timeout")
+            try:
+                return recipe_for_memory_config(model.parameters.value().get("config"))
+            except ValueError as error:
+                raise BoundaryError(
+                    "local_model_export", "unsupported_workbench_memory_config",
+                ) from error
 
     def _finish(self, operation_id: str, **updates: Any) -> None:
         current = self._read()
