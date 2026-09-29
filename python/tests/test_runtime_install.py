@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import socket
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import Request
@@ -186,11 +185,10 @@ def test_offline_install_promotes_bundled_candidate_without_sibling_connector(
     archive.write_bytes(b"synthetic bundled candidate")
     pin["release_asset_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
     actual_run = runtime_install.subprocess.run
+    npm_executable = runtime_install.shutil.which("npm")
 
     def npm_or_node(command, **kwargs):
-        if ("install" in command or
-                (len(command) >= 5 and command[1:4] == ["/d", "/s", "/c"]
-                 and " install " in command[4])):
+        if command[0] == npm_executable:
             runtime_install.shutil.copytree(node_modules, kwargs["cwd"] / "node_modules")
             return SimpleNamespace(returncode=0)
         return actual_run(command, **kwargs)
@@ -311,13 +309,10 @@ def test_install_uses_fixed_command_private_env_and_verifies_promoted_content(
         runtime_install.validate_runtime_install(directory / "runtime/node_modules", pin, connector)
 
 
-def test_install_uses_resolved_windows_cmd_launcher(tmp_path, monkeypatch, release):
+def test_install_uses_resolved_windows_batch_path(tmp_path, monkeypatch, release):
     pin, connector, archive, source = release
     npm = "C:/Program Files/nodejs/npm.cmd"
-    cmd = "C:/Windows/System32/cmd.exe"
     monkeypatch.setattr(runtime_install.shutil, "which", lambda _: npm)
-    monkeypatch.setenv("COMSPEC", cmd)
-    monkeypatch.setattr(runtime_install, "os", SimpleNamespace(name="nt", environ=os.environ))
     calls = []
 
     def install(command, **kwargs):
@@ -331,11 +326,43 @@ def test_install_uses_resolved_windows_cmd_launcher(tmp_path, monkeypatch, relea
     assert receipt["status"] == "runtime_installed"
     command, kwargs = calls[0]
     assert command == [
-        cmd, "/d", "/s", "/c",
-        subprocess.list2cmdline([npm, "install", "--ignore-scripts", "--omit=dev",
-                                 "--no-audit", "--no-fund"]),
+        npm, "install", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund",
     ]
     assert kwargs["timeout"] == 300
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows batch execution")
+def test_windows_npm_batch_with_spaces_receives_fixed_arguments(
+    tmp_path, monkeypatch, release
+):
+    pin, connector, archive, _ = release
+    directory = tmp_path / "node install"
+    directory.mkdir()
+    npm = directory / "npm.cmd"
+    received = directory / "received.txt"
+    npm.write_text(
+        "@echo off\n> \"%~dp0received.txt\" (\n"
+        + "".join(f"echo(%~{index}\n" for index in range(1, 6))
+        + ")\n",
+        encoding="ascii",
+    )
+    monkeypatch.setattr(runtime_install.shutil, "which", lambda _: str(npm))
+    monkeypatch.setattr(runtime_install, "validate_runtime_install", lambda *_: pin)
+
+    receipt = runtime_install.install_runtime(tmp_path / "state", pin, connector,
+                                               archive=archive)
+    assert receipt["status"] == "runtime_installed"
+    assert received.read_text().splitlines() == [
+        "install", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund",
+    ]
+
+    destination = tmp_path / "pack output"
+    destination.mkdir()
+    run_program(["npm", "pack", "--ignore-scripts", "--pack-destination",
+                 str(destination)], tmp_path)
+    assert received.read_text().splitlines()[:4] == [
+        "pack", "--ignore-scripts", "--pack-destination", str(destination),
+    ]
 
 
 def test_failed_npm_preserves_previous_runtime(tmp_path, monkeypatch, release):

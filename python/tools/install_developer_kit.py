@@ -147,14 +147,6 @@ def run(command: list[str], cwd: Path, *, environment: dict[str, str] | None = N
         ):
             environment.pop(name, None)
     args = [str(executable), *command[1:]]
-    if os.name == "nt" and Path(str(executable)).suffix.lower() in {".cmd", ".bat"}:
-        args = [
-            os.environ.get("COMSPEC", "cmd.exe"),
-            "/d",
-            "/s",
-            "/c",
-            subprocess.list2cmdline(args),
-        ]
     result = subprocess.run(
         args, cwd=cwd, env=environment, capture_output=True, text=True, timeout=900
     )

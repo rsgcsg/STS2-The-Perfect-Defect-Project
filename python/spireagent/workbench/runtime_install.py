@@ -348,9 +348,6 @@ def _install_runtime(
         )
         npm_args = [str(npm), "install", "--ignore-scripts", "--omit=dev",
                     "--no-audit", "--no-fund"]
-        if os.name == "nt" and Path(npm).suffix.lower() in {".cmd", ".bat"}:
-            npm_args = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c",
-                        subprocess.list2cmdline(npm_args)]
         with (stage / "install.log").open("wb") as log:
             result = subprocess.run(
                 npm_args,
