@@ -89,6 +89,44 @@ This is a Headless input presentation for that command, not a native UI or
 Human-evidence claim. Method/signature or callback-order drift requires a new
 exact-build review and native differential probe.
 
+The separate generic deck-card text page is admitted only for the pinned
+`CardSelectCmd.FromDeckGeneric` callback. A scoped invocation carries its
+actual player, preferences, filter and selector into `ICardSelector`, whose
+published callback otherwise loses the preferences. The Host presents the
+ordered original card objects as sequential select/deselect inputs, preview,
+preview return, native-permitted cancellation and confirmation. These steps
+change Host-local tentative selection state; only callback completion resumes
+the game-owned command and its native effects. Execute-time input rechecks
+the exact selector, original card identity, current deck membership and native
+filter. The older unscoped `card_select` page remains visible but unavailable
+to the text adapter; it does not enumerate card combinations or gain inferred
+cancel rights. The purpose-specific deck-upgrade selector retains its own
+separate binding and behavior.
+
+The Managed shop text page admits only a finite complete current catalog with
+exact entry identities, prices, stock and native actionability facts. For card
+removal, the action binds both merchant room and removal entry; a deferred
+callback rechecks both, stock and gold before invoking the native purchase.
+The game's `OneOffSynchronizer.DoMerchantCardRemoval` still owns gold loss and
+deck mutation. When that purchase returns true, the Managed Host calls the
+captured entry's `SetUsed()` in place of the absent
+`NMerchantCardRemoval.OnCardRemovalUsed()` UI callback; cancellation does not.
+The exact private raw-route regression checks cancellation, one confirmed
+purchase, stale and missing bindings, and duplicate rejection. This is a
+source/build and targeted scenario-control result, not a fair-player journey,
+native UI parity, Human evidence or all-selector coverage.
+The raw Host `leave_room` action in a merchant room delegates to the same
+`DoLeaveShop` owner as `leave_shop`: it requires the exact current room and
+refuses to open the map while a purchase operation or card selector is pending.
+The exact raw-route regression covers selection and preview, including missing,
+stale and current room references, then admits the completed shop exit.
+
+The Managed text adapter preserves a complete game-owned `game_over` observation
+as an observed terminal page with zero actions and the exact boolean victory
+fact. A missing or non-boolean terminal fact is unsupported; the Host does not
+convert it into defeat. An empty nonterminal or unknown page remains
+unavailable. This mapping does not decide victory or add a native Commit.
+
 The event-option text page is admitted only when the current native event room,
 event instance, and every ordered option have exact private identities and
 lock facts. Locked options remain visible without an executable action. The
@@ -100,6 +138,22 @@ completion uses the existing native
 proceed/map presentation branch; a same-index replacement or missing identity
 does not fall back to an ordinal-only mutation. This is a Managed source/build
 candidate, not native UI parity or a full-run qualification.
+
+The treasure text page exposes each current stage separately: open chest,
+select one of the complete ordered native relic catalog or skip when the native
+single-player fact permits it, then leave the completed room. A missing relic,
+duplicate identity, incomplete catalog, or unknown skip fact makes selection
+unavailable while retaining the visible rows. Opening rechecks the exact closed
+room inside the deferred callback before game-owned reward commands. Selection
+requires both observed room and relic identities and still awards through the
+native treasure synchronizer. A callback error after dispatch remains unknown
+with no retry. This is source/build evidence for the Managed text path, not
+native UI parity, a complete journey, or Human qualification.
+The raw Host `leave_room` path now requires that exact treasure room and rejects
+exit until the native chest and relic stages have completed, including while a
+deferred operation or selection remains pending. Event and other room exits retain
+their existing contract. The proprietary exact-candidate regression exercises the
+raw action path through pre-open, pending relic, and completed stages.
 
 The raw Managed combat action path and its Player Environment projection admit
 play/end-turn mutations only while the exact current run, living player turn,

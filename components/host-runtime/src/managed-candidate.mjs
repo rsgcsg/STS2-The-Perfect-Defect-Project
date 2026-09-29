@@ -524,11 +524,12 @@ export function chooseManagedCandidateAction(state) {
         : null;
     case "treasure_relic": {
       const relic = (state.relics ?? [])[0];
-      if (relic != null && typeof relic.native_ref === "string") {
+      if (relic != null && typeof relic.native_ref === "string"
+          && typeof state.room_ref === "string") {
         return {
           cmd: "action",
           action: "select_treasure_relic",
-          args: { relic_ref: relic.native_ref }
+          args: { room_ref: state.room_ref, relic_ref: relic.native_ref }
         };
       }
       return state.can_skip === true && typeof state.room_ref === "string"
