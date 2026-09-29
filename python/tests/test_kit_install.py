@@ -228,6 +228,45 @@ def test_initialize_text_runtime_releases_instance_lock_before_owner_cli(tmp_pat
     assert [args[0] for args in commands] == ["npm", "npm", "uv", "uv"]
 
 
+def test_initialize_m2_runtime_uses_real_cli_parser_and_owner_install_boundary(
+        tmp_path, monkeypatch, capsys):
+    from test_project_console import config
+
+    from spireagent.workbench import developer_cli, local_model_cli, runtime_install
+    from spireagent.workbench.local_models import LocalModelService
+
+    selected = config(tmp_path)
+    profile = tmp_path / "project.json"
+    profile.write_text(json.dumps(selected.to_dict()))
+    directory = tmp_path / "release"
+    directory.mkdir()
+    monkeypatch.setattr(install, "status", lambda _: {
+        "status": "prepared", "text_runtime": "not_bundled",
+        "m2_runtime": "bundled_installation_not_checked"})
+    monkeypatch.setattr(developer_cli.ProjectConfig, "load", lambda *_a, **_k: selected)
+    monkeypatch.setattr(local_model_cli, "running", lambda _: None)
+    expected = (selected.state_dir / "models/text-menu-m2-v1",
+                {"package": runtime_install.RUNTIME_PACKAGE})
+    monkeypatch.setattr(LocalModelService, "text_runtime_profile",
+                        lambda _self, profile="text-menu-v1": expected if profile ==
+                        "text-menu-m2-v1" else (_ for _ in ()).throw(AssertionError(profile)))
+    monkeypatch.setattr(LocalModelService, "_connector_pin", lambda _: {})
+    installed = []
+    monkeypatch.setattr(runtime_install, "install_runtime",
+                        lambda *a, **k: installed.append((a, k)) or
+                        {"status": "runtime_installed"})
+    def run(args, _cwd):
+        if "model" in args:
+            assert developer_cli.main(args[args.index("model"):]) == 0
+            return capsys.readouterr().out
+        return ""
+    monkeypatch.setattr(install, "run", run)
+    receipt = install.initialize(directory, profile)
+    assert receipt["m2_runtime"] == "installed_verified_by_runtime_owner"
+    assert installed == [((expected[0], expected[1], {}),
+                          {"archive": directory / "source" / install.M2_ARCHIVE_DESTINATION})]
+
+
 def test_initialize_new_profile_runs_real_owner_setup_without_selection(tmp_path, monkeypatch):
     from spireagent.workbench.developer import ProjectConfig
     from spireagent.workbench.developer_server import instance_lock
@@ -236,6 +275,8 @@ def test_initialize_new_profile_runs_real_owner_setup_without_selection(tmp_path
     directory.mkdir()
     profile = tmp_path / "private/project.json"
     source = Path(__file__).resolve().parents[2]
+    registry = source / "python/.local/token-policies-v1.json"
+    original_registry = registry.read_bytes() if registry.exists() else None
     monkeypatch.setattr(install, "status", lambda _: {
         "status": "prepared", "text_runtime": "bundled_installation_not_checked"})
     calls = []
@@ -252,7 +293,8 @@ def test_initialize_new_profile_runs_real_owner_setup_without_selection(tmp_path
             with instance_lock(selected.state_dir / "instance.lock"):
                 pass
             assert selected.state_dir == profile.parent
-            assert not (source / "python/.local/token-policies-v1.json").exists()
+            assert "--selection" not in args
+            assert (registry.read_bytes() if registry.exists() else None) == original_registry
             return '{"status":"runtime_installed"}'
         return ""
     monkeypatch.setattr(install, "run", run)

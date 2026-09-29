@@ -23,6 +23,10 @@ from sts2_platform_evidence.collection_tool import CollectionTool
 
 from spireagent.json_boundary import BoundaryError, decode_json, digest
 from spireagent.workbench.kit_runtime import (
+    M2_ARCHIVE_DESTINATION,
+    M2_RUNTIME_ARCHIVE,
+    M2_RUNTIME_DESTINATION,
+    M2_RUNTIME_PROFILE,
     TEXT_ARCHIVE_DESTINATION,
     TEXT_RUNTIME_ARCHIVE,
     TEXT_RUNTIME_DESTINATION,
@@ -58,23 +62,27 @@ def sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def text_runtime_files(manifest: dict[str, Any], files: dict[str, bytes]) -> bool:
-    identity = manifest.get("text_runtime")
+def text_runtime_files(manifest: dict[str, Any], files: dict[str, bytes], *,
+                       memory: bool = False) -> bool:
+    key = "m2_runtime" if memory else "text_runtime"
+    profile_name = M2_RUNTIME_PROFILE if memory else TEXT_RUNTIME_PROFILE
+    archive_name = M2_RUNTIME_ARCHIVE if memory else TEXT_RUNTIME_ARCHIVE
+    identity = manifest.get(key)
     if identity is None:
-        if TEXT_RUNTIME_PROFILE in files or TEXT_RUNTIME_ARCHIVE in files:
+        if profile_name in files or archive_name in files:
             reject("text_runtime_inventory_incomplete")
         return False
     if (not isinstance(identity, dict)
             or set(identity) != {"profile_sha256", "archive_sha256"}
-            or TEXT_RUNTIME_PROFILE not in files
-            or TEXT_RUNTIME_ARCHIVE not in files):
+            or profile_name not in files
+            or archive_name not in files):
         reject("text_runtime_inventory_incomplete")
-    for field, name in (("profile_sha256", TEXT_RUNTIME_PROFILE),
-                        ("archive_sha256", TEXT_RUNTIME_ARCHIVE)):
+    for field, name in (("profile_sha256", profile_name),
+                        ("archive_sha256", archive_name)):
         digest(identity[field], "kit_install.text_runtime_identity")
         if identity[field] != sha(files[name]):
             reject("text_runtime_inventory_mismatch")
-    text_runtime_pin(files[TEXT_RUNTIME_PROFILE], files[TEXT_RUNTIME_ARCHIVE])
+    text_runtime_pin(files[profile_name], files[archive_name], memory=memory)
     return True
 
 
@@ -130,6 +138,7 @@ def verified_archive(archive: Path, expected: str) -> tuple[dict[str, Any], dict
     if not set(STAGING).issubset(files):
         reject("native_installation_files_missing")
     text_runtime_files(manifest, files)
+    text_runtime_files(manifest, files, memory=True)
     return manifest, files
 
 
@@ -192,9 +201,14 @@ def prepare(archive: Path, expected: str, releases: Path) -> dict[str, Any]:
             destination = source / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(files[name])
-        if text_runtime_files(manifest, files):
-            for name, relative in ((TEXT_RUNTIME_PROFILE, TEXT_RUNTIME_DESTINATION),
-                                   (TEXT_RUNTIME_ARCHIVE, TEXT_ARCHIVE_DESTINATION)):
+        for memory in (False, True):
+            if not text_runtime_files(manifest, files, memory=memory):
+                continue
+            pairs = ((M2_RUNTIME_PROFILE, M2_RUNTIME_DESTINATION),
+                     (M2_RUNTIME_ARCHIVE, M2_ARCHIVE_DESTINATION)) if memory else (
+                     (TEXT_RUNTIME_PROFILE, TEXT_RUNTIME_DESTINATION),
+                     (TEXT_RUNTIME_ARCHIVE, TEXT_ARCHIVE_DESTINATION))
+            for name, relative in pairs:
                 destination = source / relative
                 if any(p.is_symlink() for p in destination.parents):
                     reject("text_runtime_staging_path_unsafe")
@@ -227,9 +241,14 @@ def status(directory: Path) -> dict[str, Any]:
     for name, relative in STAGING.items():
         if sha((source / relative).read_bytes()) != manifest["files"][name]:
             reject("staged_native_changed")
-    if text_runtime_files(manifest, files):
-        for name, relative in ((TEXT_RUNTIME_PROFILE, TEXT_RUNTIME_DESTINATION),
-                               (TEXT_RUNTIME_ARCHIVE, TEXT_ARCHIVE_DESTINATION)):
+    for memory in (False, True):
+        if not text_runtime_files(manifest, files, memory=memory):
+            continue
+        pairs = ((M2_RUNTIME_PROFILE, M2_RUNTIME_DESTINATION),
+                 (M2_RUNTIME_ARCHIVE, M2_ARCHIVE_DESTINATION)) if memory else (
+                 (TEXT_RUNTIME_PROFILE, TEXT_RUNTIME_DESTINATION),
+                 (TEXT_RUNTIME_ARCHIVE, TEXT_ARCHIVE_DESTINATION))
+        for name, relative in pairs:
             staged = source / relative
             if (any(p.is_symlink() for p in (staged, *staged.parents))
                     or sha(staged.read_bytes()) != manifest["files"][name]):
@@ -246,6 +265,8 @@ def status(directory: Path) -> dict[str, Any]:
         "next": "initialize; then follow the native owner deploy/cold-load steps",
         "text_runtime": ("bundled_installation_not_checked" if "text_runtime" in manifest
                          else "not_bundled"),
+        "m2_runtime": ("bundled_installation_not_checked" if "m2_runtime" in manifest
+                       else "not_bundled"),
     }
 
 
@@ -328,7 +349,8 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
         prepared = status(directory)
         source = directory / "source"
         if (prepared.get("text_runtime") == "bundled_installation_not_checked"
-                and not config_path.exists()):
+                or prepared.get("m2_runtime") == "bundled_installation_not_checked") and (
+                not config_path.exists()):
             # New members do not yet have a selection or even a project profile.
             # Let the selected release own the profile and its default private state.
             report = json.loads(run([
@@ -364,6 +386,18 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
                 reject("text_runtime_install_failed")
             result = status(directory)
             result["text_runtime"] = "installed_verified_by_runtime_owner"
+        if result.get("m2_runtime") == "bundled_installation_not_checked":
+            report = json.loads(run([
+                "uv", "run", "--project", "python", "--locked", "--extra", "cloud",
+                "python", "-m", "spireagent.workbench", "project", "model",
+                "--config", str(config_path), "--action", "install-runtime",
+                "--runtime-profile", "text-menu-m2-v1", "--runtime-archive",
+                str(source / M2_ARCHIVE_DESTINATION),
+            ], source))
+            if report.get("status") != "runtime_installed":
+                reject("m2_runtime_install_failed")
+            result = status(directory)
+            result["m2_runtime"] = "installed_verified_by_runtime_owner"
         result["environment"] = "initialized"
         return result
 

@@ -36,6 +36,16 @@ Runtime. A kit without these files provides no text Runtime preparation; its
 original initialization behavior remains. If initialization fails after profile
 creation, retain and inspect that profile and retry only after checking the
 reported failure and stopped Workbench state.
+An independently supplied `m2-runtime/profile.json` and `m2-runtime/runtime.tgz`
+pair is optional and separately inventoried. The profile schema is
+`stpd/local-text-m2-runtime-v1`; its archive hash and bundled closure are checked
+through the same installer. `prepare` stages it under ignored `.local/`, while
+`initialize` installs it to `models/text-menu-m2-v1`, distinct from the older
+text Runtime. Missing one member of either pair, a different archive hash, or
+staged-byte drift blocks that candidate. Neither optional pair is synthesized
+from the source checkout or a release URL; without an approved pair its profile
+remains unavailable. The M2 pair enables only later explicit model registration
+and readiness checks, not automatic model loading or qualification.
 A prepared directory is never overwritten; `status --directory ...` rechecks its
 original archive, source, tool and staged bytes. Failed temporary preparation is
 removed; initialization can be retried in the same directory while its Workbench

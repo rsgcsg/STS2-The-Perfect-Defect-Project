@@ -61,6 +61,13 @@ const textMenuScratchModel = (artifactId = id("a"), recipe = "stage1a.b.s.v2") =
   parents:[],
   payloads:[],
 });
+const memoryModel = (artifactId = id("a")) => ({
+  artifact_id:artifactId, kind:"model",
+  parameters:{schema:"stpd/experimental-m2-model-v1", partition:"train",
+    qualification:"engineering_only", episodes:1,
+    config:{slots:1, reset_each_step:false}},
+  parents:[], payloads:[],
+});
 const modelExportStatus = (operation, extra = {}) => ({
   schema:"stpd/local-model-export-operation-v1",
   availability:"ready",
@@ -1481,6 +1488,84 @@ test("local model export status is read-only until one explicit export click", a
   assert.equal(writes[0].options.headers["X-CSRF-Token"], "export-csrf");
   assert.equal(action(env.livePage, "start-local-model-export").disabled, true,
     "replacement render preserves backend pending eligibility");
+});
+
+test("M2 export stays train-only and offers explicit guarded registration", async () => {
+  const model = id("a"), run = id("b");
+  let state = modelExportStatus({status:"idle"});
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    renderOnReload:true,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model);
+      if (url === "/api/local-model-exports/status") return state;
+      if (url.startsWith("/api/local-model-registrations/status?")) return {
+        schema:"stpd/local-model-registration-v1", model_id:model,
+        status:"not_registered", loaded:false, runtime_profile:"text-menu-m2-v1",
+        csrf_token:"synthetic-csrf",
+      };
+      if (url === "/api/local-model-exports/start") {
+        assert.equal(options.method, "POST");
+        assert.deepEqual(body({options}), {model_id:model});
+        state = modelExportStatus({status:"completed", model_id:model,
+          model_type:"memory", run_id:run, payload_bytes:123},
+        {schema:"stpd/local-model-export-operation-v2"});
+        return state;
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /模型概览/);
+  assert.match(text(page), /实验性 D-Simple M2-K1/);
+  assert.match(text(page), /仅训练完成；没有独立评估/);
+  assert.match(text(page), /没有独立评估/);
+  assert.match(text(page), /才能登记或加载/);
+  assert.equal(post(env.calls).length, 0);
+  assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
+  await action(page, "start-local-model-export").onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.match(text(env.livePage), /没有独立评估/);
+  assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), true);
+  assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
+});
+
+test("older M2 receipt and registration timeout explain explicit recovery without replay", async () => {
+  const model = id("a");
+  let failure = "verified_export_receipt_required";
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    renderOnReload:true,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model);
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed", model_id:model, model_type:"memory", payload_bytes:123,
+      }, {schema:"stpd/local-model-export-operation-v2"});
+      if (url === `/api/local-model-registrations/status?model_id=${model}`) return {
+        schema:"stpd/local-model-registration-v1", model_id:model, status:"not_registered",
+        loaded:false, runtime_profile:"text-menu-m2-v1", csrf_token:"synthetic-csrf",
+      };
+      if (url === "/api/local-model-registrations/register") return {httpStatus:409, error:failure};
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.equal(action(page, "start-local-model-export").textContent, "重新核验导出");
+  await action(page, "register-local-model").onclick();
+  assert.match(text(env.notice), /缺少校验回执.*重新核验导出/);
+  assert.equal(post(env.calls).length, 1);
+  failure = "registration_timeout";
+  await action(env.livePage, "register-local-model").onclick();
+  assert.match(text(env.notice), /刷新状态核对结果.*明确重试/);
+  assert.equal(post(env.calls).length, 2);
+  assert.equal(env.calls.some(call => call.url === "/api/local-models/prepare"
+    || call.url === "/api/local-models/start"), false);
 });
 
 test("late model export completion refreshes current same-profile status without showing the old model result", async () => {

@@ -170,3 +170,18 @@ def validate(root: Path, config_path: Path, manifest_path: Path) -> tuple[dict, 
 def arguments(entry: dict[str, Any]) -> list[str]:
     return ["-m", "stpd.policy.memory_port", "--config", entry["config"],
             "--manifest", entry["manifest"]]
+
+
+def inspect(root: Path, entry: dict[str, Any], manifest: dict[str, Any],
+            policy_config: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Readiness of the detached train-only package, not policy quality."""
+    try:
+        config, checked = validate(root, _inside(root, entry["config"]),
+                                   _inside(root, entry["manifest"]))
+        if config != policy_config or checked != manifest:
+            raise BoundaryError("m2_policy", "metadata_changed")
+        return {"policy_identity": {"status": "pass"}}
+    except (OSError, ValueError, KeyError, TypeError, BoundaryError) as error:
+        return {"policy_identity": {"status": "blocked",
+                                    "code": (error.code if isinstance(error, BoundaryError)
+                                             else "metadata_unavailable")}}

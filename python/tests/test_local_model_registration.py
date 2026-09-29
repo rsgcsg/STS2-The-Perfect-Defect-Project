@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import threading
 from dataclasses import replace
 from http.cookiejar import CookieJar
@@ -63,7 +64,7 @@ def _registration(tmp_path: Path, completed, monkeypatch):
     monkeypatch.setattr(registration_module, "validate_runtime_install",
                         lambda *_args: {"version": "synthetic-validated"})
     service = LocalModelRegistration(config, exported, models)
-    monkeypatch.setattr(service, "_capabilities", lambda _sdk: _caps())
+    monkeypatch.setattr(service, "_capabilities", lambda _sdk, **_kwargs: _caps())
     return service, config, completed[3], root, models
 
 
@@ -123,6 +124,61 @@ def test_existing_b_model_registration_preserves_its_architecture(
     assert entry["label"] == "本机文字菜单 B " + model_id[:8]
 
 
+def test_registration_budget_prevents_append_after_expensive_binding(
+        registration, monkeypatch) -> None:
+    service, _, model_id, root, _ = registration
+    clock = [0.0]
+    monkeypatch.setattr(registration_module, "monotonic", lambda: clock[0])
+    binder = registration_module.bind_text_menu_export
+
+    def slow_capabilities(_sdk, *, deadline):
+        assert deadline == 22.0
+        clock[0] += 11.0
+        return _caps()
+
+    def slow_binding(*args, **kwargs):
+        result = binder(*args, **kwargs)
+        clock[0] += 12.0
+        return result
+
+    monkeypatch.setattr(service, "_capabilities", slow_capabilities)
+    monkeypatch.setattr(registration_module, "bind_text_menu_export", slow_binding)
+    with pytest.raises(BoundaryError, match="registration_timeout"):
+        service.register(model_id)
+    assert not (root / REGISTRY).exists()
+    assert list((root / ".local/model-registrations").iterdir()) == []
+
+
+def test_node_checks_consume_one_registration_deadline(registration, monkeypatch) -> None:
+    service, _, _, root, _ = registration
+    clock = [0.0]
+    observed: list[float] = []
+    monkeypatch.setattr(registration_module, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(registration_module.shutil, "which", lambda _name: "node")
+    outputs = [json.dumps(_caps()).encode(), json.dumps({
+        "schema": "sts2.player-environment/text-menu-observation-context-1",
+        "continuity_available": True,
+    }).encode(), b""]
+
+    def run(*_args, timeout, **_kwargs):
+        index = len(observed)
+        observed.append(timeout)
+        clock[0] += (9.0, 8.0, 4.0)[index]
+        return subprocess.CompletedProcess([], 0, outputs[index])
+
+    monkeypatch.setattr(registration_module.subprocess, "run", run)
+    deadline = 22.0
+    assert LocalModelRegistration._capabilities(service, root / "sdk.js",
+                                                deadline=deadline) == _caps()
+    service._context_available(root / "sdk.js", deadline=deadline)
+    service._m2_runtime_manifest_compatible(root / "node_modules", root / "manifest.json",
+                                            deadline=deadline)
+    assert observed == [12.0, 12.0, 5.0]
+    clock[0] = 22.0
+    with pytest.raises(BoundaryError, match="registration_timeout"):
+        LocalModelRegistration._capabilities(service, root / "sdk.js", deadline=deadline)
+
+
 def test_changed_environment_and_source_append_without_rewriting_old(registration,
                                                                        monkeypatch):
     service, _, model_id, root, _ = registration
@@ -130,7 +186,7 @@ def test_changed_environment_and_source_append_without_rewriting_old(registratio
     old = (root / REGISTRY).read_bytes()
     changed = _caps()
     changed["game"]["modset"]["fingerprint"] = "new-modset"
-    monkeypatch.setattr(service, "_capabilities", lambda _sdk: changed)
+    monkeypatch.setattr(service, "_capabilities", lambda _sdk, **_kwargs: changed)
     second = service.register(model_id)
     assert second["selection_id"] != first["selection_id"]
     assert len(json.loads((root / REGISTRY).read_bytes())["policies"]) == 2
@@ -155,11 +211,11 @@ def test_missing_export_bad_capabilities_and_failed_registry_write_are_closed(
     incomplete["verbs"] = ["select"]
     with pytest.raises(BoundaryError, match="text_menu_capabilities_incompatible"):
         _requirements(incomplete)
-    monkeypatch.setattr(service, "_capabilities", lambda _sdk: incomplete)
+    monkeypatch.setattr(service, "_capabilities", lambda _sdk, **_kwargs: incomplete)
     with pytest.raises(BoundaryError, match="text_menu_capabilities_incompatible"):
         service.register(model_id)
     assert not (root / REGISTRY).exists()
-    monkeypatch.setattr(service, "_capabilities", lambda _sdk: _caps())
+    monkeypatch.setattr(service, "_capabilities", lambda _sdk, **_kwargs: _caps())
     original = registration_module.atomic_json
 
     def failed_registry(path, value):

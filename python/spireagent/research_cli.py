@@ -16,6 +16,7 @@ from time import perf_counter
 from spireagent.hub.curation_access import record_use
 from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
+from spireagent.package_identity import file_sha256
 from spireagent.source import source_identity
 from spireagent.storage.config import open_store
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
@@ -88,6 +89,16 @@ def main() -> int:
         "prepare-workbench-memory", help="prepare a caller-admitted train-only Human M2 run")
     prepare_memory.add_argument("--source", required=True)
     prepare_memory.add_argument("--operation", required=True)
+    memory_export = commands.add_parser(
+        "export-memory", help="export an exact completed train-only M2 run")
+    memory_export.add_argument("--run", required=True)
+    memory_export.add_argument("--model", required=True)
+    memory_export.add_argument("--destination", required=True, type=Path)
+    memory_verify_export = commands.add_parser(
+        "verify-memory-export", help="reconcile a portable M2 package with its store")
+    memory_verify_export.add_argument("--run", required=True)
+    memory_verify_export.add_argument("--model", required=True)
+    memory_verify_export.add_argument("--destination", required=True, type=Path)
     export = commands.add_parser("export")
     export.add_argument("--model", required=True)
     export.add_argument("--destination", type=Path, required=True)
@@ -305,6 +316,46 @@ def main() -> int:
             result = {"run_id": run_id, "result_id": completed.artifact_id,
                       "model_id": completed.parent("model"),
                       "checkpoint_id": completed.parent("checkpoint")}
+        elif args.command in {"export-memory", "verify-memory-export"}:
+            import torch
+
+            from stpd.policy.memory_export import (
+                export_memory_package,
+                verify_memory_package,
+            )
+            from stpd.workers.memory_ranking import MemoryConfig
+
+            run_id = digest(args.run, "memory_export.run")
+            model_id = digest(args.model, "memory_export.model")
+            selected = store.get_manifest(run_id)
+            info = selected.parameters.value()
+            if (selected.kind != "run" or not isinstance(info.get("config"), dict)):
+                raise BoundaryError("memory_export", "run_identity_mismatch")
+            torch.set_num_threads(MemoryConfig(**info["config"]).cpu_threads)
+            reporter = ObjectStoreRunReporter(store, store.blobs)
+            if args.command == "export-memory":
+                completed = reporter.completed(run_id)
+                if completed is None or completed.parent("model") != model_id:
+                    raise BoundaryError("memory_export", "completed_model_mismatch")
+                package = export_memory_package(store, reporter, run_id, args.destination)
+                verify_memory_package(store, reporter, model_id, args.destination)
+            else:
+                package = verify_memory_package(store, reporter, model_id,
+                                                args.destination)
+                if package["ids"]["run"] != run_id:
+                    raise BoundaryError("memory_export", "run_identity_mismatch")
+            result = {"model_id": model_id, "run_id": run_id,
+                      "package_schema": package["schema"],
+                      "result_id": package["ids"]["result"],
+                      "checkpoint_id": package["ids"]["checkpoint"],
+                      "payload_bytes": package["weights"]["size"]
+                      + package["tokenizer"]["size"],
+                      "package_sha256": file_sha256(args.destination / "model.json"),
+                      "package_size": (args.destination / "model.json").stat().st_size,
+                      "weights_sha256": package["weights"]["sha256"],
+                      "weights_size": package["weights"]["size"],
+                      "tokenizer_sha256": package["tokenizer"]["sha256"],
+                      "tokenizer_size": package["tokenizer"]["size"]}
         elif args.command == "train":
             config = TrainingConfig(
                 seed=1701, max_steps=args.steps, epochs=5,

@@ -158,3 +158,36 @@ def validate_memory_package(directory: Path) -> tuple[dict[str, Any], bytes, byt
             raise BoundaryError("m2_package", "payload_digest_mismatch")
         payloads.append(content)
     return value, payloads[0], payloads[1], config
+
+
+def verify_memory_package(store: ArtifactStore, reporter: ObjectStoreRunReporter,
+                          model_id: str, directory: Path) -> dict[str, Any]:
+    """Reconcile detached package with the completed immutable store lineage."""
+    package, _, _, saved_config = validate_memory_package(directory)
+    if package["ids"]["model"] != model_id:
+        raise BoundaryError("m2_package", "model_identity_mismatch")
+    run_id = package["ids"]["run"]
+    candidate = store.get_manifest(run_id)
+    run, training_input, config, engine = _load_run(store, run_id, candidate.producer)
+    if any(step.previous_actual_action is not None or step.public_feedback is not None
+           for episode in engine.snapshot_input().episodes for step in episode.steps):
+        raise BoundaryError("m2_package", "unsupported_optional_history_channel")
+    result = reporter.completed(run_id)
+    if result is None:
+        raise BoundaryError("m2_package", "completed_result_required")
+    _verify_completed(store, result, run, training_input, config, engine)
+    model = store.get_manifest(result.parent("model"))
+    info = training_input.parameters.value()
+    expected_ids = {"source": training_input.parent("source"),
+                    "training_input": training_input.artifact_id, "run": run_id,
+                    "result": result.artifact_id, "checkpoint": result.parent("checkpoint"),
+                    "model": model.artifact_id}
+    if (info.get("schema") != INPUT_SCHEMA_V2 or package["ids"] != expected_ids
+            or saved_config != config or package["input_digest"] != info["input_digest"]
+            or package["projection_config"] != info["projection_config"]
+            or package["source_map_sha256"] != training_input.payload("source_map").sha256
+            or package["source_event_count"] != info["source_event_count"]
+            or package["weights"]["sha256"] != model.payload("weights").sha256
+            or package["tokenizer"]["sha256"] != model.payload("tokenizer").sha256):
+        raise BoundaryError("m2_package", "store_package_identity_mismatch")
+    return package

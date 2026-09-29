@@ -52,6 +52,8 @@ def inspect_policy(path: Path) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from spireagent.workbench.local_models import TEXT_PROFILES
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",
@@ -97,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="explicit local pinned Runtime archive; close workbench first",
     )
-    parser.add_argument("--runtime-profile", choices=("text-menu-v1",),
+    parser.add_argument("--runtime-profile", choices=tuple(TEXT_PROFILES),
                         help="approved local Runtime profile for offline installation")
     parser.add_argument(
         "--action",
