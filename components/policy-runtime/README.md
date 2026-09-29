@@ -11,6 +11,15 @@ returns one score per candidate and an optional selected index, and never return
 an action object. The Runtime resolves the index against the same current catalog
 and submits only that Connector-owned `bound_action_id`.
 
+An explicit Manifest with `representation.input_schema` set to
+`sts2.player-environment/text-menu-snapshot-2` selects Connector
+`input_profile=text-menu-v2`, zero Reads, the complete ordered menu action IDs,
+and the existing `sha256-json-menu-action-id-order` digest. It requires the
+stateful `decision-only-ndjson-2` port and exact completion watermark.
+`system_navigation` and `system_selection` change text menu state; only a
+`native_input` leaf can report native delivery. The v2 Agent Run requires a
+matching Evidence verifier before its record can be qualified.
+
 Before observation, each Manifest must exactly pin the Connector environment:
 host kind, Connector version/source revision/artifact SHA-256/module version ID,
 Modset status/fingerprint, and the complete ordered list of loaded Mod IDs. Any
@@ -26,10 +35,11 @@ interactions. A failed event write triggers the existing fail-closed handoff.
 
 ## Stateful observation port (opt-in)
 
-A Manifest may select `sts2.policy-runtime/decision-only-ndjson-2` only with
-`text-menu-snapshot-1` and zero Reads. In that mode Runtime obtains one atomic
-Connector `text-menu/observation-context` envelope: the unchanged strict
-`text-menu-v1` snapshot and its opaque, nullable game continuity ID. A null ID
+A Manifest may select `sts2.policy-runtime/decision-only-ndjson-2` with an
+explicit `text-menu-snapshot-1` or `text-menu-snapshot-2` representation and
+zero Reads. In that mode Runtime obtains one atomic Connector
+`text-menu/observation-context` envelope for the selected input profile and
+its opaque, nullable game continuity ID. A null ID
 or unsupported endpoint fails closed; Runtime never falls back to a separate
 snapshot GET. The game ID is control metadata and never enters the model page.
 
@@ -54,7 +64,7 @@ not claim native action execution, actual-action feedback, or model quality.
 
 ## Standalone consumer package
 
-Version `0.1.0-rc.12` provides a candidate package for external consumers. Build
+Version `0.1.0-rc.13` provides a candidate package for external consumers. Build
 from a committed component checkout with the checked-in lockfile:
 
 ```bash
@@ -63,7 +73,7 @@ npm --prefix components/policy-runtime run check
 npm --prefix components/policy-runtime run package -- --output /absolute/package-output
 ```
 
-The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.12.tgz`,
+The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.13.tgz`,
 `policy-runtime-package.json` and `checksums.sha256`. It requires committed
 component source and does not publish anything. The package contains compiled
 JavaScript/declarations, CLI entries, license, a component identity record and
