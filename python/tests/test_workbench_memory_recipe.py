@@ -9,8 +9,11 @@ import pytest
 from spireagent.workbench.memory_recipe import (
     M2_K1_RECIPE,
     RESET_K1_RECIPE,
+    V2_M2_K1_RECIPE,
+    V2_RESET_K1_RECIPE,
     recipe_for_memory_config,
 )
+from stpd.fullrun.memory_sequence_bridge import v2_episode_projection_config
 from stpd.workers.memory_ranking import MemoryConfig
 
 
@@ -30,6 +33,14 @@ def test_exact_k1_config_selects_the_closed_recipe(reset: bool, expected: str) -
                                  max_actions_per_step=256,
                                  reset_each_step=reset))
     assert recipe_for_memory_config(config) == expected
+    v2 = asdict(v2_episode_projection_config())
+    assert recipe_for_memory_config(config, projection_config=v2) == (
+        V2_RESET_K1_RECIPE if reset else V2_M2_K1_RECIPE)
+    for changed in ({**v2, "input_profile": "text-menu-v1"},
+                    {**v2, "renderer_wrapper": "counterfeit"},
+                    {**v2, "max_settling_events": 64}):
+        with pytest.raises(ValueError, match="unsupported_workbench_memory_projection"):
+            recipe_for_memory_config(config, projection_config=changed)
 
 
 @pytest.mark.parametrize(("key", "value"), [

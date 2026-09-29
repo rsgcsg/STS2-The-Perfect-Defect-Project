@@ -194,8 +194,23 @@ class LocalWorkspace:
                         or not isinstance(config, dict)
                         or parameters["episodes"] != config.get("episode_count")):
                     raise ValueError("unsupported_workbench_memory_model")
-                result["workbench_memory_recipe"] = recipe_for_memory_config(config)
-            except ValueError:
+                run = self.store.get_manifest(manifest.parent("run"))
+                training_input = self.store.get_manifest(manifest.parent("training_input"))
+                source = self.store.get_manifest(training_input.parent("source"))
+                if (run.parent("training_input") != training_input.artifact_id
+                        or run.parameters.value().get("config") != config
+                        or training_input.parameters.value().get("schema")
+                        != "stpd/experimental-m2-training-input-v2"):
+                    raise ValueError("memory_lineage_mismatch")
+                projection = training_input.parameters.value().get("projection_config")
+                recipe = recipe_for_memory_config(config, projection_config=projection)
+                expected_source = (
+                    "stpd/managed-text-menu-observed-source-v1" if recipe.endswith(".v2")
+                    else "stpd/human-text-input-source-v1")
+                if source.parameters.value().get("schema") != expected_source:
+                    raise ValueError("memory_source_profile_mismatch")
+                result["workbench_memory_recipe"] = recipe
+            except (BoundaryError, KeyError, ValueError):
                 result["workbench_memory_recipe"] = None
         return result
 
