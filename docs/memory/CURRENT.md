@@ -1,7 +1,7 @@
 # Current project context, 2026-09-29
 
 Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; accepted develop
-anchor `4f36bfdf634b4baad62ce54e9030d529e78568b0` after PR99.
+anchor `cd09b86d12677fe79abfc02ef05834c1f6121b52` after PR101.
 Resolve live GitHub refs before work; current authorities override this file.
 Source, CI, installation, Human operation and scientific results are separate.
 No complete Stage1a or policy-quality qualification is claimed. See the
@@ -28,7 +28,8 @@ for exact PR/CI and candidate-runtime receipts.
   before normal merge; merge tree `fa5f343bd7a234df261c599c933e8a22aeba7c68`
   matches that candidate. Its integration run is
   [36544655447](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36544655447);
-  check the live terminal state rather than borrowing topic CI.
+  completed successfully with router-verified same-tree reuse; fresh plan, docs
+  and portable guards passed. This was not a new OS execution.
   Evidence rc.20 now verifies port-2 with exact text input and attestation.
   The earlier sealed 107-event native run passes a new typed verification;
   the original rc.19 failure remains unchanged. A subsequent registered
@@ -38,8 +39,17 @@ for exact PR/CI and candidate-runtime receipts.
 - The [local dev evaluation receipt](../evidence/STAGE1A_M2_DEV_EVALUATION_2026-09-29.md)
   records a candidate Workbench UI flow using the existing M2 model and the
   separate 31-label source. It produced a report with 14/31 Top-1 matches.
-  This is a retrospective engineering dev result, not an independent-game
-  benchmark or a persistent-memory/Reset comparison. No new training occurred.
+  The evaluator was merged in [PR101](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/101)
+  after full run 36546048002 succeeded on exact head `b2ff83ec`; integration
+  run 36549296218 used verified same-tree reuse. This original receipt is a
+  retrospective engineering dev result, not an independent-game benchmark.
+- The [Reset-K1 candidate receipt](../evidence/STAGE1A_RESET_K1_CONTROL_2026-09-29.md)
+  adds a separately trained reset control through the Workbench. Verified
+  input bytes and recorded runtime match; configurations differ only by the
+  reset flag. Both models matched 14/31 dev labels, without a scientific
+  memory-benefit conclusion. The Reset model was exported and registered,
+  not loaded. Checkout-scoped runtime pins required explicit manual carryover;
+  durable application-owned configuration remains unfinished.
 - Merged [PR88](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/88)
   repaired potion staging; its installation did not prove a new live potion
   action. Old failed evidence remains.
