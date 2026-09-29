@@ -312,7 +312,7 @@ public static partial class ConnectorMod
             else if (path == "/api/player-environment/text-menu/observation-context")
             {
                 if (request.HttpMethod == "GET")
-                    HandleGetTextMenuObservationContext(response);
+                    HandleGetTextMenuObservationContext(request, response);
                 else
                     SendError(response, 405, "Method not allowed");
             }

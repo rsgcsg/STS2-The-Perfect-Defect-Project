@@ -19,6 +19,7 @@
         "sdk/typescript/src/controllerSession.ts",
         "sdk/typescript/src/rewardPage.ts",
         "sdk/typescript/src/textMenu.ts",
+        "sdk/typescript/src/textMenuV2.ts",
         "host/PlayerEnvironment/Protocol/TextMenuContracts.cs"
       ]
     },
