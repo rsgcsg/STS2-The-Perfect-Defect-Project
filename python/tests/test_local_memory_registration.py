@@ -17,12 +17,24 @@ from spireagent.workbench.developer import ROOT, atomic_json
 from spireagent.workbench.local_model_export import OPERATION_FILE, LocalModelExport
 from spireagent.workbench.local_model_registration import LocalModelRegistration
 from spireagent.workbench.local_models import LocalModelService
+from spireagent.workbench.memory_recipe import (
+    M2_K1_RECIPE,
+    M2_K8_RECIPE,
+    RESET_K8_RECIPE,
+    memory_settings_for_recipe,
+)
 from stpd.memory_policy_installation import PROTOCOL, validate
 
 
+@pytest.mark.parametrize("recipe", [M2_K1_RECIPE, M2_K8_RECIPE, RESET_K8_RECIPE])
 def test_m2_registration_requires_own_install_context_and_preserves_token_roster(
-        tmp_path: Path, monkeypatch) -> None:
-    config, owner, _, _, sources, _, _, model_id = _fixture(tmp_path, monkeypatch)
+        tmp_path: Path, monkeypatch, recipe: str) -> None:
+    config, owner, store, _, sources, _, _, model_id = _fixture(
+        tmp_path, monkeypatch, recipe=recipe)
+    settings = memory_settings_for_recipe(recipe)
+    saved_config = store.get_manifest(model_id).parameters.value()["config"]
+    assert saved_config["slots"] == settings.slots
+    assert saved_config["reset_each_step"] is settings.reset_each_step
     exported = LocalModelExport(config)
     exported.start(model_id)
     assert _settle(exported)["status"] == "completed"
@@ -72,6 +84,10 @@ def test_m2_registration_requires_own_install_context_and_preserves_token_roster
                            models.private_root / entry["manifest"],
                            binding_root=models.private_root)
     assert manifest["adapter"]["protocol"] == PROTOCOL
+    assert manifest["policy"]["architecture"] == recipe
+    assert exported.verified_memory_recipe_for_registration(model_id) == recipe
+    name = f"{'Reset' if settings.reset_each_step else 'M2'}-K{settings.slots}"
+    assert entry["label"].startswith("本机文字菜单 " + name + " ")
     assert models.registry()["policies"][-2] == old
     assert service.register(model_id) == result
     monkeypatch.setattr(models, "_runtime_package", lambda _identity: {"version": "synthetic"})

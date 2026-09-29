@@ -107,7 +107,7 @@ internal static partial class RecorderRuntime
     private static bool _closeProjectionPersistenceFailed;
     private static readonly RecordingRunLifecycle RunLifecycle = new();
     private static readonly ContinuousRecording Continuous = new();
-    private static bool _sealAfterNativeTerminal;
+    private static readonly TerminalAutoSeal TerminalSeal = new();
     // A native RunManager.OnEnded observation is the only authoritative
     // terminal marker.  Polling IsInProgress may describe a transition, but
     // it must never publish a successful terminal disposition by itself.
@@ -305,6 +305,7 @@ internal static partial class RecorderRuntime
                         Interlocked.Increment(ref _cardStageGeneration);
                     if (command.Kind == RecordingCommandKind.Close && result.Accepted)
                     {
+                        TerminalSeal.Reset();
                         _closeout = new RecordingCloseoutStatus(
                             "closing",
                             DateTimeOffset.UtcNow,
@@ -415,7 +416,7 @@ internal static partial class RecorderRuntime
         _statusRefreshRequested = true;
         RunLifecycle.Reset();
         Continuous.BeginSession();
-        _sealAfterNativeTerminal = false;
+        TerminalSeal.Reset();
         ResetNativeActionTrackingUnsafe();
         _semanticBoundaryTraceHealthy = true;
         Interlocked.Increment(ref _cardStageGeneration);
@@ -688,7 +689,7 @@ internal static partial class RecorderRuntime
                 snapshot = store?.GetSnapshot() ?? _lastStoreSnapshot;
                 _lastStoreSnapshot = snapshot;
                 _store = null;
-                _sealAfterNativeTerminal = false;
+                TerminalSeal.Reset();
                 Continuous.MarkSealed();
                 _sessionClosedAt = DateTimeOffset.UtcNow;
                 _lifecycle = RecordingLifecycleStateMachine.MarkClosed(_lifecycle, _sessionClosedAt.Value);
@@ -2244,38 +2245,65 @@ internal static partial class RecorderRuntime
     private static void ObserveNativeDecisionOwnerReady(
         NativeDecisionOwnerReadyObservation observation)
     {
-        if (!_semanticBoundaryTraceHealthy || _store == null)
-            return;
+        string observedSessionId;
+        string observedRunId;
         lock (Gate)
         {
-            if (!BoundaryTracker.NeedsBoundaryObservation)
+            if (_store == null || SessionId == null)
                 return;
+            observedSessionId = SessionId;
+            observedRunId = _currentRunId;
         }
-
-        try
-        {
-            ProcessLocalNativeWitnessFrame frame = CaptureSemanticFrame();
-            if (!string.Equals(
-                    frame.Snapshot.Interaction.Kind,
-                    observation.Domain,
-                    StringComparison.Ordinal))
+        TerminalSeal.CompleteDecisionOwnerReady(
+            observedSessionId,
+            observedRunId,
+            observation.Domain,
+            observeBoundary: () =>
             {
-                return;
-            }
+                try
+                {
+                    if (!_semanticBoundaryTraceHealthy)
+                        return;
+                    lock (Gate)
+                    {
+                        if (!BoundaryTracker.NeedsBoundaryObservation)
+                            return;
+                    }
+                    ProcessLocalNativeWitnessFrame frame = CaptureSemanticFrame();
+                    if (!string.Equals(
+                            frame.Snapshot.Interaction.Kind,
+                            observation.Domain,
+                            StringComparison.Ordinal))
+                        return;
 
-            ObserveSemanticDecisionBoundary(
-                frame,
-                SemanticBoundaryWitnessKinds.NativeDecisionOwnerReady,
-                nativeDecisionOwnerReady: new NativeDecisionOwnerReadyEvidence(
-                    observation.Domain,
-                    NativeWitnessIdentity.Get(observation.NativeOwner, "decision_owner"),
-                    observation.NativeOwnerType,
-                    observation.NativeMechanism));
-        }
-        catch (Exception exception)
-        {
-            DisableSemanticBoundaryTrace(exception);
-        }
+                    lock (Gate)
+                    {
+                        if (_store == null
+                            || !string.Equals(SessionId, observedSessionId, StringComparison.Ordinal)
+                            || !string.Equals(_currentRunId, observedRunId, StringComparison.Ordinal))
+                            return;
+                        ObserveSemanticDecisionBoundary(
+                            frame,
+                            SemanticBoundaryWitnessKinds.NativeDecisionOwnerReady,
+                            nativeDecisionOwnerReady: new NativeDecisionOwnerReadyEvidence(
+                                observation.Domain,
+                                NativeWitnessIdentity.Get(observation.NativeOwner, "decision_owner"),
+                                observation.NativeOwnerType,
+                                observation.NativeMechanism));
+                    }
+                }
+                catch (Exception exception)
+                {
+                    lock (Gate)
+                    {
+                        if (_store != null
+                            && string.Equals(SessionId, observedSessionId, StringComparison.Ordinal)
+                            && string.Equals(_currentRunId, observedRunId, StringComparison.Ordinal))
+                            DisableSemanticBoundaryTrace(exception);
+                    }
+                }
+            },
+            close: () => ExecuteTerminalAutoSeal(observedSessionId, observedRunId));
     }
 
     private static CurrentDecisionFrame FreezeSemanticBoundary(
@@ -4722,7 +4750,7 @@ internal static partial class RecorderRuntime
                 AppendJournal("run_abandoned_native", null, _lastSnapshotId,
                     "RunManager.OnEnded observed IsAbandoned=true.");
             Continuous.ObserveTerminal(isVictory, abandoned);
-            _sealAfterNativeTerminal = true;
+            TerminalSeal.ObserveNativeEnded(SessionId!, _currentRunId, abandoned);
             _statusRefreshRequested = true;
         }
         PublishApplicationEvent(RecordingEventKind.RunEnded, detail: detail);
@@ -4735,10 +4763,25 @@ internal static partial class RecorderRuntime
     /// </summary>
     internal static void ObserveNativeRunStarted(string journalKind)
     {
+        bool closePrevious;
+        string? previousSession;
+        lock (Gate)
+        {
+            previousSession = SessionId;
+            closePrevious = TerminalSeal.TakeOnNextNativeLaunch(previousSession, _currentRunId);
+        }
+        if (closePrevious)
+            ExecuteRecordingCommand(new RecordingCommand($"auto-seal-next-run-{Guid.NewGuid():N}",
+                RecordingCommandKind.Close), new RecordingSessionExpectation(previousSession), automatic: true);
+
         bool begin;
         lock (Gate)
+        {
+            if (_lifecycle.State == RecordingLifecycleState.Closing)
+                return;
             begin = _store == null && Continuous.Armed
                 && _lifecycle.State is RecordingLifecycleState.Ready or RecordingLifecycleState.Closed;
+        }
         if (begin)
             ExecuteRecordingCommand(new RecordingCommand($"auto-start-{Guid.NewGuid():N}",
                 RecordingCommandKind.StartNewSession), automatic: true);
@@ -4761,14 +4804,29 @@ internal static partial class RecorderRuntime
     private static void SealAfterNativeTerminal()
     {
         bool seal;
+        string? sessionId;
+        string runId;
         lock (Gate)
         {
-            seal = _sealAfterNativeTerminal;
-            _sealAfterNativeTerminal = false;
+            sessionId = SessionId;
+            runId = _currentRunId;
+            seal = TerminalSeal.TakeOnProcessFrame(sessionId, runId);
         }
         if (seal)
-            ExecuteRecordingCommand(new RecordingCommand($"auto-seal-{Guid.NewGuid():N}",
-                RecordingCommandKind.Close), automatic: true);
+            ExecuteTerminalAutoSeal(sessionId!, runId);
+    }
+
+    private static void ExecuteTerminalAutoSeal(string sessionId, string runId)
+    {
+        lock (Gate)
+        {
+            if (_store == null
+                || !string.Equals(SessionId, sessionId, StringComparison.Ordinal)
+                || !string.Equals(_currentRunId, runId, StringComparison.Ordinal))
+                return;
+        }
+        ExecuteRecordingCommand(new RecordingCommand($"auto-seal-{Guid.NewGuid():N}",
+            RecordingCommandKind.Close), new RecordingSessionExpectation(sessionId), automatic: true);
     }
 
     internal static void ObserveNativeRunCleanup(bool graceful)
@@ -4778,6 +4836,7 @@ internal static partial class RecorderRuntime
         {
             if (!graceful) Continuous.Disarm();
             if (_store == null) return;
+            TerminalSeal.Reset();
             AppendJournal("recording_segment_exit", null, _lastSnapshotId,
                 graceful ? "RunManager.CleanUp(graceful=true)" : "RunManager.CleanUp(graceful=false)");
         }

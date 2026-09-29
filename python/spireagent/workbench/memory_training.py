@@ -10,8 +10,7 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ArtifactStore
 from spireagent.workbench.memory_recipe import (
     M2_K1_RECIPE,
-    input_profile_for_recipe,
-    reset_each_step_for_recipe,
+    memory_settings_for_recipe,
 )
 from stpd.fullrun.memory_training_prepare import fit_observed_memory_tokenizer
 from stpd.fullrun.observed_input_sequence import load_observed_input_view
@@ -26,10 +25,10 @@ def prepare_workbench_memory(store: ArtifactStore, source_id: str,
     torch.set_num_threads(2)
     view = load_observed_input_view(store, source_id)
     try:
-        profile = input_profile_for_recipe(recipe)
-        reset_each_step = reset_each_step_for_recipe(recipe)
+        settings = memory_settings_for_recipe(recipe)
     except ValueError as error:
         raise BoundaryError("local_training", "unsupported_training_recipe") from error
+    profile = settings.input_profile
     settling = 0 if profile == "text-menu-v2" else 64
     tokenizer_bytes, episode_count = fit_observed_memory_tokenizer(
         view, max_settling_events=settling, input_profile=profile)
@@ -38,7 +37,7 @@ def prepare_workbench_memory(store: ArtifactStore, source_id: str,
     tokenizer = Tokenizer.from_str(tokenizer_bytes.decode("utf-8"))
     config = MemoryConfig(
         vocab_size=tokenizer.get_vocab_size(), episode_count=episode_count,
-        slots=1, reset_each_step=reset_each_step,
+        slots=settings.slots, reset_each_step=settings.reset_each_step,
         width=48, layers=1, heads=2, feedforward=96,
         dropout=0.0, max_tokens=16384, cpu_threads=2,
         max_total_input_tokens=4194304, max_episode_observations=768,

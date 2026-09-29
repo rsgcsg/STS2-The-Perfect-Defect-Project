@@ -15,8 +15,12 @@ from spireagent.workbench.local_models import LocalModelService
 from spireagent.workbench.local_training import LocalTrainingService
 from spireagent.workbench.memory_recipe import (
     M2_K1_RECIPE,
+    M2_K8_RECIPE,
     V2_M2_K1_RECIPE,
+    V2_M2_K8_RECIPE,
     V2_RESET_K1_RECIPE,
+    V2_RESET_K8_RECIPE,
+    memory_settings_for_recipe,
 )
 from stpd.policy.memory_export import validate_memory_package
 
@@ -38,14 +42,16 @@ def test_managed_v2_m2_reset_train_export_and_registration_gate(
     training = LocalTrainingService(config)
 
     # The identical M2 config cannot turn an actor-unverified v2 source into v1 Human.
-    training.start(source_id, recipe=M2_K1_RECIPE)
-    refused = _settle(training)
-    assert refused["status"] == "failed"
-    assert refused["error_code"] == "managed_v2_recipe_required"
+    for recipe in (M2_K1_RECIPE, M2_K8_RECIPE):
+        training.start(source_id, recipe=recipe)
+        refused = _settle(training)
+        assert refused["status"] == "failed"
+        assert refused["error_code"] == "managed_v2_recipe_required"
     assert _uses(owner) == (0, 0)
 
     previous = None
-    for recipe in (V2_M2_K1_RECIPE, V2_RESET_K1_RECIPE):
+    for recipe in (V2_M2_K1_RECIPE, V2_RESET_K1_RECIPE,
+                   V2_M2_K8_RECIPE, V2_RESET_K8_RECIPE):
         started = training.start(source_id, recipe=recipe,
                                  after_completed_operation_id=previous)["operation"]
         assert started["status"] == "pending"
@@ -66,6 +72,11 @@ def test_managed_v2_m2_reset_train_export_and_registration_gate(
             package_path, input_profile="text-menu-v2")
         assert package["ids"]["source"] == source_id
         assert package["ids"]["training_input"] == completed["input_id"]
+        settings = memory_settings_for_recipe(recipe)
+        assert package["config"]["slots"] == settings.slots
+        assert package["config"]["reset_each_step"] is settings.reset_each_step
+        with pytest.raises(BoundaryError, match="unsupported_package_identity"):
+            validate_memory_package(package_path, input_profile="text-menu-v1")
         assert package["renderer"]["input_schema"] == (
             "sts2.player-environment/text-menu-snapshot-2")
         assert exporter.verified_memory_for_registration(completed["model_id"]) == package_path
@@ -78,7 +89,7 @@ def test_managed_v2_m2_reset_train_export_and_registration_gate(
         with pytest.raises(BoundaryError, match="text_runtime_profile_required"):
             registration.register(completed["model_id"])
         assert not (registration.models.private_root / "token-policies-v1.json").exists()
-    assert _uses(owner) == (2, 2)
+    assert _uses(owner) == (4, 4)
 
 
 def test_test_purpose_cannot_start_v2_training(

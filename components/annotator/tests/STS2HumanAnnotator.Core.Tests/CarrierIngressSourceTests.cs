@@ -4,6 +4,38 @@ namespace STS2HumanAnnotator.Core.Tests;
 public sealed class CarrierIngressSourceTests
 {
     [Fact]
+    public void TerminalReadyClosesOnlyAfterTheActualBoundaryPathIncludingEmptyAndFailedCapture()
+    {
+        string runtime = Source("RecorderRuntime.cs");
+        int start = runtime.IndexOf("private static void ObserveNativeDecisionOwnerReady(");
+        int end = runtime.IndexOf("private static CurrentDecisionFrame FreezeSemanticBoundary", start);
+        string callback = runtime[start..end];
+        int coordinator = callback.IndexOf("TerminalSeal.CompleteDecisionOwnerReady(");
+        int noPending = callback.IndexOf("!BoundaryTracker.NeedsBoundaryObservation");
+        int capture = callback.IndexOf("CaptureSemanticFrame()");
+        int persist = callback.IndexOf("ObserveSemanticDecisionBoundary(");
+        int close = callback.IndexOf("close: () => ExecuteTerminalAutoSeal(observedSessionId, observedRunId)");
+        Assert.True(coordinator >= 0 && noPending > coordinator && capture > noPending
+            && persist > capture && close > persist);
+        Assert.Contains("observedSessionId = SessionId", callback);
+        Assert.Contains("observedRunId = _currentRunId", callback);
+        Assert.Contains("string.Equals(SessionId, observedSessionId, StringComparison.Ordinal)", callback);
+        Assert.Contains("string.Equals(_currentRunId, observedRunId, StringComparison.Ordinal)", callback);
+        Assert.Contains("DisableSemanticBoundaryTrace(exception)", callback);
+        int failure = callback.IndexOf("catch (Exception exception)");
+        int failureSessionGuard = callback.IndexOf("string.Equals(SessionId, observedSessionId", failure);
+        int failureRunGuard = callback.IndexOf("string.Equals(_currentRunId, observedRunId", failure);
+        int disable = callback.IndexOf("DisableSemanticBoundaryTrace(exception)", failure);
+        Assert.True(failure >= 0 && failureSessionGuard > failure
+            && failureRunGuard > failureSessionGuard && disable > failureRunGuard);
+
+        int sealStart = runtime.IndexOf("private static void ExecuteTerminalAutoSeal(");
+        int cleanup = runtime.IndexOf("internal static void ObserveNativeRunCleanup(", sealStart);
+        string closing = runtime[sealStart..cleanup];
+        Assert.Contains("new RecordingSessionExpectation(sessionId)", closing);
+    }
+
+    [Fact]
     public void SettlingCardObservationKeepsExactFactoryFrameAndExecutionAuthority()
     {
         string runtime = Source("RecorderRuntime.cs");
