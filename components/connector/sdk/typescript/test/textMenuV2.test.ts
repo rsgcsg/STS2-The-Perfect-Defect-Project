@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  PlayerEnvironmentRestClient,
   decodeTextMenuActionResult, decodeTextMenuCapabilities, decodeTextMenuSnapshot,
   decodeTextMenuV2ActionResult, decodeTextMenuV2Capabilities,
   decodeTextMenuV2ObservationContext, decodeTextMenuV2Snapshot,
@@ -16,6 +17,50 @@ const cardOnly = () => fixture("text-menu-v2-card-only-root");
 const cardOnlyResult = () => fixture("text-menu-v2-card-only-select");
 
 describe("opt-in text-menu-v2 SDK contract", () => {
+  it("routes each explicit v2 REST call through the existing strict decoder", async () => {
+    const root = targeted();
+    const selected = targetedResult();
+    const capabilities = {
+      protocol_version: "1.0.0", snapshot_schema: TEXT_MENU_V2_SNAPSHOT_SCHEMA,
+      receipt_schema: TEXT_MENU_V2_RESULT_SCHEMA, input_profile: TEXT_MENU_V2_PROFILE,
+      action_schema: "sts2.player-environment/action-1", control_schema: "sts2.player-environment/control-1",
+      status: "implemented", host: { id: "host", name: "Host", version: "candidate",
+        runtime_instance_id: "runtime-1", host_kind: "test", implementation: {
+          source_revision: null, module_version_id: null, artifact_sha256: null } },
+      game: { version: "v", commit: "commit", branch: null, main_assembly_hash: null,
+        compatibility: { status: "test", observation_allowed: true, detail: "test" },
+        modset: { status: "test", fingerprint: "modset", scope: "test", loaded_mod_ids: [], detail: "test" } },
+      environment_fingerprint: "environment-1", verbs: ["select_card", "select_target", "play"],
+      snapshot_bound: true, single_controller: true, execution_available: true,
+      control: { recommended_renewal_ms: 1000 }, evidence_profiles: [], non_claims: []
+    };
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+      const route = new URL(url);
+      const value = route.pathname.endsWith("/capabilities") ? capabilities
+        : route.pathname.endsWith("/observation-context")
+          ? { schema: TEXT_MENU_V2_OBSERVATION_CONTEXT_SCHEMA, snapshot: root, game_continuity_id: "game-1" }
+          : route.pathname.endsWith("/snapshot") ? root : selected;
+      return new Response(JSON.stringify(value), { status: init.method === "POST" ? 200 : 200 });
+    });
+    const client = new PlayerEnvironmentRestClient("http://127.0.0.1:15526", 1000, fetchImpl as typeof fetch);
+    expect((await client.textMenuV2Capabilities()).data.input_profile).toBe("text-menu-v2");
+    expect((await client.observeTextMenuV2()).data.menu_actions.actions).toEqual(root.menu_actions.actions);
+    expect((await client.observeTextMenuV2Context()).data.game_continuity_id).toBe("game-1");
+    const action = root.menu_actions.actions[0];
+    const result = await client.submitTextMenuV2({ requestId: selected.request_id,
+      expectedSnapshotId: root.snapshot_id, boundActionId: action.action_id,
+      clientSessionId: "client", controllerLeaseId: "lease", controllerGeneration: 1 },
+    decodeTextMenuV2Snapshot(root).data);
+    expect(result.data.successor?.menu.cursor).toBe("card_targets");
+    expect((await client.textMenuV2Result(selected.request_id)).data.action?.action_id).toBe(action.action_id);
+    expect(fetchImpl.mock.calls.map(([url]) => new URL(url).search)).toEqual([
+      "?input_profile=text-menu-v2", "?input_profile=text-menu-v2", "?input_profile=text-menu-v2", "", "?input_profile=text-menu-v2"
+    ]);
+    expect(JSON.parse(String(fetchImpl.mock.calls[3]?.[1].body))).toMatchObject({
+      input_profile: "text-menu-v2", expected_snapshot_id: root.snapshot_id, bound_action_id: action.action_id
+    });
+  });
+
   it("accepts complete targeted and card-only menu selections without widening v1", () => {
     const root = targeted();
     const result = targetedResult();

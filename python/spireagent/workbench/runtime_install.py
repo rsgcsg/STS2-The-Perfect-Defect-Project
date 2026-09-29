@@ -34,6 +34,27 @@ RELEASE_PREFIXES = tuple(
 BUNDLED_LAYOUT = "bundled_source_candidate"
 PACKAGE_IDENTITY_SCHEMA = "sts2.policy-runtime/package-identity-1"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def v2_sdk_available(sdk: Path) -> bool:
+    """Read only the installed Connector SDK's explicit v2 methods."""
+    node = shutil.which("node")
+    if node is None or not sdk.is_file() or sdk.is_symlink():
+        return False
+    script = ("const {PlayerEnvironmentRestClient}=await import(process.argv[1]);"
+              "const methods=['textMenuV2Capabilities','observeTextMenuV2',"
+              "'observeTextMenuV2Context','submitTextMenuV2','textMenuV2Result'];"
+              "if(methods.some(name=>typeof PlayerEnvironmentRestClient.prototype[name]"
+              "!=='function'))process.exit(1);")
+    environment = {key: value for key, value in os.environ.items() if key in
+                   {"PATH", "SYSTEMROOT", "SystemRoot", "TMPDIR", "TEMP", "TMP"}}
+    try:
+        return subprocess.run(
+            [node, "--input-type=module", "-e", script, sdk.as_uri()],
+            capture_output=True, check=False, timeout=5, env=environment,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 _BUNDLE_HASH_SCRIPT = """
 const fs = require('node:fs');
 const path = require('node:path');
@@ -251,13 +272,17 @@ def install_runtime(
     connector_pin: dict[str, Any],
     *,
     archive: Path | None = None,
+    required_profile: str | None = None,
 ) -> dict[str, Any]:
     """An explicit local archive remains bound to the pinned release hash."""
     from spireagent.workbench.developer_server import instance_lock
 
+    if required_profile not in {None, "text-menu-m2-v2"}:
+        raise BoundaryError("local_model", "unsupported_runtime_profile")
     with instance_lock(directory / "runtime-install.lock"):
         try:
-            return _install_runtime(directory, pin, connector_pin, archive=archive)
+            return _install_runtime(directory, pin, connector_pin, archive=archive,
+                                    required_profile=required_profile)
         except PackageIdentityError:
             raise BoundaryError(
                 "local_model", "pinned_runtime_install_verification_failed"
@@ -270,6 +295,7 @@ def _install_runtime(
     connector_pin: dict[str, Any],
     *,
     archive: Path | None,
+    required_profile: str | None,
 ) -> dict[str, Any]:
     expected = digest(pin.get("release_asset_sha256"), "local_model.runtime_archive")
     npm = shutil.which("npm")
@@ -362,6 +388,11 @@ def _install_runtime(
         if result.returncode != 0:
             raise BoundaryError("local_model", "pinned_runtime_npm_install_failed")
         observed = validate_runtime_install(stage / "node_modules", pin, connector_pin)
+        if required_profile == "text-menu-m2-v2":
+            sdk = (stage / "node_modules" / RUNTIME_PACKAGE / "node_modules" /
+                   CONNECTOR_PACKAGE / "dist/index.js")
+            if not v2_sdk_available(sdk):
+                raise BoundaryError("local_model", "v2_runtime_contract_unavailable")
         if target.is_symlink():
             raise BoundaryError("local_model", "runtime_install_path_unsafe")
         if target.exists():

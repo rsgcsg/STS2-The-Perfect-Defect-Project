@@ -130,9 +130,12 @@ def export_memory_package(store: ArtifactStore, reporter: ObjectStoreRunReporter
 
 def validate_memory_package(
     directory: Path, *, input_profile: str = INPUT_PROFILE,
+    expected_manifest_sha256: str | None = None,
 ) -> tuple[dict[str, Any], bytes, bytes, MemoryConfig]:
     """Validate detached portable bytes; no local store or ledger is needed."""
     raw = _regular_bytes(directory / MANIFEST_NAME, MAX_MANIFEST_BYTES)
+    if expected_manifest_sha256 is not None and _sha(raw) != expected_manifest_sha256:
+        raise BoundaryError("m2_package", "manifest_digest_mismatch")
     value = object_fields(decode_json(raw), {
         "schema", "ids", "input_digest", "source_map_sha256", "source_event_count",
         "projection_config",

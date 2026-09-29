@@ -1302,6 +1302,12 @@ def test_terminal_screen_projection_requires_exact_text_game_over_context():
         },
     }
     assert local_models._terminal_screen(snapshot) == "win"
+    v2 = copy.deepcopy(snapshot)
+    v2.update(schema="sts2.player-environment/text-menu-snapshot-2",
+              input_profile="text-menu-v2")
+    assert local_models._terminal_screen(v2) == "win"
+    v2["input_profile"] = "text-menu-v1"
+    assert local_models._terminal_screen(v2) is None
     for path, value in (
         (("schema",), "other"),
         (("input_profile",), "compact-v2"),
@@ -1639,6 +1645,109 @@ def test_offline_runtime_install_binds_explicit_selection_to_separate_slot(
     local_model_cli.model_command(service.config, "install-runtime", runtime_archive=archive)
     assert calls == [((service.directory, service.registry()["runtime_package"],
                        service._connector_pin()), {"archive": archive})]
+
+
+def test_v2_offline_install_requires_private_exact_pin_and_uses_distinct_slot(
+    service, monkeypatch, tmp_path,
+):
+    from spireagent.workbench import local_model_cli, runtime_install
+    from spireagent.workbench.developer import atomic_json
+
+    archive = tmp_path / "v2-candidate.tgz"
+    archive.write_bytes(b"synthetic candidate archive")
+    monkeypatch.setattr(local_model_cli, "running", lambda _: None)
+    monkeypatch.setattr(local_models, "LocalModelService", lambda _: service)
+    installed = []
+    monkeypatch.setattr(runtime_install, "install_runtime",
+                        lambda *args, **kwargs: installed.append((args, kwargs)) or
+                        {"status": "runtime_installed"})
+    with pytest.raises(BoundaryError, match="text_runtime_profile_required"):
+        local_model_cli.model_command(service.config, "install-runtime",
+                                      runtime_profile="text-menu-m2-v2",
+                                      runtime_archive=archive)
+    assert installed == []
+
+    service.private_root.mkdir(parents=True, exist_ok=True)
+    profile = service.private_root / "text-menu-m2-runtime-v2.json"
+    pin = {"package": "@rsgcsg/sts2-policy-runtime", "version": "candidate-v2",
+           "source_revision": "a" * 40, "component_tree_revision": "b" * 40,
+           "release_asset_sha256": "c" * 64,
+           "package_content_sha256": "d" * 64,
+           "dependency_layout": "bundled_source_candidate",
+           "bundled_connector_pin": {"candidate": "strictly validated by install"}}
+    atomic_json(profile, {"schema": "stpd/local-text-m2-runtime-v1",
+                          "runtime_package": pin})
+    with pytest.raises(BoundaryError, match="text_runtime_profile_invalid"):
+        local_model_cli.model_command(service.config, "install-runtime",
+                                      runtime_profile="text-menu-m2-v2",
+                                      runtime_archive=archive)
+    assert installed == []
+    atomic_json(profile, {"schema": "stpd/local-text-m2-runtime-v2",
+                          "runtime_package": pin})
+    result = local_model_cli.model_command(service.config, "install-runtime",
+                                           runtime_profile="text-menu-m2-v2",
+                                           runtime_archive=archive)
+    assert result["status"] == "runtime_installed"
+    assert installed == [((service.directory / "text-menu-m2-v2", pin,
+                           service._connector_pin()),
+                          {"archive": archive, "required_profile": "text-menu-m2-v2"})]
+
+
+def test_v2_prepare_reports_unbundled_asset_and_reuses_exact_install(
+    service, monkeypatch,
+):
+    from spireagent.workbench.developer import atomic_json
+
+    monkeypatch.setattr(local_models, "install_runtime",
+                        lambda *args, **kwargs: pytest.fail("no install on prepare"))
+    service.prepare_text_runtime("text-menu-m2-v2")
+    state = finished(service)
+    assert state["error_code"] == "trusted_text_runtime_asset_not_bundled"
+    assert state["loaded"] is False
+
+    service.private_root.mkdir(parents=True, exist_ok=True)
+    pin = {"package": "@rsgcsg/sts2-policy-runtime", "version": "candidate-v2",
+           "source_revision": "a" * 40, "component_tree_revision": "b" * 40,
+           "release_asset_sha256": "c" * 64,
+           "package_content_sha256": "d" * 64,
+           "dependency_layout": "bundled_source_candidate",
+           "bundled_connector_pin": {"candidate": "strictly validated on reuse"}}
+    atomic_json(service.private_root / "text-menu-m2-runtime-v2.json",
+                {"schema": "stpd/local-text-m2-runtime-v2", "runtime_package": pin})
+    observed = []
+    monkeypatch.setattr(local_models, "validate_runtime_install",
+                        lambda *args: observed.append(args) or {"status": "installed"})
+    monkeypatch.setattr(local_models, "v2_sdk_available", lambda _: True)
+    monkeypatch.setattr(service, "_selected_kit_text_runtime",
+                        lambda _: pytest.fail("installed v2 must not request kit assets"))
+    service.prepare_text_runtime("text-menu-m2-v2")
+    state = finished(service)
+    assert state["last_text_runtime_preparation"] == {
+        "runtime_profile": "text-menu-m2-v2", "status": "ready", "reused": True,
+    }
+    assert observed == [((service.directory / "text-menu-m2-v2" / "runtime" /
+                          "node_modules"), pin, service._connector_pin())]
+    monkeypatch.setattr(local_models, "v2_sdk_available", lambda _: False)
+    service.prepare_text_runtime("text-menu-m2-v2")
+    state = finished(service)
+    assert state["error_code"] == "v2_runtime_contract_unavailable"
+
+
+def test_v2_sdk_probe_requires_installed_methods(tmp_path):
+    from spireagent.workbench.runtime_install import v2_sdk_available
+
+    sdk = tmp_path / "index.mjs"
+    sdk.write_text("export class PlayerEnvironmentRestClient {}", encoding="utf-8")
+    assert v2_sdk_available(sdk) is False
+    sdk.write_text("export class PlayerEnvironmentRestClient {"
+                   "textMenuV2Capabilities() {} observeTextMenuV2Context() {} }",
+                   encoding="utf-8")
+    assert v2_sdk_available(sdk) is False
+    sdk.write_text("export class PlayerEnvironmentRestClient {"
+                   "textMenuV2Capabilities() {} observeTextMenuV2() {} "
+                   "observeTextMenuV2Context() {} submitTextMenuV2() {} "
+                   "textMenuV2Result() {} }", encoding="utf-8")
+    assert v2_sdk_available(sdk) is True
 
 
 def test_runtime_port_check_rejects_listener_but_accepts_closed_connections():

@@ -137,6 +137,11 @@ def _adapter(package, tmp_path, monkeypatch):
                       "score_count_matches_candidate_count": True, "selected_index": True,
                       "successor_required": True},
         support=support)
+    assert set(config) == {"schema", "export_path", "export_manifest_sha256", "model_id"}
+    assert config["schema"] == "stpd/m2-policy-config-v1"
+    assert policy_manifest["adapter"]["version"] == "1.0.0"
+    assert policy_manifest["representation"]["input_schema"] == (
+        "sts2.player-environment/text-menu-snapshot-1")
     assert validate(root, config_path, manifest_path) == (config, policy_manifest)
     import stpd.policy.memory_port as port
 

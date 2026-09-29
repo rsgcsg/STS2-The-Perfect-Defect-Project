@@ -3,7 +3,7 @@
 This component verifies typed immutable artifacts and moves their bytes without
 owning gameplay, Human action, or research semantics.
 
-Evidence `0.1.0-rc.20` verifies Policy Runtime adapter protocol v1 and the exact
+Evidence `0.1.0-rc.21` verifies Policy Runtime adapter protocol v1 and the exact
 v2 protocol in the Policy Manifest and adapter attestation. Expected and actual
 adapter identities, manifest digests, and all existing typed event checks remain
 strict. It also verifies the additive
@@ -12,6 +12,15 @@ environment and the strict text-menu snapshot contract. Its reason and snapshot
 are observation evidence only, with no decision, delivery or successor binding.
 The reason is a Runtime-reported diagnostic, not an independently recomputed
 admission decision. Verification does not grant action authority.
+The Agent-run verifier also accepts the explicit `text-menu-v2` Policy Manifest
+and Connector snapshot/result pair. It checks the complete ordered menu against
+the decision digest, public card/target selection and system-menu progression,
+then binds each dispatch/result to the selected action and derived request ID.
+Native delivery, unknown delivery and observed successor remain separate typed
+events; text-menu runs cannot mix in generic Receipt/Successor events, and each
+dispatch records exact cumulative menu/native attempt counts. Unknown delivery
+has no retry or successor. This is ordinary Agent-run
+integrity verification, not Human origin or research admission.
 Older finalized runs remain readable. A verifier pinned to an earlier strict
 Evidence version rejects runs containing this new event, so consumers must pin
 the rc.18 candidate before claiming verification of such runs.

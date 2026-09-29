@@ -24,7 +24,10 @@ from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_workspace import LocalWorkspace, open_registered_workspace
-from spireagent.workbench.memory_recipe import recipe_for_memory_config
+from spireagent.workbench.memory_recipe import (
+    V2_MEMORY_RECIPES,
+    recipe_for_memory_config,
+)
 from spireagent.workbench.research_process import private_child
 
 SCHEMA = "stpd/local-model-export-operation-v1"
@@ -95,6 +98,12 @@ def _eligible(model: Manifest) -> None:
 
 def _memory_lineage(store: Any, owner: Any, model: Manifest) -> str:
     """Cheap Workbench admission before any derivative bytes or private child."""
+    from stpd.fullrun.managed_text_menu_import import (
+        SOURCE_SCHEMA as MANAGED_SOURCE_SCHEMA,
+    )
+    from stpd.fullrun.managed_text_menu_import import (
+        load_managed_text_menu_source,
+    )
     from stpd.fullrun.text_menu_human_import import (
         SOURCE_SCHEMA,
         load_human_text_source,
@@ -112,10 +121,6 @@ def _memory_lineage(store: Any, owner: Any, model: Manifest) -> str:
     run_id = model.parent("run")
     run = store.get_manifest(run_id)
     run_info = run.parameters.value()
-    try:
-        recipe_for_memory_config(info.get("config"))
-    except ValueError as error:
-        raise BoundaryError("local_model_export", "unsupported_workbench_memory_config") from error
     if info.get("config") != run_info.get("config"):
         raise BoundaryError("local_model_export", "memory_lineage_mismatch")
     operation_id = digest(run_info.get("operation_id"),
@@ -123,6 +128,13 @@ def _memory_lineage(store: Any, owner: Any, model: Manifest) -> str:
     training_input = store.get_manifest(model.parent("training_input"))
     source_id = training_input.parent("source")
     source = store.get_manifest(source_id)
+    try:
+        recipe = recipe_for_memory_config(
+            info.get("config"),
+            projection_config=training_input.parameters.value().get("projection_config"))
+    except ValueError as error:
+        raise BoundaryError("local_model_export", "unsupported_workbench_memory_config") from error
+    managed = recipe in V2_MEMORY_RECIPES
     if (run.kind != "run" or run.producer != model.producer
             or run_info.get("schema") != RUN_SCHEMA
             or run_info.get("partition") != "train"
@@ -130,16 +142,24 @@ def _memory_lineage(store: Any, owner: Any, model: Manifest) -> str:
             or training_input.producer != model.producer
             or training_input.parameters.value().get("schema") != INPUT_SCHEMA_V2
             or source.kind != "dataset"
-            or source.parameters.value().get("schema") != SOURCE_SCHEMA):
+            or source.parameters.value().get("schema") != (
+                MANAGED_SOURCE_SCHEMA if managed else SOURCE_SCHEMA)):
         raise BoundaryError("local_model_export", "memory_lineage_mismatch")
-    checked_source, _rows = load_human_text_source(store, source_id)
-    if checked_source != source:
-        raise BoundaryError("local_model_export", "human_source_identity_mismatch")
-    source_ids = {parent.artifact_id for parent in source.parents}
-    runs: set[str] = set()
-    for evidence_id in source_ids:
-        _, bundle, _ = load_verified_human_text_bundle(store, evidence_id)
-        runs.update(bundle.session_id + "/" + run for run in bundle.run_ids)
+    if managed:
+        checked = load_managed_text_menu_source(store, source_id)
+        if checked.manifest != source:
+            raise BoundaryError("local_model_export", "managed_source_identity_mismatch")
+        source_ids = {source_id}
+        runs = {checked.split_run_id}
+    else:
+        checked_source, _rows = load_human_text_source(store, source_id)
+        if checked_source != source:
+            raise BoundaryError("local_model_export", "human_source_identity_mismatch")
+        source_ids = {parent.artifact_id for parent in source.parents}
+        runs = set()
+        for evidence_id in source_ids:
+            _, bundle, _ = load_verified_human_text_bundle(store, evidence_id)
+            runs.update(bundle.session_id + "/" + run for run in bundle.run_ids)
     owner.ledger.require_training_use(source_id, source_ids, runs, operation_id)
     completed = ObjectStoreRunReporter(store, store.blobs).completed(run_id)
     if (completed is None or completed.producer != model.producer
@@ -339,9 +359,18 @@ class LocalModelExport:
                 raise BoundaryError("local_model_export", "verified_export_required")
             if deadline is not None and monotonic() >= deadline:
                 raise BoundaryError("local_model_registration", "registration_timeout")
-            package, weights, tokenizer, _ = validate_memory_package(destination)
+            training_input = workspace.store.get_manifest(model.parent("training_input"))
+            try:
+                recipe = recipe_for_memory_config(
+                    model.parameters.value().get("config"),
+                    projection_config=training_input.parameters.value().get(
+                        "projection_config"))
+            except ValueError as error:
+                raise BoundaryError("local_model_export", "memory_lineage_mismatch") from error
+            profile = "text-menu-v2" if recipe in V2_MEMORY_RECIPES else "text-menu-v1"
+            package, weights, tokenizer, _ = validate_memory_package(
+                destination, input_profile=profile)
             store: Any = workspace.store
-            training_input = store.get_manifest(model.parent("training_input"))
             run = store.get_manifest(run_id)
             completed = ObjectStoreRunReporter(store, store.blobs).completed(run_id)
             if completed is None:
@@ -409,7 +438,11 @@ class LocalModelExport:
             if deadline is not None and monotonic() >= deadline:
                 raise BoundaryError("local_model_registration", "registration_timeout")
             try:
-                return recipe_for_memory_config(model.parameters.value().get("config"))
+                training_input = workspace.store.get_manifest(model.parent("training_input"))
+                return recipe_for_memory_config(
+                    model.parameters.value().get("config"),
+                    projection_config=training_input.parameters.value().get(
+                        "projection_config"))
             except ValueError as error:
                 raise BoundaryError(
                     "local_model_export", "unsupported_workbench_memory_config",

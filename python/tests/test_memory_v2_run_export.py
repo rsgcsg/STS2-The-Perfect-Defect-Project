@@ -17,6 +17,7 @@ from tokenizers import Tokenizer
 
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.package_identity import file_sha256
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from stpd.fullrun.managed_text_menu_import import import_managed_text_menu_report
 from stpd.fullrun.memory_sequence_bridge import v2_episode_projection_config
@@ -190,7 +191,9 @@ def test_existing_v1_binder_port_and_cli_reject_v2_without_constructing_host(
         _adapter((directory, manifest), tmp_path, monkeypatch)
 
     monkeypatch.setattr("stpd.policy.memory_port.validate", lambda *_args, **_kwargs: (
-        {"export_path": str(directory), "model_id": manifest["ids"]["model"]}, {},
+        {"schema": "stpd/m2-policy-config-v1", "export_path": str(directory),
+         "export_manifest_sha256": file_sha256(directory / MANIFEST_NAME),
+         "model_id": manifest["ids"]["model"]}, {},
     ))
     with pytest.raises(BoundaryError, match="unsupported_package_identity"):
         MemoryPolicyAdapter(tmp_path / "config.json", tmp_path / "manifest.json")

@@ -24,7 +24,12 @@ from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
 from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.local_dataset import LocalDatasetService
-from spireagent.workbench.memory_recipe import M2_K1_RECIPE, MEMORY_RECIPES
+from spireagent.workbench.memory_recipe import (
+    M2_K1_RECIPE,
+    MEMORY_RECIPES,
+    V2_MEMORY_RECIPES,
+    recipe_for_memory_config,
+)
 from spireagent.workbench.research_process import private_child as _private_child
 
 SCHEMA = "stpd/local-training-operation-v1"
@@ -286,6 +291,12 @@ class LocalTrainingService:
             from stpd.fullrun.curated_dataset import load_selection
             from stpd.fullrun.decision_spool import SpoolSelection
             from stpd.fullrun.decision_training import AllocationSpec, allocate, publish_allocation
+            from stpd.fullrun.managed_text_menu_import import (
+                SOURCE_SCHEMA as MANAGED_SOURCE_SCHEMA,
+            )
+            from stpd.fullrun.managed_text_menu_import import (
+                load_managed_text_menu_source,
+            )
             from stpd.fullrun.public_bc import publish_public_bc_view
             from stpd.fullrun.text_menu_human_import import (
                 SOURCE_SCHEMA as HUMAN_SOURCE_SCHEMA,
@@ -309,6 +320,11 @@ class LocalTrainingService:
             manifest = store.get_manifest(dataset_id)
             info = manifest.parameters.value()
             human = info.get("schema") == HUMAN_SOURCE_SCHEMA
+            managed = info.get("schema") == MANAGED_SOURCE_SCHEMA
+            if managed and operation.get("recipe") not in V2_MEMORY_RECIPES:
+                raise BoundaryError("local_training", "managed_v2_recipe_required")
+            if human and operation.get("recipe") in V2_MEMORY_RECIPES:
+                raise BoundaryError("local_training", "managed_v2_source_required")
             if human:
                 source_manifest, rows = load_human_text_source(store, dataset_id)
                 if source_manifest != manifest:
@@ -325,6 +341,13 @@ class LocalTrainingService:
                 for source_id in sources:
                     _, bundle, _ = load_verified_human_text_bundle(store, source_id)
                     runs.update(bundle.session_id + "/" + run for run in bundle.run_ids)
+                spec = None
+            elif managed:
+                managed_source = load_managed_text_menu_source(store, dataset_id)
+                if managed_source.manifest != manifest:
+                    raise BoundaryError("local_training", "managed_source_identity_mismatch")
+                runs = {managed_source.split_run_id}
+                sources = {dataset_id}
                 spec = None
             else:
                 if memory:
@@ -397,6 +420,16 @@ class LocalTrainingService:
                         or run.parent("training_input") != input_id
                         or training_input.parent("source") != dataset_id):
                     raise BoundaryError("local_training", "memory_preparation_result_invalid")
+                try:
+                    prepared_recipe = recipe_for_memory_config(
+                        run.parameters.value().get("config"),
+                        projection_config=training_input.parameters.value().get(
+                            "projection_config"))
+                except ValueError as error:
+                    raise BoundaryError("local_training",
+                                        "memory_preparation_result_invalid") from error
+                if prepared_recipe != operation["recipe"]:
+                    raise BoundaryError("local_training", "memory_preparation_profile_mismatch")
                 self._advance(path, identity, stage="training", input_id=input_id,
                               run_id=run_id)
                 command_name = "run-memory"

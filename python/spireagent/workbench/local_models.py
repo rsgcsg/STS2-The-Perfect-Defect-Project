@@ -45,7 +45,9 @@ from spireagent.workbench.kit_runtime import (
 from spireagent.workbench.native_tasks import NativeTasks
 from spireagent.workbench.runtime_install import (
     ARCHIVE_LIMIT,
+    CONNECTOR_PACKAGE,
     install_runtime,
+    v2_sdk_available,
     validate_runtime_install,
 )
 
@@ -62,7 +64,10 @@ TEXT_PROFILES = {"text-menu-v1": ("token-v1", ".local/text-menu-runtime-v1.json"
                                   "stpd/local-text-runtime-v1", "text-menu-v1"),
                  "text-menu-m2-v1": ("stpd-m2-decision-adapter",
                                      ".local/text-menu-m2-runtime-v1.json",
-                                     "stpd/local-text-m2-runtime-v1", "text-menu-m2-v1")}
+                                     "stpd/local-text-m2-runtime-v1", "text-menu-m2-v1"),
+                 "text-menu-m2-v2": ("stpd-m2-decision-adapter",
+                                     ".local/text-menu-m2-runtime-v2.json",
+                                     "stpd/local-text-m2-runtime-v2", "text-menu-m2-v2")}
 KIT_TEXT_FILES = {
     "text-menu-v1": (TEXT_RUNTIME_DESTINATION, TEXT_ARCHIVE_DESTINATION,
                      "text_runtime", "text_runtime_identity"),
@@ -98,9 +103,10 @@ def _recorded_budget(value: object) -> dict[str, Any] | None:
 def _terminal_screen(value: object) -> str | None:
     """An exact text-menu Game Over page observation, not a game outcome claim."""
     if not isinstance(value, dict) or (
-        value.get("schema") != "sts2.player-environment/text-menu-snapshot-1"
-        or value.get("input_profile") != "text-menu-v1"
-    ):
+        value.get("schema"), value.get("input_profile")) not in {
+            ("sts2.player-environment/text-menu-snapshot-1", "text-menu-v1"),
+            ("sts2.player-environment/text-menu-snapshot-2", "text-menu-v2"),
+    }:
         return None
     interaction = value.get("interaction")
     if not isinstance(interaction, dict) or interaction.get("kind") != "game_over":
@@ -362,7 +368,8 @@ class LocalModelService:
                            or entry.get("adapter") not in {"token-v1",
                                                             "stpd-m2-decision-adapter"}
                            or (entry.get("adapter") == "stpd-m2-decision-adapter"
-                               and entry.get("runtime_profile") != "text-menu-m2-v1")
+                               and entry.get("runtime_profile") not in
+                               {"text-menu-m2-v1", "text-menu-m2-v2"})
                            for entry in local["policies"])):
                 raise BoundaryError("local_model", "invalid_local_token_registry")
             value["policies"] = [*shipped, *local["policies"]]
@@ -425,9 +432,11 @@ class LocalModelService:
         if entry is not None and entry.get("runtime_profile") in TEXT_PROFILES:
             manifest = _object_file(self.entry_path(entry, "manifest"))
             representation = manifest.get("representation")
-            if not isinstance(representation, dict) or representation.get("input_schema") != (
-                "sts2.player-environment/text-menu-snapshot-1"
-            ):
+            expected_schema = ("sts2.player-environment/text-menu-snapshot-2"
+                               if entry["runtime_profile"] == "text-menu-m2-v2" else
+                               "sts2.player-environment/text-menu-snapshot-1")
+            if (not isinstance(representation, dict)
+                    or representation.get("input_schema") != expected_schema):
                 raise BoundaryError("local_model", "text_runtime_requires_text_model")
             directory, pin = self.text_runtime_profile(entry["runtime_profile"])
         else:
@@ -459,6 +468,23 @@ class LocalModelService:
                 or pin.get("dependency_layout") != "bundled_source_candidate"
                 or pin.get("package") != RUNTIME_PACKAGE):
             raise BoundaryError("local_model", "text_runtime_profile_invalid")
+        if profile_id == "text-menu-m2-v2":
+            expected = {"package", "version", "source_revision",
+                        "component_tree_revision", "release_asset_sha256",
+                        "package_content_sha256", "dependency_layout",
+                        "bundled_connector_pin"}
+            if (set(pin) != expected
+                    or not isinstance(pin.get("version"), str)
+                    or not re.fullmatch(r"[0-9A-Za-z.+-]{1,80}", pin["version"])
+                    or not isinstance(pin.get("bundled_connector_pin"), dict)):
+                raise BoundaryError("local_model", "text_runtime_profile_invalid")
+            try:
+                digest(pin["source_revision"], "local_model.v2_source", length=40)
+                digest(pin["component_tree_revision"], "local_model.v2_tree", length=40)
+                digest(pin["release_asset_sha256"], "local_model.v2_archive")
+                digest(pin["package_content_sha256"], "local_model.v2_package")
+            except BoundaryError as error:
+                raise BoundaryError("local_model", "text_runtime_profile_invalid") from error
         directory = self.directory / slot
         if directory.is_symlink():
             raise BoundaryError("local_model", "runtime_install_path_unsafe")
@@ -544,6 +570,8 @@ class LocalModelService:
 
     def _selected_kit_text_runtime(self, profile_id: str) -> tuple[bytes, Path, dict[str, Any]]:
         """Read one fixed pair from this process's already selected release only."""
+        if profile_id == "text-menu-m2-v2":
+            raise BoundaryError("local_model", "trusted_text_runtime_asset_not_bundled")
         source = self.root.parent
         release = source.parent
         if (self.root.name != "python" or source.name != "source"
@@ -607,6 +635,11 @@ class LocalModelService:
                         directory / "runtime/node_modules", pin, self._connector_pin())
                 except (OSError, ValueError, StopIteration, PackageIdentityError):
                     installed = None
+                if installed is not None and profile_id == "text-menu-m2-v2":
+                    sdk = (directory / "runtime/node_modules" / RUNTIME_PACKAGE /
+                           "node_modules" / CONNECTOR_PACKAGE / "dist/index.js")
+                    if not v2_sdk_available(sdk):
+                        raise BoundaryError("local_model", "v2_runtime_contract_unavailable")
                 if installed is not None:
                     with self.lock:
                         self._require_stopped_runtime()

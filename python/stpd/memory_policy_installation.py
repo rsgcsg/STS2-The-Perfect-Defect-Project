@@ -7,15 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from spireagent.encoding import canonical_json
-from spireagent.json_boundary import BoundaryError, json_bytes, object_fields
+from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
 from spireagent.package_identity import file_sha256
 from spireagent.policy_files import _inside, _object_file
 
-from .fullrun.text_menu_inputs import IDENTITY as TEXT_MENU_IDENTITY
-from .policy.memory_export import MANIFEST_NAME, RENDERER, validate_memory_package
+from .fullrun.text_menu_inputs import INPUT_PROFILE, V2_INPUT_PROFILE
+from .policy.memory_export import MANIFEST_NAME, validate_memory_package
 from .token_policy_installation import _manifest_artifact_path
 
 CONFIG_SCHEMA = "stpd/m2-policy-config-v1"
+V2_CONFIG_SCHEMA = "stpd/m2-policy-config-v2"
 PROTOCOL = "sts2.policy-runtime/decision-only-ndjson-2"
 ADAPTER = "stpd-m2-decision-adapter"
 CODE_SCOPE = "python-m2-owner-source-and-lock-v1"
@@ -28,6 +29,33 @@ REQUIREMENT_FIELDS = {"connector_protocol_version", "environment", "reads",
 ENVIRONMENT_FIELDS = {"host_kind", "connector_version", "connector_source_revision",
                       "connector_artifact_sha256", "connector_module_version_id",
                       "modset_status", "modset_fingerprint", "loaded_mod_ids"}
+
+
+def input_profile_for_config(value: object) -> str:
+    """Decode only closed, versioned binding configuration; never a request hint."""
+    if not isinstance(value, dict):
+        raise BoundaryError("m2_policy", "unsupported_config")
+    fields = {"schema", "export_path", "export_manifest_sha256", "model_id"}
+    if value.get("schema") == CONFIG_SCHEMA:
+        object_fields(value, fields, "m2_policy.config")
+        return INPUT_PROFILE
+    if value.get("schema") == V2_CONFIG_SCHEMA:
+        config = object_fields(value, fields | {"input_profile"}, "m2_policy.config")
+        if config["input_profile"] == V2_INPUT_PROFILE:
+            return V2_INPUT_PROFILE
+    raise BoundaryError("m2_policy", "unsupported_config")
+
+
+def _representation(package: dict[str, Any]) -> dict[str, str]:
+    """The package validator, not the browser, owns this renderer identity."""
+    renderer = package["renderer"]
+    return {"id": renderer["text_menu"]["profile"],
+            "version": renderer["text_menu"]["version"],
+            "input_schema": renderer["input_schema"]}
+
+
+def _adapter_version(input_profile: str) -> str:
+    return "2.0.0" if input_profile == V2_INPUT_PROFILE else "1.0.0"
 
 
 def _binding_facts(policy: object, requirements: object, support: object) -> None:
@@ -78,6 +106,7 @@ def bind_memory_export(root: Path, export_path: Path, config_path: Path,
                        manifest_path: Path, *, manifest_id: str,
                        policy: dict[str, Any], requirements: dict[str, Any],
                        support: dict[str, Any], binding_root: Path | None = None,
+                       input_profile: str = INPUT_PROFILE,
                        ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Bind caller-owned environment facts to an integrity-checked M2 package."""
     root, export_path = root.resolve(), export_path.resolve()
@@ -89,27 +118,30 @@ def bind_memory_export(root: Path, export_path: Path, config_path: Path,
             or not isinstance(manifest_id, str) or not manifest_id):
         raise BoundaryError("m2_policy", "invalid_binding_destination")
     _binding_facts(policy, requirements, support)
-    package, _, _, _ = validate_memory_package(export_path)
-    config = {"schema": CONFIG_SCHEMA, "export_path": str(export_path),
-              "export_manifest_sha256": file_sha256(export_path / MANIFEST_NAME),
+    package, _, _, _ = validate_memory_package(export_path, input_profile=input_profile)
+    config_schema = V2_CONFIG_SCHEMA if input_profile == V2_INPUT_PROFILE else CONFIG_SCHEMA
+    config = {"schema": config_schema, "export_path": str(export_path),
+              # The package validator requires canonical bytes. Pin the bytes
+              # already validated, rather than re-reading a replaceable path.
+              "export_manifest_sha256": hashlib.sha256(json_bytes(package)).hexdigest(),
               "model_id": package["ids"]["model"]}
+    if input_profile == V2_INPUT_PROFILE:
+        config["input_profile"] = V2_INPUT_PROFILE
     manifest = {
         "schema": "sts2.policy-runtime/policy-manifest-1", "manifest_id": manifest_id,
         "policy": policy,
-        "adapter": {"id": ADAPTER, "version": "1.0.0", "protocol": PROTOCOL,
+        "adapter": {"id": ADAPTER, "version": _adapter_version(input_profile), "protocol": PROTOCOL,
                     "code_sha256": code_digest(root)},
         "artifact": {"id": config["model_id"],
                      "path": _manifest_artifact_path(
                          export_path / MANIFEST_NAME, manifest_path.parent),
                      "sha256": config["export_manifest_sha256"]},
-        "representation": {"id": TEXT_MENU_IDENTITY["profile"],
-                           "version": TEXT_MENU_IDENTITY["version"],
-                           "input_schema": RENDERER["input_schema"]},
+        "representation": _representation(package),
         "requirements": requirements, "support": support,
         "adapter_config": {"stage1a": {"code_digest_scope": CODE_SCOPE,
             "config": {"path": config_path.relative_to(binding_root).as_posix(),
                        "sha256": hashlib.sha256(json_bytes(config)).hexdigest(),
-                       "schema": CONFIG_SCHEMA}}},
+                       "schema": config_schema}}},
         "claims": CLAIMS,
     }
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,25 +165,27 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
                           config_path.resolve().relative_to(binding_root).as_posix())
     manifest_path = _inside(binding_root,
                             manifest_path.resolve().relative_to(binding_root).as_posix())
-    config = object_fields(_object_file(config_path), {
-        "schema", "export_path", "export_manifest_sha256", "model_id",
-    }, "m2_policy.config")
+    config = _object_file(config_path)
+    input_profile = input_profile_for_config(config)
+    manifest_pin = digest(config["export_manifest_sha256"], "m2_policy.export_manifest_sha256")
     manifest = object_fields(_object_file(manifest_path), {
         "schema", "manifest_id", "policy", "adapter", "artifact", "representation",
         "requirements", "support", "adapter_config", "claims",
     }, "m2_policy.manifest")
     export = Path(config["export_path"])
-    if config["schema"] != CONFIG_SCHEMA or not export.is_absolute():
+    if not export.is_absolute():
         raise BoundaryError("m2_policy", "unsupported_config")
-    package, _, _, _ = validate_memory_package(export)
-    if (config["model_id"] != package["ids"]["model"]
-            or config["export_manifest_sha256"] != file_sha256(export / MANIFEST_NAME)):
+    package, _, _, _ = validate_memory_package(
+        export, input_profile=input_profile,
+        expected_manifest_sha256=manifest_pin)
+    if config["model_id"] != package["ids"]["model"]:
         raise BoundaryError("m2_policy", "export_identity_drift")
     expected_pin = {"code_digest_scope": CODE_SCOPE,
                     "config": {"path": config_path.relative_to(binding_root).as_posix(),
                                "sha256": file_sha256(config_path),
-                               "schema": CONFIG_SCHEMA}}
-    expected_adapter = {"id": ADAPTER, "version": "1.0.0", "protocol": PROTOCOL,
+                               "schema": config["schema"]}}
+    expected_adapter = {"id": ADAPTER, "version": _adapter_version(input_profile),
+                        "protocol": PROTOCOL,
                         "code_sha256": code_digest(root)}
     artifact = manifest.get("artifact", {})
     if (manifest.get("schema") != "sts2.policy-runtime/policy-manifest-1"
@@ -164,10 +198,7 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
                             "sha256": config["export_manifest_sha256"]}
             or (manifest_path.parent / artifact["path"]).resolve()
             != (export / MANIFEST_NAME).resolve()
-            or manifest.get("representation") != {
-                "id": TEXT_MENU_IDENTITY["profile"],
-                "version": TEXT_MENU_IDENTITY["version"],
-                "input_schema": RENDERER["input_schema"]}
+            or manifest.get("representation") != _representation(package)
             or manifest.get("claims") != CLAIMS):
         raise BoundaryError("m2_policy", "trusted_policy_identity_drift")
     _binding_facts(manifest["policy"], manifest["requirements"], manifest["support"])

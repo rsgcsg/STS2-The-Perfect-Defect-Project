@@ -34,7 +34,12 @@ from spireagent.workbench.local_model_registration import (
     _requirements,
 )
 from spireagent.workbench.local_models import LocalModelService
-from spireagent.workbench.memory_recipe import M2_K1_RECIPE, RESET_K1_RECIPE
+from spireagent.workbench.memory_recipe import (
+    M2_K1_RECIPE,
+    RESET_K1_RECIPE,
+    V2_M2_K1_RECIPE,
+    V2_RESET_K1_RECIPE,
+)
 from stpd.token_policy_installation import validate
 
 pytest_plugins = ["test_local_model_export"]
@@ -91,6 +96,23 @@ def _caps() -> dict:
                                 "loaded_mod_ids": []}}}
 
 
+def test_v2_capabilities_require_exact_profile_schemas_and_selection_verbs() -> None:
+    caps = _caps()
+    caps.update(input_profile="text-menu-v2",
+                snapshot_schema="sts2.player-environment/text-menu-snapshot-2",
+                receipt_schema="sts2.player-environment/text-menu-action-result-2",
+                verbs=[*VERBS, "select_card", "select_target", "cancel_selection"])
+    requirements, support = _requirements(caps, input_profile="text-menu-v2")
+    assert requirements["whole_decision_admission"] is True
+    assert support["action_verbs"][-3:] == [
+        "select_card", "select_target", "cancel_selection"]
+    for changed in ({**caps, "input_profile": "text-menu-v1"},
+                    {**caps, "snapshot_schema": "sts2.player-environment/text-menu-snapshot-1"},
+                    {**caps, "verbs": list(VERBS)}):
+        with pytest.raises(BoundaryError, match="text_menu_capabilities_incompatible"):
+            _requirements(changed, input_profile="text-menu-v2")
+
+
 def test_exact_export_binds_existing_policy_contract_and_is_idempotent(registration):
     service, config, model_id, root, models = registration
     assert service.status(model_id) == {
@@ -130,12 +152,14 @@ def test_existing_b_model_registration_preserves_its_architecture(
     assert entry["label"] == "本机文字菜单 B " + model_id[:8]
 
 
-@pytest.mark.parametrize(("recipe", "label"), [
-    (M2_K1_RECIPE, "M2-K1 训练版"),
-    (RESET_K1_RECIPE, "Reset-K1 独立训练对照版"),
+@pytest.mark.parametrize(("recipe", "label", "profile"), [
+    (M2_K1_RECIPE, "M2-K1 训练版", "text-menu-m2-v1"),
+    (RESET_K1_RECIPE, "Reset-K1 独立训练对照版", "text-menu-m2-v1"),
+    (V2_M2_K1_RECIPE, "M2-K1 v2 工程训练版", "text-menu-m2-v2"),
+    (V2_RESET_K1_RECIPE, "Reset-K1 v2 工程对照版", "text-menu-m2-v2"),
 ])
 def test_memory_registration_keeps_exact_architecture_and_label(
-        tmp_path: Path, monkeypatch, recipe: str, label: str) -> None:
+        tmp_path: Path, monkeypatch, recipe: str, label: str, profile: str) -> None:
     model_id = "a" * 64
     root = tmp_path / "models"
     root.mkdir()
@@ -149,12 +173,21 @@ def test_memory_registration_keeps_exact_architecture_and_label(
     )
     models = SimpleNamespace(
         root=root, private_root=root,
-        text_runtime_profile=lambda _profile: (runtime, {"pin": "synthetic"}),
+        text_runtime_profile=lambda requested: (runtime, {"pin": requested}),
         _connector_pin=lambda: {"pin": "connector"},
     )
     service = LocalModelRegistration(SimpleNamespace(), exported, models)
     monkeypatch.setattr(registration_module, "validate_runtime_install", lambda *_args: {})
-    monkeypatch.setattr(service, "_capabilities", lambda *_args, **_kwargs: _caps())
+    monkeypatch.setattr(registration_module, "_v2_sdk_available", lambda _sdk: True)
+    def capabilities(*_args, **kwargs):
+        value = _caps()
+        if kwargs.get("input_profile") == "text-menu-v2":
+            value.update(input_profile="text-menu-v2",
+                         snapshot_schema="sts2.player-environment/text-menu-snapshot-2",
+                         receipt_schema="sts2.player-environment/text-menu-action-result-2",
+                         verbs=[*VERBS, "select_card", "select_target", "cancel_selection"])
+        return value
+    monkeypatch.setattr(service, "_capabilities", capabilities)
     monkeypatch.setattr(service, "_context_available", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(service, "_m2_runtime_manifest_compatible",
                         lambda *_args, **_kwargs: None)
@@ -169,6 +202,8 @@ def test_memory_registration_keeps_exact_architecture_and_label(
 
     monkeypatch.setattr(registration_module, "bind_memory_export", bind)
     result = service.register(model_id)
+    assert result["runtime_profile"] == profile
+    assert captured.get("input_profile") == ("text-menu-v2" if profile.endswith("v2") else None)
     registry = json.loads((service.models.private_root / REGISTRY).read_bytes())
     entry = registry["policies"][0]
     assert result["status"] == "registered"
