@@ -39,7 +39,9 @@ def _package_fixture(root: Path, *, version: str = "1.1.0-rc.7",
     }
 
 
-def _run_activation(root: Path, expected: dict[str, str], script: str) -> subprocess.CompletedProcess[str]:
+def _run_activation(
+    root: Path, expected: dict[str, str], script: str
+) -> subprocess.CompletedProcess[str]:
     python_root = Path(__file__).resolve().parents[1]
     return subprocess.run(
         [sys.executable, "-c", script, str(root), json.dumps(expected)],
