@@ -7,6 +7,7 @@ Source protocol: `1.0.0`
 ```text
 GET  /api/player-environment/capabilities
 GET  /api/player-environment/snapshot
+GET  /api/player-environment/text-menu/observation-context
 GET  /api/player-environment/reads/{read_id}?expected_snapshot_id=...
 POST /api/player-environment/clients/register
 GET  /api/player-environment/controller

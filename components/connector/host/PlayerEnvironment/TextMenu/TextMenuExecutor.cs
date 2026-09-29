@@ -35,6 +35,17 @@ internal sealed class TextMenuExecutor(
         }
     }
 
+    internal TextMenuObservationContext ObserveContext()
+    {
+        lock (submissionGate)
+        {
+            SynchronizeControl();
+            TextMenuFrame frame = capture();
+            return new(TextMenuContract.ObservationContextSchema,
+                session.Observe(frame).Snapshot, frame.GameContinuityId);
+        }
+    }
+
     internal TextMenuActionResult? Find(string requestId) =>
         results.TryGetValue(requestId, out var result) ? result : null;
 
