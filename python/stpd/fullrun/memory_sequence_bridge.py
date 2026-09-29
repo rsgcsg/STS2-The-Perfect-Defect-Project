@@ -136,6 +136,7 @@ def _validate_bridge_input(
 
 def _segments(
     view: ObservedInputView,
+    input_profile: str = INPUT_PROFILE,
 ) -> tuple[tuple[tuple[ObservedInput, ...], ...], list[MemoryBridgeDiagnostic]]:
     """Share exact event-order, reset and missing-observation boundaries."""
     segments: list[tuple[ObservedInput, ...]] = []
@@ -145,6 +146,7 @@ def _segments(
     seen: set[str] = set()
     stream_sequences: dict[str, int] = {}
     last_stream: str | None = None
+    last_agent_token: str | None = None
 
     def diagnose(item: ObservedInput, reason: str) -> None:
         diagnostics.append(MemoryBridgeDiagnostic(item.stream_id, item.event_id, reason))
@@ -162,12 +164,19 @@ def _segments(
         if item.source_sequence <= stream_sequences.get(item.stream_id, 0):
             raise ValueError("invalid observed event order")
         stream_sequences[item.stream_id] = item.source_sequence
-        if item.stream_id != last_stream or item.reset_before:
+        agent_history = (input_profile in HISTORY_PROFILES
+                         and item.source_kind == "agent_decision_inputs")
+        reset = (item.history_continuity_token != last_agent_token
+                 if agent_history else item.reset_before)
+        if agent_history and last_stream is None:
+            reset = True
+        if item.stream_id != last_stream or reset:
             if segment:
                 segments.append(tuple(segment))
                 segment = []
-            broken = not item.reset_before
+            broken = not reset
         last_stream = item.stream_id
+        last_agent_token = item.history_continuity_token if agent_history else None
         if broken:
             diagnose(item, "reset_required")
             continue
@@ -197,12 +206,17 @@ def _project_segment(
     # candidates by their source completion clock; insert the current choice
     # only after projecting this step so its label can never enter its memory.
     pending: list[tuple[int, int, ObservedInput]] = []
-    agent_ready: tuple[int, int, ObservedInput] | None = None
+    confirmed_agent: dict[str, ObservedInput] = {}
+    consumed_agent: set[str] = set()
     previous_agent_snapshot: dict | None = None
     for position, item in enumerate(segment):
         if not isinstance(item.snapshot, dict):
             raise BoundaryError("memory_bridge", "missing_observation")
         if input_profile in HISTORY_PROFILES and item.source_kind == "agent_decision_inputs":
+            if (not item.observation_context_present
+                    or not isinstance(item.history_continuity_token, str)
+                    or not item.history_continuity_token):
+                raise BoundaryError("memory_bridge", "agent_observation_context_required")
             if previous_agent_snapshot is not None:
                 prior_sequence = previous_agent_snapshot.get("sequence")
                 current_sequence = item.snapshot.get("sequence")
@@ -232,30 +246,23 @@ def _project_segment(
                     candidate = heapq.heappop(pending)
                     if latest is None or candidate[:2] > latest[:2]:
                         latest = candidate
+            elif item.source_kind == "agent_decision_inputs":
+                reference = item.previous_interaction_request_id
+                if reference is not None:
+                    previous = confirmed_agent.get(reference)
+                    if (previous is None or reference in consumed_agent
+                            or previous.confirmed_at_sequence is None
+                            or previous.confirmed_at_sequence >= item.source_sequence
+                            or previous.history_continuity_token !=
+                            item.history_continuity_token):
+                        raise BoundaryError("memory_bridge", "agent_history_reference_invalid")
+                    latest = (previous.confirmed_at_sequence, 0, previous)
+                    consumed_agent.add(reference)
             else:
                 while pending and pending[0][0] < item.source_sequence:
                     candidate = heapq.heappop(pending)
                     if latest is None or candidate[:2] > latest[:2]:
                         latest = candidate
-                if item.source_kind == "agent_decision_inputs":
-                    if latest is not None and (agent_ready is None or
-                                               latest[:2] > agent_ready[:2]):
-                        agent_ready = latest
-                    latest = agent_ready
-                    if latest is not None:
-                        prior_snapshot = latest[2].snapshot
-                        prior_sequence = (prior_snapshot.get("sequence") if
-                                          isinstance(prior_snapshot, dict) else None)
-                        current_sequence = item.snapshot.get("sequence")
-                        if (not isinstance(prior_snapshot, dict)
-                                or prior_snapshot.get("snapshot_id") ==
-                                item.snapshot.get("snapshot_id")
-                                or type(prior_sequence) is not int
-                                or type(current_sequence) is not int
-                                or current_sequence <= prior_sequence):
-                            latest = None
-                        else:
-                            agent_ready = None
             if latest is not None:
                 # All results available at this observation retire together;
                 # only the greatest completed source sequence occupies memory.
@@ -310,7 +317,15 @@ def _project_segment(
                 order = item.physical_sequence
             else:
                 order = item.confirmed_at_sequence
-            heapq.heappush(pending, (order, position, item))
+            if item.source_kind == "agent_decision_inputs":
+                request_id = item.confirmed_request_id
+                if not isinstance(request_id, str) or not request_id:
+                    raise BoundaryError("memory_bridge", "agent_confirmed_request_id_required")
+                if request_id in confirmed_agent:
+                    raise BoundaryError("memory_bridge", "agent_confirmed_request_id_duplicate")
+                confirmed_agent[request_id] = item
+            else:
+                heapq.heappush(pending, (order, position, item))
     return episode_id, tuple(steps)
 
 
@@ -505,7 +520,7 @@ def project_memory_episodes(
         raise ValueError("invalid memory episode bridge limits")
     episodes: list[MemorySequenceEpisode] = []
     sources: list[MemoryEpisodeSource] = []
-    segments, diagnostics = _segments(view)
+    segments, diagnostics = _segments(view, input_profile)
     event_mapping = {
         item.event_id: MemoryEventMapping(
             view.source_id, item.stream_id, item.event_id, item.source_sequence,

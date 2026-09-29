@@ -105,13 +105,18 @@ def test_row1_and_agent_late_result_never_use_future_or_unconfirmed_choice():
     first = replace(observed("agent-a", 1, reset=True),
                     stream_id="agent:run", source_kind="agent_decision_inputs",
                     snapshot=page("agent-a", 1),
-                    confirmed_at_sequence=7, confirmed_effect_domain="native_input")
+                    confirmed_at_sequence=7, confirmed_effect_domain="native_input",
+                    confirmed_request_id="request-late", observation_context_present=True,
+                    history_continuity_token="agent")
     middle = replace(observed("agent-b", 5, action=None),
                      stream_id="agent:run", source_kind="agent_decision_inputs",
-                     snapshot=page("agent-b", 2))
+                     snapshot=page("agent-b", 2), observation_context_present=True,
+                     history_continuity_token="agent")
     last = replace(observed("agent-c", 9),
                    stream_id="agent:run", source_kind="agent_decision_inputs",
-                   snapshot=page("agent-c", 3))
+                   snapshot=page("agent-c", 3), observation_context_present=True,
+                   history_continuity_token="agent",
+                   previous_interaction_request_id="request-late")
     agent = ObservedInputView("agent-source", "verified_agent_observed_inputs", False,
                               (first, middle, last))
     result = project_memory_episodes(
@@ -126,10 +131,13 @@ def test_row1_and_agent_late_result_never_use_future_or_unconfirmed_choice():
 def test_agent_result_from_before_reset_cannot_enter_new_episode():
     prior = replace(observed("before-reset", 1, reset=True),
                     stream_id="agent:run", source_kind="agent_decision_inputs",
-                    confirmed_at_sequence=4, confirmed_effect_domain="native_input")
+                    confirmed_at_sequence=4, confirmed_effect_domain="native_input",
+                    confirmed_request_id="request-prior", observation_context_present=True,
+                    history_continuity_token="before")
     after = replace(observed("after-reset", 5, reset=True),
                     stream_id="agent:run", source_kind="agent_decision_inputs",
-                    reset_reason="handoff_to_human")
+                    reset_reason="handoff_to_human", observation_context_present=True,
+                    history_continuity_token="after")
     agent = ObservedInputView("agent-source", "verified_agent_observed_inputs", False,
                               (prior, after))
     result = project_memory_episodes(
@@ -139,6 +147,67 @@ def test_agent_result_from_before_reset_cannot_enter_new_episode():
     assert not result.diagnostics and len(result.episodes) == 2
     assert all(episode.steps[0].previous_actual_action is None
                for episode in result.episodes)
+
+
+def test_agent_history_requires_owner_context_and_exact_prior_request():
+    first = replace(observed("a", 1, reset=True),
+                    stream_id="agent:run", source_kind="agent_decision_inputs",
+                    confirmed_at_sequence=2, confirmed_effect_domain="native_input",
+                    confirmed_request_id="request-a")
+    second = replace(observed("b", 3), stream_id="agent:run",
+                     source_kind="agent_decision_inputs", snapshot=page("b", 2))
+    config = history_episode_projection_config(HISTORY_INPUT_PROFILE)
+
+    def project(*items):
+        return project_memory_episodes(
+            ObservedInputView("agent-source", "verified_agent_observed_inputs", False,
+                              tuple(items)), tokenizer(), _model(), max_observations=8,
+            max_input_tokens=100000, max_settling_events=64,
+            projection_config=config)
+
+    assert project(first, second).diagnostics[0].reason == \
+        "agent_observation_context_required"
+    first = replace(first, observation_context_present=True,
+                    history_continuity_token="token")
+    second = replace(second, observation_context_present=True,
+                     history_continuity_token="token",
+                     previous_interaction_request_id="wrong-request")
+    assert project(first, second).diagnostics[0].reason == \
+        "agent_history_reference_invalid"
+    second = replace(second, previous_interaction_request_id="request-a")
+    third = replace(observed("c", 5), stream_id="agent:run",
+                    source_kind="agent_decision_inputs", snapshot=page("c", 3),
+                    observation_context_present=True, history_continuity_token="token",
+                    previous_interaction_request_id="request-a")
+    assert project(first, second, third).diagnostics[0].reason == \
+        "agent_history_reference_invalid"
+
+
+def test_agent_history_uses_token_change_not_coarse_mode_event():
+    first = replace(observed("a", 1, reset=True),
+                    stream_id="agent:run", source_kind="agent_decision_inputs",
+                    snapshot=page("a", 1), confirmed_at_sequence=2,
+                    confirmed_effect_domain="native_input", confirmed_request_id="request-a",
+                    observation_context_present=True, history_continuity_token="token")
+    same_token = replace(observed("b", 3, reset=True),
+                         stream_id="agent:run", source_kind="agent_decision_inputs",
+                         snapshot=page("b", 2), reset_reason="mode_changed",
+                         observation_context_present=True,
+                         history_continuity_token="token",
+                         previous_interaction_request_id="request-a")
+    changed_token = replace(observed("c", 5),
+                            stream_id="agent:run", source_kind="agent_decision_inputs",
+                            snapshot=page("c", 3), observation_context_present=True,
+                            history_continuity_token="new-token")
+    result = project_memory_episodes(
+        ObservedInputView("agent-source", "verified_agent_observed_inputs", False,
+                          (first, same_token, changed_token)),
+        tokenizer(), _model(), max_observations=8, max_input_tokens=100000,
+        max_settling_events=64,
+        projection_config=history_episode_projection_config(HISTORY_INPUT_PROFILE))
+    assert not result.diagnostics and len(result.episodes) == 2
+    assert result.episodes[0].steps[1].previous_actual_action is not None
+    assert result.episodes[1].steps[0].previous_actual_action is None
 
 
 @pytest.mark.parametrize(("slots", "reset_each_step"), [
@@ -164,8 +233,13 @@ def test_unique_agent_pages_bridge_tokens_memory_and_scores_match_online(
         stream_id="agent:run", source_kind="agent_decision_inputs",
         snapshot=pages[index - 1],
         confirmed_at_sequence=2 * index if index < 3 else None,
+        confirmed_request_id=f"request-{index}" if index < 3 else None,
         confirmed_effect_domain=("text_menu" if index == 1 else
                                  "native_input" if index == 2 else None),
+        observation_context_present=True,
+        history_continuity_token="agent",
+        previous_interaction_request_id=(f"request-{index - 1}"
+                                         if index > 1 else None),
     ) for index in (1, 2, 3))
     agent = ObservedInputView("agent-source", "verified_agent_observed_inputs", False,
                               items)
@@ -216,13 +290,17 @@ def test_agent_same_snapshot_replay_is_explicitly_unsupported_offline_and_cached
         replace(observed("first", 1, reset=True, action="opaque-nav"),
                 stream_id="agent:run", source_kind="agent_decision_inputs",
                 snapshot=first, confirmed_at_sequence=2,
-                confirmed_effect_domain="text_menu"),
+                confirmed_effect_domain="text_menu", confirmed_request_id="request",
+                observation_context_present=True, history_continuity_token="agent"),
         replace(observed("reread", 3, action=None),
                 stream_id="agent:run", source_kind="agent_decision_inputs",
-                snapshot=first),
+                snapshot=first, observation_context_present=True,
+                history_continuity_token="agent"),
         replace(observed("third", 5),
                 stream_id="agent:run", source_kind="agent_decision_inputs",
-                snapshot=third),
+                snapshot=third, observation_context_present=True,
+                history_continuity_token="agent",
+                previous_interaction_request_id="request"),
     )
     agent = ObservedInputView("agent-source", "verified_agent_observed_inputs", False,
                               items)
@@ -279,6 +357,28 @@ def test_cancelled_dispatch_is_not_unknown_or_confirmed(monkeypatch):
     assert [ref.kind for ref in item.source_events] == [
         "text_decision_input", "decision", "text_menu_dispatch_attempt",
         "text_menu_dispatch_cancelled"]
+
+
+def test_agent_owner_context_is_projected_without_inferred_mode_reset(monkeypatch):
+    events = (
+        {"sequence": 1, "kind": "text_decision_input",
+         "payload": {"decision_id": "first", "snapshot": page("first", 1),
+                     "observation_context": {
+                         "continuity_token": "token", "previous_interaction_request_id": None}}},
+        {"sequence": 2, "kind": "mode_changed", "payload": {}},
+        {"sequence": 3, "kind": "text_decision_input",
+         "payload": {"decision_id": "second", "snapshot": page("second", 2),
+                     "observation_context": {
+                         "continuity_token": "token",
+                         "previous_interaction_request_id": "request-first"}}},
+    )
+    monkeypatch.setattr("stpd.fullrun.observed_input_sequence.load_verified_agent_run_events",
+                        lambda *_: SimpleNamespace(events=events, content_id="content",
+                                                   run_id="run"))
+    items = _agent_view(None, "source").inputs
+    assert items[1].reset_before  # Original observation-only profile stays unchanged.
+    assert items[1].history_continuity_token == "token"
+    assert items[1].previous_interaction_request_id == "request-first"
 
 
 def test_online_offline_three_step_tokens_memory_scores_and_binding(exported):

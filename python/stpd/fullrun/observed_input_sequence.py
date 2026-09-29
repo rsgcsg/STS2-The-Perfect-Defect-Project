@@ -77,6 +77,10 @@ class ObservedInput:
     capture_ordinal: int | None = None
     completed_append_watermark: int | None = None
     physical_sequence: int | None = None
+    observation_context_present: bool = False
+    history_continuity_token: str | None = None
+    previous_interaction_request_id: str | None = None
+    confirmed_request_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -192,6 +196,20 @@ def _agent_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
             continue
         if kind != "text_decision_input":
             continue
+        context = payload.get("observation_context")
+        context_present = "observation_context" in payload
+        if context_present:
+            if (not isinstance(context, dict)
+                    or set(context) != {"continuity_token", "previous_interaction_request_id"}
+                    or not isinstance(context.get("continuity_token"), str)
+                    or not context["continuity_token"]
+                    or (context["previous_interaction_request_id"] is not None
+                        and (not isinstance(context["previous_interaction_request_id"], str)
+                             or not context["previous_interaction_request_id"]))):
+                raise BoundaryError("observed_input_sequence", "invalid_observation_context")
+            current_token = context["continuity_token"]
+        else:
+            current_token = None
         decision_id = payload["decision_id"]
         decision = decisions.get(decision_id)
         dispatch = dispatches.get(decision_id)
@@ -290,6 +308,13 @@ def _agent_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
             confirmed_effect_domain=(outcome["result"]["effect_domain"]
                                      if outcome is not None and outcome["kind"] in {
                                          "menu_navigation", "text_native_delivery"} else None),
+            observation_context_present=context_present,
+            history_continuity_token=current_token,
+            previous_interaction_request_id=(context["previous_interaction_request_id"]
+                                             if context_present else None),
+            confirmed_request_id=(outcome["result"].get("request_id")
+                                  if outcome is not None and outcome["kind"] in {
+                                      "menu_navigation", "text_native_delivery"} else None),
         ))
         pending_reset = None
     return ObservedInputView(source_id, "verified_agent_observed_inputs", False,
