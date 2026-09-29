@@ -3265,9 +3265,9 @@ test("explicit local workspace create uses the browser session and empty command
 });
 
 test("environment page explains missing setup without accepting browser paths", async () => {
-  const env = setup({view:"local-environment", identity:{status:"local_only", csrf_token:"csrf"},
+  const env = setup({view:"local-environment", identity:{status:"local_only"},
     handler: async (url) => url === "/api/local-environment" ? {
-      schema:"stpd/local-managed-environment-v1", availability:"profile_required",
+      schema:"stpd/local-managed-environment-v1", availability:"profile_required", csrf_token:"browser-csrf",
       scenarios:[{id:"managed-defect-a0-map-prefix-20260929", label:"故障机器人 A0",
         seed:"M2H0ST20260929A", character:"Defect", scope:"工程范围"}],
       session:{status:"idle"},
@@ -3280,16 +3280,46 @@ test("environment page explains missing setup without accepting browser paths", 
   assert.equal(post(env.calls).length, 0);
   assert.deepEqual(env.calls.map(call => call.url),
     ["/api/local-environment", "/api/local-environment/reports"]);
+  assert.doesNotMatch(text(page), /browser-csrf/);
+});
+
+test("cold local environment starts from browser status CSRF without cloud identity", async () => {
+  const scenarioId = "managed-defect-a0-map-prefix-20260929";
+  const env = setup({view:"local-environment", identity:{status:"local_only"},
+    handler: async (url) => {
+      if (url === "/api/local-environment") return {
+        schema:"stpd/local-managed-environment-v1", availability:"configured",
+        input_profile:"text-menu-v2", csrf_token:"browser-csrf",
+        scenarios:[{id:scenarioId, label:"故障机器人 A0", seed:"M2H0ST20260929A",
+          character:"Defect", scope:"工程范围"}], session:{status:"idle"},
+      };
+      if (url === "/api/local-environment/reports") return {
+        schema:"stpd/local-managed-environment-report-v1",items:[]};
+      if (url === "/api/local-environment/start") return {status:"starting"};
+      throw new Error(`unexpected ${url}`);
+    },
+  });
+  const page = await env.render();
+  const start = action(page, `environment-start-${scenarioId}`);
+  assert.equal(start.disabled, false);
+  await start.onclick();
+  const writes = post(env.calls);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, "/api/local-environment/start");
+  assert.deepEqual(body(writes[0]), {scenario_id:scenarioId});
+  assert.equal(writes[0].options.headers["X-CSRF-Token"], "browser-csrf");
+  assert.equal(env.reloads, 1);
 });
 
 test("environment renders the complete current menu and submits one exact binding", async () => {
   const sessionId = "a".repeat(32);
   const actions = [{action_id:"first", verb:"select", label:"Choose monster at (3,0)", effect_domain:"native_input"},
     {action_id:"second", verb:"inspect", label:"Inspect route", effect_domain:"text_menu"}];
-  const env = setup({view:"local-environment", identity:{status:"local_only", csrf_token:"csrf"},
+  const env = setup({view:"local-environment", identity:{status:"local_only"},
     handler: async (url) => {
       if (url === "/api/local-environment") return {
-        schema:"stpd/local-managed-environment-v1", availability:"configured", input_profile:"text-menu-v1", scenarios:[],
+        schema:"stpd/local-managed-environment-v1", availability:"configured", input_profile:"text-menu-v1",
+        csrf_token:"browser-csrf", scenarios:[],
         session:{status:"active", session_id:sessionId, context:{game_continuity_id:"episode-1",
           snapshot:{schema:"sts2.player-environment/text-menu-snapshot-1",
             input_profile:"text-menu-v1", snapshot_id:"snapshot-1", status:"interactive", interaction:{kind:"map_navigation",
@@ -3316,7 +3346,7 @@ test("environment renders the complete current menu and submits one exact bindin
   assert.equal(writes[0].url, "/api/local-environment/submit");
   assert.deepEqual(body(writes[0]), {session_id:sessionId, action_id:"first",
     expected_snapshot_id:"snapshot-1", expected_game_continuity_id:"episode-1"});
-  assert.equal(writes[0].options.headers["X-CSRF-Token"], "csrf");
+  assert.equal(writes[0].options.headers["X-CSRF-Token"], "browser-csrf");
   assert.equal(env.reloads, 1);
 });
 

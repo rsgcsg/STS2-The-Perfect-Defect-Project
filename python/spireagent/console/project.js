@@ -4024,7 +4024,7 @@ window.SpireProject = (() => {
       ? `已配置 ${data.input_profile}。启动时仍会复核安装包、候选和游戏身份。`
       : "环境未准备。请由本机环境维护者完成受信任的精确包与候选配置；此页面不接受文件路径或命令。");
     box.append(setup);
-    const csrf = ctx.identity?.csrf_token;
+    const csrf = typeof data.csrf_token === "string" && data.csrf_token ? data.csrf_token : "";
     const sessionId = typeof session.session_id === "string" && /^[a-f0-9]{32}$/.test(session.session_id)
       ? session.session_id : null;
     const currentStatus = session.status;

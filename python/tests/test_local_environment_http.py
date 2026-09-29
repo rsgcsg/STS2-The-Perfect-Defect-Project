@@ -80,6 +80,7 @@ def test_local_environment_http_is_browser_scoped_exact_and_get_only_reads(
         with client.open(root + "/api/local-environment") as response:
             value = json.load(response)
         assert value["availability"] == "profile_required"
+        assert value["csrf_token"] == app.account.csrf
         with client.open(root + "/api/local-environment/reports") as response:
             assert json.load(response)["items"] == []
         with client.open(root + "/api/local-environment/events/" + "e" * 64) as response:

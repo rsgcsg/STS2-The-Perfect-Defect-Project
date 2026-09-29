@@ -20,6 +20,7 @@ const views = {
   downloads: ["数据下载", "固定下载清单和校验值；封存与未获共享授权的数据保持受限。"],
   research: ["训练与模型", "查看真实训练产物、benchmark 和数据分析，区分尚未执行的计划。"],
   "local-models": ["模型实战", "检查兼容性、加载模型，再明确开始真实游戏评估。"],
+  "local-environment": ["环境与场景", "从已配置的本机 Managed 环境开始固定种子新局，并明确选择每一步。"],
   "local-workspace": ["本机资料", "直接浏览已登记的本机研究资料与来源。无需项目账号或云端连接。"],
   campaigns: ["真人采集", "在游戏内由你控制录制；本机后台投递状态按实际配置显示。"],
   evaluations: ["评估结果", "模型游戏实战与离线评价分别展示；片段和未知结果不会计作胜局。"],
@@ -998,7 +999,7 @@ function readLocation() {
   const params = new URLSearchParams(location.search),
     requested = params.get("view");
   state.view = Object.hasOwn(views, requested) &&
-    (!["local-workspace", "local-home"].includes(requested) || localShell)
+    (!["local-workspace", "local-environment", "local-home"].includes(requested) || localShell)
     ? requested
     : (localShell ? "local-home" : "collections");
   const id = params.get("id");
@@ -1135,8 +1136,8 @@ async function load(manual = false, forceIdentity = manual) {
       ? `?limit=${state.limit}&offset=${state.offset}`
       : "";
   try {
-    const localWorkspaceOnly = localShell && view === "local-workspace";
-    const identity = localWorkspaceOnly
+    const localOnlyPage = localShell && ["local-workspace", "local-environment"].includes(view);
+    const identity = localOnlyPage
       ? window.SpireIdentity.localOnly()
       : await window.SpireIdentity.refresh(forceIdentity);
     if (serial !== state.serial) return;
@@ -1154,7 +1155,7 @@ async function load(manual = false, forceIdentity = manual) {
         $("updated").textContent = "当前页面状态已检查";
       return;
     }
-    if (["members", "statistics", "downloads", "research", "local-models", "local-workspace", "campaigns", "evaluations"].includes(view) || (["datasets", "games"].includes(view) && !id)) {
+    if (["members", "statistics", "downloads", "research", "local-models", "local-environment", "local-workspace", "campaigns", "evaluations"].includes(view) || (["datasets", "games"].includes(view) && !id)) {
       const opened = [...document.querySelectorAll("details[open]")].map(item => item.dataset.preserve);
       const content = await window.SpireProject.render(view, identity, shell => {
         if (serial === state.serial && identityContext === window.SpireIdentity.context()) $("content").replaceChildren(shell);
@@ -1165,7 +1166,9 @@ async function load(manual = false, forceIdentity = manual) {
         item.open = opened.includes(item.dataset.preserve);
       });
       renderedContext = context;
-      $("updated").textContent = localWorkspaceOnly ? "本机资料读取完成" : "当前账号下的服务观测";
+      $("updated").textContent = localOnlyPage
+        ? (view === "local-environment" ? "本机环境读取完成" : "本机资料读取完成")
+        : "当前账号下的服务观测";
       $("connection").textContent = identity?.status === "signed_in" ? "已通过身份验证" : "本机工作台";
       return;
     }
