@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
+import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { TextMenuAction, TextMenuActionResult, TextMenuSnapshot, TextMenuCapabilities } from "@rsgcsg/sts2-connector-client";
 import { PlayerEnvironmentRestClient } from "@rsgcsg/sts2-connector-client";
@@ -215,6 +216,39 @@ describe("model-neutral observation continuity v2", () => {
     } finally { port.close(); }
   });
 
+  it("distinguishes pre-offer serialization and abort from a synchronous partial write", async () => {
+    const stdin = new PassThrough(), stdout = new PassThrough(), stderr = new PassThrough();
+    const child = Object.assign(new EventEmitter(), { stdin, stdout, stderr, exitCode: null, killed: false,
+      kill: vi.fn(() => true) });
+    const port = new NdjsonPolicyPort(child as unknown as ConstructorParameters<typeof NdjsonPolicyPort>[0]);
+    stdout.write(JSON.stringify({ schema: POLICY_PORT_V2_SCHEMA, message_type: "ready", adapter: manifest().adapter }) + "\n");
+    await port.ready();
+    const input: StatefulPolicyDecisionInput = { run_id: "run", manifest: manifest(), bundle: { observation: page(1), reads: [] },
+      candidate_count: 1, candidate_digest: candidateOrderDigest([action.action_id]), continuity_token: "token" };
+    const offered = vi.fn();
+    try {
+      const cyclic: Record<string, unknown> = {}; cyclic.self = cyclic;
+      await expect(port.decideV2({ ...input, manifest: { ...input.manifest, adapter_config: cyclic } }, new AbortController().signal, offered)).rejects.toThrow();
+      expect(offered).not.toHaveBeenCalled();
+      const preAborted = new AbortController(); preAborted.abort();
+      await expect(port.decideV2(input, preAborted.signal, offered)).rejects.toThrow("cancelled");
+      expect(offered).not.toHaveBeenCalled();
+      stdin.write = (() => { throw new Error("partial write"); }) as typeof stdin.write;
+      await expect(port.decideV2(input, new AbortController().signal, offered)).rejects.toThrow("partial write");
+      expect(offered).toHaveBeenCalledOnce();
+
+      const f = fixture(); let token = "";
+      const runtime = new PolicyRuntime({ manifest: manifest(), connector: f.connector, mode: "one_step", runId: "run",
+        statefulOfferBoundary: "port_write", statefulPolicy: (decision, signal, onOffer) => {
+          token = decision.continuity_token; return port.decideV2(decision, signal, onOffer);
+        } });
+      expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "policy_failed" });
+      const continuity = (runtime as unknown as { continuity: { token: string } | null }).continuity;
+      expect(continuity?.token).toBeDefined();
+      expect(continuity?.token).not.toBe(token);
+    } finally { port.close(); }
+  });
+
   it("rejects incomplete or drifted v2 child input before calling the stateful policy", async () => {
     const input = new PassThrough(), outputStream = new PassThrough();
     const replies: string[] = [];
@@ -230,5 +264,35 @@ describe("model-neutral observation continuity v2", () => {
     const parsed = replies.join("").trim().split("\n").map(line => JSON.parse(line) as { message_type: string; request_id: string });
     expect(parsed).toMatchObject([{ message_type: "error", request_id: "bad" }, { message_type: "decision", request_id: "good" }]);
     expect(policy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not enter a queued v2 observation until the first child call completes", async () => {
+    const input = new PassThrough(), outputStream = new PassThrough();
+    const replies: string[] = [], entered: number[] = [];
+    outputStream.setEncoding("utf8"); outputStream.on("data", chunk => replies.push(String(chunk)));
+    let firstEntered!: () => void, releaseFirst!: () => void;
+    const atFirst = new Promise<void>(resolve => { firstEntered = resolve; });
+    const barrier = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const serving = serveStatefulPolicyPort(async value => {
+      const sequence = value.bundle.observation.sequence;
+      entered.push(sequence);
+      if (sequence === 1) { firstEntered(); await barrier; }
+      return output(value);
+    }, input, outputStream);
+    const wire = (sequence: number, request_id: string) => JSON.stringify({ schema: POLICY_PORT_V2_SCHEMA,
+      message_type: "decide", request_id, input: { run_id: "run", manifest: manifest(), bundle: { observation: page(sequence), reads: [] },
+        candidate_count: 1, candidate_digest: candidateOrderDigest([action.action_id]), continuity_token: "same-game" } }) + "\n";
+    try {
+      input.write(wire(1, "first")); input.write(wire(2, "second")); input.end();
+      await atFirst;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(entered).toEqual([1]);
+    } finally { releaseFirst(); }
+    await serving;
+    expect(entered).toEqual([1, 2]);
+    expect(replies.join("").trim().split("\n").map(line => {
+      const response = JSON.parse(line) as { request_id: string; completion: { sequence: number } };
+      return [response.request_id, response.completion.sequence];
+    })).toEqual([["first", 1], ["second", 2]]);
   });
 });

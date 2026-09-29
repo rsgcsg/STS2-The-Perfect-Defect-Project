@@ -88,6 +88,9 @@ export class NdjsonPolicyPort {
     const requestId = randomUUID();
     const request: PolicyPortV2DecisionRequest = { schema: POLICY_PORT_V2_SCHEMA,
       message_type: "decide", request_id: requestId, input };
+    let wire: string;
+    try { wire = `${JSON.stringify(request)}\n`; }
+    catch (error) { return Promise.reject(error instanceof Error ? error : new Error(String(error))); }
     return new Promise<StatefulAdapterDecision>((resolve, reject) => {
       let settled = false;
       const onAbort = () => {
@@ -106,16 +109,18 @@ export class NdjsonPolicyPort {
       this.pendingV2.set(requestId, { input, resolve: settle(resolve), reject: settle(reject) });
       signal.addEventListener("abort", onAbort, { once: true });
       if (signal.aborted) { onAbort(); return; }
+      let writeInvoked = false;
       try {
-        this.child.stdin.write(`${JSON.stringify(request)}\n`, (error) => {
+        onOffer(); // From this point the write may have partially reached the child.
+        writeInvoked = true;
+        this.child.stdin.write(wire, (error) => {
           if (error && this.pendingV2.delete(requestId)) {
             this.rememberCancelled(requestId);
             settle(reject)(error);
           }
         });
-        onOffer(); // The write call was invoked; delivery/acceptance remains unconfirmed.
       } catch (error) {
-        this.pendingV2.delete(requestId);
+        if (this.pendingV2.delete(requestId) && writeInvoked) this.rememberCancelled(requestId);
         settle(reject)(error instanceof Error ? error : new Error(String(error)));
       }
     });
