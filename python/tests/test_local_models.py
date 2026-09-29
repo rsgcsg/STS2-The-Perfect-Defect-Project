@@ -1661,7 +1661,7 @@ def test_v2_offline_install_requires_private_exact_pin_and_uses_distinct_slot(
     monkeypatch.setattr(runtime_install, "install_runtime",
                         lambda *args, **kwargs: installed.append((args, kwargs)) or
                         {"status": "runtime_installed"})
-    with pytest.raises(BoundaryError, match="text_runtime_profile_required"):
+    with pytest.raises(BoundaryError, match="trusted_text_runtime_kit_unavailable"):
         local_model_cli.model_command(service.config, "install-runtime",
                                       runtime_profile="text-menu-m2-v2",
                                       runtime_archive=archive)

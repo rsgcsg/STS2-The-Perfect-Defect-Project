@@ -267,7 +267,7 @@ def test_optional_m2_runtime_is_separate_from_text_and_requires_exact_pair(
 
 
 def test_v2_kit_pair_is_inventoried_staged_and_selected_without_caller_path(
-        inputs, tmp_path, monkeypatch):
+        inputs, tmp_path, monkeypatch, capsys):
     from spireagent.workbench.developer import ProjectConfig, combination
     from spireagent.workbench.local_models import LocalModelService
     from tools import install_developer_kit as install
@@ -314,12 +314,68 @@ def test_v2_kit_pair_is_inventoried_staged_and_selected_without_caller_path(
         "profile_sha256": sha256(profile.read_bytes()),
         "archive_sha256": sha256(archive.read_bytes()),
     }
-    service = LocalModelService(ProjectConfig(tmp_path / "state", "", "", None, combination()))
+    service = LocalModelService(ProjectConfig(tmp_path / "private", "", "", None,
+                                             combination()))
     service.root = target / "source/python"
     raw, staged_archive, pin = service._selected_kit_text_runtime("text-menu-m2-v2")
     assert raw == profile.read_bytes()
     assert staged_archive.read_bytes() == archive.read_bytes()
     assert pin == synthetic_text_pin(archive.read_bytes())
+    from spireagent.workbench import developer_cli, local_model_cli, runtime_install
+
+    config_path = tmp_path / "private/project.json"
+    config_path.parent.mkdir()
+    original_init = LocalModelService.__init__
+    def selected_release_init(self, config, hub=None):
+        original_init(self, config, hub)
+        self.root = target / "source/python"
+    monkeypatch.setattr(LocalModelService, "__init__", selected_release_init)
+    monkeypatch.setattr(local_model_cli, "running", lambda _: None)
+    monkeypatch.setattr(developer_cli.ProjectConfig, "load", lambda *_a, **_k: service.config)
+    monkeypatch.setattr(LocalModelService, "_connector_pin", lambda _: {})
+    with pytest.raises(BoundaryError, match="runtime_profile_staging_unsafe"):
+        local_model_cli.model_command(service.config, "install-runtime",
+                                      runtime_profile="text-menu-m2-v2",
+                                      runtime_archive=archive)
+    assert not (service.directory / "text-menu-m2-runtime-v2.json").exists()
+    service.private_root.mkdir(parents=True)
+    colliding = dict(pin, version="other-v2")
+    private_pin = service.directory / "text-menu-m2-runtime-v2.json"
+    private_pin.write_text(json.dumps({"schema": "stpd/local-text-m2-runtime-v2",
+                                       "runtime_package": colliding}))
+    with pytest.raises(BoundaryError, match="private_profile_collision"):
+        local_model_cli.model_command(service.config, "install-runtime",
+                                      runtime_profile="text-menu-m2-v2",
+                                      runtime_archive=staged_archive)
+    private_pin.unlink()
+    owner_install = []
+    monkeypatch.setattr(runtime_install, "install_runtime",
+                        lambda *a, **k: owner_install.append((a, k)) or
+                        {"status": "runtime_installed"})
+    actual_run = install.run
+    owner_steps = []
+    def initialize_run(args, cwd):
+        if args[0] == "git":
+            return actual_run(args, cwd)
+        if "setup" in args:
+            owner_steps.append("setup")
+            config_path.write_text(json.dumps(service.config.to_dict()))
+            return '{"status":"configured"}'
+        if "model" in args:
+            owner_steps.append("model")
+            assert developer_cli.main(args[args.index("model"):]) == 0
+            return capsys.readouterr().out
+        return ""
+    monkeypatch.setattr(install, "run", initialize_run)
+    initialized = install.initialize(target, config_path)
+    assert owner_steps == ["setup", "model"]
+    assert initialized["m2_v2_runtime"] == "installed_verified_by_runtime_owner"
+    assert owner_install == [((service.directory / "text-menu-m2-v2", pin, {}),
+                              {"archive": staged_archive,
+                               "required_profile": "text-menu-m2-v2"})]
+    assert json.loads((service.directory / "text-menu-m2-runtime-v2.json").read_text()) == {
+        "schema": "stpd/local-text-m2-runtime-v2", "runtime_package": pin,
+    }
     staged_archive.write_bytes(b"replaced")
     with pytest.raises(BoundaryError, match="trusted_text_runtime_kit_invalid"):
         service._selected_kit_text_runtime("text-menu-m2-v2")

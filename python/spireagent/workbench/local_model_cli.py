@@ -42,17 +42,36 @@ def model_command(
                 raise BoundaryError("local_model", "previous_operation_requires_recovery")
             if runtime_profile in {"text-menu-v1", "text-menu-m2-v1",
                                    "text-menu-m2-v2"}:
-                # Legacy profiles may stage the current kit's inventoried pin.
-                # v2 requires an already provisioned application-owned pin;
-                # no source-tree or v1 kit fallback can create it.
+                # Legacy profiles keep their original staged-source behavior.
+                # A new v2 pin comes only from the selected kit's verified pair.
                 from spireagent.policy_files import _object_file
-                from spireagent.workbench.kit_runtime import text_runtime_pin
+                from spireagent.workbench.kit_runtime import KIT_RUNTIME_PAIRS, text_runtime_pin
                 from spireagent.workbench.local_models import TEXT_PROFILES
 
                 _, legacy_name, _, _ = TEXT_PROFILES[runtime_profile]
                 destination = service.private_root / Path(legacy_name).name
                 if destination.is_symlink():
                     raise BoundaryError("local_model", "private_model_state_unsafe")
+                selected_v2_archive = (service.root.parent / KIT_RUNTIME_PAIRS["text-menu-m2-v2"][3]
+                                       if runtime_profile == "text-menu-m2-v2" else None)
+                if (runtime_profile == "text-menu-m2-v2" and not destination.exists()):
+                    from spireagent.workbench.model_state_migration import _publish_profile
+
+                    raw, selected_archive, _ = service._selected_kit_text_runtime(runtime_profile)
+                    if runtime_archive != selected_archive or runtime_archive.is_symlink():
+                        raise BoundaryError("local_model", "runtime_profile_staging_unsafe")
+                    if service.private_root.is_symlink():
+                        raise BoundaryError("local_model", "private_model_state_unsafe")
+                    service.private_root.mkdir(parents=True, exist_ok=True)
+                    _publish_profile(destination, raw)
+                elif (runtime_profile == "text-menu-m2-v2"
+                      and runtime_archive == selected_v2_archive):
+                    # initialize passes this fixed path. A previous private pin
+                    # must not silently replace the included kit's identity.
+                    _, _, kit_pin = service._selected_kit_text_runtime(runtime_profile)
+                    _, existing_pin = service.text_runtime_profile(runtime_profile)
+                    if existing_pin != kit_pin:
+                        raise BoundaryError("local_model", "private_profile_collision")
                 if (runtime_profile != "text-menu-m2-v2"
                         and not destination.exists() and not destination.is_symlink()):
                     staged = service.root / legacy_name

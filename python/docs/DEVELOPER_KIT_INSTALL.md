@@ -52,9 +52,10 @@ The packager checks the exact archive and all five text-menu-v2 Connector SDK
 methods in a temporary installation before publishing the kit. `prepare` stages
 the pair under ignored `.local/`; the Workbench's explicit **检查 v2 记忆运行环境**
 action reads it only from the selected verified release and installs it into
-`models/text-menu-m2-v2`. A missing pair stays unavailable. `initialize` does
-not automatically install this optional v2 Runtime; an existing v1 pair keeps
-its prior initialization behavior. The v2 pair does not supply model weights or
+`models/text-menu-m2-v2`. A missing pair stays unavailable. `initialize` also
+installs an included v2 pair through the selected release's CLI and its same
+verified profile and archive. Existing v1 pairs keep their prior slots. The v2
+pair does not supply model weights or
 establish native or policy qualification.
 A prepared directory is never overwritten; `status --directory ...` rechecks its
 original archive, source, tool and staged bytes. Failed temporary preparation is

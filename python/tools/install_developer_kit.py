@@ -402,6 +402,18 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
                 reject("m2_runtime_install_failed")
             result = status(directory)
             result["m2_runtime"] = "installed_verified_by_runtime_owner"
+        if result.get("m2_v2_runtime") == "bundled_installation_not_checked":
+            report = json.loads(run([
+                "uv", "run", "--project", "python", "--locked", "--extra", "cloud",
+                "python", "-m", "spireagent.workbench", "project", "model",
+                "--config", str(config_path), "--action", "install-runtime",
+                "--runtime-profile", "text-menu-m2-v2", "--runtime-archive",
+                str(source / KIT_RUNTIME_PAIRS["text-menu-m2-v2"][3]),
+            ], source))
+            if report.get("status") != "runtime_installed":
+                reject("m2_v2_runtime_install_failed")
+            result = status(directory)
+            result["m2_v2_runtime"] = "installed_verified_by_runtime_owner"
         result["environment"] = "initialized"
         return result
 
