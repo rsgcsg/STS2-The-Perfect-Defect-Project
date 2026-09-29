@@ -23,6 +23,7 @@ from sts2_platform_evidence.collection_tool import CollectionTool
 
 from spireagent.json_boundary import BoundaryError, decode_json, digest
 from spireagent.workbench.kit_runtime import (
+    KIT_RUNTIME_PAIRS,
     M2_ARCHIVE_DESTINATION,
     M2_RUNTIME_ARCHIVE,
     M2_RUNTIME_DESTINATION,
@@ -33,6 +34,10 @@ from spireagent.workbench.kit_runtime import (
     TEXT_RUNTIME_PROFILE,
     text_runtime_pin,
 )
+
+# Retain the established public test/operator constants as importable aliases.
+__all__ = ("M2_RUNTIME_ARCHIVE", "M2_RUNTIME_DESTINATION", "M2_RUNTIME_PROFILE",
+           "TEXT_RUNTIME_ARCHIVE", "TEXT_RUNTIME_DESTINATION", "TEXT_RUNTIME_PROFILE")
 
 REPOSITORY = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git"
 LIMIT = 256 * 1024 * 1024
@@ -63,10 +68,10 @@ def sha(raw: bytes) -> str:
 
 
 def text_runtime_files(manifest: dict[str, Any], files: dict[str, bytes], *,
-                       memory: bool = False) -> bool:
-    key = "m2_runtime" if memory else "text_runtime"
-    profile_name = M2_RUNTIME_PROFILE if memory else TEXT_RUNTIME_PROFILE
-    archive_name = M2_RUNTIME_ARCHIVE if memory else TEXT_RUNTIME_ARCHIVE
+                       memory: bool = False,
+                       required_profile: str | None = None) -> bool:
+    profile_id = required_profile or ("text-menu-m2-v1" if memory else "text-menu-v1")
+    profile_name, archive_name, _, _, key, _ = KIT_RUNTIME_PAIRS[profile_id]
     identity = manifest.get(key)
     if identity is None:
         if profile_name in files or archive_name in files:
@@ -82,7 +87,10 @@ def text_runtime_files(manifest: dict[str, Any], files: dict[str, bytes], *,
         digest(identity[field], "kit_install.text_runtime_identity")
         if identity[field] != sha(files[name]):
             reject("text_runtime_inventory_mismatch")
-    text_runtime_pin(files[profile_name], files[archive_name], memory=memory)
+    text_runtime_pin(files[profile_name], files[archive_name],
+                     **({"required_profile": profile_id}
+                        if profile_id == "text-menu-m2-v2" else
+                        {"memory": profile_id == "text-menu-m2-v1"}))
     return True
 
 
@@ -137,8 +145,8 @@ def verified_archive(archive: Path, expected: str) -> tuple[dict[str, Any], dict
             reject("composition_identity_mismatch")
     if not set(STAGING).issubset(files):
         reject("native_installation_files_missing")
-    text_runtime_files(manifest, files)
-    text_runtime_files(manifest, files, memory=True)
+    for profile_id in KIT_RUNTIME_PAIRS:
+        text_runtime_files(manifest, files, required_profile=profile_id)
     return manifest, files
 
 
@@ -201,13 +209,10 @@ def prepare(archive: Path, expected: str, releases: Path) -> dict[str, Any]:
             destination = source / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(files[name])
-        for memory in (False, True):
-            if not text_runtime_files(manifest, files, memory=memory):
+        for profile_id, pair in KIT_RUNTIME_PAIRS.items():
+            if not text_runtime_files(manifest, files, required_profile=profile_id):
                 continue
-            pairs = ((M2_RUNTIME_PROFILE, M2_RUNTIME_DESTINATION),
-                     (M2_RUNTIME_ARCHIVE, M2_ARCHIVE_DESTINATION)) if memory else (
-                     (TEXT_RUNTIME_PROFILE, TEXT_RUNTIME_DESTINATION),
-                     (TEXT_RUNTIME_ARCHIVE, TEXT_ARCHIVE_DESTINATION))
+            pairs = ((pair[0], pair[2]), (pair[1], pair[3]))
             for name, relative in pairs:
                 destination = source / relative
                 if any(p.is_symlink() for p in destination.parents):
@@ -241,13 +246,10 @@ def status(directory: Path) -> dict[str, Any]:
     for name, relative in STAGING.items():
         if sha((source / relative).read_bytes()) != manifest["files"][name]:
             reject("staged_native_changed")
-    for memory in (False, True):
-        if not text_runtime_files(manifest, files, memory=memory):
+    for profile_id, pair in KIT_RUNTIME_PAIRS.items():
+        if not text_runtime_files(manifest, files, required_profile=profile_id):
             continue
-        pairs = ((M2_RUNTIME_PROFILE, M2_RUNTIME_DESTINATION),
-                 (M2_RUNTIME_ARCHIVE, M2_ARCHIVE_DESTINATION)) if memory else (
-                 (TEXT_RUNTIME_PROFILE, TEXT_RUNTIME_DESTINATION),
-                 (TEXT_RUNTIME_ARCHIVE, TEXT_ARCHIVE_DESTINATION))
+        pairs = ((pair[0], pair[2]), (pair[1], pair[3]))
         for name, relative in pairs:
             staged = source / relative
             if (any(p.is_symlink() for p in (staged, *staged.parents))
@@ -263,15 +265,13 @@ def status(directory: Path) -> dict[str, Any]:
         "installed": "not_checked",
         "loaded": "not_checked",
         "next": "initialize; then follow the native owner deploy/cold-load steps",
-        "text_runtime": ("bundled_installation_not_checked" if "text_runtime" in manifest
-                         else "not_bundled"),
-        "m2_runtime": ("bundled_installation_not_checked" if "m2_runtime" in manifest
-                       else "not_bundled"),
-        # The Workbench may read only these two fixed staged pairs. These
+        **{pair[4]: ("bundled_installation_not_checked" if pair[4] in manifest
+                     else "not_bundled") for pair in KIT_RUNTIME_PAIRS.values()},
+        # The Workbench may read only these fixed staged pairs. These
         # hashes come from the already verified package inventory, not from a
         # caller-supplied profile or path.
-        "text_runtime_identity": manifest.get("text_runtime"),
-        "m2_runtime_identity": manifest.get("m2_runtime"),
+        **{pair[4] + "_identity": manifest.get(pair[4])
+           for pair in KIT_RUNTIME_PAIRS.values()},
     }
 
 
@@ -353,9 +353,8 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
     with instance_lock(directory / "initialize.lock"):
         prepared = status(directory)
         source = directory / "source"
-        if (prepared.get("text_runtime") == "bundled_installation_not_checked"
-                or prepared.get("m2_runtime") == "bundled_installation_not_checked") and (
-                not config_path.exists()):
+        if (any(prepared.get(pair[4]) == "bundled_installation_not_checked"
+                for pair in KIT_RUNTIME_PAIRS.values()) and not config_path.exists()):
             # New members do not yet have a selection or even a project profile.
             # Let the selected release own the profile and its default private state.
             report = json.loads(run([

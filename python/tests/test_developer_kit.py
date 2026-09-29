@@ -266,6 +266,69 @@ def test_optional_m2_runtime_is_separate_from_text_and_requires_exact_pair(
         install.text_runtime_files(manifest, files, memory=True)
 
 
+def test_v2_kit_pair_is_inventoried_staged_and_selected_without_caller_path(
+        inputs, tmp_path, monkeypatch):
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.local_models import LocalModelService
+    from tools import install_developer_kit as install
+
+    archive = tmp_path / "v2.tgz"
+    archive.write_bytes(b"synthetic v2 candidate")
+    profile = tmp_path / "v2.json"
+    profile.write_text(json.dumps({
+        "schema": "stpd/local-text-m2-runtime-v2",
+        "runtime_package": synthetic_text_pin(archive.read_bytes()),
+    }))
+    supplied = {"m2_v2_runtime_profile": PinnedFile(profile, sha256(profile.read_bytes())),
+                "m2_v2_runtime_archive": PinnedFile(archive, sha256(archive.read_bytes()))}
+    with pytest.raises(BoundaryError, match="m2_v2_runtime_profile_and_archive_required"):
+        package(**{**inputs, "m2_v2_runtime_profile": supplied["m2_v2_runtime_profile"]})
+    wrong = json.loads(profile.read_text())
+    wrong["schema"] = "stpd/local-text-m2-runtime-v1"
+    profile.write_text(json.dumps(wrong))
+    with pytest.raises(BoundaryError, match="text_runtime_profile_invalid"):
+        package(**{**inputs, **supplied, "m2_v2_runtime_profile": PinnedFile(
+            profile, sha256(profile.read_bytes()))})
+    wrong["schema"] = "stpd/local-text-m2-runtime-v2"
+    wrong["runtime_package"]["release_asset_sha256"] = "0" * 64
+    profile.write_text(json.dumps(wrong))
+    with pytest.raises(BoundaryError, match="text_runtime_archive_checksum_mismatch"):
+        package(**{**inputs, **supplied, "m2_v2_runtime_profile": PinnedFile(
+            profile, sha256(profile.read_bytes()))})
+    wrong["runtime_package"] = synthetic_text_pin(archive.read_bytes())
+    profile.write_text(json.dumps(wrong))
+    supplied["m2_v2_runtime_profile"] = PinnedFile(profile, sha256(profile.read_bytes()))
+    checked = []
+    monkeypatch.setattr("tools.package_developer_kit.install_runtime",
+                        lambda *a, **k: checked.append((a, k)))
+    package(**{**inputs, **supplied})
+    assert len(checked) == 1
+    assert checked[0][0][0].name == "text-menu-m2-v2"
+    assert checked[0][1]["required_profile"] == "text-menu-m2-v2"
+    monkeypatch.setattr(install, "REPOSITORY", str(inputs["root"]))
+    expected = sha256(inputs["output"].read_bytes())
+    target = tmp_path / "releases" / expected
+    receipt = install.prepare(inputs["output"], expected, target.parent)
+    assert receipt["m2_v2_runtime"] == "bundled_installation_not_checked"
+    assert receipt["m2_v2_runtime_identity"] == {
+        "profile_sha256": sha256(profile.read_bytes()),
+        "archive_sha256": sha256(archive.read_bytes()),
+    }
+    service = LocalModelService(ProjectConfig(tmp_path / "state", "", "", None, combination()))
+    service.root = target / "source/python"
+    raw, staged_archive, pin = service._selected_kit_text_runtime("text-menu-m2-v2")
+    assert raw == profile.read_bytes()
+    assert staged_archive.read_bytes() == archive.read_bytes()
+    assert pin == synthetic_text_pin(archive.read_bytes())
+    staged_archive.write_bytes(b"replaced")
+    with pytest.raises(BoundaryError, match="trusted_text_runtime_kit_invalid"):
+        service._selected_kit_text_runtime("text-menu-m2-v2")
+    staged_archive.unlink()
+    staged_archive.symlink_to(archive)
+    with pytest.raises(BoundaryError, match="trusted_text_runtime_kit_invalid"):
+        service._selected_kit_text_runtime("text-menu-m2-v2")
+
+
 def test_text_and_m2_kit_profiles_coexist_and_staged_m2_drift_blocks_status(
         inputs, tmp_path, monkeypatch):
     from tools import install_developer_kit as install
@@ -331,6 +394,8 @@ def test_workbench_consumes_real_kit_verifier_receipt_and_rejects_staged_drift(
     assert pin == synthetic_text_pin(archive.read_bytes())
     with pytest.raises(BoundaryError, match="trusted_text_runtime_asset_not_bundled"):
         service._selected_kit_text_runtime("text-menu-m2-v1")
+    with pytest.raises(BoundaryError, match="trusted_text_runtime_asset_not_bundled"):
+        service._selected_kit_text_runtime("text-menu-m2-v2")
     staged = target / "source" / install.TEXT_RUNTIME_DESTINATION
     staged.write_bytes(b"changed")
     with pytest.raises(BoundaryError, match="trusted_text_runtime_kit_invalid"):

@@ -17,10 +17,29 @@ M2_RUNTIME_PROFILE = "m2-runtime/profile.json"
 M2_RUNTIME_ARCHIVE = "m2-runtime/runtime.tgz"
 M2_RUNTIME_DESTINATION = "python/.local/text-menu-m2-runtime-v1.json"
 M2_ARCHIVE_DESTINATION = "python/.local/text-menu-m2-runtime-v1.tgz"
+V2_M2_RUNTIME_PROFILE = "m2-v2-runtime/profile.json"
+V2_M2_RUNTIME_ARCHIVE = "m2-v2-runtime/runtime.tgz"
+V2_M2_RUNTIME_DESTINATION = "python/.local/text-menu-m2-runtime-v2.json"
+V2_M2_ARCHIVE_DESTINATION = "python/.local/text-menu-m2-runtime-v2.tgz"
+
+# The selected release carries only these fixed, independently inventoried pairs.
+# (profile, archive, staged profile, staged archive, manifest key, schema)
+KIT_RUNTIME_PAIRS = {
+    "text-menu-v1": (TEXT_RUNTIME_PROFILE, TEXT_RUNTIME_ARCHIVE,
+                     TEXT_RUNTIME_DESTINATION, TEXT_ARCHIVE_DESTINATION,
+                     "text_runtime", "stpd/local-text-runtime-v1"),
+    "text-menu-m2-v1": (M2_RUNTIME_PROFILE, M2_RUNTIME_ARCHIVE,
+                        M2_RUNTIME_DESTINATION, M2_ARCHIVE_DESTINATION,
+                        "m2_runtime", "stpd/local-text-m2-runtime-v1"),
+    "text-menu-m2-v2": (V2_M2_RUNTIME_PROFILE, V2_M2_RUNTIME_ARCHIVE,
+                        V2_M2_RUNTIME_DESTINATION, V2_M2_ARCHIVE_DESTINATION,
+                        "m2_v2_runtime", "stpd/local-text-m2-runtime-v2"),
+}
 
 
 def text_runtime_pin(profile_raw: bytes, archive_raw: bytes, *,
-                     memory: bool = False) -> dict[str, Any]:
+                     memory: bool = False,
+                     required_profile: str | None = None) -> dict[str, Any]:
     """Check the externally approved profile against inventoried archive bytes."""
     if len(archive_raw) > ARCHIVE_LIMIT:
         raise BoundaryError("developer_kit", "text_runtime_archive_too_large")
@@ -28,8 +47,10 @@ def text_runtime_pin(profile_raw: bytes, archive_raw: bytes, *,
     if not isinstance(profile, dict) or set(profile) != {"schema", "runtime_package"}:
         raise BoundaryError("developer_kit", "text_runtime_profile_invalid")
     pin = profile["runtime_package"]
-    if (profile["schema"] != ("stpd/local-text-m2-runtime-v1" if memory
-                              else "stpd/local-text-runtime-v1")
+    expected_schema = (KIT_RUNTIME_PAIRS[required_profile][5] if required_profile is not None
+                       else ("stpd/local-text-m2-runtime-v1" if memory
+                             else "stpd/local-text-runtime-v1"))
+    if (profile["schema"] != expected_schema
             or not isinstance(pin, dict)
             or set(pin) != {"package", "version", "source_revision",
                             "component_tree_revision", "release_asset_sha256",
