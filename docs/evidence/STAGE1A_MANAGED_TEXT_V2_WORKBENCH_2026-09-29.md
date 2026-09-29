@@ -139,6 +139,31 @@ the engineering entry, not a polished all-scenario UI: player statuses/orbs,
 persistent potions/relics and other page details still remain accessible in the
 full public snapshot rather than all having specialized summary layouts.
 
+At clean integrated source `3ec44b73dcc03453be8a9114458befc37029ac71`, Safari
+displayed all 55 actual map referents with the new coordinates/connections and
+the exact offered action label. Start and Stop were clicked in the local page,
+without login; no gameplay action was submitted during this presentation pass.
+The resulting stopped report begins `2466493c6cb5`. The combined shell/project
+Node files passed 209 tests on that source.
+
+Source `873b34f96c2615cba49de9984127a97b147c9dea` subsequently fixes a report
+provenance omission: new sessions retain their exact public Host package pin,
+not just the game's candidate identity. The original regression failed with
+missing `host_package_pin`; after the correction, 28 environment/HTTP tests,
+scoped Ruff and mypy passed. A configured pin during startup is not proof of
+successful validation; activation still requires package, native-build and
+episode checks. Historical reports without this field are unchanged, and a
+later profile change cannot rewrite the immutable report.
+
+The real authenticated HTTP six-step journey was repeated on `873b34f9` to
+verify this owning change, including exact archived pin equality and successful
+episode provenance. It completed in 5.176 seconds with report
+`a608d995442b014e64fecb18e3a0b140f5e1fc01d7e1feefab645abb96b2cc1a`.
+Aggregate receipt SHA-256:
+`78c90d7bbcd32c29464e7d3de66f2e1f8b672b778644bfef6ae1c089c25ccd22`.
+The private Workbench again reported not_running after normal CLI Stop.
+This remains a scripted engineering control, not Human/expert training data.
+
 ### Source checks
 
 On final Host source `35dcf11a`, `npm --prefix components/host-runtime run check`
