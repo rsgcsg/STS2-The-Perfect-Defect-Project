@@ -245,6 +245,35 @@ def test_exact_profile_start_one_explicit_action_stop_and_immutable_report(tmp_p
     assert service.stop(session_id)["session"]["report_artifact_id"] == report_id
 
 
+def test_report_retains_session_host_pin_without_private_paths_or_current_profile_lookup(
+    tmp_path: Path,
+) -> None:
+    config, host, candidate, pin, audit, checked = fixture(tmp_path)
+    client = PublicClientFixture(audit)
+    service = LocalEnvironmentService(
+        config, audit=checked, client_factory=lambda _command, _host, _pin: client,
+    )
+    started = service.start(SCENARIO["id"])
+    session_id = started["session"]["session_id"]
+    try:
+        active = wait_status(service, "active")
+        assert active["session"]["host_package_pin"] == pin
+    finally:
+        stopped = service.stop(session_id)
+    report_id = stopped["session"]["report_artifact_id"]
+    report = service.report(report_id)
+    assert report["host_package_pin"] == pin
+    assert report["episode_identity"]["candidate_build"] == audit
+    assert str(host) not in json.dumps(report)
+    assert str(candidate) not in json.dumps(report)
+    profile_path = config.state_dir / PROFILE_FILE
+    profile = json.loads(profile_path.read_text())
+    profile["host_package_pin"]["source_revision"] = "f" * 40
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    assert service.report(report_id) == report
+    assert client.closed
+
+
 def test_declared_v2_profile_uses_public_selection_and_exact_context(tmp_path: Path) -> None:
     config, host, candidate, pin, audit, checked = fixture(tmp_path)
     (config.state_dir / PROFILE_FILE).unlink()

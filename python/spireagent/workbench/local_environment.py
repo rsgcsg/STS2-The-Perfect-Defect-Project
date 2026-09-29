@@ -481,6 +481,10 @@ class LocalEnvironmentService:
             self.record = {"schema": SCHEMA, "status": "starting", "session_id": session_id,
                            "scenario_id": scenario_id, "seed": SCENARIO["seed"],
                            "input_profile": profile["input_profile"],
+                           # The worker verifies these exact package bytes before activation.
+                           # Capture only public identity, never private installation paths;
+                           # report reads must not reconstruct it from a later profile.
+                           "host_package_pin": dict(profile["host_package_pin"]),
                            "producer": producer, "events": [], "context": None,
                            "episode_identity": None}
             self.stopping = False
