@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import torch
 from test_local_training import _human_ready
 
 from spireagent.json_boundary import BoundaryError
@@ -145,3 +146,19 @@ def test_spawn_failure_is_failed_but_started_child_outcome_is_unknown(
     durable = json.loads((config.state_dir / OPERATION_FILE).read_bytes())
     assert durable["status"] == "pending" and durable["model_type"] == "memory"
     assert not (config.state_dir / EXPORT_ROOT / model_id).exists()
+
+
+def test_registration_reconciles_m2_in_child_without_changing_web_torch_threads(
+        tmp_path: Path, monkeypatch) -> None:
+    config, _, _, _, _, _, _, model_id = _fixture(tmp_path, monkeypatch)
+    service = LocalModelExport(config)
+    service.start(model_id)
+    assert _settle(service)["status"] == "completed"
+    previous = torch.get_num_threads()
+    try:
+        torch.set_num_threads(3)  # Deliberately unlike the run's pinned two threads.
+        assert service.verified_memory_for_registration(model_id) == (
+            config.state_dir / EXPORT_ROOT / model_id)
+        assert torch.get_num_threads() == 3
+    finally:
+        torch.set_num_threads(previous)
