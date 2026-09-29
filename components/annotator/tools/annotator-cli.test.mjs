@@ -48,6 +48,6 @@ test("Annotator package and native Mod agree; Connector dependency is a valid mi
   assert.equal(nativeVersion, packageMetadata.version);
   assert.equal(connectorDependencies.length, 1);
   assert.equal(semVerAtLeast(connectorManifest.version, connectorDependencies[0].min_version), true);
-  assert.equal(semVerAtLeast(connectorManifest.version, "1.3.0-rc.10"), false);
-  assert.equal(semVerAtLeast(connectorManifest.version, "1.3.0-rc.06"), false);
+  assert.equal(semVerAtLeast("1.3.0-rc.6", "1.3.0-rc.10"), false);
+  assert.equal(semVerAtLeast("1.3.0-rc.6", "1.3.0-rc.06"), false);
 });

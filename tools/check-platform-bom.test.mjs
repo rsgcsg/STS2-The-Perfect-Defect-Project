@@ -27,6 +27,7 @@ test("BOM check rejects component and public Connector pin drift", async () => {
 test("Connector dependency is a strict SemVer minimum, not a current-version lockstep pin", () => {
   const bom = JSON.parse(fs.readFileSync(path.join(root, "platform-bom.json"), "utf8"));
   const authorities = structuredClone(authoritySnapshot);
+  authorities.connectorManifest.version = "1.3.0-rc.6"; // Fixed comparison fixture; future source versions may advance.
   const dependencies = authorities.annotatorManifest.dependencies;
   const connector = dependencies.find(({ id }) => id === "STS2_MCP");
   const dependencyErrors = () => validatePlatformBom(bom, authorities).filter((error) =>
@@ -37,13 +38,15 @@ test("Connector dependency is a strict SemVer minimum, not a current-version loc
   assert.equal(dependencyErrors().length, 1);
   connector.min_version = "1.3.0-rc.10";
   assert.equal(dependencyErrors().length, 1); // Numeric prerelease order.
+  connector.min_version = "1.3.0-rc.x";
+  assert.equal(dependencyErrors().length, 1); // Valid SemVer, later than numeric rc.6.
   connector.min_version = "1.3.0";
   assert.equal(dependencyErrors().length, 1); // Stable is later than rc.6.
   connector.min_version = "1.3.0-rc.5";
   authorities.connectorManifest.version = "1.3.0";
   assert.deepEqual(dependencyErrors(), []); // Stable satisfies its prerelease minimum.
   authorities.connectorManifest.version = "1.3.0-rc.6";
-  for (const invalid of ["", "1.3", "1.3.0-rc.06", "1.3.0-rc.x", "1.3.0+bad..meta"]) {
+  for (const invalid of ["", "1.3", "1.3.0-rc.06", "1.3.0+bad..meta"]) {
     connector.min_version = invalid;
     assert.equal(dependencyErrors().length, 1, invalid);
   }
