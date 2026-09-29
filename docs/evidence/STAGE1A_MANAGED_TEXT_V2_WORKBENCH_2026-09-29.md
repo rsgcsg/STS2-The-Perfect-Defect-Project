@@ -184,3 +184,38 @@ No Human recording, trained v2 policy, memory-benefit result, complete-game
 coverage, arbitrary checkpoint restore, MCTS, Windows/Linux native execution
 or production distribution is established here. Existing v1 model/data
 identities and failed receipts remain unchanged.
+
+## Windows fixture follow-up, 2026-09-30 AEST
+
+PR107 full run [36579954435/1](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36579954435)
+executes head `2d329c24196d45d5ac3e6150c3f0767102a6a7d8` through merge checkout
+`ceb49f48370b0e402c554b099c6cf51cb0f87eb5`. Windows job
+[109445279230](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36579954435/job/109445279230)
+failed the new cleanup-failure negative control: its synthetic child could exit
+naturally when the rejected-cleanup driver exited and closed stdin. The assertion
+expecting that child still alive failed; the nonzero driver-exit assertion passed.
+This receipt does not reinterpret that failure as a production shutdown failure.
+
+Test-only correction `21988e6129de4f88c9077ccdc4692ec5b339ce84` gives that
+negative-control child an explicit live handle and an EOF marker, with a 30-second
+orphan backstop. The test waits for actual EOF, retains the nonzero-exit/live-child
+assertions and kills only its own fixture child in finally. It does not skip
+Windows, weaken a production guard or alter production shutdown behavior.
+
+The new assertion against the old fixture failed with `the negative control must
+observe parent EOF while retaining a live handle` (exit 1; four other cases
+unselected). Corrected `node --test components/host-runtime/test/managed-driver-shutdown.test.mjs`
+passed all five cases (exit 0). `npm --prefix components/host-runtime run check`
+passed 237 Node cases with four exact-game skips, 17 Python cases, docs/repository
+checks and temporary installed-package smoke (exit 0). An independent read found
+no blocker in the fixture repair. Local macOS results do not substitute for the
+new Windows candidate run.
+
+Current path-scoped Host source is `21988e6129de4f88c9077ccdc4692ec5b339ce84`,
+tree `20313f3165a9d8452001af55e0b7402b5bce634e`, source digest
+`1cc53b124bfc49e3ea0062b40ac6ae54bc82813179ff3e63988f95e184521c5d`.
+Contract digest and rc.20 version are unchanged. The package check still reports
+installed content digest `f56978fd016834e5eef2b5afd5c81b8ad94d5c005e0dc36d6b036396116512bd`:
+the changed tests/fixture are excluded from its distributable file list. Earlier
+private installed canaries retain their original source/pin identity; this test
+commit does not relabel those installations or historical reports.
