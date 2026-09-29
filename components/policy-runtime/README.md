@@ -24,9 +24,37 @@ this event. The record is an observation only: it has no decision, delivery or
 causal successor association, and it does not expand the policy's supported
 interactions. A failed event write triggers the existing fail-closed handoff.
 
+## Stateful observation port (opt-in)
+
+A Manifest may select `sts2.policy-runtime/decision-only-ndjson-2` only with
+`text-menu-snapshot-1` and zero Reads. In that mode Runtime obtains one atomic
+Connector `text-menu/observation-context` envelope: the unchanged strict
+`text-menu-v1` snapshot and its opaque, nullable game continuity ID. A null ID
+or unsupported endpoint fails closed; Runtime never falls back to a separate
+snapshot GET. The game ID is control metadata and never enters the model page.
+
+Runtime mints a separate opaque `continuity_token` and adds it to the v2
+request's existing decision input. The v2 response keeps the existing
+three-field `output` and adds a sibling `completion` with that token, exact
+`snapshot_id`, and `sequence`. The port checks request ID, digest, count and
+completion before accepting scores. A known completed observation remains in
+the same continuity segment through ordinary Human handoff, One-Step,
+abstention and known non-delivery. A new game ID or a request offered to the
+child without a trustworthy completion causes a new token before the next
+offer. Command `recovery_epoch` is separate: it rejects stale commands but
+does not itself erase a known model observation.
+
+The child processes requests serially; an old cancelled response cannot satisfy
+a new request. Runtime marks a port request offered when it invokes the child
+stdin write, and treats timeout, abort, invalid response or port failure after
+that point as uncertain model state. Human handoff does not wait for the old
+child computation. After too many outstanding cancelled request IDs the port
+closes and kills that child rather than forgetting old IDs. This contract does
+not claim native action execution, actual-action feedback, or model quality.
+
 ## Standalone consumer package
 
-Version `0.1.0-rc.11` provides a candidate package for external consumers. Build
+Version `0.1.0-rc.12` provides a candidate package for external consumers. Build
 from a committed component checkout with the checked-in lockfile:
 
 ```bash
@@ -35,7 +63,7 @@ npm --prefix components/policy-runtime run check
 npm --prefix components/policy-runtime run package -- --output /absolute/package-output
 ```
 
-The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.11.tgz`,
+The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.12.tgz`,
 `policy-runtime-package.json` and `checksums.sha256`. It requires committed
 component source and does not publish anything. The package contains compiled
 JavaScript/declarations, CLI entries, license, a component identity record and

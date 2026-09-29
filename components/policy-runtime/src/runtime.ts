@@ -3,7 +3,7 @@ import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvi
 import { admitWholeDecision } from "./admission.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { candidateOrderDigest } from "./digest.js";
-import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type DecisionAction, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type TickResult } from "./contracts.js";
+import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type DecisionAction, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TickResult } from "./contracts.js";
 import { StaleWholeBundleError } from "./connector.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 
@@ -15,7 +15,10 @@ export class RuntimeControlPreconditionError extends Error {
 export interface RuntimeOptions {
   manifest: PolicyManifest;
   connector: PolicyConnector;
-  policy: Policy;
+  policy?: Policy;
+  statefulPolicy?: StatefulPolicy;
+  /** A child port marks an offer only when stdin.write is invoked. */
+  statefulOfferBoundary?: "invocation" | "port_write";
   mode?: RuntimeMode;
   runId?: string;
   evidence?: AgentRunEvidence;
@@ -90,6 +93,7 @@ export class PolicyRuntime {
   private recoveryEpoch = 0;
   private recoveryEpochExhausted = false;
   private activePolicy: { controller: AbortController } | null = null;
+  private continuity: { token: string; gameId: string; runtimeId: string; environment: string } | null = null;
   private autonomyBudgetTimer: ReturnType<typeof setTimeout> | undefined;
   private autonomyBudgetGeneration = 0;
   private autonomyBudgetHandoffQueued = false;
@@ -116,6 +120,8 @@ export class PolicyRuntime {
 
   constructor(private readonly options: RuntimeOptions) {
     validatePolicyManifest(options.manifest);
+    if (this.stateful && !options.statefulPolicy) throw new Error("v2 adapter requires a stateful policy");
+    if (!this.stateful && !options.policy) throw new Error("v1 adapter requires a policy");
     if (options.evidence && !/^[a-f0-9]{64}$/u.test(options.runtimeIdentity?.code_sha256 ?? "")) {
       throw new Error("Agent evidence requires an exact Policy Runtime code SHA-256");
     }
@@ -145,6 +151,35 @@ export class PolicyRuntime {
       endedReason: null
     };
     if (started) this.scheduleAutonomyBudgetDeadline();
+  }
+
+  private get stateful(): boolean {
+    return this.options.manifest.adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-2";
+  }
+
+  private bindContinuity(gameId: string, snapshot: AnyDecisionBundle["observation"]): string {
+    const runtimeId = snapshot.session.runtime_instance_id;
+    const environment = snapshot.session.environment_fingerprint;
+    if (!this.continuity || this.continuity.gameId !== gameId ||
+        this.continuity.runtimeId !== runtimeId || this.continuity.environment !== environment) {
+      this.continuity = { token: randomUUID(), gameId, runtimeId, environment };
+    }
+    return this.continuity.token;
+  }
+
+  private rotateContinuity(): void {
+    if (this.continuity) this.continuity = { ...this.continuity, token: randomUUID() };
+  }
+
+  private validateCompletion(completion: ObservationCompletion, input: StatefulPolicyDecisionInput): void {
+    if (completion === null || typeof completion !== "object" ||
+        Object.keys(completion).sort().join(",") !== "continuity_token,sequence,snapshot_id" ||
+        completion.continuity_token !== input.continuity_token ||
+        completion.snapshot_id !== input.bundle.observation.snapshot_id ||
+        completion.sequence !== input.bundle.observation.sequence ||
+        !Number.isSafeInteger(completion.sequence) || completion.sequence < 0) {
+      throw new Error("policy observation completion watermark mismatch");
+    }
   }
 
   status(): RuntimeStatus {
@@ -305,8 +340,17 @@ export class PolicyRuntime {
     }
     this.refreshing = true;
     let bundle: AnyDecisionBundle | null;
+    let gameContinuityId: string | null = null;
     try {
-      bundle = await refreshWholeDecisionBundle(this.options.connector, this.options.manifest.requirements.reads, { ...this.staleRefresh, inputProfile, sleep: this.sleep, onStale: async (attempt, delayMs) => { await this.appendEvidence("stale_whole_bundle_discarded", { attempt, delay_ms: delayMs, whole_bundle_discarded: true, action_submission_attempted: false }); } });
+      if (this.stateful) {
+        if (!this.options.connector.observeTextMenuContext) throw new Error("text_menu_context_unsupported");
+        const context = await this.options.connector.observeTextMenuContext();
+        if (context.schema !== "sts2.player-environment/text-menu-observation-context-1") throw new Error("text_menu_context_schema_mismatch");
+        gameContinuityId = context.game_continuity_id;
+        bundle = { observation: context.snapshot, reads: [] };
+      } else {
+        bundle = await refreshWholeDecisionBundle(this.options.connector, this.options.manifest.requirements.reads, { ...this.staleRefresh, inputProfile, sleep: this.sleep, onStale: async (attempt, delayMs) => { await this.appendEvidence("stale_whole_bundle_discarded", { attempt, delay_ms: delayMs, whole_bundle_discarded: true, action_submission_attempted: false }); } });
+      }
     } catch (error) {
       this.refreshing = false;
       await this.failClosed(`observation_failed:${message(error)}`);
@@ -314,6 +358,11 @@ export class PolicyRuntime {
     }
     this.refreshing = false;
     if (!bundle) return { type: "not_admitted", reason: "stale_refresh_exhausted", status: this.status() };
+    if (this.stateful && (typeof gameContinuityId !== "string" || gameContinuityId.length === 0)) {
+      this.continuity = null;
+      await this.failClosed("game_continuity_unavailable");
+      return { type: "not_admitted", reason: "game_continuity_unavailable", status: this.status() };
+    }
     if (isTextMenuSnapshot(bundle.observation) !== textMenu) {
       await this.failClosed("snapshot_profile_drift");
       return { type: "not_admitted", reason: "snapshot_profile_drift", status: this.status() };
@@ -349,16 +398,33 @@ export class PolicyRuntime {
     const policyRecoveryEpoch = this.recoveryEpoch;
     const policyController = new AbortController();
     this.activePolicy = { controller: policyController };
+    let offered = false;
     try {
-      adapterDecision = await withTimeout(
-        Promise.resolve(this.options.policy(input, policyController.signal)),
-        this.policyTimeoutMs,
-        "policy decision timed out",
-        policyController.signal
-      );
+      if (this.stateful) {
+        const statefulInput: StatefulPolicyDecisionInput = { ...input,
+          continuity_token: this.bindContinuity(gameContinuityId!, bundle.observation) };
+        const onOffer = () => { offered = true; };
+        if (this.options.statefulOfferBoundary !== "port_write") onOffer();
+        const result = await withTimeout(
+          Promise.resolve(this.options.statefulPolicy!(statefulInput, policyController.signal, onOffer)),
+          this.policyTimeoutMs, "policy decision timed out", policyController.signal);
+        if (!offered) throw new Error("stateful policy returned before offer");
+        this.validateCompletion(result.completion, statefulInput);
+        adapterDecision = result.output;
+      } else {
+        adapterDecision = await withTimeout(
+          Promise.resolve(this.options.policy!(input, policyController.signal)),
+          this.policyTimeoutMs, "policy decision timed out", policyController.signal);
+      }
       assertAdapterDecision(adapterDecision);
       validateAdapterDecision(adapterDecision, admission.candidateDigest, admission.candidateCount);
     } catch (error) {
+      if (this.stateful && offered) {
+        // A timeout can win the race without aborting the pending port read.
+        // Fence that request before another continuity token can be offered.
+        policyController.abort();
+        this.rotateContinuity();
+      }
       if (this.autonomyBudgetState.exhaustedReason === "deadline") {
         await this.handoffAutonomyBudget();
         return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
