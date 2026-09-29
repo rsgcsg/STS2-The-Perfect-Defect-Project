@@ -58,6 +58,20 @@ def config(**changes) -> MemoryConfig:
                                 max_total_input_tokens=300), **changes)
 
 
+def test_reset_control_has_same_fresh_initial_weights_and_input():
+    persistent = config(reset_each_step=False)
+    reset = config(reset_each_step=True)
+    assert replace(reset, reset_each_step=False) == persistent
+    ordinary_engine = MemoryRankingEngine(source(), persistent)
+    reset_engine = MemoryRankingEngine(source(), reset)
+    assert ordinary_engine.input_digest == reset_engine.input_digest
+    assert ordinary_engine.optimizer.state_dict()["state"] == {}
+    assert reset_engine.optimizer.state_dict()["state"] == {}
+    assert ordinary_engine.model.state_dict().keys() == reset_engine.model.state_dict().keys()
+    for name, value in ordinary_engine.model.state_dict().items():
+        assert torch.equal(value, reset_engine.model.state_dict()[name]), name
+
+
 def finish(engine: MemoryRankingEngine) -> bytes:
     while engine.next_episode < engine.config.episode_count:
         assert torch.isfinite(torch.tensor(engine.advance()))

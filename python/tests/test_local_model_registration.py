@@ -9,6 +9,7 @@ import threading
 from dataclasses import replace
 from http.cookiejar import CookieJar
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
@@ -32,6 +33,7 @@ from spireagent.workbench.local_model_registration import (
     _requirements,
 )
 from spireagent.workbench.local_models import LocalModelService
+from spireagent.workbench.memory_recipe import M2_K1_RECIPE, RESET_K1_RECIPE
 from stpd.token_policy_installation import validate
 
 pytest_plugins = ["test_local_model_export"]
@@ -122,6 +124,53 @@ def test_existing_b_model_registration_preserves_its_architecture(
     _, manifest = validate(root, root / entry["config"], root / entry["manifest"])
     assert manifest["policy"]["architecture"] == "stage1a.b.s.v2"
     assert entry["label"] == "本机文字菜单 B " + model_id[:8]
+
+
+@pytest.mark.parametrize(("recipe", "label"), [
+    (M2_K1_RECIPE, "M2-K1 训练版"),
+    (RESET_K1_RECIPE, "Reset-K1 独立训练对照版"),
+])
+def test_memory_registration_keeps_exact_architecture_and_label(
+        tmp_path: Path, monkeypatch, recipe: str, label: str) -> None:
+    model_id = "a" * 64
+    root = tmp_path / "models"
+    root.mkdir()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    exported = SimpleNamespace(
+        status=lambda: {"schema": "stpd/local-model-export-operation-v2",
+                        "operation": {"model_id": model_id, "model_type": "memory"}},
+        verified_memory_for_registration=lambda *_args, **_kwargs: tmp_path / "export",
+        verified_memory_recipe_for_registration=lambda *_args, **_kwargs: recipe,
+    )
+    models = SimpleNamespace(
+        root=root,
+        text_runtime_profile=lambda _profile: (runtime, {"pin": "synthetic"}),
+        _connector_pin=lambda: {"pin": "connector"},
+    )
+    service = LocalModelRegistration(SimpleNamespace(), exported, models)
+    monkeypatch.setattr(registration_module, "validate_runtime_install", lambda *_args: {})
+    monkeypatch.setattr(service, "_capabilities", lambda *_args, **_kwargs: _caps())
+    monkeypatch.setattr(service, "_context_available", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_m2_runtime_manifest_compatible",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_entries", lambda: [])
+    monkeypatch.setattr(service, "_matching", lambda *_args, **_kwargs: (None, False))
+    captured: dict[str, object] = {}
+
+    def bind(_root, _export, config_path, manifest_path, **kwargs):
+        captured.update(kwargs)
+        config_path.write_text("{}")
+        manifest_path.write_text("{}")
+
+    monkeypatch.setattr(registration_module, "bind_memory_export", bind)
+    result = service.register(model_id)
+    registry = json.loads((root / REGISTRY).read_bytes())
+    entry = registry["policies"][0]
+    assert result["status"] == "registered"
+    assert captured["policy"]["architecture"] == recipe
+    assert entry["label"] == "本机文字菜单 " + label + " " + model_id[:8]
+    assert entry["adapter"] == "stpd-m2-decision-adapter"
 
 
 def test_registration_budget_prevents_append_after_expensive_binding(
