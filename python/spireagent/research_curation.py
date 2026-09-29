@@ -152,18 +152,23 @@ class CurationLedger:
             db.execute("INSERT OR IGNORE INTO curation_exact_source_index VALUES(?)", (source,))
 
     def reserve_managed_observed_source(
-        self, store: Any, source: str, purpose: str,
+        self, store: Any, source: str, purpose: str, *, expected: Any,
     ) -> str:
         """Index a typed Managed stream and reserve its existing ledger purpose.
 
         This does not create a training-use record. All sessions with the same
-        declared scenario and seed share one conservative split component.
+        seed and exact candidate/game identity share one split component.
         """
-        from stpd.fullrun.managed_text_menu_import import load_managed_text_menu_source
+        from stpd.fullrun.managed_text_menu_import import (
+            ManagedImportExpectation,
+            load_managed_text_menu_source,
+        )
 
         if purpose not in {"training", "test"}:
             raise BoundaryError("curation", "managed_purpose_invalid")
-        verified = load_managed_text_menu_source(store, source)
+        if not isinstance(expected, ManagedImportExpectation):
+            raise BoundaryError("curation", "managed_expectation_required")
+        verified = load_managed_text_menu_source(store, source, expected=expected)
         run = verified.split_run_id
         archive = verified.report_id
         fingerprint = run.removeprefix("managed:")
@@ -183,6 +188,17 @@ class CurationLedger:
                 self._claim_guard(db, purpose, related)
             if any(kind != purpose for kind, _ in self._claims(db, related).values()):
                 raise BoundaryError("curation", "managed_split_purpose_overlap")
+            if purpose == "test" and (
+                db.execute("SELECT 1 FROM curation_source_uses WHERE source=? "
+                           "AND kind='training'", (source,)).fetchone()
+                or any(db.execute(
+                    "SELECT 1 FROM curation_uses WHERE run=? AND kind='training' UNION "
+                    "SELECT 1 FROM curation_source_uses u JOIN curation_source_runs r "
+                    "ON r.source=u.source WHERE r.run=? AND u.kind='training'",
+                    (related_run, related_run),
+                ).fetchone() for related_run in related)
+            ):
+                raise BoundaryError("curation", "managed_test_previously_used_for_training")
             if previous is None:
                 db.execute("INSERT INTO curation_sources VALUES(?,?,0)", (source, archive))
             db.execute("INSERT OR IGNORE INTO curation_source_runs VALUES(?,?)", (source, run))

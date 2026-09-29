@@ -29,6 +29,47 @@ MAX_EVENT_BYTES = 4 * 1024 * 1024
 
 
 @dataclass(frozen=True)
+class ManagedImportExpectation:
+    """Exact caller-supplied operation facts; this is not actor attestation."""
+
+    session_id: str
+    scenario_id: str
+    seed: str
+    host_package_pin: FrozenObject
+    candidate_build: FrozenObject
+    environment_fingerprint: str
+    runtime_instance_id: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id, "scenario_id": self.scenario_id,
+            "seed": self.seed, "host_package_pin": self.host_package_pin.value(),
+            "candidate_build": self.candidate_build.value(),
+            "environment_fingerprint": self.environment_fingerprint,
+            "runtime_instance_id": self.runtime_instance_id,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> ManagedImportExpectation:
+        if not isinstance(value, dict) or set(value) != {
+            "session_id", "scenario_id", "seed", "host_package_pin",
+            "candidate_build", "environment_fingerprint", "runtime_instance_id",
+        }:
+            _fail("import_expectation_invalid")
+        if any(not isinstance(value[key], str) or not value[key] for key in (
+            "session_id", "scenario_id", "seed", "environment_fingerprint",
+            "runtime_instance_id",
+        )) or not isinstance(value["host_package_pin"], dict) or not isinstance(
+            value["candidate_build"], dict
+        ):
+            _fail("import_expectation_invalid")
+        return cls(value["session_id"], value["scenario_id"], value["seed"],
+                   FrozenObject.of(value["host_package_pin"]),
+                   FrozenObject.of(value["candidate_build"]),
+                   value["environment_fingerprint"], value["runtime_instance_id"])
+
+
+@dataclass(frozen=True)
 class ManagedInput:
     sequence: int
     event_artifact_id: str
@@ -44,13 +85,72 @@ class ManagedSource:
     report_id: str
     report: dict[str, Any]
     inputs: tuple[ManagedInput, ...]
-    # One fixed scenario/seed/game is one conservative split component, even
-    # when Workbench session IDs differ. This is not an independent-game claim.
+    # Repeated seed and exact candidate/game identity share one split component,
+    # even when Workbench session IDs or UI scenario labels differ.
     split_run_id: str
+    import_expectation: ManagedImportExpectation
 
 
 def _fail(code: str) -> None:
     raise BoundaryError("managed_text_menu_import", code)
+
+
+def _snapshot(value: Any, *, interactive: bool) -> dict[str, Any]:
+    if not isinstance(value, dict) or value.get("schema") != (
+        "sts2.player-environment/text-menu-snapshot-2"
+    ) or value.get("input_profile") != PROFILE:
+        _fail("snapshot_invalid")
+    if interactive:
+        project_text_menu_v2_snapshot(value)
+    else:
+        # Public result observations may be terminal or temporarily settling.
+        # They carry no candidate label and never enter the next input unless
+        # another complete interactive page was actually recorded.
+        if value.get("status") == "interactive":
+            project_text_menu_v2_snapshot(value)
+        elif (value.get("status") not in {"observed", "settling", "visible_unsupported"}
+              or set(value) != {"protocol_version", "schema", "input_profile",
+                                "snapshot_id", "sequence", "observed_at", "status",
+                                "persistent", "interaction", "referents", "completeness",
+                                "session", "information_policy", "menu", "menu_actions"}
+              or value.get("protocol_version") != "1.0.0"
+              or not isinstance(value.get("observed_at"), str)
+              or not value["observed_at"]
+              or not isinstance(value.get("interaction"), dict)
+              or value["interaction"].get("capabilities") != []
+              or not isinstance(value["interaction"].get("content"), dict)
+              or not isinstance(value.get("referents"), list)
+              or not isinstance(value.get("completeness"), dict)
+              or not isinstance(value.get("information_policy"), dict)
+              or value["information_policy"].get("includes_hidden_information") is not False
+              or not isinstance(value.get("menu"), dict)
+              or set(value["menu"]) != {
+                  "cursor", "revision", "native_snapshot_id", "selection"}
+              or value["menu"].get("cursor") != "root"
+              or value["menu"].get("selection") != []
+              or type(value["menu"].get("revision")) is not int
+              or value["menu"]["revision"] < 0
+              or not isinstance(value["menu"].get("native_snapshot_id"), str)
+              or not value["menu"]["native_snapshot_id"]
+              or not isinstance(value.get("menu_actions"), dict)
+              or set(value["menu_actions"]) != {
+                  "status", "materialized_count", "total_count",
+                  "ordering_semantics", "actions"}
+              or value["menu_actions"].get("actions") != []
+              or value["menu_actions"].get("materialized_count") != 0
+              or value["menu_actions"].get("total_count") != 0
+              or value["menu_actions"].get("status") != (
+                  "complete" if value["status"] == "observed" else "unavailable")
+              or not isinstance(value["menu_actions"].get("ordering_semantics"), str)
+              or not value["menu_actions"]["ordering_semantics"]):
+            _fail("noninteractive_successor_invalid")
+    if (type(value.get("sequence")) is not int or value["sequence"] < 1
+            or not isinstance(value.get("snapshot_id"), str)
+            or not value["snapshot_id"] or not isinstance(value.get("session"), dict)
+            or set(value["session"]) != {"runtime_instance_id", "environment_fingerprint"}
+            or any(not isinstance(item, str) or not item for item in value["session"].values())):
+        _fail("snapshot_identity_invalid")
+    return dict(value)
 
 
 def _context(value: Any) -> dict[str, Any]:
@@ -60,15 +160,49 @@ def _context(value: Any) -> dict[str, Any]:
         value["game_continuity_id"], str
     ) or not value["game_continuity_id"]):
         _fail("context_invalid")
-    snapshot = value["snapshot"]
-    if not isinstance(snapshot, dict):
-        _fail("context_invalid")
-    project_text_menu_v2_snapshot(snapshot)
+    _snapshot(value["snapshot"], interactive=True)
     return dict(value)
 
 
-def _closed_report(store: ArtifactStore, report_id: str) -> tuple[Manifest, dict[str, Any],
-                                                                 tuple[ManagedInput, ...], str]:
+def _ui_successor(action: dict[str, Any], before: dict[str, Any],
+                  after: dict[str, Any]) -> None:
+    current, next_menu = before["menu"], after["menu"]
+    if (after["status"] != "interactive"
+            or next_menu["native_snapshot_id"] != current["native_snapshot_id"]
+            or next_menu["revision"] <= current["revision"]):
+        _fail("menu_successor_mismatch")
+    verb = action["verb"]
+    selection = current["selection"]
+    next_selection = next_menu["selection"]
+    if verb == "select_card":
+        valid = (current["cursor"] == "root"
+                 and next_menu["cursor"] in {"card_targets", "card_confirmation"}
+                 and next_selection == [{"role": "card",
+                                         "referent_id": action["subject_referent_id"]}])
+    elif verb == "select_target":
+        valid = (current["cursor"] == "card_targets"
+                 and next_menu["cursor"] == "card_confirmation"
+                 and next_selection == selection + [{
+                     "role": "target", "referent_id": action["subject_referent_id"]}])
+    elif verb == "cancel_selection":
+        valid = next_menu["cursor"] == "root" and next_selection == []
+    elif verb == "back":
+        if current["cursor"] == "card_confirmation" and len(selection) == 2:
+            valid = (next_menu["cursor"] == "card_targets"
+                     and next_selection == selection[:1])
+        else:
+            valid = next_menu["cursor"] in {"root", "information"} and next_selection == []
+    elif verb == "open_information":
+        valid = current["cursor"] == "root" and next_menu["cursor"] == "information"
+    else:
+        valid = next_menu["cursor"] == verb.removeprefix("open_")
+    if not valid:
+        _fail("menu_successor_mismatch")
+
+
+def _closed_report(store: ArtifactStore, report_id: str, *,
+                   expected: ManagedImportExpectation | None = None) -> tuple[
+                       Manifest, dict[str, Any], tuple[ManagedInput, ...], str]:
     report_manifest = store.get_manifest(report_id)
     params = report_manifest.parameters.value()
     if (report_manifest.kind != "analysis" or len(report_manifest.payloads) != 1
@@ -121,6 +255,18 @@ def _closed_report(store: ArtifactStore, report_id: str) -> tuple[Manifest, dict
     for key in ("source_patch_sha256", "artifact_sha256", "original_sts2_sha256",
                 "runtime_sts2_sha256"):
         digest(build[key], f"managed.{key}")
+    if expected is not None and expected.to_dict() != {
+        "session_id": report["session_id"], "scenario_id": report["scenario_id"],
+        "seed": report["seed"], "host_package_pin": pin,
+        "candidate_build": build,
+        "environment_fingerprint": episode["environment_fingerprint"],
+        "runtime_instance_id": episode["episode_provenance"].get("runtime_instance_id"),
+    }:
+        _fail("import_expectation_mismatch")
+    session = {"runtime_instance_id": episode["episode_provenance"].get(
+        "runtime_instance_id"), "environment_fingerprint": episode["environment_fingerprint"]}
+    if any(not isinstance(item, str) or not item for item in session.values()):
+        _fail("episode_lineage_invalid")
     initial: dict[str, Any] | None = None
     prior: dict[str, Any] | None = None
     inputs: list[ManagedInput] = []
@@ -157,6 +303,7 @@ def _closed_report(store: ArtifactStore, report_id: str) -> tuple[Manifest, dict
         action = event["action_id"]
         if (not isinstance(request, str) or not request or request in seen_requests
                 or not isinstance(action, str) or not action
+                or snapshot["session"] != session
                 or event["expected_snapshot_id"] != snapshot.get("snapshot_id")
                 or prior is not None and before != prior
                 or initial is not None and before["game_continuity_id"] !=
@@ -199,44 +346,62 @@ def _closed_report(store: ArtifactStore, report_id: str) -> tuple[Manifest, dict
                 }):
             _fail("unconfirmed_or_mismatched_result")
         successor = result["successor"]
-        project_text_menu_v2_snapshot(successor)
+        _snapshot(successor, interactive=False)
+        if (successor["session"] != session or successor["sequence"] <= snapshot["sequence"]
+                or successor["snapshot_id"] == snapshot["snapshot_id"]
+                or index < len(report["events"]) - 1 and successor["status"] != "interactive"):
+            _fail("successor_identity_or_order_mismatch")
+        if selected["effect_domain"] == "text_menu":
+            _ui_successor(selected, snapshot, successor)
         prior = {"schema": CONTEXT_SCHEMA, "snapshot": successor,
                  "game_continuity_id": before["game_continuity_id"]}
         inputs.append(ManagedInput(index + 1, parent.artifact_id, request, action,
                                    before, result))
     if report.get("context") != prior:
         _fail("final_context_mismatch")
-    # Same declared scenario/seed/game stays in one split group across imports.
-    run = "managed:" + semantic_hash([report["scenario_id"], report["seed"]])
+    # UI scenario names are mutable and cannot establish independent games.
+    run = "managed:" + semantic_hash([
+        report["seed"], build["source_patch_sha256"], build["artifact_sha256"],
+        build["runtime_sts2_sha256"],
+    ])
     return report_manifest, report, tuple(inputs), run
 
 
-def load_managed_text_menu_source(store: ArtifactStore, source_id: str) -> ManagedSource:
+def load_managed_text_menu_source(store: ArtifactStore, source_id: str, *,
+                                  expected: ManagedImportExpectation | None = None
+                                  ) -> ManagedSource:
     manifest = store.get_manifest(source_id)
     if (manifest.kind != "dataset" or manifest.payloads
             or len(manifest.parents) != 1 or manifest.parents[0].role != "managed_report"):
         _fail("managed_source_required")
     report_id = manifest.parents[0].artifact_id
-    _, report, inputs, run = _closed_report(store, report_id)
-    expected = {
+    recorded = ManagedImportExpectation.from_dict(
+        manifest.parameters.value().get("import_expectation"))
+    if expected is not None and recorded != expected:
+        _fail("import_expectation_mismatch")
+    _, report, inputs, run = _closed_report(store, report_id, expected=recorded)
+    expected_parameters = {
         "schema": SOURCE_SCHEMA, "scope": "engineering_control",
         "source_kind": "managed_control_input_stream", "actor": "unverified",
         "purpose": "observed_input", "report_id": report_id,
         "session_id": report["session_id"], "scenario_id": report["scenario_id"],
         "split_run_id": run, "event_count": len(inputs),
+        "import_expectation": recorded.to_dict(),
         "claim": "applied_control_inputs_only_no_human_or_causal_successor",
     }
-    if manifest.parameters.value() != expected:
+    if manifest.parameters.value() != expected_parameters:
         _fail("source_identity_mismatch")
-    return ManagedSource(manifest, report_id, report, inputs, run)
+    return ManagedSource(manifest, report_id, report, inputs, run, recorded)
 
 
 def import_managed_text_menu_report(
     report_store: ArtifactStore, research_store: ArtifactStore, report_id: str,
-    producer: Producer,
+    producer: Producer, *, expected: ManagedImportExpectation,
 ) -> ManagedSource:
     """Validate before copying; publication creates no training-use proof."""
-    _, report, inputs, run = _closed_report(report_store, report_id)
+    if not isinstance(expected, ManagedImportExpectation):
+        _fail("import_expectation_required")
+    _, report, inputs, run = _closed_report(report_store, report_id, expected=expected)
     copy_artifact(report_store, research_store, report_id)
     manifest = Manifest("dataset", producer, (Parent("managed_report", report_id),), (),
                         FrozenObject.of({
@@ -245,6 +410,7 @@ def import_managed_text_menu_report(
         "purpose": "observed_input", "report_id": report_id,
         "session_id": report["session_id"], "scenario_id": report["scenario_id"],
         "split_run_id": run, "event_count": len(inputs),
+        "import_expectation": expected.to_dict(),
         "claim": "applied_control_inputs_only_no_human_or_causal_successor",
     }))
     research_store.publish(manifest)
