@@ -325,3 +325,18 @@ existing result and does not optimize again. These commands are synthetic
 engineering infrastructure, not a real-data training or live policy entry.
 
 The v2 map covers the verified observed-input view, not one row for every raw archive event. Raw decision, dispatch, outcome and successor records retain their original archive identities and source-event references; the map does not promote them into additional model observations.
+
+Training projection and exported online scoring use the same M2 token encoder:
+the page capacity includes the old memory and write-query slots (2 × K), plus
+markers only when confirmed previous action/feedback are supplied. Each action
+is encoded independently by the lightweight action encoder and has its own token
+limit. The old four-graph page-plus-action joint budget does not apply to M2.
+Complete catalogs are retained or rejected as a unit; this does not truncate
+pages or extend training episode/chunk resource budgets.
+
+The synchronous online bytes entrypoint rejects tokenizer JSON and one snapshot
+above 16 MiB before parsing; the tokenizer cap is shared with the durable worker.
+This is a resource rejection, never a truncated page or menu. No lifetime page
+count is imposed by training episode budgets. The exported config's complete
+catalog and single-observation token budget still apply; the eventual port and
+Runtime retain responsibility for streaming/framing and autonomy limits.

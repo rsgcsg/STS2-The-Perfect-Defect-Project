@@ -8,6 +8,8 @@ from spireagent.json_boundary import BoundaryError
 
 from .token_inputs import TokenRow, input_texts
 
+MAX_TOKENIZER_BYTES = 16 * 1024 * 1024
+
 
 def encode_memory_texts(
     tokenizer: Tokenizer, state: str, actions: tuple[str, ...], *,

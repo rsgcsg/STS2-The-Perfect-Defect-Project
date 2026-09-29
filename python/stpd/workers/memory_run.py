@@ -17,6 +17,7 @@ from spireagent.artifact_contracts import Manifest, Parent, Payload, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, json_bytes
 from spireagent.storage.store import ArtifactStore
 
+from ..fullrun.memory_token_inputs import MAX_TOKENIZER_BYTES
 from ..models.dsimple_sequence_training import MemorySequenceEpisode, MemorySequenceStep
 from .checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .memory_ranking import (
@@ -43,7 +44,6 @@ SOURCE_MAP_SCHEMA = "stpd/experimental-m2-source-event-map-v1"
 RUN_SCHEMA = "stpd/experimental-m2-run-v1"
 MODEL_SCHEMA = "stpd/experimental-m2-model-v1"
 MAX_INPUT_BYTES = 256 * 1024 * 1024
-MAX_TOKENIZER_BYTES = 16 * 1024 * 1024
 MAX_CHECKPOINT_BYTES = 512 * 1024 * 1024
 MAX_SOURCE_MAP_BYTES = 64 * 1024 * 1024
 

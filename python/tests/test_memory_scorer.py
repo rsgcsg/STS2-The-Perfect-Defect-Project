@@ -304,3 +304,27 @@ def test_export_identity_and_tokenizer_are_checked(exported):
         OnlineM2Scorer.from_export(weights, config, changed.to_str().encode())
     with pytest.raises(BoundaryError, match="tokenizer_invalid"):
         OnlineM2Scorer.from_export(weights, config, b'{"broken":')
+
+
+def test_raw_input_limits_reject_before_parsing_or_writing(exported):
+    import stpd.policy.memory_scorer as module
+
+    weights, config, token_bytes = exported
+    # Lower the threshold, not the input, to exercise the actual bytes entrypoints.
+    with patch.object(module, "MAX_TOKENIZER_BYTES", len(token_bytes) - 1), \
+            patch.object(module, "load_memory_export") as load:
+        with pytest.raises(BoundaryError, match="tokenizer_size_limit"):
+            OnlineM2Scorer.from_export(weights, config, token_bytes)
+        load.assert_not_called()
+    online = scorer(exported)
+    raw = json_bytes(page("first", 1))
+    original = online._memory.clone()
+    with patch.object(module, "MAX_SNAPSHOT_BYTES", len(raw) - 1), \
+            patch.object(module, "decode_json") as decode, \
+            patch.object(online._model, "step") as compute:
+        with pytest.raises(BoundaryError, match="snapshot_size_limit"):
+            online.observe_and_score(continuity_token="run", snapshot_bytes=raw)
+        decode.assert_not_called()
+        compute.assert_not_called()
+    assert online._continuity is None and torch.equal(online._memory, original)
+    assert len(online.observe_and_score(continuity_token="run", snapshot_bytes=raw).scores) == 2

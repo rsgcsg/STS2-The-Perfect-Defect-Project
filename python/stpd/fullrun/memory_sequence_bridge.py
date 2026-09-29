@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+from tokenizers import Tokenizer
 
 from spireagent.json_boundary import BoundaryError
 
@@ -25,9 +26,9 @@ from ..models.dsimple_sequence_training import (
     _validate_step,
     validate_memory_window,
 )
+from .memory_token_inputs import encode_memory_texts
 from .observed_input_sequence import ObservedInput, ObservedInputView
 from .text_menu_inputs import INPUT_PROFILE, SNAPSHOT_SCHEMA, project_text_menu_snapshot
-from .token_inputs import encode_texts
 
 
 @dataclass(frozen=True)
@@ -102,13 +103,14 @@ class MemoryEpisodeSource:
 
 
 def _validate_bridge_input(
-    view: ObservedInputView, tokenizer: object, model: ExperimentalDSimpleM2,
+    view: ObservedInputView, tokenizer: Tokenizer, model: ExperimentalDSimpleM2,
 ) -> None:
     if (
         not isinstance(view, ObservedInputView)
         or not view.source_id
         or not isinstance(view.inputs, tuple)
         or not isinstance(model, ExperimentalDSimpleM2)
+        or not isinstance(tokenizer, Tokenizer)
         or getattr(tokenizer, "truncation", None) is not None
         or getattr(tokenizer, "padding", None) is not None
     ):
@@ -166,7 +168,7 @@ def _segments(
 
 
 def _project_segment(
-    view: ObservedInputView, tokenizer: object, model: ExperimentalDSimpleM2,
+    view: ObservedInputView, tokenizer: Tokenizer, model: ExperimentalDSimpleM2,
     segment: tuple[ObservedInput, ...], *, max_input_tokens: int, limit_code: str,
 ) -> tuple[str, tuple[MemorySequenceStep, ...]]:
     first = segment[0]
@@ -182,8 +184,9 @@ def _project_segment(
             raise BoundaryError("memory_bridge", "choice_mask_mismatch")
         if selected is not None and public.action_ids.count(selected) != 1:
             raise BoundaryError("memory_bridge", "choice_binding_mismatch")
-        row = encode_texts(tokenizer, public.state_text, public.action_texts,
-                           max_tokens=model.core.max_tokens)
+        row = encode_memory_texts(
+            tokenizer, public.state_text, public.action_texts,
+            max_tokens=model.core.max_tokens, slots=model.slots)
         step = MemorySequenceStep(
             episode_id=episode_id,
             position=position,
@@ -305,7 +308,7 @@ def _ordered_diagnostics(
 
 def project_memory_windows(
     view: ObservedInputView,
-    tokenizer: object,
+    tokenizer: Tokenizer,
     model: ExperimentalDSimpleM2,
     *,
     burn_in_steps: int = 0,
@@ -353,7 +356,7 @@ def project_memory_windows(
 
 def project_memory_episodes(
     view: ObservedInputView,
-    tokenizer: object,
+    tokenizer: Tokenizer,
     model: ExperimentalDSimpleM2,
     *,
     max_observations: int,

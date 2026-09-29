@@ -16,11 +16,12 @@ from tokenizers import Tokenizer
 
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 
-from ..fullrun.memory_token_inputs import encode_memory_texts
+from ..fullrun.memory_token_inputs import MAX_TOKENIZER_BYTES, encode_memory_texts
 from ..fullrun.text_menu_inputs import project_text_menu_snapshot
 from ..models.dsimple_memory import ExperimentalDSimpleM2
 from ..workers.memory_ranking import MemoryConfig, load_memory_export
 
+MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 MAX_RETIRED_CONTINUITIES = 1024
 SNAPSHOT_FIELDS = frozenset({
     "protocol_version", "schema", "input_profile", "snapshot_id", "sequence",
@@ -70,6 +71,8 @@ class OnlineM2Scorer:
         if (not isinstance(weights, bytes) or not isinstance(tokenizer_bytes, bytes)
                 or not isinstance(config, MemoryConfig)):
             raise BoundaryError("online_m2", "export_bytes_required")
+        if not 0 < len(tokenizer_bytes) <= MAX_TOKENIZER_BYTES:
+            raise BoundaryError("online_m2", "tokenizer_size_limit")
         try:
             tokenizer = Tokenizer.from_str(tokenizer_bytes.decode("utf-8"))
         except Exception as error:
@@ -96,6 +99,8 @@ class OnlineM2Scorer:
         if (not isinstance(continuity_token, str) or not continuity_token
                 or not isinstance(snapshot_bytes, bytes)):
             raise BoundaryError("online_m2", "observation_identity_required")
+        if not 0 < len(snapshot_bytes) <= MAX_SNAPSHOT_BYTES:
+            raise BoundaryError("online_m2", "snapshot_size_limit")
         snapshot = decode_json(snapshot_bytes)
         if not isinstance(snapshot, dict):
             raise BoundaryError("online_m2", "snapshot_object_required")
