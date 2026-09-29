@@ -268,7 +268,7 @@ def run_managed_memory_smoke(
                     raise SmokeBoundaryError("text_result_invalid")
                 if result.get("status") == "unknown":
                     if input_profile == V2_INPUT_PROFILE and (
-                        result.get("action") is not None
+                        result.get("action") != action
                         or result.get("effect_domain") != "native_input"
                         or result.get("native_delivery") != "unknown"
                         or result.get("successor") is not None or result.get("retry") != "never"

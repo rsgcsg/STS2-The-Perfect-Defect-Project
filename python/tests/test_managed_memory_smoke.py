@@ -178,8 +178,8 @@ class V2Environment(Environment):
         result = v2_fixture("targeted-select")
         result.update(input_profile=input_profile, request_id=request_id,
                       action=action, effect_domain=action["effect_domain"])
-        if self.unknown:
-            result.update(status="unknown", action=None, effect_domain="native_input",
+        if self.unknown and action["effect_domain"] == "native_input":
+            result.update(status="unknown", action=action, effect_domain="native_input",
                           native_delivery="unknown", successor=None, retry="never",
                           reason_code="native_delivery_unknown", attribution=None)
             return result
@@ -545,7 +545,7 @@ def test_v2_complete_bound_selection_target_native_leaf_and_observed_terminal() 
 def test_v2_unknown_and_wrong_score_binding_never_retry() -> None:
     for environment, scorer, reason, submissions in (
         (V2Environment(v2_trajectory(), unknown=True), V2Scorer(),
-         "native_delivery_unknown", 1),
+         "native_delivery_unknown", 3),
         (V2Environment(v2_trajectory()), V2Scorer(wrong_binding=True),
          "score_binding_invalid", 0),
     ):
@@ -557,6 +557,28 @@ def test_v2_unknown_and_wrong_score_binding_never_retry() -> None:
         assert report["episodes_started"] == 1
         assert len(environment.submissions) == submissions
         assert environment.closed
+
+
+def test_v2_unknown_with_wrong_bound_action_is_invalid_and_stops() -> None:
+    class WrongUnknownAction(V2Environment):
+        def submit_text_menu(self, action_id: str, expected_snapshot_id: str,
+                             expected_game_continuity_id: str, request_id: str, *,
+                             input_profile: str) -> dict:
+            result = super().submit_text_menu(action_id, expected_snapshot_id,
+                                              expected_game_continuity_id, request_id,
+                                              input_profile=input_profile)
+            if result["status"] == "unknown":
+                result["action"] = self.trajectory[0]["menu_actions"]["actions"][0]
+            return result
+
+    environment = WrongUnknownAction(v2_trajectory(), unknown=True)
+    report = run_managed_memory_smoke(
+        environment, V2Scorer(), seeds=("SEED1",), model_id="a" * 64,
+        reset_each_step=True, input_profile="text-menu-v2",
+        limits=SmokeLimits(max_submissions=3, max_policy_calls=3))
+    assert report["stop_reason"] == "text_result_invalid"
+    assert len(environment.submissions) == 3
+    assert environment.closed
 
 
 @pytest.mark.parametrize("mutation,reason", [
