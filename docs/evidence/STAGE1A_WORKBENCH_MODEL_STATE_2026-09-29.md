@@ -114,11 +114,26 @@ Its 166 Node tests passed, including a 14-record mixed-status fixture and
 render-without-POST assertions. This is not a claim about the complete archive
 or chronological latest run.
 
+## Browser verification of the combined candidate
+
+At clean source `127883c7bf23a52adc8c81f1eb3d72e3af33f1cc`, the owned
+Workbench was started as instance `9193fbdac6f2b24147d5f59e28d86b8d`.
+Safari displayed the retained Reset-K1 selection, unloaded model state and
+compact history: 12 returned records, 10 verified, 2 failed, 0 unknown.
+Clicking the history link opened the existing evaluations page with the full
+reports, including retained failures and separate offline development results.
+No model, training or gameplay command was issued during this check. An API
+read-back also reported `idle`, `loaded=false` and no error. Root checks on
+that exact source passed the 166-test Node file, identity, BOM, diff hygiene,
+closeout and the planner; the planner selected full. This is a local browser
+and application-state receipt, not a hosted full or native gameplay result.
+
 ## Remaining boundary
 
 The migration receipt used the explicit operator API and an already validated
 local text-profile installation. The preparation button reused the verified existing installation as recorded
-above. Fresh selected-kit installation is covered by synthetic tests only. It does not establish a new user's complete
+above. Fresh selected-kit installation is covered by synthetic tests only.
+This does not establish a new user's complete
 one-click setup, released rc.12 asset availability, native Reset operation or
 cross-machine portability. Raw private paths, records, tokens and weights stay
 local. Old stores, packages and archives are preserved for rollback; any return
