@@ -393,6 +393,28 @@ has no durable source record in the existing ledger, so this first path reports
 that boundary as unknown and makes only an engineering dev claim.
 The train-only run is not retrospectively split into dev.
 
+### Workbench Reset-K1 training control
+
+The existing Workbench training owner supports two closed train-only recipes:
+`stage1a.dsimple.m2.k1.experimental.v1` and
+`stage1a.dsimple.reset.k1.experimental.v1`. The Reset-K1 recipe uses the same
+claimed source, ordered episode projection, fitted tokenizer, seed, linear
+action encoder, one slot, width 48, one layer, two heads, feedforward width 96,
+token and episode limits, optimizer settings, CPU thread limit, and execution,
+verification, and export pipeline. Its sole model configuration difference is
+`reset_each_step=true`; it uses the same parameter structure and deterministic
+initial weights as M2-K1 for the same seed. Each explicit start creates a new
+operation, prepared run, checkpoint, result, and model. The runner does not
+load or toggle an M2 checkpoint, and each run starts with a fresh optimizer.
+The immutable journal keeps the completed predecessor IDs and exact recipe.
+The default M2 recipe remains unchanged, and neither recipe automatically
+starts another training operation.
+
+This adds an independently trained engineering control only. It does not
+establish paired native-run independence, a deduplicated benchmark, or a policy
+quality result; the evaluation protocol and its separate admission remain as
+described above.
+
 After a run has been prepared with that Python API at the **same exact source
 identity**, the existing research CLI can execute it:
 
