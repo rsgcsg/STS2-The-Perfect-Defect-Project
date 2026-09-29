@@ -164,6 +164,12 @@ is not a public Connector service: Managed has no text-menu HTTP route or
 controller-lease/attribution owner, and this projection does not qualify
 Connector text-menu compatibility.
 
+The current rest patch has a new macOS build identity in the candidate manifest.
+The separately retained Windows build tuple is historical; it does not admit
+this changed patch. Windows preparation remains fail-closed until its new
+exact build is measured. The source package candidate is not an installed
+or published Runtime update.
+
 ## Documentation
 
 - [Document map](docs/DOCUMENT_MAP.md)
