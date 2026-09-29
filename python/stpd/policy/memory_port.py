@@ -11,8 +11,8 @@ from typing import Any, TextIO
 from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, object_fields
 
-from ..fullrun.memory_token_inputs import project_memory_snapshot
-from ..memory_policy_installation import validate
+from ..fullrun.memory_token_inputs import project_memory_profile_snapshot
+from ..memory_policy_installation import input_profile_for_config, validate
 from .memory_export import validate_memory_package
 from .memory_scorer import MAX_SNAPSHOT_BYTES, OnlineM2Scorer
 
@@ -26,11 +26,13 @@ class MemoryPolicyAdapter:
                  binding_root: Path | None = None) -> None:
         self.config, self.manifest = validate(
             ROOT, config_path, manifest_path, binding_root=binding_root)
+        self.input_profile = input_profile_for_config(self.config)
         package, weights, tokenizer, settings = validate_memory_package(
-            Path(self.config["export_path"]))
+            Path(self.config["export_path"]), input_profile=self.input_profile)
         if package["ids"]["model"] != self.config["model_id"]:
             raise BoundaryError("m2_policy", "model_identity_mismatch")
-        self.scorer = OnlineM2Scorer.from_export(weights, settings, tokenizer)
+        self.scorer = OnlineM2Scorer.from_export(
+            weights, settings, tokenizer, input_profile=self.input_profile)
         self.closed = False
 
     def decide(self, value: object) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -57,7 +59,7 @@ class MemoryPolicyAdapter:
             raise BoundaryError("m2_policy", "snapshot_size_limit")
         # Shared projection owns complete catalog identity. This preflight is
         # before the scorer's single observation write, not a legality filter.
-        public = project_memory_snapshot(snapshot)
+        public = project_memory_profile_snapshot(snapshot, self.input_profile)
         actions = snapshot["menu_actions"]["actions"]
         if (type(request["candidate_count"]) is not int
                 or request["candidate_count"] != len(public.action_ids)

@@ -190,7 +190,8 @@ def test_existing_v1_binder_port_and_cli_reject_v2_without_constructing_host(
         _adapter((directory, manifest), tmp_path, monkeypatch)
 
     monkeypatch.setattr("stpd.policy.memory_port.validate", lambda *_args, **_kwargs: (
-        {"export_path": str(directory), "model_id": manifest["ids"]["model"]}, {},
+        {"schema": "stpd/m2-policy-config-v1", "export_path": str(directory),
+         "export_manifest_sha256": "a" * 64, "model_id": manifest["ids"]["model"]}, {},
     ))
     with pytest.raises(BoundaryError, match="unsupported_package_identity"):
         MemoryPolicyAdapter(tmp_path / "config.json", tmp_path / "manifest.json")
