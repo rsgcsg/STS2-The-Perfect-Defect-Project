@@ -224,3 +224,31 @@ training, episode failure, corrupt checkpoints and mismatched exports. These
 are synthetic CPU regressions. Real source eligibility, independent train/dev
 splits, paired game experiments, Runtime integration and policy quality remain
 separate work.
+
+## Immutable experimental run execution
+
+`stpd.workers.memory_run.prepare_memory_run` freezes one caller-admitted source,
+the complete ordered episode tokens, candidate keys and labels, exact tokenizer
+bytes, full `MemoryConfig`, and source ancestry in the existing `ArtifactStore`.
+It does not determine source eligibility or create an independent task owner.
+Input and tokenizer payloads are bounded at 256 MiB and 16 MiB respectively.
+The worker writes an immutable checkpoint only after a whole episode, uses the
+existing `RunReporter` for events and completion, and exports train-only model
+weights without active memory or optimizer history. It produces no dev report.
+
+After a run has been prepared with that Python API at the **same exact source
+identity**, the existing research CLI can execute it:
+
+```sh
+uv run python -m spireagent.research_cli --store /absolute/local-store-directory \
+  run-memory --run <run-artifact-id> --stop-after 1
+uv run python -m spireagent.research_cli --store /absolute/local-store-directory \
+  run-memory --run <run-artifact-id> --resume <checkpoint-artifact-id>
+```
+
+`--resume` selects an exact durable checkpoint after interruption or failure;
+the command never chooses one automatically. The CPU thread count comes from
+the immutable run configuration, and the CLI derives producer identity from
+the executing clean checkout. A repeated completed request verifies the
+existing result and does not optimize again. These commands are synthetic
+engineering infrastructure, not a real-data training or live policy entry.
