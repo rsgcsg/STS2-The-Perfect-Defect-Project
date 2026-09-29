@@ -650,6 +650,37 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
         self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
                          "human_text_input_capture_order_invalid")
 
+    def test_v2_capture_ordinal_survives_snapshot_serialization_failure(self) -> None:
+        bundle = self._bundle()
+        first = self._text_row_v2(bundle, 1, 1, 0)
+        failed = self._text_row_v2(bundle, 2, 2, 1)
+        failed.update(snapshot=None, snapshot_sha256=None, chosen_action=None,
+                      disposition="capture_failed", reason_code="serialization_failed")
+        later = self._text_row_v2(bundle, 3, 3, 2)
+        rows = [first, failed, later]
+        self._declare_text(bundle, rows, version=2)
+        result = verify_human_session_bundle(bundle)
+        self.assertTrue(result.passed, result.findings)
+        for environment in (None, {}, {"runtime_instance_id": "runtime-1"}):
+            with self.subTest(environment=environment):
+                bad = deepcopy(rows)
+                bad[1]["environment"] = environment
+                self._declare_text(bundle, bad, version=2)
+                self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                                 "human_text_input_environment_missing")
+        for ordinal in (0, -1, True):
+            with self.subTest(ordinal=ordinal):
+                bad = deepcopy(rows)
+                bad[1]["observation_order"]["capture_ordinal"] = ordinal
+                self._declare_text(bundle, bad, version=2)
+                self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                                 "human_text_input_capture_order_invalid")
+        bad = deepcopy(rows)
+        bad[1]["observation_order"]["capture_ordinal"] = 4
+        self._declare_text(bundle, bad, version=2)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_capture_order_invalid")
+
     def test_native_input_mechanisms_bind_public_verbs_without_promoting_commit(self) -> None:
         bundle = self._bundle()
         pairs = (

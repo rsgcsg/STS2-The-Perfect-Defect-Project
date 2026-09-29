@@ -171,9 +171,13 @@ def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
         ordinal = order["capture_ordinal"]
         watermark = order["completed_append_watermark"]
         _check(type(watermark) is int and 0 <= watermark < sequence
-               and (ordinal is None if row.get("snapshot") is None
-                    else type(ordinal) is int and ordinal > 0),
+               and (ordinal is None or type(ordinal) is int and ordinal > 0)
+               and (row.get("snapshot") is None or ordinal is not None),
                "human_text_input_capture_order_invalid")
+        if row.get("snapshot") is None and ordinal is not None:
+            environment = row.get("environment")
+            _check(isinstance(environment, dict) and _exact_environment(environment),
+                   "human_text_input_environment_missing")
     _check(_timestamp(row.get("recorded_at")) >= _timestamp(row.get("observed_at")),
            "human_text_input_identity_invalid")
     _check(row.get("external_controller_active") is False,
