@@ -129,6 +129,36 @@ def v2_episode_projection_config() -> MemoryEpisodeProjectionConfigV2:
     )
 
 
+def parse_episode_projection_config(
+    value: object,
+) -> MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2:
+    """Decode only the two immutable observed-input projection contracts."""
+    if not isinstance(value, dict):
+        raise ValueError("invalid memory episode projection config")
+    if (value.get("schema") == "stpd/memory-episode-projection-config-v1"
+            and set(value) == {"schema", "max_settling_events"}):
+        return MemoryEpisodeProjectionConfig(**value)
+    if (value.get("schema") == "stpd/memory-episode-projection-config-v2"
+            and set(value) == {"schema", "max_settling_events", "input_profile",
+                               "renderer_id", "renderer_text_menu_version",
+                               "renderer_wrapper"}):
+        return MemoryEpisodeProjectionConfigV2(**value)
+    raise ValueError("invalid memory episode projection config")
+
+
+def projection_input_profile(
+    config: MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2,
+) -> str:
+    """Get the profile only after exact non-virtual config validation."""
+    if type(config) is MemoryEpisodeProjectionConfig:
+        MemoryEpisodeProjectionConfig.__post_init__(config)
+        return INPUT_PROFILE
+    if type(config) is MemoryEpisodeProjectionConfigV2:
+        MemoryEpisodeProjectionConfigV2.__post_init__(config)
+        return V2_INPUT_PROFILE
+    raise ValueError("invalid memory episode projection config")
+
+
 @dataclass(frozen=True)
 class MemoryEpisodeSource:
     episode_id: str
@@ -407,24 +437,21 @@ def project_memory_episodes(
 ) -> MemoryEpisodeBridgeResult:
     """Project bounded episodes; opted-in verified settling writes no model state."""
     _validate_bridge_input(view, tokenizer, model)
-    if projection_config is None:
-        input_profile = INPUT_PROFILE
-    elif type(projection_config) is MemoryEpisodeProjectionConfigV2:
-        # Revalidate even a frozen instance; never dispatch through an override.
-        MemoryEpisodeProjectionConfigV2.__post_init__(projection_config)
+    if projection_config is not None and type(projection_config) not in {
+        MemoryEpisodeProjectionConfig, MemoryEpisodeProjectionConfigV2,
+    }:
+        raise BoundaryError("memory_bridge", "projection_config_mismatch")
+    input_profile = (INPUT_PROFILE if projection_config is None else
+                     projection_input_profile(projection_config))
+    if input_profile == V2_INPUT_PROFILE:
         if (view.stream_scope != "managed_engineering_control_inputs"
                 or any(not isinstance(item, ObservedInput)
                        or item.source_kind != "managed_control_input_stream"
                        for item in view.inputs)
                 or max_settling_events != 0):
             raise BoundaryError("memory_bridge", "v2_source_or_settling_mismatch")
-        input_profile = V2_INPUT_PROFILE
-    elif type(projection_config) is MemoryEpisodeProjectionConfig:
-        MemoryEpisodeProjectionConfig.__post_init__(projection_config)
-        if max_settling_events != projection_config.max_settling_events:
-            raise BoundaryError("memory_bridge", "projection_config_mismatch")
-        input_profile = INPUT_PROFILE
-    else:
+    elif (projection_config is not None
+          and max_settling_events != projection_config.max_settling_events):
         raise BoundaryError("memory_bridge", "projection_config_mismatch")
     if (type(max_observations) is not int or max_observations <= 0
             or type(max_input_tokens) is not int or max_input_tokens <= 0
