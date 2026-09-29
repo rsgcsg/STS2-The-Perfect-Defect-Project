@@ -410,6 +410,13 @@ The immutable journal keeps the completed predecessor IDs and exact recipe.
 The default M2 recipe remains unchanged, and neither recipe automatically
 starts another training operation.
 
+Both closed recipes may use the existing explicit export and registration
+owners. Those owners derive identity from the exact model/run configuration,
+preserve the selected reset behavior in the exported scorer, and register the
+architecture and label as M2-K1 or Reset-K1. Unsupported memory configurations
+are not guessed into either recipe; the read-only artifact detail reports their
+Workbench recipe as unknown.
+
 This adds an independently trained engineering control only. It does not
 establish paired native-run independence, a deduplicated benchmark, or a policy
 quality result; the evaluation protocol and its separate admission remain as

@@ -6,6 +6,23 @@ M2_K1_RECIPE = "stage1a.dsimple.m2.k1.experimental.v1"
 RESET_K1_RECIPE = "stage1a.dsimple.reset.k1.experimental.v1"
 MEMORY_RECIPES = frozenset({M2_K1_RECIPE, RESET_K1_RECIPE})
 
+_CONFIG_KEYS = frozenset({
+    "vocab_size", "episode_count", "slots", "reset_each_step", "gated", "seed",
+    "width", "layers", "heads", "feedforward", "dropout", "max_tokens",
+    "learning_rate", "weight_decay", "gradient_clip", "cpu_threads",
+    "max_total_input_tokens", "max_episode_observations", "max_episode_input_tokens",
+    "max_chunk_steps", "max_chunk_input_tokens", "max_actions_per_step",
+})
+_FIXED_CONFIG = {
+    "slots": 1, "gated": False, "seed": 1701, "width": 48, "layers": 1,
+    "heads": 2, "feedforward": 96, "dropout": 0.0, "max_tokens": 16384,
+    "learning_rate": 0.001, "weight_decay": 0.0, "gradient_clip": 1.0,
+    "cpu_threads": 2, "max_total_input_tokens": 4_194_304,
+    "max_episode_observations": 768, "max_episode_input_tokens": 4_194_304,
+    "max_chunk_steps": 2, "max_chunk_input_tokens": 24_576,
+    "max_actions_per_step": 256,
+}
+
 
 def reset_each_step_for_recipe(recipe: object) -> bool:
     """Resolve only the closed Workbench recipe names; no checkpoint toggling."""
@@ -14,3 +31,17 @@ def reset_each_step_for_recipe(recipe: object) -> bool:
     if recipe == RESET_K1_RECIPE:
         return True
     raise ValueError("unsupported_workbench_memory_recipe")
+
+
+def recipe_for_memory_config(config: object) -> str:
+    """Derive the closed recipe only from the exact immutable K1 config."""
+    if (not isinstance(config, dict) or set(config) != _CONFIG_KEYS
+            or type(config.get("vocab_size")) is not int
+            or not 1 <= config["vocab_size"] <= 65_536
+            or type(config.get("episode_count")) is not int
+            or not 1 <= config["episode_count"] <= 8
+            or type(config.get("reset_each_step")) is not bool
+            or any(type(config.get(key)) is not type(value) or config.get(key) != value
+                   for key, value in _FIXED_CONFIG.items())):
+        raise ValueError("unsupported_workbench_memory_config")
+    return RESET_K1_RECIPE if config["reset_each_step"] else M2_K1_RECIPE

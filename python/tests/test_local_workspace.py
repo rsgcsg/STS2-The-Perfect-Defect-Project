@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,8 @@ from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.storage.registry import SQLiteRegistry, sync_registry
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig
 from spireagent.workbench.local_workspace import LocalWorkspace, open_registered_workspace
+from spireagent.workbench.memory_recipe import M2_K1_RECIPE, RESET_K1_RECIPE
+from stpd.workers.memory_ranking import MemoryConfig
 
 
 def fixture(tmp_path: Path):
@@ -84,6 +87,74 @@ def test_exact_artifact_view_uses_manifest_identity_and_safe_descriptors(tmp_pat
     assert value["parents"] == [{"role": "dataset", "artifact_id": dataset.artifact_id}]
     assert value["payloads"] == []
     assert value["registry_cached"] is False
+    assert "workbench_memory_recipe" not in value
+
+
+@pytest.mark.parametrize(("reset", "expected"), [
+    (False, M2_K1_RECIPE),
+    (True, RESET_K1_RECIPE),
+])
+def test_memory_artifact_view_derives_only_supported_workbench_recipe(
+        tmp_path: Path, reset: bool, expected: str) -> None:
+    artifact_store = store(tmp_path / "store")
+    registry = SQLiteRegistry(tmp_path / "registry.sqlite")
+    config = asdict(MemoryConfig(vocab_size=32, episode_count=2,
+                                 width=48, layers=1, heads=2,
+                                 feedforward=96, max_tokens=16384,
+                                 max_total_input_tokens=4_194_304,
+                                 max_episode_observations=768,
+                                 max_episode_input_tokens=4_194_304,
+                                 max_chunk_steps=2,
+                                 max_chunk_input_tokens=24_576,
+                                 max_actions_per_step=256,
+                                 reset_each_step=reset))
+    model = Manifest("model", PRODUCER, parameters=FrozenObject.of({
+        "schema": "stpd/experimental-m2-model-v1", "config": config,
+        "episodes": 2, "partition": "train", "qualification": "engineering_only",
+    }))
+    artifact_store.publish(model)
+    artifact_store.read_payload = lambda _payload: (_ for _ in ()).throw(
+        AssertionError("model detail must not read payload bytes")
+    )
+    value = LocalWorkspace(registry, artifact_store).artifact(model.artifact_id)
+    assert value["workbench_memory_recipe"] == expected
+
+
+@pytest.mark.parametrize("change", [
+    "width", "missing_config_key", "dev_partition", "missing_qualification",
+    "episode_count_mismatch",
+])
+def test_memory_artifact_view_does_not_guess_unsupported_recipe(
+        tmp_path: Path, change: str) -> None:
+    artifact_store = store(tmp_path / "store")
+    registry = SQLiteRegistry(tmp_path / "registry.sqlite")
+    config = asdict(MemoryConfig(vocab_size=32, episode_count=2,
+                                 width=48, layers=1, heads=2,
+                                 feedforward=96, max_tokens=16384,
+                                 max_total_input_tokens=4_194_304,
+                                 max_episode_observations=768,
+                                 max_episode_input_tokens=4_194_304,
+                                 max_chunk_steps=2,
+                                 max_chunk_input_tokens=24_576,
+                                 max_actions_per_step=256))
+    if change == "width":
+        config["width"] = 96
+    else:
+        del config["reset_each_step"]
+    parameters = {"schema": "stpd/experimental-m2-model-v1", "config": config,
+                  "episodes": 2, "partition": "train",
+                  "qualification": "engineering_only"}
+    if change == "dev_partition":
+        parameters["partition"] = "dev"
+    elif change == "missing_qualification":
+        del parameters["qualification"]
+    elif change == "episode_count_mismatch":
+        parameters["episodes"] = 3
+    model = Manifest("model", PRODUCER, parameters=FrozenObject.of(parameters))
+    artifact_store.publish(model)
+    value = LocalWorkspace(registry, artifact_store).artifact(model.artifact_id)
+    assert "workbench_memory_recipe" in value
+    assert value["workbench_memory_recipe"] is None
 
 
 def test_inventory_shows_store_records_missing_from_rebuildable_registry(tmp_path: Path) -> None:

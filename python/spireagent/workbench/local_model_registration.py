@@ -24,6 +24,7 @@ from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
 from spireagent.workbench.local_model_export import LocalModelExport, _ordinary
 from spireagent.workbench.local_models import LocalModelService, _loopback
+from spireagent.workbench.memory_recipe import M2_K1_RECIPE, RESET_K1_RECIPE
 from spireagent.workbench.runtime_install import (
     CONNECTOR_PACKAGE,
     RUNTIME_PACKAGE,
@@ -44,6 +45,8 @@ SCHEMA = "stpd/local-model-registration-v1"
 PROFILE = "text-menu-v1"
 M2_PROFILE = "text-menu-m2-v1"
 RECIPE_LABELS = {"stage1a.b.s.v2": "B", "stage1a.dsimple.s.v1": "D-Simple"}
+MEMORY_RECIPE_LABELS = {M2_K1_RECIPE: "M2-K1 训练版",
+                        RESET_K1_RECIPE: "Reset-K1 独立训练对照版"}
 REGISTRY = ".local/token-policies-v1.json"
 LOCK = ".local/token-policies-v1.lock"
 REGISTRATIONS = ".local/model-registrations"
@@ -332,7 +335,10 @@ class LocalModelRegistration:
         if memory:
             # The isolated verification child has checked exact model/run lineage
             # and the parent has rebound the response to unchanged package bytes.
-            recipe = "stage1a.dsimple.m2.k1.experimental.v1"
+            recipe = self.export.verified_memory_recipe_for_registration(
+                identity, deadline=deadline)
+            if recipe not in MEMORY_RECIPE_LABELS:
+                raise BoundaryError("local_model_registration", "unsupported_model_recipe")
         else:
             envelope = _object_file(export / "model.json")
             if envelope.get("model_id") != identity:
@@ -398,7 +404,8 @@ class LocalModelRegistration:
                         self._m2_runtime_manifest_compatible(node_modules, manifest_path,
                                                              deadline=deadline)
                     entries = self._entries()
-                    label = "M2 训练版" if memory else RECIPE_LABELS[recipe]
+                    label = (MEMORY_RECIPE_LABELS[recipe] if memory
+                             else RECIPE_LABELS[recipe])
                     entry = {"id": selection,
                              "label": "本机文字菜单 " + label + " " + identity[:8],
                              "adapter": "stpd-m2-decision-adapter" if memory else "token-v1",

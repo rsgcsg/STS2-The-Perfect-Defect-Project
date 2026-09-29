@@ -18,6 +18,7 @@ from spireagent.storage.registry import Registry, SQLiteRegistry
 from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
 from spireagent.workbench.dashboard import _safe_value
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig
+from spireagent.workbench.memory_recipe import recipe_for_memory_config
 
 INVENTORY_SCHEMA = "stpd/local-workspace-inventory-v1"
 ARTIFACT_SCHEMA = "stpd/local-workspace-artifact-v1"
@@ -162,7 +163,7 @@ class LocalWorkspace:
             if error.code != "not_indexed":
                 raise
             indexed = False
-        return {
+        result = {
             "schema": ARTIFACT_SCHEMA,
             "source": "configured_local_artifact_store",
             "artifact_id": manifest.artifact_id,
@@ -181,6 +182,22 @@ class LocalWorkspace:
             "registry_indexed": indexed,
             "registry_cached": self.registry.is_cached(artifact_id) if indexed else None,
         }
+        parameters = manifest.parameters.value()
+        if (manifest.kind == "model"
+                and parameters.get("schema") == "stpd/experimental-m2-model-v1"):
+            try:
+                config = parameters.get("config")
+                if (parameters.get("partition") != "train"
+                        or parameters.get("qualification") != "engineering_only"
+                        or type(parameters.get("episodes")) is not int
+                        or parameters["episodes"] <= 0
+                        or not isinstance(config, dict)
+                        or parameters["episodes"] != config.get("episode_count")):
+                    raise ValueError("unsupported_workbench_memory_model")
+                result["workbench_memory_recipe"] = recipe_for_memory_config(config)
+            except ValueError:
+                result["workbench_memory_recipe"] = None
+        return result
 
 
 def open_registered_workspace(
