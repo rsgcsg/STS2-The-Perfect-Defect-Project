@@ -12,6 +12,12 @@ from typing import Any, Literal
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ArtifactStore
 
+from .managed_text_menu_import import (
+    SOURCE_SCHEMA as MANAGED_SOURCE_SCHEMA,
+)
+from .managed_text_menu_import import (
+    load_managed_text_menu_source,
+)
 from .text_menu_human_import import (
     SOURCE_SCHEMA as HUMAN_SOURCE_SCHEMA,
 )
@@ -37,7 +43,8 @@ class SourceEventRef:
 @dataclass(frozen=True)
 class ObservedInput:
     stream_id: str
-    source_kind: Literal["agent_decision_inputs", "human_input_stream"]
+    source_kind: Literal["agent_decision_inputs", "human_input_stream",
+                         "managed_control_input_stream"]
     event_id: str
     source_sequence: int
     snapshot: dict[str, Any] | None
@@ -63,7 +70,8 @@ class ObservedInput:
 @dataclass(frozen=True)
 class ObservedInputView:
     source_id: str
-    stream_scope: Literal["verified_agent_observed_inputs", "partial_human_input_stream"]
+    stream_scope: Literal["verified_agent_observed_inputs", "partial_human_input_stream",
+                          "managed_engineering_control_inputs"]
     trajectory_complete: Literal[False]
     inputs: tuple[ObservedInput, ...]
 
@@ -95,7 +103,36 @@ def load_observed_input_view(store: ArtifactStore, source_id: str) -> ObservedIn
         return _agent_view(store, source_id)
     if schema == HUMAN_SOURCE_SCHEMA:
         return _human_view(store, source_id)
+    if schema == MANAGED_SOURCE_SCHEMA:
+        return _managed_view(store, source_id)
     raise BoundaryError("observed_input_sequence", "unsupported_verified_source")
+
+
+def _managed_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
+    source = load_managed_text_menu_source(store, source_id)
+    stream_id = "managed:" + source.report["session_id"]
+    inputs: list[ObservedInput] = []
+    for item in source.inputs:
+        result = item.result
+        native = result["effect_domain"] == "native_input"
+        inputs.append(ObservedInput(
+            stream_id=stream_id, source_kind="managed_control_input_stream",
+            event_id=f"managed:{item.event_artifact_id}:{item.request_id}",
+            source_sequence=item.sequence,
+            snapshot=item.before_context["snapshot"], observation_mask=True,
+            selected_action_id=item.action_id, choice_mask=True,
+            delivery_status="delivered" if native else "not_applicable",
+            delivery_mask=native,
+            successor_snapshot=result["successor"],
+            successor_relation="post_native_observation" if native else "ui_navigation",
+            successor_observation_mask=True, causal_successor_mask=False,
+            reset_before=item.sequence == 1,
+            reset_reason="stream_start" if item.sequence == 1 else None,
+            source_events=(SourceEventRef(item.sequence, "managed_run_event",
+                                          item.event_artifact_id),),
+        ))
+    return ObservedInputView(source_id, "managed_engineering_control_inputs", False,
+                             tuple(inputs))
 
 
 def _agent_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
