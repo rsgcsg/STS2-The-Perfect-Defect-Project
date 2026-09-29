@@ -23,6 +23,9 @@ A malformed or missing driver reply after a submission closes the consumer
 process before any later mutation. A known delivered action whose successor
 projection fails reports `delivered` with no successor and requires process
 replacement.
+A valid `unknown` text result is returned intact to the caller and then closes
+the child before another request. Applied text-menu navigation has no native
+delivery; only applied native input reports `delivered`.
 
 The continuity ID is a Host-owned Managed episode epoch, rotated only after a
 successful reset. A failed reset makes both raw and text routes unavailable

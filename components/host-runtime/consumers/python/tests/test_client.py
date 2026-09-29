@@ -11,6 +11,9 @@ from sts2_headless.client import (
     canonicalize_episode_seed,
 )
 
+CONNECTOR_TEXT_ROOT = (Path(__file__).resolve().parents[5] / "components" / "connector"
+                       / "sdk" / "typescript" / "test" / "fixtures" / "text-menu-root.json")
+
 
 FAKE_DRIVER = r'''
 import json, sys
@@ -42,11 +45,17 @@ for line in sys.stdin:
         assert request["expected_snapshot_id"] == "text-s1"
         assert request["expected_game_continuity_id"] == "managed_episode_test"
         assert request["mutation_request_id"] == "text-mutation-1"
+        action = {"action_id":"text-a1", "kind":"native_input", "verb":"activate",
+                  "label":"Choose", "subject_referent_id":None, "arguments":[],
+                  "effect_domain":"native_input"}
         print(json.dumps({**base,"type":"text_submit_result","result":{
+            "protocol_version":"1.0.0",
             "schema":"sts2.player-environment/text-menu-action-result-1",
-            "input_profile":"text-menu-v1", "status":"applied",
-            "native_delivery":"delivered", "retry":"never",
-            "request_id":"text-mutation-1"}}), flush=True)
+            "input_profile":"text-menu-v1", "request_id":"text-mutation-1",
+            "status":"applied", "effect_domain":"native_input",
+            "native_delivery":"delivered", "action":action,
+            "reason_code":None, "detail":None, "retry":"never",
+            "successor":None, "attribution":None}}), flush=True)
     elif request["command"] == "episode_identity":
         print(json.dumps({**base,"type":"episode_identity_result","identity":{"episode_provenance":{"verdict":"provenance_pass","actual_seed":"SEED"}}}), flush=True)
     elif request["command"] == "close":
@@ -91,13 +100,43 @@ for line in sys.stdin:
         elif mode == "error":
             print(json.dumps({**base,"type":"error","message":"driver_request_failed"}), flush=True)
         else:
-            result = {"schema":"bad-after-action" if mode == "bad_schema" else
+            navigation = mode == "system_navigation"
+            uncertain = mode in ("unknown", "bad_unknown_retry")
+            rejected = mode == "not_applied"
+            effect = "text_menu" if navigation else "native_input"
+            action = {"action_id":request["action_id"],
+                      "kind":"system_navigation" if navigation else "native_input",
+                      "verb":"open_information" if navigation else "activate",
+                      "label":"Information" if navigation else "Choose",
+                      "subject_referent_id":None, "arguments":[], "effect_domain":effect}
+            successor = None
+            if navigation:
+                with open(sys.argv[3], encoding="utf-8") as handle:
+                    successor = json.load(handle)
+                successor["snapshot_id"] = "text-runtime-1-native-1-u1"
+                successor["menu"]["cursor"] = "information"
+                successor["menu"]["revision"] = 1
+                successor["menu_actions"]["actions"][0]["verb"] = "back"
+            result = {"protocol_version":"1.0.0",
+                      "schema":"bad-after-action" if mode == "bad_schema" else
                       "sts2.player-environment/text-menu-action-result-1",
-                      "input_profile":"text-menu-v1",
-                      "status":"not_applied" if mode == "not_applied" else "applied",
-                      "native_delivery":None if mode in ("bad_delivery", "not_applied") else "delivered",
-                      "retry":"reobserve" if mode == "not_applied" else "never",
-                      "request_id":request["mutation_request_id"]}
+                      "input_profile":"text-menu-v1", "request_id":request["mutation_request_id"],
+                      "status":"not_applied" if rejected else "unknown" if uncertain else "applied",
+                      "effect_domain":None if rejected else effect,
+                      "native_delivery":None if mode in ("bad_delivery", "not_applied", "system_navigation")
+                      else "unknown" if uncertain else "delivered",
+                      "action":None if rejected else action,
+                      "reason_code":"stale_snapshot" if rejected else None,
+                      "detail":None,
+                      "retry":"reobserve" if mode in ("not_applied", "bad_unknown_retry", "bad_applied_retry") else "never",
+                      "successor":successor,
+                      "attribution":None}
+            if mode == "bad_status_type":
+                result["status"] = []
+            if mode == "bad_effect_type":
+                result["effect_domain"] = []
+            if mode == "bad_retry_type":
+                result["retry"] = []
             print(json.dumps({**base,"type":"text_submit_result",
                               "result":result if mode != "bad_type" else []}), flush=True)
     elif request["command"] == "step":
@@ -135,12 +174,17 @@ class ClientTest(unittest.TestCase):
                 context["game_continuity_id"], request_id="text-mutation-1",
             )
             self.assertEqual(result["status"], "applied")
+            self.assertEqual(result["effect_domain"], "native_input")
+            self.assertEqual(result["native_delivery"], "delivered")
+            self.assertEqual(result["retry"], "never")
             with self.assertRaises(ValueError):
                 environment.submit_text_menu(action, "", context["game_continuity_id"])
 
     def test_post_offer_invalid_text_result_quarantines_before_another_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
-            for mode in ("bad_schema", "bad_type", "bad_delivery", "bad_json", "eof", "error"):
+            for mode in ("bad_schema", "bad_type", "bad_delivery", "bad_unknown_retry",
+                         "bad_applied_retry", "bad_status_type", "bad_effect_type",
+                         "bad_retry_type", "bad_json", "eof", "error"):
                 with self.subTest(mode=mode):
                     record = Path(temporary) / f"{mode}.txt"
                     with ManagedPlayerEnvironment(
@@ -167,9 +211,48 @@ class ClientTest(unittest.TestCase):
                     "text-a1", "text-s1", "managed_episode_test", request_id="mutation-1"
                 )
                 self.assertEqual(result["status"], "not_applied")
+                self.assertIsNone(result["native_delivery"])
+                self.assertEqual(result["retry"], "reobserve")
                 self.assertFalse(environment._closed)
                 self.assertEqual(environment.step("a1", "s1")["delivery"], "delivered")
             self.assertEqual(record.read_text().splitlines(), ["reset", "text_submit", "step", "close"])
+
+    def test_system_navigation_applied_has_no_native_delivery(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            record = Path(temporary) / "requests.txt"
+            with ManagedPlayerEnvironment(
+                [sys.executable, "-u", "-c", UNCERTAIN_DRIVER, "system_navigation",
+                 str(record), str(CONNECTOR_TEXT_ROOT)]
+            ) as environment:
+                environment.reset("SEED")
+                result = environment.submit_text_menu(
+                    "menu-open_information-1", "text-s1", "managed_episode_test",
+                    request_id="navigation-1",
+                )
+                self.assertEqual(result["status"], "applied")
+                self.assertEqual(result["effect_domain"], "text_menu")
+                self.assertIsNone(result["native_delivery"])
+                self.assertEqual(result["successor"]["menu"]["cursor"], "information")
+                self.assertFalse(environment._closed)
+            self.assertEqual(record.read_text().splitlines(), ["reset", "text_submit", "close"])
+
+    def test_valid_unknown_result_is_returned_then_closes_child(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            record = Path(temporary) / "requests.txt"
+            with ManagedPlayerEnvironment(
+                [sys.executable, "-u", "-c", UNCERTAIN_DRIVER, "unknown", str(record)]
+            ) as environment:
+                environment.reset("SEED")
+                result = environment.submit_text_menu(
+                    "text-a1", "text-s1", "managed_episode_test", request_id="unknown-1"
+                )
+                self.assertEqual(result["status"], "unknown")
+                self.assertEqual(result["native_delivery"], "unknown")
+                self.assertEqual(result["retry"], "never")
+                self.assertTrue(environment._closed)
+                with self.assertRaisesRegex(DriverError, "closed"):
+                    environment.step("a1", "s1")
+            self.assertEqual(record.read_text().splitlines(), ["reset", "text_submit"])
 
     def test_rejects_incomplete_action_projection(self):
         with self.assertRaises(DriverError):
