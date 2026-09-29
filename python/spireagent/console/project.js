@@ -3272,7 +3272,8 @@ window.SpireProject = (() => {
     const taskId = hex(operation.operation_id, 32) ? operation.operation_id : null;
     const memoryRecipe = "stage1a.dsimple.m2.k1.experimental.v1";
     const defaultRecipe = "stage1a.dsimple.s.v1";
-    const recipeLabel = operation.recipe === memoryRecipe ? "实验性 D-Simple M2-K1" : "D-Simple-S v1";
+    const recipeLabel = operation.recipe === memoryRecipe ? "实验性 D-Simple M2-K1"
+      : operation.recipe === defaultRecipe ? "D-Simple-S v1" : "以模型记录为准";
     if (operation.status !== "idle") card.append(el("p", `当前任务配方：${recipeLabel}。${operation.result_type === "train_only" ? "仅训练；未运行独立评估。" : ""}`, "small muted"));
     if (operation.status === "pending") {
       const stage = localTrainingStage(operation.stage);

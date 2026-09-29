@@ -1222,6 +1222,7 @@ test("local training state gates pending and unknown outcomes, and links only co
   }});
   const resultPage = await done.render();
   assert.match(text(resultPage), /这不表示模型已加载到游戏/);
+  assert.match(text(resultPage), /当前任务配方：以模型记录为准/);
   for (const [output, view] of [[runResult, "local-workspace"], [model, "local-workspace"], [evaluation, "local-workspace"]])
     assert.equal(find(resultPage, element => element.tagName === "A" && element.href === `?view=${view}&id=${output}`) !== null, true);
   assert.equal(walk(resultPage).some(element => element.dataset?.action === "start-local-training"), false);

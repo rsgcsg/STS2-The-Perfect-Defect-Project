@@ -1097,7 +1097,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(404, b'{"error":"route_not_found"}')
                     return
                 try:
-                    body = self.json_body(maximum=192)
+                    body = self.json_body(maximum=256)
                     if not {"dataset_id"} <= set(body) or not set(body) <= {
                         "dataset_id", "after_completed_operation_id", "recipe"
                     }:

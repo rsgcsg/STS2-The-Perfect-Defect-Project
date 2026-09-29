@@ -37,6 +37,7 @@ from spireagent.workbench.inplace_curation import InplaceCurationPreparation, co
 from spireagent.workbench.local_curation import LocalLedger
 from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_training import (
+    DEFAULT_RECIPE,
     MEMORY_RECIPE,
     OPERATION_FILE,
     LocalTrainingService,
@@ -734,6 +735,75 @@ def test_http_readonly_status_and_exact_browser_write(tmp_path: Path) -> None:
                             data=json.dumps({"dataset_id": "a" * 64, "extra": 1}).encode(),
                             headers=headers), timeout=3)
         assert unknown.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        app.close()
+
+
+@pytest.mark.parametrize("recipe", [DEFAULT_RECIPE, MEMORY_RECIPE])
+def test_http_explicit_new_recipe_accepts_bounded_body_and_rejects_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recipe: str,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    owner = configured_owner(config)
+    previous_id = "1" * 32
+    (owner.path.parent / OPERATION_FILE).write_text(json.dumps({
+        "schema": "stpd/local-training-operation-v1", "status": "completed",
+        "stage": "completed", "operation_id": previous_id,
+        "dataset_id": dataset_id, "run_id": "2" * 64,
+        "result_id": "3" * 64, "model_id": "4" * 64,
+        "evaluation_id": "5" * 64, "_owner": list(owner.identity),
+    }))
+    config_path = tmp_path / "project.json"
+    config_path.write_text(json.dumps(config.to_dict()))
+    app = Application(config, config_path=config_path)
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    (config.state_dir / "runtime.json").write_text(json.dumps({
+        "instance_id": app.instance_id, "configuration_id": configuration_id(config),
+        "port": server.server_port,
+    }))
+    headers = {
+        "Cookie": f"{app.account.cookie_name}={app.account.cookie}",
+        "Content-Type": "application/json", "Origin": url,
+        "X-CSRF-Token": app.account.csrf,
+    }
+    body = json.dumps({"dataset_id": dataset_id,
+                       "after_completed_operation_id": previous_id,
+                       "recipe": recipe}).encode()
+    assert len(body) <= 256
+
+    def parked(held, _path, _identity, _owner, _store):
+        held.__exit__(None, None, None)
+
+    monkeypatch.setattr(app.local_training, "_run", parked)
+    try:
+        def post(payload: bytes, request_headers: dict[str, str] = headers):
+            return urlopen(Request(url + "/api/local-training/start",
+                                   data=payload, headers=request_headers), timeout=5)
+
+        with pytest.raises(HTTPError) as forbidden:
+            post(body, {**headers, "Origin": "http://invalid.local"})
+        assert forbidden.value.code == 403
+        with pytest.raises(HTTPError) as wrong_recipe:
+            post(json.dumps({"dataset_id": dataset_id,
+                             "after_completed_operation_id": previous_id,
+                             "recipe": "unrecognized"}).encode())
+        assert wrong_recipe.value.code == 409
+        assert json.load(wrong_recipe.value)["error"] == "unsupported_training_recipe"
+        with pytest.raises(HTTPError) as oversized:
+            post(body + b" " * (257 - len(body)))
+        assert oversized.value.code == 400
+        with post(body) as response:
+            started = json.load(response)["operation"]
+        assert started["status"] == "pending"
+        assert started.get("recipe", DEFAULT_RECIPE) == recipe
+        assert started["previous_completed"]["operation_id"] == previous_id
+        assert app.local_training._thread is not None
+        app.local_training._thread.join(timeout=10)
     finally:
         server.shutdown()
         server.server_close()
