@@ -171,6 +171,90 @@ def test_unknown_agent_delivery_does_not_become_not_delivered():
     assert item.snapshot["snapshot_id"] == "opaque-snapshot-same-page"
 
 
+def _ordered_human_row(append: int, capture: int | None, *,
+                       runtime: str | None = "runtime-a", run: str = "run-1",
+                       missing: bool = False) -> dict:
+    row = observation("session-a", f"append-{append}")
+    row.update(schema_version=2, schema="sts2.human-annotator/human-text-input-2",
+               sequence=append, timeline_id="timeline-a", run_id=run,
+               observation_order={"capture_ordinal": capture, "completed_append_watermark": 0})
+    if runtime is not None:
+        row["environment"] = {"runtime_instance_id": runtime,
+                              "environment_fingerprint": "environment-a"}
+    if missing:
+        row.update(snapshot=None, chosen_action=None, disposition="capture_failed")
+    return row
+
+
+def _human_rows_view(monkeypatch, rows):
+    import stpd.fullrun.observed_input_sequence as module
+
+    manifest = SimpleNamespace(parameters=SimpleNamespace(value=lambda: {
+        "schema": "stpd/human-text-input-source-v1"}))
+    monkeypatch.setattr(module, "load_human_text_source", lambda _store, _identity: (
+        manifest, tuple(rows)))
+    return load_observed_input_view(SimpleNamespace(get_manifest=lambda _id: manifest), "source")
+
+
+def test_human_row2_nested_append_order_uses_capture_and_retains_physical_refs(monkeypatch):
+    rows = [_ordered_human_row(1, 2), _ordered_human_row(2, 1), _ordered_human_row(3, 19)]
+    # Same page and a large capture gap are not an inferred missing Human input.
+    for row in rows:
+        row["snapshot"] = copy.deepcopy(rows[0]["snapshot"])
+        row["chosen_action"] = copy.deepcopy(rows[0]["chosen_action"])
+    view = _human_rows_view(monkeypatch, rows)
+
+    assert [item.source_sequence for item in view.inputs] == [1, 2, 19]
+    assert [item.source_events[0].sequence for item in view.inputs] == [2, 1, 3]
+    assert [item.reset_before for item in view.inputs] == [True, False, False]
+    assert len(build_fixed_windows(view, learn_steps=8, burn_in_steps=0)) == 1
+    assert all(not item.delivery_mask and not item.causal_successor_mask for item in view.inputs)
+
+
+def test_human_row2_known_capture_without_observation_splits_at_capture_not_append(monkeypatch):
+    view = _human_rows_view(monkeypatch, [
+        _ordered_human_row(1, 2, missing=True), _ordered_human_row(2, 1),
+        _ordered_human_row(3, 3), _ordered_human_row(4, 4),
+    ])
+
+    assert [item.source_sequence for item in view.inputs] == [1, 2, 3, 4]
+    assert [item.source_events[0].sequence for item in view.inputs] == [2, 1, 3, 4]
+    assert [item.reset_reason for item in view.inputs] == [
+        "stream_start", "missing_observation", "after_missing_observation", None]
+
+
+@pytest.mark.parametrize("failed_runtime", ["runtime-a", None])
+def test_human_row2_unlocated_failure_never_bridges_outer_capture_to_later(
+    monkeypatch, failed_runtime,
+):
+    view = _human_rows_view(monkeypatch, [
+        _ordered_human_row(1, 2),
+        _ordered_human_row(2, None, runtime=failed_runtime, missing=True),
+        _ordered_human_row(3, 1), _ordered_human_row(4, 3),
+        _ordered_human_row(5, 1, runtime="runtime-b"),
+        _ordered_human_row(6, 2, runtime="runtime-b"),
+        _ordered_human_row(7, 4, run="run-2"), _ordered_human_row(8, 5, run="run-2"),
+    ])
+
+    by_append = {item.source_events[0].sequence: item for item in view.inputs}
+    assert all(by_append[index].reset_before for index in (1, 2, 3, 4))
+    assert len({by_append[index].stream_id for index in (1, 2, 3, 4)}) == 4
+    assert by_append[6].reset_before is (failed_runtime is None)
+    assert by_append[8].reset_before is False  # An unrelated run remains usable.
+    assert all(by_append[index].choice_mask for index in (1, 3, 4, 5, 6, 7, 8))
+
+
+def test_human_row2_capture_order_splits_runs_and_does_not_rejoin_returned_run(monkeypatch):
+    view = _human_rows_view(monkeypatch, [
+        _ordered_human_row(1, 2, run="run-2"), _ordered_human_row(2, 1),
+        _ordered_human_row(3, 3), _ordered_human_row(4, 4),
+    ])
+
+    assert [item.source_events[0].sequence for item in view.inputs] == [2, 1, 3, 4]
+    assert [item.reset_before for item in view.inputs] == [True, True, True, False]
+    assert view.inputs[0].stream_id != view.inputs[2].stream_id
+
+
 @pytest.mark.parametrize(
     ("native", "expected_delivery", "expected_successor"),
     [(False, "not_applicable", "ui_navigation"),

@@ -345,6 +345,140 @@ public sealed class HumanTextInputObservationTests
         finally { Delete(root); Delete(recovered); }
     }
 
+    [Fact]
+    public void LegacyRowsDoNotAcquireNewOrderFieldsWhenWritten()
+    {
+        string json = JsonSerializer.Serialize(Accepted(), EvidenceJson.Options);
+        Assert.DoesNotContain("observation_order", json);
+        Assert.Empty(HumanTextInputObservationValidator.Validate(Accepted()));
+        Assert.Contains("text_input_legacy_order_metadata",
+            HumanTextInputObservationValidator.Validate(Accepted() with
+            { ObservationOrder = new(1, 0) }));
+    }
+
+    [Fact]
+    public void NestedCaptureOrderPersistsThroughPhysicalAppendAndCloseAudit()
+    {
+        string root = Temp();
+        try
+        {
+            var profile = Profile();
+            var manifest = Manifest(profile) with { TextInputSchemaVersion = 2 };
+            string session;
+            using (var store = RecordingSessionStore.Create(root, manifest, profile))
+            {
+                session = store.DirectoryPath;
+                Journal(store, manifest);
+                // Outer capture 1 precedes inner 2; inner completes first.
+                store.AppendHumanTextInputObservation(Ordered(1, 2, 0));
+                store.AppendHumanTextInputObservation(Ordered(2, 1, 0));
+                // Only the later observation can know both completions.
+                store.AppendHumanTextInputObservation(Ordered(3, 3, 2));
+                Assert.Equal(0, store.GetSnapshot().Counters.Records);
+            }
+            var rows = File.ReadAllLines(Path.Combine(session,
+                HumanTextInputObservationContract.FileName))
+                .Select(line => JsonSerializer.Deserialize<HumanTextInputObservation>(
+                    line, EvidenceJson.Options)!).ToArray();
+            Assert.Equal(new long[] { 1, 2, 3 }, rows.Select(row => row.Sequence));
+            Assert.Equal(new long?[] { 2, 1, 3 }, rows.Select(row => row.ObservationOrder!.CaptureOrdinal));
+            Assert.Equal(new long[] { 0, 0, 2 }, rows.Select(row => row.ObservationOrder!.CompletedAppendWatermark));
+            Assert.Equal("pass", RecordingSessionAuditor.Audit(session).Status);
+            Assert.Equal(0, RecordingSessionAuditor.Audit(session).ValidRecords);
+        }
+        finally { Delete(root); }
+    }
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(-1, 0)]
+    [InlineData(1, -1)]
+    [InlineData(1, 3)]
+    public void OrderedRowsRejectOneInvalidFact(long capture, long watermark)
+    {
+        Assert.Contains("text_input_observation_order_invalid",
+            HumanTextInputObservationValidator.Validate(Ordered(3, capture, watermark)));
+    }
+
+    [Fact]
+    public void CompletedPrefixUsesMaximumCaptureNotJustLastAppend()
+    {
+        var ledger = new HumanTextInputOrderLedger();
+        Assert.Null(ledger.Observe(Ordered(1, 100, 0)));
+        Assert.Null(ledger.Observe(Ordered(2, 1, 0)));
+        Assert.Equal("human_text_input_capture_order_invalid",
+            ledger.Observe(Ordered(3, 50, 2)));
+        var duplicate = new HumanTextInputOrderLedger();
+        Assert.Null(duplicate.Observe(Ordered(1, 1, 0)));
+        Assert.Equal("human_text_input_capture_order_invalid",
+            duplicate.Observe(Ordered(2, 1, 0)));
+    }
+
+    [Fact]
+    public void CaptureFailureRetainsCompletedPrefixWithoutInventingAnObservation()
+    {
+        var failed = Ordered(2, 2, 1) with {
+            ObservationOrder = new(null, 1), Snapshot = null, SnapshotSha256 = null,
+            ChosenAction = null, MappingStatus = "capture_failed", MatchCount = 0,
+            Disposition = HumanTextInputObservationContract.CaptureFailed,
+            ReasonCode = "capture_unavailable"
+        };
+        Assert.Empty(HumanTextInputObservationValidator.Validate(failed));
+        var ledger = new HumanTextInputOrderLedger();
+        Assert.Null(ledger.Observe(Ordered(1, 1, 0)));
+        Assert.Null(ledger.Observe(failed));
+        Assert.Null(ledger.Observe(Ordered(3, 3, 2)));
+        // The native freeze can succeed before serialization fails. Keep that
+        // known position while still exposing no usable observation or label.
+        Assert.Empty(HumanTextInputObservationValidator.Validate(failed with {
+            ObservationOrder = new(2, 1)
+        }));
+        Assert.NotEmpty(HumanTextInputObservationValidator.Validate(failed with {
+            ObservationOrder = new(2, 1), Environment = null
+        }));
+    }
+
+    [Fact]
+    public void UnknownCapturePositionIsExplicitNullInSealedRecording()
+    {
+        string root = Temp();
+        try
+        {
+            var profile = Profile();
+            var manifest = Manifest(profile) with { TextInputSchemaVersion = 2 };
+            string session;
+            using (var store = RecordingSessionStore.Create(root, manifest, profile))
+            {
+                session = store.DirectoryPath;
+                Journal(store, manifest);
+                store.AppendHumanTextInputObservation(Ordered(1, 1, 0));
+                store.AppendHumanTextInputObservation(Ordered(2, 2, 1) with {
+                    ObservationOrder = new(null, 1), Environment = null,
+                    Snapshot = null, SnapshotSha256 = null, ChosenAction = null,
+                    MappingStatus = "capture_failed", MatchCount = 0,
+                    Disposition = HumanTextInputObservationContract.CaptureFailed,
+                    ReasonCode = "capture_unavailable"
+                });
+            }
+            string[] rows = File.ReadAllLines(Path.Combine(session,
+                HumanTextInputObservationContract.FileName));
+            using var json = JsonDocument.Parse(rows[1]);
+            var order = json.RootElement.GetProperty("observation_order");
+            Assert.Equal(JsonValueKind.Null, order.GetProperty("capture_ordinal").ValueKind);
+            Assert.Equal(1, order.GetProperty("completed_append_watermark").GetInt64());
+            Assert.Equal("pass", RecordingSessionAuditor.Audit(session).Status);
+        }
+        finally { Delete(root); }
+    }
+
+    private static HumanTextInputObservation Ordered(long sequence, long capture, long watermark) =>
+        Accepted() with {
+            SchemaVersion = HumanTextInputObservationContract.SchemaVersion,
+            Schema = HumanTextInputObservationContract.Schema,
+            Sequence = sequence, RecordId = $"order-{sequence}",
+            ObservationOrder = new(capture, watermark)
+        };
+
     private static HumanTextInputObservation Accepted()
     {
         JsonObject action = JsonNode.Parse("{\"action_id\":\"card-1\",\"kind\":\"native_input\",\"verb\":\"begin_card_play\",\"label\":\"Play Strike\",\"subject_referent_id\":\"card-1\",\"arguments\":[],\"effect_domain\":\"native_input\"}")!.AsObject();
@@ -371,7 +505,7 @@ public sealed class HumanTextInputObservationTests
         var environment = new RecorderEnvironmentIdentity(
             new ExactGameIdentity("game", "commit", sha, "11111111-1111-1111-1111-111111111111"),
             artifact, artifact, "1.0.0", "runtime-1", "environment-1", "exact", sha);
-        return new HumanTextInputObservation(1, HumanTextInputObservationContract.Schema, 1,
+        return new HumanTextInputObservation(1, HumanTextInputObservationContract.LegacySchema, 1,
             "text-1", "session-test", "timeline-test", "run-0001",
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddSeconds(1), environment,
             snapshot, EvidenceIdentity.Sha256Json(snapshot), action, "exact_unique", 1,

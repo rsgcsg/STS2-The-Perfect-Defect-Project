@@ -2,7 +2,7 @@
   "schema": "stpd/developer-combination-v1",
   "platform_repository": "https://github.com/rsgcsg/STS2-The-Pefect-Defect-Project.git",
   "platform_source_revision": "6f2e3c11360e1d0c4b3f5bb52c739972061f36b9",
-  "evidence_source_revision": "ec1fcfa5dee3164040b36430c45b8f932605847a",
+  "evidence_source_revision": "330fc960c1a42f70988e976465c4baaa0674c4c7",
   "policy_mode": "existing-adapter-only",
   "node_packages": [
     {
