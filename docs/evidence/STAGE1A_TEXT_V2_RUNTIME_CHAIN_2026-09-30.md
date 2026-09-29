@@ -110,10 +110,65 @@ The application author's first broad check used an old installed Evidence rc.16
 and rejected the existing `text_observation_not_admitted` fixture on both parent
 and candidate. Rechecking with the correct locked rc.20 environment passed 138
 application tests; no production guard or test was weakened. The final combined
-consumer now pins reviewed Evidence rc.21. Final combination checks and its own
-hosted CI must be recorded separately before acceptance.
+consumer now pins reviewed Evidence rc.21. The combined application/adapter
+short suite at `8be9f867` passed 263 tests
+with one native-Windows-only skip. Its subsequent scoped typecheck identified an
+obsolete import ignore, which was removed without changing runtime behavior;
+Ruff, mypy over 13 production files and 180 console Node tests then passed.
 
-Remaining product boundaries include real Workbench use of this combination,
-released kit inventory/distribution, current native Runtime canaries, broader
-scene coverage and independent model evaluation. No complete game, memory
-benefit or larger independent training corpus follows from these checks.
+A real isolated Workbench launch exposed a remaining composition mismatch:
+`pyproject.toml` and the lock selected Evidence rc.21, but the shipped developer
+combination still selected its older source. The existing
+`test_shipped_combination_pins_the_locked_evidence_reader` failed on those bytes.
+Commit `e4fe8ca9486277bd526a0b56856232ec49ee0693` aligns only that Evidence
+combination pin and removes the obsolete type-ignore. All 53 developer
+Workbench tests then passed. Old persisted project configurations still require
+the existing explicit setup/update; no running project was silently migrated.
+
+On clean `e4fe8ca9`, `check:identity`, `check:bom`, `project:closeout`,
+`git diff --check` and `check:plan -- --base 5d5a471bd46f6d46444ced3be309f9e7574c599c`
+all exited zero. Planner selects `full` for source/contract/governance changes.
+Closeout calls for contract/BOM and evidence-level review, not automatic
+qualification. This candidate still requires its own hosted result.
+
+## Isolated Workbench journey
+
+On clean application source `e4fe8ca9486277bd526a0b56856232ec49ee0693`,
+an independent private project used the exact locked Python rc.21 consumer and
+its own three Node consumer packages installed from the existing lock. The
+normal `doctor()` passed and the normal `serve()` entrypoint launched. Real
+cookie/Origin/CSRF-protected HTTP routes performed six-step engineering-source
+training, worker export and registration. This used the ordinary fixed
+`stage1a.dsimple.m2.k1.experimental.v2` recipe (width 48, one layer), not the
+smaller manual model from the earlier probe. It produced:
+
+- training run `6b529507f300df92e3ee51a87a558e71366f990ebb2346b5bb9a9cd15adcfb79`;
+- checkpoint `04adf1c32436589d5cd4242a177be41f9570256587f1bd72f4226944b26bbdeb`;
+- model `9363c368389c9b733216029ba8d1bb12f1fc2fe82ee657338f6f9a3a1c746c3a`.
+
+Evaluation was `not_run`. The imported six-step source remains Managed
+engineering/control data, not another independent game or Human episode.
+
+The subsequent Human load → one Shadow decision → explicit Stop used the same
+actual application owners, model child and exact temporary rc.13 Runtime.
+Connector was synthetic. An external one-use harness redirected only the
+process-local `NativeTasks.address` to a synthetic task-status service, avoiding
+the existing user game's fixed bridge port. Therefore this is a synthetic seam
+exercise, not an unmodified native installation or native recording handoff.
+No producer source or safety guard was patched for that exercise.
+
+Run `run-9fec6371-ca2e-4e61-91f9-5f85f516f837` selected index 0 from one
+candidate in Shadow; this does not test strategic choice. Connector counted
+8 atomic context reads, zero separate snapshot reads and zero text/native
+submissions, without acquiring a lease. The synthetic task service saw one
+status read and no prepare command. Stop completed Human/stopped, released,
+untainted; immutable evidence has five events and verifies with no findings.
+The lead reverified content ID
+`3ad9b7152b349a151cae2ed20b049a290e3e075b0f08c08411e8ee96b57d6389`.
+Owned Workbench, Runtime and fixture processes were closed; the real game and
+user Workbench were untouched.
+
+Remaining product boundaries include trusted member-kit v2 inventory and
+ordinary preparation, current native Runtime canaries, broader scene coverage
+and independent model evaluation. No complete game, memory benefit or larger
+independent training corpus follows from these checks.
