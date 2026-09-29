@@ -276,6 +276,27 @@ def train_memory_window(
     return float(loss.detach())
 
 
+def _episode_chunk_plan(
+    input_tokens: tuple[int, ...], max_chunk_steps: int, max_chunk_input_tokens: int,
+) -> tuple[tuple[int, int], ...]:
+    """Partition validated observations without changing their order or content."""
+    chunks: list[tuple[int, int]] = []
+    chunk_start = 0
+    chunk_tokens = 0
+    for position, step_tokens in enumerate(input_tokens):
+        if (
+            position > chunk_start
+            and (position - chunk_start >= max_chunk_steps
+                 or chunk_tokens + step_tokens > max_chunk_input_tokens)
+        ):
+            chunks.append((chunk_start, position))
+            chunk_start = position
+            chunk_tokens = 0
+        chunk_tokens += step_tokens
+    chunks.append((chunk_start, len(input_tokens)))
+    return tuple(chunks)
+
+
 def train_memory_episode(
     model: ExperimentalDSimpleM2,
     optimizer: torch.optim.Optimizer,
@@ -324,9 +345,7 @@ def train_memory_episode(
 
     # Build the full deterministic chunk plan while validating every supplied
     # token and binding. No model forward or optimizer operation occurs here.
-    chunks: list[tuple[int, int]] = []
-    chunk_start = 0
-    chunk_tokens = 0
+    step_tokens_by_position: list[int] = []
     total_tokens = 0
     label_count = 0
     for position, step in enumerate(episode.steps):
@@ -336,19 +355,13 @@ def train_memory_episode(
         total_tokens += step_tokens
         if total_tokens > max_input_tokens:
             raise ValueError("memory episode input token limit exceeded")
-        if (
-            position > chunk_start
-            and (position - chunk_start >= max_chunk_steps
-                 or chunk_tokens + step_tokens > max_chunk_input_tokens)
-        ):
-            chunks.append((chunk_start, position))
-            chunk_start = position
-            chunk_tokens = 0
-        chunk_tokens += step_tokens
+        step_tokens_by_position.append(step_tokens)
         label_count += int(step.label_key is not None)
     if label_count == 0:
         raise ValueError("memory episode needs at least one label")
-    chunks.append((chunk_start, len(episode.steps)))
+    chunks = _episode_chunk_plan(
+        tuple(step_tokens_by_position), max_chunk_steps, max_chunk_input_tokens,
+    )
 
     model.train()
     memory = model.initial_memory()
