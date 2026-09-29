@@ -74,6 +74,51 @@ accommodate that script mistake.
 
 ## Checks and limits
 
+### Application and HTTP journey
+
+Application source `8ce8b23a301613e17bb114e062c0df339bb252c5` adds one
+explicitly started fixed-seed session, not a general scheduler. It uses the
+public Host client through a strategy-free shared loader. Each complete
+before-page, offered action and returned result is stored once as an immutable
+event; the small mutable journal and terminal report reference these events.
+Saving a result cannot silently discard the offered page or grow every later
+journal rewrite by the full size of all preceding results.
+
+Independent review found and the author corrected journal-write failures that
+could otherwise leave a live child behind. Focused tests distinguish no spawn,
+no submission, native submission with a retained event, pending event writing,
+confirmed cleanup and cleanup unknown. The exact app-only log at `8ce8b23a`
+records 48 Python tests across `test_local_environment.py`,
+`test_local_environment_http.py`, `test_host_runtime_client.py` and
+`test_project_console.py`, plus 171 project-console JavaScript tests passing,
+Ruff clean and mypy clean on five source files. These are separate from the
+later combined-source 86-test receipt below.
+
+At clean combined source `2412a42ab03abb4276d358bf44d227dad61b31f3`, a separate
+temporary Workbench was configured through the ordinary CLI and opened with
+its own state directory. Browser-cookie/Origin/CSRF-authenticated HTTP requests
+performed the same six-step Managed v2 sequence, then Stop and report reads.
+All six complete before-contexts and results read back through event endpoints;
+the terminal report referenced those exact six events. Read-only refresh left
+the stopped session unchanged. This took 6.339 seconds, without a throughput
+claim. Report ID:
+`3837be30e067e4f10fbfa415e345bd12b5cf660aec65b19e21cde9d9b0fed553`.
+The local aggregate receipt SHA-256 is
+`9defd05c71359fcf40bd6d5fa63f0c5a6a7e25e3b4b3e6c8baab7fe5cc16787f`.
+The temporary Workbench subsequently reported `not_running`; no canary Host
+process remained. The user's existing Workbench was not replaced for this test.
+
+Safari exposed a separate shell-routing omission at that source: the new
+navigation link fell back to the local home page. Therefore the HTTP journey
+does not by itself qualify the visible environment entry. This finding is
+retained. Shell follow-up `09430edfa363301fc72359a1a847a583e4d3ed00`
+registers the local view, keeps cloud navigation separate and obtains local
+browser CSRF from authenticated environment status. Its 207 shell/project
+JavaScript tests and focused HTTP test passed. These tests do not replace
+the subsequent browser verification of the integrated source.
+
+### Source checks
+
 On final Host source `35dcf11a`, `npm --prefix components/host-runtime run check`
 completed successfully: 237 Node tests passed, 4 exact-game tests were skipped,
 and 17 Python tests passed; syntax, docs, repository and temporary package
@@ -81,9 +126,12 @@ checks also passed. Skipped proprietary gates are not covered by this result.
 The installed journey above is additional local evidence, not hosted CI.
 
 Combined v1/v2 projection and memory-scorer short checks passed 55 tests on the
-research integration before the application merge. Host identity/BOM and diff
-checks passed after its exact source fields were aligned. Final candidate
-checks and hosted CI must still be bound to the eventual PR head.
+research integration before the application merge. At combined `2412a42a`,
+the six Python files covering environment service/HTTP, shared Host loading,
+v1/v2 inputs and memory scoring passed 86 tests; the project console file
+passed 171 JavaScript tests. Host identity/BOM and diff checks passed after
+its exact source fields were aligned. Final candidate checks and hosted CI
+must still be bound to the eventual PR head.
 
 No Human recording, trained v2 policy, memory-benefit result, complete-game
 coverage, arbitrary checkpoint restore, MCTS, Windows/Linux native execution

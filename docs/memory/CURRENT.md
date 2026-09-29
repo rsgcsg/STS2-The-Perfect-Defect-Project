@@ -1,7 +1,7 @@
 # Current project context, 2026-09-29
 
 Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; accepted develop
-anchor `def60b649ddc7ef97f6e60f5f288e387ab8d460a` after PR102.
+anchor `004f0afeac46f627025360f7b0e7c890f6510393` after PR105.
 Resolve live GitHub refs before work; current authorities override this file.
 Source, CI, installation, Human operation and scientific results are separate.
 No complete Stage1a or policy-quality qualification is claimed. See the
@@ -66,6 +66,21 @@ for exact PR/CI and candidate-runtime receipts.
 
 ## Research and environment candidates
 
+Merged PR104/105 extend Managed merchant exit and consumer recovery. PR105
+head `33d0f295` passed full run `36567189499`; normal merge `004f0afe` retained
+its tree and integration run `36570628523` succeeded using verified same-tree
+reuse. A private 32-submission M2 continuation ended at its declared budget,
+not at a game terminal. The separate text-menu-v2 Connector candidate PR106
+is not implied accepted by these checks; resolve its current head and CI.
+
+The [Managed v2 / environment Workbench candidate receipt](../evidence/STAGE1A_MANAGED_TEXT_V2_WORKBENCH_2026-09-29.md)
+records an exact temporary rc.20 package, text-only card/target intentions,
+truthful process cleanup and a real authenticated HTTP → Managed native →
+immutable report journey. That candidate does not replace the current private
+or published installation merely by existing in Git. Existing v1 Human data,
+tokenizers and M2 exports remain v1. A v2 projector is not a trained v2 policy;
+the complete v2 training/export/Runtime profile remains separate unfinished work.
+
 D-Simple-S remains the default application recipe. Merged PR90/91/95 provide
 observed-sequence M2 training, durable checkpoints and read-only online scoring;
 [PR97](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/97)
@@ -84,7 +99,9 @@ passed on `83d997b1`; the normal merge retained the same candidate tree.
 A private 105-action scripted smoke traversed card rewards, gold, map,
 combat and one event choice. It is not trained-model, Human, Windows native
 or full-flow evidence. Treasure, shop/selectors and typed text terminal
-handling have separate unpublished candidates and are not covered by PR100.
+handling were separate candidates at that point and are not covered by PR100;
+later source integration is recorded under PR104/105 above, without upgrading
+the older PR100 runtime receipt.
 Selected PR90–98 CI passed; PR97/98 develop integration reused verified
 same-tree OS execution with fresh guards, as detailed in the dated ledger.
 Source/test success is not gameplay qualification.
