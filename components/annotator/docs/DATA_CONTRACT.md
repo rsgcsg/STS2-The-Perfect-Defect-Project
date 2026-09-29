@@ -481,9 +481,16 @@ Status 5 adds `continuous`: armed, observed fresh/resumed start, interruption,
 terminal/outcome, native boundary completeness and sealed/finished counts. These
 are lifecycle facts, not complete Human or sequence qualification. Start/Resume
 arms; Pause interrupts and disarms; manual Close disarms even between sessions.
-A native terminal seals the current session without disarming. The next exact
-Launch opens the next session. `IsAbandoned` at OnEnded distinguishes abandonment
-from defeat. Cleanup/exit seals a partial segment without inventing a terminal.
+A native terminal starts closure coordination without disarming. For a normal
+victory or defeat, the recorder retains the session through the exact native
+Game Over Continue-ready callback, attempts the existing causal boundary there,
+then closes. A process frame between OnEnded and that callback cannot close it.
+The callback does not itself prove a successor: an incomplete capture or missing
+Commit remains unknown at Close. Abandonment seals on the next process frame.
+Cleanup/exit, manual Close, or the next exact native Launch closes an unready
+segment as unknown instead of carrying it into another run. `IsAbandoned` at
+OnEnded distinguishes abandonment from defeat. A later Launch opens a fresh
+session only after the preceding close succeeds.
 Packing and upload remain asynchronous Workbench/Evidence operations.
 
 `continuous_schema_version=1` permits explicitly empty current streams when a

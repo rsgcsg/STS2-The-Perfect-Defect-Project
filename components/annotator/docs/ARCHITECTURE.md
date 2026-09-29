@@ -94,6 +94,13 @@ the RunJournal/evidence streams. Close does not wait for a semantic drain and
 never captures or promotes a replacement `S'`. Audit/pack/verify/store/transfer
 remain offline Evidence operations.
 
+Automatic terminal Close waits for the exact native Game Over Continue-ready
+callback to finish its synchronous boundary persistence. OnEnded records native
+terminal lifecycle only; intervening process frames cannot seal a normal
+victory/defeat session. Explicit cleanup, manual Close and a later native Launch
+still close an unready segment with unknown successor. No timer or frame poll
+supplies readiness.
+
 The frame loop is not observation authority. It performs no Player Environment
 capture while an idle recording has no explicit status or Close work. Canonical
 families capture one complete boundary at the mutation edge; that same frame

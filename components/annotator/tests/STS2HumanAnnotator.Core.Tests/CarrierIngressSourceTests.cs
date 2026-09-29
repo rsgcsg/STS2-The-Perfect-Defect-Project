@@ -4,6 +4,31 @@ namespace STS2HumanAnnotator.Core.Tests;
 public sealed class CarrierIngressSourceTests
 {
     [Fact]
+    public void TerminalReadyClosesOnlyAfterTheActualBoundaryPathIncludingEmptyAndFailedCapture()
+    {
+        string runtime = Source("RecorderRuntime.cs");
+        int start = runtime.IndexOf("private static void ObserveNativeDecisionOwnerReady(");
+        int end = runtime.IndexOf("private static CurrentDecisionFrame FreezeSemanticBoundary", start);
+        string callback = runtime[start..end];
+        int tryStart = callback.IndexOf("try\n");
+        int noPending = callback.IndexOf("!BoundaryTracker.NeedsBoundaryObservation");
+        int capture = callback.IndexOf("CaptureSemanticFrame()");
+        int persist = callback.IndexOf("ObserveSemanticDecisionBoundary(");
+        int finalizer = callback.IndexOf("finally");
+        int seal = callback.IndexOf("SealAfterNativeTerminal(observation.Domain)");
+        Assert.True(tryStart >= 0 && noPending > tryStart && capture > noPending
+            && persist > capture && finalizer > persist && seal > finalizer);
+        Assert.Contains("if (!_semanticBoundaryTraceHealthy)\n                return;", callback[tryStart..finalizer]);
+        Assert.Contains("DisableSemanticBoundaryTrace(exception)", callback);
+
+        int sealStart = runtime.IndexOf("private static void SealAfterNativeTerminal(");
+        int cleanup = runtime.IndexOf("internal static void ObserveNativeRunCleanup(", sealStart);
+        string closing = runtime[sealStart..cleanup];
+        Assert.Contains("TakeOnDecisionOwnerReady(sessionId, _currentRunId, readyDomain)", closing);
+        Assert.Contains("new RecordingSessionExpectation(sessionId!)", closing);
+    }
+
+    [Fact]
     public void SettlingCardObservationKeepsExactFactoryFrameAndExecutionAuthority()
     {
         string runtime = Source("RecorderRuntime.cs");
