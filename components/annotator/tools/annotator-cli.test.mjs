@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { resolveCliPath } from "./cli-paths.mjs";
+import { semVerAtLeast } from "../../../tools/check-platform-bom.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 
@@ -26,7 +27,7 @@ test("Annotator CLI exposes portable and exact-game entry points", () => {
   assert.match(result.stdout, /pack-session/u);
 });
 
-test("Annotator package, native Mod, and Connector dependency versions agree", () => {
+test("Annotator package and native Mod agree; Connector dependency is a valid minimum", () => {
   const packageMetadata = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
   const manifest = JSON.parse(fs.readFileSync(
     path.join(root, "src", "STS2HumanAnnotator.Mod", "mod_manifest.json"),
@@ -41,9 +42,12 @@ test("Annotator package, native Mod, and Connector dependency versions agree", (
     "utf8"
   ));
   const nativeVersion = contracts.match(/public const string ProductVersion = "([^"]+)";/u)?.[1];
-  const connectorDependency = manifest.dependencies.find(({ id }) => id === "STS2_MCP");
+  const connectorDependencies = manifest.dependencies.filter(({ id }) => id === "STS2_MCP");
 
   assert.equal(manifest.version, packageMetadata.version);
   assert.equal(nativeVersion, packageMetadata.version);
-  assert.equal(connectorDependency?.min_version, connectorManifest.version);
+  assert.equal(connectorDependencies.length, 1);
+  assert.equal(semVerAtLeast(connectorManifest.version, connectorDependencies[0].min_version), true);
+  assert.equal(semVerAtLeast(connectorManifest.version, "1.3.0-rc.10"), false);
+  assert.equal(semVerAtLeast(connectorManifest.version, "1.3.0-rc.06"), false);
 });

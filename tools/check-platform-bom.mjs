@@ -108,7 +108,7 @@ function parseSemVer(value) {
   return { core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])], prerelease };
 }
 
-function semVerAtLeast(current, minimum) {
+export function semVerAtLeast(current, minimum) {
   const actual = parseSemVer(current);
   const required = parseSemVer(minimum);
   if (!actual || !required) return false;
