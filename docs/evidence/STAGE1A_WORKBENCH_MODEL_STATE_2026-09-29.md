@@ -31,7 +31,9 @@ interrupted archive and pin writes and retry through the same owning API.
 
 At `d2638341`, the scoped Python suite completed with 198 passed and 1 skipped.
 The skip requires a native Windows batch launcher; it is not a local Windows
-pass. Scoped Ruff and mypy passed. Root identity, BOM, patch hygiene and closeout
+pass. A separate root scoped Ruff/mypy check on later clean source
+`c2e546b4513a876913e0fad87605c2ed256afa9c` passed; these are not attributed to
+the earlier pytest log. Root identity, BOM, patch hygiene and closeout
 checks passed on integration source `1849ba78`; the actual planner selected full.
 A later candidate's hosted gate remains separate from these local checks.
 
@@ -41,7 +43,7 @@ A later candidate's hosted gate remains separate from these local checks.
    Workbench was stopped through its lifecycle owner. The first immediate
    migration attempt returned `already_running`, exit 1, while shutdown was
    still completing. It changed no model metadata. That failure was retained.
-2. After an explicit owner status returned `not_running`, the same private
+2. After the operator observed owner status `not_running`, the same private
    application configuration imported two known legacy checkout metadata roots
    through `project migrate-model-state`. Both commands exited 0 at
    2026-09-29 10:03:07 UTC. No machine-wide search or automatic migration ran.
@@ -64,11 +66,37 @@ A later candidate's hosted gate remains separate from these local checks.
 6. The new roster and binding files were verified under application-owned
    storage. No model was loaded, no mode changed, and no gameplay was submitted.
 
+## Explicit preparation candidate
+
+A subsequent independently reviewed source increment
+`6a5492b1edca8bc6e03c5654fd865000d8d35a4f` adds two explicit fixed-profile
+preparation buttons and an owning application operation. A fully verified current
+developer-kit may supply its pinned text/M2 Runtime pair; an ordinary checkout
+can only reuse an already verified private installation. Missing assets remain
+an explicit unavailable condition. The service never registers or loads a model
+automatically, takes an arbitrary browser path, replaces a conflicting pin or
+rebinds an old model manifest.
+
+Independent review found a gap between the stopped-runtime check and operation
+admission. The same operation lock now owns that admission, with worker rechecks
+before publication/install and final state updates. Three deterministic
+interleavings cover the original gap and late state changes. Root checks at the
+clean exact source above ran 162 Python tests and 165 Node console tests, all
+passed with exit 0; diff hygiene passed. The original 159/165 precommit results
+are not used as exact final-head receipts.
+
+The earlier application at clean `c2e546b4` was restarted after the migration;
+read-only status retained the same registered selection and `loaded=false`.
+Before the preparation candidate switch, root observed model idle/unloaded,
+training completed, and stopped that Workbench through its lifecycle owner. An
+explicit owner read-back at 2026-09-29 10:44:02 UTC reported `not_running`.
+No Runtime Stop or game action was issued by this Workbench switch.
+
 ## Remaining boundary
 
-The browser's existing Runtime installer still prepares the base Runtime only.
-This receipt used the explicit operator migration API and an already validated
-local text-profile installation. It does not establish a new user's complete
+The migration receipt used the explicit operator API and an already validated
+local text-profile installation. The preparation candidate is source/test
+validation until its actual application use is recorded separately. It does not establish a new user's complete
 one-click setup, released rc.12 asset availability, native Reset operation or
 cross-machine portability. Raw private paths, records, tokens and weights stay
 local. Old stores, packages and archives are preserved for rollback; any return
