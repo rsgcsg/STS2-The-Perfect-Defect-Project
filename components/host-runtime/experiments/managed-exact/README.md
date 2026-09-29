@@ -93,10 +93,22 @@ The raw Managed combat action path and its Player Environment projection admit
 play/end-turn mutations only while the exact current run, living player turn,
 CombatManager play phase, enabled-action state, not-ready-to-end state, and
 ActionQueueSynchronizer `PlayPhase` agree. A closed native window projects no
-combat mutations and is reported as settling; this gate does not add Managed
-combat text-menu support. A dependency-free contract test checks each
-player-turn/action-queue blocker. This is source-level coverage, not a live
-combat rejection receipt.
+combat mutations and is reported as settling; a dependency-free contract test
+checks each player-turn/action-queue blocker. This is source-level coverage,
+not a live combat rejection receipt.
+
+The `text-menu-v1` Managed adapter can expose the complete current combat leaf
+catalog as direct semantic actions (`play`, `use`, `end_turn`, and supported
+potion discard). Card and potion target arguments retain the current visible
+enemy referent and the adapter dispatches the existing exact Player Environment
+binding. It admits only a complete ready PlayPhase snapshot; AnyAlly, unknown
+target kinds, malformed or incomplete action catalogs, and closed phases make
+the entire action catalog unavailable. The menu stays at its existing root;
+it does not invent a card cursor, held-card, target-confirm, potion-popup, or
+information-read action. A direct semantic `play(card, target)` is not the
+Connector Live Godot sequence of holding a card and confirming a target, so
+cross-Host trajectory equality is not claimed. This is source/test coverage,
+not a native runtime, cross-Host, or full-game qualification.
 
 `engine-lab` measures the exact in-process game-owned semantic loop without a
 Player Environment or consumer. `pe-profile` separates training overhead from

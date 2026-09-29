@@ -43,15 +43,62 @@ function completeCurrentLeaf(snapshot) {
         ? snapshot.referents.some((referent) => referent.role === "card"
           && referent.referent_id === action.subject_referent_id)
         : action.subject_referent_id == null));
-  return (map || rest || upgrade)
+  const combat = snapshot?.interaction?.kind === "combat_turn"
+    && snapshot.interaction.stage === "ready"
+    && snapshot.status === "interactive"
+    && snapshot.completeness?.visible_information === "contract_complete_for_immediate_combat_turn_including_visible_companions; pile contents available through a separate read-only Player Environment Read"
+    && snapshot.completeness?.interaction_discovery === "derived_from_same_validator_as_execution"
+    && snapshot.interaction.content?.context?.kind === "combat"
+    && snapshot.interaction.content.context.turn_owner === "player"
+    && snapshot.interaction.content.context.is_play_phase === true
+    && snapshot.interaction.content.surface?.can_end_turn === true;
+  const referentById = new Map((snapshot?.referents ?? []).map((referent) => [referent.referent_id, referent]));
+  const targetArgumentValid = (action, subject) => {
+    const args = action.arguments ?? [];
+    if (args.length === 0) return true;
+    if (args.length !== 1 || args[0].role !== "target") return false;
+    const target = referentById.get(args[0].referent_id);
+    return target?.role === "enemy"
+      && (subject?.properties?.target_entity_ids ?? []).includes(target.referent_id);
+  };
+  const combatActionValid = (action) => {
+    const subject = action.subject_referent_id == null ? null : referentById.get(action.subject_referent_id);
+    const context = snapshot.interaction.content.context;
+    const targetType = subject?.role === "playable_card"
+      ? context.player?.hand?.find((card) => card.entity_id === subject.referent_id)?.target_type
+      : subject?.role === "usable_potion"
+        ? context.player?.potion_states?.find((potion) => potion.entity_id === subject.referent_id)?.target_type
+        : null;
+    if (action.verb === "end_turn") return subject === null && (action.arguments ?? []).length === 0;
+    if (action.verb === "play") {
+      return subject?.role === "playable_card"
+        && (targetType === "AnyEnemy"
+          ? (action.arguments ?? []).length === 1 && targetArgumentValid(action, subject)
+          : ["Self", "AllEnemies", "AllCharacters", "None"].includes(targetType)
+            && (action.arguments ?? []).length === 0);
+    }
+    if (action.verb === "use") {
+      return subject?.role === "usable_potion"
+        && (targetType === "AnyEnemy"
+          ? (action.arguments ?? []).length === 1 && targetArgumentValid(action, subject)
+          : ["Self", "AllEnemies", "AllCharacters", "None"].includes(targetType)
+            && (action.arguments ?? []).length === 0);
+    }
+    return action.verb === "activate" && subject?.role === "usable_potion"
+      && (action.arguments ?? []).length === 0;
+  };
+  return (map || rest || upgrade || combat)
     && snapshot.bound_actions?.status === "complete"
     && snapshot.bound_actions.actions.length > 0
-    && snapshot.bound_actions.actions.every((action) => (upgrade
-      || action.verb === "activate")
+    && snapshot.bound_actions.actions.every((action) => (combat
+      ? combatActionValid(action)
+      : upgrade
+        ? true
+        : action.verb === "activate")
       && typeof action.bound_action_id === "string"
       && typeof action.label === "string"
-      && (action.arguments ?? []).length === 0
-      && (upgrade || (action.subject_referent_id != null
+      && (combat || (action.arguments ?? []).length === 0)
+      && (combat || upgrade || (action.subject_referent_id != null
         && snapshot.referents.some((referent) => referent.referent_id === action.subject_referent_id))));
 }
 
@@ -63,7 +110,7 @@ function project(snapshot, allowActions = true) {
     verb: bound.verb,
     label: bound.label,
     subject_referent_id: bound.subject_referent_id,
-    arguments: [],
+    arguments: bound.arguments ?? [],
     effect_domain: "native_input"
   })) : [];
   const { bound_actions: _boundActions, reads: _reads, ...publicSnapshot } = snapshot;
@@ -85,7 +132,7 @@ function project(snapshot, allowActions = true) {
   };
 }
 
-/** In-process projection of complete current Managed map, rest, and deck-upgrade leaves. */
+/** In-process projection of complete current Managed map, rest, deck-upgrade, and direct combat leaves. */
 export class ManagedTextMenuSessionAdapter {
   #session;
   #bindings = new Map();
@@ -155,7 +202,7 @@ export class ManagedTextMenuSessionAdapter {
       return this.#save(request_id, fingerprint, this.#result(request_id, {
         status: "not_applied", effect_domain: null, native_delivery: null,
         action: null, reason_code: "stale_or_unadvertised_action",
-        detail: "Only a current advertised Managed map, rest-site, or deck-upgrade leaf can be submitted.",
+        detail: "Only a current advertised Managed text-menu leaf can be submitted.",
         retry: "reobserve", successor: current
       }));
     }
