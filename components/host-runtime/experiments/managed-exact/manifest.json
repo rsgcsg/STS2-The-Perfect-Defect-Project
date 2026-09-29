@@ -40,7 +40,7 @@
     "artifact_sha256": "813cb77d3ee9c896cfbfb0ef601e262b0f0fd2389f40c0946e06336e34e94151",
     "artifact_mvid": "2585772e-1c62-4d61-8568-d39809bf5bec"
   },
-  "previous_accepted_build": {
+  "previous_candidate_build": {
     "source_patch_sha256": "93c90b690490f7490eea1c66e2feea658c94306ed88d0194ab131d61ceb1bada",
     "artifact_sha256": "ca5f16ce98fbaab2e24a49927d7faec03c04fbaa73df549fa69adf17e8d5a260",
     "artifact_mvid": "46fba5f2-1db0-4d90-ad83-29d05e3d2139"
