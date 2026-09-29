@@ -78,6 +78,10 @@ def main() -> int:
     token_train.add_argument("--max-tokens", type=int, default=16384)
     run_tokens = commands.add_parser("run-tokens", help="execute an existing exact token run")
     run_tokens.add_argument("--run", required=True)
+    run_memory = commands.add_parser("run-memory", help="execute an existing exact M2 episode run")
+    run_memory.add_argument("--run", required=True)
+    run_memory.add_argument("--resume", help="exact prior episode checkpoint ID")
+    run_memory.add_argument("--stop-after", type=int, help="pause after this many whole episodes")
     export = commands.add_parser("export")
     export.add_argument("--model", required=True)
     export.add_argument("--destination", type=Path, required=True)
@@ -236,6 +240,29 @@ def main() -> int:
             run_id = digest(args.run, "token_run.id")
             result = asdict(execute_tokens(
                 store, ObjectStoreRunReporter(store, store.blobs), run_id, runtime,
+            ))
+        elif args.command == "run-memory":
+            import torch
+
+            from stpd.workers.memory_ranking import MemoryConfig
+            from stpd.workers.memory_run import RUN_SCHEMA, execute_memory_run
+
+            run_id = digest(args.run, "memory_run.id")
+            run = store.get_manifest(run_id)
+            info = run.parameters.value()
+            if (run.kind != "run" or run.producer != runtime
+                    or info.get("schema") != RUN_SCHEMA
+                    or not isinstance(info.get("config"), dict)):
+                raise BoundaryError("memory_run", "run_identity_mismatch")
+            try:
+                memory_config = MemoryConfig(**info["config"])
+            except (TypeError, ValueError) as error:
+                raise BoundaryError("memory_run", "config_format_mismatch") from error
+            torch.set_num_threads(memory_config.cpu_threads)
+            result = asdict(execute_memory_run(
+                store, ObjectStoreRunReporter(store, store.blobs), run_id, runtime,
+                resume=(digest(args.resume, "memory_run.resume") if args.resume else None),
+                stop_after=args.stop_after,
             ))
         elif args.command == "train":
             config = TrainingConfig(
