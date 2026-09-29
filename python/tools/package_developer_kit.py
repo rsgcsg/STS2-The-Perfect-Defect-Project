@@ -55,13 +55,18 @@ other accounts need separate private directories. From python/ in the exact proj
 replace /ABS/project.json and /ABS/kit below with your chosen locations and quote paths with spaces:
 
 ```bash
-python tools/open_workbench.py --config /ABS/project.json --hub-url https://hub.2-fire-2.com
+python tools/open_workbench.py --config /ABS/project.json
 ```
 
-An administrator invites your email in the cloud. In the local workbench open account/device
-setup, log in with that email and approve the matching computer name and pairing code.
-Then stop the workbench, register the complete tool with its independently approved release ID,
-and reopen. Closing a browser tab alone does not release the registration lock.
+The local home, fixed model environment and recorded reports work without team login.
+If this approved kit contains a fixed text Runtime pair, initialize installs the
+locked `local-models` Python extra; a collection-only kit remains light. No model
+weights or Qwen/Transformers are downloaded by this step. For team collection and
+uploads, an administrator invites your email. Open the Workbench with the approved
+`--hub-url`, then use account/device setup to log in and approve the matching
+computer name and pairing code. Stop the Workbench, register the complete tool
+with its independently approved release ID, and reopen. Closing a browser tab
+alone does not release the registration lock.
 
 ```bash
 uv run --locked python -m spireagent.workbench project stop --config /ABS/project.json

@@ -24,6 +24,13 @@ uv run --locked --extra cloud python tools/install_developer_kit.py initialize -
 source, verifies lock/combination/manifest, stages the published native bytes and
 publishes the directory. Dependencies initialize **after** placement so virtualenv
 paths remain stable. Neither step changes the game, profile, queues or cloud.
+The verified kit inventory selects the locked environment: collection-only kits
+install the `cloud` extra; a kit containing any fixed text Runtime pair also
+installs `local-models` (Torch, Tokenizers and Safetensors). It does not install
+Qwen/Transformers or download model weights. Opening the local Workbench later
+retains these installed optional dependencies. The local home, model setup and
+recorded-report reading do not require team login; team account pairing is
+optional until a member uses collection sharing or uploads.
 A kit may additionally contain an independently approved `text-runtime/profile.json`
 and `text-runtime/runtime.tgz`. Its inventory and external ZIP SHA256 bind both;
 the packager verifies the archive through the ordinary bundled Runtime installer in
@@ -69,11 +76,11 @@ provenance and calls the existing lifecycle, which checks source/artifact identi
 and retains rollback. It does not rebuild, launch or claim a loaded game. Use the
 cold-load commands below from that permanent source directory.
 
-After creating/logging into the private Workbench profile, stop it and run
+After creating the private Workbench profile, stop it and run
 `register --directory ... --config /ABS/project.json` through this entrypoint.
 The selected release's registration owner enforces the stopped-profile lock and
 refuses replacing a different registration. Daily consent and upload activation
-still require the member. For existing tools/queues use the existing explicit
+still require the member's team account. For existing tools/queues use the existing explicit
 collection-upgrade prepare/activate procedure: pending evidence is never rewritten.
 A Workbench-only change does not require Mod deployment when published Mod/tool
 bytes and their necessary contracts remain unchanged.
