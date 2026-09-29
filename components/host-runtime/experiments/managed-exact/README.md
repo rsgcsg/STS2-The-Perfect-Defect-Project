@@ -101,9 +101,11 @@ The `text-menu-v1` Managed adapter can expose the complete current combat leaf
 catalog as direct semantic actions (`play`, `use`, `end_turn`, and supported
 potion discard). Card and potion target arguments retain the current visible
 enemy referent and the adapter dispatches the existing exact Player Environment
-binding. It admits only a complete ready PlayPhase snapshot; AnyAlly, unknown
-target kinds, malformed or incomplete action catalogs, and closed phases make
-the entire action catalog unavailable. The menu stays at its existing root;
+binding. MPE admits only its supported native target bindings; AnyAlly, potion
+target types outside the exact native binding set, non-creature target selection
+without a published target referent, and unknown target kinds make the entire
+MPE combat catalog unavailable. The text adapter admits only a structurally
+complete MPE combat catalog. The menu stays at its existing root;
 it does not invent a card cursor, held-card, target-confirm, potion-popup, or
 information-read action. A direct semantic `play(card, target)` is not the
 Connector Live Godot sequence of holding a card and confirming a target, so

@@ -14,92 +14,48 @@ function textSnapshotId(snapshotId) {
   return `managed_tm_${createHash("sha256").update(snapshotId).digest("hex").slice(0, 32)}`;
 }
 
+const REVIEWED_TEXT_MENU_SURFACES = new Set([
+  "map_navigation", "rest_site", "deck_upgrade_selection", "combat_turn"
+]);
+
 function completeCurrentLeaf(snapshot) {
-  const restReferents = (snapshot?.referents ?? []).filter((referent) =>
-    (referent.role === "rest_option" || referent.role === "rest_room")
-    && referent.state.enabled === true);
-  const restCanProceed = snapshot?.interaction?.content?.surface?.can_proceed === true;
-  const map = snapshot?.interaction?.kind === "map_navigation"
-    && snapshot.status === "interactive"
-    && snapshot.completeness?.visible_information === "contract_complete_for_visible_singleplayer_map_navigation"
-    && snapshot.completeness?.interaction_discovery === "derived_from_exact_current_travelable_map_point_controls";
-  const rest = snapshot?.interaction?.kind === "rest_site"
-    && snapshot.interaction.stage === "choosing"
-    && snapshot.status === "interactive"
-    && snapshot.completeness?.visible_information === "contract_complete_for_current_native_interaction"
-    && snapshot.completeness?.interaction_discovery === "derived_from_same_current_native_interaction_as_execution"
-    && restReferents.filter((referent) => referent.role === "rest_room").length === (restCanProceed ? 1 : 0)
-    && snapshot.bound_actions?.actions.length === restReferents.length
-    && snapshot.bound_actions.actions.every((action) => restReferents.some((referent) =>
-      referent.referent_id === action.subject_referent_id));
-  const upgrade = snapshot?.interaction?.kind === "deck_upgrade_selection"
-    && ["selecting", "preview"].includes(snapshot.interaction.stage)
-    && snapshot.status === "interactive"
-    && snapshot.completeness?.visible_information === "contract_complete_for_current_native_interaction"
-    && snapshot.completeness?.interaction_discovery === "derived_from_same_current_native_interaction_as_execution"
-    && snapshot.bound_actions?.actions.every((action) =>
-      ["select", "deselect", "cancel", "confirm"].includes(action.verb)
-      && (action.verb === "select" || action.verb === "deselect"
-        ? snapshot.referents.some((referent) => referent.role === "card"
-          && referent.referent_id === action.subject_referent_id)
-        : action.subject_referent_id == null));
-  const combat = snapshot?.interaction?.kind === "combat_turn"
-    && snapshot.interaction.stage === "ready"
-    && snapshot.status === "interactive"
-    && snapshot.completeness?.visible_information === "contract_complete_for_immediate_combat_turn_including_visible_companions; pile contents available through a separate read-only Player Environment Read"
-    && snapshot.completeness?.interaction_discovery === "derived_from_same_validator_as_execution"
-    && snapshot.interaction.content?.context?.kind === "combat"
-    && snapshot.interaction.content.context.turn_owner === "player"
-    && snapshot.interaction.content.context.is_play_phase === true
-    && snapshot.interaction.content.surface?.can_end_turn === true;
-  const referentById = new Map((snapshot?.referents ?? []).map((referent) => [referent.referent_id, referent]));
-  const targetArgumentValid = (action, subject) => {
-    const args = action.arguments ?? [];
-    if (args.length === 0) return true;
-    if (args.length !== 1 || args[0].role !== "target") return false;
-    const target = referentById.get(args[0].referent_id);
-    return target?.role === "enemy"
-      && (subject?.properties?.target_entity_ids ?? []).includes(target.referent_id);
-  };
-  const combatActionValid = (action) => {
-    const subject = action.subject_referent_id == null ? null : referentById.get(action.subject_referent_id);
-    const context = snapshot.interaction.content.context;
-    const targetType = subject?.role === "playable_card"
-      ? context.player?.hand?.find((card) => card.entity_id === subject.referent_id)?.target_type
-      : subject?.role === "usable_potion"
-        ? context.player?.potion_states?.find((potion) => potion.entity_id === subject.referent_id)?.target_type
-        : null;
-    if (action.verb === "end_turn") return subject === null && (action.arguments ?? []).length === 0;
-    if (action.verb === "play") {
-      return subject?.role === "playable_card"
-        && (targetType === "AnyEnemy"
-          ? (action.arguments ?? []).length === 1 && targetArgumentValid(action, subject)
-          : ["Self", "AllEnemies", "AllCharacters", "None"].includes(targetType)
-            && (action.arguments ?? []).length === 0);
-    }
-    if (action.verb === "use") {
-      return subject?.role === "usable_potion"
-        && (targetType === "AnyEnemy"
-          ? (action.arguments ?? []).length === 1 && targetArgumentValid(action, subject)
-          : ["Self", "AllEnemies", "AllCharacters", "None"].includes(targetType)
-            && (action.arguments ?? []).length === 0);
-    }
-    return action.verb === "activate" && subject?.role === "usable_potion"
-      && (action.arguments ?? []).length === 0;
-  };
-  return (map || rest || upgrade || combat)
-    && snapshot.bound_actions?.status === "complete"
-    && snapshot.bound_actions.actions.length > 0
-    && snapshot.bound_actions.actions.every((action) => (combat
-      ? combatActionValid(action)
-      : upgrade
-        ? true
-        : action.verb === "activate")
-      && typeof action.bound_action_id === "string"
-      && typeof action.label === "string"
-      && (combat || (action.arguments ?? []).length === 0)
-      && (combat || upgrade || (action.subject_referent_id != null
-        && snapshot.referents.some((referent) => referent.referent_id === action.subject_referent_id))));
+  const interactionId = snapshot?.interaction?.interaction_id;
+  const actions = snapshot?.bound_actions?.actions;
+  const referents = snapshot?.referents;
+  if (!REVIEWED_TEXT_MENU_SURFACES.has(snapshot?.interaction?.kind)
+    || snapshot.status !== "interactive"
+    || snapshot.completeness?.status !== "complete"
+    || snapshot.bound_actions?.status !== "complete"
+    || !Array.isArray(referents)
+    || !Array.isArray(actions)
+    || actions.length === 0
+    || !Number.isSafeInteger(snapshot.bound_actions.materialized_count)
+    || !Number.isSafeInteger(snapshot.bound_actions.total_count)
+    || snapshot.bound_actions.materialized_count !== actions.length
+    || snapshot.bound_actions.total_count !== actions.length
+    || typeof interactionId !== "string" || interactionId.length === 0) return false;
+
+  const referentIds = new Set();
+  for (const referent of referents) {
+    if (typeof referent?.referent_id !== "string" || referent.referent_id.length === 0
+      || referentIds.has(referent.referent_id)) return false;
+    referentIds.add(referent.referent_id);
+  }
+  const actionIds = new Set();
+  return actions.every((action) => {
+    if (typeof action?.bound_action_id !== "string" || action.bound_action_id.length === 0
+      || actionIds.has(action.bound_action_id)
+      || action.interaction_id !== interactionId
+      || typeof action.verb !== "string" || action.verb.length === 0
+      || typeof action.label !== "string"
+      || !Array.isArray(action.arguments)
+      || (action.subject_referent_id != null && !referentIds.has(action.subject_referent_id))) return false;
+    actionIds.add(action.bound_action_id);
+    return action.arguments.every((argument) => typeof argument?.role === "string"
+      && argument.role.length > 0
+      && typeof argument.referent_id === "string"
+      && referentIds.has(argument.referent_id));
+  });
 }
 
 function project(snapshot, allowActions = true) {

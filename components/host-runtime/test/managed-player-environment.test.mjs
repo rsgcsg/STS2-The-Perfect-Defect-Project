@@ -644,6 +644,78 @@ test("fails closed when visible potion actionability is not represented", () => 
   assert.equal(projection.bindings.size, 0);
 });
 
+test("combat projection fails closed for target types without an exact current binding", () => {
+  const base = {
+    type: "decision",
+    decision: "combat_play",
+    context: { act: 1, floor: 2, room_type: "Combat" },
+    is_play_phase: true,
+    hand: [{
+      index: 0, native_ref: "card-a", id: "CARD.STRIKE", name: "Strike", can_play: true,
+      target_type: "AnyEnemy", valid_target_refs: ["enemy-a"]
+    }],
+    enemies: [{ index: 0, native_ref: "enemy-a", name: "Enemy A", hp: 10, max_hp: 10 }],
+    player: { ...player(), native_ref: "player-a", potions: [] }
+  };
+
+  for (const targetType of ["AnyAlly", "FutureUnknownTarget"]) {
+    const projection = projectManagedCandidateDecision({
+      state: { ...base, hand: [{ ...base.hand[0], target_type: targetType }] }, ...projectionIdentity
+    });
+    assert.equal(projection.snapshot.bound_actions.status, "unavailable", targetType);
+    assert.deepEqual(projection.snapshot.bound_actions.actions, [], targetType);
+    assert.equal(projection.bindings.size, 0, targetType);
+    assert.equal(projection.snapshot.completeness.status, "partial", targetType);
+    assert.ok(projection.snapshot.completeness.missing.includes("native_unsupported_card_target_type"), targetType);
+  }
+
+  for (const targetType of ["None", "Self", "AllEnemies", "RandomEnemy", "AnyPlayer", "AllAllies", "TargetedNoCreature", "Osty"]) {
+    const projection = projectManagedCandidateDecision({
+      state: { ...base, hand: [{ ...base.hand[0], target_type: targetType, valid_target_refs: [] }] }, ...projectionIdentity
+    });
+    assert.equal(projection.snapshot.bound_actions.status, "complete", targetType);
+    assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.verb), ["play", "end_turn"]);
+  }
+
+  for (const targetType of ["None", "Self", "AllEnemies", "RandomEnemy", "AllAllies"]) {
+    const projection = projectManagedCandidateDecision({
+      state: { ...base, hand: [], player: { ...base.player, potions: [{
+        index: 0, slot: 0, native_ref: "potion-a", name: "Test Potion", can_use: true,
+        can_discard: false, binding_supported: true, target_type: targetType
+      }] } }, ...projectionIdentity
+    });
+    assert.equal(projection.snapshot.bound_actions.status, "complete", targetType);
+    assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.verb), ["end_turn", "use"]);
+  }
+
+  const potion = {
+    ...base,
+    hand: [],
+    player: { ...base.player, potions: [{
+      index: 0, slot: 0, native_ref: "potion-a", id: "POTION.TEST", name: "Test Potion",
+      can_use: true, can_discard: false, binding_supported: true, target_type: "FutureUnknownTarget"
+    }] }
+  };
+  const potionProjection = projectManagedCandidateDecision({ state: potion, ...projectionIdentity });
+  assert.equal(potionProjection.snapshot.bound_actions.status, "unavailable");
+  assert.deepEqual(potionProjection.snapshot.bound_actions.actions, []);
+  assert.equal(potionProjection.bindings.size, 0);
+  assert.ok(potionProjection.snapshot.completeness.missing.includes(
+    "native_unsupported_potion_target_type_or_binding"));
+
+  for (const targetType of ["AnyAlly", "AnyPlayer", "TargetedNoCreature", "Osty", "FutureUnknownTarget"]) {
+    const projection = projectManagedCandidateDecision({
+      state: { ...base, hand: [], player: { ...base.player, potions: [{
+        index: 0, slot: 0, native_ref: "potion-a", id: "POTION.TEST", name: "Test Potion",
+        can_use: true, can_discard: false, binding_supported: true, target_type: targetType
+      }] } }, ...projectionIdentity
+    });
+    assert.equal(projection.snapshot.bound_actions.status, "unavailable", targetType);
+    assert.deepEqual(projection.snapshot.bound_actions.actions, [], targetType);
+    assert.equal(projection.bindings.size, 0, targetType);
+  }
+});
+
 test("projects shop entries from native actionability and keeps purchase identities Host-local", () => {
   const projection = projectManagedCandidateDecision({
     ...projectionIdentity,

@@ -407,7 +407,7 @@ test("projects complete direct combat leaves with exact target referents and nat
     args: { potion_slot: 0, potion_ref: "native-potion-fire", target_ref: "native-enemy-a" } });
 });
 
-test("combat text menu fails closed for phase, unknown verb, and unadvertised target arguments", async () => {
+test("text menu defers combat legality to MPE and accepts only reviewed surfaces", async () => {
   const base = projectManagedCandidateDecision({ state: combatDecision(), ...identity }).snapshot;
   const unsupportedFor = (snapshot) => new ManagedTextMenuSessionAdapter({
     observe: () => snapshot,
@@ -418,27 +418,58 @@ test("combat text menu fails closed for phase, unknown verb, and unadvertised ta
   }).snapshot;
   assert.equal(unsupportedFor(closed).menu_actions.status, "unavailable");
 
-  const anyAlly = projectManagedCandidateDecision({
-    state: { ...combatDecision(), hand: [{ ...combatDecision().hand[0], target_type: "AnyAlly" }] }, ...identity
-  }).snapshot;
-  assert.equal(anyAlly.bound_actions.status, "unavailable");
-  assert.equal(unsupportedFor(anyAlly).menu_actions.status, "unavailable");
+  for (const targetType of ["AnyAlly", "FutureUnknownTarget"]) {
+    const unsupported = projectManagedCandidateDecision({
+      state: { ...combatDecision(), hand: [{ ...combatDecision().hand[0], target_type: targetType }] }, ...identity
+    }).snapshot;
+    assert.equal(unsupported.bound_actions.status, "unavailable", targetType);
+    assert.equal(unsupportedFor(unsupported).menu_actions.status, "unavailable", targetType);
+  }
 
-  const unknownTargetType = structuredClone(base);
-  unknownTargetType.interaction.content.context.player.hand[0].target_type = "FutureUnknownTarget";
-  assert.equal(unsupportedFor(unknownTargetType).menu_actions.status, "unavailable");
+  const futureVerb = structuredClone(base);
+  futureVerb.bound_actions.actions[0].verb = "future_exact_mpe_action";
+  assert.deepEqual(unsupportedFor(futureVerb).menu_actions.actions.map((action) => action.verb),
+    ["future_exact_mpe_action", "end_turn", "use", "activate"]);
 
-  const unknown = structuredClone(base);
-  unknown.bound_actions.actions[0].verb = "invented_combat_action";
-  assert.equal(unsupportedFor(unknown).menu_actions.status, "unavailable");
+  for (const surface of ["event_choice", "card_reward_selection", "bundle_selection"]) {
+    const unreviewed = structuredClone(base);
+    unreviewed.interaction.kind = surface;
+    assert.equal(unsupportedFor(unreviewed).menu_actions.status, "unavailable", surface);
+  }
+});
 
-  const invalidTarget = structuredClone(base);
-  invalidTarget.bound_actions.actions[0].arguments[0].referent_id = "not-a-visible-enemy";
-  assert.equal(unsupportedFor(invalidTarget).menu_actions.status, "unavailable");
+test("text menu checks generic complete counts and referent structure", async () => {
+  const base = projectManagedCandidateDecision({ state: combatDecision(), ...identity }).snapshot;
+  const observe = (snapshot) => new ManagedTextMenuSessionAdapter({
+    observe: () => snapshot,
+    async submit() { throw new Error("observe-only structural check must not dispatch"); }
+  }).observe();
 
-  const extra = structuredClone(base);
-  extra.bound_actions.actions[0].arguments.push({ role: "target", referent_id: base.bound_actions.actions[0].arguments[0].referent_id });
-  assert.equal(unsupportedFor(extra).menu_actions.status, "unavailable");
+  const badCount = structuredClone(base);
+  badCount.bound_actions.total_count += 1;
+  assert.equal(observe(badCount).menu_actions.status, "unavailable");
+
+  const duplicateId = structuredClone(base);
+  duplicateId.bound_actions.actions[1].bound_action_id = duplicateId.bound_actions.actions[0].bound_action_id;
+  assert.equal(observe(duplicateId).menu_actions.status, "unavailable");
+
+  const missingSubject = structuredClone(base);
+  missingSubject.bound_actions.actions[0].subject_referent_id = "missing-referent";
+  assert.equal(observe(missingSubject).menu_actions.status, "unavailable");
+
+  const missingArgument = structuredClone(base);
+  missingArgument.bound_actions.actions[0].arguments[0].referent_id = "missing-target";
+  assert.equal(observe(missingArgument).menu_actions.status, "unavailable");
+
+  const incomplete = structuredClone(base);
+  incomplete.completeness.status = "partial";
+  assert.equal(observe(incomplete).menu_actions.status, "unavailable");
+
+  const presentationChanged = structuredClone(base);
+  presentationChanged.interaction.stage = "new-owner-defined-stage";
+  presentationChanged.completeness.visible_information = "owner-defined complete evidence";
+  presentationChanged.completeness.interaction_discovery = "owner-defined discovery evidence";
+  assert.equal(observe(presentationChanged).menu_actions.status, "complete");
 });
 
 test("stale combat text-menu leaf dispatches nothing and unknown delivery is never retried", async () => {
