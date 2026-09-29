@@ -506,6 +506,9 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
     text_successors: set[str] = set()
     pending_text_input: str | None = None
     v2_unknown_seen = False
+    native_submissions_used = 0
+    menu_navigations_used = 0
+    autonomy_mode = False
     for sequence, content in enumerate(lines[:-1], start=1):
         if content.endswith(b"\r"):
             content = content[:-1]
@@ -524,6 +527,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             raise AgentRunEvidenceError("invalid_event_payload", f"event payload is not an object at line {sequence}", _EVENTS_FILE)
         if kind not in _EVENT_KINDS:
             raise AgentRunEvidenceError("unsupported_event_kind", f"unsupported event kind: {kind}", _EVENTS_FILE)
+        if input_schema in _TEXT_SNAPSHOT_SCHEMAS and kind in {"receipt", "receipt_rejected", "successor"}:
+            raise AgentRunEvidenceError("text_profile_association", "text-menu run cannot use generic receipt or successor evidence", _EVENTS_FILE)
         if v2_unknown_seen and kind in {"text_decision_input", "text_menu_dispatch_attempt", "menu_navigation",
                                         "text_native_delivery", "text_native_unknown", "text_menu_not_applied",
                                         "text_menu_result_rejected", "text_observed_successor"}:
@@ -571,6 +576,15 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _mode(payload, "mode", _EVENTS_FILE)
             if "autonomy_budget" in payload:
                 _verify_autonomy_budget(payload["autonomy_budget"])
+            next_autonomy_mode = payload["mode"] in {"one_step", "auto"}
+            if next_autonomy_mode and not autonomy_mode:
+                if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA and (
+                    "autonomy_budget" not in payload or payload["autonomy_budget"]["state"] != "active"
+                ):
+                    raise AgentRunEvidenceError("budget_association", "v2 autonomy entry requires an active budget", _EVENTS_FILE)
+                native_submissions_used = 0
+                menu_navigations_used = 0
+            autonomy_mode = next_autonomy_mode
         elif kind == "autonomy_budget_exhausted":
             _exact_keys(payload, {"reason", "budget", "controller"}, "autonomy_budget_exhausted payload")
             _enum(payload, "reason", {"submission_attempt_limit", "policy_call_limit", "deadline"}, _EVENTS_FILE)
@@ -650,6 +664,12 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             successors[decision_id] = successor
         elif kind == "text_menu_dispatch_attempt":
             decision_id = _verify_text_dispatch(payload, decisions, text_inputs, text_dispatches)
+            expected_native = native_submissions_used + (1 if payload["effect_domain"] == "native_input" else 0)
+            expected_menu = menu_navigations_used + (1 if payload["effect_domain"] == "text_menu" else 0)
+            if payload["native_submissions_used"] != expected_native or payload["menu_navigations_used"] != expected_menu:
+                raise AgentRunEvidenceError("text_dispatch_binding", "text dispatch counters differ from cumulative selected action domains", _EVENTS_FILE)
+            native_submissions_used = expected_native
+            menu_navigations_used = expected_menu
             text_dispatches[decision_id] = payload
         elif kind in {"menu_navigation", "text_native_delivery", "text_native_unknown", "text_menu_not_applied", "text_menu_result_rejected"}:
             decision_id = _verify_text_outcome(kind, payload, manifest, environment, decisions, text_inputs, text_dispatches, input_schema)
@@ -666,25 +686,30 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         elif kind == "handoff_to_human":
             _exact_keys(payload, {"reason"}, "handoff_to_human payload")
             _text(payload, "reason", _EVENTS_FILE)
+            autonomy_mode = False
         elif kind == "one_step_completed":
             if set(payload) not in (set(), {"autonomy_budget"}):
                 raise AgentRunEvidenceError("schema_keys", "one_step_completed payload has invalid fields", _EVENTS_FILE)
             if "autonomy_budget" in payload:
                 _verify_autonomy_budget(payload["autonomy_budget"])
+            autonomy_mode = False
         elif kind == "stopped":
             if set(payload) not in (set(), {"autonomy_budget", "controller"}):
                 raise AgentRunEvidenceError("schema_keys", "stopped payload has invalid fields", _EVENTS_FILE)
             if "autonomy_budget" in payload:
                 _verify_autonomy_budget(payload["autonomy_budget"])
                 _enum(payload, "controller", {"held", "released"}, _EVENTS_FILE)
+            autonomy_mode = False
         elif kind == "fail_closed":
             pending_text_input = None
             _exact_keys(payload, {"reason"}, "fail_closed payload")
             _text(payload, "reason", _EVENTS_FILE)
+            autonomy_mode = False
         elif kind == "runtime_tainted":
             _exact_keys(payload, {"reason", "retry"}, "runtime_tainted payload")
             _text(payload, "reason", _EVENTS_FILE)
             _literal(payload, "retry", False, _EVENTS_FILE)
+            autonomy_mode = False
         events.append(value)
     if pending_text_input is not None and manifest["status"] != "tainted":
         raise AgentRunEvidenceError("text_decision_order", "unmatched text input in finalized run", _EVENTS_FILE)

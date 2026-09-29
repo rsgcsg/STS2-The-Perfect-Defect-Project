@@ -17,7 +17,9 @@ and Connector snapshot/result pair. It checks the complete ordered menu against
 the decision digest, public card/target selection and system-menu progression,
 then binds each dispatch/result to the selected action and derived request ID.
 Native delivery, unknown delivery and observed successor remain separate typed
-events; unknown delivery has no retry or successor. This is ordinary Agent-run
+events; text-menu runs cannot mix in generic Receipt/Successor events, and each
+dispatch records exact cumulative menu/native attempt counts. Unknown delivery
+has no retry or successor. This is ordinary Agent-run
 integrity verification, not Human origin or research admission.
 Older finalized runs remain readable. A verifier pinned to an earlier strict
 Evidence version rejects runs containing this new event, so consumers must pin

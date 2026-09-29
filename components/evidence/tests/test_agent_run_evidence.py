@@ -844,6 +844,146 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         self._rewrite_events(directory, events)
         self.assertFalse(verifier.verify(directory).passed)
 
+    def test_v2_unknown_cannot_be_reinterpreted_as_generic_receipt_success(self) -> None:
+        directory = self._text_v2_native("v2-generic-receipt", unknown=True)
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        action_id = events[2]["payload"]["resolved_bound_action_id"]
+        successor = self._snapshot("generic-successor", 23)
+        receipt = {"protocol_version": "1.0.0", "schema": "sts2.player-environment/receipt-1",
+                   "request_id": "request-v2-generic-receipt-decision-1", "delivery": "delivered",
+                   "action": {"bound_action_id": action_id, "verb": "play", "arguments": []},
+                   "retry": {"allowed": False, "reason": "fixture"}, "successor": successor}
+        for kind, payload in (("receipt", {"decision_id": "decision-1", "receipt": receipt}),
+                              ("successor", {"decision_id": "decision-1", "successor": successor})):
+            events.append({"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": len(events) + 1,
+                           "recorded_at": "2026-08-25T00:00:04.000Z", "kind": kind, "payload": payload})
+        self._rewrite_events(directory, events)
+        self.assertEqual(AgentRunEvidenceVerifier().verify(directory).findings[0].code, "text_profile_association")
+
+    def test_text_profiles_reject_all_generic_receipt_channels(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+        for profile in ("v1", "v2"):
+            for kind in ("receipt", "receipt_rejected", "successor"):
+                name = f"{profile}-generic-{kind}"
+                directory = self._text_evidence(name) if profile == "v1" else self._text_v2_evidence(name)
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+                events.append({"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": len(events) + 1,
+                               "recorded_at": "2026-08-25T00:00:04.000Z", "kind": kind, "payload": {}})
+                self._rewrite_events(directory, events)
+                self.assertEqual(verifier.verify(directory).findings[0].code, "text_profile_association", name)
+
+    def test_v2_system_selection_dispatch_counters_match_selected_domain(self) -> None:
+        directory = self._text_v2_evidence("v2-counter-domain")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[4]["payload"].update(native_submissions_used=1, menu_navigations_used=0)
+        self._rewrite_events(directory, events)
+        self.assertEqual(AgentRunEvidenceVerifier().verify(directory).findings[0].code, "text_dispatch_binding")
+
+    def _v2_cumulative_dispatches(self, name: str) -> tuple[Path, list[dict[str, Any]]]:
+        directory = self._text_v2_evidence(name)
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        targeted = events[5]["payload"]["result"]["successor"]
+        target_action = targeted["menu_actions"]["actions"][0]
+        confirmation = json.loads(json.dumps(targeted))
+        confirmation.update(snapshot_id="v2-menu-22", sequence=22)
+        confirmation["menu"].update(cursor="card_confirmation", revision=2,
+                                    selection=[*targeted["menu"]["selection"], {"role": "target", "referent_id": "enemy-E"}])
+        leaf = {"action_id": "v2-play-targeted-C-E", "kind": "native_input", "verb": "play", "label": "Play Strike",
+                "subject_referent_id": "card-C", "arguments": [{"role": "target", "referent_id": "enemy-E"}],
+                "effect_domain": "native_input"}
+        confirmation["menu_actions"].update(actions=[leaf, targeted["menu_actions"]["actions"][1]],
+                                            materialized_count=2, total_count=2)
+
+        def event(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+            return {"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0, "recorded_at": "2026-08-25T00:00:04.000Z",
+                    "kind": kind, "payload": payload}
+
+        for number, snapshot, action, result_kind, result_successor, native_count, menu_count in (
+            (2, targeted, target_action, "menu_navigation", confirmation, 0, 2),
+            (3, confirmation, leaf, "text_menu_not_applied", None, 1, 2),
+        ):
+            decision_id = f"decision-{number}"
+            ids = [candidate["action_id"] for candidate in snapshot["menu_actions"]["actions"]]
+            decision = json.loads(json.dumps(events[2]["payload"]["decision"]))
+            decision.update(decision_id=decision_id, snapshot_id=snapshot["snapshot_id"],
+                            candidate_digest=sha256(json.dumps(ids, separators=(",", ":")).encode()),
+                            candidate_count=len(ids), scores=[1.0, 0.0], selected_index=0)
+            events.extend([
+                event("text_decision_input", {"decision_id": decision_id, "snapshot": snapshot}),
+                event("decision", {"decision": decision, "resolved_bound_action_id": action["action_id"]}),
+                event("controller_acquired", {}),
+                event("text_menu_dispatch_attempt", {"decision_id": decision_id, "action_id": action["action_id"],
+                                                     "effect_domain": action["effect_domain"],
+                                                     "native_submissions_used": native_count,
+                                                     "menu_navigations_used": menu_count}),
+                event(result_kind, {"decision_id": decision_id, **({"action_id": action["action_id"]} if result_kind == "menu_navigation" else {}),
+                                    "result": {"protocol_version": "1.0.0", "schema": "sts2.player-environment/text-menu-action-result-2",
+                                               "input_profile": "text-menu-v2", "request_id": f"request-{name}-{decision_id}",
+                                               "status": "applied" if result_kind == "menu_navigation" else "not_applied",
+                                               "effect_domain": action["effect_domain"],
+                                               "native_delivery": None if result_kind == "menu_navigation" else "not_delivered",
+                                               "action": action, "reason_code": None, "detail": None,
+                                               "retry": "never" if result_kind == "menu_navigation" else "reobserve",
+                                               "successor": result_successor, "attribution": None}}),
+                event("controller_released", {}),
+            ])
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(directory, events)
+        return directory, events
+
+    def test_v2_dispatch_counters_accumulate_across_selection_and_native_leaf(self) -> None:
+        directory, events = self._v2_cumulative_dispatches("v2-cumulative-counters")
+        verifier = AgentRunEvidenceVerifier()
+        self.assertTrue(verifier.verify(directory).passed)
+        for index, field, bad_value in ((10, "menu_navigations_used", 1), (16, "native_submissions_used", 0),
+                                        (16, "menu_navigations_used", 3)):
+            changed = json.loads(json.dumps(events))
+            changed[index]["payload"][field] = bad_value
+            self._rewrite_events(directory, changed)
+            self.assertEqual(verifier.verify(directory).findings[0].code, "text_dispatch_binding")
+
+    def test_v2_counters_restart_only_after_human_to_new_auto_budget(self) -> None:
+        directory, original = self._v2_cumulative_dispatches("v2-budget-restart")
+        active = {"state": "active", "max_submissions": 4, "submissions_used": 0,
+                  "max_policy_calls": 4, "policy_calls_used": 0, "deadline_ms": 10000,
+                  "elapsed_ms": 0, "remaining_ms": 10000, "exhausted_reason": None, "ended_reason": None}
+        inactive = {**active, "state": "inactive", "submissions_used": 1, "policy_calls_used": 1,
+                    "ended_reason": "human_recovery"}
+
+        def mode_event(mode: str, budget: dict[str, Any]) -> dict[str, Any]:
+            return {"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                    "recorded_at": "2026-08-25T00:00:03.000Z", "kind": "mode_changed",
+                    "payload": {"mode": mode, "autonomy_budget": budget}}
+
+        def reseal(events: list[dict[str, Any]]) -> None:
+            for index, event in enumerate(events, 1):
+                event["sequence"] = index
+            self._rewrite_events(directory, events)
+
+        first_release = next(index for index, event in enumerate(original) if event["kind"] == "controller_released")
+        restarted = json.loads(json.dumps(original))
+        restarted.insert(1, mode_event("auto", active))
+        restarted[first_release + 2:first_release + 2] = [mode_event("human", inactive), mode_event("auto", active)]
+        dispatches = [event for event in restarted if event["kind"] == "text_menu_dispatch_attempt"]
+        dispatches[1]["payload"].update(native_submissions_used=0, menu_navigations_used=1)
+        dispatches[2]["payload"].update(native_submissions_used=1, menu_navigations_used=1)
+        reseal(restarted)
+        verifier = AgentRunEvidenceVerifier()
+        self.assertTrue(verifier.verify(directory).passed)
+
+        forged = json.loads(json.dumps(original))
+        forged.insert(1, mode_event("auto", active))
+        forged.insert(first_release + 2, mode_event("auto", active))
+        forged_dispatches = [event for event in forged if event["kind"] == "text_menu_dispatch_attempt"]
+        forged_dispatches[1]["payload"].update(native_submissions_used=0, menu_navigations_used=1)
+        reseal(forged)
+        self.assertEqual(verifier.verify(directory).findings[0].code, "text_dispatch_binding")
+        missing_budget = json.loads(json.dumps(restarted))
+        missing_budget[1]["payload"].pop("autonomy_budget")
+        reseal(missing_budget)
+        self.assertEqual(verifier.verify(directory).findings[0].code, "budget_association")
+
     def test_v2_manifest_port_and_renderer_profile_are_closed(self) -> None:
         directory = self._text_v2_evidence("v2-manifest")
         verifier = AgentRunEvidenceVerifier()
