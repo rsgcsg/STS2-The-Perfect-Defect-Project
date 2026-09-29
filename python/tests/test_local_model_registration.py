@@ -168,14 +168,15 @@ def test_node_checks_consume_one_registration_deadline(registration, monkeypatch
 
     monkeypatch.setattr(registration_module.subprocess, "run", run)
     deadline = 22.0
-    assert service._capabilities(root / "sdk.js", deadline=deadline) == _caps()
+    assert LocalModelRegistration._capabilities(service, root / "sdk.js",
+                                                deadline=deadline) == _caps()
     service._context_available(root / "sdk.js", deadline=deadline)
     service._m2_runtime_manifest_compatible(root / "node_modules", root / "manifest.json",
                                             deadline=deadline)
     assert observed == [12.0, 12.0, 5.0]
     clock[0] = 22.0
     with pytest.raises(BoundaryError, match="registration_timeout"):
-        service._capabilities(root / "sdk.js", deadline=deadline)
+        LocalModelRegistration._capabilities(service, root / "sdk.js", deadline=deadline)
 
 
 def test_changed_environment_and_source_append_without_rewriting_old(registration,
