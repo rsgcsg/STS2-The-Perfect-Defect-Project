@@ -461,6 +461,40 @@ def test_offline_text_runtime_profile_needs_no_selection_and_rejects_mismatch(
         local_model_cli.model_command(config, "status", runtime_profile="text-menu-v1")
 
 
+def test_explicit_kit_runtime_install_stages_private_profile_once(tmp_path, monkeypatch):
+    from spireagent.workbench import kit_runtime, local_model_cli, local_models
+    from spireagent.workbench.developer import ProjectConfig, combination
+
+    source = tmp_path / "source"
+    staged = source / ".local/text-menu-m2-runtime-v1.json"
+    staged.parent.mkdir(parents=True)
+    pin = {"package": runtime_install.RUNTIME_PACKAGE,
+           "dependency_layout": "bundled_source_candidate"}
+    staged.write_text(json.dumps({"schema": "stpd/local-text-m2-runtime-v1",
+                                  "runtime_package": pin}))
+    archive = tmp_path / "runtime.tgz"
+    archive.write_bytes(b"verified synthetic archive")
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    monkeypatch.setattr(local_models, "ROOT", source)
+    monkeypatch.setattr(local_model_cli, "running", lambda _: None)
+    checked = []
+    monkeypatch.setattr(kit_runtime, "text_runtime_pin",
+                        lambda raw, payload, *, memory: checked.append(
+                            (raw, payload, memory)) or pin)
+    monkeypatch.setattr(runtime_install, "install_runtime",
+                        lambda *args, **_kwargs: {"status": "runtime_installed"})
+    assert local_model_cli.model_command(
+        config, "install-runtime", runtime_archive=archive,
+        runtime_profile="text-menu-m2-v1")["status"] == "runtime_installed"
+    private = config.state_dir / "models/text-menu-m2-runtime-v1.json"
+    assert json.loads(private.read_text())["runtime_package"] == pin
+    assert checked == [(staged.read_bytes(), archive.read_bytes(), True)]
+    assert local_model_cli.model_command(
+        config, "install-runtime", runtime_archive=archive,
+        runtime_profile="text-menu-m2-v1")["status"] == "runtime_installed"
+    assert len(checked) == 1
+
+
 def test_runtime_profile_cli_flag_is_only_for_model_install(capsys):
     from spireagent.workbench.developer_cli import main
 

@@ -47,9 +47,9 @@ M2_PROFILE = "text-menu-m2-v1"
 RECIPE_LABELS = {"stage1a.b.s.v2": "B", "stage1a.dsimple.s.v1": "D-Simple"}
 MEMORY_RECIPE_LABELS = {M2_K1_RECIPE: "M2-K1 训练版",
                         RESET_K1_RECIPE: "Reset-K1 独立训练对照版"}
-REGISTRY = ".local/token-policies-v1.json"
-LOCK = ".local/token-policies-v1.lock"
-REGISTRATIONS = ".local/model-registrations"
+REGISTRY = "token-policies-v1.json"
+LOCK = "token-policies-v1.lock"
+REGISTRATIONS = "model-registrations"
 REGISTRATION_SECONDS = 22.0
 # Source-reviewed engineering support: LiveObservationReader registrations,
 # SnapshotBuilder/providers and NativeTextMenu overrides. This is not native
@@ -172,7 +172,7 @@ class LocalModelRegistration:
     def _entries(self) -> list[dict[str, Any]]:
         # LocalModelService validates the shipped and private catalog together.
         self.models.registry()
-        path = self.models.root / REGISTRY
+        path = self.models.private_root / REGISTRY
         if not path.exists() and not path.is_symlink():
             return []
         value = _object_file(path)
@@ -193,18 +193,20 @@ class LocalModelRegistration:
             if entry.get("runtime_profile") != profile:
                 continue
             try:
-                config = _object_file(_inside(self.models.root, entry["config"]))
+                config = _object_file(_inside(self.models.private_root, entry["config"]))
                 if config.get("model_id") != model_id or config.get("export_path") != str(
                     export.resolve()
                 ):
                     continue
-                manifest = _object_file(_inside(self.models.root, entry["manifest"]))
+                manifest = _object_file(_inside(self.models.private_root, entry["manifest"]))
                 if manifest.get("adapter", {}).get("code_sha256") != current_code:
                     stale = True
                     continue
                 validator = validate_memory if profile == M2_PROFILE else validate
-                validator(self.models.root, _inside(self.models.root, entry["config"]),
-                          _inside(self.models.root, entry["manifest"]))
+                validator(self.models.root,
+                          _inside(self.models.private_root, entry["config"]),
+                          _inside(self.models.private_root, entry["manifest"]),
+                          binding_root=self.models.private_root)
                 if (requirements is not None and manifest.get("requirements") != requirements
                         or support is not None and manifest.get("support") != support):
                     continue
@@ -349,6 +351,12 @@ class LocalModelRegistration:
                 raise BoundaryError("local_model_registration", "unsupported_model_recipe")
         try:
             directory, pin = self.models.text_runtime_profile(profile)
+        except BoundaryError as error:
+            if error.code == "text_runtime_profile_required":
+                raise BoundaryError("local_model_registration",
+                                    "text_runtime_profile_required") from error
+            raise
+        try:
             node_modules = directory / "runtime" / "node_modules"
             validate_runtime_install(node_modules, pin, self.models._connector_pin())
         except (BoundaryError, OSError, PackageIdentityError, ValueError) as error:
@@ -362,13 +370,13 @@ class LocalModelRegistration:
         if memory:
             self._context_available(sdk, deadline=deadline)
         _remaining(deadline)
-        private = self.models.root / ".local"
+        private = self.models.private_root
         if private.exists() or private.is_symlink():
             if not _ordinary(private, directory=True):
                 raise BoundaryError("local_model_registration", "registration_metadata_invalid")
         else:
             private.mkdir(mode=0o700)
-        lock_path = self.models.root / LOCK
+        lock_path = self.models.private_root / LOCK
         if lock_path.is_symlink() or (lock_path.exists()
                                       and not _ordinary(lock_path, directory=False)):
             raise BoundaryError("local_model_registration", "registration_metadata_invalid")
@@ -381,7 +389,7 @@ class LocalModelRegistration:
                     _remaining(deadline)
                     return _public(identity, "registered", selection_id=found,
                                    profile=profile)
-                folder = self.models.root / REGISTRATIONS
+                folder = self.models.private_root / REGISTRATIONS
                 if folder.exists() or folder.is_symlink():
                     if not _ordinary(folder, directory=True):
                         raise BoundaryError(
@@ -399,7 +407,8 @@ class LocalModelRegistration:
                            manifest_id=selection,
                            policy={"id": selection, "version": "1.0.0", "provider": "stpd",
                                    "architecture": recipe},
-                           requirements=requirements, support=support)
+                           requirements=requirements, support=support,
+                           binding_root=self.models.private_root)
                     if memory:
                         self._m2_runtime_manifest_compatible(node_modules, manifest_path,
                                                              deadline=deadline)
@@ -410,10 +419,12 @@ class LocalModelRegistration:
                              "label": "本机文字菜单 " + label + " " + identity[:8],
                              "adapter": "stpd-m2-decision-adapter" if memory else "token-v1",
                              "runtime_profile": profile,
-                             "manifest": manifest_path.relative_to(self.models.root).as_posix(),
-                             "config": config_path.relative_to(self.models.root).as_posix()}
+                             "manifest": manifest_path.relative_to(
+                                 self.models.private_root).as_posix(),
+                             "config": config_path.relative_to(
+                                 self.models.private_root).as_posix()}
                     _remaining(deadline)
-                    atomic_json(self.models.root / REGISTRY,
+                    atomic_json(self.models.private_root / REGISTRY,
                                 {"schema": "stpd/local-token-policies-v1",
                                  "policies": [*entries, entry]})
                 except Exception:

@@ -267,6 +267,11 @@ def status(directory: Path) -> dict[str, Any]:
                          else "not_bundled"),
         "m2_runtime": ("bundled_installation_not_checked" if "m2_runtime" in manifest
                        else "not_bundled"),
+        # The Workbench may read only these two fixed staged pairs. These
+        # hashes come from the already verified package inventory, not from a
+        # caller-supplied profile or path.
+        "text_runtime_identity": manifest.get("text_runtime"),
+        "m2_runtime_identity": manifest.get("m2_runtime"),
     }
 
 
