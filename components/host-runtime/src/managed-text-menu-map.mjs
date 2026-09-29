@@ -14,11 +14,25 @@ function textSnapshotId(snapshotId) {
   return `managed_tm_${createHash("sha256").update(snapshotId).digest("hex").slice(0, 32)}`;
 }
 
-function completeMap(snapshot) {
-  return snapshot?.interaction?.kind === "map_navigation"
+function completeCurrentLeaf(snapshot) {
+  const restReferents = (snapshot?.referents ?? []).filter((referent) =>
+    (referent.role === "rest_option" || referent.role === "rest_room")
+    && referent.state.enabled === true);
+  const restCanProceed = snapshot?.interaction?.content?.surface?.can_proceed === true;
+  const map = snapshot?.interaction?.kind === "map_navigation"
     && snapshot.status === "interactive"
     && snapshot.completeness?.visible_information === "contract_complete_for_visible_singleplayer_map_navigation"
-    && snapshot.completeness?.interaction_discovery === "derived_from_exact_current_travelable_map_point_controls"
+    && snapshot.completeness?.interaction_discovery === "derived_from_exact_current_travelable_map_point_controls";
+  const rest = snapshot?.interaction?.kind === "rest_site"
+    && snapshot.interaction.stage === "choosing"
+    && snapshot.status === "interactive"
+    && snapshot.completeness?.visible_information === "contract_complete_for_current_native_interaction"
+    && snapshot.completeness?.interaction_discovery === "derived_from_same_current_native_interaction_as_execution"
+    && restReferents.filter((referent) => referent.role === "rest_room").length === (restCanProceed ? 1 : 0)
+    && snapshot.bound_actions?.actions.length === restReferents.length
+    && snapshot.bound_actions.actions.every((action) => restReferents.some((referent) =>
+      referent.referent_id === action.subject_referent_id));
+  return (map || rest)
     && snapshot.bound_actions?.status === "complete"
     && snapshot.bound_actions.actions.length > 0
     && snapshot.bound_actions.actions.every((action) => action.verb === "activate"
@@ -30,7 +44,7 @@ function completeMap(snapshot) {
 }
 
 function project(snapshot, allowActions = true) {
-  const supported = allowActions && completeMap(snapshot);
+  const supported = allowActions && completeCurrentLeaf(snapshot);
   const actions = supported ? snapshot.bound_actions.actions.map((bound) => ({
     action_id: stableActionId(snapshot.snapshot_id, bound.bound_action_id),
     kind: "native_input",
@@ -59,8 +73,8 @@ function project(snapshot, allowActions = true) {
   };
 }
 
-/** In-process, opt-in projection of exact Managed map bindings into text-menu-v1. */
-export class ManagedTextMenuMapSessionAdapter {
+/** In-process projection of complete current Managed map and rest-site leaves. */
+export class ManagedTextMenuSessionAdapter {
   #session;
   #bindings = new Map();
   // Preserve request-ID replay semantics for this session, including unknown outcomes.
@@ -69,7 +83,7 @@ export class ManagedTextMenuMapSessionAdapter {
 
   constructor(session) {
     if (session == null || typeof session.observe !== "function" || typeof session.submit !== "function") {
-      throw new TypeError("ManagedTextMenuMapSessionAdapter requires a Managed Player Environment session.");
+      throw new TypeError("ManagedTextMenuSessionAdapter requires a Managed Player Environment session.");
     }
     this.#session = session;
   }
@@ -129,7 +143,7 @@ export class ManagedTextMenuMapSessionAdapter {
       return this.#save(request_id, fingerprint, this.#result(request_id, {
         status: "not_applied", effect_domain: null, native_delivery: null,
         action: null, reason_code: "stale_or_unadvertised_action",
-        detail: "Only a current advertised map leaf can be submitted.",
+        detail: "Only a current advertised Managed map or rest-site leaf can be submitted.",
         retry: "reobserve", successor: current
       }));
     }
@@ -205,3 +219,6 @@ export class ManagedTextMenuMapSessionAdapter {
     return result;
   }
 }
+
+// Retain the original consumer import while the supported scene set grows.
+export const ManagedTextMenuMapSessionAdapter = ManagedTextMenuSessionAdapter;

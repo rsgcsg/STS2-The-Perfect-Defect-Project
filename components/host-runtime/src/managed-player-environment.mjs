@@ -568,6 +568,11 @@ function currentSurface(state, ctx) {
       };
     }
     case "rest_site": {
+      const exactOptions = (state.options ?? []).every((option, index) =>
+        option.index === index && typeof option.native_ref === "string" && option.native_ref.length > 0);
+      const canProceed = state.can_proceed === true;
+      const exactProceed = !canProceed || (typeof state.room_ref === "string" && state.room_ref.length > 0);
+      const complete = exactOptions && exactProceed;
       const options = (state.options ?? []).map((option, index) => {
         const enabled = option.is_enabled !== false;
         const item = ctx.referent({
@@ -583,23 +588,40 @@ function currentSurface(state, ctx) {
             is_enabled: enabled
           }
         });
-        if (enabled) {
+        if (enabled && complete) {
           ctx.action({
             verb: "activate",
             subject: item,
             label: String(option.name ?? option.option_id ?? `Choose option ${index + 1}`),
-            raw: { cmd: "action", action: "choose_option", args: { option_index: option.index } }
+            raw: { cmd: "action", action: "choose_option", args: {
+              option_index: option.index, option_ref: option.native_ref
+            } }
           });
         }
         return item.properties;
       });
+      if (canProceed && complete) {
+        const room = ctx.referent({
+          role: "rest_room", label: "Rest site proceed", enabled: true,
+          properties: { can_proceed: true }
+        });
+        ctx.action({
+          verb: "activate", subject: room, label: "Proceed",
+          raw: { cmd: "action", action: "proceed", args: { room_ref: state.room_ref } }
+        });
+      }
       return {
         kind: "rest_site",
         stage: "choosing",
         prompt: null,
-        surface: { kind: "rest_site", stage: "choosing", options },
+        surface: { kind: "rest_site", stage: "choosing", options, can_proceed: canProceed },
         context: { ...commonContext, kind: "rest" },
-        ...supported
+        ...supported,
+        complete,
+        missing: [
+          ...(exactOptions ? [] : ["exact_current_rest_option_identity"]),
+          ...(exactProceed ? [] : ["exact_current_rest_room_identity"])
+        ]
       };
     }
     case "treasure_chest": {

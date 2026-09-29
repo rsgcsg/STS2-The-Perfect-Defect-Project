@@ -6,6 +6,7 @@ import {
 } from "../src/managed-player-environment.mjs";
 import {
   MANAGED_TEXT_MENU_PROFILE,
+  ManagedTextMenuSessionAdapter,
   ManagedTextMenuMapSessionAdapter
 } from "../src/managed-text-menu-map.mjs";
 
@@ -37,6 +38,208 @@ function mapDecision() {
     }
   };
 }
+
+function restDecision() {
+  return {
+    type: "decision", decision: "rest_site",
+    context: { ...mapDecision().context, floor: 5, total_floor: 5, room_type: "RestSite" },
+    options: [
+      { index: 0, native_ref: "native-rest-a", option_id: "HEAL", name: "Rest", description: "Heal 24 HP.", is_enabled: true },
+      { index: 1, native_ref: "native-rest-b", option_id: "SMITH", name: "Smith", description: "Upgrade a card.", is_enabled: false },
+      { index: 2, native_ref: "native-rest-c", option_id: "DIG", name: "Dig", description: "Find a relic.", is_enabled: true }
+    ],
+    player: mapDecision().player
+  };
+}
+
+test("projects complete rest options in native order and submits only bound enabled leaves", async () => {
+  let rawAction = null;
+  const process = { async request(request) {
+    if (request.cmd === "start_run") return restDecision();
+    rawAction = request;
+    return { ...restDecision(), decision: "deck_upgrade_selection", options: [] };
+  } };
+  const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+  await session.mount({ seed: "TREST" });
+  const adapter = new ManagedTextMenuSessionAdapter(session);
+  assert.equal(ManagedTextMenuMapSessionAdapter, ManagedTextMenuSessionAdapter);
+  const snapshot = adapter.observe();
+  assert.equal(snapshot.menu_actions.status, "complete");
+  assert.deepEqual(snapshot.interaction.content.surface.options.map((entry) =>
+    [entry.name, entry.is_enabled]), [["Rest", true], ["Smith", false], ["Dig", true]]);
+  assert.deepEqual(snapshot.menu_actions.actions.map((entry) => entry.label), ["Rest", "Dig"]);
+  assert.equal(JSON.stringify(snapshot).includes("native-rest-a"), false);
+  const input = { request_id: "rest-choose", expected_snapshot_id: snapshot.snapshot_id,
+    action_id: snapshot.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE };
+  const result = await adapter.submit(input);
+  assert.equal(result.status, "applied");
+  assert.deepEqual(rawAction, { cmd: "action", action: "choose_option",
+    args: { option_index: 0, option_ref: "native-rest-a" } });
+  assert.equal(result.successor.status, "visible_unsupported");
+  assert.equal(result.successor.menu_actions.status, "unavailable");
+  assert.deepEqual(await adapter.submit(input), result);
+});
+
+test("rest reordering or replacement invalidates old leaf before native dispatch", async () => {
+  for (const mode of ["reordered", "replaced"]) {
+    let actionCalls = 0;
+    let resetState = null;
+    const process = { async request(request) {
+      if (request.cmd === "start_run") return restDecision();
+      if (request.cmd === "reset_run") return resetState;
+      actionCalls += 1;
+      return restDecision();
+    } };
+    const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+    await session.mount({ seed: "TREST" });
+    const adapter = new ManagedTextMenuSessionAdapter(session);
+    const old = adapter.observe();
+    const updated = restDecision();
+    if (mode === "reordered") {
+      updated.options = [updated.options[2], updated.options[1], updated.options[0]]
+        .map((entry, index) => ({ ...entry, index }));
+    } else updated.options[0] = { ...updated.options[0], native_ref: "native-rest-replacement" };
+    resetState = updated;
+    await session.mount({ seed: "TREST", reset: true });
+    const result = await adapter.submit({ request_id: `stale-rest-${mode}`,
+      expected_snapshot_id: old.snapshot_id, action_id: old.menu_actions.actions[0].action_id,
+      input_profile: MANAGED_TEXT_MENU_PROFILE });
+    assert.equal(result.status, "not_applied");
+    assert.equal(result.reason_code, "stale_snapshot");
+    assert.equal(actionCalls, 0);
+  }
+});
+
+test("a successful rest option retains the page and exposes an independent bound proceed", async () => {
+  const nativeRequests = [];
+  const process = { async request(request) {
+    if (request.cmd === "start_run") return restDecision();
+    if (request.cmd === "get_map") return mapDecision().visible_map;
+    nativeRequests.push(request);
+    if (request.action === "choose_option") return {
+      ...restDecision(),
+      options: restDecision().options.slice(1).map((option, index) => ({ ...option, index })),
+      can_proceed: true, room_ref: "native-rest-room", last_option_result: "succeeded"
+    };
+    return mapDecision();
+  } };
+  const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+  await session.mount({ seed: "TREST" });
+  const adapter = new ManagedTextMenuSessionAdapter(session);
+  const initial = adapter.observe();
+  const choice = await adapter.submit({ request_id: "rest-first", expected_snapshot_id: initial.snapshot_id,
+    action_id: initial.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE });
+  assert.equal(choice.status, "applied");
+  assert.equal(choice.successor.interaction.kind, "rest_site");
+  assert.deepEqual(choice.successor.menu_actions.actions.map((action) => action.label), ["Dig", "Proceed"]);
+  assert.deepEqual(choice.successor.interaction.content.surface.options.map((option) => option.name), ["Smith", "Dig"]);
+  const proceed = choice.successor.menu_actions.actions[1];
+  const result = await adapter.submit({ request_id: "rest-proceed", expected_snapshot_id: choice.successor.snapshot_id,
+    action_id: proceed.action_id, input_profile: MANAGED_TEXT_MENU_PROFILE });
+  assert.equal(result.status, "applied");
+  assert.equal(result.successor.interaction.kind, "map_navigation");
+  assert.deepEqual(nativeRequests, [
+    { cmd: "action", action: "choose_option", args: { option_index: 0, option_ref: "native-rest-a" } },
+    { cmd: "action", action: "proceed", args: { room_ref: "native-rest-room" } }
+  ]);
+});
+
+test("an exhausted rest site advertises only proceed when native success enabled it", async () => {
+  let state = { ...restDecision(), options: [], can_proceed: false, room_ref: "native-rest-room" };
+  const session = new ManagedPlayerEnvironmentSession({
+    process: { async request(request) {
+      if (request.cmd === "start_run" || request.cmd === "reset_run") return state;
+      throw new Error("No native input expected");
+    } }, ...identity
+  });
+  await session.mount({ seed: "TREST" });
+  const adapter = new ManagedTextMenuSessionAdapter(session);
+  assert.equal(adapter.observe().status, "visible_unsupported");
+  state = { ...state, can_proceed: true };
+  await session.mount({ seed: "TREST", reset: true });
+  const ready = adapter.observe();
+  assert.equal(ready.menu_actions.status, "complete");
+  assert.deepEqual(ready.menu_actions.actions.map((action) => action.label), ["Proceed"]);
+});
+
+test("replaced rest room invalidates the previously advertised proceed without dispatch", async () => {
+  let state = { ...restDecision(), options: [], can_proceed: true, room_ref: "native-rest-room-a" };
+  let actionCalls = 0;
+  const session = new ManagedPlayerEnvironmentSession({
+    process: { async request(request) {
+      if (request.cmd === "start_run" || request.cmd === "reset_run") return state;
+      actionCalls += 1;
+      return mapDecision();
+    } }, ...identity
+  });
+  await session.mount({ seed: "TREST" });
+  const adapter = new ManagedTextMenuSessionAdapter(session);
+  const old = adapter.observe();
+  state = { ...state, room_ref: "native-rest-room-b" };
+  await session.mount({ seed: "TREST", reset: true });
+  const rejected = await adapter.submit({ request_id: "stale-rest-proceed",
+    expected_snapshot_id: old.snapshot_id, action_id: old.menu_actions.actions[0].action_id,
+    input_profile: MANAGED_TEXT_MENU_PROFILE });
+  assert.equal(rejected.status, "not_applied");
+  assert.equal(actionCalls, 0);
+});
+
+test("cancelled rest choice stays on rest without proceed, while native error taints delivery", async () => {
+  for (const outcome of ["cancelled", "error"]) {
+    let actionCalls = 0;
+    const process = { async request(request) {
+      if (request.cmd === "start_run") return restDecision();
+      actionCalls += 1;
+      return outcome === "cancelled"
+        ? { ...restDecision(), can_proceed: false, last_option_result: "cancelled" }
+        : { type: "error", message: "Rest site option delivery is unknown: native operation faulted" };
+    } };
+    const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+    await session.mount({ seed: "TREST" });
+    const adapter = new ManagedTextMenuSessionAdapter(session);
+    const initial = adapter.observe();
+    const input = { request_id: `rest-${outcome}`, expected_snapshot_id: initial.snapshot_id,
+      action_id: initial.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE };
+    const result = await adapter.submit(input);
+    if (outcome === "cancelled") {
+      assert.equal(result.status, "applied");
+      assert.equal(result.successor.interaction.kind, "rest_site");
+      assert.deepEqual(result.successor.menu_actions.actions.map((action) => action.label), ["Rest", "Dig"]);
+    } else {
+      assert.equal(result.status, "unknown");
+      assert.equal(result.retry, "never");
+      assert.equal(adapter.observe().menu_actions.status, "unavailable");
+    }
+    assert.deepEqual(await adapter.submit(input), result);
+    assert.equal(actionCalls, 1);
+  }
+});
+
+test("unknown rest delivery is replayed only as a receipt and taints later leaves", async () => {
+  let actionCalls = 0;
+  const process = { async request(request) {
+    if (request.cmd === "start_run") return restDecision();
+    actionCalls += 1;
+    throw new Error("transport lost after native write");
+  } };
+  const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+  await session.mount({ seed: "TREST" });
+  const adapter = new ManagedTextMenuSessionAdapter(session);
+  const snapshot = adapter.observe();
+  const input = { request_id: "unknown-rest", expected_snapshot_id: snapshot.snapshot_id,
+    action_id: snapshot.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE };
+  const unknown = await adapter.submit(input);
+  assert.equal(unknown.status, "unknown");
+  assert.equal(unknown.retry, "never");
+  assert.deepEqual(await adapter.submit(input), unknown);
+  assert.equal((await adapter.submit({ ...input, action_id: snapshot.menu_actions.actions[1].action_id }))
+    .reason_code, "request_id_conflict");
+  const later = await adapter.submit({ ...input, request_id: "after-unknown",
+    action_id: snapshot.menu_actions.actions[1].action_id });
+  assert.equal(later.status, "not_applied");
+  assert.equal(adapter.observe().menu_actions.status, "unavailable");
+  assert.equal(actionCalls, 1);
+});
 
 test("projects only the complete current map catalog and submits its exact hidden binding", async () => {
   let rawAction = null;
