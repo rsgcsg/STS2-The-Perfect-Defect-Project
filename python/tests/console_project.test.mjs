@@ -1690,7 +1690,7 @@ test("M2 export describes its own scope alongside a completed dev report and gua
   assert.doesNotMatch(text(page), /没有独立评估|仍没有独立评估/);
   assert.ok(walk(page).some(element => element.tagName === "A"
     && element.href === `?view=local-workspace&id=${evaluation}`));
-  assert.match(text(page), /才能登记或加载/);
+  assert.match(text(page), /登记与加载时分别核验本机运行组件和当前环境/);
   assert.equal(post(env.calls).length, 0);
   assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
   await action(page, "start-local-model-export").onclick();
@@ -1723,6 +1723,8 @@ test("Reset-K1 model identity drives overview, export, and neutral dev evaluatio
     }});
   const page = await env.render();
   assert.match(text(page), /Reset-K1（每步重置，独立训练对照）/);
+  assert.match(text(page), /此处不表示实时状态/);
+  assert.doesNotMatch(text(page), /需先具备固定的记忆模型运行包/);
   assert.match(text(page), /Reset-K1 训练模型已导出并校验/);
   assert.match(text(page), /Reset-K1 独立来源开发集评估/);
   assert.match(text(page), /不是 Gold、独立游戏局、记忆收益或科学质量证明/);
@@ -2203,6 +2205,12 @@ test("registration only appears for the matching completed export and unavailabl
     },
     {
       export:modelExportStatus({status:"completed", model_id:model}),
+      registration:modelRegistrationStatus(model, "unavailable", {reason_code:"text_runtime_profile_required"}),
+      action:false, request:true, setupLink:true,
+      message:/本机文本菜单运行环境尚未准备/,
+    },
+    {
+      export:modelExportStatus({status:"completed", model_id:model}),
       registration:modelRegistrationStatus(model, "not_registered", {reason_code:"source_binding_changed"}),
       action:true, request:true,
       message:/运行源码已变化；旧选择保留。可明确重新登记并生成新选择/,
@@ -2230,6 +2238,8 @@ test("registration only appears for the matching completed export and unavailabl
     assert.equal(walk(page).some(element => element.dataset?.action === "register-local-model"), scenario.action);
     if (scenario.message) assert.match(text(page), scenario.message);
     if (scenario.hidden) assert.doesNotMatch(text(page), scenario.hidden);
+    if (scenario.setupLink) assert.ok(find(page, element => element.tagName === "A"
+      && element.href === "?view=local-models"));
     assert.equal(post(env.calls).length, 0);
   }
 });
@@ -3623,6 +3633,28 @@ test("runtime prepares one trusted selection with optional diagnosis and no impl
   assert.equal(post(env.calls)[0].url, "/api/local-models/prepare");
   assert.deepEqual(body(post(env.calls)[0]), { selection_id: "audited-cpu", run_profile:"short" });
   assert.match(text(env.notice), /尚需完成实际加载/);
+});
+
+test("model environment preparation offers only the two fixed profiles", async () => {
+  let status = {status:"idle", loaded:false, operation:null};
+  const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) => {
+    if (url === "/api/local-models/status") return status;
+    if (url === "/api/local-models/prepare-text-runtime" && options.method === "POST") {
+      status = {status:"idle", loaded:false,
+        operation:{id:"prepare-runtime", action:"prepare-text-runtime", status:"pending"}};
+      return status;
+    }
+    return modelHandler(url, options);
+  }});
+  const page = await env.render();
+  assert.equal(action(page, "prepare-runtime-text-menu-v1").disabled, false);
+  assert.equal(action(page, "prepare-runtime-text-menu-m2-v1").disabled, false);
+  assert.equal(post(env.calls).length, 0);
+  await action(page, "prepare-runtime-text-menu-m2-v1").onclick();
+  assert.equal(post(env.calls)[0].url, "/api/local-models/prepare-text-runtime");
+  assert.deepEqual(body(post(env.calls)[0]), {runtime_profile:"text-menu-m2-v1"});
+  assert.equal(action(env.livePage, "prepare-runtime-text-menu-v1").disabled, true);
+  assert.equal(post(env.calls).length, 1);
 });
 
 test("run profile is bound to the exact selection before load and never starts Auto", async () => {

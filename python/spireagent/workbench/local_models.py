@@ -35,8 +35,19 @@ from spireagent.policies import SUPPORTED_ADAPTERS, policy_support
 from spireagent.policy_files import _inside, _object_file
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json, endpoint
 from spireagent.workbench.hub_client import HubClient, NoRedirect
+from spireagent.workbench.kit_runtime import (
+    M2_ARCHIVE_DESTINATION,
+    M2_RUNTIME_DESTINATION,
+    TEXT_ARCHIVE_DESTINATION,
+    TEXT_RUNTIME_DESTINATION,
+    text_runtime_pin,
+)
 from spireagent.workbench.native_tasks import NativeTasks
-from spireagent.workbench.runtime_install import install_runtime, validate_runtime_install
+from spireagent.workbench.runtime_install import (
+    ARCHIVE_LIMIT,
+    install_runtime,
+    validate_runtime_install,
+)
 
 SCHEMA = "stpd/local-models-v1"
 RUNTIME_PACKAGE = "@rsgcsg/sts2-policy-runtime"
@@ -52,6 +63,12 @@ TEXT_PROFILES = {"text-menu-v1": ("token-v1", ".local/text-menu-runtime-v1.json"
                  "text-menu-m2-v1": ("stpd-m2-decision-adapter",
                                      ".local/text-menu-m2-runtime-v1.json",
                                      "stpd/local-text-m2-runtime-v1", "text-menu-m2-v1")}
+KIT_TEXT_FILES = {
+    "text-menu-v1": (TEXT_RUNTIME_DESTINATION, TEXT_ARCHIVE_DESTINATION,
+                     "text_runtime", "text_runtime_identity"),
+    "text-menu-m2-v1": (M2_RUNTIME_DESTINATION, M2_ARCHIVE_DESTINATION,
+                        "m2_runtime", "m2_runtime_identity"),
+}
 _BUDGET_STATES = frozenset({"inactive", "active", "exhausted"})
 _BUDGET_EXHAUSTION = frozenset({"submission_attempt_limit", "policy_call_limit", "deadline"})
 _BUDGET_END = frozenset({"human_recovery", "mode_changed", "stopped"})
@@ -517,6 +534,117 @@ class LocalModelService:
 
         return self._begin("install-runtime", install)
 
+    def _require_stopped_runtime(self) -> None:
+        with self.lock:
+            if self.closed:
+                raise BoundaryError("local_model", "service_closed")
+            if (self.client is not None or self.state["loaded"]
+                    or self.process is not None and self.process.poll() is None):
+                raise BoundaryError("local_model", "stop_runtime_before_install")
+
+    def _selected_kit_text_runtime(self, profile_id: str) -> tuple[bytes, Path, dict[str, Any]]:
+        """Read one fixed pair from this process's already selected release only."""
+        source = self.root.parent
+        release = source.parent
+        if (self.root.name != "python" or source.name != "source"
+                or not re.fullmatch(r"[a-f0-9]{64}", release.name)
+                or release / "source/python" != self.root):
+            raise BoundaryError("local_model", "trusted_text_runtime_kit_unavailable")
+        profile_name, archive_name, status_key, identity_key = KIT_TEXT_FILES[profile_id]
+        verifier = ROOT / "tools/install_developer_kit.py"
+        environment = {key: value for key, value in os.environ.items()
+                       if key in {"PATH", "HOME", "SYSTEMROOT", "SystemRoot",
+                                  "TMPDIR", "TEMP", "TMP"}}
+        try:
+            checked = subprocess.run(
+                [sys.executable, "-I", str(verifier), "status", "--directory", str(release)],
+                cwd=self.root, env=environment, capture_output=True, timeout=120, check=False,
+            )
+            receipt = decode_json(checked.stdout) if checked.returncode == 0 else None
+        except (OSError, ValueError, BoundaryError, subprocess.SubprocessError):
+            receipt = None
+        if not isinstance(receipt, dict) or receipt.get("status") != "prepared":
+            raise BoundaryError("local_model", "trusted_text_runtime_kit_invalid")
+        if receipt.get("directory") != str(release):
+            raise BoundaryError("local_model", "trusted_text_runtime_kit_invalid")
+        if receipt.get(status_key) == "not_bundled":
+            raise BoundaryError("local_model", "trusted_text_runtime_asset_not_bundled")
+        identity = receipt.get(identity_key)
+        if (receipt.get(status_key) != "bundled_installation_not_checked"
+                or not isinstance(identity, dict)
+                or set(identity) != {"profile_sha256", "archive_sha256"}):
+            raise BoundaryError("local_model", "trusted_text_runtime_kit_invalid")
+        profile_path, archive_path = source / profile_name, source / archive_name
+        if (profile_path.is_symlink() or archive_path.is_symlink()
+                or not profile_path.is_file() or not archive_path.is_file()):
+            raise BoundaryError("local_model", "trusted_text_runtime_kit_invalid")
+        if profile_path.stat().st_size > JSON_LIMIT or archive_path.stat().st_size > ARCHIVE_LIMIT:
+            raise BoundaryError("local_model", "trusted_text_runtime_kit_invalid")
+        profile_raw, archive_raw = profile_path.read_bytes(), archive_path.read_bytes()
+        if (hashlib.sha256(profile_raw).hexdigest() != identity["profile_sha256"]
+                or hashlib.sha256(archive_raw).hexdigest() != identity["archive_sha256"]):
+            raise BoundaryError("local_model", "trusted_text_runtime_kit_changed")
+        pin = text_runtime_pin(profile_raw, archive_raw,
+                               memory=profile_id == "text-menu-m2-v1")
+        return profile_raw, archive_path, pin
+
+    def prepare_text_runtime(self, profile_id: str) -> dict[str, Any]:
+        """Explicitly prepare an exact private text Runtime; never load a model."""
+        if not isinstance(profile_id, str) or profile_id not in TEXT_PROFILES:
+            raise BoundaryError("local_model", "unsupported_runtime_profile")
+
+        def prepare() -> None:
+            self._require_stopped_runtime()
+            try:
+                directory, pin = self.text_runtime_profile(profile_id)
+            except BoundaryError as error:
+                if error.code != "text_runtime_profile_required":
+                    raise
+                directory, pin = None, None
+            if directory is not None and pin is not None:
+                try:
+                    installed = validate_runtime_install(
+                        directory / "runtime/node_modules", pin, self._connector_pin())
+                except (OSError, ValueError, StopIteration, PackageIdentityError):
+                    installed = None
+                if installed is not None:
+                    with self.lock:
+                        self._require_stopped_runtime()
+                        self.state.update(status="idle", last_text_runtime_preparation={
+                            "runtime_profile": profile_id, "status": "ready", "reused": True,
+                        })
+                    return
+            profile_raw, archive, kit_pin = self._selected_kit_text_runtime(profile_id)
+            if pin is not None and pin != kit_pin:
+                raise BoundaryError("local_model", "private_profile_collision")
+            self._require_stopped_runtime()
+            if pin is None:
+                # The durable state owner publishes complete bytes, without
+                # replacing a different operator pin or touching the source tree.
+                from spireagent.workbench.model_state_migration import _publish_profile
+
+                if self.private_root.is_symlink():
+                    raise BoundaryError("local_model", "private_model_state_unsafe")
+                self.private_root.mkdir(parents=True, exist_ok=True)
+                _publish_profile(self.private_root / Path(TEXT_PROFILES[profile_id][1]).name,
+                                 profile_raw)
+            directory, current_pin = self.text_runtime_profile(profile_id)
+            if current_pin != kit_pin:
+                raise BoundaryError("local_model", "private_profile_collision")
+            self._require_stopped_runtime()
+            installed = install_runtime(directory, current_pin, self._connector_pin(),
+                                        archive=archive)
+            with self.lock:
+                self._require_stopped_runtime()
+                self.state.update(status="idle", last_runtime_install=installed,
+                                  last_text_runtime_preparation={
+                                      "runtime_profile": profile_id, "status": "ready",
+                                      "reused": False,
+                                  })
+
+        return self._begin("prepare-text-runtime", prepare,
+                           admission=self._require_stopped_runtime)
+
     def catalog(self) -> dict[str, Any]:
         entries = []
         for entry in self.registry()["policies"]:
@@ -648,7 +776,8 @@ class LocalModelService:
         atomic_json(self.directory / "session.json", self.state)
 
     def _begin(
-        self, action: str, operation: Callable[[], None], *, recovery: bool = False
+        self, action: str, operation: Callable[[], None], *, recovery: bool = False,
+        admission: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             if self.closed:
@@ -657,6 +786,8 @@ class LocalModelService:
                 raise BoundaryError("local_model", "operation_in_progress")
             if self.state["status"] in {"command_unknown", "recovery_required"} and not recovery:
                 raise BoundaryError("local_model", "previous_operation_requires_recovery")
+            if admission is not None:
+                admission()
             current = {"id": uuid4().hex, "action": action, "status": "pending"}
             self.state["operation"] = current
             self._save()

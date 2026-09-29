@@ -369,6 +369,18 @@ new selection. An explicit offline Runtime install can stage its kit-verified pr
 private directory. A missing private profile is reported separately from a missing or drifted
 Runtime install.
 
+The local **准备本机模型环境** panel has two fixed actions: text-menu v1 and M2.
+Each explicit request reuses an exact installed private Runtime and pin when both
+still validate. Otherwise it requires the Workbench to be running from the selected
+developer-kit release, invokes that kit owner's full `status` verifier, checks the
+fixed staged pair against its verified inventory hashes, publishes a missing pin
+under `state_dir/models`, and uses the existing pinned Runtime installer. A
+development checkout with no selected kit can only reuse an already verified
+private install. A kit without the requested pair, or a changed/colliding pin,
+blocks preparation; the browser cannot choose a source path or invent a release
+download. The action does not migrate old checkout records, register a model, load
+weights, start Runtime or operate the game. Status reads do not prepare anything.
+
 For checkout-era metadata, close the Workbench and use
 `python -m spireagent.workbench project migrate-model-state --config /ABS/project.json --legacy-python-root /ABS/old-checkout/python`.
 The same explicit operation is available to a setup/prepare control through the owning

@@ -252,7 +252,7 @@ def install_runtime(
     *,
     archive: Path | None = None,
 ) -> dict[str, Any]:
-    """A local archive is an explicit CLI-only input, still bound to the release hash."""
+    """An explicit local archive remains bound to the pinned release hash."""
     from spireagent.workbench.developer_server import instance_lock
 
     with instance_lock(directory / "runtime-install.lock"):

@@ -675,6 +675,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 return app.models.command(body["action"])
             if path == "/api/local-models/install-runtime" and not body:
                 return app.models.install_runtime()
+            if path == "/api/local-models/prepare-text-runtime" and set(body) == {
+                "runtime_profile"
+            }:
+                return app.models.prepare_text_runtime(body["runtime_profile"])
             raise BoundaryError("local_model", "invalid_local_command")
 
         def respond(self, code: int, value: bytes, content_type: str = "application/json") -> None:
