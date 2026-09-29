@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   ManagedPlayerEnvironmentSession,
@@ -67,6 +68,24 @@ function deckUpgradeDecision(stage = "selecting", cardRefs = ["native-card-a", "
       is_selected: preview && index === 0, is_selectable: !preview,
       is_deselectable: false
     }))
+  };
+}
+
+function combatDecision() {
+  return {
+    type: "decision", decision: "combat_play", context: { ...mapDecision().context, floor: 2, total_floor: 2, room_type: "Combat" },
+    encounter_type: "normal", turn_owner: "player", is_play_phase: true, round: 1,
+    energy: 3, max_energy: 3, exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [], player_statuses: [],
+    hand: [{ index: 0, native_ref: "native-card-strike", valid_target_refs: ["native-enemy-a"],
+      id: "CARD.STRIKE_IRONCLAD", name: "Strike", can_play: true, target_type: "AnyEnemy",
+      type: "Attack", rarity: "Basic", cost: 1 }],
+    enemies: [{ index: 0, native_ref: "native-enemy-a", id: "MONSTER.CULTIST", combat_id: 1,
+      name: "Cultist", hp: 10, max_hp: 10, block: 0, statuses: [], intents: [] }],
+    player: { ...mapDecision().player, native_ref: "native-player", potions: [{
+      slot: 0, native_ref: "native-potion-fire", id: "POTION.FIRE", name: "Fire Potion",
+      target_type: "AnyEnemy", can_use: true, can_discard: true, binding_supported: true,
+      valid_target_refs: ["native-enemy-a"], hover_facts_complete: true, keywords: [], card_previews: []
+    }] }
   };
 }
 
@@ -348,6 +367,143 @@ test("unknown rest delivery is replayed only as a receipt and taints later leave
   assert.equal(later.status, "not_applied");
   assert.equal(adapter.observe().menu_actions.status, "unavailable");
   assert.equal(actionCalls, 1);
+});
+
+test("projects complete direct combat leaves with exact target referents and native bindings", async () => {
+  const rawRequests = [];
+  const process = { async request(request) {
+    if (request.cmd === "start_run") return combatDecision();
+    rawRequests.push(request);
+    return combatDecision();
+  } };
+  const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+  await session.mount({ seed: "TCOMBAT" });
+  const adapter = new ManagedTextMenuSessionAdapter(session);
+  const source = session.observe();
+  const snapshot = adapter.observe();
+  assert.equal(snapshot.interaction.kind, "combat_turn");
+  assert.equal(snapshot.status, "interactive");
+  assert.equal(snapshot.menu_actions.status, "complete");
+  assert.deepEqual(snapshot.menu_actions.actions.map((action) => action.verb), ["play", "end_turn", "use", "activate"]);
+  assert.deepEqual(snapshot.menu_actions.actions[0].arguments,
+    source.bound_actions.actions[0].arguments);
+  assert.equal(snapshot.menu_actions.actions[0].action_id, `managed_${createHash("sha256")
+    .update(`${source.snapshot_id}\0${source.bound_actions.actions[0].bound_action_id}`).digest("hex").slice(0, 32)}`);
+  assert.equal(snapshot.menu_actions.actions[0].arguments[0].role, "target");
+  const enemyId = snapshot.menu_actions.actions[0].arguments[0].referent_id;
+  assert.equal(snapshot.referents.find((referent) => referent.referent_id === enemyId).role, "enemy");
+  assert.equal(snapshot.menu.native_snapshot_id, source.snapshot_id);
+  assert.equal(Object.hasOwn(snapshot, "reads"), false);
+  const play = await adapter.submit({ request_id: "combat-play", expected_snapshot_id: snapshot.snapshot_id,
+    action_id: snapshot.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE });
+  assert.equal(play.status, "applied");
+  assert.deepEqual(rawRequests[0], { cmd: "action", action: "play_card",
+    args: { card_ref: "native-card-strike", target_ref: "native-enemy-a" } });
+  const use = await adapter.submit({ request_id: "combat-use", expected_snapshot_id: play.successor.snapshot_id,
+    action_id: play.successor.menu_actions.actions.find((action) => action.verb === "use").action_id,
+    input_profile: MANAGED_TEXT_MENU_PROFILE });
+  assert.equal(use.status, "applied");
+  assert.deepEqual(rawRequests[1], { cmd: "action", action: "use_potion",
+    args: { potion_slot: 0, potion_ref: "native-potion-fire", target_ref: "native-enemy-a" } });
+});
+
+test("text menu defers combat legality to MPE and accepts only reviewed surfaces", async () => {
+  const base = projectManagedCandidateDecision({ state: combatDecision(), ...identity }).snapshot;
+  const unsupportedFor = (snapshot) => new ManagedTextMenuSessionAdapter({
+    observe: () => snapshot,
+    async submit() { throw new Error("unsupported combat action dispatched"); }
+  }).observe();
+  const closed = projectManagedCandidateDecision({
+    state: { ...combatDecision(), is_play_phase: false }, ...identity
+  }).snapshot;
+  assert.equal(unsupportedFor(closed).menu_actions.status, "unavailable");
+
+  for (const targetType of ["AnyAlly", "FutureUnknownTarget"]) {
+    const unsupported = projectManagedCandidateDecision({
+      state: { ...combatDecision(), hand: [{ ...combatDecision().hand[0], target_type: targetType }] }, ...identity
+    }).snapshot;
+    assert.equal(unsupported.bound_actions.status, "unavailable", targetType);
+    assert.equal(unsupportedFor(unsupported).menu_actions.status, "unavailable", targetType);
+  }
+
+  const futureVerb = structuredClone(base);
+  futureVerb.bound_actions.actions[0].verb = "future_exact_mpe_action";
+  assert.deepEqual(unsupportedFor(futureVerb).menu_actions.actions.map((action) => action.verb),
+    ["future_exact_mpe_action", "end_turn", "use", "activate"]);
+
+  for (const surface of ["event_choice", "card_reward_selection", "bundle_selection"]) {
+    const unreviewed = structuredClone(base);
+    unreviewed.interaction.kind = surface;
+    assert.equal(unsupportedFor(unreviewed).menu_actions.status, "unavailable", surface);
+  }
+});
+
+test("text menu checks generic complete counts and referent structure", async () => {
+  const base = projectManagedCandidateDecision({ state: combatDecision(), ...identity }).snapshot;
+  const observe = (snapshot) => new ManagedTextMenuSessionAdapter({
+    observe: () => snapshot,
+    async submit() { throw new Error("observe-only structural check must not dispatch"); }
+  }).observe();
+
+  const badCount = structuredClone(base);
+  badCount.bound_actions.total_count += 1;
+  assert.equal(observe(badCount).menu_actions.status, "unavailable");
+
+  const duplicateId = structuredClone(base);
+  duplicateId.bound_actions.actions[1].bound_action_id = duplicateId.bound_actions.actions[0].bound_action_id;
+  assert.equal(observe(duplicateId).menu_actions.status, "unavailable");
+
+  const missingSubject = structuredClone(base);
+  missingSubject.bound_actions.actions[0].subject_referent_id = "missing-referent";
+  assert.equal(observe(missingSubject).menu_actions.status, "unavailable");
+
+  const missingArgument = structuredClone(base);
+  missingArgument.bound_actions.actions[0].arguments[0].referent_id = "missing-target";
+  assert.equal(observe(missingArgument).menu_actions.status, "unavailable");
+
+  const incomplete = structuredClone(base);
+  incomplete.completeness.status = "partial";
+  assert.equal(observe(incomplete).menu_actions.status, "unavailable");
+
+  const presentationChanged = structuredClone(base);
+  presentationChanged.interaction.stage = "new-owner-defined-stage";
+  presentationChanged.completeness.visible_information = "owner-defined complete evidence";
+  presentationChanged.completeness.interaction_discovery = "owner-defined discovery evidence";
+  assert.equal(observe(presentationChanged).menu_actions.status, "complete");
+});
+
+test("stale combat text-menu leaf dispatches nothing and unknown delivery is never retried", async () => {
+  for (const outcome of ["stale", "unknown"]) {
+    let current = combatDecision();
+    let actionCalls = 0;
+    const process = { async request(request) {
+      if (request.cmd === "start_run") return current;
+      if (request.cmd === "reset_run") return current;
+      actionCalls += 1;
+      if (outcome === "unknown") throw new Error("transport lost after native write");
+      return current;
+    } };
+    const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+    await session.mount({ seed: "TCOMBAT" });
+    const adapter = new ManagedTextMenuSessionAdapter(session);
+    const old = adapter.observe();
+    if (outcome === "stale") {
+      current = { ...combatDecision(), round: 2 };
+      await session.mount({ seed: "TCOMBAT", reset: true });
+      const rejected = await adapter.submit({ request_id: "stale-combat", expected_snapshot_id: old.snapshot_id,
+        action_id: old.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE });
+      assert.equal(rejected.reason_code, "stale_snapshot");
+      assert.equal(actionCalls, 0);
+    } else {
+      const input = { request_id: "unknown-combat", expected_snapshot_id: old.snapshot_id,
+        action_id: old.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE };
+      const receipt = await adapter.submit(input);
+      assert.equal(receipt.status, "unknown");
+      assert.equal(receipt.retry, "never");
+      assert.deepEqual(await adapter.submit(input), receipt);
+      assert.equal(actionCalls, 1);
+    }
+  }
 });
 
 test("projects only the complete current map catalog and submits its exact hidden binding", async () => {

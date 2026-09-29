@@ -14,45 +14,48 @@ function textSnapshotId(snapshotId) {
   return `managed_tm_${createHash("sha256").update(snapshotId).digest("hex").slice(0, 32)}`;
 }
 
+const REVIEWED_TEXT_MENU_SURFACES = new Set([
+  "map_navigation", "rest_site", "deck_upgrade_selection", "combat_turn"
+]);
+
 function completeCurrentLeaf(snapshot) {
-  const restReferents = (snapshot?.referents ?? []).filter((referent) =>
-    (referent.role === "rest_option" || referent.role === "rest_room")
-    && referent.state.enabled === true);
-  const restCanProceed = snapshot?.interaction?.content?.surface?.can_proceed === true;
-  const map = snapshot?.interaction?.kind === "map_navigation"
-    && snapshot.status === "interactive"
-    && snapshot.completeness?.visible_information === "contract_complete_for_visible_singleplayer_map_navigation"
-    && snapshot.completeness?.interaction_discovery === "derived_from_exact_current_travelable_map_point_controls";
-  const rest = snapshot?.interaction?.kind === "rest_site"
-    && snapshot.interaction.stage === "choosing"
-    && snapshot.status === "interactive"
-    && snapshot.completeness?.visible_information === "contract_complete_for_current_native_interaction"
-    && snapshot.completeness?.interaction_discovery === "derived_from_same_current_native_interaction_as_execution"
-    && restReferents.filter((referent) => referent.role === "rest_room").length === (restCanProceed ? 1 : 0)
-    && snapshot.bound_actions?.actions.length === restReferents.length
-    && snapshot.bound_actions.actions.every((action) => restReferents.some((referent) =>
-      referent.referent_id === action.subject_referent_id));
-  const upgrade = snapshot?.interaction?.kind === "deck_upgrade_selection"
-    && ["selecting", "preview"].includes(snapshot.interaction.stage)
-    && snapshot.status === "interactive"
-    && snapshot.completeness?.visible_information === "contract_complete_for_current_native_interaction"
-    && snapshot.completeness?.interaction_discovery === "derived_from_same_current_native_interaction_as_execution"
-    && snapshot.bound_actions?.actions.every((action) =>
-      ["select", "deselect", "cancel", "confirm"].includes(action.verb)
-      && (action.verb === "select" || action.verb === "deselect"
-        ? snapshot.referents.some((referent) => referent.role === "card"
-          && referent.referent_id === action.subject_referent_id)
-        : action.subject_referent_id == null));
-  return (map || rest || upgrade)
-    && snapshot.bound_actions?.status === "complete"
-    && snapshot.bound_actions.actions.length > 0
-    && snapshot.bound_actions.actions.every((action) => (upgrade
-      || action.verb === "activate")
-      && typeof action.bound_action_id === "string"
-      && typeof action.label === "string"
-      && (action.arguments ?? []).length === 0
-      && (upgrade || (action.subject_referent_id != null
-        && snapshot.referents.some((referent) => referent.referent_id === action.subject_referent_id))));
+  const interactionId = snapshot?.interaction?.interaction_id;
+  const actions = snapshot?.bound_actions?.actions;
+  const referents = snapshot?.referents;
+  if (!REVIEWED_TEXT_MENU_SURFACES.has(snapshot?.interaction?.kind)
+    || snapshot.status !== "interactive"
+    || snapshot.completeness?.status !== "complete"
+    || snapshot.bound_actions?.status !== "complete"
+    || !Array.isArray(referents)
+    || !Array.isArray(actions)
+    || actions.length === 0
+    || !Number.isSafeInteger(snapshot.bound_actions.materialized_count)
+    || !Number.isSafeInteger(snapshot.bound_actions.total_count)
+    || snapshot.bound_actions.materialized_count !== actions.length
+    || snapshot.bound_actions.total_count !== actions.length
+    || typeof interactionId !== "string" || interactionId.length === 0) return false;
+
+  const referentIds = new Set();
+  for (const referent of referents) {
+    if (typeof referent?.referent_id !== "string" || referent.referent_id.length === 0
+      || referentIds.has(referent.referent_id)) return false;
+    referentIds.add(referent.referent_id);
+  }
+  const actionIds = new Set();
+  return actions.every((action) => {
+    if (typeof action?.bound_action_id !== "string" || action.bound_action_id.length === 0
+      || actionIds.has(action.bound_action_id)
+      || action.interaction_id !== interactionId
+      || typeof action.verb !== "string" || action.verb.length === 0
+      || typeof action.label !== "string"
+      || !Array.isArray(action.arguments)
+      || (action.subject_referent_id != null && !referentIds.has(action.subject_referent_id))) return false;
+    actionIds.add(action.bound_action_id);
+    return action.arguments.every((argument) => typeof argument?.role === "string"
+      && argument.role.length > 0
+      && typeof argument.referent_id === "string"
+      && referentIds.has(argument.referent_id));
+  });
 }
 
 function project(snapshot, allowActions = true) {
@@ -63,7 +66,7 @@ function project(snapshot, allowActions = true) {
     verb: bound.verb,
     label: bound.label,
     subject_referent_id: bound.subject_referent_id,
-    arguments: [],
+    arguments: bound.arguments ?? [],
     effect_domain: "native_input"
   })) : [];
   const { bound_actions: _boundActions, reads: _reads, ...publicSnapshot } = snapshot;
@@ -85,7 +88,7 @@ function project(snapshot, allowActions = true) {
   };
 }
 
-/** In-process projection of complete current Managed map, rest, and deck-upgrade leaves. */
+/** In-process projection of complete current Managed map, rest, deck-upgrade, and direct combat leaves. */
 export class ManagedTextMenuSessionAdapter {
   #session;
   #bindings = new Map();
@@ -155,7 +158,7 @@ export class ManagedTextMenuSessionAdapter {
       return this.#save(request_id, fingerprint, this.#result(request_id, {
         status: "not_applied", effect_domain: null, native_delivery: null,
         action: null, reason_code: "stale_or_unadvertised_action",
-        detail: "Only a current advertised Managed map, rest-site, or deck-upgrade leaf can be submitted.",
+        detail: "Only a current advertised Managed text-menu leaf can be submitted.",
         retry: "reobserve", successor: current
       }));
     }

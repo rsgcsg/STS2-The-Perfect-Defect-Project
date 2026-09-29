@@ -469,6 +469,7 @@ test("materializes every combat card-target pair and keeps raw operands Host-loc
       type: "decision",
       decision: "combat_play",
       context: { act: 1, floor: 2, room_type: "Combat" },
+      is_play_phase: true,
       round: 1,
       energy: 3,
       max_energy: 3,
@@ -498,6 +499,58 @@ test("materializes every combat card-target pair and keeps raw operands Host-loc
   assert.equal([...projection.bindings.values()].some((binding) => binding.raw_request.args?.card_ref === "card-strike"), true);
 });
 
+test("does not publish combat mutations outside the native player play window", () => {
+  const projection = projectManagedCandidateDecision({
+    ...projectionIdentity,
+    state: {
+      type: "decision",
+      decision: "combat_play",
+      context: { act: 1, floor: 2, room_type: "Combat" },
+      round: 1,
+      energy: 3,
+      max_energy: 3,
+      encounter_type: "normal",
+      turn_owner: "enemy",
+      is_play_phase: false,
+      exhaust_pile_count: 0,
+      orb_slots: 0,
+      orbs: [],
+      companions: [],
+      player_statuses: [],
+      hand: [{
+        index: 0,
+        native_ref: "card-strike",
+        valid_target_refs: ["enemy-a"],
+        id: "CARD.STRIKE_IRONCLAD",
+        name: "Strike",
+        can_play: true,
+        target_type: "AnyEnemy",
+        type: "Attack",
+        rarity: "Basic",
+        cost: 1
+      }],
+      enemies: [{
+        index: 0,
+        native_ref: "enemy-a",
+        id: "MONSTER.CULTIST",
+        combat_id: 1,
+        name: "A",
+        hp: 10,
+        max_hp: 10,
+        block: 0,
+        statuses: [],
+        intents: []
+      }],
+      player: { ...player(), native_ref: "player-a" }
+    }
+  });
+  assert.equal(projection.snapshot.status, "visible_unsupported");
+  assert.equal(projection.snapshot.interaction.content.surface.can_end_turn, false);
+  assert.deepEqual(projection.snapshot.interaction.content.surface.playable_cards, []);
+  assert.deepEqual(projection.snapshot.bound_actions.actions, []);
+  assert.equal(projection.bindings.size, 0);
+});
+
 test("keeps visible unplayable cards as hand facts without creating action authority", () => {
   const projection = projectManagedCandidateDecision({
     ...projectionIdentity,
@@ -505,6 +558,7 @@ test("keeps visible unplayable cards as hand facts without creating action autho
       type: "decision",
       decision: "combat_play",
       context: { act: 1, floor: 2, room_type: "Combat" },
+      is_play_phase: true,
       round: 1,
       energy: 0,
       max_energy: 3,
@@ -545,6 +599,7 @@ test("projects native potion bindings without exposing Host-local identity", () 
       type: "decision",
       decision: "combat_play",
       context: {},
+      is_play_phase: true,
       hand: [],
       enemies: [{ index: 0, native_ref: "enemy-a", name: "A", hp: 10, max_hp: 10 }],
       player: {
@@ -587,6 +642,112 @@ test("fails closed when visible potion actionability is not represented", () => 
   assert.equal(projection.snapshot.status, "visible_unsupported");
   assert.equal(projection.snapshot.bound_actions.status, "unavailable");
   assert.equal(projection.bindings.size, 0);
+});
+
+test("combat projection fails closed for target types without an exact current binding", () => {
+  const base = {
+    type: "decision",
+    decision: "combat_play",
+    context: {
+      act: 1, act_index: 0, act_definition_id: "OVERGROWTH", act_name: "Overgrowth",
+      floor: 2, total_floor: 2, ascension: 0, room_type: "Combat",
+      bosses: [{ id: "VANTOM_BOSS", name: "Vantom", order: 0 }], modifiers: []
+    },
+    encounter_type: "normal", turn_owner: "player", round: 1,
+    is_play_phase: true,
+    exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [], player_statuses: [],
+    hand: [{
+      index: 0, native_ref: "card-a", id: "CARD.STRIKE", name: "Strike", can_play: true,
+      target_type: "AnyEnemy", valid_target_refs: ["enemy-a"]
+    }],
+    enemies: [{
+      index: 0, native_ref: "enemy-a", id: "MONSTER.CULTIST", combat_id: 1,
+      name: "Enemy A", hp: 10, max_hp: 10, block: 0, statuses: [], intents: []
+    }],
+    player: { ...player(), native_ref: "player-a", character_id: "IRONCLAD", max_potion_slots: 3, potions: [] }
+  };
+
+  for (const targetType of ["AnyAlly", "FutureUnknownTarget"]) {
+    const projection = projectManagedCandidateDecision({
+      state: { ...base, hand: [{ ...base.hand[0], target_type: targetType }] }, ...projectionIdentity
+    });
+    assert.equal(projection.snapshot.bound_actions.status, "unavailable", targetType);
+    assert.deepEqual(projection.snapshot.bound_actions.actions, [], targetType);
+    assert.equal(projection.bindings.size, 0, targetType);
+    assert.equal(projection.snapshot.completeness.status, "partial", targetType);
+    assert.ok(projection.snapshot.completeness.missing.includes("native_unsupported_card_target_type"), targetType);
+  }
+
+  for (const targetType of ["None", "Self", "AllEnemies", "RandomEnemy", "AnyPlayer", "AllAllies", "TargetedNoCreature", "Osty"]) {
+    const projection = projectManagedCandidateDecision({
+      state: { ...base, hand: [{ ...base.hand[0], target_type: targetType, valid_target_refs: [] }] }, ...projectionIdentity
+    });
+    assert.equal(projection.snapshot.bound_actions.status, "complete", targetType);
+    assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.verb), ["play", "end_turn"]);
+  }
+
+  for (const targetType of ["None", "Self", "AllEnemies", "RandomEnemy", "AllAllies"]) {
+    const projection = projectManagedCandidateDecision({
+      state: { ...base, hand: [], player: { ...base.player, potions: [{
+        index: 0, slot: 0, native_ref: "potion-a", name: "Test Potion", can_use: true,
+        can_discard: false, binding_supported: true, target_type: targetType
+      }] } }, ...projectionIdentity
+    });
+    assert.equal(projection.snapshot.bound_actions.status, "complete", targetType);
+    assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.verb), ["end_turn", "use"]);
+  }
+
+  const supportedButUnavailable = projectManagedCandidateDecision({
+    state: { ...base, hand: [], player: { ...base.player, potions: [{
+      index: 0, slot: 0, native_ref: "potion-unavailable", id: "POTION.TEST", name: "Test Potion",
+      can_use: false, can_discard: true, binding_supported: true, target_type: "Self",
+      hover_facts_complete: true, keywords: [], card_previews: []
+    }] } }, ...projectionIdentity
+  });
+  assert.equal(supportedButUnavailable.snapshot.completeness.status, "complete");
+  assert.equal(supportedButUnavailable.snapshot.bound_actions.status, "complete");
+  assert.deepEqual(supportedButUnavailable.snapshot.bound_actions.actions.map((action) => action.verb), ["end_turn", "activate"]);
+
+  const unavailableUnknownTarget = projectManagedCandidateDecision({
+    state: { ...base, hand: [], player: { ...base.player, potions: [{
+      index: 0, slot: 0, native_ref: "potion-unbound", id: "POTION.TEST", name: "Test Potion",
+      can_use: false, can_discard: true, binding_supported: false, target_type: "FutureUnknownTarget",
+      hover_facts_complete: true, keywords: [], card_previews: []
+    }] } }, ...projectionIdentity
+  });
+  assert.equal(unavailableUnknownTarget.snapshot.completeness.status, "partial");
+  assert.equal(unavailableUnknownTarget.snapshot.bound_actions.status, "unavailable");
+  assert.deepEqual(unavailableUnknownTarget.snapshot.bound_actions.actions, []);
+  assert.equal(unavailableUnknownTarget.bindings.size, 0);
+  assert.ok(unavailableUnknownTarget.snapshot.completeness.missing.includes(
+    "native_unsupported_potion_target_type_or_binding"));
+
+  const potion = {
+    ...base,
+    hand: [],
+    player: { ...base.player, potions: [{
+      index: 0, slot: 0, native_ref: "potion-a", id: "POTION.TEST", name: "Test Potion",
+      can_use: true, can_discard: false, binding_supported: true, target_type: "FutureUnknownTarget"
+    }] }
+  };
+  const potionProjection = projectManagedCandidateDecision({ state: potion, ...projectionIdentity });
+  assert.equal(potionProjection.snapshot.bound_actions.status, "unavailable");
+  assert.deepEqual(potionProjection.snapshot.bound_actions.actions, []);
+  assert.equal(potionProjection.bindings.size, 0);
+  assert.ok(potionProjection.snapshot.completeness.missing.includes(
+    "native_unsupported_potion_target_type_or_binding"));
+
+  for (const targetType of ["AnyAlly", "AnyPlayer", "TargetedNoCreature", "Osty", "FutureUnknownTarget"]) {
+    const projection = projectManagedCandidateDecision({
+      state: { ...base, hand: [], player: { ...base.player, potions: [{
+        index: 0, slot: 0, native_ref: "potion-a", id: "POTION.TEST", name: "Test Potion",
+        can_use: true, can_discard: false, binding_supported: true, target_type: targetType
+      }] } }, ...projectionIdentity
+    });
+    assert.equal(projection.snapshot.bound_actions.status, "unavailable", targetType);
+    assert.deepEqual(projection.snapshot.bound_actions.actions, [], targetType);
+    assert.equal(projection.bindings.size, 0, targetType);
+  }
 });
 
 test("projects shop entries from native actionability and keeps purchase identities Host-local", () => {

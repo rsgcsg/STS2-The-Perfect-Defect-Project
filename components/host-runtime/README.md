@@ -151,21 +151,31 @@ gameplay contract. A consumer owns policy. Future training adapters may encode
 observations, masks, and rewards, but those do not become STS2 truth.
 
 The experimental `ManagedTextMenuSessionAdapter` is an in-process opt-in
-projection of complete current Managed map, rest-site and exact deck-upgrade catalogs to
-`text-menu-v1`. The earlier `ManagedTextMenuMapSessionAdapter` import remains an
-alias. It keeps exact native bindings private and rechecks the current page
-before dispatch. Rest-site option submission also carries the observed native
-option identity for execute-time validation. Deck-upgrade selection carries the
-exact native invocation preferences and original card references: selection enters
-a preview, preview cancellation returns to selection, and confirmation completes
-the native wait. Exiting selection is offered only when native preferences allow it.
-Other pages, including combat and other card-selection sources, remain unavailable. A completed rest option leaves the
-room visible, may leave other options available, and advertises a separate
-room-bound Proceed input. A cancelled native option stays on the rest page;
-faults or unresolved native delivery taint the Managed session. This adapter
-is not a public Connector service: Managed has no text-menu HTTP route or
-controller-lease/attribution owner, and this projection does not qualify
-Connector text-menu compatibility.
+projection of complete current Managed map, rest-site, deck-upgrade, and combat
+catalogs to `text-menu-v1`. It admits only those reviewed surfaces and requires
+complete finite action counts plus unique, internally referenced bindings; it
+preserves every advertised action and argument in source order. The earlier
+`ManagedTextMenuMapSessionAdapter` import remains an alias. It keeps exact
+native bindings private and rechecks the current page before dispatch.
+
+Rest-site option submission carries the observed native option identity for
+execute-time validation. Deck-upgrade selection carries the exact native
+invocation preferences and original card references: selection enters a
+preview, preview cancellation returns to selection, and confirmation completes
+the native wait. Exiting selection is offered only when native preferences
+allow it. Combat actions are direct semantic bindings for the existing MPE
+play, potion, discard, and end-turn leaves; MPE owns current-phase and target
+binding checks. AnyAlly, potion target types outside the exact native binding
+set, non-creature targeted potions without a published target referent, and
+unrecognized native target types make the combat catalog unavailable. This
+text adapter does not model Live Godot's held-card/target
+cursor steps, and no cross-Host trajectory equivalence is implied. A completed
+rest option leaves the room visible, may leave other options available, and
+advertises a separate room-bound Proceed input. A cancelled native option
+stays on the rest page; faults or unresolved native delivery taint the Managed
+session. This adapter is not a public Connector service: Managed has no
+text-menu HTTP route or controller-lease/attribution owner, and this projection
+does not qualify Connector text-menu compatibility.
 
 The current rest/upgrade patch has a new macOS build identity in the candidate manifest.
 The separately retained Windows build tuple is historical; it does not admit
