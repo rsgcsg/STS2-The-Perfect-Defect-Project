@@ -123,7 +123,7 @@ compact history: 12 returned records, 10 verified, 2 failed, 0 unknown.
 Clicking the history link opened the existing evaluations page with the full
 reports, including retained failures and separate offline development results.
 No model, training or gameplay command was issued during this check. An API
-read-back also reported `idle`, `loaded=false` and no error. Root checks on
+read-back also reported `idle`, `loaded=false` and `runtime=null`. Root checks on
 that exact source passed the 166-test Node file, identity, BOM, diff hygiene,
 closeout and the planner; the planner selected full. This is a local browser
 and application-state receipt, not a hosted full or native gameplay result.
