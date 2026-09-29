@@ -229,6 +229,30 @@ uv run python -m stpd.training_smoke \
 
 Raw evidence is local and must not be committed.
 
+An opt-in exported M2/Reset engineering smoke uses the exact installed Host Runtime
+Python consumer's atomic `text-menu-v1` observation and bound submit methods. It
+requires a reviewed Host package pin that actually provides those methods; an older
+installed package fails before a Managed child starts. From `python/`, after supplying
+private exact candidate, pin and exported package paths:
+
+```bash
+uv run --locked python tools/managed_memory_smoke.py \
+  --host-runtime /ABS/installed-host-runtime \
+  --host-runtime-pin /ABS/exact-host-pin.json \
+  --candidate /ABS/exact-managed-candidate \
+  --model-export /ABS/verified-memory-export \
+  --seed M2SMOKE01 --max-policy-calls 4 --max-submissions 2 \
+  --max-observations 8 --max-seconds 30
+```
+
+The command verifies the detached model package and Host package identity, never
+uses a Live registration manifest as Managed admission, and prints only bounded
+counts/status. A complete terminal page has no score or submit. Unknown delivery
+stops without retry; the dedicated child closes on all outcomes. The wall limit is
+checked around each synchronous client call, whose own response timeout is bounded;
+it is not a hard process-kill deadline. This is an engineering experiment, not a
+Policy Runtime HTTP, Human, full-game or model-quality result.
+
 The original operational environment patch baseline remains predecessor Headless `v1.0.1`, Managed
 Host `8dc622b0.../7228541c...`, Connector `v1.1.0-rc.1`
 `e065102.../c1877f1a.../64765ea1...`, and Player Environment protocol/SDK
