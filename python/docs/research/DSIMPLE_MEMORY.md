@@ -54,6 +54,54 @@ narrower embedding design; neither is implemented here.
 No real-data training, policy quality, native independence, or runtime
 qualification has been measured.
 
+## Synchronous exported-model scoring seam
+
+`stpd.policy.memory_scorer.OnlineM2Scorer` loads the exact experimental M2
+weights with `load_memory_export`, the matching unpadded/untruncated tokenizer,
+and the current `text-menu-v1` page projector. Its call is
+`observe_and_score(continuity_token=..., snapshot_bytes=...)`: the caller supplies
+an opaque continuity token and the complete public snapshot bytes. This module
+does not determine what starts a game, whether Human intervened, or whether an
+action was executed. It is a synchronous research component, not a Policy
+Runtime adapter or a live service.
+
+One new, strictly ordered snapshot in the same continuity advances M2 once,
+with `previous_actual_action=None` and `feedback=None`, then scores every
+advertised candidate from the resulting memory. The page is encoded once and
+each complete-catalog action uses the light action encoder. A retry of the
+current snapshot with identical canonical JSON apart from `observed_at` returns
+immutable cached keys and scores without another page read. Connector
+`Observation/SnapshotBuilder.cs` samples that timestamp on each Observe, while
+`TextMenu/TextMenuSession.cs` excludes it from snapshot identity. The digest
+preserves every other field and array position, ignoring JSON whitespace and
+object-key order. The projector receives the canonical object-key order on its
+first read too, so equivalent JSON spellings use the same model input. Duplicate
+keys, nonfinite JSON numbers, missing fields,
+changed bound content under the same snapshot ID, and reversed sequence are
+rejected. Returning to a page under a
+new snapshot ID and later sequence is a new observation even if its visible
+content looks familiar.
+
+Changing the caller-owned continuity token starts at zero memory and retires
+the old token. A retired token cannot resume; the bounded retirement set fails
+closed once full, requiring a fresh scorer instance. Runtime/environment
+identity drift within one token is rejected. The entire menu, per-text encoder
+limit, and per-page aggregate input limit (`max_chunk_input_tokens` reused as a
+single-page scoring resource guard) are checked before computation. The
+training episode length and cumulative token budgets do not cap online
+continuity; Policy Runtime owns its finite autonomy budget. A provisional memory write
+becomes this scorer's state only after finite full-vector scoring succeeds;
+this is acceptance of an observation, independent of abstention or Connector
+delivery. The scorer returns no mutable memory. A nonblocking single-owner lock
+rejects overlapping calls with `concurrent_observation`; a future serialized
+port still owns cancelled requests and late responses.
+
+`stpd.fullrun.memory_token_inputs.encode_memory_texts` is the shared M2 input
+budget: page tokens plus two memory-slot groups and any actual feedback markers
+must fit the page core, while each complete-catalog action is encoded separately
+and must fit its own token bound. This matches M2's light action encoder; the
+legacy four-family joint page-plus-action budget remains unchanged.
+
 ## Offline sequence computation (experimental)
 
 `stpd.models.dsimple_sequence_training` adds an in-memory sequence loss and one
@@ -130,7 +178,7 @@ the TBPTT function does not convert windows into episodes.
 
 `stpd.fullrun.memory_sequence_bridge.project_memory_windows` converts a
 **caller-verified** `ObservedInputView` with a fixed tokenizer into M2 windows.
-It uses the existing current-page text projection and `encode_texts`, retaining
+It uses the existing current-page text projection and `encode_memory_texts`, retaining
 the complete current catalog and exact action keys. Each output records its
 source, stream, reset reason and ordered event IDs separately from the tensor
 window. A window starts at an explicit observation reset and contains every
@@ -224,3 +272,85 @@ training, episode failure, corrupt checkpoints and mismatched exports. These
 are synthetic CPU regressions. Real source eligibility, independent train/dev
 splits, paired game experiments, Runtime integration and policy quality remain
 separate work.
+
+## Immutable experimental run execution
+
+`stpd.workers.memory_run.prepare_memory_run` freezes one caller-admitted source,
+the complete ordered episode tokens, candidate keys and labels, exact tokenizer
+bytes, full `MemoryConfig`, and source ancestry in the existing `ArtifactStore`.
+It does not determine source eligibility or create an independent task owner.
+Input and tokenizer payloads are bounded at 256 MiB and 16 MiB respectively.
+The worker writes an immutable checkpoint only after a whole episode, uses the
+existing `RunReporter` for events and completion, and exports train-only model
+weights without active memory or optimizer history. It produces no dev report.
+
+`prepare_observed_memory_run` is the research-layer preparation API for a typed
+verified observed-input source. The caller must first establish purpose, claim,
+and training-use exposure with the owning application ledger; this API verifies
+source typing and projection but cannot grant or verify that permission. It
+parses the exact supplied tokenizer bytes, rejects padding/truncation and vocab
+mismatch, projects complete bounded observed episodes, and rejects a configured
+episode count that differs from the projection. It only prepares artifacts; the
+separate `run-memory` command remains the execution entry.
+
+Observed-source preparation writes a v2 `training_input` with the same source
+parent and the existing episodes and tokenizer payloads, plus a source-event map
+and the versioned projection choice for per-episode settling allowance.
+The map accounts for every verified observed-input event, its stream/sequence/reset
+reason, and its disposition as a model step, a verified settling skip, or an
+explicit exclusion. Run loading re-verifies the source,
+reprojects it with the persisted tokenizer/configuration, and checks the map and
+episodes against that result. The exact immutable training-input artifact is
+already in the run and checkpoint parent chain; the M2 engine input digest and
+v1 checkpoints are unchanged. Existing experimental-v1 inputs without a map
+remain readable and are never rewritten. Both forms are train-only and create
+no dev report. The map records observation projection only; it does not claim
+Human execution, delivery, Commit, or causal successor evidence.
+
+After a run has been prepared with that Python API at the **same exact source
+identity**, the existing research CLI can execute it:
+
+```sh
+uv run python -m spireagent.research_cli --store /absolute/local-store-directory \
+  run-memory --run <run-artifact-id> --stop-after 1
+uv run python -m spireagent.research_cli --store /absolute/local-store-directory \
+  run-memory --run <run-artifact-id> --resume <checkpoint-artifact-id>
+```
+
+`--resume` selects an exact durable checkpoint after interruption or failure;
+the command never chooses one automatically. The CPU thread count comes from
+the immutable run configuration, and the CLI derives producer identity from
+the executing clean checkout. A repeated completed request verifies the
+existing result and does not optimize again. These commands are synthetic
+engineering infrastructure, not a real-data training or live policy entry.
+
+The v2 map covers the verified observed-input view, not one row for every raw archive event. Raw decision, dispatch, outcome and successor records retain their original archive identities and source-event references; the map does not promote them into additional model observations.
+
+Training projection and exported online scoring use the same M2 token encoder:
+the page capacity includes the old memory and write-query slots (2 × K), plus
+markers only when confirmed previous action/feedback are supplied. Each action
+is encoded independently by the lightweight action encoder and has its own token
+limit. The old four-graph page-plus-action joint budget does not apply to M2.
+Complete catalogs are retained or rejected as a unit; this does not truncate
+pages or extend training episode/chunk resource budgets.
+
+The synchronous online bytes entrypoint rejects tokenizer JSON and one snapshot
+above 16 MiB before parsing; the tokenizer cap is shared with the durable worker.
+This is a resource rejection, never a truncated page or menu. No lifetime page
+count is imposed by training episode budgets. The exported config's complete
+catalog and single-observation token budget still apply; the eventual port and
+Runtime retain responsibility for streaming/framing and autonomy limits.
+
+Both M2 paths also share `project_memory_snapshot`: JSON object keys are rendered
+in canonical order, while all arrays retain their supplied order (including the
+native menu). This makes a verified observed source and the same live snapshot
+produce identical page/action token IDs. Opaque action bindings stay outside the
+model text. Existing four-graph rendering and historical stored tokens are not
+rewritten.
+
+`OnlineM2Scorer.from_export` validates compute weights/configuration/tokenizer;
+it is not an artifact admission service. The compute export identity does not
+certify text projection/source eligibility, and manually prepared v1 tensors are
+not thereby verified text-menu training data. A product loader must verify the
+model artifact's admitted source/projection lineage before registering a live
+recipe; this candidate provides neither that registration nor a Runtime port.

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+from tokenizers import Tokenizer
 
 from spireagent.json_boundary import BoundaryError
 
@@ -25,9 +26,9 @@ from ..models.dsimple_sequence_training import (
     _validate_step,
     validate_memory_window,
 )
+from .memory_token_inputs import encode_memory_texts, project_memory_snapshot
 from .observed_input_sequence import ObservedInput, ObservedInputView
-from .text_menu_inputs import INPUT_PROFILE, SNAPSHOT_SCHEMA, project_text_menu_snapshot
-from .token_inputs import encode_texts
+from .text_menu_inputs import INPUT_PROFILE, SNAPSHOT_SCHEMA
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,36 @@ class MemoryEpisodeBridgeResult:
     episodes: tuple[MemorySequenceEpisode, ...]
     sources: tuple[MemoryEpisodeSource, ...]
     diagnostics: tuple[MemoryBridgeDiagnostic, ...]
+    event_mapping: tuple[MemoryEventMapping, ...]
+
+
+@dataclass(frozen=True)
+class MemoryEventMapping:
+    """Auditable disposition of one verified observed event in an M2 projection."""
+
+    source_id: str
+    stream_id: str
+    event_id: str
+    source_sequence: int
+    disposition: str
+    episode_id: str | None
+    position: int | None
+    reason: str | None
+    reset_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class MemoryEpisodeProjectionConfig:
+    """Versioned projection choices not already bound by MemoryConfig."""
+
+    schema: str
+    max_settling_events: int
+
+    def __post_init__(self) -> None:
+        if (self.schema != "stpd/memory-episode-projection-config-v1"
+                or type(self.max_settling_events) is not int
+                or self.max_settling_events < 0):
+            raise ValueError("invalid memory episode projection config")
 
 
 @dataclass(frozen=True)
@@ -72,13 +103,14 @@ class MemoryEpisodeSource:
 
 
 def _validate_bridge_input(
-    view: ObservedInputView, tokenizer: object, model: ExperimentalDSimpleM2,
+    view: ObservedInputView, tokenizer: Tokenizer, model: ExperimentalDSimpleM2,
 ) -> None:
     if (
         not isinstance(view, ObservedInputView)
         or not view.source_id
         or not isinstance(view.inputs, tuple)
         or not isinstance(model, ExperimentalDSimpleM2)
+        or not isinstance(tokenizer, Tokenizer)
         or getattr(tokenizer, "truncation", None) is not None
         or getattr(tokenizer, "padding", None) is not None
     ):
@@ -136,7 +168,7 @@ def _segments(
 
 
 def _project_segment(
-    view: ObservedInputView, tokenizer: object, model: ExperimentalDSimpleM2,
+    view: ObservedInputView, tokenizer: Tokenizer, model: ExperimentalDSimpleM2,
     segment: tuple[ObservedInput, ...], *, max_input_tokens: int, limit_code: str,
 ) -> tuple[str, tuple[MemorySequenceStep, ...]]:
     first = segment[0]
@@ -146,14 +178,15 @@ def _project_segment(
     for position, item in enumerate(segment):
         if not isinstance(item.snapshot, dict):
             raise BoundaryError("memory_bridge", "missing_observation")
-        public = project_text_menu_snapshot(item.snapshot)
+        public = project_memory_snapshot(item.snapshot)
         selected = item.selected_action_id
         if item.choice_mask != (selected is not None):
             raise BoundaryError("memory_bridge", "choice_mask_mismatch")
         if selected is not None and public.action_ids.count(selected) != 1:
             raise BoundaryError("memory_bridge", "choice_binding_mismatch")
-        row = encode_texts(tokenizer, public.state_text, public.action_texts,
-                           max_tokens=model.core.max_tokens)
+        row = encode_memory_texts(
+            tokenizer, public.state_text, public.action_texts,
+            max_tokens=model.core.max_tokens, slots=model.slots)
         step = MemorySequenceStep(
             episode_id=episode_id,
             position=position,
@@ -275,7 +308,7 @@ def _ordered_diagnostics(
 
 def project_memory_windows(
     view: ObservedInputView,
-    tokenizer: object,
+    tokenizer: Tokenizer,
     model: ExperimentalDSimpleM2,
     *,
     burn_in_steps: int = 0,
@@ -323,7 +356,7 @@ def project_memory_windows(
 
 def project_memory_episodes(
     view: ObservedInputView,
-    tokenizer: object,
+    tokenizer: Tokenizer,
     model: ExperimentalDSimpleM2,
     *,
     max_observations: int,
@@ -339,6 +372,20 @@ def project_memory_episodes(
     episodes: list[MemorySequenceEpisode] = []
     sources: list[MemoryEpisodeSource] = []
     segments, diagnostics = _segments(view)
+    event_mapping = {
+        item.event_id: MemoryEventMapping(
+            view.source_id, item.stream_id, item.event_id, item.source_sequence,
+            "excluded", None, None, "not_projected", item.reset_reason,
+        ) for item in view.inputs
+    }
+    for diagnostic in diagnostics:
+        mapped_event = event_mapping.get(diagnostic.first_event_id)
+        if mapped_event is not None:
+            event_mapping[mapped_event.event_id] = MemoryEventMapping(
+                mapped_event.source_id, mapped_event.stream_id, mapped_event.event_id,
+                mapped_event.source_sequence, "excluded", None, None, diagnostic.reason,
+                mapped_event.reset_reason,
+            )
     for segment in segments:
         first = segment[0]
         try:
@@ -353,13 +400,37 @@ def project_memory_episodes(
             if not any(step.label_key is not None for step in steps):
                 diagnostics.append(MemoryBridgeDiagnostic(first.stream_id, first.event_id,
                                                           "no_learn_span_label"))
+                for item in segment:
+                    event_mapping[item.event_id] = MemoryEventMapping(
+                        view.source_id, item.stream_id, item.event_id, item.source_sequence,
+                        "excluded", None, None, "no_learn_span_label", item.reset_reason,
+                    )
                 continue
             episodes.append(MemorySequenceEpisode(episode_id, steps))
             sources.append(_episode_source(view, segment, projected, episode_id))
+            positions = {item.event_id: position for position, item in enumerate(projected)}
+            for item in segment:
+                if item.event_id in positions:
+                    event_mapping[item.event_id] = MemoryEventMapping(
+                        view.source_id, item.stream_id, item.event_id, item.source_sequence,
+                        "step", episode_id, positions[item.event_id], None, item.reset_reason,
+                    )
+                else:
+                    event_mapping[item.event_id] = MemoryEventMapping(
+                        view.source_id, item.stream_id, item.event_id, item.source_sequence,
+                        "settling", episode_id, None, "verified_settling", item.reset_reason,
+                    )
         except (BoundaryError, ValueError, TypeError, AttributeError) as error:
+            reason = (error.code if isinstance(error, BoundaryError)
+                      else "episode_contract_rejected")
             diagnostics.append(MemoryBridgeDiagnostic(
-                first.stream_id, first.event_id,
-                error.code if isinstance(error, BoundaryError) else "episode_contract_rejected",
+                first.stream_id, first.event_id, reason,
             ))
+            for item in segment:
+                event_mapping[item.event_id] = MemoryEventMapping(
+                    view.source_id, item.stream_id, item.event_id, item.source_sequence,
+                    "excluded", None, None, reason, item.reset_reason,
+                )
     return MemoryEpisodeBridgeResult(tuple(episodes), tuple(sources),
-                                     _ordered_diagnostics(view, diagnostics))
+                                     _ordered_diagnostics(view, diagnostics),
+                                     tuple(event_mapping[item.event_id] for item in view.inputs))
