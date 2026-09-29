@@ -43,6 +43,9 @@ export class JsonLineProcess {
   #closed;
   #requestPending = false;
   #diagnosticLimit;
+  #gracefulStop = null;
+  #forcedStop = null;
+  #forcedStopTimeoutMs = null;
 
   constructor({ command, args = [], cwd, env = process.env, diagnosticLimit = 200 }) {
     if (typeof command !== "string" || command.length === 0) {
@@ -163,23 +166,47 @@ export class JsonLineProcess {
     }
   }
 
-  async stop({ request = null, timeoutMs = 5_000 } = {}) {
+  async #forceStop(timeoutMs) {
     if (this.#closed.settled) return this.#closed.promise;
-    if (request != null) {
-      try {
-        await this.request(request, timeoutMs);
-        return await withTimeout(this.#closed.promise, timeoutMs, "JSON-line graceful stop");
-      } catch (error) {
-        this.#recordDiagnostic("driver", `graceful stop failed: ${errorText(error)}`);
+    if (this.#forcedStop != null) {
+      if (timeoutMs < this.#forcedStopTimeoutMs) {
+        // A consumer EOF can demand a shorter bound after a graceful close
+        // has already sent SIGTERM. Escalate that same owned child now.
+        this.#forcedStopTimeoutMs = timeoutMs;
+        if (!this.#closed.settled) this.#child.kill("SIGKILL");
+        return withTimeout(this.#closed.promise, timeoutMs, "JSON-line forced stop upgrade");
       }
+      return this.#forcedStop;
     }
-    if (!this.#closed.settled) this.#child.kill("SIGTERM");
-    try {
-      return await withTimeout(this.#closed.promise, timeoutMs, "JSON-line process stop");
-    } catch {
-      this.#child.kill("SIGKILL");
-      return withTimeout(this.#closed.promise, timeoutMs, "JSON-line process kill");
-    }
+    this.#forcedStopTimeoutMs = timeoutMs;
+    this.#forcedStop = (async () => {
+      if (!this.#closed.settled) this.#child.kill("SIGTERM");
+      try {
+        return await withTimeout(this.#closed.promise, timeoutMs, "JSON-line process stop");
+      } catch {
+        if (!this.#closed.settled) this.#child.kill("SIGKILL");
+        return withTimeout(this.#closed.promise, timeoutMs, "JSON-line process kill");
+      }
+    })();
+    return this.#forcedStop;
+  }
+
+  async stop({ request = null, timeoutMs = 5_000, force = false } = {}) {
+    if (force) return this.#forceStop(timeoutMs);
+    if (this.#closed.settled) return this.#closed.promise;
+    if (this.#gracefulStop != null) return this.#gracefulStop;
+    this.#gracefulStop = (async () => {
+      if (request != null) {
+        try {
+          await this.request(request, timeoutMs);
+          return await withTimeout(this.#closed.promise, timeoutMs, "JSON-line graceful stop");
+        } catch (error) {
+          this.#recordDiagnostic("driver", `graceful stop failed: ${errorText(error)}`);
+        }
+      }
+      return this.#forceStop(timeoutMs);
+    })();
+    return this.#gracefulStop;
   }
 }
 

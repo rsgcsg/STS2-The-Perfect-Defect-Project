@@ -186,6 +186,38 @@ RunState attestation. The locked Connector SDK package has no text context
 decoder export yet; this driver emits its existing context shape while the
 real adapter and raw snapshot SDK retain their respective checks.
 
+An explicit `input_profile: "text-menu-v2"` on the same JSONL `text_observe`
+and `text_submit` commands selects the separate Managed v2 text adapter and
+the `*-2` context/Snapshot/result schemas. Omitting the profile preserves v1.
+On a complete ready combat page, v2 groups the existing exact `play` leaves
+into text-only card and optional target choices; a card without a target goes
+straight to card-only confirmation. Back and cancel change only this menu.
+The final `play` choice alone submits the current private BoundAction once,
+which the Managed native path revalidates. Other complete Managed pages retain
+their current native leaves under the v2 schema; unsupported or incomplete
+catalogs remain unavailable. A v1 observation does not reset a v2 selection.
+Raw mutation, reset, changed source/catalog, and unknown delivery invalidate it.
+Both profiles share the driver's episode and mutation-request fences. The
+public Python consumer opts in with `observe_text_menu(input_profile="text-menu-v2")`
+and `submit_text_menu(..., input_profile="text-menu-v2")`; omitted profile
+still selects v1. This does not expose a Connector HTTP/controller lease or
+turn historical v1 Human/model inputs into v2 data. The pinned
+Connector SDK remains at its older released version. An isolated source-level
+cross-check used the PR106 SDK's strict v2 decoder; this package does not
+claim to consume that unpublished SDK build.
+
+The JSONL driver's explicit close, stdin EOF, and supported process signals
+share one native-child cleanup owner. A Python force-close first closes stdin
+so the Node driver can interrupt an in-flight request and reap its child on
+Windows as well as Unix; only after a bounded wait does Python terminate Node.
+The fallback bounds the client but cannot itself prove native-child cleanup if
+the owner fails. The Python client raises a persistent `DriverCleanupError` on
+fallback or nonzero driver exit. Startup failures carry the original exception
+as `DriverInitializationError.__cause__` and a `cleanup_confirmed` flag. A
+valid correlated unknown result is returned unchanged; a later explicit
+`close()` exposes any separate cleanup error. A pending or unknown mutation is never reported as
+`not_delivered` merely because shutdown suppressed a late reply.
+
 Event options retain the game's visible order and locked options remain visible
 but non-executable. An executable event choice carries the current native room,
 event, and option identities as private operands; the native handler rechecks

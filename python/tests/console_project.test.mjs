@@ -3263,6 +3263,272 @@ test("explicit local workspace create uses the browser session and empty command
   assert.doesNotMatch(text(page), /browser-csrf/);
   assert.equal(env.reloads, 1);
 });
+
+test("environment page explains missing setup without accepting browser paths", async () => {
+  const env = setup({view:"local-environment", identity:{status:"local_only"},
+    handler: async (url) => url === "/api/local-environment" ? {
+      schema:"stpd/local-managed-environment-v1", availability:"profile_required", csrf_token:"browser-csrf",
+      scenarios:[{id:"managed-defect-a0-map-prefix-20260929", label:"故障机器人 A0",
+        seed:"M2H0ST20260929A", character:"Defect", scope:"工程范围"}],
+      session:{status:"idle"},
+    } : {schema:"stpd/local-managed-environment-report-v1", items:[]},
+  });
+  const page = await env.render();
+  assert.match(text(page), /环境未准备/);
+  assert.match(text(page), /重新开一局/);
+  assert.equal(action(page, "environment-start-managed-defect-a0-map-prefix-20260929").disabled, true);
+  assert.equal(post(env.calls).length, 0);
+  assert.deepEqual(env.calls.map(call => call.url),
+    ["/api/local-environment", "/api/local-environment/reports"]);
+  assert.doesNotMatch(text(page), /browser-csrf/);
+});
+
+test("cold local environment starts from browser status CSRF without cloud identity", async () => {
+  const scenarioId = "managed-defect-a0-map-prefix-20260929";
+  const env = setup({view:"local-environment", identity:{status:"local_only"},
+    handler: async (url) => {
+      if (url === "/api/local-environment") return {
+        schema:"stpd/local-managed-environment-v1", availability:"configured",
+        input_profile:"text-menu-v2", csrf_token:"browser-csrf",
+        scenarios:[{id:scenarioId, label:"故障机器人 A0", seed:"M2H0ST20260929A",
+          character:"Defect", scope:"工程范围"}], session:{status:"idle"},
+      };
+      if (url === "/api/local-environment/reports") return {
+        schema:"stpd/local-managed-environment-report-v1",items:[]};
+      if (url === "/api/local-environment/start") return {status:"starting"};
+      throw new Error(`unexpected ${url}`);
+    },
+  });
+  const page = await env.render();
+  const start = action(page, `environment-start-${scenarioId}`);
+  assert.equal(start.disabled, false);
+  await start.onclick();
+  const writes = post(env.calls);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, "/api/local-environment/start");
+  assert.deepEqual(body(writes[0]), {scenario_id:scenarioId});
+  assert.equal(writes[0].options.headers["X-CSRF-Token"], "browser-csrf");
+  assert.equal(env.reloads, 1);
+});
+
+test("environment renders the complete current menu and submits one exact binding", async () => {
+  const sessionId = "a".repeat(32);
+  const actions = [{action_id:"first", verb:"select", label:"Choose monster at (3,0)", effect_domain:"native_input"},
+    {action_id:"second", verb:"inspect", label:"Inspect route", effect_domain:"text_menu"}];
+  const env = setup({view:"local-environment", identity:{status:"local_only"},
+    handler: async (url) => {
+      if (url === "/api/local-environment") return {
+        schema:"stpd/local-managed-environment-v1", availability:"configured", input_profile:"text-menu-v1",
+        csrf_token:"browser-csrf", scenarios:[],
+        session:{status:"active", session_id:sessionId, context:{game_continuity_id:"episode-1",
+          snapshot:{schema:"sts2.player-environment/text-menu-snapshot-1",
+            input_profile:"text-menu-v1", snapshot_id:"snapshot-1", status:"interactive", interaction:{kind:"map_navigation",
+              content:{surface:{kind:"map_navigation"}}},
+            persistent:{content:{run:{floor:1},player:{character_name:"Defect",hp:70,max_hp:75,gold:99}}},
+            referents:[{role:"node",label:"Monster"}],
+            menu_actions:{status:"complete",materialized_count:2,total_count:2,actions}}}},
+      };
+      if (url === "/api/local-environment/reports") return {
+        schema:"stpd/local-managed-environment-report-v1",items:[]};
+      if (url === "/api/local-environment/submit") return {status:"submitting"};
+      throw new Error(`unexpected ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /Choose monster at \(3,0\)/);
+  assert.match(text(page), /Inspect route/);
+  assert.match(text(page), /70 \/ 75/);
+  assert.match(text(page), /Monster/);
+  assert.equal(post(env.calls).length, 0);
+  await action(page, "environment-action-first").onclick();
+  const writes = post(env.calls);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, "/api/local-environment/submit");
+  assert.deepEqual(body(writes[0]), {session_id:sessionId, action_id:"first",
+    expected_snapshot_id:"snapshot-1", expected_game_continuity_id:"episode-1"});
+  assert.equal(writes[0].options.headers["X-CSRF-Token"], "browser-csrf");
+  assert.equal(env.reloads, 1);
+});
+
+test("environment renders declared v2 selection menu without interpreting its operands", async () => {
+  const env = setup({view:"local-environment", identity:{status:"local_only", csrf_token:"csrf"},
+    handler: async (url) => url === "/api/local-environment" ? {
+      schema:"stpd/local-managed-environment-v1", availability:"configured", input_profile:"text-menu-v2", scenarios:[],
+      session:{status:"active", session_id:"d".repeat(32), context:{game_continuity_id:"episode-v2",
+        snapshot:{schema:"sts2.player-environment/text-menu-snapshot-2", input_profile:"text-menu-v2",
+          snapshot_id:"selection-1", status:"interactive", interaction:{kind:"combat_turn"},
+          menu:{cursor:"root",selection:[]},
+          menu_actions:{status:"complete",materialized_count:1,total_count:1,
+            actions:[{action_id:"choose-card",kind:"system_selection",verb:"select_card",
+              label:"Select Strike",effect_domain:"text_menu"}]}}}},
+    } : {schema:"stpd/local-managed-environment-report-v1",items:[]},
+  });
+  const page = await env.render();
+  assert.match(text(page), /text-menu-v2/);
+  assert.match(text(page), /Select Strike/);
+  assert.ok(action(page, "environment-action-choose-card"));
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("environment map presents every public node with position, state and connections", async () => {
+  const nodes = Array.from({length:55}, (_, index) => ({
+    referent_id:`node-${index}`, role:"node", kind:"entity", label:null,
+    state:{visible:true,enabled:null}, properties:{col:index % 7,row:Math.floor(index / 7),
+      point_type:index === 0 ? "monster" : "unknown",
+      state:index === 0 ? "traveled" : "untravelable",
+      children:index === 0 ? [{col:1,row:1,point_type:"rest"}] : []},
+  }));
+  const option = {referent_id:"option-1",role:"option",kind:"entity",label:null,
+    state:{visible:true,enabled:null},properties:{col:3,row:0,point_type:"monster"}};
+  const env = setup({view:"local-environment",identity:{status:"local_only"},handler:async url => {
+    if (url === "/api/local-environment") return {
+      schema:"stpd/local-managed-environment-v1",availability:"configured",
+      input_profile:"text-menu-v2",csrf_token:"browser-csrf",scenarios:[],
+      session:{status:"active",session_id:"a".repeat(32),context:{game_continuity_id:"episode-map",
+        snapshot:{schema:"sts2.player-environment/text-menu-snapshot-2",input_profile:"text-menu-v2",
+          snapshot_id:"map-1",status:"interactive",
+          persistent:{content:{run:{floor:1},player:{character_name:"Defect",hp:70,max_hp:75,gold:99}}},
+          interaction:{kind:"map_navigation",content:{surface:{kind:"map_navigation",
+            next_options:[option.properties]},
+            context:{kind:"map",current_position:{col:0,row:0,point_type:"monster"},
+              visited:[{col:0,row:0,point_type:"monster"}],
+              nodes:[...nodes,option].map(item => ({...item.properties,entity_id:item.referent_id}))}}},
+          referents:[...nodes,option],menu:{cursor:"root",revision:0,
+            native_snapshot_id:"source-map-1",selection:[]},
+          menu_actions:{status:"complete",materialized_count:1,total_count:1,
+            actions:[{action_id:"map-choice",kind:"native_input",verb:"activate",
+              label:"Choose monster at (3,0)",effect_domain:"native_input",
+              subject_referent_id:"option-1",arguments:[]}]}}}}
+    };
+    if (url === "/api/local-environment/reports") return {
+      schema:"stpd/local-managed-environment-report-v1",items:[]};
+    if (url === "/api/local-environment/submit") return {status:"submitting"};
+    throw new Error(`unexpected ${url}`);
+  }});
+  const page = await env.render();
+  const objects = walk(page).filter(item => item.tag === "li");
+  assert.equal(objects.length,56);
+  assert.match(objects[0].textContent,/地图节点 monster \(0,0\) · 状态 traveled · 连接 rest \(1,1\)/);
+  assert.match(objects[54].textContent,/地图节点 unknown \(5,7\) · 状态 untravelable · 连接 无/);
+  assert.match(objects[55].textContent,/可选路线 monster \(3,0\)/);
+  assert.match(text(page),/地图当前位置\n\(0,0\)/);
+  assert.equal(post(env.calls).length,0);
+  const choice = action(page,"environment-action-map-choice");
+  assert.equal(choice.textContent,"向游戏提交：Choose monster at (3,0)");
+  assert.equal(choice.attributes["aria-label"],"菜单第 1 项，向游戏提交：Choose monster at (3,0)");
+  await choice.onclick();
+  const writes = post(env.calls);
+  assert.equal(writes.length,1);
+  assert.deepEqual(body(writes[0]),{session_id:"a".repeat(32),action_id:"map-choice",
+    expected_snapshot_id:"map-1",expected_game_continuity_id:"episode-map"});
+});
+
+test("environment combat shows public card and enemy facts with v2 staged action labels", async () => {
+  const card = {entity_id:"card-1",name:"Strike",cost:"1",type:"Attack",
+    description:"Deal 6 damage.",is_upgraded:false,can_play:true};
+  const enemy = {entity_id:"enemy-1",name:"Cultist",hp:10,max_hp:12,block:2,
+    statuses:[{name:"Weak",amount:1,description:"Deals less damage."}],
+    intents:[{label:"Attack",title:"Attack 6",description:"Deal 6 damage."}]};
+  const referents = [
+    {referent_id:"card-1",role:"playable_card",label:"Strike",kind:"entity",
+      state:{visible:true,enabled:true},properties:{entity_id:"card-1",name:"Strike",target_entity_ids:["enemy-1"]}},
+    {referent_id:"enemy-1",role:"enemy",label:"Cultist",kind:"entity",
+      state:{visible:true,enabled:true},properties:enemy},
+    {referent_id:"player-1",role:"player",label:null,kind:"entity",
+      state:{visible:true,enabled:true},properties:{energy:3,max_energy:3,block:4}},
+  ];
+  const choice = (id,kind,verb,label,effect,subject=null,args=[]) => ({
+    action_id:id,kind,verb,label,effect_domain:effect,subject_referent_id:subject,arguments:args,
+  });
+  const cases = [
+    ["root",[],[choice("end-turn","native_input","end_turn","End turn","native_input"),
+      choice("select-card","system_selection","select_card","Choose card Strike","text_menu","card-1")]],
+    ["card_targets",[{role:"card",referent_id:"card-1"}],
+      [choice("select-target","system_selection","select_target","Choose target Cultist","text_menu","enemy-1"),
+        choice("cancel","system_selection","cancel_selection","Cancel selection","text_menu"),
+        choice("back","system_navigation","back","Back","text_menu")]],
+    ["card_confirmation",[{role:"card",referent_id:"card-1"},{role:"target",referent_id:"enemy-1"}],
+      [choice("play","native_input","play","Play Strike -> Cultist","native_input","card-1",
+        [{role:"target",referent_id:"enemy-1"}]),
+        choice("cancel","system_selection","cancel_selection","Cancel selection","text_menu"),
+        choice("back","system_navigation","back","Back","text_menu")]],
+  ];
+  for (const [cursor,selection,actions] of cases) {
+    const env = setup({view:"local-environment",identity:{status:"local_only"},handler:async url => {
+      if (url === "/api/local-environment") return {
+        schema:"stpd/local-managed-environment-v1",availability:"configured",input_profile:"text-menu-v2",
+        csrf_token:"browser-csrf",scenarios:[],session:{status:"active",session_id:"b".repeat(32),
+          context:{game_continuity_id:"episode-combat",snapshot:{
+            schema:"sts2.player-environment/text-menu-snapshot-2",input_profile:"text-menu-v2",
+            snapshot_id:`combat-${cursor}`,status:"interactive",
+            persistent:{content:{run:{floor:2},player:{character_name:"Defect",hp:65,max_hp:75,gold:99}}},
+            interaction:{kind:"combat_turn",stage:"ready",
+              content_schema:"sts2.player-environment/surface/combat_turn-1",
+              content:{surface:{kind:"combat_turn",can_end_turn:true,
+                playable_cards:[{entity_id:"card-1",name:"Strike",target_entity_ids:["enemy-1"]}],
+                usable_potions:[]},
+              context:{kind:"combat",round:1,turn_owner:"player",player:{energy:3,max_energy:3,
+                player_entity_id:"player-1",block:4,draw_pile_count:5,discard_pile_count:2,
+                exhaust_pile_count:0,hand:[card]},enemies:[enemy]}}},referents,
+            menu:{cursor,revision:0,native_snapshot_id:"source-combat-1",selection},
+            menu_actions:{status:"complete",materialized_count:actions.length,total_count:actions.length,actions},
+          }}}};
+      if (url === "/api/local-environment/reports") return {
+        schema:"stpd/local-managed-environment-report-v1",items:[]};
+      if (url === "/api/local-environment/submit") return {status:"submitting"};
+      throw new Error(`unexpected ${url}`);
+    }});
+    const page = await env.render();
+    assert.match(text(page),/能量\n3 \/ 3/);
+    assert.match(text(page),/格挡\n4/);
+    assert.match(text(page),/Strike · 费用 1 · 类型 Attack · 说明 Deal 6 damage\./);
+    assert.match(text(page),/Cultist · 生命 10\/12 · 格挡 2 · 状态 Weak 1：Deals less damage\./);
+    assert.match(text(page),/意图 Attack · Attack 6 · Deal 6 damage\./);
+    assert.equal(post(env.calls).length,0);
+    for (const [index,item] of actions.entries()) {
+      const button = action(page,`environment-action-${item.action_id}`);
+      const prefix = item.effect_domain === "text_menu" ? "操作文字菜单" : "向游戏提交";
+      assert.equal(button.textContent,`${prefix}：${item.label}`);
+      assert.equal(button.attributes["aria-label"],`菜单第 ${index + 1} 项，${prefix}：${item.label}`);
+    }
+    if (cursor === "card_confirmation") {
+      await action(page,"environment-action-play").onclick();
+      const writes = post(env.calls);
+      assert.equal(writes.length,1);
+      assert.deepEqual(body(writes[0]),{session_id:"b".repeat(32),action_id:"play",
+        expected_snapshot_id:"combat-card_confirmation",expected_game_continuity_id:"episode-combat"});
+    }
+  }
+});
+
+test("unknown environment action has Stop only and keeps its receipt visible", async () => {
+  const env = setup({view:"local-environment", identity:{status:"local_only", csrf_token:"csrf"},
+    handler: async (url) => url === "/api/local-environment" ? {
+      schema:"stpd/local-managed-environment-v1", availability:"configured", input_profile:"text-menu-v1", scenarios:[],
+      session:{status:"unknown", session_id:"b".repeat(32), error_code:"native_delivery_unknown",
+        events:[{request_id:"r",result_status:"unknown",native_delivery:"unknown",event_artifact_id:"e".repeat(64)}]},
+    } : {schema:"stpd/local-managed-environment-report-v1",items:[]},
+  });
+  const page = await env.render();
+  assert.match(text(page), /动作交付或后续页面未确认/);
+  assert.ok(action(page, "environment-stop"));
+  assert.equal(walk(page).filter(item => item.dataset?.action?.startsWith("environment-action-")).length, 0);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("confirmed stop with pending report offers archive retry without a game action", async () => {
+  const env = setup({view:"local-environment", identity:{status:"local_only", csrf_token:"csrf"},
+    handler: async (url) => url === "/api/local-environment" ? {
+      schema:"stpd/local-managed-environment-v1", availability:"configured", scenarios:[],
+      session:{status:"stopped", session_id:"c".repeat(32)},
+    } : {schema:"stpd/local-managed-environment-report-v1",items:[]},
+  });
+  const page = await env.render();
+  assert.match(text(page), /报告尚未保存/);
+  assert.match(text(action(page, "environment-stop")), /重试归档报告/);
+  assert.equal(walk(page).filter(item => item.dataset?.action?.startsWith("environment-action-")).length, 0);
+  assert.equal(post(env.calls).length, 0);
+});
 const template = {
   template_id: id("b"),
   template: {

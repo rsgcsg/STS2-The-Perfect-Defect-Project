@@ -1,4 +1,7 @@
 from .client import (
+    DriverCleanupError,
+    DriverError,
+    DriverInitializationError,
     FiniteActionView,
     ManagedPlayerEnvironment,
     SyncVectorPlayerEnvironment,
@@ -6,6 +9,9 @@ from .client import (
 )
 
 __all__ = [
+    "DriverCleanupError",
+    "DriverError",
+    "DriverInitializationError",
     "FiniteActionView",
     "ManagedPlayerEnvironment",
     "SyncVectorPlayerEnvironment",

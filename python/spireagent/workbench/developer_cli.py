@@ -68,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             "policy",
             "model",
             "migrate-model-state",
+            "environment-profile",
             "credential",
             "collection-tool",
             "collection-upgrade",
@@ -135,6 +136,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--enrollment-id")
     parser.add_argument("--phase", choices=("prepare", "activate"))
     parser.add_argument("--game-directory", type=Path)
+    parser.add_argument(
+        "--candidate-directory", type=Path,
+        help="trusted exact Managed candidate; configure while Workbench is stopped",
+    )
+    parser.add_argument("--host-package-directory", type=Path,
+                        help="private exact installed Host package for Managed environment")
+    parser.add_argument("--host-package-pin", type=Path,
+                        help="operator-provided exact private Host package pin JSON")
+    parser.add_argument("--input-profile", choices=("text-menu-v1", "text-menu-v2"),
+                        help="explicit Managed text-menu profile in the private Host setup")
     args = parser.parse_args(argv)
     try:
         result: Any
@@ -171,6 +182,20 @@ def main(argv: list[str] | None = None) -> int:
                     artifact=args.artifact,
                     runtime_archive=args.runtime_archive,
                     runtime_profile=args.runtime_profile,
+                )
+            elif args.command == "environment-profile":
+                from spireagent.workbench.local_environment import configure_managed_host
+
+                if (args.candidate_directory is None or args.host_package_directory is None
+                        or args.host_package_pin is None or args.input_profile is None):
+                    raise BoundaryError("local_environment", "candidate_and_host_pin_required")
+                pin = decode_json(args.host_package_pin.read_bytes())
+                if not isinstance(pin, dict):
+                    raise BoundaryError("local_environment", "host_package_pin_invalid")
+                result = configure_managed_host(
+                    config, args.candidate_directory,
+                    host_root=args.host_package_directory, host_pin=pin,
+                    input_profile=args.input_profile,
                 )
             elif args.command == "migrate-model-state":
                 from spireagent.workbench.model_state_migration import migrate_legacy_model_state

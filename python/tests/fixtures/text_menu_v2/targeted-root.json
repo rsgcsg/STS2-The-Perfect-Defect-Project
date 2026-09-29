@@ -1,0 +1,98 @@
+{
+  "protocol_version": "1.0.0",
+  "schema": "sts2.player-environment/text-menu-snapshot-2",
+  "input_profile": "text-menu-v2",
+  "snapshot_id": "v2-menu-20",
+  "sequence": 20,
+  "observed_at": "2026-09-26T00:00:00Z",
+  "status": "interactive",
+  "persistent": null,
+  "interaction": {
+    "interaction_id": "combat-1",
+    "kind": "combat_turn",
+    "stage": "ready",
+    "prompt": null,
+    "content_schema": "sts2.player-environment/surface/combat_turn-1",
+    "content": {
+      "surface": {
+        "kind": "combat_turn"
+      },
+      "context": {
+        "kind": "combat"
+      }
+    },
+    "capabilities": []
+  },
+  "referents": [
+    {
+      "referent_id": "card-C",
+      "role": "playable_card",
+      "kind": "entity",
+      "label": "Strike",
+      "state": {
+        "visible": true,
+        "enabled": true,
+        "selected": null,
+        "focused": false,
+        "observation_basis": "native_visible_fact"
+      },
+      "properties_schema": null,
+      "properties": null
+    },
+    {
+      "referent_id": "enemy-E",
+      "role": "enemy",
+      "kind": "entity",
+      "label": "Jaw Worm",
+      "state": {
+        "visible": true,
+        "enabled": true,
+        "selected": null,
+        "focused": false,
+        "observation_basis": "native_visible_fact"
+      },
+      "properties_schema": null,
+      "properties": null
+    }
+  ],
+  "completeness": {
+    "status": "complete",
+    "visible_information": "current visible combat facts",
+    "interaction_discovery": "exact current owner",
+    "missing": [],
+    "hidden_by_policy": []
+  },
+  "session": {
+    "runtime_instance_id": "runtime-1",
+    "environment_fingerprint": "environment-1"
+  },
+  "information_policy": {
+    "id": "player_visible",
+    "scope": "player_environment",
+    "includes_hidden_information": false,
+    "unknown_field_behavior": "fail_closed"
+  },
+  "menu": {
+    "cursor": "root",
+    "revision": 0,
+    "native_snapshot_id": "managed-source-20",
+    "selection": []
+  },
+  "menu_actions": {
+    "status": "complete",
+    "materialized_count": 1,
+    "total_count": 1,
+    "ordering_semantics": "current_menu_source_order",
+    "actions": [
+      {
+        "action_id": "v2-select-card-C",
+        "kind": "system_selection",
+        "verb": "select_card",
+        "label": "Select Strike",
+        "subject_referent_id": "card-C",
+        "arguments": [],
+        "effect_domain": "text_menu"
+      }
+    ]
+  }
+}
