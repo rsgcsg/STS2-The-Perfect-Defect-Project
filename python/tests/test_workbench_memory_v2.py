@@ -14,7 +14,9 @@ from spireagent.workbench.local_model_registration import LocalModelRegistration
 from spireagent.workbench.local_models import LocalModelService
 from spireagent.workbench.local_training import LocalTrainingService
 from spireagent.workbench.memory_recipe import (
-    M2_K1_RECIPE, V2_M2_K1_RECIPE, V2_RESET_K1_RECIPE,
+    M2_K1_RECIPE,
+    V2_M2_K1_RECIPE,
+    V2_RESET_K1_RECIPE,
 )
 from stpd.policy.memory_export import validate_memory_package
 

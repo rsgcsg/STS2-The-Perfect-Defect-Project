@@ -35,7 +35,10 @@ from spireagent.workbench.local_model_registration import (
 )
 from spireagent.workbench.local_models import LocalModelService
 from spireagent.workbench.memory_recipe import (
-    M2_K1_RECIPE, RESET_K1_RECIPE, V2_M2_K1_RECIPE, V2_RESET_K1_RECIPE,
+    M2_K1_RECIPE,
+    RESET_K1_RECIPE,
+    V2_M2_K1_RECIPE,
+    V2_RESET_K1_RECIPE,
 )
 from stpd.token_policy_installation import validate
 
@@ -175,6 +178,7 @@ def test_memory_registration_keeps_exact_architecture_and_label(
     )
     service = LocalModelRegistration(SimpleNamespace(), exported, models)
     monkeypatch.setattr(registration_module, "validate_runtime_install", lambda *_args: {})
+    monkeypatch.setattr(registration_module, "_v2_sdk_available", lambda _sdk: True)
     def capabilities(*_args, **kwargs):
         value = _caps()
         if kwargs.get("input_profile") == "text-menu-v2":

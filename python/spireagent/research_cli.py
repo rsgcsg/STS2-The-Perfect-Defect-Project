@@ -346,14 +346,15 @@ def main() -> int:
         elif args.command in {"export-memory", "verify-memory-export"}:
             import torch
 
+            from stpd.fullrun.memory_sequence_bridge import (
+                parse_episode_projection_config,
+                projection_input_profile,
+            )
             from stpd.policy.memory_export import (
                 export_memory_package,
                 verify_memory_package,
             )
             from stpd.workers.memory_ranking import MemoryConfig
-            from stpd.fullrun.memory_sequence_bridge import (
-                parse_episode_projection_config, projection_input_profile,
-            )
 
             run_id = digest(args.run, "memory_export.run")
             model_id = digest(args.model, "memory_export.model")

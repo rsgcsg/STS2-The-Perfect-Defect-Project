@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import torch
-from tokenizers import Tokenizer
+from tokenizers import Tokenizer  # type: ignore[import-untyped]
 
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError

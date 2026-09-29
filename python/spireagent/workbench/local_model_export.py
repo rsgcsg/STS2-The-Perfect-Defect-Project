@@ -25,7 +25,8 @@ from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_workspace import LocalWorkspace, open_registered_workspace
 from spireagent.workbench.memory_recipe import (
-    V2_MEMORY_RECIPES, recipe_for_memory_config,
+    V2_MEMORY_RECIPES,
+    recipe_for_memory_config,
 )
 from spireagent.workbench.research_process import private_child
 
@@ -97,14 +98,16 @@ def _eligible(model: Manifest) -> None:
 
 def _memory_lineage(store: Any, owner: Any, model: Manifest) -> str:
     """Cheap Workbench admission before any derivative bytes or private child."""
+    from stpd.fullrun.managed_text_menu_import import (
+        SOURCE_SCHEMA as MANAGED_SOURCE_SCHEMA,
+    )
+    from stpd.fullrun.managed_text_menu_import import (
+        load_managed_text_menu_source,
+    )
     from stpd.fullrun.text_menu_human_import import (
         SOURCE_SCHEMA,
         load_human_text_source,
         load_verified_human_text_bundle,
-    )
-    from stpd.fullrun.managed_text_menu_import import (
-        SOURCE_SCHEMA as MANAGED_SOURCE_SCHEMA,
-        load_managed_text_menu_source,
     )
     from stpd.workers.memory_run import INPUT_SCHEMA_V2, MODEL_SCHEMA, RUN_SCHEMA
 

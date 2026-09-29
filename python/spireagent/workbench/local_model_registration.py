@@ -25,8 +25,11 @@ from spireagent.workbench.developer_server import instance_lock
 from spireagent.workbench.local_model_export import LocalModelExport, _ordinary
 from spireagent.workbench.local_models import LocalModelService, _loopback
 from spireagent.workbench.memory_recipe import (
-    M2_K1_RECIPE, RESET_K1_RECIPE, V2_M2_K1_RECIPE, V2_RESET_K1_RECIPE,
+    M2_K1_RECIPE,
+    RESET_K1_RECIPE,
+    V2_M2_K1_RECIPE,
     V2_MEMORY_RECIPES,
+    V2_RESET_K1_RECIPE,
 )
 from spireagent.workbench.runtime_install import (
     CONNECTOR_PACKAGE,
@@ -58,7 +61,8 @@ MEMORY_RECIPE_LABELS = {M2_K1_RECIPE: "M2-K1 训练版",
 def _export_memory_profile(export: Path) -> str:
     """Read a closed package projection for display; POST rechecks full lineage."""
     from stpd.fullrun.memory_sequence_bridge import (
-        parse_episode_projection_config, projection_input_profile,
+        parse_episode_projection_config,
+        projection_input_profile,
     )
 
     value = _object_file(export / "model.json")
@@ -499,7 +503,7 @@ class LocalModelRegistration:
                 config_path, manifest_path = target / "config.json", target / "manifest.json"
                 try:
                     binder = bind_memory_export if memory else bind_text_menu_export
-                    binding = {"manifest_id": selection,
+                    binding: dict[str, Any] = {"manifest_id": selection,
                                "policy": {"id": selection, "version": "1.0.0",
                                           "provider": "stpd", "architecture": recipe},
                                "requirements": requirements, "support": support,

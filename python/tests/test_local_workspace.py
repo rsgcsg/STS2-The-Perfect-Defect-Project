@@ -19,7 +19,8 @@ from spireagent.workbench.memory_recipe import (
     recipe_for_memory_config,
 )
 from stpd.fullrun.memory_sequence_bridge import (
-    MemoryEpisodeProjectionConfig, v2_episode_projection_config,
+    MemoryEpisodeProjectionConfig,
+    v2_episode_projection_config,
 )
 from stpd.workers.memory_ranking import MemoryConfig
 
