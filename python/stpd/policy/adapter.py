@@ -25,7 +25,7 @@ from .s1 import (
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = ROOT / "configs/v0/experiments/s1-human-combat-live-v2.json"
-DEFAULT_MANIFEST = ROOT / "policy-manifests" / "s1-policy-adapter-v6.json"
+DEFAULT_MANIFEST = ROOT / "policy-manifests" / "s1-policy-adapter-v7.json"
 MANIFEST_SCHEMA = "sts2.policy-runtime/policy-manifest-1"
 PORT_SCHEMA = "sts2.policy-runtime/policy-port-1"
 ADAPTER_PROTOCOL = "sts2.policy-runtime/decision-only-ndjson-1"
@@ -34,7 +34,6 @@ ADAPTER_CODE_DIGEST_SCOPE = "runtime-import-closure-v1"
 ADAPTER_SOURCE_CLOSURE = (
     "spireagent/__init__.py",
     "spireagent/encoding.py",
-    "spireagent/package_identity.py",
     "stpd/__init__.py",
     "stpd/canonical.py",
     "stpd/contracts.py",
@@ -42,9 +41,6 @@ ADAPTER_SOURCE_CLOSURE = (
     "stpd/environment/collector.py",
     "stpd/environment/identity.py",
     "stpd/environment/projector.py",
-    "stpd/environment/runtime_collection.py",
-    "stpd/game_seed.py",
-    "stpd/host_runtime_client.py",
     "stpd/linear_q.py",
     "stpd/models/__init__.py",
     "stpd/models/_backend.py",
@@ -65,7 +61,6 @@ ADAPTER_SOURCE_CLOSURE = (
     "stpd/training/__init__.py",
     "stpd/training/checkpoint.py",
     "stpd/training/trainer.py",
-    "stpd/training_smoke.py",
     "tools/policy_adapter.py",
 )
 
