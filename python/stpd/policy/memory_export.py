@@ -15,6 +15,11 @@ from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, obj
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ArtifactStore
 
+from ..fullrun.confirmed_interaction import (
+    HISTORY_INPUT_PROFILE,
+    HISTORY_PROFILES,
+    V2_HISTORY_INPUT_PROFILE,
+)
 from ..fullrun.memory_sequence_bridge import (
     parse_episode_projection_config,
     projection_input_profile,
@@ -65,7 +70,13 @@ def _projection_renderer(value: object) -> tuple[str, dict[str, Any]]:
         profile = projection_input_profile(config)
     except (TypeError, ValueError) as error:
         raise BoundaryError("m2_package", "projection_config_invalid") from error
-    return profile, RENDERER if profile == INPUT_PROFILE else V2_RENDERER
+    if profile == INPUT_PROFILE:
+        return profile, RENDERER
+    if profile == V2_INPUT_PROFILE:
+        return profile, V2_RENDERER
+    renderer = renderer_identity_for_profile(profile)
+    base = RENDERER if profile == HISTORY_INPUT_PROFILE else V2_RENDERER
+    return profile, {**base, "id": renderer["id"]}
 
 
 def export_memory_package(store: ArtifactStore, reporter: ObjectStoreRunReporter,
@@ -81,7 +92,8 @@ def export_memory_package(store: ArtifactStore, reporter: ObjectStoreRunReporter
     if input_info.get("schema") != INPUT_SCHEMA_V2:
         raise BoundaryError("m2_package", "verified_observed_input_required")
     input_profile, renderer = _projection_renderer(input_info.get("projection_config"))
-    if any(step.previous_actual_action is not None or step.public_feedback is not None
+    if any(step.public_feedback is not None or
+           (input_profile not in HISTORY_PROFILES and step.previous_actual_action is not None)
            for episode in engine.snapshot_input().episodes for step in episode.steps):
         raise BoundaryError("m2_package", "unsupported_optional_history_channel")
     result = reporter.completed(run_id)
@@ -143,7 +155,7 @@ def validate_memory_package(
         "evaluation_status", "source_admission",
     }, "m2_package.manifest")
     if not isinstance(input_profile, str) or input_profile not in {
-        INPUT_PROFILE, V2_INPUT_PROFILE,
+        INPUT_PROFILE, V2_INPUT_PROFILE, HISTORY_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE,
     }:
         raise BoundaryError("m2_package", "unsupported_package_identity")
     package_profile, expected_renderer = _projection_renderer(value["projection_config"])
@@ -198,7 +210,8 @@ def verify_memory_package(store: ArtifactStore, reporter: ObjectStoreRunReporter
     run_id = package["ids"]["run"]
     candidate = store.get_manifest(run_id)
     run, training_input, config, engine = _load_run(store, run_id, candidate.producer)
-    if any(step.previous_actual_action is not None or step.public_feedback is not None
+    if any(step.public_feedback is not None or
+           (input_profile not in HISTORY_PROFILES and step.previous_actual_action is not None)
            for episode in engine.snapshot_input().episodes for step in episode.steps):
         raise BoundaryError("m2_package", "unsupported_optional_history_channel")
     result = reporter.completed(run_id)

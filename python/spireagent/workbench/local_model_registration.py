@@ -31,6 +31,7 @@ from spireagent.workbench.local_models import LocalModelService, _loopback
 from spireagent.workbench.memory_recipe import (
     MEMORY_RECIPES,
     V2_MEMORY_RECIPES,
+    input_profile_for_recipe,
     memory_settings_for_recipe,
 )
 from spireagent.workbench.runtime_install import (
@@ -50,6 +51,9 @@ RECIPE_LABELS = {"stage1a.b.s.v2": "B", "stage1a.dsimple.s.v1": "D-Simple"}
 def _memory_recipe_label(recipe: str) -> str:
     settings = memory_settings_for_recipe(recipe)
     name = f"{'Reset' if settings.reset_each_step else 'M2'}-K{settings.slots}"
+    if settings.input_profile.endswith("confirmed-interaction"):
+        return name + (" 已确认交互对照版" if settings.reset_each_step else
+                       " 已确认交互训练版")
     if settings.input_profile == "text-menu-v2":
         return name + (" v2 工程对照版" if settings.reset_each_step else " v2 工程训练版")
     return name + (" 独立训练对照版" if settings.reset_each_step else " 训练版")
@@ -71,7 +75,7 @@ def _export_memory_profile(export: Path) -> str:
             value.get("projection_config")))
     except (TypeError, ValueError) as error:
         raise BoundaryError("local_model_registration", "export_profile_invalid") from error
-    return V2_M2_PROFILE if profile == "text-menu-v2" else M2_PROFILE
+    return V2_M2_PROFILE if profile.startswith("text-menu-v2") else M2_PROFILE
 
 
 _v2_sdk_available = v2_sdk_available
@@ -514,8 +518,8 @@ class LocalModelRegistration:
                                           "provider": "stpd", "architecture": recipe},
                                "requirements": requirements, "support": support,
                                "binding_root": self.models.private_root}
-                    if profile == V2_M2_PROFILE:
-                        binding["input_profile"] = "text-menu-v2"
+                    if memory and input_profile_for_recipe(recipe) != PROFILE:
+                        binding["input_profile"] = input_profile_for_recipe(recipe)
                     binder(self.models.root, export, config_path, manifest_path,
                            **binding)
                     if memory:

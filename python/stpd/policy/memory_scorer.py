@@ -17,6 +17,7 @@ from tokenizers import Tokenizer
 
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 
+from ..fullrun.confirmed_interaction import HISTORY_PROFILES, confirmed_action_text
 from ..fullrun.memory_token_inputs import (
     MAX_TOKENIZER_BYTES,
     encode_memory_texts,
@@ -28,6 +29,7 @@ from ..workers.memory_ranking import MemoryConfig, load_memory_export
 
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 MAX_RETIRED_CONTINUITIES = 1024
+MAX_CONSUMED_HISTORY_REQUESTS = 100000
 SNAPSHOT_FIELDS = frozenset({
     "protocol_version", "schema", "input_profile", "snapshot_id", "sequence",
     "observed_at", "status", "persistent", "interaction", "referents",
@@ -57,7 +59,7 @@ class OnlineM2Scorer:
                 or tokenizer.get_vocab_size() != config.vocab_size
                 or tokenizer.truncation is not None or tokenizer.padding is not None
                 or not isinstance(input_profile, str)
-                or input_profile not in {INPUT_PROFILE, V2_INPUT_PROFILE}):
+                or input_profile not in {INPUT_PROFILE, V2_INPUT_PROFILE, *HISTORY_PROFILES}):
             raise BoundaryError("online_m2", "model_tokenizer_config_mismatch")
         self._model = model.eval()
         self._tokenizer = tokenizer
@@ -72,6 +74,8 @@ class OnlineM2Scorer:
         self._sequence = 0
         self._snapshot_digest: str | None = None
         self._cached: OnlineScores | None = None
+        self._last_snapshot: dict | None = None
+        self._consumed_history_requests: set[str] = set()
 
     @classmethod
     def from_export(cls, weights: bytes, config: MemoryConfig,
@@ -105,20 +109,25 @@ class OnlineM2Scorer:
 
     def observe_and_score(self, *, continuity_token: str,
                           snapshot_bytes: bytes, expected_candidate_digest: str | None = None,
-                          expected_candidate_count: int | None = None) -> OnlineScores:
+                          expected_candidate_count: int | None = None,
+                          previous_interaction: dict | None = None) -> OnlineScores:
         if not self._lock.acquire(blocking=False):
             raise BoundaryError("online_m2", "concurrent_observation")
         try:
             return self._observe_and_score(continuity_token=continuity_token,
                                            snapshot_bytes=snapshot_bytes,
                                            expected_candidate_digest=expected_candidate_digest,
-                                           expected_candidate_count=expected_candidate_count)
+                                           expected_candidate_count=expected_candidate_count,
+                                           previous_interaction=previous_interaction)
         finally:
             self._lock.release()
 
     def _observe_and_score(self, *, continuity_token: str,
                            snapshot_bytes: bytes, expected_candidate_digest: str | None,
-                           expected_candidate_count: int | None) -> OnlineScores:
+                           expected_candidate_count: int | None,
+                           previous_interaction: dict | None) -> OnlineScores:
+        if self._input_profile not in HISTORY_PROFILES and previous_interaction is not None:
+            raise BoundaryError("online_m2", "history_profile_required")
         if (not isinstance(continuity_token, str) or not continuity_token
                 or not isinstance(snapshot_bytes, bytes)):
             raise BoundaryError("online_m2", "observation_identity_required")
@@ -153,12 +162,44 @@ class OnlineM2Scorer:
         changed = self._continuity is not None and continuity_token != self._continuity
         if changed and len(self._retired) >= MAX_RETIRED_CONTINUITIES:
             raise BoundaryError("online_m2", "continuity_limit")
+        history_text: str | None = None
+        history_request_id: str | None = None
+        if self._input_profile in HISTORY_PROFILES and previous_interaction is not None:
+            if (not isinstance(previous_interaction, dict)
+                    or set(previous_interaction) != {"decision_id", "snapshot_id",
+                                                       "candidate_digest", "action_id",
+                                                       "request_id", "effect_domain",
+                                                       "result_kind"}):
+                raise BoundaryError("online_m2", "history_fields_mismatch")
+            if any(not isinstance(value, str) or not value
+                   for value in previous_interaction.values()):
+                raise BoundaryError("online_m2", "history_identity_invalid")
+            history_request_id = previous_interaction["request_id"]
+            if (changed or self._last_snapshot is None or self._cached is None
+                    or previous_interaction["snapshot_id"] != self._snapshot_id
+                    or previous_interaction["candidate_digest"] !=
+                    self._cached.candidate_digest
+                    or self._cached.action_ids.count(previous_interaction["action_id"]) != 1
+                    or previous_interaction["effect_domain"] not in {
+                        "text_menu", "native_input"}
+                    or previous_interaction["result_kind"] != (
+                        "menu_applied" if previous_interaction["effect_domain"] ==
+                        "text_menu" else "native_input_delivered")
+                    or history_request_id in self._consumed_history_requests
+                    or len(self._consumed_history_requests) >= MAX_CONSUMED_HISTORY_REQUESTS):
+                raise BoundaryError("online_m2", "history_binding_mismatch")
+            history_text = confirmed_action_text(
+                self._last_snapshot, previous_interaction["action_id"],
+                effect_domain=previous_interaction["effect_domain"],
+                basis="confirmed_connector_result", profile=self._input_profile)
         if not changed and self._continuity is not None:
             if session_key != self._session:
                 raise BoundaryError("online_m2", "session_identity_changed")
             if snapshot_id == self._snapshot_id:
                 if sequence != self._sequence or digest != self._snapshot_digest:
                     raise BoundaryError("online_m2", "snapshot_identity_reused")
+                if history_text is not None:
+                    raise BoundaryError("online_m2", "history_requires_new_observation")
                 assert self._cached is not None
                 if (expected_candidate_digest is not None
                         or expected_candidate_count is not None):
@@ -181,19 +222,32 @@ class OnlineM2Scorer:
             raise BoundaryError("online_m2", "catalog_limit_no_truncation")
         row = encode_memory_texts(
             self._tokenizer, public.state_text, public.action_texts,
-            max_tokens=self._model.core.max_tokens, slots=self._model.slots)
-        input_tokens = len(row.state) + sum(map(len, row.actions))
+            max_tokens=self._model.core.max_tokens, slots=self._model.slots,
+            previous_actual_action=history_text is not None)
+        history_ids = (tuple(self._tokenizer.encode(history_text, add_special_tokens=False).ids)
+                       if history_text is not None else None)
+        if history_ids is not None and (not history_ids or
+                                        len(history_ids) > self._model.core.max_tokens):
+            raise BoundaryError("online_m2", "history_token_limit")
+        input_tokens = (len(row.state) + sum(map(len, row.actions))
+                        + (len(history_ids) if history_ids is not None else 0))
         if input_tokens > self._config.max_chunk_input_tokens:
             raise BoundaryError("online_m2", "observation_budget_no_truncation")
         device = self._model.write_queries.device
         page = torch.tensor(row.state, dtype=torch.long, device=device)
         actions = tuple(torch.tensor(ids, dtype=torch.long, device=device)
                         for ids in row.actions)
+        history_tensor = (torch.tensor(history_ids, dtype=torch.long, device=device)
+                          if history_ids is not None else None)
         old = self._model.initial_memory() if changed else self._memory
         with torch.inference_mode():
             # step preflights every action before advance; returned memory remains
             # provisional until the complete finite score vector is checked.
-            values, proposed = self._model.step(page, actions, old)
+            if history_tensor is None:
+                values, proposed = self._model.step(page, actions, old)
+            else:
+                values, proposed = self._model.step(
+                    page, actions, old, previous_actual_action=history_tensor)
             if (values.shape != (len(public.action_ids),)
                     or not bool(torch.isfinite(values).all())
                     or not bool(torch.isfinite(proposed).all())):
@@ -215,6 +269,9 @@ class OnlineM2Scorer:
         self._sequence = sequence
         self._snapshot_digest = digest
         self._cached = result
+        self._last_snapshot = snapshot
+        if history_request_id is not None:
+            self._consumed_history_requests.add(history_request_id)
         return result
 
     @staticmethod

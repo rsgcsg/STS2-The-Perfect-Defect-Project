@@ -7,10 +7,18 @@ from dataclasses import asdict
 import pytest
 
 from spireagent.workbench.memory_recipe import (
+    HISTORY_M2_K1_RECIPE,
+    HISTORY_M2_K8_RECIPE,
+    HISTORY_RESET_K1_RECIPE,
+    HISTORY_RESET_K8_RECIPE,
     M2_K1_RECIPE,
     M2_K8_RECIPE,
     RESET_K1_RECIPE,
     RESET_K8_RECIPE,
+    V2_HISTORY_M2_K1_RECIPE,
+    V2_HISTORY_M2_K8_RECIPE,
+    V2_HISTORY_RESET_K1_RECIPE,
+    V2_HISTORY_RESET_K8_RECIPE,
     V2_M2_K1_RECIPE,
     V2_M2_K8_RECIPE,
     V2_RESET_K1_RECIPE,
@@ -20,7 +28,10 @@ from spireagent.workbench.memory_recipe import (
     recipe_for_memory_config,
     reset_each_step_for_recipe,
 )
-from stpd.fullrun.memory_sequence_bridge import v2_episode_projection_config
+from stpd.fullrun.memory_sequence_bridge import (
+    history_episode_projection_config,
+    v2_episode_projection_config,
+)
 from stpd.workers.memory_ranking import MemoryConfig
 
 
@@ -80,6 +91,28 @@ def test_unsupported_memory_config_cannot_be_mislabeled(key: str, value: object)
     config[key] = value
     with pytest.raises(ValueError, match="unsupported_workbench_memory_config"):
         recipe_for_memory_config(config)
+
+
+@pytest.mark.parametrize(("slots", "reset", "expected_v1", "expected_v2"), [
+    (1, False, HISTORY_M2_K1_RECIPE, V2_HISTORY_M2_K1_RECIPE),
+    (1, True, HISTORY_RESET_K1_RECIPE, V2_HISTORY_RESET_K1_RECIPE),
+    (8, False, HISTORY_M2_K8_RECIPE, V2_HISTORY_M2_K8_RECIPE),
+    (8, True, HISTORY_RESET_K8_RECIPE, V2_HISTORY_RESET_K8_RECIPE),
+])
+def test_history_recipe_identity_is_explicit_for_reset_and_slots(
+    slots: int, reset: bool, expected_v1: str, expected_v2: str,
+) -> None:
+    config = asdict(MemoryConfig(
+        vocab_size=32, episode_count=2, width=48, layers=1, heads=2,
+        feedforward=96, max_tokens=16384, max_total_input_tokens=4_194_304,
+        max_episode_observations=768, max_episode_input_tokens=4_194_304,
+        max_chunk_steps=2, max_chunk_input_tokens=24_576,
+        max_actions_per_step=256, slots=slots, reset_each_step=reset))
+    for profile, expected in (("text-menu-v1-confirmed-interaction", expected_v1),
+                              ("text-menu-v2-confirmed-interaction", expected_v2)):
+        projection = asdict(history_episode_projection_config(profile))
+        assert recipe_for_memory_config(config, projection_config=projection) == expected
+        assert input_profile_for_recipe(expected) == profile
 
 
 @pytest.mark.parametrize("recipe", [None, {}, [], "stage1a.dsimple.m2.k2.experimental.v1",

@@ -8,6 +8,7 @@ from tokenizers import Tokenizer
 
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 
+from .confirmed_interaction import HISTORY_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE
 from .memory_projection_config import (
     RENDERER_IDENTITY as RENDERER_IDENTITY,
 )
@@ -28,9 +29,13 @@ MAX_TOKENIZER_BYTES = 16 * 1024 * 1024
 
 def renderer_identity_for_profile(input_profile: str) -> dict[str, str]:
     """Closed, explicit renderer lookup for future candidate manifests."""
+    if input_profile == HISTORY_INPUT_PROFILE:
+        return {**RENDERER_IDENTITY, "id": "stpd/m2-confirmed-interaction-v1"}
+    if input_profile == V2_HISTORY_INPUT_PROFILE:
+        return {**V2_RENDERER_IDENTITY, "id": "stpd/m2-confirmed-interaction-v2"}
     if input_profile == INPUT_PROFILE:
         return RENDERER_IDENTITY.copy()
-    if input_profile == V2_INPUT_PROFILE:
+    if input_profile in {V2_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE}:
         return V2_RENDERER_IDENTITY.copy()
     raise BoundaryError("memory_tokens", "unknown_text_menu_profile")
 
@@ -52,9 +57,9 @@ def project_memory_v2_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:
 def project_memory_profile_snapshot(snapshot: dict[str, Any],
                                     input_profile: str) -> TextMenuInput:
     """Render only a caller-selected, closed text-menu input profile."""
-    if input_profile == INPUT_PROFILE:
+    if input_profile in {INPUT_PROFILE, HISTORY_INPUT_PROFILE}:
         return project_memory_snapshot(snapshot)
-    if input_profile == V2_INPUT_PROFILE:
+    if input_profile in {V2_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE}:
         return project_memory_v2_snapshot(snapshot)
     raise BoundaryError("memory_tokens", "unknown_text_menu_profile")
 

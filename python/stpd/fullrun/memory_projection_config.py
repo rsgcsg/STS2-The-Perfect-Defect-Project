@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .confirmed_interaction import HISTORY_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE
 from .text_menu_inputs import INPUT_PROFILE, V2_INPUT_PROFILE
 from .text_menu_inputs import V2_VERSION as TEXT_MENU_V2_VERSION
 from .text_menu_inputs import VERSION as TEXT_MENU_VERSION
@@ -56,6 +57,46 @@ class MemoryEpisodeProjectionConfigV2:
             raise ValueError("invalid memory episode projection config")
 
 
+@dataclass(frozen=True)
+class MemoryEpisodeProjectionConfigV3:
+    """Opt-in completed-interaction channel; never reinterprets old inputs."""
+
+    schema: str
+    max_settling_events: int
+    input_profile: str
+    renderer_id: str
+    renderer_text_menu_version: str
+    renderer_wrapper: str
+
+    def __post_init__(self) -> None:
+        from .memory_token_inputs import renderer_identity_for_profile
+
+        if (self.schema != "stpd/memory-episode-projection-config-v3"
+                or self.input_profile not in {HISTORY_INPUT_PROFILE,
+                                              V2_HISTORY_INPUT_PROFILE}
+                or type(self.max_settling_events) is not int
+                or self.max_settling_events != (64 if self.input_profile ==
+                                                HISTORY_INPUT_PROFILE else 0)):
+            raise ValueError("invalid memory episode projection config")
+        renderer = renderer_identity_for_profile(self.input_profile)
+        if (self.renderer_id, self.renderer_text_menu_version,
+                self.renderer_wrapper) != (renderer["id"],
+                                           renderer["text_menu_version"],
+                                           renderer["wrapper"]):
+            raise ValueError("invalid memory episode projection config")
+
+
+def history_episode_projection_config(profile: str) -> MemoryEpisodeProjectionConfigV3:
+    from .memory_token_inputs import renderer_identity_for_profile
+
+    renderer = renderer_identity_for_profile(profile)
+    return MemoryEpisodeProjectionConfigV3(
+        "stpd/memory-episode-projection-config-v3",
+        64 if profile == HISTORY_INPUT_PROFILE else 0, profile,
+        renderer["id"], renderer["text_menu_version"], renderer["wrapper"],
+    )
+
+
 def v2_episode_projection_config() -> MemoryEpisodeProjectionConfigV2:
     """Construct the sole admitted v2 projection contract."""
     return MemoryEpisodeProjectionConfigV2(
@@ -67,7 +108,8 @@ def v2_episode_projection_config() -> MemoryEpisodeProjectionConfigV2:
 
 def parse_episode_projection_config(
     value: object,
-) -> MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2:
+) -> (MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2 |
+      MemoryEpisodeProjectionConfigV3):
     """Decode only the two immutable observed-input projection contracts."""
     if not isinstance(value, dict):
         raise ValueError("invalid memory episode projection config")
@@ -79,11 +121,17 @@ def parse_episode_projection_config(
                                "renderer_id", "renderer_text_menu_version",
                                "renderer_wrapper"}):
         return MemoryEpisodeProjectionConfigV2(**value)
+    if (value.get("schema") == "stpd/memory-episode-projection-config-v3"
+            and set(value) == {"schema", "max_settling_events", "input_profile",
+                               "renderer_id", "renderer_text_menu_version",
+                               "renderer_wrapper"}):
+        return MemoryEpisodeProjectionConfigV3(**value)
     raise ValueError("invalid memory episode projection config")
 
 
 def projection_input_profile(
-    config: MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2,
+    config: (MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2 |
+             MemoryEpisodeProjectionConfigV3),
 ) -> str:
     """Get the profile only after exact non-virtual config validation."""
     if type(config) is MemoryEpisodeProjectionConfig:
@@ -92,4 +140,7 @@ def projection_input_profile(
     if type(config) is MemoryEpisodeProjectionConfigV2:
         MemoryEpisodeProjectionConfigV2.__post_init__(config)
         return V2_INPUT_PROFILE
+    if type(config) is MemoryEpisodeProjectionConfigV3:
+        MemoryEpisodeProjectionConfigV3.__post_init__(config)
+        return config.input_profile
     raise ValueError("invalid memory episode projection config")

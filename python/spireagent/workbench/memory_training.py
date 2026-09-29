@@ -29,7 +29,7 @@ def prepare_workbench_memory(store: ArtifactStore, source_id: str,
     except ValueError as error:
         raise BoundaryError("local_training", "unsupported_training_recipe") from error
     profile = settings.input_profile
-    settling = 0 if profile == "text-menu-v2" else 64
+    settling = 0 if profile.startswith("text-menu-v2") else 64
     tokenizer_bytes, episode_count = fit_observed_memory_tokenizer(
         view, max_settling_events=settling, input_profile=profile)
     if episode_count > 8:

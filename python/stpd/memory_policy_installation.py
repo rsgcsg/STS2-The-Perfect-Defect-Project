@@ -11,13 +11,18 @@ from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_f
 from spireagent.package_identity import file_sha256
 from spireagent.policy_files import _inside, _object_file
 
+from .fullrun.confirmed_interaction import (
+    HISTORY_PROFILES,
+)
 from .fullrun.text_menu_inputs import INPUT_PROFILE, V2_INPUT_PROFILE
 from .policy.memory_export import MANIFEST_NAME, validate_memory_package
 from .token_policy_installation import _manifest_artifact_path
 
 CONFIG_SCHEMA = "stpd/m2-policy-config-v1"
 V2_CONFIG_SCHEMA = "stpd/m2-policy-config-v2"
+HISTORY_CONFIG_SCHEMA = "stpd/m2-policy-config-v3"
 PROTOCOL = "sts2.policy-runtime/decision-only-ndjson-2"
+HISTORY_PROTOCOL = "sts2.policy-runtime/decision-only-ndjson-3"
 ADAPTER = "stpd-m2-decision-adapter"
 CODE_SCOPE = "python-m2-owner-source-and-lock-v1"
 CLAIMS = {"full_run": False, "selector": False, "catalog_filtered": False,
@@ -43,6 +48,11 @@ def input_profile_for_config(value: object) -> str:
         config = object_fields(value, fields | {"input_profile"}, "m2_policy.config")
         if config["input_profile"] == V2_INPUT_PROFILE:
             return V2_INPUT_PROFILE
+    if value.get("schema") == HISTORY_CONFIG_SCHEMA:
+        config = object_fields(value, fields | {"input_profile"}, "m2_policy.config")
+        profile = config["input_profile"]
+        if isinstance(profile, str) and profile in HISTORY_PROFILES:
+            return profile
     raise BoundaryError("m2_policy", "unsupported_config")
 
 
@@ -55,7 +65,13 @@ def _representation(package: dict[str, Any]) -> dict[str, str]:
 
 
 def _adapter_version(input_profile: str) -> str:
+    if input_profile in HISTORY_PROFILES:
+        return "3.0.0"
     return "2.0.0" if input_profile == V2_INPUT_PROFILE else "1.0.0"
+
+
+def _protocol(input_profile: str) -> str:
+    return HISTORY_PROTOCOL if input_profile in HISTORY_PROFILES else PROTOCOL
 
 
 def _binding_facts(policy: object, requirements: object, support: object) -> None:
@@ -119,18 +135,20 @@ def bind_memory_export(root: Path, export_path: Path, config_path: Path,
         raise BoundaryError("m2_policy", "invalid_binding_destination")
     _binding_facts(policy, requirements, support)
     package, _, _, _ = validate_memory_package(export_path, input_profile=input_profile)
-    config_schema = V2_CONFIG_SCHEMA if input_profile == V2_INPUT_PROFILE else CONFIG_SCHEMA
+    config_schema = (HISTORY_CONFIG_SCHEMA if input_profile in HISTORY_PROFILES else
+                     V2_CONFIG_SCHEMA if input_profile == V2_INPUT_PROFILE else CONFIG_SCHEMA)
     config = {"schema": config_schema, "export_path": str(export_path),
               # The package validator requires canonical bytes. Pin the bytes
               # already validated, rather than re-reading a replaceable path.
               "export_manifest_sha256": hashlib.sha256(json_bytes(package)).hexdigest(),
               "model_id": package["ids"]["model"]}
-    if input_profile == V2_INPUT_PROFILE:
-        config["input_profile"] = V2_INPUT_PROFILE
+    if input_profile != INPUT_PROFILE:
+        config["input_profile"] = input_profile
     manifest = {
         "schema": "sts2.policy-runtime/policy-manifest-1", "manifest_id": manifest_id,
         "policy": policy,
-        "adapter": {"id": ADAPTER, "version": _adapter_version(input_profile), "protocol": PROTOCOL,
+        "adapter": {"id": ADAPTER, "version": _adapter_version(input_profile),
+                    "protocol": _protocol(input_profile),
                     "code_sha256": code_digest(root)},
         "artifact": {"id": config["model_id"],
                      "path": _manifest_artifact_path(
@@ -185,7 +203,7 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
                                "sha256": file_sha256(config_path),
                                "schema": config["schema"]}}
     expected_adapter = {"id": ADAPTER, "version": _adapter_version(input_profile),
-                        "protocol": PROTOCOL,
+                        "protocol": _protocol(input_profile),
                         "code_sha256": code_digest(root)}
     artifact = manifest.get("artifact", {})
     if (manifest.get("schema") != "sts2.policy-runtime/policy-manifest-1"

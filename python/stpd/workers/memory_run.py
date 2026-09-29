@@ -17,6 +17,7 @@ from spireagent.artifact_contracts import Manifest, Parent, Payload, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, digest, json_bytes
 from spireagent.storage.store import ArtifactStore
 
+from ..fullrun.confirmed_interaction import HISTORY_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE
 from ..fullrun.memory_token_inputs import MAX_TOKENIZER_BYTES
 from ..fullrun.text_menu_inputs import INPUT_PROFILE, V2_INPUT_PROFILE
 from ..models.dsimple_sequence_training import MemorySequenceEpisode, MemorySequenceStep
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
     from stpd.fullrun.memory_sequence_bridge import (
         MemoryEpisodeProjectionConfig,
         MemoryEpisodeProjectionConfigV2,
+        MemoryEpisodeProjectionConfigV3,
         MemoryEventMapping,
     )
     from stpd.fullrun.observed_input_sequence import ObservedInputView
@@ -99,7 +101,8 @@ def prepare_memory_run(
     producer: Producer, tokenizer_bytes: bytes, *,
     source_mapping: tuple[MemoryEventMapping, ...] | None = None,
     projection_config: (
-        MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2 | None
+        MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2 |
+        MemoryEpisodeProjectionConfigV3 | None
     ) = None,
     operation_id: str | None = None,
 ) -> Manifest:
@@ -219,16 +222,20 @@ def prepare_observed_memory_run(
     model = _projection_model(config)
     from stpd.fullrun.memory_sequence_bridge import (
         MemoryEpisodeProjectionConfig,
+        history_episode_projection_config,
         v2_episode_projection_config,
     )
 
-    projection_config: MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2
+    projection_config: (MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2 |
+                        MemoryEpisodeProjectionConfigV3)
     if input_profile == INPUT_PROFILE:
         projection_config = MemoryEpisodeProjectionConfig(
             "stpd/memory-episode-projection-config-v1", max_settling_events,
         )
     elif input_profile == V2_INPUT_PROFILE and max_settling_events == 0:
         projection_config = v2_episode_projection_config()
+    elif input_profile in {HISTORY_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE}:
+        projection_config = history_episode_projection_config(input_profile)
     else:
         raise BoundaryError("memory_run", "unsupported_projection_profile")
     projection = project_memory_episodes(
@@ -436,7 +443,9 @@ def _verify_observed_projection(source_id: str, tokenizer_bytes: bytes,
                                 config: MemoryConfig, saved: MemoryTrainingInput,
                                 mapping: tuple[MemoryEventMapping, ...], view: ObservedInputView,
                                 projection_config: (
-                                    MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2
+                                    MemoryEpisodeProjectionConfig |
+                                    MemoryEpisodeProjectionConfigV2 |
+                                    MemoryEpisodeProjectionConfigV3
                                 ),
                                 ) -> None:
     """Rebuild typed bridge output so v2 mappings cannot be decorative metadata."""
