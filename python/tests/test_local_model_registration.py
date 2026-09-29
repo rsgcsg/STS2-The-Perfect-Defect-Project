@@ -161,9 +161,10 @@ def test_node_checks_consume_one_registration_deadline(registration, monkeypatch
     }).encode(), b""]
 
     def run(*_args, timeout, **_kwargs):
+        index = len(observed)
         observed.append(timeout)
-        clock[0] += (9.0, 8.0, 4.0)[len(observed) - 1]
-        return subprocess.CompletedProcess([], 0, outputs[len(observed) - 1])
+        clock[0] += (9.0, 8.0, 4.0)[index]
+        return subprocess.CompletedProcess([], 0, outputs[index])
 
     monkeypatch.setattr(registration_module.subprocess, "run", run)
     deadline = 22.0
