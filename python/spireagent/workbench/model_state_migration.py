@@ -55,6 +55,15 @@ def _write_new_file(path: Path, raw: bytes) -> None:
         os.fsync(handle.fileno())
 
 
+def _sync_directory(path: Path) -> None:
+    if os.name != "nt":
+        handle = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(handle)
+        finally:
+            os.close(handle)
+
+
 def _publish_profile(destination: Path, raw: bytes) -> None:
     """Publish a complete pin only when no different pin owns the final name."""
     temporary = destination.with_name(destination.name + ".stage-" + uuid4().hex)
@@ -67,6 +76,7 @@ def _publish_profile(destination: Path, raw: bytes) -> None:
                 raise BoundaryError("local_model", "private_profile_collision") from None
     finally:
         temporary.unlink(missing_ok=True)
+    _sync_directory(destination.parent)
 
 
 def migrate_legacy_model_state(config: ProjectConfig, legacy_python_root: Path) -> dict[str, Any]:
@@ -168,7 +178,12 @@ def migrate_legacy_model_state(config: ProjectConfig, legacy_python_root: Path) 
                 for name, raw in files.items():
                     if _ordinary_file(_inside(stage, name)) != raw:
                         raise BoundaryError("local_model", "legacy_archive_staging_invalid")
+                for directory in sorted((stage, *stage.rglob("*")),
+                                        key=lambda path: len(path.parts), reverse=True):
+                    if directory.is_dir():
+                        _sync_directory(directory)
                 stage.rename(archive)
+                _sync_directory(archive.parent)
             finally:
                 if stage.exists():
                     shutil.rmtree(stage)
