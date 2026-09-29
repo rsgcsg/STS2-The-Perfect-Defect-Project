@@ -2824,15 +2824,11 @@ window.SpireProject = (() => {
 
   function memoryModelVariant(value) {
     const parameters = value?.parameters;
-    const config = parameters?.config;
     if (value?.kind !== "model" || !hex(value.artifact_id)
-        || parameters?.schema !== "stpd/experimental-m2-model-v1"
-        || parameters.partition !== "train" || parameters.qualification !== "engineering_only"
-        || !Number.isSafeInteger(parameters.episodes) || parameters.episodes < 1
-        || !config || typeof config !== "object" || Array.isArray(config)
-        || config.slots !== 1 || config.gated !== false
-        || typeof config.reset_each_step !== "boolean") return null;
-    return config.reset_each_step ? "reset" : "m2";
+        || parameters?.schema !== "stpd/experimental-m2-model-v1") return null;
+    if (value.workbench_memory_recipe === "stage1a.dsimple.m2.k1.experimental.v1") return "m2";
+    if (value.workbench_memory_recipe === "stage1a.dsimple.reset.k1.experimental.v1") return "reset";
+    return null;
   }
 
   function localModelOverview(value) {

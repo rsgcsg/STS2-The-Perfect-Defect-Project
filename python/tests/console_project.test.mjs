@@ -63,9 +63,18 @@ const textMenuScratchModel = (artifactId = id("a"), recipe = "stage1a.b.s.v2") =
 });
 const memoryModel = (artifactId = id("a"), resetEachStep = false) => ({
   artifact_id:artifactId, kind:"model",
+  workbench_memory_recipe:resetEachStep
+    ? "stage1a.dsimple.reset.k1.experimental.v1"
+    : "stage1a.dsimple.m2.k1.experimental.v1",
   parameters:{schema:"stpd/experimental-m2-model-v1", partition:"train",
     qualification:"engineering_only", episodes:1,
-    config:{slots:1, gated:false, reset_each_step:resetEachStep}},
+    config:{vocab_size:128, episode_count:1, slots:1, gated:false,
+      reset_each_step:resetEachStep, seed:1701, width:48, layers:1, heads:2,
+      feedforward:96, dropout:0, max_tokens:16384, learning_rate:0.001,
+      weight_decay:0, gradient_clip:1, cpu_threads:2,
+      max_total_input_tokens:4194304, max_episode_observations:768,
+      max_episode_input_tokens:4194304, max_chunk_steps:2,
+      max_chunk_input_tokens:24576, max_actions_per_step:256}},
   parents:[], payloads:[],
 });
 const modelExportStatus = (operation, extra = {}) => ({
@@ -1722,13 +1731,14 @@ test("Reset-K1 model identity drives overview, export, and neutral dev evaluatio
   assert.equal(post(env.calls).length, 0);
 });
 
-test("unknown memory model shape does not expose export, registration, or evaluation controls", async () => {
+test("owner-rejected or absent Workbench recipe does not expose export, registration, or evaluation controls", async () => {
   const model = id("a");
-  for (const config of [
-    {slots:8, gated:false, reset_each_step:true},
-    {slots:1, gated:true, reset_each_step:true},
-    {slots:1, gated:false},
-    {slots:1, gated:false, reset_each_step:"true"},
+  for (const alter of [
+    artifact => { artifact.parameters.config.width = 96; artifact.workbench_memory_recipe = null; },
+    artifact => { delete artifact.parameters.config.max_chunk_input_tokens; artifact.workbench_memory_recipe = null; },
+    artifact => { artifact.workbench_memory_recipe = null; },
+    artifact => { delete artifact.workbench_memory_recipe; },
+    artifact => { artifact.workbench_memory_recipe = "future/memory-recipe-v9"; },
   ]) {
     const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
       handler:async url => {
@@ -1736,7 +1746,7 @@ test("unknown memory model shape does not expose export, registration, or evalua
           schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready"};
         if (url === `/api/local-workspace/artifacts/${model}`) {
           const artifact = memoryModel(model);
-          artifact.parameters.config = config;
+          alter(artifact);
           return artifact;
         }
         throw new Error(`unexpected route ${url}`);
