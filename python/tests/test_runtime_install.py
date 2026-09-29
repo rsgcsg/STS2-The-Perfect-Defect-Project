@@ -468,6 +468,40 @@ def test_runtime_profile_cli_flag_is_only_for_model_install(capsys):
     assert "runtime_profile_requires_model_command" in capsys.readouterr().out
 
 
+def test_m2_runtime_profile_real_cli_parser_reaches_offline_installer(
+    tmp_path, monkeypatch, capsys,
+):
+    from spireagent.workbench import developer_cli, local_model_cli
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.local_models import LocalModelService
+
+    config = ProjectConfig(tmp_path, "", "", None, combination())
+    monkeypatch.setattr(developer_cli.ProjectConfig, "load", lambda *_args, **_kwargs: config)
+    monkeypatch.setattr(local_model_cli, "running", lambda _: None)
+    selected = (tmp_path / "models/text-menu-m2-v1",
+                {"package": runtime_install.RUNTIME_PACKAGE})
+    monkeypatch.setattr(LocalModelService, "text_runtime_profile",
+                        lambda _self, profile="text-menu-v1": selected if profile ==
+                        "text-menu-m2-v1" else (_ for _ in ()).throw(AssertionError(profile)))
+    monkeypatch.setattr(LocalModelService, "_connector_pin", lambda _: {})
+    calls = []
+    monkeypatch.setattr(runtime_install, "install_runtime",
+                        lambda *a, **k: calls.append((a, k)) or {"status": "runtime_installed"})
+    args = ["model", "--config", str(tmp_path / "project.json"), "--action",
+            "install-runtime", "--runtime-profile", "text-menu-m2-v1",
+            "--runtime-archive", str(tmp_path / "m2-runtime.tgz")]
+    assert developer_cli.main(args) == 0
+    assert calls == [((selected[0], selected[1], {}),
+                      {"archive": tmp_path / "m2-runtime.tgz"})]
+    assert "runtime_installed" in capsys.readouterr().out
+    assert developer_cli.main(["status", "--runtime-profile", "text-menu-m2-v1"]) == 1
+    assert "runtime_profile_requires_model_command" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as invalid:
+        developer_cli.main(["model", "--runtime-profile", "unreviewed"])
+    assert invalid.value.code == 2
+    assert not calls[1:]
+
+
 @pytest.mark.parametrize("spelling", ["Pefect", "Perfect"])
 def test_download_accepts_exact_rename_alias_and_still_checks_bytes(
     tmp_path, monkeypatch, release, spelling
