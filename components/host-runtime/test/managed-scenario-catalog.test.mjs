@@ -53,7 +53,7 @@ test("built-in catalog is metadata-only and exposes the reviewed engineering sce
   assert.equal(getManagedScenario(ID).scenario.seed, "H1CROSSHOST01");
 });
 
-test("built-in exact candidate tuple matches the committed frozen manifest", () => {
+test("built-in engineering scenario retains its measured candidate after a new patch", () => {
   const definition = getManagedScenario(ID);
   const manifest = JSON.parse(readFileSync(
     path.join(ROOT, "experiments", "managed-exact", "manifest.json"), "utf8"
@@ -62,10 +62,11 @@ test("built-in exact candidate tuple matches the committed frozen manifest", () 
   assert.deepEqual(definition.candidate, {
     candidate_id: manifest.candidate_id,
     upstream_revision: manifest.upstream.revision,
-    source_patch_sha256: manifest.expected_build.source_patch_sha256,
-    artifact_sha256: manifest.expected_build.artifact_sha256,
-    artifact_mvid: manifest.expected_build.artifact_mvid
+    source_patch_sha256: "40d2e4cde715954c75125c12f30cc31cdf2b08dffd619bf95ca28f9913e7e030",
+    artifact_sha256: "9a1d9445971d54f471701a84a6f95ed4984a2d60dc1319e1846f068eda1fd02b",
+    artifact_mvid: "a75a426d-db7c-45a6-9d34-1179b2e35003"
   });
+  assert.notEqual(definition.candidate.source_patch_sha256, manifest.expected_build.source_patch_sha256);
 });
 
 test("built-in selection accepts only matching explicit overrides", () => {
