@@ -55,6 +55,26 @@ public sealed class TerminalAutoSealTests
     }
 
     [Fact]
+    public void SessionChangedDuringBoundaryCallbackCannotCloseReplacement()
+    {
+        var seal = new TerminalAutoSeal();
+        var order = new List<string>();
+        seal.ObserveNativeEnded("session-1", "run-1", abandoned: false);
+
+        seal.CompleteDecisionOwnerReady("session-1", "run-1", "game_over",
+            observeBoundary: () =>
+            {
+                order.Add("boundary_started");
+                seal.Reset();
+                seal.ObserveNativeEnded("session-2", "run-1", abandoned: false);
+            },
+            close: () => order.Add("wrong_close"));
+
+        Assert.Equal(new[] { "boundary_started" }, order);
+        Assert.True(seal.TakeOnDecisionOwnerReady("session-2", "run-1", "game_over"));
+    }
+
+    [Fact]
     public void FrameBetweenNativeEndAndExactGameOverReadyMustKeepSessionOpen()
     {
         var seal = new TerminalAutoSeal();

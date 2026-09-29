@@ -22,6 +22,12 @@ public sealed class CarrierIngressSourceTests
         Assert.Contains("string.Equals(SessionId, observedSessionId, StringComparison.Ordinal)", callback);
         Assert.Contains("string.Equals(_currentRunId, observedRunId, StringComparison.Ordinal)", callback);
         Assert.Contains("DisableSemanticBoundaryTrace(exception)", callback);
+        int failure = callback.IndexOf("catch (Exception exception)");
+        int failureSessionGuard = callback.IndexOf("string.Equals(SessionId, observedSessionId", failure);
+        int failureRunGuard = callback.IndexOf("string.Equals(_currentRunId, observedRunId", failure);
+        int disable = callback.IndexOf("DisableSemanticBoundaryTrace(exception)", failure);
+        Assert.True(failure >= 0 && failureSessionGuard > failure
+            && failureRunGuard > failureSessionGuard && disable > failureRunGuard);
 
         int sealStart = runtime.IndexOf("private static void ExecuteTerminalAutoSeal(");
         int cleanup = runtime.IndexOf("internal static void ObserveNativeRunCleanup(", sealStart);

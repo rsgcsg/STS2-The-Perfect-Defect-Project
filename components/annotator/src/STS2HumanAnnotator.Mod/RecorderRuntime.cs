@@ -2294,7 +2294,13 @@ internal static partial class RecorderRuntime
                 }
                 catch (Exception exception)
                 {
-                    DisableSemanticBoundaryTrace(exception);
+                    lock (Gate)
+                    {
+                        if (_store != null
+                            && string.Equals(SessionId, observedSessionId, StringComparison.Ordinal)
+                            && string.Equals(_currentRunId, observedRunId, StringComparison.Ordinal))
+                            DisableSemanticBoundaryTrace(exception);
+                    }
                 }
             },
             close: () => ExecuteTerminalAutoSeal(observedSessionId, observedRunId));
