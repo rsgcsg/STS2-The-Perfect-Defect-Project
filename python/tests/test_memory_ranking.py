@@ -270,11 +270,12 @@ def test_export_reload_replays_scores_with_exact_candidate_order_and_config(
         assert set(actual_keys) == set(original_keys)
         assert bool(torch.isfinite(actual).all()), "nonfinite reordered scores"
         assert bool(torch.isfinite(original).all()), "nonfinite original scores"
+        assert actual.dtype == original.dtype == torch.float32
         by_key = dict(zip(original_keys, original, strict=True))
         expected = torch.stack([by_key[key] for key in actual_keys])
         # Reordering a candidate batch can change the FP32 reduction path on
         # Windows while each score must still belong to its exact action key.
-        torch.testing.assert_close(actual, expected, atol=1.3e-6, rtol=1e-5)
+        torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1.3e-6, equal_nan=False)
 
     settings = config(episode_count=1, slots=slots, gated=gated, reset_each_step=reset)
     inputs = source(count=1)
