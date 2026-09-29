@@ -67,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
             "download",
             "policy",
             "model",
+            "migrate-model-state",
             "credential",
             "collection-tool",
             "collection-upgrade",
@@ -93,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
         "--role", action="append", help="own payload role, repeat for multiple roles"
     )
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--legacy-python-root", type=Path,
+                        help="explicit old checkout python directory for model metadata archive")
     parser.add_argument("--selection", help="reviewed local policy registry selection")
     parser.add_argument(
         "--runtime-archive",
@@ -169,6 +172,12 @@ def main(argv: list[str] | None = None) -> int:
                     runtime_archive=args.runtime_archive,
                     runtime_profile=args.runtime_profile,
                 )
+            elif args.command == "migrate-model-state":
+                from spireagent.workbench.model_state_migration import migrate_legacy_model_state
+
+                if args.legacy_python_root is None:
+                    raise BoundaryError("local_model", "legacy_python_root_required")
+                result = migrate_legacy_model_state(config, args.legacy_python_root)
             elif args.command == "collection-upgrade":
                 from spireagent.workbench.collection_upgrade import upgrade
 

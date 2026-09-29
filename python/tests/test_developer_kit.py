@@ -300,6 +300,54 @@ def test_text_and_m2_kit_profiles_coexist_and_staged_m2_drift_blocks_status(
         install.status(target)
 
 
+def test_workbench_consumes_real_kit_verifier_receipt_and_rejects_staged_drift(
+        inputs, tmp_path, monkeypatch):
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.local_models import LocalModelService
+    from tools import install_developer_kit as install
+
+    archive = tmp_path / "runtime.tgz"
+    archive.write_bytes(b"synthetic exact runtime")
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"schema": "stpd/local-text-runtime-v1",
+                                   "runtime_package": synthetic_text_pin(archive.read_bytes())}))
+    monkeypatch.setattr("tools.package_developer_kit.install_runtime", lambda *a, **k: None)
+    package(**{**inputs,
+               "text_runtime_profile": PinnedFile(profile, sha256(profile.read_bytes())),
+               "text_runtime_archive": PinnedFile(archive, sha256(archive.read_bytes()))})
+    monkeypatch.setattr(install, "REPOSITORY", str(inputs["root"]))
+    target = tmp_path / "releases" / sha256(inputs["output"].read_bytes())
+    receipt = install.prepare(inputs["output"], target.name, target.parent)
+    assert receipt["text_runtime_identity"] == {
+        "profile_sha256": sha256(profile.read_bytes()),
+        "archive_sha256": sha256(archive.read_bytes()),
+    }
+    assert receipt["m2_runtime_identity"] is None
+    service = LocalModelService(ProjectConfig(tmp_path / "state", "", "", None, combination()))
+    service.root = target / "source/python"
+    actual, staged_archive, pin = service._selected_kit_text_runtime("text-menu-v1")
+    assert actual == profile.read_bytes()
+    assert staged_archive.read_bytes() == archive.read_bytes()
+    assert pin == synthetic_text_pin(archive.read_bytes())
+    with pytest.raises(BoundaryError, match="trusted_text_runtime_asset_not_bundled"):
+        service._selected_kit_text_runtime("text-menu-m2-v1")
+    staged = target / "source" / install.TEXT_RUNTIME_DESTINATION
+    staged.write_bytes(b"changed")
+    with pytest.raises(BoundaryError, match="trusted_text_runtime_kit_invalid"):
+        service._selected_kit_text_runtime("text-menu-v1")
+    staged.write_bytes(profile.read_bytes())
+    kit_manifest = target / "kit/combination.json"
+    original_manifest = kit_manifest.read_bytes()
+    kit_manifest.write_bytes(b"changed inventory")
+    with pytest.raises(BoundaryError, match="trusted_text_runtime_kit_invalid"):
+        service._selected_kit_text_runtime("text-menu-v1")
+    kit_manifest.write_bytes(original_manifest)
+    lock = target / "source/python/uv.lock"
+    lock.write_bytes(b"changed tracked source")
+    with pytest.raises(BoundaryError, match="trusted_text_runtime_kit_invalid"):
+        service._selected_kit_text_runtime("text-menu-v1")
+
+
 @pytest.mark.parametrize("mutation", ["archive", "profile", "closure"])
 def test_optional_runtime_invalid_inputs_never_publish(inputs, tmp_path, monkeypatch,
                                                        mutation):

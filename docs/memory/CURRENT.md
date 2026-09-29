@@ -1,7 +1,7 @@
 # Current project context, 2026-09-29
 
 Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; accepted develop
-anchor `9732c44e678366dfb7fd337c20300f799622561a` after PR100.
+anchor `def60b649ddc7ef97f6e60f5f288e387ab8d460a` after PR102.
 Resolve live GitHub refs before work; current authorities override this file.
 Source, CI, installation, Human operation and scientific results are separate.
 No complete Stage1a or policy-quality qualification is claimed. See the
@@ -48,8 +48,18 @@ for exact PR/CI and candidate-runtime receipts.
   input bytes and recorded runtime match; configurations differ only by the
   reset flag. Both models matched 14/31 dev labels, without a scientific
   memory-benefit conclusion. The Reset model was exported and registered,
-  not loaded. Checkout-scoped runtime pins required explicit manual carryover;
-  durable application-owned configuration remains unfinished.
+  not loaded. [PR102](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/102)
+  merged after full run 36554360252 succeeded on exact `12c2cff6`; integration
+  run 36557763588 used verified same-tree reuse. Those checks do not establish
+  a memory benefit or a larger independent corpus.
+- The [durable Workbench state candidate](../evidence/STAGE1A_WORKBENCH_MODEL_STATE_2026-09-29.md)
+  moves private model profiles/selections/bindings to application-owned storage.
+  Its explicit migration and Reset registration were exercised locally; a later
+  source switch retained the unloaded selection. The preparation button reused
+  an existing verified installation. This does not establish fresh member
+  installation, released candidate assets or cross-machine runtime support.
+  The model page now summarizes returned history and links to the existing full
+  report view; local Safari verification remains separate from hosted CI.
 - Merged [PR88](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/88)
   repaired potion staging; its installation did not prove a new live potion
   action. Old failed evidence remains.

@@ -35,6 +35,7 @@ def bind_text_menu_export(
     root: Path, export_path: Path, config_path: Path, manifest_path: Path,
     *, manifest_id: str, policy: dict[str, Any], requirements: dict[str, Any],
     support: dict[str, Any], qwen_snapshot: Path | None = None,
+    binding_root: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Bind an exported text-menu model to caller-owned environment/support facts.
 
@@ -45,10 +46,12 @@ def bind_text_menu_export(
     from .fullrun.text_menu_inputs import IDENTITY, SNAPSHOT_SCHEMA
 
     root = root.resolve()
+    binding_root = (binding_root or root).resolve()
     export_path = export_path.resolve()
     config_path = config_path.resolve()
     manifest_path = manifest_path.resolve()
-    if (not config_path.is_relative_to(root) or not manifest_path.is_relative_to(root)
+    if (not config_path.is_relative_to(binding_root)
+            or not manifest_path.is_relative_to(binding_root)
             or config_path == manifest_path or config_path.exists() or manifest_path.exists()
             or not isinstance(manifest_id, str) or not manifest_id
             or not all(isinstance(value, dict) for value in (policy, requirements, support))):
@@ -103,7 +106,7 @@ def bind_text_menu_export(
                            "input_schema": SNAPSHOT_SCHEMA},
         "requirements": requirements, "support": support,
         "adapter_config": {"stage1a": {"code_digest_scope": CODE_SCOPE,
-            "config": {"path": config_path.relative_to(root).as_posix(),
+            "config": {"path": config_path.relative_to(binding_root).as_posix(),
                        "sha256": hashlib.sha256(json_bytes(config)).hexdigest(),
                        "schema": CONFIG_SCHEMA}}},
         "claims": {"full_run": False, "selector": False, "catalog_filtered": False,
@@ -126,7 +129,7 @@ def bind_text_menu_export(
     try:
         config_path.write_bytes(json_bytes(config))
         manifest_path.write_bytes(json_bytes(manifest))
-        validate(root, config_path, manifest_path)
+        validate(root, config_path, manifest_path, binding_root=binding_root)
     except Exception:
         config_path.unlink(missing_ok=True)
         manifest_path.unlink(missing_ok=True)
@@ -152,7 +155,12 @@ def code_digest(root: Path) -> str:
     return hashlib.sha256(canonical_json(rows).encode()).hexdigest()
 
 
-def validate(root: Path, config_path: Path, manifest_path: Path) -> tuple[dict, dict]:
+def validate(root: Path, config_path: Path, manifest_path: Path, *,
+             binding_root: Path | None = None) -> tuple[dict, dict]:
+    binding_root = (binding_root or root).resolve()
+    config_path = _inside(binding_root, config_path.resolve().relative_to(binding_root).as_posix())
+    manifest_path = _inside(binding_root,
+                            manifest_path.resolve().relative_to(binding_root).as_posix())
     config, manifest = _object_file(config_path), _object_file(manifest_path)
     object_fields(
         config,
@@ -170,7 +178,7 @@ def validate(root: Path, config_path: Path, manifest_path: Path) -> tuple[dict, 
         or pin.get("code_digest_scope") != CODE_SCOPE
         or pin.get("config")
         != {
-            "path": config_path.resolve().relative_to(root.resolve()).as_posix(),
+            "path": config_path.relative_to(binding_root).as_posix(),
             "sha256": file_sha256(config_path),
             "schema": CONFIG_SCHEMA,
         }
@@ -207,11 +215,14 @@ def validate(root: Path, config_path: Path, manifest_path: Path) -> tuple[dict, 
 
 
 def inspect(
-    root: Path, entry: dict[str, Any], manifest: dict[str, Any], policy_config: dict[str, Any]
+    root: Path, entry: dict[str, Any], manifest: dict[str, Any], policy_config: dict[str, Any],
+    *, binding_root: Path | None = None,
 ) -> dict[str, dict[str, str]]:
+    binding_root = binding_root or root
     try:
         config, checked = validate(
-            root, _inside(root, entry["config"]), _inside(root, entry["manifest"])
+            root, _inside(binding_root, entry["config"]),
+            _inside(binding_root, entry["manifest"]), binding_root=binding_root,
         )
         if checked != manifest or config != policy_config:
             raise BoundaryError("token_policy", "metadata_changed")

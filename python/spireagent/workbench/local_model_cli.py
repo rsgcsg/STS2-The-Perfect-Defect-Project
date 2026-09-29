@@ -9,7 +9,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError, decode_json, digest
-from spireagent.workbench.developer import ProjectConfig
+from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock, running
 from spireagent.workbench.hub_client import NoRedirect
 
@@ -40,6 +40,30 @@ def model_command(
             if service.state["status"] == "recovery_required":
                 raise BoundaryError("local_model", "previous_operation_requires_recovery")
             if runtime_profile in {"text-menu-v1", "text-menu-m2-v1"}:
+                # An explicit offline install may stage the current kit's
+                # inventoried pin into application state. Normal selection and
+                # readiness never search a checkout for a missing profile.
+                from spireagent.policy_files import _object_file
+                from spireagent.workbench.kit_runtime import text_runtime_pin
+                from spireagent.workbench.local_models import TEXT_PROFILES
+
+                _, legacy_name, _, _ = TEXT_PROFILES[runtime_profile]
+                destination = service.private_root / Path(legacy_name).name
+                if destination.is_symlink():
+                    raise BoundaryError("local_model", "private_model_state_unsafe")
+                if not destination.exists() and not destination.is_symlink():
+                    staged = service.root / legacy_name
+                    if staged.exists() or staged.is_symlink():
+                        if (staged.is_symlink() or runtime_archive.is_symlink()
+                                or runtime_archive.stat().st_size > 32 * 1024 * 1024):
+                            raise BoundaryError("local_model", "runtime_profile_staging_unsafe")
+                        raw = staged.read_bytes()
+                        text_runtime_pin(raw, runtime_archive.read_bytes(),
+                                         memory=runtime_profile == "text-menu-m2-v1")
+                        service.private_root.mkdir(parents=True, exist_ok=True)
+                        if service.private_root.is_symlink():
+                            raise BoundaryError("local_model", "private_model_state_unsafe")
+                        atomic_json(destination, _object_file(staged))
                 if selection is not None:
                     selected = service.selection(selection)
                     if selected.get("runtime_profile") != runtime_profile:

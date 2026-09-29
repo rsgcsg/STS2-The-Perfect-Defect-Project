@@ -77,11 +77,14 @@ def code_digest(root: Path) -> str:
 def bind_memory_export(root: Path, export_path: Path, config_path: Path,
                        manifest_path: Path, *, manifest_id: str,
                        policy: dict[str, Any], requirements: dict[str, Any],
-                       support: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+                       support: dict[str, Any], binding_root: Path | None = None,
+                       ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Bind caller-owned environment facts to an integrity-checked M2 package."""
     root, export_path = root.resolve(), export_path.resolve()
+    binding_root = (binding_root or root).resolve()
     config_path, manifest_path = config_path.resolve(), manifest_path.resolve()
-    if (not config_path.is_relative_to(root) or not manifest_path.is_relative_to(root)
+    if (not config_path.is_relative_to(binding_root)
+            or not manifest_path.is_relative_to(binding_root)
             or config_path == manifest_path or config_path.exists() or manifest_path.exists()
             or not isinstance(manifest_id, str) or not manifest_id):
         raise BoundaryError("m2_policy", "invalid_binding_destination")
@@ -104,7 +107,7 @@ def bind_memory_export(root: Path, export_path: Path, config_path: Path,
                            "input_schema": RENDERER["input_schema"]},
         "requirements": requirements, "support": support,
         "adapter_config": {"stage1a": {"code_digest_scope": CODE_SCOPE,
-            "config": {"path": config_path.relative_to(root).as_posix(),
+            "config": {"path": config_path.relative_to(binding_root).as_posix(),
                        "sha256": hashlib.sha256(json_bytes(config)).hexdigest(),
                        "schema": CONFIG_SCHEMA}}},
         "claims": CLAIMS,
@@ -114,7 +117,7 @@ def bind_memory_export(root: Path, export_path: Path, config_path: Path,
     try:
         config_path.write_bytes(json_bytes(config))
         manifest_path.write_bytes(json_bytes(manifest))
-        validate(root, config_path, manifest_path)
+        validate(root, config_path, manifest_path, binding_root=binding_root)
     except Exception:
         config_path.unlink(missing_ok=True)
         manifest_path.unlink(missing_ok=True)
@@ -122,10 +125,14 @@ def bind_memory_export(root: Path, export_path: Path, config_path: Path,
     return config, manifest
 
 
-def validate(root: Path, config_path: Path, manifest_path: Path) -> tuple[dict, dict]:
+def validate(root: Path, config_path: Path, manifest_path: Path, *,
+             binding_root: Path | None = None) -> tuple[dict, dict]:
     root = root.resolve()
-    config_path = _inside(root, config_path.resolve().relative_to(root).as_posix())
-    manifest_path = _inside(root, manifest_path.resolve().relative_to(root).as_posix())
+    binding_root = (binding_root or root).resolve()
+    config_path = _inside(binding_root,
+                          config_path.resolve().relative_to(binding_root).as_posix())
+    manifest_path = _inside(binding_root,
+                            manifest_path.resolve().relative_to(binding_root).as_posix())
     config = object_fields(_object_file(config_path), {
         "schema", "export_path", "export_manifest_sha256", "model_id",
     }, "m2_policy.config")
@@ -141,7 +148,7 @@ def validate(root: Path, config_path: Path, manifest_path: Path) -> tuple[dict, 
             or config["export_manifest_sha256"] != file_sha256(export / MANIFEST_NAME)):
         raise BoundaryError("m2_policy", "export_identity_drift")
     expected_pin = {"code_digest_scope": CODE_SCOPE,
-                    "config": {"path": config_path.relative_to(root).as_posix(),
+                    "config": {"path": config_path.relative_to(binding_root).as_posix(),
                                "sha256": file_sha256(config_path),
                                "schema": CONFIG_SCHEMA}}
     expected_adapter = {"id": ADAPTER, "version": "1.0.0", "protocol": PROTOCOL,
@@ -173,11 +180,14 @@ def arguments(entry: dict[str, Any]) -> list[str]:
 
 
 def inspect(root: Path, entry: dict[str, Any], manifest: dict[str, Any],
-            policy_config: dict[str, Any]) -> dict[str, dict[str, str]]:
+            policy_config: dict[str, Any], *,
+            binding_root: Path | None = None) -> dict[str, dict[str, str]]:
     """Readiness of the detached train-only package, not policy quality."""
     try:
-        config, checked = validate(root, _inside(root, entry["config"]),
-                                   _inside(root, entry["manifest"]))
+        binding_root = binding_root or root
+        config, checked = validate(root, _inside(binding_root, entry["config"]),
+                                   _inside(binding_root, entry["manifest"]),
+                                   binding_root=binding_root)
         if config != policy_config or checked != manifest:
             raise BoundaryError("m2_policy", "metadata_changed")
         return {"policy_identity": {"status": "pass"}}
