@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import readline from "node:readline";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverGameDirectory, readDiskIdentity, resolveInstallation } from "../src/game-installation.mjs";
 import { ManagedPeDriverSession } from "../src/managed-pe-driver-session.mjs";
+import { serveManagedPeDriver } from "../src/managed-pe-driver-loop.mjs";
 import { startManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
 import { readProjectIdentity } from "../src/project-identity.mjs";
 
@@ -46,27 +46,4 @@ write({
   environment_fingerprint: started.environmentFingerprint
 });
 
-const input = readline.createInterface({ input: process.stdin });
-let queue = Promise.resolve();
-input.on("line", (line) => {
-  queue = queue.then(async () => {
-    let request;
-    try {
-      request = JSON.parse(line);
-      const response = await driver.handle(request);
-      write(response);
-    } catch (error) {
-      write({
-        type: "error",
-        request_id: request?.request_id ?? null,
-        code: "driver_request_failed",
-        message: error instanceof Error ? error.message : String(error)
-      });
-    }
-    if (driver.closed) input.close();
-  });
-});
-input.on("close", async () => {
-  await queue;
-  if (!driver.closed) await driver.handle({ command: "close", request_id: null }).catch(() => null);
-});
+serveManagedPeDriver(driver);

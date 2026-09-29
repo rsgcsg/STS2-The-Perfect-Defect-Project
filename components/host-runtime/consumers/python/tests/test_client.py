@@ -1,5 +1,7 @@
 import sys
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -148,6 +150,26 @@ for line in sys.stdin:
 
 
 class ClientTest(unittest.TestCase):
+    def test_force_close_uses_eof_to_reap_pending_native_child(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is required for the public Host consumer")
+        fixture = (Path(__file__).resolve().parents[3] / "tools" / "test-fixtures"
+                   / "managed-driver-shutdown.mjs")
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = ManagedPlayerEnvironment(
+                [node, str(fixture), str(Path(temporary) / "entered")],
+                response_timeout_seconds=5,
+            )
+            native_pid = environment.ready["native_pid"]
+            environment.close(force=True)
+            self.assertIsNotNone(environment._process.poll())
+            self.assertEqual(subprocess.run(
+                [node, "-e", "try { process.kill(Number(process.argv[1]), 0); process.exit(1); } "
+                 "catch (error) { process.exit(error.code === 'ESRCH' ? 0 : 2); }",
+                 str(native_pid)], check=False,
+            ).returncode, 0, "force-close left the synthetic native child alive")
+
     def test_episode_seed_uses_the_game_canonical_form(self):
         self.assertEqual(canonicalize_episode_seed(" oiAbc123 "), "01ABC123")
         with self.assertRaises(ValueError):

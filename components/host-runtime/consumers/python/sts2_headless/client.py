@@ -265,12 +265,25 @@ class ManagedPlayerEnvironment:
         finally:
             self._closed = True
             if self._process.poll() is None:
-                self._process.terminate()
+                # EOF is the cross-platform request for Node to close the
+                # native child it owns. Windows terminate() is abrupt and
+                # cannot run Node's JavaScript signal handler.
+                if self._process.stdin is not None and not self._process.stdin.closed:
+                    try:
+                        self._process.stdin.close()
+                    except OSError:
+                        pass
             try:
-                self._process.wait(timeout=5)
+                self._process.wait(timeout=3 if force else 5)
             except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=5)
+                # This fallback bounds the public client, but cannot prove
+                # cleanup of a child if the Node owner failed before EOF.
+                self._process.terminate()
+                try:
+                    self._process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    self._process.wait(timeout=5)
             for stream in (self._process.stdin, self._process.stdout, self._process.stderr):
                 if stream is not None and not stream.closed:
                     stream.close()

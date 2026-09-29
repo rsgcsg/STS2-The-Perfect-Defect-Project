@@ -200,8 +200,17 @@ Raw mutation, reset, changed source/catalog, and unknown delivery invalidate it.
 Both profiles share the driver's episode and mutation-request fences. This
 JSONL opt-in does not expose a Connector HTTP/controller lease, add a Python
 v2 consumer, or turn historical v1 Human/model inputs into v2 data. The pinned
-Connector SDK remains at its older released version; Host's v2 wire shape is
-checked against the explicit Connector v2 contract fixture at source/test level.
+Connector SDK remains at its older released version. An isolated source-level
+cross-check used the PR106 SDK's strict v2 decoder; this package does not
+claim to consume that unpublished SDK build.
+
+The JSONL driver's explicit close, stdin EOF, and supported process signals
+share one native-child cleanup owner. A Python force-close first closes stdin
+so the Node driver can interrupt an in-flight request and reap its child on
+Windows as well as Unix; only after a bounded wait does Python terminate Node.
+The fallback bounds the client but cannot itself prove native-child cleanup if
+the owner fails. A pending or unknown mutation is never reported as
+`not_delivered` merely because shutdown suppressed a late reply.
 
 Event options retain the game's visible order and locked options remain visible
 but non-executable. An executable event choice carries the current native room,

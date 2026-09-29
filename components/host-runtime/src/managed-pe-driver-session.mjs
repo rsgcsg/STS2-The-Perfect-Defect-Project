@@ -22,6 +22,8 @@ export class ManagedPeDriverSession {
   #textRequestContinuity = new Map();
   #mutationRoutes = new Map();
   #tail = Promise.resolve();
+  #normalShutdown = null;
+  #forcedShutdown = null;
 
   constructor(started, { requestTimeoutMs = 10_000 } = {}) {
     if (started?.session == null || started?.runtime == null) {
@@ -34,6 +36,24 @@ export class ManagedPeDriverSession {
   }
 
   get closed() { return this.#closed; }
+
+  // EOF and force-close must interrupt an in-flight native request, rather
+  // than joining the JSONL mutation queue that request is waiting on.
+  shutdown({ force = false } = {}) {
+    if (!this.#closed) {
+      this.#closed = true;
+      this.#available = false;
+      this.#gameContinuityId = null;
+      this.#textV2.resetSelection();
+    }
+    if (force) {
+      this.#forcedShutdown ??= this.#started.session.close({ force: true, timeoutMs: 1_000 });
+      return this.#forcedShutdown;
+    }
+    if (this.#forcedShutdown != null) return this.#forcedShutdown;
+    this.#normalShutdown ??= this.#started.session.close();
+    return this.#normalShutdown;
+  }
 
   #requireEpisode() {
     if (this.#closed) throw new Error("driver_closed");
@@ -74,6 +94,7 @@ export class ManagedPeDriverSession {
         const snapshot = await this.#started.session.mount({
           seed, reset, timeoutMs: this.#timeoutMs
         });
+        if (this.#closed) throw new Error("driver_closed_during_reset");
         this.#requestedSeed = seed;
         this.#gameContinuityId = `managed_episode_${randomUUID().replaceAll("-", "")}`;
         this.#available = true;
@@ -171,11 +192,8 @@ export class ManagedPeDriverSession {
           } };
       }
       case "close":
-        this.#closed = true;
-        this.#available = false;
-        this.#gameContinuityId = null;
         return { type: "close_result", request_id: requestId,
-          exit: await this.#started.session.close() };
+          exit: await this.shutdown() };
       default:
         throw new Error(`Unsupported driver command: ${String(request?.command)}`);
     }

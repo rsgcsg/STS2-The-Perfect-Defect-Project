@@ -2024,8 +2024,8 @@ export class ManagedPlayerEnvironmentSession {
     return this.#setState(state, timeoutMs);
   }
 
-  async close() {
-    return this.#process.stop({ request: { cmd: "quit" }, timeoutMs: 5_000 });
+  async close({ force = false, timeoutMs = 5_000 } = {}) {
+    return this.#process.stop({ request: force ? null : { cmd: "quit" }, timeoutMs, force });
   }
 
   observe() {
