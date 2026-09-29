@@ -59,8 +59,9 @@ hosted acceptance:
   immutable source names session
   `session-20260928T162157Z-2b0c0cbd78874df382d89a1b630f2f5a` and verified
   Human bundle `ea98b0c7f16ccfffcacef6d7b71e4168ea896b17d9f8275e2afe5775c7c1536a`.
-  Its 584 input dispositions and the M2 projection's 548 observations
-  (including 36 verified settling events) are different, non-additive views.
+  Its 584 verified source events map to 548 model observation steps and
+  36 separately retained verified settling events. Settling does not update
+  memory; these counts are not additional accepted training labels.
   The audit originally did not train; this later operation did.
 - Explicit export revalidation completed for 4,659,080 package bytes without
   retraining. Registration on final candidate source returned HTTP 200 in
