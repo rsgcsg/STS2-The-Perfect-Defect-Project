@@ -46,6 +46,17 @@ staged-byte drift blocks that candidate. Neither optional pair is synthesized
 from the source checkout or a release URL; without an approved pair its profile
 remains unavailable. The M2 pair enables only later explicit model registration
 and readiness checks, not automatic model loading or qualification.
+An optional `m2-v2-runtime/profile.json` and `m2-v2-runtime/runtime.tgz` pair
+has its own inventory entry and `stpd/local-text-m2-runtime-v2` profile schema.
+The packager checks the exact archive and all five text-menu-v2 Connector SDK
+methods in a temporary installation before publishing the kit. `prepare` stages
+the pair under ignored `.local/`; the Workbench's explicit **检查 v2 记忆运行环境**
+action reads it only from the selected verified release and installs it into
+`models/text-menu-m2-v2`. A missing pair stays unavailable. `initialize` also
+installs an included v2 pair through the selected release's CLI and its same
+verified profile and archive. Existing v1 pairs keep their prior slots. The v2
+pair does not supply model weights or
+establish native or policy qualification.
 A prepared directory is never overwritten; `status --directory ...` rechecks its
 original archive, source, tool and staged bytes. Failed temporary preparation is
 removed; initialization can be retried in the same directory while its Workbench

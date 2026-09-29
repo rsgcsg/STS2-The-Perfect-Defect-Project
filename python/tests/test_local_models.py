@@ -1661,7 +1661,7 @@ def test_v2_offline_install_requires_private_exact_pin_and_uses_distinct_slot(
     monkeypatch.setattr(runtime_install, "install_runtime",
                         lambda *args, **kwargs: installed.append((args, kwargs)) or
                         {"status": "runtime_installed"})
-    with pytest.raises(BoundaryError, match="text_runtime_profile_required"):
+    with pytest.raises(BoundaryError, match="trusted_text_runtime_kit_unavailable"):
         local_model_cli.model_command(service.config, "install-runtime",
                                       runtime_profile="text-menu-m2-v2",
                                       runtime_archive=archive)
@@ -1702,7 +1702,7 @@ def test_v2_prepare_reports_unbundled_asset_and_reuses_exact_install(
                         lambda *args, **kwargs: pytest.fail("no install on prepare"))
     service.prepare_text_runtime("text-menu-m2-v2")
     state = finished(service)
-    assert state["error_code"] == "trusted_text_runtime_asset_not_bundled"
+    assert state["error_code"] == "trusted_text_runtime_kit_unavailable"
     assert state["loaded"] is False
 
     service.private_root.mkdir(parents=True, exist_ok=True)
@@ -1731,6 +1731,62 @@ def test_v2_prepare_reports_unbundled_asset_and_reuses_exact_install(
     service.prepare_text_runtime("text-menu-m2-v2")
     state = finished(service)
     assert state["error_code"] == "v2_runtime_contract_unavailable"
+
+
+def test_v2_prepare_from_selected_kit_uses_contract_checked_transaction(
+    service, monkeypatch, tmp_path,
+):
+    from spireagent.workbench import kit_runtime
+
+    archive = tmp_path / "v2.tgz"
+    archive.write_bytes(b"synthetic inventoried archive")
+    pin = {"package": "@rsgcsg/sts2-policy-runtime", "version": "candidate-v2",
+           "source_revision": "a" * 40, "component_tree_revision": "b" * 40,
+           "release_asset_sha256": kit_runtime.hashlib.sha256(archive.read_bytes()).hexdigest(),
+           "package_content_sha256": "d" * 64,
+           "dependency_layout": "bundled_source_candidate",
+           "bundled_connector_pin": {}}
+    profile = json.dumps({"schema": "stpd/local-text-m2-runtime-v2",
+                          "runtime_package": pin}).encode()
+    monkeypatch.setattr(service, "_selected_kit_text_runtime",
+                        lambda profile_id: (profile, archive, pin))
+    installed = []
+    monkeypatch.setattr(local_models, "install_runtime",
+                        lambda *a, **k: installed.append((a, k)) or
+                        {"status": "runtime_installed"})
+    service.prepare_text_runtime("text-menu-m2-v2")
+    state = finished(service)
+    assert state["last_text_runtime_preparation"] == {
+        "runtime_profile": "text-menu-m2-v2", "status": "ready", "reused": False,
+    }
+    assert installed == [((service.directory / "text-menu-m2-v2", pin,
+                           service._connector_pin()),
+                          {"archive": archive, "required_profile": "text-menu-m2-v2"})]
+
+
+def test_v2_prepare_rejects_colliding_private_pin_before_install(
+    service, monkeypatch, tmp_path,
+):
+    from spireagent.workbench.developer import atomic_json
+
+    archive = tmp_path / "v2.tgz"
+    archive.write_bytes(b"inventoried")
+    pin = {"package": "@rsgcsg/sts2-policy-runtime", "version": "candidate-v2",
+           "source_revision": "a" * 40, "component_tree_revision": "b" * 40,
+           "release_asset_sha256": "c" * 64,
+           "package_content_sha256": "d" * 64,
+           "dependency_layout": "bundled_source_candidate", "bundled_connector_pin": {}}
+    service.private_root.mkdir(parents=True)
+    atomic_json(service.private_root / "text-menu-m2-runtime-v2.json",
+                {"schema": "stpd/local-text-m2-runtime-v2", "runtime_package": pin})
+    different = dict(pin, version="other-v2")
+    monkeypatch.setattr(service, "_selected_kit_text_runtime",
+                        lambda _: (b"profile", archive, different))
+    monkeypatch.setattr(local_models, "validate_runtime_install", lambda *a: None)
+    monkeypatch.setattr(local_models, "install_runtime",
+                        lambda *a, **k: pytest.fail("collision must not install"))
+    service.prepare_text_runtime("text-menu-m2-v2")
+    assert finished(service)["error_code"] == "private_profile_collision"
 
 
 def test_v2_sdk_probe_requires_installed_methods(tmp_path):
