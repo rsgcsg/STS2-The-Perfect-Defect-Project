@@ -17,6 +17,7 @@ from test_text_menu_data import snapshot
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, json_bytes
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
+from stpd.canonical import semantic_hash
 from stpd.fullrun.features import _load_model_view, load_model_view
 from stpd.fullrun.observed_input_sequence import load_observed_input_view
 from stpd.fullrun.text_menu_human_import import (
@@ -225,12 +226,12 @@ def test_source_requires_verified_archived_evidence(tmp_path) -> None:
 
 def _declared_bundle(
     tmp_path: Path, mechanism: str, verb: str, *, session_id: str | None = None,
-    page_name: str | None = None,
+    page_name: str | None = None, row_version: int = 1,
 ) -> tuple[Path, dict, Path]:
     bundle = bundle3(tmp_path / "fixture", session_id=session_id)
     raw = bundle / "raw"
     recording = load(raw / "recording-manifest.json")
-    recording.update(text_input_schema_version=1, close_schema_version=1)
+    recording.update(text_input_schema_version=row_version, close_schema_version=1)
     write(raw / "recording-manifest.json", recording)
     current = snapshot(page_name or session_id or "archive")
     current["session"] = {"runtime_instance_id": "runtime-1",
@@ -275,6 +276,9 @@ def _declared_bundle(
         row["native_carrier_witness_id"] = "request-1"
     elif verb != "begin_card_play":
         row["native_owner_witness_id"] = row["native_carrier_witness_id"]
+    if row_version == 2:
+        row.update(schema_version=2, schema="sts2.human-annotator/human-text-input-2",
+                   observation_order={"capture_ordinal": 11, "completed_append_watermark": 0})
     stream = raw / "human-text-inputs.jsonl"
     stream.write_bytes(json_bytes(row))
     write(raw / "session-close-receipt.json", {
@@ -288,6 +292,7 @@ def _declared_bundle(
     return bundle, row, stream
 
 
+@pytest.mark.parametrize("row_version", [1, 2])
 @pytest.mark.parametrize(("mechanism", "verb"), [
     ("begin_card_play_exact_factory_return", "begin_card_play"),
     ("controller_confirmed_input_signal", "confirm_card"),
@@ -296,13 +301,15 @@ def _declared_bundle(
     ("controller_target_canceled_input", "cancel_card_play"),
     ("end_turn_exact_request_submitted", "end_turn"),
 ])
-def test_declared_bundle_archive_is_reverified_when_source_loads(tmp_path, mechanism, verb) -> None:
-    bundle, row, stream = _declared_bundle(tmp_path, mechanism, verb)
+def test_declared_bundle_archive_is_reverified_when_source_loads(
+    tmp_path, mechanism, verb, row_version,
+) -> None:
+    bundle, row, stream = _declared_bundle(tmp_path, mechanism, verb, row_version=row_version)
     target = store(tmp_path / "artifacts")
     evidence = publish_verified_human_text_bundle(target, bundle, PRODUCER)
     stream.write_bytes(b"corrupted after archive\n")
     _, verified, rows = load_verified_human_text_bundle(target, evidence.artifact_id)
-    assert verified.text_input_schema_version == 1
+    assert verified.text_input_schema_version == row_version
     assert rows[0]["disposition"] == "accepted_input"
     source = publish_human_text_source(target, (evidence.artifact_id,), PRODUCER)
     _, loaded = load_human_text_source(target, source.artifact_id)
@@ -324,6 +331,84 @@ def test_declared_bundle_archive_is_reverified_when_source_loads(tmp_path, mecha
     assert all(mechanism not in action for action in archived.action_texts)
     with pytest.raises(BoundaryError, match="independent_groups_required"):
         _project(loaded)
+
+
+def test_row2_source_preserves_append_digest_while_observed_view_orders_nested_captures(
+    tmp_path,
+) -> None:
+    bundle, row, stream = _declared_bundle(
+        tmp_path, "begin_card_play_exact_factory_return", "begin_card_play", row_version=2)
+    rows = []
+    for sequence, ordinal in enumerate((2, 1, 17), 1):
+        item = copy.deepcopy(row)
+        item.update(sequence=sequence, record_id=f"nested-{sequence}")
+        item["observation_order"] = {
+            "capture_ordinal": ordinal, "completed_append_watermark": 0 if sequence < 3 else 2}
+        rows.append(item)
+    stream.write_bytes(b"".join(json_bytes(item) for item in rows))
+    receipt_path = stream.parent / "session-close-receipt.json"
+    receipt = load(receipt_path)
+    receipt.update(human_text_input_count=3,
+                   human_text_inputs_sha256=hashlib.sha256(stream.read_bytes()).hexdigest())
+    write(receipt_path, receipt)
+    seal(bundle)
+    target = store(tmp_path / "artifacts")
+    evidence = publish_verified_human_text_bundle(target, bundle, PRODUCER)
+    source = publish_human_text_source(target, (evidence.artifact_id,), PRODUCER)
+    _, loaded = load_human_text_source(target, source.artifact_id)
+    assert loaded == tuple(rows)
+    assert source.parameters.value()["schema"] == SOURCE_SCHEMA
+    assert source.parameters.value()["source_digest"] == semantic_hash(rows)
+    observed = load_observed_input_view(target, source.artifact_id)
+    assert [item.source_sequence for item in observed.inputs] == [1, 2, 17]
+    assert [item.source_events[0].sequence for item in observed.inputs] == [2, 1, 3]
+    changed_order = copy.deepcopy(rows)
+    changed_order[0]["observation_order"]["capture_ordinal"] = 3
+    assert semantic_hash(changed_order) != source.parameters.value()["source_digest"]
+    forged = replace(source, parameters=FrozenObject.of({
+        **source.parameters.value(), "source_digest": semantic_hash(changed_order)}))
+    target.publish(forged)
+    with pytest.raises(BoundaryError, match="source_identity_mismatch"):
+        load_human_text_source(target, forged.artifact_id)
+
+
+@pytest.mark.parametrize(("failed_capture", "keep_environment"), [
+    (2, True), (None, True), (None, False),
+])
+def test_row2_verified_capture_failure_preserves_samples_without_inventing_memory_edges(
+    tmp_path, failed_capture, keep_environment,
+) -> None:
+    from stpd.fullrun.memory_sequence_bridge import _segments
+
+    bundle, row, stream = _declared_bundle(
+        tmp_path, "begin_card_play_exact_factory_return", "begin_card_play", row_version=2)
+    rows = []
+    for sequence, ordinal in enumerate((failed_capture, 1, 3, 4), 1):
+        item = copy.deepcopy(row)
+        item.update(sequence=sequence, record_id=f"failed-nested-{sequence}")
+        item["observation_order"] = {
+            "capture_ordinal": ordinal, "completed_append_watermark": 0}
+        rows.append(item)
+    rows[0].update(snapshot=None, snapshot_sha256=None, chosen_action=None,
+                   disposition="capture_failed", reason_code="snapshot_serialization_failed")
+    if not keep_environment:
+        rows[0].pop("environment")
+    stream.write_bytes(b"".join(json_bytes(item) for item in rows))
+    receipt_path = stream.parent / "session-close-receipt.json"
+    receipt = load(receipt_path)
+    receipt.update(human_text_input_count=4,
+                   human_text_inputs_sha256=hashlib.sha256(stream.read_bytes()).hexdigest())
+    write(receipt_path, receipt)
+    seal(bundle)
+    target = store(tmp_path / "artifacts")
+    evidence = publish_verified_human_text_bundle(target, bundle, PRODUCER)
+    source = publish_human_text_source(target, (evidence.artifact_id,), PRODUCER)
+    view = load_observed_input_view(target, source.artifact_id)
+    segments, diagnostics = _segments(view)
+    assert sum(item.choice_mask for item in view.inputs) == 3
+    assert [item.reason for item in diagnostics] == ["missing_observation"]
+    assert [len(segment) for segment in segments] == ([1, 2] if failed_capture else [1, 1, 1])
+    assert {item.source_events[0].sequence for item in view.inputs} == {1, 2, 3, 4}
 
 
 def test_typed_human_text_view_trains_tiny_b_and_exports_standalone_text_menu(

@@ -33,6 +33,7 @@ test("Connector dependency is a strict SemVer minimum, not a current-version loc
   const dependencyErrors = () => validatePlatformBom(bom, authorities).filter((error) =>
     error.startsWith("Annotator Connector dependency:"));
 
+  connector.min_version = "1.3.0-rc.5"; // Both sides of this synthetic comparison are fixed.
   assert.deepEqual(dependencyErrors(), []); // rc.5 is a valid minimum for rc.6.
   connector.min_version = "1.3.0-rc.7";
   assert.equal(dependencyErrors().length, 1);

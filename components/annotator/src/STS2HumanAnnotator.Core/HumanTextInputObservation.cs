@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Runtime.CompilerServices;
 
 namespace STS2HumanAnnotator.Core;
@@ -6,8 +7,10 @@ namespace STS2HumanAnnotator.Core;
 /// <summary>Read-only Human input evidence. It is never a canonical transition or successor.</summary>
 public static class HumanTextInputObservationContract
 {
-    public const int SchemaVersion = 1;
-    public const string Schema = "sts2.human-annotator/human-text-input-1";
+    public const int SchemaVersion = 2;
+    public const string Schema = "sts2.human-annotator/human-text-input-2";
+    public const string LegacySchema = "sts2.human-annotator/human-text-input-1";
+    public static bool Supports(int? version) => version is 1 or SchemaVersion;
     public const string FileName = "human-text-inputs.jsonl";
     public const string AcceptedInput = "accepted_input";
     public const string NotMapped = "not_mapped";
@@ -92,6 +95,11 @@ public sealed class HumanTextInputClaimGate
     }
 }
 
+/// <summary>Capture order and completed append prefix are distinct facts, not causal effects.</summary>
+public sealed record HumanTextInputObservationOrder(
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] long? CaptureOrdinal,
+    long CompletedAppendWatermark);
+
 public sealed record HumanTextInputObservation(
     int SchemaVersion,
     string Schema,
@@ -115,7 +123,9 @@ public sealed record HumanTextInputObservation(
     string NativeMechanism,
     string Disposition,
     string? ReasonCode,
-    bool ExternalControllerActive);
+    bool ExternalControllerActive,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    HumanTextInputObservationOrder? ObservationOrder = null);
 
 public static class HumanTextInputObservationValidator
 {
@@ -123,9 +133,22 @@ public static class HumanTextInputObservationValidator
     {
         var errors = new List<string>();
         if (value is null) return new[] { "text_input_missing" };
-        if (value.SchemaVersion != HumanTextInputObservationContract.SchemaVersion
-            || value.Schema != HumanTextInputObservationContract.Schema)
+        if (!(value.SchemaVersion == 1 && value.Schema == HumanTextInputObservationContract.LegacySchema)
+            && !(value.SchemaVersion == HumanTextInputObservationContract.SchemaVersion
+                && value.Schema == HumanTextInputObservationContract.Schema))
             errors.Add("text_input_schema_invalid");
+        if (value.SchemaVersion == 1 && value.ObservationOrder is not null)
+            errors.Add("text_input_legacy_order_metadata");
+        if (value.SchemaVersion == HumanTextInputObservationContract.SchemaVersion)
+        {
+            HumanTextInputObservationOrder? order = value.ObservationOrder;
+            if (order == null || order.CompletedAppendWatermark < 0
+                || order.CompletedAppendWatermark >= value.Sequence
+                || (value.Snapshot != null && order.CaptureOrdinal is not > 0)
+                || (order.CaptureOrdinal != null && (order.CaptureOrdinal <= 0
+                    || value.Environment == null || !ExactEnvironment(value.Environment))))
+                errors.Add("text_input_observation_order_invalid");
+        }
         if (value.Sequence <= 0 || string.IsNullOrWhiteSpace(value.RecordId)
             || string.IsNullOrWhiteSpace(value.SessionId)
             || string.IsNullOrWhiteSpace(value.TimelineId)

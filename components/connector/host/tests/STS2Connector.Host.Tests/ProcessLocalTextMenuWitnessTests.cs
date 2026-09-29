@@ -33,6 +33,70 @@ public sealed class ProcessLocalTextMenuWitnessTests
     }
 
     [Fact]
+    public void SuccessfulFreezesOfTheSamePageHaveDistinctOrdinalsWithoutChangingTheSnapshot()
+    {
+        TextMenuFrame page = Frame(new(), new(), new(), new DispatchCounter());
+        ProcessLocalTextMenuWitnessFrame Freeze(long ordinal) =>
+            new(page, Capabilities(), "source", false, ordinal);
+
+        var first = PlayerEnvironmentService.CaptureTextMenuWitnessCore(Freeze);
+        Assert.Throws<InvalidOperationException>(() =>
+            PlayerEnvironmentService.CaptureTextMenuWitnessCore(_ =>
+                throw new InvalidOperationException("native freeze failed")));
+        Assert.Throws<InvalidOperationException>(() =>
+            PlayerEnvironmentService.CaptureTextMenuWitnessCore(_ =>
+                PlayerEnvironmentService.CaptureTextMenuWitnessCore(Freeze)));
+        var second = PlayerEnvironmentService.CaptureTextMenuWitnessCore(Freeze);
+
+        Assert.Equal(first.CaptureOrdinal + 1, second.CaptureOrdinal);
+        Assert.Equal(first.Snapshot.SnapshotId, second.Snapshot.SnapshotId);
+        Assert.Equal(first.Snapshot.Sequence, second.Snapshot.Sequence);
+        Assert.DoesNotContain("CaptureOrdinal", JsonSerializer.Serialize(second.Snapshot));
+    }
+
+    [Fact]
+    public async Task ConcurrentFreezesReceiveOrdinalsInTheOrderTheyFreeze()
+    {
+        TextMenuFrame page = Frame(new(), new(), new(), new DispatchCounter());
+        using var firstEntered = new ManualResetEventSlim();
+        using var releaseFirst = new ManualResetEventSlim();
+        using var secondStarted = new ManualResetEventSlim();
+        using var secondEntered = new ManualResetEventSlim();
+        Task<ProcessLocalTextMenuWitnessFrame> first = Task.Run(() =>
+            PlayerEnvironmentService.CaptureTextMenuWitnessCore(ordinal =>
+            {
+                firstEntered.Set();
+                if (!releaseFirst.Wait(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("first freeze was not released");
+                return new(page, Capabilities(), "source", false, ordinal);
+            }));
+        try
+        {
+            Assert.True(firstEntered.Wait(TimeSpan.FromSeconds(10)));
+            Task<ProcessLocalTextMenuWitnessFrame> second = Task.Run(() =>
+            {
+                secondStarted.Set();
+                return PlayerEnvironmentService.CaptureTextMenuWitnessCore(ordinal =>
+                {
+                    secondEntered.Set();
+                    return new(page, Capabilities(), "source", false, ordinal);
+                });
+            });
+            Assert.True(secondStarted.Wait(TimeSpan.FromSeconds(10)));
+            Assert.False(secondEntered.Wait(TimeSpan.FromMilliseconds(100)));
+            releaseFirst.Set();
+            var frozen = await Task.WhenAll(first, second);
+            Assert.Equal(frozen[0].CaptureOrdinal + 1, frozen[1].CaptureOrdinal);
+            Assert.Equal(frozen[0].Snapshot.SnapshotId, frozen[1].Snapshot.SnapshotId);
+        }
+        finally
+        {
+            releaseFirst.Set();
+            await first;
+        }
+    }
+
+    [Fact]
     public void EndTurnControlRequiresItsExactFrozenButtonReference()
     {
         var dispatches = new DispatchCounter();

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -449,10 +450,11 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
         self._reseal(bundle)
         self.assertEqual(verify_human_session_bundle(bundle).findings[0].code, "session_close_receipt_invalid_or_missing")
 
-    def _declare_text(self, bundle: Path, rows: list[dict[str, Any]]) -> Path:
+    def _declare_text(self, bundle: Path, rows: list[dict[str, Any]],
+                      *, version: int = 1) -> Path:
         raw = bundle / "raw"
         recording = json.loads((raw / "recording-manifest.json").read_text())
-        recording.update(text_input_schema_version=1, close_schema_version=1)
+        recording.update(text_input_schema_version=version, close_schema_version=1)
         self._write(raw / "recording-manifest.json", recording)
         path = raw / "human-text-inputs.jsonl"
         self._stream(path, rows)
@@ -531,6 +533,153 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
             verified.human_text_inputs[0]["record_id"] = "mutated"  # type: ignore[index]
         with self.assertRaises(TypeError):
             verified.human_text_inputs[0]["snapshot"]["snapshot_id"] = "mutated"  # type: ignore[index]
+
+    def _text_row_v2(self, bundle: Path, sequence: int, capture: int | None,
+                     watermark: int) -> dict[str, Any]:
+        row = deepcopy(self._text_row(bundle))
+        row.update(schema_version=2, schema="sts2.human-annotator/human-text-input-2",
+                   sequence=sequence, record_id=f"text-{sequence}",
+                   observation_order={"capture_ordinal": capture,
+                                      "completed_append_watermark": watermark})
+        row["snapshot"]["snapshot_id"] = f"snapshot-{sequence}"
+        row["snapshot_sha256"] = sha_bytes(canonical(row["snapshot"]).encode())
+        return row
+
+    def test_v2_nested_capture_order_keeps_physical_append_sequence(self) -> None:
+        bundle = self._bundle()
+        # Outer capture C1 starts, inner C2 appends S1, then C1 appends S2.
+        # A later C3 may observe the completed S1..S2 prefix.
+        rows = [self._text_row_v2(bundle, 1, 2, 0),
+                self._text_row_v2(bundle, 2, 1, 0),
+                self._text_row_v2(bundle, 3, 3, 2)]
+        self._declare_text(bundle, rows, version=2)
+        verified = verify_human_session_bundle(bundle)
+        self.assertTrue(verified.passed, verified.findings)
+        value = verified.require_value()
+        self.assertEqual(value.text_input_schema_version, 2)
+        self.assertEqual([row["sequence"] for row in value.human_text_inputs], [1, 2, 3])
+        self.assertEqual([row["observation_order"]["capture_ordinal"]
+                          for row in value.human_text_inputs], [2, 1, 3])
+        with self.assertRaises(TypeError):
+            value.human_text_inputs[0]["observation_order"]["capture_ordinal"] = 9  # type: ignore[index]
+
+    def test_v2_capture_order_rejects_future_prefix_duplicate_and_mixed_schema(self) -> None:
+        bundle = self._bundle()
+        rows = [self._text_row_v2(bundle, 1, 2, 0),
+                self._text_row_v2(bundle, 2, 1, 0),
+                self._text_row_v2(bundle, 3, 3, 2)]
+        for mutation in (lambda r: r[2]["observation_order"].update(
+                             completed_append_watermark=3),
+                         lambda r: r[2]["observation_order"].update(
+                             completed_append_watermark=True),
+                         lambda r: r[2]["observation_order"].update(
+                             capture_ordinal=2),
+                         lambda r: r[2]["observation_order"].update(
+                             capture_ordinal=True),
+                         lambda r: r[2].update(schema_version=1),
+                         lambda r: r[2]["observation_order"].update(
+                             unrelated=1)):
+            with self.subTest(mutation=mutation):
+                bad = deepcopy(rows)
+                mutation(bad)
+                self._declare_text(bundle, bad, version=2)
+                self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                                 "human_text_input_capture_order_invalid"
+                                 if bad[2]["schema_version"] == 2 else
+                                 "human_text_input_schema_invalid")
+        self._declare_text(bundle, rows, version=1)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_schema_invalid")
+
+    def test_v2_watermark_checks_max_capture_not_last_append(self) -> None:
+        bundle = self._bundle()
+        rows = [self._text_row_v2(bundle, 1, 4, 0),
+                self._text_row_v2(bundle, 2, 1, 0),
+                self._text_row_v2(bundle, 3, 3, 2)]
+        self._declare_text(bundle, rows, version=2)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_capture_order_invalid")
+
+    def test_v2_other_runtime_prefix_is_not_compared_as_capture_clock(self) -> None:
+        bundle = self._bundle()
+        first = self._text_row_v2(bundle, 1, 7, 0)
+        other = self._text_row_v2(bundle, 2, 1, 1)
+        other["environment"]["runtime_instance_id"] = "runtime-2"
+        other["snapshot"]["session"]["runtime_instance_id"] = "runtime-2"
+        other["snapshot_sha256"] = sha_bytes(canonical(other["snapshot"]).encode())
+        self._declare_text(bundle, [first, other], version=2)
+        result = verify_human_session_bundle(bundle)
+        self.assertTrue(result.passed, result.findings)
+
+    def test_v2_prefix_can_span_declared_runs_but_not_foreign_identity(self) -> None:
+        bundle = self._bundle()
+        first = self._text_row_v2(bundle, 1, 1, 0)
+        next_run = self._text_row_v2(bundle, 2, 2, 1)
+        next_run["run_id"] = "run-0002"
+        path = self._declare_text(bundle, [first, next_run], version=2)
+        raw = bundle / "raw"
+        recording = json.loads((raw / "recording-manifest.json").read_text())
+        receipt = json.loads((raw / "session-close-receipt.json").read_text())
+        rows = verify_human_text_inputs(raw, recording, receipt,
+                                        ("run-0001", "run-0002"))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1]["observation_order"]["completed_append_watermark"], 1)
+        # The bundle itself still rejects an unrecorded run in its own journal.
+        self.assertFalse(verify_human_session_bundle(bundle).passed)
+        next_run["session_id"] = "foreign-session"
+        self._stream(path, [first, next_run])
+        receipt["human_text_inputs_sha256"] = sha_file(path)
+        self._write(raw / "session-close-receipt.json", receipt)
+        self._reseal(bundle)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_identity_invalid")
+
+    def test_v2_null_capture_preserves_watermark_without_history_claim(self) -> None:
+        bundle = self._bundle()
+        first = self._text_row_v2(bundle, 1, 1, 0)
+        failed = self._text_row_v2(bundle, 2, None, 1)
+        failed.update(snapshot=None, snapshot_sha256=None, chosen_action=None,
+                      disposition="capture_failed", reason_code="capture_failed")
+        later = self._text_row_v2(bundle, 3, 2, 2)
+        self._declare_text(bundle, [first, failed, later], version=2)
+        verified = verify_human_session_bundle(bundle)
+        self.assertTrue(verified.passed, verified.findings)
+        bad = deepcopy(failed)
+        bad["observation_order"]["capture_ordinal"] = 3
+        self._declare_text(bundle, [first, bad, later], version=2)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_capture_order_invalid")
+
+    def test_v2_capture_ordinal_survives_snapshot_serialization_failure(self) -> None:
+        bundle = self._bundle()
+        first = self._text_row_v2(bundle, 1, 1, 0)
+        failed = self._text_row_v2(bundle, 2, 2, 1)
+        failed.update(snapshot=None, snapshot_sha256=None, chosen_action=None,
+                      disposition="capture_failed", reason_code="serialization_failed")
+        later = self._text_row_v2(bundle, 3, 3, 2)
+        rows = [first, failed, later]
+        self._declare_text(bundle, rows, version=2)
+        result = verify_human_session_bundle(bundle)
+        self.assertTrue(result.passed, result.findings)
+        for environment in (None, {}, {"runtime_instance_id": "runtime-1"}):
+            with self.subTest(environment=environment):
+                bad = deepcopy(rows)
+                bad[1]["environment"] = environment
+                self._declare_text(bundle, bad, version=2)
+                self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                                 "human_text_input_environment_missing")
+        for ordinal in (0, -1, True):
+            with self.subTest(ordinal=ordinal):
+                bad = deepcopy(rows)
+                bad[1]["observation_order"]["capture_ordinal"] = ordinal
+                self._declare_text(bundle, bad, version=2)
+                self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                                 "human_text_input_capture_order_invalid")
+        bad = deepcopy(rows)
+        bad[1]["observation_order"]["capture_ordinal"] = 4
+        self._declare_text(bundle, bad, version=2)
+        self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
+                         "human_text_input_capture_order_invalid")
 
     def test_native_input_mechanisms_bind_public_verbs_without_promoting_commit(self) -> None:
         bundle = self._bundle()
@@ -731,7 +880,7 @@ class HumanSessionBundleV3Tests(unittest.TestCase):
         self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,
                          "undeclared_human_text_input_stream")
         recording = json.loads((raw / "recording-manifest.json").read_text())
-        recording["text_input_schema_version"] = 2
+        recording["text_input_schema_version"] = 3
         self._write(raw / "recording-manifest.json", recording)
         self._reseal(bundle)
         self.assertEqual(verify_human_session_bundle(bundle).findings[0].code,

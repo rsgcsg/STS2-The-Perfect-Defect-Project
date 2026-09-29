@@ -27,6 +27,7 @@ public sealed class RecordingSessionStore : IDisposable
     private readonly FileStream _nativeSemanticDiscriminator;
     private readonly FileStream? _humanTextInputs;
     private long _humanTextInputSequence;
+    private readonly HumanTextInputOrderLedger _humanTextInputOrder = new();
     private readonly HashSet<string> _humanTextInputIds = new(StringComparer.Ordinal);
     private bool _humanTextInputAppendFailed;
     private readonly Dictionary<string, long> _families = new(StringComparer.Ordinal);
@@ -77,7 +78,7 @@ public sealed class RecordingSessionStore : IDisposable
                 Path.Combine(directory, "canonical-transitions.jsonl"));
             _nativeSemanticDiscriminator = OpenBufferedAppend(
                 Path.Combine(directory, "native-semantic-discriminator.jsonl"));
-            if (manifest.TextInputSchemaVersion == HumanTextInputObservationContract.SchemaVersion)
+            if (HumanTextInputObservationContract.Supports(manifest.TextInputSchemaVersion))
                 _humanTextInputs = OpenBufferedAppend(Path.Combine(directory,
                     HumanTextInputObservationContract.FileName));
             WriteCoverage();
@@ -144,7 +145,8 @@ public sealed class RecordingSessionStore : IDisposable
             || manifest.Schema != CurrentRecordingContract.ManifestSchema
             || manifest.CaptureProfileId != captureProfile.ProfileId
             || manifest.CaptureProfileSha256 != EvidenceIdentity.Sha256Json(captureProfile)
-            || manifest.TextInputSchemaVersion is not (null or HumanTextInputObservationContract.SchemaVersion))
+            || (manifest.TextInputSchemaVersion != null
+                && !HumanTextInputObservationContract.Supports(manifest.TextInputSchemaVersion)))
             throw new InvalidDataException("Current recording manifest does not bind the capture profile.");
         return new RecordingSessionStore(
             Path.Combine(Path.GetFullPath(root), SafeId(manifest.SessionId, nameof(manifest.SessionId))),
@@ -512,7 +514,8 @@ public sealed class RecordingSessionStore : IDisposable
                 throw new InvalidDataException("Human text input stream already failed this session.");
             try
             {
-                if (Manifest.TextInputSchemaVersion != HumanTextInputObservationContract.SchemaVersion
+                if (!HumanTextInputObservationContract.Supports(Manifest.TextInputSchemaVersion)
+                    || value.SchemaVersion != Manifest.TextInputSchemaVersion
                     || _humanTextInputs is null)
                     throw new InvalidDataException("Human text input stream was not declared by this manifest.");
                 IReadOnlyList<string> errors = HumanTextInputObservationValidator.Validate(value);
@@ -523,6 +526,8 @@ public sealed class RecordingSessionStore : IDisposable
                     throw new InvalidDataException("Human text input sequence is not contiguous.");
                 if (_humanTextInputIds.Contains(value.RecordId))
                     throw new InvalidDataException("Human text input record ID is duplicated.");
+                string? orderError = _humanTextInputOrder.Observe(value);
+                if (orderError != null) throw new InvalidDataException(orderError);
                 AppendBufferedLine(_humanTextInputs, value);
                 _humanTextInputSequence = value.Sequence;
                 _humanTextInputIds.Add(value.RecordId);
@@ -642,9 +647,9 @@ public sealed class RecordingSessionStore : IDisposable
                         schema = "sts2.human-annotator/session-close-1",
                         session_id = Manifest.SessionId, timeline_id = Manifest.TimelineId,
                         closed_at = DateTimeOffset.UtcNow, status = "closed",
-                        human_text_input_count = Manifest.TextInputSchemaVersion == 1
+                        human_text_input_count = HumanTextInputObservationContract.Supports(Manifest.TextInputSchemaVersion)
                             ? _humanTextInputSequence : (long?)null,
-                        human_text_inputs_sha256 = Manifest.TextInputSchemaVersion == 1
+                        human_text_inputs_sha256 = HumanTextInputObservationContract.Supports(Manifest.TextInputSchemaVersion)
                             ? EvidenceIdentity.Sha256File(Path.Combine(DirectoryPath,
                                 HumanTextInputObservationContract.FileName)) : null
                     }, EvidenceJson.IndentedOptions));

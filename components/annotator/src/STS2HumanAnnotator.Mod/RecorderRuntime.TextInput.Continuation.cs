@@ -19,7 +19,7 @@ internal static partial class RecorderRuntime
     {
         internal HumanTextContinuationScope(HumanTextContinuationScope? previous,
             RecordingSessionStore store, string sessionId, string timelineId,
-            string runId, NCardPlay carrier, InputEvent input, string verb,
+            string runId, long completedAppendWatermark, NCardPlay carrier, InputEvent input, string verb,
             string mechanism, NTargetManager? manager, NCreature? target,
             bool requestedCancel)
         {
@@ -28,6 +28,7 @@ internal static partial class RecorderRuntime
             SessionId = sessionId;
             TimelineId = timelineId;
             RunId = runId;
+            CompletedAppendWatermark = completedAppendWatermark;
             Carrier = carrier;
             Input = input;
             Verb = verb;
@@ -43,6 +44,7 @@ internal static partial class RecorderRuntime
         internal string SessionId { get; }
         internal string TimelineId { get; }
         internal string RunId { get; }
+        internal long CompletedAppendWatermark { get; }
         internal NCardPlay Carrier { get; }
         internal InputEvent Input { get; }
         internal CardModel? Card { get; set; }
@@ -254,7 +256,7 @@ internal static partial class RecorderRuntime
                     || _store == null || !_humanTextInputHealthy
                     || SessionId == null || TimelineId == null) return null;
                 scope = new(HumanTextContinuationCurrent.Value, _store,
-                    SessionId, TimelineId, _currentRunId, carrier, input, verb,
+                    SessionId, TimelineId, _currentRunId, _humanTextInputSequence, carrier, input, verb,
                     mechanism, manager, target, requestedCancel);
                 _humanTextInputPendingScopes++;
             }
@@ -423,6 +425,13 @@ internal static partial class RecorderRuntime
                     || SessionId != scope.SessionId || TimelineId != scope.TimelineId
                     || _lifecycle.State is RecordingLifecycleState.Ready
                         or RecordingLifecycleState.Closed) return;
+                // A callback spanning a new run remains diagnostic evidence;
+                // it cannot be accepted as an input in that later run.
+                if (_currentRunId != scope.RunId && snapshot != null)
+                {
+                    disposition = HumanTextInputObservationContract.NotMapped;
+                    reason = "run_identity_changed_before_finish";
+                }
                 if (disposition == HumanTextInputObservationContract.AcceptedInput
                     && !HumanTextConsumedInputs.TryClaim(scope.Input, scope.SessionId))
                     return;
@@ -441,7 +450,10 @@ internal static partial class RecorderRuntime
                     NativeWitnessIdentity.Get(scope.Carrier, "text_carrier"),
                     scope.Card == null ? null : NativeWitnessIdentity.Get(scope.Card, "text_card"),
                     NativeWitnessIdentity.Get(scope.Carrier, "text_carrier"),
-                    scope.Mechanism, disposition, reason, false);
+                    scope.Mechanism, disposition, reason, false,
+                    new HumanTextInputObservationOrder(
+                        scope.Environment == null ? null : scope.Frame?.CaptureOrdinal,
+                        scope.CompletedAppendWatermark));
                 try
                 {
                     scope.Store.AppendHumanTextInputObservation(observation);
