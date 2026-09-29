@@ -81,18 +81,9 @@ def model_command(
                 pin,
                 service._connector_pin(),
                 archive=runtime_archive,
+                **({"required_profile": runtime_profile}
+                   if runtime_profile == "text-menu-m2-v2" else {}),
             )
-            if runtime_profile == "text-menu-m2-v2":
-                from spireagent.workbench.runtime_install import (
-                    CONNECTOR_PACKAGE,
-                    RUNTIME_PACKAGE,
-                    v2_sdk_available,
-                )
-
-                sdk = (directory / "runtime/node_modules" / RUNTIME_PACKAGE /
-                       "node_modules" / CONNECTOR_PACKAGE / "dist/index.js")
-                if not v2_sdk_available(sdk):
-                    raise BoundaryError("local_model", "v2_runtime_contract_unavailable")
             return installed
     current = running(config)
     if current is None:

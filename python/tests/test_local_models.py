@@ -1661,7 +1661,6 @@ def test_v2_offline_install_requires_private_exact_pin_and_uses_distinct_slot(
     monkeypatch.setattr(runtime_install, "install_runtime",
                         lambda *args, **kwargs: installed.append((args, kwargs)) or
                         {"status": "runtime_installed"})
-    monkeypatch.setattr(runtime_install, "v2_sdk_available", lambda _: True)
     with pytest.raises(BoundaryError, match="text_runtime_profile_required"):
         local_model_cli.model_command(service.config, "install-runtime",
                                       runtime_profile="text-menu-m2-v2",
@@ -1690,12 +1689,8 @@ def test_v2_offline_install_requires_private_exact_pin_and_uses_distinct_slot(
                                            runtime_archive=archive)
     assert result["status"] == "runtime_installed"
     assert installed == [((service.directory / "text-menu-m2-v2", pin,
-                           service._connector_pin()), {"archive": archive})]
-    monkeypatch.setattr(runtime_install, "v2_sdk_available", lambda _: False)
-    with pytest.raises(BoundaryError, match="v2_runtime_contract_unavailable"):
-        local_model_cli.model_command(service.config, "install-runtime",
-                                      runtime_profile="text-menu-m2-v2",
-                                      runtime_archive=archive)
+                           service._connector_pin()),
+                          {"archive": archive, "required_profile": "text-menu-m2-v2"})]
 
 
 def test_v2_prepare_reports_unbundled_asset_and_reuses_exact_install(

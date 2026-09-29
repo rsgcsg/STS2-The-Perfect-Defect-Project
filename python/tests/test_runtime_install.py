@@ -204,6 +204,80 @@ def test_offline_install_promotes_bundled_candidate_without_sibling_connector(
     runtime_install.validate_runtime_install(target / "runtime/node_modules", pin, {})
 
 
+def test_v2_contract_rejection_preserves_existing_install_before_promotion(
+    tmp_path, monkeypatch, isolated_port, bundled_release,
+):
+    node_modules, _, pin = bundled_release
+    archive = tmp_path / "candidate.tgz"
+    archive.write_bytes(b"synthetic bundled candidate")
+    pin["release_asset_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
+    npm_executable = runtime_install.shutil.which("npm")
+    actual_run = runtime_install.subprocess.run
+
+    def npm_or_node(command, **kwargs):
+        if command[0] == npm_executable:
+            runtime_install.shutil.copytree(node_modules, kwargs["cwd"] / "node_modules")
+            return SimpleNamespace(returncode=0)
+        return actual_run(command, **kwargs)
+
+    monkeypatch.setattr(runtime_install.subprocess, "run", npm_or_node)
+    directory = tmp_path / "installed"
+    target = directory / "runtime"
+    target.mkdir(parents=True)
+    (target / "old-package.txt").write_bytes(b"previous exact installation")
+    (directory / "receipt.json").write_bytes(b"previous receipt")
+    with pytest.raises(BoundaryError, match="v2_runtime_contract_unavailable"):
+        runtime_install.install_runtime(directory, pin, {}, archive=archive,
+                                        required_profile="text-menu-m2-v2")
+    assert (target / "old-package.txt").read_bytes() == b"previous exact installation"
+    assert (directory / "receipt.json").read_bytes() == b"previous receipt"
+    assert not list(directory.glob(".runtime-install-*"))
+    assert not list(directory.glob(".runtime-backup-*"))
+
+
+def test_v2_contract_promotes_only_validated_stage(
+    tmp_path, monkeypatch, isolated_port, bundled_release,
+):
+    node_modules, root, pin = bundled_release
+    sdk = root / "node_modules" / runtime_install.CONNECTOR_PACKAGE
+    sdk_json = json.loads((sdk / "package.json").read_text())
+    sdk_json["type"] = "module"
+    (sdk / "package.json").write_text(json.dumps(sdk_json))
+    (sdk / "dist").mkdir()
+    (sdk / "dist/index.js").write_text(
+        "export class PlayerEnvironmentRestClient {"
+        "textMenuV2Capabilities() {} observeTextMenuV2Context() {} }"
+    )
+    pin["bundled_connector_pin"]["bundle_sha256"] = runtime_install._bundled_hashes(
+        sdk, root / "node_modules/zod",
+    )[0]
+    identity = json.loads((root / "package-identity.json").read_text())
+    identity["connector_sdk"] = pin["bundled_connector_pin"]
+    (root / "package-identity.json").write_text(json.dumps(identity))
+    pin["package_content_sha256"] = directory_sha256(root)
+    archive = tmp_path / "candidate.tgz"
+    archive.write_bytes(b"synthetic v2 bundled candidate")
+    pin["release_asset_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
+    npm_executable = runtime_install.shutil.which("npm")
+    actual_run = runtime_install.subprocess.run
+
+    def npm_or_node(command, **kwargs):
+        if command[0] == npm_executable:
+            runtime_install.shutil.copytree(node_modules, kwargs["cwd"] / "node_modules")
+            return SimpleNamespace(returncode=0)
+        return actual_run(command, **kwargs)
+
+    monkeypatch.setattr(runtime_install.subprocess, "run", npm_or_node)
+    directory = tmp_path / "installed"
+    result = runtime_install.install_runtime(directory, pin, {}, archive=archive,
+                                             required_profile="text-menu-m2-v2")
+    assert result["status"] == "runtime_installed"
+    assert runtime_install.v2_sdk_available(
+        directory / "runtime/node_modules" / runtime_install.RUNTIME_PACKAGE /
+        "node_modules" / runtime_install.CONNECTOR_PACKAGE / "dist/index.js"
+    )
+
+
 def test_real_npm_pack_install_validates_bundled_closure(tmp_path, bundled_release,
                                                         isolated_port):
     """Exercise npm tarball extraction and the same closure check used by kit packaging."""

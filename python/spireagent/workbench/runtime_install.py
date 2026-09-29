@@ -271,13 +271,17 @@ def install_runtime(
     connector_pin: dict[str, Any],
     *,
     archive: Path | None = None,
+    required_profile: str | None = None,
 ) -> dict[str, Any]:
     """An explicit local archive remains bound to the pinned release hash."""
     from spireagent.workbench.developer_server import instance_lock
 
+    if required_profile not in {None, "text-menu-m2-v2"}:
+        raise BoundaryError("local_model", "unsupported_runtime_profile")
     with instance_lock(directory / "runtime-install.lock"):
         try:
-            return _install_runtime(directory, pin, connector_pin, archive=archive)
+            return _install_runtime(directory, pin, connector_pin, archive=archive,
+                                    required_profile=required_profile)
         except PackageIdentityError:
             raise BoundaryError(
                 "local_model", "pinned_runtime_install_verification_failed"
@@ -290,6 +294,7 @@ def _install_runtime(
     connector_pin: dict[str, Any],
     *,
     archive: Path | None,
+    required_profile: str | None,
 ) -> dict[str, Any]:
     expected = digest(pin.get("release_asset_sha256"), "local_model.runtime_archive")
     npm = shutil.which("npm")
@@ -382,6 +387,11 @@ def _install_runtime(
         if result.returncode != 0:
             raise BoundaryError("local_model", "pinned_runtime_npm_install_failed")
         observed = validate_runtime_install(stage / "node_modules", pin, connector_pin)
+        if required_profile == "text-menu-m2-v2":
+            sdk = (stage / "node_modules" / RUNTIME_PACKAGE / "node_modules" /
+                   CONNECTOR_PACKAGE / "dist/index.js")
+            if not v2_sdk_available(sdk):
+                raise BoundaryError("local_model", "v2_runtime_contract_unavailable")
         if target.is_symlink():
             raise BoundaryError("local_model", "runtime_install_path_unsafe")
         if target.exists():
