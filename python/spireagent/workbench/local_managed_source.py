@@ -23,6 +23,7 @@ from stpd.fullrun.managed_text_menu_import import (
     ManagedImportExpectation,
     import_managed_text_menu_report,
     load_managed_text_menu_source,
+    validate_managed_text_menu_report,
 )
 
 BINDING_SCHEMA = "stpd/local-managed-source-binding-v1"
@@ -103,6 +104,7 @@ class LocalManagedSourceService:
             if archived.get("status") != "stopped" or archived.get("error_code") is not None:
                 raise BoundaryError("local_managed_source", "closed_report_required")
             expected = _expectation(archived)
+            run = validate_managed_text_menu_report(archive, identity, expected=expected)
             owner, store, registry_path = self._selected()
             existing = []
             for artifact_id in store.manifest_ids():
@@ -119,7 +121,8 @@ class LocalManagedSourceService:
                 claim = owner.ledger.dataset(existing[0])
                 if claim is not None and claim[0] != purpose:
                     raise BoundaryError("local_managed_source", "reservation_identity_conflict")
-            owner.begin_source(identity)
+            owner.begin_managed_source(identity, run, purpose,
+                                       source=existing[0] if existing else None)
             if existing:
                 source = load_managed_text_menu_source(store, existing[0], expected=expected)
             else:

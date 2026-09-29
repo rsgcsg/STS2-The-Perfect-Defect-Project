@@ -324,6 +324,20 @@ def load_managed_text_menu_source(store: ArtifactStore, source_id: str, *,
     return ManagedSource(manifest, report_id, report, inputs, run, recorded)
 
 
+def validate_managed_text_menu_report(
+    report_store: ArtifactStore, report_id: str, *, expected: ManagedImportExpectation,
+) -> str:
+    """Read and validate the complete immutable closure before an application writes.
+
+    Return the exact split run for the owning ledger's purpose preflight. Import
+    repeats this validation immediately before copying; neither call grants use.
+    """
+    if not isinstance(expected, ManagedImportExpectation):
+        _fail("import_expectation_required")
+    _, _, _, run = _closed_report(report_store, report_id, expected=expected)
+    return run
+
+
 def import_managed_text_menu_report(
     report_store: ArtifactStore, research_store: ArtifactStore, report_id: str,
     producer: Producer, *, expected: ManagedImportExpectation,

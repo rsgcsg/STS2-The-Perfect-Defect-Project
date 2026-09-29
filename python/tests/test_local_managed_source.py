@@ -204,13 +204,28 @@ def test_old_unpinned_report_and_related_test_split_are_rejected(
     report_store.publish(failed)
     with pytest.raises(BoundaryError, match="closed_report_required"):
         service.import_report(failed.artifact_id, "test")
+    bad_profile = environment.report(report_id)
+    bad_profile["input_profile"] = "text-menu-v1"
+    invalid = Manifest("analysis", original.producer, parents=original.parents,
+                       payloads=(report_store.put_bytes("report", json_bytes(bad_profile)),),
+                       parameters=original.parameters)
+    report_store.publish(invalid)
+    _, research, _ = service._selected()
+    before = set(research.manifest_ids())
+    for _ in range(2):
+        with pytest.raises(BoundaryError, match="report_identity_mismatch"):
+            service.import_report(invalid.artifact_id, "training")
+    assert set(research.manifest_ids()) == before
     another, related_id, _ = _archive(tmp_path / "related", session="later-session",
                                        scenario="renamed-scenario")
     copy_artifact(another, report_store, related_id)
-    with pytest.raises(BoundaryError, match="managed_split_purpose_overlap"):
-        service.import_report(related_id, "test")
+    for _ in range(2):
+        with pytest.raises(BoundaryError, match="managed_split_purpose_overlap"):
+            service.import_report(related_id, "test")
+    assert set(research.manifest_ids()) == before
     assert service.binding(first["artifact_id"])["status"] == "admitted"
     assert _uses(owner) == (0, 0)
     with owner.transaction() as db:
         pending = {row[0] for row in db.execute("SELECT candidate FROM local_source_pending")}
-    assert unpinned.artifact_id not in pending and failed.artifact_id not in pending
+    assert not {unpinned.artifact_id, failed.artifact_id, invalid.artifact_id,
+                related_id} & pending
