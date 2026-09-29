@@ -112,6 +112,21 @@ Connector Live Godot sequence of holding a card and confirming a target, so
 cross-Host trajectory equality is not claimed. This is source/test coverage,
 not a native runtime, cross-Host, or full-game qualification.
 
+The same bounded adapter also admits complete current combat reward, card
+reward, and reward-completion leaves. Combat reward generation follows the
+native no-reward encounter flag and `RewardsSet.Offer`; a claimed card reward
+continues through the game's `CardReward.OnSelect` callback. That callback's
+current `CardCreationResult` options and `CardRewardAlternative` options retain
+their original order and private native bindings. Skip is available only when
+the callback actually offers it; reroll, sacrifice, and later alternatives
+return the exact callback object for the game to handle. Missing or changed
+choice identity makes the entire card-reward catalog unavailable. Proceed
+opens native map presentation, and the subsequent native map vote owns room
+exit and skipping any remaining combat rewards. The adapter does not claim
+native UI parity or a full-run qualification.
+The manifest's Windows tuple remains historical evidence for the previous patch;
+the changed source has no Windows build admission.
+
 `engine-lab` measures the exact in-process game-owned semantic loop without a
 Player Environment or consumer. `pe-profile` separates training overhead from
 strict qualification overhead. `pe-sharded-capacity` is retained as an

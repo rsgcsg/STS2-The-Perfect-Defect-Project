@@ -365,6 +365,21 @@ test("projects native reward sets without exposing exact reward or room operands
   assert.equal(requests.some((request) => request.args?.room_ref === "combat-room-a"), true);
 });
 
+test("a non-skippable terminal reward set offers claims without proceed", () => {
+  const projection = projectManagedCandidateDecision({
+    ...projectionIdentity,
+    state: {
+      type: "decision", decision: "reward_set",
+      context: { act: 1, floor: 2, room_type: "Monster" },
+      rewards: [{ index: 0, native_ref: "required-reward", kind: "gold", name: "Gold" }],
+      potion_slots_full: false, can_skip: false, is_terminal: true, can_proceed: false,
+      room_ref: "combat-room", is_boss: false, player: player()
+    }
+  });
+  assert.deepEqual([...projection.bindings.values()].map((binding) => binding.raw_request.action),
+    ["select_reward"]);
+});
+
 test("blocks a full-belt potion reward and publishes exact native potion discards", () => {
   const projection = projectManagedCandidateDecision({
     ...projectionIdentity,

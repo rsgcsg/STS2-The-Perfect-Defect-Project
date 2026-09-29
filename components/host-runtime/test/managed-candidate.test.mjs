@@ -34,8 +34,8 @@ test("managed candidate source and measured build identity match the manifest", 
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "9a1d9445971d54f471701a84a6f95ed4984a2d60dc1319e1846f068eda1fd02b");
-  assert.equal(manifest.expected_build.artifact_mvid, "a75a426d-db7c-45a6-9d34-1179b2e35003");
+  assert.equal(manifest.expected_build.artifact_sha256, "ca5f16ce98fbaab2e24a49927d7faec03c04fbaa73df549fa69adf17e8d5a260");
+  assert.equal(manifest.expected_build.artifact_mvid, "46fba5f2-1db0-4d90-ad83-29d05e3d2139");
   assert.equal(manifest.last_measured_build.artifact_sha256, "dd4b10f22606203f8825569c2e0478626d96ac1166d2cd9430591be607d808a6");
   assert.equal(manifest.last_measured_build.artifact_mvid, "61b5b737-724e-4887-a0a4-6664a3c9daea");
   assert.equal(manifest.admission.forbidden_claims.includes("formal H1.0 qualification"), true);
@@ -117,7 +117,7 @@ test("managed candidate selects Windows as separate provenance without changing 
       sha256: "0e4897ecdfb31456a97c7d8028dfb8d7dbdc632e2f73fc9b438d7b266a139289"
     }
   });
-  assert.equal(selected.selected_baseline.status, "windows_candidate_separate_provenance");
+  assert.equal(selected.selected_baseline.status, "historical_windows_candidate_previous_patch");
   assert.equal(
     selected.expected_build.artifact_sha256,
     "0d8c916365f0a64a0ed5cfc706186811e33708c841fef82e1f73c6a33dcfcc4d"

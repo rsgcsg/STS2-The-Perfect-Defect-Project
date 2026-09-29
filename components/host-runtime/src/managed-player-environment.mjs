@@ -873,35 +873,59 @@ function currentSurface(state, ctx) {
       };
     }
     case "card_reward": {
-      const cards = (state.cards ?? []).map((card, index) => {
+      const rawCards = state.cards;
+      const rawAlternatives = state.alternatives;
+      const options = [...(Array.isArray(rawCards) ? rawCards : []),
+        ...(Array.isArray(rawAlternatives) ? rawAlternatives : [])];
+      const exact = Array.isArray(rawCards) && Array.isArray(rawAlternatives)
+        && options.length > 0 && options.length <= ACTION_LIMIT
+        && options.every((option) => typeof option?.native_ref === "string"
+          && option.native_ref.length > 0
+          && Number.isSafeInteger(option.index)
+          && option.index >= 0)
+        && rawCards.every((option, index) => option.index === index)
+        && rawAlternatives.every((option, index) => option.index === index
+          && typeof option.id === "string" && option.id.length > 0
+          && typeof option.name === "string" && option.name.length > 0)
+        && new Set(options.map((option) => option.native_ref)).size === options.length;
+      const cards = (Array.isArray(rawCards) ? rawCards : []).map((card, index) => {
         const item = ctx.referent({
           role: "card",
-          label: card.name ?? `Card ${index + 1}`,
+          label: card?.name ?? `Card ${index + 1}`,
           occurrence: index,
-          properties: { index: card.index ?? index, ...cardProperties(card) }
+          properties: { index: card?.index ?? index, ...cardProperties(card) }
         });
-        ctx.action({
-          verb: "select",
-          subject: item,
-          label: `Take ${card.name ?? `card ${index + 1}`}`,
-          raw: { cmd: "action", action: "select_card_reward", args: { card_index: card.index ?? index } }
+        if (exact) ctx.action({
+          verb: "select", subject: item, label: `Take ${card.name ?? `card ${index + 1}`}`,
+          raw: { cmd: "action", action: "select_card_reward", args: { card_ref: card.native_ref } }
         });
         return item.properties;
       });
-      if (state.can_skip === true) {
-        ctx.action({
-          verb: "skip",
-          label: "Skip card reward",
-          raw: { cmd: "action", action: "skip_card_reward" }
+      const alternatives = (Array.isArray(rawAlternatives) ? rawAlternatives : []).map((alternative, index) => {
+        const item = ctx.referent({
+          role: "card_reward_alternative", label: alternative?.name ?? `Alternative ${index + 1}`,
+          occurrence: index,
+          properties: { option_id: alternative?.id ?? null, name: alternative?.name ?? null }
         });
-      }
+        if (exact) ctx.action({
+          verb: alternative.id.toLowerCase() === "skip" ? "skip" : "activate",
+          subject: item, label: alternative.name,
+          raw: { cmd: "action", action: "select_card_reward_alternative",
+            args: { alternative_ref: alternative.native_ref } }
+        });
+        return item.properties;
+      });
       return {
         kind: "card_reward_selection",
         stage: "choosing",
         prompt: null,
-        surface: { kind: "card_reward_selection", stage: "choosing", cards, can_skip: state.can_skip === true },
+        surface: { kind: "card_reward_selection", stage: "choosing", cards, alternatives,
+          can_skip: rawAlternatives?.some((option) => option.id?.toLowerCase() === "skip") === true },
         context: { ...commonContext, kind: "reward" },
-        ...supported
+        complete: exact,
+        visibleInformation: exact ? "contract_complete_for_current_native_card_reward" : "native_card_reward_options_incomplete",
+        interactionDiscovery: "derived_from_same_current_native_card_reward_callback_as_execution",
+        missing: exact ? [] : ["exact_current_card_reward_choices"]
       };
     }
     case "combat_rewards_complete": {
