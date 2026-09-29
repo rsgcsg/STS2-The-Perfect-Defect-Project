@@ -119,7 +119,7 @@ def _seeded_cpu(seed: int) -> Iterator[None]:
         torch.set_rng_state(prior)
 
 
-def _runtime_identity() -> dict[str, Any]:
+def _implementation_sha256() -> str:
     module_root = Path(__file__).resolve().parents[1]
     sources = ("workers/memory_ranking.py", "workers/checkpoint_codec.py",
                "models/dsimple_memory.py", "models/dsimple_sequence_training.py",
@@ -128,13 +128,17 @@ def _runtime_identity() -> dict[str, Any]:
     for name in sources:
         implementation.update(name.encode("utf-8"))
         implementation.update((module_root / name).read_bytes())
+    return implementation.hexdigest()
+
+
+def _runtime_identity() -> dict[str, Any]:
     return {
         "torch": str(torch.__version__), "python": platform.python_version(),
         "system": platform.system(), "machine": platform.machine(),
         "threads": torch.get_num_threads(), "interop_threads": torch.get_num_interop_threads(),
         "deterministic": torch.are_deterministic_algorithms_enabled(),
         "mkldnn": torch.backends.mkldnn.enabled,
-        "implementation_sha256": implementation.hexdigest(),
+        "implementation_sha256": _implementation_sha256(),
     }
 
 
@@ -448,7 +452,8 @@ class MemoryRankingEngine:
                                or tensors[key].shape != parameter.shape
                                or tensors[key].dtype != parameter.dtype
                                or not bool(torch.isfinite(tensors[key]).all())
-                               for key in ("exp_avg", "exp_avg_sq"))):
+                               for key in ("exp_avg", "exp_avg_sq"))
+                        or bool(torch.any(tensors["exp_avg_sq"] < 0))):
                     raise BoundaryError("memory_checkpoint", "optimizer_tensor_mismatch")
                 if (self.parameter_names[index] in mandatory
                         and float(tensors["step"]) != updates):
@@ -470,6 +475,7 @@ class MemoryRankingEngine:
         return encode_checkpoint({
             "schema": EXPORT_SCHEMA, "config": asdict(self.config),
             "tokenizer_sha256": self.tokenizer_sha256,
+            "implementation_sha256": self.runtime["implementation_sha256"],
             "weights": weights, "weights_digest": _tensor_digest(weights),
         })
 
@@ -477,11 +483,12 @@ class MemoryRankingEngine:
 def load_memory_export(raw: bytes, config: MemoryConfig,
                        tokenizer_sha256: str) -> ExperimentalDSimpleM2:
     value = decode_checkpoint(raw)
-    if (set(value) != {"schema", "config", "tokenizer_sha256", "weights",
-                       "weights_digest"}
+    if (set(value) != {"schema", "config", "tokenizer_sha256",
+                       "implementation_sha256", "weights", "weights_digest"}
             or value["schema"] != EXPORT_SCHEMA
             or value["config"] != asdict(config)
-            or value["tokenizer_sha256"] != tokenizer_sha256):
+            or value["tokenizer_sha256"] != tokenizer_sha256
+            or value["implementation_sha256"] != _implementation_sha256()):
         raise BoundaryError("memory_model", "export_identity_mismatch")
     model = _construct(config)
     weights = _validated_weights(model, value["weights"])

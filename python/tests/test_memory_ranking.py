@@ -175,6 +175,22 @@ def test_corrupt_checkpoint_rejected(corruption: str):
         MemoryRankingEngine(source(), config()).restore(encode_checkpoint(value))
 
 
+def test_negative_adam_second_moment_rejected_even_with_recomputed_digest():
+    from stpd.workers.memory_ranking import _optimizer_digest
+
+    engine = MemoryRankingEngine(source(), config())
+    engine.advance()
+    value = decode_checkpoint(engine.checkpoint())
+    state = value["optimizer"]["state"]
+    index = next(iter(state))
+    state[index]["exp_avg_sq"].flatten()[0] = -1
+    value["optimizer_digest"] = _optimizer_digest(
+        value["optimizer"], value["parameter_names"],
+    )
+    with pytest.raises(BoundaryError, match="optimizer_tensor_mismatch"):
+        MemoryRankingEngine(source(), config()).restore(encode_checkpoint(value))
+
+
 @pytest.mark.parametrize("removed", ["write_queries", "previous_action_marker",
                                       "feedback_embedding.weight"])
 def test_recorded_optional_adam_state_and_mandatory_state_inventory(removed: str):
@@ -254,7 +270,8 @@ def test_export_reload_replays_scores_with_exact_candidate_order_and_config(
     engine.advance()
     raw = engine.export()
     assert set(decode_checkpoint(raw)) == {
-        "schema", "config", "tokenizer_sha256", "weights", "weights_digest",
+        "schema", "config", "tokenizer_sha256", "implementation_sha256",
+        "weights", "weights_digest",
     }
     loaded = load_memory_export(raw, settings, TOKENIZER)
     engine.model.eval()
@@ -286,6 +303,10 @@ def test_export_reload_replays_scores_with_exact_candidate_order_and_config(
             load_memory_export(raw, wrong, TOKENIZER)
     with pytest.raises(BoundaryError, match="export_identity_mismatch"):
         load_memory_export(raw, settings, "b" * 64)
+    changed_implementation = decode_checkpoint(raw)
+    changed_implementation["implementation_sha256"] = "0" * 64
+    with pytest.raises(BoundaryError, match="export_identity_mismatch"):
+        load_memory_export(encode_checkpoint(changed_implementation), settings, TOKENIZER)
     value = decode_checkpoint(raw)
     name = next(iter(value["weights"]))
     value["weights"][name].flatten()[0] += 1
