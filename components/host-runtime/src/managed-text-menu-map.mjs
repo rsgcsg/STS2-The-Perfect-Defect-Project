@@ -32,15 +32,27 @@ function completeCurrentLeaf(snapshot) {
     && snapshot.bound_actions?.actions.length === restReferents.length
     && snapshot.bound_actions.actions.every((action) => restReferents.some((referent) =>
       referent.referent_id === action.subject_referent_id));
-  return (map || rest)
+  const upgrade = snapshot?.interaction?.kind === "deck_upgrade_selection"
+    && ["selecting", "preview"].includes(snapshot.interaction.stage)
+    && snapshot.status === "interactive"
+    && snapshot.completeness?.visible_information === "contract_complete_for_current_native_interaction"
+    && snapshot.completeness?.interaction_discovery === "derived_from_same_current_native_interaction_as_execution"
+    && snapshot.bound_actions?.actions.every((action) =>
+      ["select", "deselect", "cancel", "confirm"].includes(action.verb)
+      && (action.verb === "select" || action.verb === "deselect"
+        ? snapshot.referents.some((referent) => referent.role === "card"
+          && referent.referent_id === action.subject_referent_id)
+        : action.subject_referent_id == null));
+  return (map || rest || upgrade)
     && snapshot.bound_actions?.status === "complete"
     && snapshot.bound_actions.actions.length > 0
-    && snapshot.bound_actions.actions.every((action) => action.verb === "activate"
+    && snapshot.bound_actions.actions.every((action) => (upgrade
+      || action.verb === "activate")
       && typeof action.bound_action_id === "string"
       && typeof action.label === "string"
-      && action.subject_referent_id != null
       && (action.arguments ?? []).length === 0
-      && snapshot.referents.some((referent) => referent.referent_id === action.subject_referent_id));
+      && (upgrade || (action.subject_referent_id != null
+        && snapshot.referents.some((referent) => referent.referent_id === action.subject_referent_id))));
 }
 
 function project(snapshot, allowActions = true) {
@@ -73,7 +85,7 @@ function project(snapshot, allowActions = true) {
   };
 }
 
-/** In-process projection of complete current Managed map and rest-site leaves. */
+/** In-process projection of complete current Managed map, rest, and deck-upgrade leaves. */
 export class ManagedTextMenuSessionAdapter {
   #session;
   #bindings = new Map();
@@ -143,7 +155,7 @@ export class ManagedTextMenuSessionAdapter {
       return this.#save(request_id, fingerprint, this.#result(request_id, {
         status: "not_applied", effect_domain: null, native_delivery: null,
         action: null, reason_code: "stale_or_unadvertised_action",
-        detail: "Only a current advertised Managed map or rest-site leaf can be submitted.",
+        detail: "Only a current advertised Managed map, rest-site, or deck-upgrade leaf can be submitted.",
         retry: "reobserve", successor: current
       }));
     }

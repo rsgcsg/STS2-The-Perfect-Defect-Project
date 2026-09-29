@@ -74,7 +74,11 @@ test("fresh candidate preparation admits added source files into the audited dif
     path.join(ROOT, "experiments", "managed-exact", manifest.source_patch),
     "utf8"
   );
-  assert.deepEqual(addedPatchPaths(patch), ["src/Sts2Headless/PerformanceLab.cs"]);
+  assert.deepEqual(addedPatchPaths(patch), [
+    "src/Sts2Headless/DeckUpgradeCallScope.cs",
+    "src/Sts2Headless/DeckUpgradeSelection.cs",
+    "src/Sts2Headless/PerformanceLab.cs"
+  ]);
   assert.equal(source.includes('["add", "--intent-to-add"'), true);
   assert.equal(source.includes("stpd-managed-candidate.patch"), true);
   assert.equal(source.includes("normalizeText(readFileSync(patchFile"), true);
@@ -102,7 +106,7 @@ test("managed candidate selects Windows as separate provenance without changing 
     "0d8c916365f0a64a0ed5cfc706186811e33708c841fef82e1f73c6a33dcfcc4d"
   );
   assert.equal(manifest.exact_game.platform, "darwin");
-  assert.equal(manifest.expected_build.artifact_mvid, "4a9b280b-685d-4ff4-a4eb-396d18276548");
+  assert.equal(manifest.expected_build.artifact_mvid, "61b5b737-724e-4887-a0a4-6664a3c9daea");
 });
 
 test("managed setup converts drive-qualified Windows paths for Git Bash", () => {
