@@ -689,34 +689,44 @@ function currentSurface(state, ctx) {
         label: "Opened treasure chest",
         properties: { stage: "relic_selection" }
       });
-      const nativeIdentityComplete = (state.relics ?? []).every((relic) =>
-        typeof relic.native_ref === "string" && relic.native_ref.length > 0);
-      const relics = (state.relics ?? []).map((relic, index) => {
+      const currentRelics = Array.isArray(state.relics) ? state.relics : [];
+      const nativeIdentityComplete = Array.isArray(state.relics)
+        && currentRelics.length > 0 && currentRelics.length <= ACTION_LIMIT
+        && currentRelics.every((relic, index) => relic?.index === index
+          && typeof relic.native_ref === "string" && relic.native_ref.length > 0
+          && typeof relic.id === "string" && relic.id.length > 0
+          && typeof relic.name === "string" && relic.name.length > 0)
+        && new Set(currentRelics.map((relic) => relic.native_ref)).size === currentRelics.length;
+      const roomIdentityComplete = typeof state.room_ref === "string" && state.room_ref.length > 0;
+      const skipFactComplete = typeof state.can_skip === "boolean";
+      const complete = roomIdentityComplete && nativeIdentityComplete && skipFactComplete;
+      const relics = currentRelics.map((relic, index) => {
         const item = ctx.referent({
           role: "relic",
-          label: relic.name ?? `Relic ${index + 1}`,
+          label: relic?.name ?? `Unavailable relic ${index + 1}`,
+          enabled: complete,
           occurrence: index,
           properties: {
-            index: relic.index ?? index,
-            definition_id: definitionId(relic.id ?? relic.name),
-            name: relic.name ?? null,
-            description: relic.description ?? null,
-            rarity: relic.rarity ?? null
+            index: relic?.index ?? index,
+            definition_id: relic == null ? null : definitionId(relic.id ?? relic.name),
+            name: relic?.name ?? null,
+            description: relic?.description ?? null,
+            rarity: relic?.rarity ?? null
           }
         });
-        ctx.action({
+        if (complete) ctx.action({
           verb: "select",
           subject: item,
           label: `Take ${relic.name ?? `relic ${index + 1}`}`,
           raw: {
             cmd: "action",
             action: "select_treasure_relic",
-            args: { relic_ref: relic.native_ref }
+            args: { room_ref: state.room_ref, relic_ref: relic.native_ref }
           }
         });
         return item.properties;
       });
-      if (state.can_skip === true) {
+      if (complete && state.can_skip === true) {
         ctx.action({
           verb: "skip",
           subject: room,
@@ -728,8 +738,6 @@ function currentSurface(state, ctx) {
           }
         });
       }
-      const roomIdentityComplete = typeof state.room_ref === "string" && state.room_ref.length > 0;
-      const complete = roomIdentityComplete && nativeIdentityComplete && relics.length > 0;
       return {
         kind: "treasure_relic_selection",
         stage: "choosing",
@@ -747,7 +755,7 @@ function currentSurface(state, ctx) {
         missing: [
           ...(roomIdentityComplete ? [] : ["native_treasure_room_identity"]),
           ...(nativeIdentityComplete ? [] : ["native_treasure_relic_identity"]),
-          ...(relics.length > 0 ? [] : ["visible_treasure_relics"])
+          ...(skipFactComplete ? [] : ["native_treasure_skip_actionability"])
         ]
       };
     }

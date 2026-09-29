@@ -101,6 +101,17 @@ proceed/map presentation branch; a same-index replacement or missing identity
 does not fall back to an ordinal-only mutation. This is a Managed source/build
 candidate, not native UI parity or a full-run qualification.
 
+The treasure text page exposes each current stage separately: open chest,
+select one of the complete ordered native relic catalog or skip when the native
+single-player fact permits it, then leave the completed room. A missing relic,
+duplicate identity, incomplete catalog, or unknown skip fact makes selection
+unavailable while retaining the visible rows. Opening rechecks the exact closed
+room inside the deferred callback before game-owned reward commands. Selection
+requires both observed room and relic identities and still awards through the
+native treasure synchronizer. A callback error after dispatch remains unknown
+with no retry. This is source/build evidence for the Managed text path, not
+native UI parity, a complete journey, or Human qualification.
+
 The raw Managed combat action path and its Player Environment projection admit
 play/end-turn mutations only while the exact current run, living player turn,
 CombatManager play phase, enabled-action state, not-ready-to-end state, and
