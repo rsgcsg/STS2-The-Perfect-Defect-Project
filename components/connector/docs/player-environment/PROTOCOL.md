@@ -49,6 +49,10 @@ catalog by reference equality. It is read-only, process-local, not transported,
 and cannot create or deliver a BoundAction. The frozen witness also supports
 exact native owner/operation/operand matching for selector input callbacks.
 Private owner bindings are never serialized into the public Snapshot.
+Each successful process-local text-menu witness freeze also carries a distinct
+capture ordinal assigned under the Host's existing submission gate. It orders
+captures even when the public Snapshot identity and state sequence are unchanged;
+it is not a public Snapshot field or evidence of native input delivery.
 
 `bound_actions.status=complete` proves every current finite binding was
 materialized. `truncated` preserves the Snapshot but grants no consumer input
