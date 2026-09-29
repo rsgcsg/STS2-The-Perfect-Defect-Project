@@ -62,13 +62,14 @@ describe("opt-in text-menu-v2 SDK contract", () => {
   it("requires visible subjects, exact selection phases and a complete current catalog", () => {
     const root = targeted();
     const badSubject = targeted(); badSubject.menu_actions.actions[0].subject_referent_id = "missing";
-    expect(() => decodeTextMenuV2Snapshot(badSubject)).toThrow(/non-visible/u);
+    expect(() => decodeTextMenuV2Snapshot(badSubject)).toThrow(/enabled visible/u);
     const disabled = targeted(); disabled.referents[0].state.visible = false;
-    expect(() => decodeTextMenuV2Snapshot(disabled)).toThrow(/non-visible/u);
+    expect(() => decodeTextMenuV2Snapshot(disabled)).toThrow(/enabled visible/u);
     const wrongPhase = targetedResult().successor; wrongPhase.menu.selection = [];
     expect(() => decodeTextMenuV2Snapshot(wrongPhase)).toThrow(/cursor and selection/u);
     const wrongTarget = cardOnlyResult().successor;
-    wrongTarget.menu.selection.push({ role: "target", referent_id: "card-C" });
+    wrongTarget.referents.push(targeted().referents[1]);
+    wrongTarget.menu.selection.push({ role: "target", referent_id: "enemy-E" });
     expect(() => decodeTextMenuV2Snapshot(wrongTarget)).toThrow(/confirmation/u);
     const partial = targeted(); partial.menu_actions.status = "truncated";
     expect(() => decodeTextMenuV2Snapshot(partial)).toThrow(/incomplete menu/u);
@@ -77,6 +78,38 @@ describe("opt-in text-menu-v2 SDK contract", () => {
     expect(() => decodeTextMenuV2Snapshot(duplicate)).toThrow(/duplicate/u);
     const extra = targeted(); extra.menu.extra = true;
     expect(() => decodeTextMenuV2Snapshot(extra)).toThrow();
+  });
+
+  it("binds staged card choices to a ready combat page and correct public roles", () => {
+    const wrongCardRole = targeted(); wrongCardRole.referents[0].role = "enemy";
+    expect(() => decodeTextMenuV2Snapshot(wrongCardRole)).toThrow(/card or target referent/u);
+    const disabledCard = targeted(); disabledCard.referents[0].state.enabled = false;
+    expect(() => decodeTextMenuV2Snapshot(disabledCard)).toThrow(/enabled visible/u);
+    const alternateCardRole = targeted(); alternateCardRole.referents[0].role = "card";
+    expect(decodeTextMenuV2Snapshot(alternateCardRole).data.menu.cursor).toBe("root");
+
+    const targetPage = targetedResult().successor;
+    targetPage.referents[1].state.enabled = false;
+    expect(() => decodeTextMenuV2Snapshot(targetPage)).toThrow(/enabled visible/u);
+    targetPage.referents[1].state.enabled = null;
+    targetPage.referents[1].role = "target";
+    expect(decodeTextMenuV2Snapshot(targetPage).data.menu.cursor).toBe("card_targets");
+
+    const wrongPage = targeted(); wrongPage.interaction.kind = "map_navigation";
+    wrongPage.interaction.content_schema = "sts2.player-environment/surface/map_navigation-1";
+    wrongPage.interaction.content.surface.kind = "map_navigation";
+    expect(() => decodeTextMenuV2Snapshot(wrongPage)).toThrow(/ready public combat page/u);
+  });
+
+  it("does not treat the existing card_tips information cursor as card staging", () => {
+    const tips = targeted();
+    tips.menu.cursor = "card_tips";
+    tips.menu.selection = [{ role: "card", referent_id: "card-C" }];
+    tips.menu_actions.actions = [{ action_id: "back-card-tips", kind: "system_navigation",
+      verb: "back", label: "Back", subject_referent_id: null, arguments: [], effect_domain: "text_menu" }];
+    expect(() => decodeTextMenuV2Snapshot(tips)).toThrow(/cursor and selection/u);
+    tips.menu.selection = [];
+    expect(decodeTextMenuV2Snapshot(tips).data.menu.cursor).toBe("card_tips");
   });
 
   it("does not turn cancel into a bound entity or a native delivery", () => {

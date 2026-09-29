@@ -39,7 +39,11 @@ fixtures. This is an opt-in decoding contract only: the current REST client and
 Host still request and advertise `text-menu-v1`. The v1 bytes and fixed
 operand-free navigation grammar remain unchanged. A v2 `system_selection`
 has `effect_domain=text_menu`; `select_card` and `select_target` bind a visible
-subject, while `cancel_selection` has no subject or arguments. The v2 menu
+subject on a ready combat page, while `cancel_selection` has no subject or
+arguments. A card subject has the current public `card` or `playable_card`
+role; a target has a public creature/target role. An explicit `enabled=false`
+blocks selection, while a missing enabled fact is not a new legality claim.
+The v2 menu
 records only staged card/optional target referents. Card-only native leaves
 reach confirmation without a fabricated target. A `native_input` leaf keeps
 the v1 delivered/not-delivered/unknown semantics; this term does not specify

@@ -18,6 +18,9 @@ const argumentsSchema = z.array(z.object({ role: z.string().min(1), referent_id:
 const selectionSchema = z.array(z.object({ role: z.enum(["card", "target"]), referent_id: z.string().min(1) }).strict()).max(2);
 const cursors = ["root", "information", "relic_inspect", "relic_tips", "card_tips",
   "power_tips", "intent_tips", "orb_tips", "topbar_tips", "card_targets", "card_confirmation"] as const;
+const stagedCursors = new Set<string>(["card_targets", "card_confirmation"]);
+const cardRoles = new Set(["card", "playable_card"]);
+const targetRoles = new Set(["target", "enemy", "ally", "creature", "player", "companion"]);
 const informationGroups = cursors.slice(2, 9);
 const navigation = ["open_information", ...informationGroups.map(group => `open_${group}`), "back"];
 const selectionVerbs = ["select_card", "select_target", "cancel_selection"] as const;
@@ -139,19 +142,37 @@ export function decodeTextMenuV2Snapshot(value: unknown): DecodedPlayerPayload<T
   const menu = parse(raw.menu, menuSchema, "text menu v2 cursor");
   const catalog = parse(raw.menu_actions, catalogSchema, "text menu v2 actions");
   const selection = menu.selection;
-  if ((menu.cursor === "root" || !menu.cursor.startsWith("card_")) && selection.length !== 0 ||
+  if (!stagedCursors.has(menu.cursor) && selection.length !== 0 ||
       menu.cursor === "card_targets" && (selection.length !== 1 || selection[0]?.role !== "card") ||
       menu.cursor === "card_confirmation" && (selection.length < 1 || selection[0]?.role !== "card" ||
         selection.length === 2 && selection[1]?.role !== "target")) {
     throw new Error("text menu v2 cursor and selection disagree");
   }
   const referents = Array.isArray(raw.referents) ? raw.referents : [];
-  const visible = new Set(referents.filter(item => isJsonObject(item) && isJsonObject(item.state) &&
-    item.state.visible === true).map(item => (item as JsonObject).referent_id));
-  if (selection.some(item => !visible.has(item.referent_id)) ||
+  const publicReferents = new Map(referents.filter(isJsonObject)
+    .map(item => [item.referent_id, item]));
+  const selectable = (id: string, roles: ReadonlySet<string>): boolean => {
+    const referent = publicReferents.get(id);
+    const state = referent?.state;
+    return referent?.kind === "entity" && roles.has(String(referent.role)) &&
+      isJsonObject(state) && state.visible === true && state.enabled !== false;
+  };
+  const interaction = isJsonObject(raw.interaction) ? raw.interaction : null;
+  const content = isJsonObject(interaction?.content) ? interaction.content : null;
+  const surface = isJsonObject(content?.surface) ? content.surface : null;
+  const hasSystemSelection = catalog.actions.some(action => action.kind === "system_selection");
+  if ((stagedCursors.has(menu.cursor) || hasSystemSelection) &&
+      (interaction?.kind !== "combat_turn" || interaction.stage !== "ready" ||
+       interaction.content_schema !== "sts2.player-environment/surface/combat_turn-1" ||
+       surface?.kind !== "combat_turn")) {
+    throw new Error("text menu v2 card staging requires a ready public combat page");
+  }
+  if (selection.some(item => !selectable(item.referent_id,
+        item.role === "card" ? cardRoles : targetRoles)) ||
       catalog.actions.some(action => action.kind === "system_selection" &&
-        action.subject_referent_id !== null && !visible.has(action.subject_referent_id))) {
-    throw new Error("text menu v2 selection references a non-visible referent");
+        action.verb !== "cancel_selection" && !selectable(action.subject_referent_id!,
+          action.verb === "select_card" ? cardRoles : targetRoles))) {
+    throw new Error("text menu v2 selection requires an enabled visible public card or target referent");
   }
   const allowedNavigation = menu.cursor === "root" ? ["open_information"] :
     menu.cursor === "information" ? [...navigation.filter(verb => verb !== "open_information")] : ["back"];
