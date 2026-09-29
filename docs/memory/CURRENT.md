@@ -1,7 +1,7 @@
 # Current project context, 2026-09-30
 
 Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; accepted develop
-anchor `cc6208fc257796c6721b2f2fdf42d57d39ee48a9` after PR107.
+anchor `5d5a471bd46f6d46444ced3be309f9e7574c599c` after PR108.
 Resolve live GitHub refs before work; current authorities override this file.
 Source, CI, installation, Human operation and scientific results are separate.
 No complete Stage1a or policy-quality qualification is claimed. See the
@@ -85,9 +85,14 @@ has now trained one six-step Managed engineering sequence, exported and verified
 its model, checked offline/online complete-menu parity, then run six model-chosen
 Managed submissions with two native deliveries and a budget stop. The data is
 actor-unverified and has no causal-successor labels. This is not an independent
-dev result, Human data, policy quality or a full game. Explicit v2 Workbench
-training recipes and native Runtime admission remain unfinished; old v1 packages
-and default entrypoints retain their identities.
+dev result, Human data, policy quality or a full game. PR108 passed its own
+full run `36588481214`; normal merge `5d5a471b` and integration `36592794499`
+preserved its tree, with verified same-tree reuse rather than a second OS run.
+The [v2 Runtime chain candidate](../evidence/STAGE1A_TEXT_V2_RUNTIME_CHAIN_2026-09-30.md)
+connects explicit Workbench recipes, strict package binding, SDK/Runtime and
+Evidence profiles. Actual temporary-package synthetic runs and old v1 archive
+verification are separate from pending native/member qualification. Old v1
+packages and default entrypoints retain their identities.
 
 D-Simple-S remains the default application recipe. Merged PR90/91/95 provide
 observed-sequence M2 training, durable checkpoints and read-only online scoring;
