@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,6 +23,7 @@ from spireagent.workbench.local_model_export import (
     LocalModelExport,
 )
 from spireagent.workbench.memory_training import prepare_workbench_memory
+from spireagent.workbench.research_process import private_child
 from stpd.fullrun.text_menu_human_import import load_verified_human_text_bundle
 from stpd.policy.memory_export import validate_memory_package
 from stpd.workers.memory_run import execute_memory_run
@@ -135,8 +138,10 @@ def test_spawn_failure_is_failed_but_started_child_outcome_is_unknown(
         service.start(model_id)
         assert _settle(service)["status"] == "failed"
 
-    def started_failure(_command, _log_path, _environment, *, on_started):
+    def started_failure(_command, _log_path, _environment, *, on_started,
+                        timeout_seconds):
         on_started()
+        assert timeout_seconds is None
         return 2, b""
 
     with patch("spireagent.workbench.local_model_export.private_child",
@@ -154,6 +159,9 @@ def test_registration_reconciles_m2_in_child_without_changing_web_torch_threads(
     service = LocalModelExport(config)
     service.start(model_id)
     assert _settle(service)["status"] == "completed"
+    export_logs = list(config.state_dir.glob("local-model-export-*.log"))
+    assert len(export_logs) == 1
+    original_log = export_logs[0].read_bytes()
     previous = torch.get_num_threads()
     try:
         torch.set_num_threads(3)  # Deliberately unlike the run's pinned two threads.
@@ -162,3 +170,16 @@ def test_registration_reconciles_m2_in_child_without_changing_web_torch_threads(
         assert torch.get_num_threads() == 3
     finally:
         torch.set_num_threads(previous)
+    assert export_logs[0].read_bytes() == original_log
+    assert len(list(config.state_dir.glob("local-model-registration-verify-*.log"))) == 1
+
+
+def test_private_verification_child_timeout_reaps_without_reusing_log(tmp_path: Path) -> None:
+    log = tmp_path / "verification.log"
+    with pytest.raises(BoundaryError, match="private_child_timeout"):
+        private_child([sys.executable, "-c", "import time; time.sleep(10)"],
+                      log, dict(os.environ), timeout_seconds=0.1)
+    assert log.is_file()
+    with pytest.raises(FileExistsError):
+        private_child([sys.executable, "-c", "pass"], log,
+                      dict(os.environ), timeout_seconds=0.1)

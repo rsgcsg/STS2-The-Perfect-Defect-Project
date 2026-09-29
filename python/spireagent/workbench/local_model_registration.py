@@ -313,11 +313,8 @@ class LocalModelRegistration:
         export = (self.export.verified_memory_for_registration(identity) if memory
                   else self.export.verified_for_registration(identity))
         if memory:
-            from stpd.policy.memory_export import validate_memory_package
-
-            package, _, _, _ = validate_memory_package(export)
-            if package["ids"]["model"] != identity:
-                raise BoundaryError("local_model_registration", "export_identity_mismatch")
+            # The isolated verification child has checked exact model/run lineage
+            # and the parent has rebound the response to unchanged package bytes.
             recipe = "stage1a.dsimple.m2.k1.experimental.v1"
         else:
             envelope = _object_file(export / "model.json")

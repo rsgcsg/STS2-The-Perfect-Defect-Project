@@ -16,6 +16,7 @@ from time import perf_counter
 from spireagent.hub.curation_access import record_use
 from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
+from spireagent.package_identity import file_sha256
 from spireagent.source import source_identity
 from spireagent.storage.config import open_store
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
@@ -346,7 +347,10 @@ def main() -> int:
             result = {"model_id": model_id, "run_id": run_id,
                       "package_schema": package["schema"],
                       "payload_bytes": package["weights"]["size"]
-                      + package["tokenizer"]["size"]}
+                      + package["tokenizer"]["size"],
+                      "package_sha256": file_sha256(args.destination / "model.json"),
+                      "weights_sha256": package["weights"]["sha256"],
+                      "tokenizer_sha256": package["tokenizer"]["sha256"]}
         elif args.command == "train":
             config = TrainingConfig(
                 seed=1701, max_steps=args.steps, epochs=5,

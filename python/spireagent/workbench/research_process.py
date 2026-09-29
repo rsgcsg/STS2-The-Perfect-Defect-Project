@@ -5,17 +5,22 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.developer import ROOT
 
 
 def private_child(command: list[str], log_path: Path,
                   environment: dict[str, str], *,
-                  on_started: Callable[[], None] | None = None) -> tuple[int, bytes]:
+                  on_started: Callable[[], None] | None = None,
+                  timeout_seconds: float | None = None) -> tuple[int, bytes]:
     """Drain both pipes and retain bounded private diagnostics plus machine stdout."""
+    if timeout_seconds is not None and timeout_seconds <= 0:
+        raise ValueError("positive_child_timeout_required")
     log_fd = os.open(log_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     captured = bytearray()
     with os.fdopen(log_fd, "wb") as log:
@@ -53,9 +58,20 @@ def private_child(command: list[str], log_path: Path,
                                              kwargs={"machine": False})
             stdout_reader.start()
             stderr_reader.start()
+            deadline = (time.monotonic() + timeout_seconds
+                        if timeout_seconds is not None else None)
+            timed_out = False
             while True:
                 try:
-                    exit_code = child.wait(timeout=0.25)
+                    remaining_time = (deadline - time.monotonic()
+                                      if deadline is not None else None)
+                    if remaining_time is not None and remaining_time <= 0:
+                        timed_out = True
+                        child.kill()
+                        exit_code = child.wait()
+                        break
+                    exit_code = child.wait(timeout=min(0.25, remaining_time)
+                                           if remaining_time is not None else 0.25)
                     break
                 except subprocess.TimeoutExpired:
                     if read_errors:
@@ -68,6 +84,8 @@ def private_child(command: list[str], log_path: Path,
                 raise read_errors[0]
             if log_errors:
                 raise log_errors[0]
+            if timed_out:
+                raise BoundaryError("research_process", "private_child_timeout")
         log.flush()
         os.fsync(log.fileno())
     return exit_code, bytes(captured)

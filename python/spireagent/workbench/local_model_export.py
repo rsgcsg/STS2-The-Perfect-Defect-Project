@@ -14,10 +14,11 @@ import threading
 import uuid
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import BoundaryError, digest
+from spireagent.package_identity import file_sha256
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.local_dataset import LocalDatasetService
@@ -277,8 +278,6 @@ class LocalModelExport:
 
     def verified_memory_for_registration(self, model_id: object) -> Path:
         """Recheck an M2 export and its historical local training admission on POST."""
-        from stpd.policy.memory_export import verify_memory_package
-
         identity = digest(model_id, "local_model_export.model_id")
         with self.lock:
             operation = self._read()
@@ -297,10 +296,19 @@ class LocalModelExport:
             if operation["run_id"] != run_id:
                 raise BoundaryError("local_model_export", "memory_lineage_mismatch")
             destination = self.config.state_dir / EXPORT_ROOT / identity
-            selected_store = LocalDatasetService(self.config)._selected()[1]
-            verify_memory_package(workspace.store,
-                                  ObjectStoreRunReporter(workspace.store, selected_store.blobs),
-                                  identity, destination)
+            if not _ordinary(destination, directory=True):
+                raise BoundaryError("local_model_export", "verified_export_required")
+            # The web process never adjusts global Torch thread identity. Replay and
+            # checkpoint verification happen in the same isolated CLI as export.
+            result = self._memory_child(uuid.uuid4().hex, workspace.store, model,
+                                        destination, run_id, on_started=lambda: None,
+                                        verify_only=True)
+            for name, key in (("model.json", "package_sha256"),
+                              ("weights.tensor-tree", "weights_sha256"),
+                              ("tokenizer.json", "tokenizer_sha256")):
+                path = destination / name
+                if not _ordinary(path, directory=False) or file_sha256(path) != result[key]:
+                    raise BoundaryError("local_model_export", "export_identity_mismatch")
             return destination
 
     def _finish(self, operation_id: str, **updates: Any) -> None:
@@ -372,20 +380,25 @@ class LocalModelExport:
 
     def _memory_child(self, operation_id: str, store: Any, model: Manifest,
                       destination: Path, run_id: str, *,
-                      on_started: Any) -> int:
+                      on_started: Any, verify_only: bool = False) -> dict[str, Any]:
         root = getattr(getattr(store, "blobs", None), "root", None)
         if not isinstance(root, Path):
             raise BoundaryError("local_model_export", "unsupported_workspace_store")
-        command_name = "verify-memory-export" if destination.exists() else "export-memory"
+        if verify_only and not _ordinary(destination, directory=True):
+            raise BoundaryError("local_model_export", "verified_export_required")
+        command_name = ("verify-memory-export" if verify_only or destination.exists()
+                        else "export-memory")
         command = [sys.executable, "-m", "spireagent.research_cli", "--store", str(root),
                    command_name, "--run", run_id, "--model", model.artifact_id,
                    "--destination", str(destination)]
         environment = dict(os.environ)
         for name in ("STPD_HUB_ADMIN_TOKEN", "PYTHONPATH", "PYTHONHOME"):
             environment.pop(name, None)
-        log_path = self.config.state_dir / ("local-model-export-" + operation_id + ".log")
+        log_prefix = "local-model-registration-verify-" if verify_only else "local-model-export-"
+        log_path = self.config.state_dir / (log_prefix + operation_id + ".log")
         exit_code, captured = private_child(command, log_path, environment,
-                                            on_started=on_started)
+                                            on_started=on_started,
+                                            timeout_seconds=15 if verify_only else None)
         if exit_code:
             raise BoundaryError("local_model_export", "memory_export_process_failed")
         try:
@@ -395,9 +408,14 @@ class LocalModelExport:
                     or value.get("package_schema")
                     != "stpd/experimental-m2-portable-policy-v1"
                     or type(value.get("payload_bytes")) is not int
-                    or value["payload_bytes"] < 1):
+                    or value["payload_bytes"] < 1
+                    or any(not isinstance(value.get(key), str)
+                           or len(value[key]) != 64
+                           or any(char not in "0123456789abcdef" for char in value[key])
+                           for key in ("package_sha256", "weights_sha256",
+                                       "tokenizer_sha256"))):
                 raise ValueError
-            return cast(int, value["payload_bytes"])
+            return value
         except (ValueError, KeyError, TypeError) as error:
             raise BoundaryError("local_model_export", "memory_export_result_invalid") from error
 
@@ -420,7 +438,7 @@ class LocalModelExport:
             else:
                 _memory_lineage(store, self._memory_owner(store), model)
                 count = self._memory_child(operation_id, store, model, destination,
-                                           run_id, on_started=mark_started)
+                                           run_id, on_started=mark_started)["payload_bytes"]
             verified = True
             with self.lock:
                 self._finish(operation_id, status="completed", payload_bytes=count)
