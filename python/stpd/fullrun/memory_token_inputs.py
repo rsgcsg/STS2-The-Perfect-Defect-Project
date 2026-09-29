@@ -51,6 +51,16 @@ def project_memory_v2_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:
     return project_text_menu_v2_snapshot(decode_json(json_bytes(snapshot)))
 
 
+def project_memory_profile_snapshot(snapshot: dict[str, Any],
+                                    input_profile: str) -> TextMenuInput:
+    """Render only a caller-selected, closed text-menu input profile."""
+    if input_profile == INPUT_PROFILE:
+        return project_memory_snapshot(snapshot)
+    if input_profile == V2_INPUT_PROFILE:
+        return project_memory_v2_snapshot(snapshot)
+    raise BoundaryError("memory_tokens", "unknown_text_menu_profile")
+
+
 def encode_memory_texts(
     tokenizer: Tokenizer, state: str, actions: tuple[str, ...], *,
     max_tokens: int, slots: int, previous_actual_action: bool = False,

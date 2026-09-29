@@ -26,9 +26,13 @@ from ..models.dsimple_sequence_training import (
     _validate_step,
     validate_memory_window,
 )
-from .memory_token_inputs import encode_memory_texts, project_memory_snapshot
+from .memory_token_inputs import (
+    V2_RENDERER_IDENTITY,
+    encode_memory_texts,
+    project_memory_profile_snapshot,
+)
 from .observed_input_sequence import ObservedInput, ObservedInputView
-from .text_menu_inputs import INPUT_PROFILE, SNAPSHOT_SCHEMA
+from .text_menu_inputs import INPUT_PROFILE, SNAPSHOT_SCHEMA, V2_INPUT_PROFILE
 
 
 @dataclass(frozen=True)
@@ -89,6 +93,70 @@ class MemoryEpisodeProjectionConfig:
                 or type(self.max_settling_events) is not int
                 or self.max_settling_events < 0):
             raise ValueError("invalid memory episode projection config")
+
+
+@dataclass(frozen=True)
+class MemoryEpisodeProjectionConfigV2:
+    """Immutable v2 profile and exact renderer binding for observed-input replay."""
+
+    schema: str
+    max_settling_events: int
+    input_profile: str
+    renderer_id: str
+    renderer_text_menu_version: str
+    renderer_wrapper: str
+
+    def __post_init__(self) -> None:
+        if (self.schema != "stpd/memory-episode-projection-config-v2"
+                or type(self.max_settling_events) is not int
+                or self.max_settling_events != 0
+                or self.input_profile != V2_INPUT_PROFILE
+                or (self.renderer_id, self.renderer_text_menu_version,
+                    self.renderer_wrapper) != (
+                        V2_RENDERER_IDENTITY["id"],
+                        V2_RENDERER_IDENTITY["text_menu_version"],
+                        V2_RENDERER_IDENTITY["wrapper"],
+                    )):
+            raise ValueError("invalid memory episode projection config")
+
+
+def v2_episode_projection_config() -> MemoryEpisodeProjectionConfigV2:
+    """Construct the sole admitted v2 projection contract."""
+    return MemoryEpisodeProjectionConfigV2(
+        "stpd/memory-episode-projection-config-v2", 0, V2_INPUT_PROFILE,
+        V2_RENDERER_IDENTITY["id"], V2_RENDERER_IDENTITY["text_menu_version"],
+        V2_RENDERER_IDENTITY["wrapper"],
+    )
+
+
+def parse_episode_projection_config(
+    value: object,
+) -> MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2:
+    """Decode only the two immutable observed-input projection contracts."""
+    if not isinstance(value, dict):
+        raise ValueError("invalid memory episode projection config")
+    if (value.get("schema") == "stpd/memory-episode-projection-config-v1"
+            and set(value) == {"schema", "max_settling_events"}):
+        return MemoryEpisodeProjectionConfig(**value)
+    if (value.get("schema") == "stpd/memory-episode-projection-config-v2"
+            and set(value) == {"schema", "max_settling_events", "input_profile",
+                               "renderer_id", "renderer_text_menu_version",
+                               "renderer_wrapper"}):
+        return MemoryEpisodeProjectionConfigV2(**value)
+    raise ValueError("invalid memory episode projection config")
+
+
+def projection_input_profile(
+    config: MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2,
+) -> str:
+    """Get the profile only after exact non-virtual config validation."""
+    if type(config) is MemoryEpisodeProjectionConfig:
+        MemoryEpisodeProjectionConfig.__post_init__(config)
+        return INPUT_PROFILE
+    if type(config) is MemoryEpisodeProjectionConfigV2:
+        MemoryEpisodeProjectionConfigV2.__post_init__(config)
+        return V2_INPUT_PROFILE
+    raise ValueError("invalid memory episode projection config")
 
 
 @dataclass(frozen=True)
@@ -170,6 +238,7 @@ def _segments(
 def _project_segment(
     view: ObservedInputView, tokenizer: Tokenizer, model: ExperimentalDSimpleM2,
     segment: tuple[ObservedInput, ...], *, max_input_tokens: int, limit_code: str,
+    input_profile: str = INPUT_PROFILE,
 ) -> tuple[str, tuple[MemorySequenceStep, ...]]:
     first = segment[0]
     episode_id = semantic_hash([view.source_id, first.stream_id, first.event_id])
@@ -178,7 +247,7 @@ def _project_segment(
     for position, item in enumerate(segment):
         if not isinstance(item.snapshot, dict):
             raise BoundaryError("memory_bridge", "missing_observation")
-        public = project_memory_snapshot(item.snapshot)
+        public = project_memory_profile_snapshot(item.snapshot, input_profile)
         selected = item.selected_action_id
         if item.choice_mask != (selected is not None):
             raise BoundaryError("memory_bridge", "choice_mask_mismatch")
@@ -362,9 +431,28 @@ def project_memory_episodes(
     max_observations: int,
     max_input_tokens: int,
     max_settling_events: int = 0,
+    projection_config: (
+        MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2 | None
+    ) = None,
 ) -> MemoryEpisodeBridgeResult:
     """Project bounded episodes; opted-in verified settling writes no model state."""
     _validate_bridge_input(view, tokenizer, model)
+    if projection_config is not None and type(projection_config) not in {
+        MemoryEpisodeProjectionConfig, MemoryEpisodeProjectionConfigV2,
+    }:
+        raise BoundaryError("memory_bridge", "projection_config_mismatch")
+    input_profile = (INPUT_PROFILE if projection_config is None else
+                     projection_input_profile(projection_config))
+    if input_profile == V2_INPUT_PROFILE:
+        if (view.stream_scope != "managed_engineering_control_inputs"
+                or any(not isinstance(item, ObservedInput)
+                       or item.source_kind != "managed_control_input_stream"
+                       for item in view.inputs)
+                or max_settling_events != 0):
+            raise BoundaryError("memory_bridge", "v2_source_or_settling_mismatch")
+    elif (projection_config is not None
+          and max_settling_events != projection_config.max_settling_events):
+        raise BoundaryError("memory_bridge", "projection_config_mismatch")
     if (type(max_observations) is not int or max_observations <= 0
             or type(max_input_tokens) is not int or max_input_tokens <= 0
             or type(max_settling_events) is not int or max_settling_events < 0):
@@ -396,6 +484,7 @@ def project_memory_episodes(
                 view, tokenizer, model, projected,
                 max_input_tokens=max_input_tokens,
                 limit_code="episode_input_token_limit",
+                input_profile=input_profile,
             )
             if not any(step.label_key is not None for step in steps):
                 diagnostics.append(MemoryBridgeDiagnostic(first.stream_id, first.event_id,

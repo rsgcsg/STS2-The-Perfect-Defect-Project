@@ -18,6 +18,7 @@ from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, d
 from spireagent.storage.store import ArtifactStore
 
 from ..fullrun.memory_token_inputs import MAX_TOKENIZER_BYTES
+from ..fullrun.text_menu_inputs import INPUT_PROFILE, V2_INPUT_PROFILE
 from ..models.dsimple_sequence_training import MemorySequenceEpisode, MemorySequenceStep
 from .checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .memory_ranking import (
@@ -33,6 +34,7 @@ from .worker import WorkerResult
 if TYPE_CHECKING:
     from stpd.fullrun.memory_sequence_bridge import (
         MemoryEpisodeProjectionConfig,
+        MemoryEpisodeProjectionConfigV2,
         MemoryEventMapping,
     )
     from stpd.fullrun.observed_input_sequence import ObservedInputView
@@ -96,7 +98,9 @@ def prepare_memory_run(
     store: ArtifactStore, source: MemoryTrainingInput, config: MemoryConfig,
     producer: Producer, tokenizer_bytes: bytes, *,
     source_mapping: tuple[MemoryEventMapping, ...] | None = None,
-    projection_config: MemoryEpisodeProjectionConfig | None = None,
+    projection_config: (
+        MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2 | None
+    ) = None,
     operation_id: str | None = None,
 ) -> Manifest:
     """Freeze caller-admitted M2 tensors and exact tokenizer into a train-only run.
@@ -120,10 +124,14 @@ def prepare_memory_run(
     mapping_raw = None
     mapping_parameters: dict[str, object] = {}
     if source_mapping is not None:
-        from stpd.fullrun.memory_sequence_bridge import MemoryEpisodeProjectionConfig
+        from stpd.fullrun.memory_sequence_bridge import projection_input_profile
 
-        if not isinstance(projection_config, MemoryEpisodeProjectionConfig):
+        if projection_config is None:
             raise BoundaryError("memory_run", "projection_config_required")
+        try:
+            projection_input_profile(projection_config)
+        except ValueError as error:
+            raise BoundaryError("memory_run", "projection_config_required") from error
         mapping_raw = _source_map_bytes(source_mapping)
         _validate_source_mapping(source.source_id, engine.snapshot_input().episodes,
                                  source_mapping)
@@ -183,6 +191,7 @@ def prepare_observed_memory_run(
     tokenizer_bytes: bytes, *, max_settling_events: int = 0,
     operation_id: str | None = None,
     reject_diagnostics: bool = False,
+    input_profile: str = INPUT_PROFILE,
 ) -> Manifest:
     """Project a typed observed source and freeze train-only M2 input plus its map.
 
@@ -208,16 +217,26 @@ def prepare_observed_memory_run(
 
     view = load_observed_input_view(store, source_id)
     model = _projection_model(config)
-    from stpd.fullrun.memory_sequence_bridge import MemoryEpisodeProjectionConfig
-
-    projection_config = MemoryEpisodeProjectionConfig(
-        "stpd/memory-episode-projection-config-v1", max_settling_events,
+    from stpd.fullrun.memory_sequence_bridge import (
+        MemoryEpisodeProjectionConfig,
+        v2_episode_projection_config,
     )
+
+    projection_config: MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2
+    if input_profile == INPUT_PROFILE:
+        projection_config = MemoryEpisodeProjectionConfig(
+            "stpd/memory-episode-projection-config-v1", max_settling_events,
+        )
+    elif input_profile == V2_INPUT_PROFILE and max_settling_events == 0:
+        projection_config = v2_episode_projection_config()
+    else:
+        raise BoundaryError("memory_run", "unsupported_projection_profile")
     projection = project_memory_episodes(
         view, tokenizer, model,
         max_observations=config.max_episode_observations,
         max_input_tokens=config.max_episode_input_tokens,
         max_settling_events=projection_config.max_settling_events,
+        projection_config=projection_config,
     )
     if reject_diagnostics and projection.diagnostics:
         raise BoundaryError("memory_run", projection.diagnostics[0].reason)
@@ -369,16 +388,13 @@ def _load_run(store: ArtifactStore, run_id: str, runtime: Producer,
                 or raw_mapping != json_bytes(value)):
             raise BoundaryError("memory_run", "source_map_payload_mismatch")
         from stpd.fullrun.memory_sequence_bridge import (
-            MemoryEpisodeProjectionConfig,
             MemoryEventMapping,
+            parse_episode_projection_config,
         )
 
         projection_config_value = input_info.get("projection_config")
-        if (not isinstance(projection_config_value, dict)
-                or set(projection_config_value) != {"schema", "max_settling_events"}):
-            raise BoundaryError("memory_run", "projection_config_mismatch")
         try:
-            projection_config = MemoryEpisodeProjectionConfig(**projection_config_value)
+            projection_config = parse_episode_projection_config(projection_config_value)
         except (TypeError, ValueError) as error:
             raise BoundaryError("memory_run", "projection_config_mismatch") from error
         event_fields = {
@@ -419,7 +435,10 @@ def _load_run(store: ArtifactStore, run_id: str, runtime: Producer,
 def _verify_observed_projection(source_id: str, tokenizer_bytes: bytes,
                                 config: MemoryConfig, saved: MemoryTrainingInput,
                                 mapping: tuple[MemoryEventMapping, ...], view: ObservedInputView,
-                                projection_config: MemoryEpisodeProjectionConfig) -> None:
+                                projection_config: (
+                                    MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV2
+                                ),
+                                ) -> None:
     """Rebuild typed bridge output so v2 mappings cannot be decorative metadata."""
     from tokenizers import Tokenizer
 
@@ -439,6 +458,7 @@ def _verify_observed_projection(source_id: str, tokenizer_bytes: bytes,
         max_input_tokens=config.max_episode_input_tokens,
         # Settling events appear only when explicitly admitted at prepare time.
         max_settling_events=projection_config.max_settling_events,
+        projection_config=projection_config,
     )
     if (projection.event_mapping != mapping
             or len(projection.episodes) != config.episode_count):

@@ -15,9 +15,19 @@ from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, obj
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ArtifactStore
 
-from ..fullrun.memory_token_inputs import RENDERER_IDENTITY
+from ..fullrun.memory_sequence_bridge import (
+    parse_episode_projection_config,
+    projection_input_profile,
+)
+from ..fullrun.memory_token_inputs import RENDERER_IDENTITY, renderer_identity_for_profile
 from ..fullrun.text_menu_inputs import IDENTITY as TEXT_MENU_IDENTITY
-from ..fullrun.text_menu_inputs import SNAPSHOT_SCHEMA
+from ..fullrun.text_menu_inputs import (
+    INPUT_PROFILE,
+    SNAPSHOT_SCHEMA,
+    V2_IDENTITY,
+    V2_INPUT_PROFILE,
+    V2_SNAPSHOT_SCHEMA,
+)
 from ..workers.memory_ranking import MemoryConfig
 from ..workers.memory_run import (
     INPUT_SCHEMA_V2,
@@ -30,6 +40,8 @@ from ..workers.memory_run import (
 PACKAGE_SCHEMA = "stpd/experimental-m2-portable-policy-v1"
 RENDERER = {**RENDERER_IDENTITY, "text_menu": TEXT_MENU_IDENTITY,
             "input_schema": SNAPSHOT_SCHEMA}
+V2_RENDERER = {**renderer_identity_for_profile(V2_INPUT_PROFILE),
+               "text_menu": V2_IDENTITY, "input_schema": V2_SNAPSHOT_SCHEMA}
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_WEIGHTS_BYTES = MAX_CHECKPOINT_BYTES
 WEIGHTS_NAME = "weights.tensor-tree"
@@ -47,6 +59,15 @@ def _regular_bytes(path: Path, maximum: int) -> bytes:
     return path.read_bytes()
 
 
+def _projection_renderer(value: object) -> tuple[str, dict[str, Any]]:
+    try:
+        config = parse_episode_projection_config(value)
+        profile = projection_input_profile(config)
+    except (TypeError, ValueError) as error:
+        raise BoundaryError("m2_package", "projection_config_invalid") from error
+    return profile, RENDERER if profile == INPUT_PROFILE else V2_RENDERER
+
+
 def export_memory_package(store: ArtifactStore, reporter: ObjectStoreRunReporter,
                           run_id: str, destination: Path) -> dict[str, Any]:
     """Export only a completed observed-input v2 run, with no source payloads.
@@ -59,6 +80,7 @@ def export_memory_package(store: ArtifactStore, reporter: ObjectStoreRunReporter
     input_info = training_input.parameters.value()
     if input_info.get("schema") != INPUT_SCHEMA_V2:
         raise BoundaryError("m2_package", "verified_observed_input_required")
+    input_profile, renderer = _projection_renderer(input_info.get("projection_config"))
     if any(step.previous_actual_action is not None or step.public_feedback is not None
            for episode in engine.snapshot_input().episodes for step in episode.steps):
         raise BoundaryError("m2_package", "unsupported_optional_history_channel")
@@ -81,7 +103,7 @@ def export_memory_package(store: ArtifactStore, reporter: ObjectStoreRunReporter
         "source_map_sha256": training_input.payload("source_map").sha256,
         "source_event_count": input_info["source_event_count"],
         "projection_config": input_info["projection_config"],
-        "renderer": RENDERER,
+        "renderer": renderer,
         "config": asdict(config),
         "weights": {"file": WEIGHTS_NAME, "sha256": _sha(weights), "size": len(weights)},
         "tokenizer": {"file": TOKENIZER_NAME, "sha256": _sha(tokenizer),
@@ -97,7 +119,7 @@ def export_memory_package(store: ArtifactStore, reporter: ObjectStoreRunReporter
         (destination / WEIGHTS_NAME).write_bytes(weights)
         (destination / TOKENIZER_NAME).write_bytes(tokenizer)
         (destination / MANIFEST_NAME).write_bytes(raw_manifest)
-        validate_memory_package(destination)
+        validate_memory_package(destination, input_profile=input_profile)
     except Exception:
         for name in (WEIGHTS_NAME, TOKENIZER_NAME, MANIFEST_NAME):
             (destination / name).unlink(missing_ok=True)
@@ -106,7 +128,9 @@ def export_memory_package(store: ArtifactStore, reporter: ObjectStoreRunReporter
     return manifest
 
 
-def validate_memory_package(directory: Path) -> tuple[dict[str, Any], bytes, bytes, MemoryConfig]:
+def validate_memory_package(
+    directory: Path, *, input_profile: str = INPUT_PROFILE,
+) -> tuple[dict[str, Any], bytes, bytes, MemoryConfig]:
     """Validate detached portable bytes; no local store or ledger is needed."""
     raw = _regular_bytes(directory / MANIFEST_NAME, MAX_MANIFEST_BYTES)
     value = object_fields(decode_json(raw), {
@@ -115,8 +139,14 @@ def validate_memory_package(directory: Path) -> tuple[dict[str, Any], bytes, byt
         "renderer", "config", "weights", "tokenizer", "partition", "qualification",
         "evaluation_status", "source_admission",
     }, "m2_package.manifest")
+    if not isinstance(input_profile, str) or input_profile not in {
+        INPUT_PROFILE, V2_INPUT_PROFILE,
+    }:
+        raise BoundaryError("m2_package", "unsupported_package_identity")
+    package_profile, expected_renderer = _projection_renderer(value["projection_config"])
     if (raw != json_bytes(value) or value["schema"] != PACKAGE_SCHEMA
-            or value["renderer"] != RENDERER or value["partition"] != "train"
+            or package_profile != input_profile or value["renderer"] != expected_renderer
+            or value["partition"] != "train"
             or value["qualification"] != "engineering_only"
             or value["evaluation_status"] != "not_run"
             or value["source_admission"] != "caller_owned"):
@@ -135,12 +165,6 @@ def validate_memory_package(directory: Path) -> tuple[dict[str, Any], bytes, byt
     if (type(value["source_event_count"]) is not int
             or value["source_event_count"] < 1):
         raise BoundaryError("m2_package", "source_event_count_invalid")
-    projection = object_fields(value["projection_config"], {
-        "schema", "max_settling_events"}, "m2_package.projection")
-    if (projection["schema"] != "stpd/memory-episode-projection-config-v1"
-            or type(projection["max_settling_events"]) is not int
-            or projection["max_settling_events"] < 0):
-        raise BoundaryError("m2_package", "projection_config_invalid")
     config_value = value["config"]
     if not isinstance(config_value, dict) or set(config_value) != {
         field.name for field in fields(MemoryConfig)
@@ -161,9 +185,11 @@ def validate_memory_package(directory: Path) -> tuple[dict[str, Any], bytes, byt
 
 
 def verify_memory_package(store: ArtifactStore, reporter: ObjectStoreRunReporter,
-                          model_id: str, directory: Path) -> dict[str, Any]:
+                          model_id: str, directory: Path, *,
+                          input_profile: str = INPUT_PROFILE) -> dict[str, Any]:
     """Reconcile detached package with the completed immutable store lineage."""
-    package, _, _, saved_config = validate_memory_package(directory)
+    package, _, _, saved_config = validate_memory_package(
+        directory, input_profile=input_profile)
     if package["ids"]["model"] != model_id:
         raise BoundaryError("m2_package", "model_identity_mismatch")
     run_id = package["ids"]["run"]

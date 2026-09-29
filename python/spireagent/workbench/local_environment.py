@@ -401,12 +401,24 @@ class LocalEnvironmentService:
                 items.append({"artifact_id": artifact_id, **params})
         return {"schema": REPORT_SCHEMA, "items": items[-20:]}
 
-    def report(self, artifact_id: str) -> dict[str, Any]:
+    def report_archive(self, artifact_id: str) -> ManifestArtifactStore:
+        """Open the exact app-owned immutable report archive for explicit import."""
         if re.fullmatch(r"[0-9a-f]{64}", artifact_id) is None:
             raise BoundaryError("local_environment", "report_not_found")
         store = self._report_store(create=False)
         if store is None:
             raise BoundaryError("local_environment", "report_not_found")
+        try:
+            manifest = store.get_manifest(artifact_id)
+            if (manifest.kind != "analysis"
+                    or manifest.parameters.value().get("schema") != REPORT_SCHEMA):
+                raise ValueError
+        except (OSError, KeyError, ValueError, BoundaryError) as error:
+            raise BoundaryError("local_environment", "report_not_found") from error
+        return store
+
+    def report(self, artifact_id: str) -> dict[str, Any]:
+        store = self.report_archive(artifact_id)
         try:
             manifest = store.get_manifest(artifact_id)
             if manifest.kind != "analysis" or (

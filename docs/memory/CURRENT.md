@@ -1,7 +1,7 @@
-# Current project context, 2026-09-29
+# Current project context, 2026-09-30
 
 Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; accepted develop
-anchor `2b428b3aae904a4eedc3ef0241f071cb3d2db91c` after PR106.
+anchor `cc6208fc257796c6721b2f2fdf42d57d39ee48a9` after PR107.
 Resolve live GitHub refs before work; current authorities override this file.
 Source, CI, installation, Human operation and scientific results are separate.
 No complete Stage1a or policy-quality qualification is claimed. See the
@@ -75,7 +75,19 @@ truthful process cleanup and a real authenticated HTTP → Managed native →
 immutable report journey. That candidate does not replace the current private
 or published installation merely by existing in Git. Existing v1 Human data,
 tokenizers and M2 exports remain v1. A v2 projector is not a trained v2 policy;
-the complete v2 training/export/Runtime profile remains separate unfinished work.
+PR107 subsequently merged as `cc6208fc` after exact head `d0b45832` passed
+full run `36583149955` on Linux, Windows and portable. Its integration run
+`36587399952` succeeded with verified same-tree reuse and fresh guards;
+no second OS execution is claimed.
+
+The [v2 M2 engineering candidate](../evidence/STAGE1A_M2_V2_ENGINEERING_2026-09-30.md)
+has now trained one six-step Managed engineering sequence, exported and verified
+its model, checked offline/online complete-menu parity, then run six model-chosen
+Managed submissions with two native deliveries and a budget stop. The data is
+actor-unverified and has no causal-successor labels. This is not an independent
+dev result, Human data, policy quality or a full game. Explicit v2 Workbench
+training recipes and native Runtime admission remain unfinished; old v1 packages
+and default entrypoints retain their identities.
 
 D-Simple-S remains the default application recipe. Merged PR90/91/95 provide
 observed-sequence M2 training, durable checkpoints and read-only online scoring;

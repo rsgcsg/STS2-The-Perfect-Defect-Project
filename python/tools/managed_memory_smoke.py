@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from stpd.fullrun.text_menu_inputs import INPUT_PROFILE, V2_INPUT_PROFILE  # noqa: E402
 from stpd.host_runtime_client import (  # noqa: E402
     DEFAULT_HOST_RUNTIME,
     DEFAULT_HOST_RUNTIME_PIN,
@@ -37,6 +38,8 @@ def main() -> int:
     parser.add_argument("--seed", action="append", required=True)
     parser.add_argument("--character", default="Defect")
     parser.add_argument("--ascension", type=int, default=0)
+    parser.add_argument("--input-profile", choices=(INPUT_PROFILE, V2_INPUT_PROFILE),
+                        default=INPUT_PROFILE)
     parser.add_argument("--max-policy-calls", type=int, default=4)
     parser.add_argument("--max-submissions", type=int, default=1)
     parser.add_argument("--max-observations", type=int, default=8)
@@ -52,21 +55,33 @@ def main() -> int:
         if (not callable(getattr(ManagedPlayerEnvironment, "observe_text_menu", None))
                 or not callable(getattr(ManagedPlayerEnvironment, "submit_text_menu", None))):
             raise RuntimeError("text_menu_consumer_unavailable")
-        package, weights, tokenizer, config = validate_memory_package(args.model_export)
-        validate_smoke_request(tuple(args.seed), package["ids"]["model"],
-                               config.reset_each_step, args.character, args.ascension)
+        if args.input_profile == V2_INPUT_PROFILE:
+            package, weights, tokenizer, config = validate_memory_package(
+                args.model_export, input_profile=args.input_profile)
+            validate_smoke_request(tuple(args.seed), package["ids"]["model"],
+                                   config.reset_each_step, args.character, args.ascension,
+                                   input_profile=args.input_profile)
+        else:
+            package, weights, tokenizer, config = validate_memory_package(args.model_export)
+            validate_smoke_request(tuple(args.seed), package["ids"]["model"],
+                                   config.reset_each_step, args.character, args.ascension)
         import torch
 
         torch.set_num_threads(config.cpu_threads)
-        scorer = OnlineM2Scorer.from_export(weights, config, tokenizer)
+        scorer = (OnlineM2Scorer.from_export(
+            weights, config, tokenizer, input_profile=args.input_profile)
+            if args.input_profile == V2_INPUT_PROFILE else
+            OnlineM2Scorer.from_export(weights, config, tokenizer))
         command = [*driver_command(host_runtime, args.candidate.resolve()),
                    "--character", args.character, "--timeout-ms", "5000"]
         environment = ManagedPlayerEnvironment(
             command, response_timeout_seconds=min(limits.max_seconds, 10.0))
+        options = ({"input_profile": args.input_profile}
+                   if args.input_profile == V2_INPUT_PROFILE else {})
         report = run_managed_memory_smoke(
             environment, scorer, seeds=tuple(args.seed),
             model_id=package["ids"]["model"], reset_each_step=config.reset_each_step,
-            limits=limits, character=args.character, ascension=args.ascension,
+            limits=limits, character=args.character, ascension=args.ascension, **options,
         )
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
         return 0 if report["status"] == "engineering_smoke_complete" else 2

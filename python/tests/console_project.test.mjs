@@ -3264,6 +3264,108 @@ test("explicit local workspace create uses the browser session and empty command
   assert.equal(env.reloads, 1);
 });
 
+function managedReportImportSetup({csrf = "report-csrf", pin = true, wrongResult = false} = {}) {
+  const reportId = id("e"), sourceId = id("f");
+  const env = setup({view:"local-environment", identity:{status:"local_only"},
+    handler: async (url, options) => {
+      if (url === "/api/local-environment") return {
+        schema:"stpd/local-managed-environment-v1", availability:"configured", csrf_token:csrf,
+        input_profile:"text-menu-v2", scenarios:[], session:{status:"idle"},
+      };
+      if (url === "/api/local-environment/reports") return {items:[{artifact_id:reportId,status:"stopped"}]};
+      if (url === `/api/local-environment/reports/${reportId}`) return {
+        status:"stopped", error_code:null, input_profile:"text-menu-v2", events:[],
+        ...(pin ? {host_package_pin:{schema:"stpd/platform-host-runtime-pin-v1"}} : {}),
+      };
+      if (url === "/api/local-environment/reports/import") return {
+        schema:"stpd/local-managed-source-import-v1", status:"admitted", artifact_id:sourceId,
+        report_artifact_id:wrongResult ? id("a") : reportId,
+        curation_purpose:JSON.parse(options.body).purpose,
+        scope:"engineering_control",sample_type:"managed_control_input_stream",actor:"unverified",
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  return {env, reportId, sourceId};
+}
+
+test("archived Managed report needs explicit purpose and one save request without training", async () => {
+  for (const purpose of ["training", "test"]) {
+    const {env, reportId, sourceId} = managedReportImportSetup();
+    const page = await env.render();
+    await action(page, `environment-report-${reportId}`).onclick();
+    const save = action(page, `environment-import-${reportId}`);
+    assert.equal(save.disabled, true);
+    await save.onclick();
+    assert.equal(post(env.calls).length, 0);
+    const selector = field(page, `environment-purpose-${reportId}`);
+    selector.value = purpose;
+    selector.onchange();
+    assert.equal(save.disabled, false);
+    await save.onclick();
+    const writes = post(env.calls);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].url, "/api/local-environment/reports/import");
+    assert.deepEqual(body(writes[0]), {report_artifact_id:reportId,purpose});
+    assert.equal(writes[0].options.headers["X-CSRF-Token"], "report-csrf");
+    assert.match(find(page, element => element.textContent === "打开已保存的资料").href, new RegExp(sourceId));
+    assert.match(text(page), /不会启动训练或上传/);
+    assert.doesNotMatch(text(page), /report-csrf/);
+    await env.render();
+    assert.equal(post(env.calls).length, 1);
+  }
+});
+
+test("Managed report import cannot save without a pin or CSRF and rejects a mismatched result", async () => {
+  const noPin = managedReportImportSetup({pin:false});
+  const oldPage = await noPin.env.render();
+  await action(oldPage, `environment-report-${noPin.reportId}`).onclick();
+  assert.equal(walk(oldPage).some(e => e.dataset?.action === `environment-import-${noPin.reportId}`), false);
+  const noCsrf = managedReportImportSetup({csrf:""});
+  const page = await noCsrf.env.render();
+  await action(page, `environment-report-${noCsrf.reportId}`).onclick();
+  const purpose = field(page, `environment-purpose-${noCsrf.reportId}`);
+  purpose.value = "training"; purpose.onchange();
+  const save = action(page, `environment-import-${noCsrf.reportId}`);
+  assert.equal(save.disabled, true);
+  await save.onclick();
+  assert.equal(post(noCsrf.env.calls).length, 0);
+  const mismatch = managedReportImportSetup({wrongResult:true});
+  const wrongPage = await mismatch.env.render();
+  await action(wrongPage, `environment-report-${mismatch.reportId}`).onclick();
+  const choice = field(wrongPage, `environment-purpose-${mismatch.reportId}`);
+  choice.value = "test"; choice.onchange();
+  await action(wrongPage, `environment-import-${mismatch.reportId}`).onclick();
+  assert.equal(post(mismatch.env.calls).length, 1);
+  assert.equal(walk(wrongPage).some(e => e.textContent === "打开已保存的资料"), false);
+});
+
+test("Managed source detail reads its owning purpose without granting a training action", async () => {
+  const source = id("f");
+  const env = setup({view:"local-workspace", query:`&id=${source}`, identity:{status:"local_only"},
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${source}`) return {
+        kind:"dataset",artifact_id:source,parents:[],payloads:[],
+        parameters:{schema:"stpd/managed-text-menu-observed-source-v1"},
+      };
+      if (url === `/api/local-managed-sources/binding/${source}`) return {
+        schema:"stpd/local-managed-source-binding-v1",status:"admitted",artifact_id:source,
+        curation_purpose:"training",event_count:6,scope:"engineering_control",
+        sample_type:"managed_control_input_stream",actor:"unverified",
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /工程训练/);
+  assert.match(text(page), /未自动启动训练/);
+  assert.equal(post(env.calls).length, 0);
+  assert.equal(walk(page).some(e => (e.dataset?.action || "").includes("start-local-training")), false);
+});
+
 test("environment page explains missing setup without accepting browser paths", async () => {
   const env = setup({view:"local-environment", identity:{status:"local_only"},
     handler: async (url) => url === "/api/local-environment" ? {
