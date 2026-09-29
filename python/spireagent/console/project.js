@@ -4084,16 +4084,78 @@ window.SpireProject = (() => {
           ? `${player.hp} / ${player.max_hp}` : "未提供"],
         ["金币", Number.isSafeInteger(player.gold) ? String(player.gold) : "未提供"],
       ]));
+      const position = value => Number.isSafeInteger(value?.col) && Number.isSafeInteger(value?.row)
+        ? `(${value.col},${value.row})` : null;
+      const map = content.context?.kind === "map" ? content.context : null;
+      if (map) {
+        const visited = Array.isArray(map.visited) ? map.visited.map(position).filter(Boolean) : [];
+        page.append(fields([
+          ["地图当前位置", position(map.current_position) || "未提供"],
+          ["已走过的节点", visited.length ? visited.join(" → ")
+            : Array.isArray(map.visited) ? "无" : "未提供"],
+        ]));
+      }
+      const combat = content.context?.kind === "combat" ? content.context : null;
+      const combatPlayer = combat?.player || {};
+      if (combat) page.append(fields([
+        ["回合", Number.isSafeInteger(combat.round) ? String(combat.round) : "未提供"],
+        ["当前行动方", combat.turn_owner || "未提供"],
+        ["能量", Number.isSafeInteger(combatPlayer.energy) && Number.isSafeInteger(combatPlayer.max_energy)
+          ? `${combatPlayer.energy} / ${combatPlayer.max_energy}` : "未提供"],
+        ["格挡", Number.isSafeInteger(combatPlayer.block) ? String(combatPlayer.block) : "未提供"],
+        ["牌堆数量", ["draw_pile_count", "discard_pile_count", "exhaust_pile_count"].every(key =>
+          Number.isSafeInteger(combatPlayer[key]))
+          ? `抽牌 ${combatPlayer.draw_pile_count} · 弃牌 ${combatPlayer.discard_pile_count} · 消耗 ${combatPlayer.exhaust_pile_count}`
+          : "未提供"],
+      ]));
+      const hand = new Map((Array.isArray(combatPlayer.hand) ? combatPlayer.hand : [])
+        .filter(card => typeof card?.entity_id === "string").map(card => [card.entity_id, card]));
+      const describeReferent = item => {
+        const properties = item.properties || {};
+        const details = [];
+        let label = item.label || item.name || item.role || "公开对象";
+        if (map && ["node", "option"].includes(item.role) && position(properties)) {
+          label = `${item.role === "option" ? "可选路线" : "地图节点"} ${properties.point_type || "类型未提供"} ${position(properties)}`;
+          if (typeof properties.state === "string") details.push(`状态 ${properties.state}`);
+          if (Array.isArray(properties.children)) details.push(`连接 ${properties.children.length
+            ? properties.children.map(child => `${child.point_type || "类型未提供"} ${position(child) || "位置未提供"}`).join("、")
+            : "无"}`);
+        }
+        if (combat && item.role === "enemy") {
+          if (Number.isSafeInteger(properties.hp) && Number.isSafeInteger(properties.max_hp))
+            details.push(`生命 ${properties.hp}/${properties.max_hp}`);
+          if (Number.isSafeInteger(properties.block)) details.push(`格挡 ${properties.block}`);
+          if (Array.isArray(properties.statuses) && properties.statuses.length)
+            details.push(`状态 ${properties.statuses.map(value =>
+              `${value.name || value.definition_id || "未命名"} ${value.amount ?? ""}${value.description ? `：${value.description}` : ""}`).join("、")}`);
+          if (Array.isArray(properties.intents) && properties.intents.length)
+            details.push(`意图 ${properties.intents.map(value =>
+              [value.label, value.title, value.description].filter(Boolean).join(" · ")).join("、")}`);
+        }
+        const card = combat && ["hand", "playable_card"].includes(item.role)
+          ? hand.get(item.referent_id) : null;
+        if (card) {
+          if (card.cost != null) details.push(`费用 ${card.cost}`);
+          if (card.type) details.push(`类型 ${card.type}`);
+          if (card.description) details.push(`说明 ${card.description}`);
+          if (card.is_upgraded === true) details.push("已升级");
+          if (card.can_play === false) details.push(`当前不可打出${card.unplayable_reason ? `：${card.unplayable_reason}` : ""}`);
+        }
+        if (item.state?.enabled === false) details.push("当前不可用");
+        if (item.state?.selected === true) details.push("已选择");
+        if (item.state?.visible === false) details.push("当前不可见");
+        return `${label}${details.length ? ` · ${details.join(" · ")}` : ""}`;
+      };
       if (Array.isArray(snapshot.referents) && snapshot.referents.length) {
         page.append(el("h3", `当前页公开对象 · ${snapshot.referents.length} 项`));
         const objects = el("ul");
         for (const item of snapshot.referents) {
-          objects.append(el("li", `${item.label || item.name || item.role || "公开对象"}${item.state?.enabled === false ? "（当前不可用）" : ""}`));
+          objects.append(el("li", describeReferent(item)));
         }
         page.append(objects);
       }
       if (Array.isArray(snapshot.menu?.selection) && snapshot.menu.selection.length) {
-        const referentLabels = new Map((snapshot.referents || []).map(item => [item.referent_id, item.label]));
+        const referentLabels = new Map((snapshot.referents || []).map(item => [item.referent_id, describeReferent(item)]));
         page.append(el("p", `当前选择：${snapshot.menu.selection.map(item =>
           `${item.role} ${referentLabels.get(item.referent_id) || "公开对象"}`).join(" → ")}`));
       }
@@ -4102,20 +4164,25 @@ window.SpireProject = (() => {
       if (menu?.status === "complete" && Array.isArray(menu.actions) &&
           menu.materialized_count === menu.actions.length && menu.total_count === menu.actions.length) {
         page.append(el("h3", `完整菜单 · ${menu.actions.length} 项`));
-        for (const item of menu.actions) {
+        for (const [index, item] of menu.actions.entries()) {
           const row = el("div", null, "project-card");
-          row.append(el("strong", `${item.label || item.verb || "未命名动作"}`));
+          const actionLabel = item.label || item.verb || "未命名动作";
+          row.append(el("strong", actionLabel));
           row.append(el("p", `${item.verb || ""} · ${item.effect_domain || ""}`, "small muted"));
           if (item.arguments?.length) row.append(technical(item.arguments, "查看目标和参数"));
           if (typeof item.action_id === "string" && item.action_id && sessionId) {
-            row.append(command(ctx, `environment-action-${item.action_id}`, "执行此动作", async () => {
+            const effect = item.effect_domain === "text_menu" ? "操作文字菜单"
+              : item.effect_domain === "native_input" ? "向游戏提交" : "选择当前动作";
+            const button = command(ctx, `environment-action-${item.action_id}`, `${effect}：${actionLabel}`, async () => {
               await request(ctx, "/api/local-environment/submit", {
                 session_id:sessionId, action_id:item.action_id,
                 expected_snapshot_id:snapshot.snapshot_id,
                 expected_game_continuity_id:context.game_continuity_id,
               }, csrf);
               await reload(ctx);
-            }, {disabled:!csrf}));
+            }, {disabled:!csrf});
+            button.setAttribute("aria-label", `菜单第 ${index + 1} 项，${effect}：${actionLabel}`);
+            row.append(button);
           }
           page.append(row);
         }
