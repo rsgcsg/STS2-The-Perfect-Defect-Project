@@ -94,9 +94,11 @@ weights SHA-256 `dd9cdfc9c96b87236de69b5262989adf0f8346eea500dd2e221d654e5791023
 tokenizer SHA-256 `d7e64760cbfa197d0831c82a3bf8640da16e355b07f9ffa4e0af553cf086e128`.
 Payload bytes total 4,659,079. These private weights were not committed or uploaded.
 
-The first registration attempt correctly refused the new checkout because its
-private runtime-profile pin was absent, although the shared application state
-already contained the exact installed Runtime. The original profile bytes
+The first browser registration request displayed the unavailable-runtime message
+and did not create a selection. This failure was observed in Safari; no raw
+POST failure receipt was retained. A subsequent read-only owner lookup failed
+on the absent private runtime-profile pin, while exact install validation
+confirmed the existing Runtime in shared application state. The original profile bytes
 (SHA-256 `3453b93f5fd5347257b267f7de2cd85c5c3c26990a227c58753489343038418b`)
 were explicitly copied into the new private checkout only after validating
 the existing install against that pin. No package was reinstalled, repinned,
