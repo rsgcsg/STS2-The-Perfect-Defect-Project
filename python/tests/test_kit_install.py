@@ -260,3 +260,35 @@ def test_initialize_new_profile_runs_real_owner_setup_without_selection(tmp_path
     loaded = ProjectConfig.load(profile, require_current_combination=False)
     assert loaded.state_dir == profile.parent
     assert "setup" in calls[0][0] and "model" in calls[-1][0]
+
+
+def test_selected_source_uv_subprocess_ignores_foreign_python_and_uv_targets(
+    tmp_path, monkeypatch
+):
+    source = Path(__file__).resolve().parents[2]
+    foreign = tmp_path / "foreign"
+    package = foreign / "spireagent"
+    workbench = package / "workbench"
+    workbench.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (workbench / "__init__.py").write_text("")
+    (workbench / "developer.py").write_text(f"ROOT = {str(foreign)!r}\n")
+    foreign_environment = tmp_path / "foreign-environment"
+    foreign_environment.mkdir()
+    sentinel = foreign_environment / "sentinel"
+    sentinel.write_text("unchanged")
+    monkeypatch.setenv("PYTHONPATH", str(foreign))
+    command = [
+        "uv", "run", "--project", "python", "--locked", "--extra", "cloud", "python",
+        "-c", "import spireagent.workbench.developer as d; print(d.ROOT)",
+    ]
+    assert install.run(command, source).strip() == str(source / "python")
+    monkeypatch.setenv("PYTHONHOME", str(foreign))
+    monkeypatch.setenv("VIRTUAL_ENV", str(foreign_environment))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(foreign_environment))
+    monkeypatch.setenv("UV_WORKING_DIR", str(foreign))
+    monkeypatch.setenv("UV_PROJECT", str(foreign))
+    monkeypatch.setenv("UV_PYTHON", str(foreign / "python"))
+    assert install.run(command, source).strip() == str(source / "python")
+    assert sentinel.read_text() == "unchanged"
+    assert sorted(p.name for p in foreign_environment.iterdir()) == ["sentinel"]

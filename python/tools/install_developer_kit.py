@@ -137,6 +137,15 @@ def run(command: list[str], cwd: Path, *, environment: dict[str, str] | None = N
     executable = shutil.which(command[0])
     if executable is None:
         reject("required_program_missing_" + command[0])
+    if command[0] == "uv":
+        # A release checkout must use its own project and interpreter. Keep ordinary
+        # network/certificate settings, but remove inherited import and uv targets.
+        environment = dict(os.environ if environment is None else environment)
+        for name in (
+            "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT",
+            "UV_WORKING_DIR", "UV_PROJECT", "UV_PYTHON", "UV_CONFIG_FILE", "UV_ENV_FILE",
+        ):
+            environment.pop(name, None)
     args = [str(executable), *command[1:]]
     if os.name == "nt" and Path(str(executable)).suffix.lower() in {".cmd", ".bat"}:
         args = [
