@@ -3340,10 +3340,10 @@ test("Managed report import cannot save without a pin or CSRF and rejects a mism
   assert.equal(walk(wrongPage).some(e => e.textContent === "打开已保存的资料"), false);
 });
 
-test("Managed source detail reads its owning purpose without granting a training action", async () => {
+test("Managed training source offers explicit v2 M2 and Reset without GET work", async () => {
   const source = id("f");
   const env = setup({view:"local-workspace", query:`&id=${source}`, identity:{status:"local_only"},
-    handler:async url => {
+    handler:async (url, options) => {
       if (url === "/api/local-workspace/managed") return {
         schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
       };
@@ -3356,6 +3356,14 @@ test("Managed source detail reads its owning purpose without granting a training
         curation_purpose:"training",event_count:6,scope:"engineering_control",
         sample_type:"managed_control_input_stream",actor:"unverified",
       };
+      if (url === "/api/local-training/status") return {
+        schema:"stpd/local-training-operation-v2",availability:"ready",
+        csrf_token:"train-csrf",operation:{status:"idle"},
+      };
+      if (url === "/api/local-training/start" && options.method === "POST") return {
+        schema:"stpd/local-training-operation-v2",availability:"ready",
+        operation:{status:"pending",dataset_id:source},
+      };
       throw new Error(`unexpected route ${url}`);
     },
   });
@@ -3363,7 +3371,63 @@ test("Managed source detail reads its owning purpose without granting a training
   assert.match(text(page), /工程训练/);
   assert.match(text(page), /未自动启动训练/);
   assert.equal(post(env.calls).length, 0);
-  assert.equal(walk(page).some(e => (e.dataset?.action || "").includes("start-local-training")), false);
+  const recipe = field(page, "local-training-recipe");
+  assert.deepEqual(recipe.children.map(option => option.value), [
+    "stage1a.dsimple.m2.k1.experimental.v2",
+    "stage1a.dsimple.reset.k1.experimental.v2",
+  ]);
+  await action(page, "start-local-training").onclick();
+  assert.deepEqual(body(post(env.calls)[0]), {dataset_id:source,
+    recipe:"stage1a.dsimple.m2.k1.experimental.v2"});
+});
+
+test("Managed test source never offers training", async () => {
+  const source = id("e");
+  const env = setup({view:"local-workspace", query:`&id=${source}`,
+    identity:{status:"local_only"}, handler:async url => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${source}`) return {
+        kind:"dataset",artifact_id:source,parents:[],payloads:[],
+        parameters:{schema:"stpd/managed-text-menu-observed-source-v1"},
+      };
+      if (url === `/api/local-managed-sources/binding/${source}`) return {
+        schema:"stpd/local-managed-source-binding-v1",status:"admitted",artifact_id:source,
+        curation_purpose:"test",event_count:6,scope:"engineering_control",
+        sample_type:"managed_control_input_stream",actor:"unverified",
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.equal(env.calls.some(call => call.url === "/api/local-training/status"), false);
+  assert.equal(post(env.calls).length, 0);
+  assert.equal(walk(page).some(e => e.dataset?.action === "start-local-training"), false);
+});
+
+test("v2 memory model card keeps its profile and never starts evaluation or registration on GET", async () => {
+  const modelId = id("a");
+  const model = memoryModel(modelId);
+  model.workbench_memory_recipe = "stage1a.dsimple.m2.k1.experimental.v2";
+  const env = setup({view:"local-workspace",query:`&id=${modelId}`,
+    identity:{status:"local_only"},handler:async url => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${modelId}`) return model;
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed",model_id:modelId,model_type:"memory",payload_bytes:123,
+      }, {schema:"stpd/local-model-export-operation-v2"});
+      if (url.startsWith("/api/local-model-registrations/status?")) return {
+        schema:"stpd/local-model-registration-v1",model_id:modelId,
+        status:"not_registered",loaded:false,runtime_profile:"text-menu-m2-v2",
+        csrf_token:"registration-csrf",
+      };
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /text-menu-v2 · Managed 工程操作，actor 未验证/);
+  assert.ok(action(page, "register-local-model"));
+  assert.equal(env.calls.some(call => call.url === "/api/local-memory-evaluations/status"), false);
+  assert.equal(post(env.calls).length, 0);
 });
 
 test("environment page explains missing setup without accepting browser paths", async () => {

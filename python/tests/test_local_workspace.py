@@ -14,7 +14,12 @@ from spireagent.workbench.local_workspace import LocalWorkspace, open_registered
 from spireagent.workbench.memory_recipe import (
     M2_K1_RECIPE,
     RESET_K1_RECIPE,
+    V2_M2_K1_RECIPE,
+    V2_RESET_K1_RECIPE,
     recipe_for_memory_config,
+)
+from stpd.fullrun.memory_sequence_bridge import (
+    MemoryEpisodeProjectionConfig, v2_episode_projection_config,
 )
 from stpd.workers.memory_ranking import MemoryConfig
 
@@ -94,12 +99,14 @@ def test_exact_artifact_view_uses_manifest_identity_and_safe_descriptors(tmp_pat
     assert "workbench_memory_recipe" not in value
 
 
-@pytest.mark.parametrize(("reset", "expected"), [
-    (False, M2_K1_RECIPE),
-    (True, RESET_K1_RECIPE),
+@pytest.mark.parametrize(("reset", "v2", "expected"), [
+    (False, False, M2_K1_RECIPE),
+    (True, False, RESET_K1_RECIPE),
+    (False, True, V2_M2_K1_RECIPE),
+    (True, True, V2_RESET_K1_RECIPE),
 ])
 def test_memory_artifact_view_derives_only_supported_workbench_recipe(
-        tmp_path: Path, reset: bool, expected: str) -> None:
+        tmp_path: Path, reset: bool, v2: bool, expected: str) -> None:
     artifact_store = store(tmp_path / "store")
     registry = SQLiteRegistry(tmp_path / "registry.sqlite")
     config = asdict(MemoryConfig(vocab_size=32, episode_count=2,
@@ -112,7 +119,27 @@ def test_memory_artifact_view_derives_only_supported_workbench_recipe(
                                  max_chunk_input_tokens=24_576,
                                  max_actions_per_step=256,
                                  reset_each_step=reset))
-    model = Manifest("model", PRODUCER, parameters=FrozenObject.of({
+    source = Manifest("dataset", PRODUCER, parameters=FrozenObject.of({
+        "schema": ("stpd/managed-text-menu-observed-source-v1" if v2
+                   else "stpd/human-text-input-source-v1")}))
+    artifact_store.publish(source)
+    projection = (v2_episode_projection_config() if v2 else
+                  MemoryEpisodeProjectionConfig(
+                      "stpd/memory-episode-projection-config-v1", 64))
+    training_input = Manifest("training_input", PRODUCER,
+                              parents=(Parent("source", source.artifact_id),),
+                              parameters=FrozenObject.of({
+                                  "schema": "stpd/experimental-m2-training-input-v2",
+                                  "projection_config": asdict(projection)}))
+    artifact_store.publish(training_input)
+    run = Manifest("run", PRODUCER,
+                   parents=(Parent("training_input", training_input.artifact_id),),
+                   parameters=FrozenObject.of({"config": config}))
+    artifact_store.publish(run)
+    model = Manifest("model", PRODUCER,
+                     parents=(Parent("run", run.artifact_id),
+                              Parent("training_input", training_input.artifact_id)),
+                     parameters=FrozenObject.of({
         "schema": "stpd/experimental-m2-model-v1", "config": config,
         "episodes": 2, "partition": "train", "qualification": "engineering_only",
     }))
