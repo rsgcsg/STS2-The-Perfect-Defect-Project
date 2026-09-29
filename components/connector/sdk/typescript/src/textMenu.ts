@@ -10,6 +10,8 @@ import {
 export const TEXT_MENU_PROFILE = "text-menu-v1" as const;
 export const TEXT_MENU_SNAPSHOT_SCHEMA = "sts2.player-environment/text-menu-snapshot-1" as const;
 export const TEXT_MENU_RESULT_SCHEMA = "sts2.player-environment/text-menu-action-result-1" as const;
+export const TEXT_MENU_OBSERVATION_CONTEXT_SCHEMA =
+  "sts2.player-environment/text-menu-observation-context-1" as const;
 
 const cursors = ["root", "information", "relic_inspect", "relic_tips", "card_tips",
   "power_tips", "intent_tips", "orb_tips", "topbar_tips"] as const;
@@ -98,6 +100,11 @@ export type TextMenuSnapshot = Omit<PlayerEnvironmentSnapshot, "schema" | "inter
 };
 export type TextMenuActionResult = Omit<z.infer<typeof resultSchema>, "successor"> & {
   successor: TextMenuSnapshot | null;
+};
+export type TextMenuObservationContext = {
+  schema: typeof TEXT_MENU_OBSERVATION_CONTEXT_SCHEMA;
+  snapshot: TextMenuSnapshot;
+  game_continuity_id: string | null;
 };
 
 function parse<T>(value: unknown, schema: z.ZodType<T>, label: string): T {
@@ -189,6 +196,19 @@ export function decodeTextMenuSnapshot(value: unknown): DecodedPlayerPayload<Tex
   decodePlayerSnapshot(normalized);
   return { raw, data: { ...raw, interaction: { ...interaction, capabilities },
     menu, menu_actions: menuActions } as TextMenuSnapshot };
+}
+
+export function decodeTextMenuObservationContext(value: unknown): DecodedPlayerPayload<TextMenuObservationContext> {
+  const raw = asObject(value, "text menu observation context");
+  exactKeys(raw, ["schema", "snapshot", "game_continuity_id"], "text menu observation context");
+  if (raw.schema !== TEXT_MENU_OBSERVATION_CONTEXT_SCHEMA) {
+    throw new Error("text menu observation context schema mismatch");
+  }
+  const gameContinuityId = raw.game_continuity_id === null ? null :
+    parse(raw.game_continuity_id, transportIdentifier, "game continuity identity");
+  const snapshot = decodeTextMenuSnapshot(raw.snapshot).data;
+  return { raw, data: { schema: TEXT_MENU_OBSERVATION_CONTEXT_SCHEMA,
+    snapshot, game_continuity_id: gameContinuityId } };
 }
 
 export function decodeTextMenuActionResult(value: unknown): DecodedPlayerPayload<TextMenuActionResult> {

@@ -58,6 +58,24 @@ public static partial class ConnectorMod
         }
     }
 
+    private static void HandleGetTextMenuObservationContext(HttpListenerResponse response)
+    {
+        try
+        {
+            var task = RunOnMainThread(PlayerEnvironmentService.ObserveTextMenuContext);
+            SendJson(response, task.GetAwaiter().GetResult());
+        }
+        catch (TextMenuRunContinuityChangedException)
+        {
+            SendApiError(response, 409, "run_continuity_changed_during_capture",
+                "The game run changed during observation; request a fresh context.");
+        }
+        catch (Exception exception)
+        {
+            SendApiInternalError(response, "text_menu_context_observation_failed", exception);
+        }
+    }
+
     private static void HandleGetPlayerEnvironmentRead(
         string encodedReadId,
         HttpListenerRequest request,

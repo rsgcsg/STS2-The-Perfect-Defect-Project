@@ -19,8 +19,9 @@ import {
 } from "./rewardPotionPage.js";
 import {
   TEXT_MENU_PROFILE, TEXT_MENU_RESULT_SCHEMA, decodeTextMenuCapabilities, decodeTextMenuSnapshot,
-  decodeTextMenuActionResult, type TextMenuCapabilities, type TextMenuSnapshot,
-  type TextMenuActionResult
+  decodeTextMenuActionResult, decodeTextMenuObservationContext,
+  type TextMenuCapabilities, type TextMenuSnapshot,
+  type TextMenuActionResult, type TextMenuObservationContext
 } from "./textMenu.js";
 import {
   decodePlayerClientRegistration,
@@ -88,6 +89,11 @@ export class PlayerEnvironmentRestClient {
   async observeTextMenu(): Promise<DecodedPlayerPayload<TextMenuSnapshot>> {
     return decodeTextMenuSnapshot(await this.get(
       `/api/player-environment/snapshot?input_profile=${TEXT_MENU_PROFILE}`));
+  }
+
+  async observeTextMenuContext(): Promise<DecodedPlayerPayload<TextMenuObservationContext>> {
+    return decodeTextMenuObservationContext(await this.get(
+      "/api/player-environment/text-menu/observation-context"));
   }
 
   async read(readId: string, expectedSnapshotId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReadResponse>> {
