@@ -175,11 +175,11 @@ def _agent_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
         elif kind == "text_observed_successor":
             successors[payload["decision_id"]] = {"event": event, **payload}
 
-    for decision_id, cancellation in cancellations.items():
+    for decision_id, cancelled_event in cancellations.items():
         dispatch = dispatches.get(decision_id)
         if (dispatch is None or decision_id in outcomes
-                or cancellation.get("reason") != "recovery_before_submit"
-                or cancellation["event"]["sequence"] <= dispatch["event"]["sequence"]):
+                or cancelled_event.get("reason") != "recovery_before_submit"
+                or cancelled_event["event"]["sequence"] <= dispatch["event"]["sequence"]):
             raise BoundaryError("observed_input_sequence", "dispatch_cancellation_mismatch")
 
     stream_id = f"agent:{verified.content_id}:{verified.run_id}"
