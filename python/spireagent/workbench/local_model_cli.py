@@ -44,7 +44,9 @@ def model_command(
                     selected = service.selection(selection)
                     if selected.get("runtime_profile") != runtime_profile:
                         raise BoundaryError("local_model", "selection_runtime_profile_mismatch")
-                directory, pin = service.text_runtime_profile(runtime_profile)
+                directory, pin = (service.text_runtime_profile()
+                                  if runtime_profile == "text-menu-v1"
+                                  else service.text_runtime_profile(runtime_profile))
             else:
                 directory, pin = service.runtime_profile(selection)
             return install_runtime(
