@@ -310,6 +310,23 @@ class MemoryRankingEngine:
             self._failed = True
             raise BoundaryError("memory_training", "runtime_or_input_changed")
 
+    def snapshot_input(self) -> MemoryTrainingInput:
+        """Return independent copies of the input already validated at construction."""
+        self._assert_live()
+        episodes = tuple(MemorySequenceEpisode(
+            episode.episode_id,
+            tuple(replace(
+                step, page=_clone_required(step.page),
+                actions=tuple(_clone_required(action) for action in step.actions),
+                previous_actual_action=_clone_token(step.previous_actual_action),
+                public_feedback=_clone_token(step.public_feedback),
+            ) for step in episode.steps),
+        ) for episode in self._episodes)
+        if _input_digest(self.source_id, self.tokenizer_sha256, episodes) != self.input_digest:
+            self._failed = True
+            raise BoundaryError("memory_training", "runtime_or_input_changed")
+        return MemoryTrainingInput(self.source_id, self.tokenizer_sha256, episodes)
+
     def advance(self) -> float:
         self._assert_live()
         if self.next_episode >= self.config.episode_count:
