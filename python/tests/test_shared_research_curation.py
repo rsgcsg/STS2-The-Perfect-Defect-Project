@@ -99,3 +99,28 @@ def test_annotation_revision_and_repeat_reservation_identity(tmp_path: Path) -> 
         ledger.claim("selection", "test", {"different"})
     with host.transaction() as db:
         assert db.execute("SELECT count(*) FROM curation_claim_runs").fetchone()[0] == 1
+
+
+def test_exact_training_use_read_is_nonmutating_and_survives_later_work(tmp_path: Path) -> None:
+    host = PrivateHost(tmp_path / "curation.sqlite")
+    ledger = CurationLedger(host)
+    dataset, source, operation = "a" * 64, "b" * 64, "c" * 32
+    ledger.claim("claim", "training", {"run-a"})
+    ledger.bind("claim", dataset)
+    with host.transaction() as db:
+        db.execute("INSERT INTO curation_sources VALUES(?,?,1)", (source, "d" * 64))
+        db.execute("INSERT INTO curation_exact_source_index VALUES(?)", (source,))
+        db.execute("INSERT INTO curation_source_runs VALUES(?,?)", (source, "run-a"))
+    with pytest.raises(BoundaryError, match="training_source_use_missing"):
+        ledger.require_training_use(dataset, {source}, {"run-a"}, operation)
+    ledger.use_source(source, "training", operation)
+    with pytest.raises(BoundaryError, match="training_run_use_missing"):
+        ledger.require_training_use(dataset, {source}, {"run-a"}, operation)
+    ledger.use({"run-a"}, "training", operation)
+    ledger.require_training_use(dataset, {source}, {"run-a"}, operation)
+    ledger.claim("later", "training", {"run-b"})
+    ledger.require_training_use(dataset, {source}, {"run-a"}, operation)
+    with pytest.raises(BoundaryError, match="training_claim_mismatch"):
+        ledger.require_training_use(dataset, {source}, {"run-b"}, operation)
+    with pytest.raises(BoundaryError, match="source_index_incomplete"):
+        ledger.require_training_use(dataset, {source, "e" * 64}, {"run-a"}, operation)

@@ -2822,6 +2822,15 @@ window.SpireProject = (() => {
   function localModelOverview(value) {
     const parameters = value.parameters && typeof value.parameters === "object"
       && !Array.isArray(value.parameters) ? value.parameters : {};
+    if (parameters.schema === "stpd/experimental-m2-model-v1") {
+      const overview = panel("模型概览", "以下是本机模型清单中的训练记录；此处不读取权重或评估模型质量。");
+      overview.append(fields([
+        ["训练配方", "实验性 D-Simple M2-K1"],
+        ["结果类型", "仅训练完成；没有独立评估"],
+        ["运行状态", "尚未具备本机游戏登记与加载条件"],
+      ]));
+      return overview;
+    }
     if (parameters.schema !== "stpd/stage1a-model-v1") return null;
     const config = parameters.config && typeof parameters.config === "object"
       && !Array.isArray(parameters.config) ? parameters.config : {};
@@ -2882,6 +2891,13 @@ window.SpireProject = (() => {
       && !Array.isArray(parameters.serializer) ? parameters.serializer : {};
     const backbone = parameters.backbone && typeof parameters.backbone === "object"
       && !Array.isArray(parameters.backbone) ? parameters.backbone : {};
+    if (value?.kind === "model" && hex(value.artifact_id)
+        && parameters.schema === "stpd/experimental-m2-model-v1") {
+      return parameters.partition === "train"
+        && parameters.qualification === "engineering_only"
+        && Number.isSafeInteger(parameters.episodes) && parameters.episodes > 0
+        && config.slots === 1 && config.reset_each_step === false;
+    }
     const serializerKeys = ["input_profile", "profile", "source_schema", "status", "version"];
     return value?.kind === "model" && hex(value.artifact_id)
       && parameters.schema === "stpd/stage1a-model-v1"
@@ -2988,7 +3004,10 @@ window.SpireProject = (() => {
   }
 
   async function localModelExportCard(ctx, model) {
-    const card = panel("导出并校验", "导出只保存并检查本机模型文件；不会登记为游戏模型或加载，也不检查游戏兼容性。服务端会重新验证模型身份。");
+    const memory = model.parameters?.schema === "stpd/experimental-m2-model-v1";
+    const card = panel("导出并校验", memory
+      ? "导出只保存并检查实验性 M2 训练模型；它没有独立评估，当前不能登记或加载到游戏。服务端会重新核对训练来源与模型身份。"
+      : "导出只保存并检查本机模型文件；不会登记为游戏模型或加载，也不检查游戏兼容性。服务端会重新验证模型身份。");
     const path = "/api/local-model-exports/status";
     let status;
     try {
@@ -3001,7 +3020,8 @@ window.SpireProject = (() => {
     if (!live(ctx)) return card;
     const operation = status?.operation && typeof status.operation === "object"
       && !Array.isArray(status.operation) ? status.operation : null;
-    if (status?.schema !== "stpd/local-model-export-operation-v1") {
+    if (!["stpd/local-model-export-operation-v1",
+          "stpd/local-model-export-operation-v2"].includes(status?.schema)) {
       const message = "导出状态格式未知；未发起导出。";
       card.append(el("p", message, "small muted"));
       card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
@@ -3011,7 +3031,12 @@ window.SpireProject = (() => {
     const validOwner = operation && (operation.status === "idle"
       ? operation.model_id === undefined || hex(operation.model_id)
       : hex(operation.model_id));
-    if (!operation || !knownStates.includes(operation.status) || !validOwner) {
+    const validType = status.schema === "stpd/local-model-export-operation-v1"
+      ? operation?.model_type === undefined
+      : operation?.model_type === "memory";
+    if (!operation || !knownStates.includes(operation.status) || !validOwner || !validType
+        || (memory && operation.status !== "idle" && operation.model_id === model.artifact_id
+            && status.schema !== "stpd/local-model-export-operation-v2")) {
       card.append(el("p", "导出状态格式未知；未发起导出。", "small muted"));
       card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
       return card;
@@ -3067,11 +3092,15 @@ window.SpireProject = (() => {
       card.append(el("p", "另一模型的导出正在进行；完成前不能启动此模型的导出。", "small muted"));
     } else if (operation.status === "completed" && sameModel) {
       label = "重新核验导出";
-      card.append(el("p", "导出校验本身不会加载模型；当前运行状态请到模型页查看。游戏兼容性仍须单独检查。", "small muted"));
+      card.append(el("p", memory
+        ? "M2 训练模型已导出并校验；仍没有独立评估，当前不能登记或加载到游戏。"
+        : "导出校验本身不会加载模型；当前运行状态请到模型页查看。游戏兼容性仍须单独检查。", "small muted"));
       if (Number.isSafeInteger(operation.payload_bytes) && operation.payload_bytes >= 0)
         card.append(fields([["导出大小", bytes(operation.payload_bytes)]]));
-      const registration = await localModelRegistrationCard(ctx, model);
-      if (live(ctx)) card.append(registration);
+      if (!memory) {
+        const registration = await localModelRegistrationCard(ctx, model);
+        if (live(ctx)) card.append(registration);
+      }
     } else if (operation.status === "failed" && sameModel) {
       label = "重新导出并校验";
       card.append(el("p", "上次导出未完成。你可以明确再次发起；不会自动重试。", "small muted"));
