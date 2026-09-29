@@ -42,6 +42,7 @@ window.SpireProject = (() => {
   const supportedOfflineEvaluationSchemas = new Set([
     "stpd/offline-ranking-evaluation-v1",
     "stpd/stage1a-ranking-evaluation-v1",
+    "stpd/experimental-m2-offline-evaluation-v1",
   ]);
   let current = null;
   let account = null;
@@ -3136,6 +3137,7 @@ window.SpireProject = (() => {
       }
       const hasGroupingMetadata = value.grouping !== undefined
         || value.native_run_independence !== undefined;
+      const memoryReport = schema === "stpd/experimental-m2-offline-evaluation-v1";
       const sessionScopedGroups = value.grouping === "session_scoped_run_group"
         && value.native_run_independence === "unknown_across_sessions";
       const facts = [
@@ -3153,10 +3155,18 @@ window.SpireProject = (() => {
       if (hasGroupingMetadata) facts.push(["独立性", sessionScopedGroups
         ? "未知（按录制分组计数，不证明来自不同游戏局）"
         : "未知（分组信息未确认，不据此认定为独立游戏局）"]);
+      if (memoryReport) facts.push(
+        ["来源隔离", value.semantic_overlap === true
+          ? "已记录语义重叠诊断；不构成严格去重基准"
+          : value.semantic_overlap === false ? "未发现语义重叠；不证明独立游戏局" : "未知"],
+        ["严格去重基准", "未建立"],
+        ["模型选择暴露", "未知"],
+      );
       summary.append(fields(facts));
       const related = el("div", null, "project-actions");
       if (hex(value.model_id)) related.append(link(`查看本机模型 · ${value.model_id.slice(0, 16)}`, route("local-workspace", value.model_id)));
       if (hex(value.model_view_id)) related.append(link(`查看本机模型视图 · ${value.model_view_id.slice(0, 16)}`, route("local-workspace", value.model_view_id)));
+      if (memoryReport && hex(value.dev_source_id)) related.append(link(`查看开发来源 · ${value.dev_source_id.slice(0, 16)}`, route("local-workspace", value.dev_source_id)));
       if (related.children.length) summary.append(el("h3", "关联对象"), related);
       summary.append(el("h3", "总体记录指标"), offlineEvaluationMetrics(value.overall));
       if (value.baselines && typeof value.baselines === "object") {
@@ -3234,6 +3244,100 @@ window.SpireProject = (() => {
       completed: "训练已完成",
     };
     return (stage && Object.hasOwn(labels, stage) && labels[stage]) || "训练阶段未知";
+  }
+
+  async function localMemoryEvaluationCard(ctx, model) {
+    const card = panel("M2 独立来源开发集评估",
+      "仅对本机已登记的实验性 M2 模型与另一份 Human 观察来源做开发用途工程评估。须明确点击才会启动；不是 Gold、独立游戏局或科学质量证明。");
+    let status;
+    try {
+      status = await request(ctx, "/api/local-memory-evaluations/status");
+    } catch {
+      card.append(el("p", "评估状态暂不可读；没有启动评估。", "small muted"));
+      return card;
+    }
+    if (!live(ctx)) return card;
+    if (status?.schema !== "stpd/local-memory-evaluation-operation-v1"
+        || !status.operation || typeof status.operation !== "object"
+        || !["ready", "recovery_required"].includes(status.availability)) {
+      card.append(el("p", "评估状态格式未知；无法启动。", "small muted"));
+      return card;
+    }
+    const operation = status.operation;
+    const sameModel = operation.model_id === model.artifact_id;
+    if (status.availability !== "ready" || operation.status === "interrupted_unknown") {
+      card.append(el("p", "上次评估结果或本机用途状态需要人工核对；不会自动重发。", "small muted"));
+      return card;
+    }
+    if (operation.status === "pending") {
+      card.append(el("p", sameModel ? "评估正在执行；刷新本页查看结果。" : "本机已有另一项评估正在执行。", "small muted"));
+      card.append(command(ctx, "refresh-local-memory-evaluation", "刷新评估状态", async () => {
+        await reload(ctx);
+      }, {type:"secondary"}));
+      return card;
+    }
+    if (sameModel && operation.status === "completed") {
+      card.append(el("p", "开发用途离线工程评估已完成；仅显示生产者记录的结果摘要。", "small muted"));
+      if (hex(operation.evaluation_id))
+        card.append(link("查看开发集报告", route("local-workspace", operation.evaluation_id)));
+      if (operation.semantic_overlap === true)
+        card.append(el("p", "诊断提示训练与开发来源存在语义重叠；这不是严格去重基准。", "small muted"));
+    } else if (sameModel && operation.status === "failed") {
+      card.append(el("p", "开发集评估未完成。请核对模型、来源与本机用途记录；不会自动重试。", "small muted"));
+      if (localTrainingCode(operation.error_code))
+        card.append(technical({error_code:operation.error_code}, "查看失败代码"));
+    } else if (!["idle", "completed", "failed"].includes(operation.status)) {
+      card.append(el("p", "评估任务状态未知；无法启动。", "small muted"));
+      return card;
+    }
+    if (!hex(model.artifact_id) || typeof status.csrf_token !== "string" || !status.csrf_token) {
+      card.append(el("p", "本机浏览器保护令牌暂不可用；无法启动。", "small muted"));
+      return card;
+    }
+    const offsetKey = `m2-dev-sources:${model.artifact_id}`;
+    const offset = offsets.get(offsetKey) || 0;
+    const params = new URLSearchParams({kind:"dataset", q:"stpd/human-text-input-source-v1",
+      limit:"100", offset:String(offset)});
+    let inventory;
+    try {
+      inventory = await request(ctx, `/api/local-workspace?${params}`);
+    } catch {
+      card.append(el("p", "Human 观察来源目录暂不可读；没有启动评估。", "small muted"));
+      return card;
+    }
+    if (!live(ctx)) return card;
+    if (inventory?.schema !== "stpd/local-workspace-inventory-v1" || !Array.isArray(inventory.items)
+        || !Number.isSafeInteger(inventory.total) || inventory.total < 0) {
+      card.append(el("p", "来源目录格式未知；无法启动。", "small muted"));
+      return card;
+    }
+    const sources = inventory.items.filter(item => item?.kind === "dataset"
+      && item.parameters?.schema === "stpd/human-text-input-source-v1" && hex(item.artifact_id));
+    if (!sources.length) card.append(el("p", "本页没有可选择的 Human 观察来源。", "small muted"));
+    else {
+      const form = el("div", null, "project-form");
+      const source = select(form, "开发来源", "local-memory-dev-source",
+        [["", "请选择另一份来源"], ...sources.map(item =>
+          [item.artifact_id, `Human 观察来源 · ${item.artifact_id.slice(0, 16)}`])], "");
+      card.append(form);
+      const options = {primary:true};
+      card.append(command(ctx, "start-local-memory-evaluation", "明确开始开发集评估", async () => {
+        if (!live(ctx) || options.disabled || !sources.some(item => item.artifact_id === source.value)) return;
+        options.disabled = true;
+        await request(ctx, "/api/local-memory-evaluations/start",
+          {model_id:model.artifact_id, source_id:source.value}, status.csrf_token);
+        await reload(ctx);
+      }, options));
+    }
+    const pager = el("div", null, "project-actions");
+    if (offset > 0) pager.append(command(ctx, "m2-dev-sources-prev", "上一页来源", async () => {
+      offsets.set(offsetKey, Math.max(0, offset - 100)); await reload(ctx);
+    }, {type:"secondary"}));
+    if (offset + 100 < inventory.total) pager.append(command(ctx, "m2-dev-sources-next", "下一页来源", async () => {
+      offsets.set(offsetKey, offset + 100); await reload(ctx);
+    }, {type:"secondary"}));
+    if (pager.children.length) card.append(pager);
+    return card;
   }
 
   async function localTrainingCard(ctx, dataset) {
@@ -3844,6 +3948,9 @@ window.SpireProject = (() => {
         box.append(localDatasetOverview(value));
       if (value.kind === "model" && value.parameters?.schema === "stpd/stage1a-model-v1")
         box.append(localModelOverview(value));
+      if (value.kind === "model" && value.parameters?.schema === "stpd/experimental-m2-model-v1"
+          && hex(value.artifact_id))
+        box.append(await localMemoryEvaluationCard(ctx, value));
       if (supportsLocalModelExport(value)) {
         const exportCard = await localModelExportCard(ctx, value);
         if (live(ctx)) box.append(exportCard);
