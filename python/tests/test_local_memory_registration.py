@@ -87,7 +87,7 @@ def test_m2_registration_requires_own_install_context_and_preserves_token_roster
     assert manifest["policy"]["architecture"] == recipe
     assert exported.verified_memory_recipe_for_registration(model_id) == recipe
     name = f"{'Reset' if settings.reset_each_step else 'M2'}-K{settings.slots}"
-    assert entry["label"].startswith(name + " ")
+    assert entry["label"].startswith("本机文字菜单 " + name + " ")
     assert models.registry()["policies"][-2] == old
     assert service.register(model_id) == result
     monkeypatch.setattr(models, "_runtime_package", lambda _identity: {"version": "synthetic"})
