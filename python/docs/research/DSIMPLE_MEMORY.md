@@ -94,3 +94,83 @@ omitted while the observed page still updates memory. No source in this
 module proves execution, event continuity, episode identity, or eligibility.
 The tiny synthetic cue regression checks only the computation and optimizer
 path; it is not a policy-quality or generalization result.
+
+### Bounded long-episode TBPTT
+
+`train_memory_episode` accepts a caller-owned `MemorySequenceEpisode` with all
+observations from position 0 in order and an explicit initial reset. It
+preflights the **entire** episode, including every candidate binding and token,
+before the first optimizer step. The caller must set positive total observation
+and input-token ceilings; chunk ceilings default to 32 observations and 65,536
+input tokens and may be lowered. A step that cannot fit its chunk, an exceeded
+total ceiling, a missing initial reset, any later reset, or an episode without
+labels is rejected rather than shortened. This path does not change the older
+64-position full-prefix loss and one-update API or its bounds.
+
+Each chunk reads the carried memory value and writes every observation in
+order. An unlabelled observation still writes memory; only labelled steps score
+the complete supplied candidate catalog and contribute listwise loss. Chunks
+without labels write under `no_grad` and do not update parameters. After each
+chunk, memory is detached; a labelled chunk makes one optimizer update. The
+returned scalar is the mean of the losses seen at all labelled observations,
+measured as training proceeded. There is no gradient across a chunk boundary,
+and memory carried after an update was computed with the preceding weights.
+This is the usual TBPTT approximation, **not** exact replay or full-history
+gradient descent. Every call begins with zero memory, so episodes are isolated.
+The `reset_each_step=True` comparison uses the same model structure with its
+own optimizer and initial weights.
+
+This is only a local synthetic compute path. It does not resolve incomplete
+pages, admission of the observed source, split independence,
+real-data training, export, runtime registration, or policy quality. The
+observed-source bridge owns its bounded prefix and whole-episode projections;
+the TBPTT function does not convert windows into episodes.
+
+## Observed-source bridge (experimental)
+
+`stpd.fullrun.memory_sequence_bridge.project_memory_windows` converts a
+**caller-verified** `ObservedInputView` with a fixed tokenizer into M2 windows.
+It uses the existing current-page text projection and `encode_texts`, retaining
+the complete current catalog and exact action keys. Each output records its
+source, stream, reset reason and ordered event IDs separately from the tensor
+window. A window starts at an explicit observation reset and contains every
+observed event up to its end; this is a memory episode, not proof of a complete
+native game run. Missing pages, absent resets, bad bindings and over-limit
+segments produce diagnostics rather than a shortened or repaired history.
+Accepted choices, including a valid system-navigation choice in a verified
+source, may contribute loss. An unlabelled but observed page still writes
+memory. A witnessed Human input, navigation and an unknown delivery never
+become `previous_actual_action` or `public_feedback`; both optional inputs
+remain `None` in this bridge.
+
+`project_memory_episodes` reuses the same caller-verified view, current-page
+projection, fixed tokenizer, ordered reset-origin segments, exact choice
+binding and source-event IDs. It emits whole `MemorySequenceEpisode` values
+for bounded TBPTT. The caller explicitly sets total model-observation and
+input-token ceilings; a whole segment over either limit is diagnosed without
+shortening the history or candidate catalog. The older window projection and
+its 64/32-step limits remain separate.
+
+The episode bridge normally rejects a settling page. An explicit
+`max_settling_events` allowance permits only source-visible pages marked
+`status=settling` with the current text-menu profile, complete public facts,
+an explicit `includes_hidden_information=False`, no interaction capabilities,
+an unavailable empty executable catalog, no selected action, and the same
+runtime/environment identity as interactive observations on both sides.
+Such a page retains its event ID in the ordered source mapping but produces
+no model step, score, token input, memory write or reset. `step_event_ids`
+aligns one-to-one with model steps; `settling_event_ids` names only verified
+skips. The allowance is per episode and defaults to zero. Missing observations,
+other unprojectable pages and identity drift cannot use this skip. Numeric
+source-sequence gaps alone never prove settling or authorize a skip. The
+episode bridge still neither proves a causal successor nor invents previous
+executed actions or feedback.
+
+The bridge does **not** establish source trust, training purpose, ledger
+authorization, independent-run splits or real-data admission. In particular,
+the Human source manifest's `purpose=bc_input_observation` is not a training
+claim: the SpireAgent curation owner keeps that claim in its ledger. A future
+caller must check that owner and fixed split before training. The current
+Human witness source admits native-input labels; the generic bridge preserves
+a separately verified navigation label without manufacturing one from Human
+evidence. No M2 worker, checkpoint, export or runtime path is added here.
