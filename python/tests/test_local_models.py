@@ -1302,6 +1302,12 @@ def test_terminal_screen_projection_requires_exact_text_game_over_context():
         },
     }
     assert local_models._terminal_screen(snapshot) == "win"
+    v2 = copy.deepcopy(snapshot)
+    v2.update(schema="sts2.player-environment/text-menu-snapshot-2",
+              input_profile="text-menu-v2")
+    assert local_models._terminal_screen(v2) == "win"
+    v2["input_profile"] = "text-menu-v1"
+    assert local_models._terminal_screen(v2) is None
     for path, value in (
         (("schema",), "other"),
         (("input_profile",), "compact-v2"),

@@ -101,9 +101,10 @@ def _recorded_budget(value: object) -> dict[str, Any] | None:
 def _terminal_screen(value: object) -> str | None:
     """An exact text-menu Game Over page observation, not a game outcome claim."""
     if not isinstance(value, dict) or (
-        value.get("schema") != "sts2.player-environment/text-menu-snapshot-1"
-        or value.get("input_profile") != "text-menu-v1"
-    ):
+        value.get("schema"), value.get("input_profile")) not in {
+            ("sts2.player-environment/text-menu-snapshot-1", "text-menu-v1"),
+            ("sts2.player-environment/text-menu-snapshot-2", "text-menu-v2"),
+    }:
         return None
     interaction = value.get("interaction")
     if not isinstance(interaction, dict) or interaction.get("kind") != "game_over":
