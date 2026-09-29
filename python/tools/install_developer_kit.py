@@ -318,6 +318,7 @@ def deploy(directory: Path, game: Path) -> dict[str, Any]:
 def register(directory: Path, config: Path) -> dict[str, Any]:
     result = status(directory)
     source = directory / "source"
+    extras = _environment_extras(result)
     # Execute the selected release owner, not the engineering checkout's environment.
     args = [
         "uv",
@@ -325,8 +326,7 @@ def register(directory: Path, config: Path) -> dict[str, Any]:
         "--project",
         "python",
         "--locked",
-        "--extra",
-        "cloud",
+        *extras,
         "python",
         "-m",
         "spireagent.workbench",
@@ -342,6 +342,15 @@ def register(directory: Path, config: Path) -> dict[str, Any]:
     return dict(json.loads(run(args, source)))
 
 
+def _environment_extras(prepared: dict[str, Any]) -> list[str]:
+    """Use only the verified kit inventory to select the locked local model backend."""
+    extras = ["--extra", "cloud"]
+    if any(prepared.get(pair[4]) == "bundled_installation_not_checked"
+           for pair in KIT_RUNTIME_PAIRS.values()):
+        extras.extend(("--extra", "local-models"))
+    return extras
+
+
 def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
     from contextlib import nullcontext
 
@@ -353,12 +362,13 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
     with instance_lock(directory / "initialize.lock"):
         prepared = status(directory)
         source = directory / "source"
+        extras = _environment_extras(prepared)
         if (any(prepared.get(pair[4]) == "bundled_installation_not_checked"
                 for pair in KIT_RUNTIME_PAIRS.values()) and not config_path.exists()):
             # New members do not yet have a selection or even a project profile.
             # Let the selected release own the profile and its default private state.
             report = json.loads(run([
-                "uv", "run", "--project", "python", "--locked", "--extra", "cloud",
+                "uv", "run", "--project", "python", "--locked", *extras,
                 "python", "-m", "spireagent.workbench", "project", "setup",
                 "--skip-install", "--config", str(config_path),
                 "--state-dir", str(config_path.parent),
@@ -375,12 +385,12 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
             run(["npm", "ci"], source)
             # Workbench's transport SDKs are a separate locked consumer environment.
             run(["npm", "ci", "--prefix", "python"], source)
-            run(["uv", "sync", "--project", "python", "--locked", "--extra", "cloud"], source)
+            run(["uv", "sync", "--project", "python", "--locked", *extras], source)
             result = status(directory)
         if result.get("text_runtime") == "bundled_installation_not_checked":
             # The selected CLI takes this same lock and checks Runtime liveness.
             report = json.loads(run([
-                "uv", "run", "--project", "python", "--locked", "--extra", "cloud",
+                "uv", "run", "--project", "python", "--locked", *extras,
                 "python", "-m", "spireagent.workbench", "project", "model",
                 "--config", str(config_path), "--action", "install-runtime",
                 "--runtime-profile", "text-menu-v1", "--runtime-archive",
@@ -392,7 +402,7 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
             result["text_runtime"] = "installed_verified_by_runtime_owner"
         if result.get("m2_runtime") == "bundled_installation_not_checked":
             report = json.loads(run([
-                "uv", "run", "--project", "python", "--locked", "--extra", "cloud",
+                "uv", "run", "--project", "python", "--locked", *extras,
                 "python", "-m", "spireagent.workbench", "project", "model",
                 "--config", str(config_path), "--action", "install-runtime",
                 "--runtime-profile", "text-menu-m2-v1", "--runtime-archive",
@@ -404,7 +414,7 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
             result["m2_runtime"] = "installed_verified_by_runtime_owner"
         if result.get("m2_v2_runtime") == "bundled_installation_not_checked":
             report = json.loads(run([
-                "uv", "run", "--project", "python", "--locked", "--extra", "cloud",
+                "uv", "run", "--project", "python", "--locked", *extras,
                 "python", "-m", "spireagent.workbench", "project", "model",
                 "--config", str(config_path), "--action", "install-runtime",
                 "--runtime-profile", "text-menu-m2-v2", "--runtime-archive",

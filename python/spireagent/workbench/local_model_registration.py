@@ -22,6 +22,7 @@ from spireagent.package_identity import PackageIdentityError
 from spireagent.policy_files import _inside, _object_file
 from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
+from spireagent.workbench.local_model_dependencies import require_local_models
 from spireagent.workbench.local_model_export import LocalModelExport, _ordinary
 from spireagent.workbench.local_models import LocalModelService, _loopback
 from spireagent.workbench.memory_recipe import (
@@ -37,16 +38,6 @@ from spireagent.workbench.runtime_install import (
     v2_sdk_available,
     validate_runtime_install,
 )
-from stpd.memory_policy_installation import (
-    bind_memory_export,
-)
-from stpd.memory_policy_installation import (
-    code_digest as memory_code_digest,
-)
-from stpd.memory_policy_installation import (
-    validate as validate_memory,
-)
-from stpd.token_policy_installation import bind_text_menu_export, code_digest, validate
 
 SCHEMA = "stpd/local-model-registration-v1"
 PROFILE = "text-menu-v1"
@@ -205,6 +196,19 @@ def _requirements(value: Any, *, input_profile: str = PROFILE
         ) from error
 
 
+def bind_memory_export(*args: Any, **kwargs: Any) -> Any:
+    """Load the ML binding owner only for an explicit registration operation."""
+    from stpd.memory_policy_installation import bind_memory_export as bind
+
+    return bind(*args, **kwargs)
+
+
+def bind_text_menu_export(*args: Any, **kwargs: Any) -> Any:
+    from stpd.token_policy_installation import bind_text_menu_export as bind
+
+    return bind(*args, **kwargs)
+
+
 class LocalModelRegistration:
     def __init__(self, config: ProjectConfig, export: LocalModelExport,
                  models: LocalModelService) -> None:
@@ -227,6 +231,10 @@ class LocalModelRegistration:
                   requirements: dict[str, Any] | None = None,
                   support: dict[str, Any] | None = None, *,
                   profile: str = PROFILE) -> tuple[str | None, bool]:
+        from stpd.memory_policy_installation import code_digest as memory_code_digest
+        from stpd.memory_policy_installation import validate as validate_memory
+        from stpd.token_policy_installation import code_digest, validate
+
         stale = False
         current_code = (memory_code_digest(self.models.root) if profile in
                         {M2_PROFILE, V2_M2_PROFILE}
@@ -391,10 +399,10 @@ class LocalModelRegistration:
                                 "m2_runtime_contract_unavailable") from error
 
     def register(self, model_id: object) -> dict[str, Any]:
-        from stpd.policy.token_decision import check_model
+        identity = digest(model_id, "local_model_registration.model_id")
+        require_local_models("local_model_registration")
 
         deadline = monotonic() + REGISTRATION_SECONDS
-        identity = digest(model_id, "local_model_registration.model_id")
         # Weight/scorer verification and current-store binding are explicit POST work.
         observed = self.export.status()
         operation = observed["operation"]
@@ -413,6 +421,8 @@ class LocalModelRegistration:
                 raise BoundaryError("local_model_registration", "unsupported_model_recipe")
             profile = V2_M2_PROFILE if recipe in V2_MEMORY_RECIPES else M2_PROFILE
         else:
+            from stpd.policy.token_decision import check_model
+
             profile = PROFILE
             envelope = _object_file(export / "model.json")
             if envelope.get("model_id") != identity:

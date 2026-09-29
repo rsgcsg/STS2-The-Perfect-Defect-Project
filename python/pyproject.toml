@@ -16,6 +16,8 @@ dependencies = [
 
 [project.optional-dependencies]
 cloud = ["waitress>=3,<4", "modal==1.5.5", "python-dotenv>=1.1,<2", "PyJWT[crypto]>=2.10,<3"]
+# Fixed local text-menu B/D/M2 models; collection-only members do not need these.
+local-models = ["torch>=2.7,<3", "tokenizers>=0.21,<1", "safetensors>=0.5,<1"]
 research = [
   "boto3>=1.35,<2",
   "duckdb>=1.4,<2",

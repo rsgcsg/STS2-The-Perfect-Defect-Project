@@ -24,6 +24,7 @@ from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
 from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.local_dataset import LocalDatasetService
+from spireagent.workbench.local_model_dependencies import require_local_models
 from spireagent.workbench.memory_recipe import (
     M2_K1_RECIPE,
     MEMORY_RECIPES,
@@ -197,6 +198,7 @@ class LocalTrainingService:
                 or recipe not in {DEFAULT_RECIPE, *MEMORY_RECIPES}):
             raise BoundaryError("local_training", "unsupported_training_recipe")
         dataset_id = digest(dataset_id, "local_training.dataset_id")
+        require_local_models("local_training")
         after_completed = (None if after_completed_operation_id is None else
                            digest(after_completed_operation_id,
                                   "local_training.after_completed_operation_id", length=32))
