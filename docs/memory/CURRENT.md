@@ -37,7 +37,11 @@ D-Simple is the default application recipe. [M2 computation and sequence
 notes](../../python/docs/research/DSIMPLE_MEMORY.md) describe a separate
 experimental model, not a live recipe. PR90 adds bounded prefix/episode bridges and TBPTT.
 Explicit verified settling retains event provenance without updating memory.
-Ledger admission, independent splits, worker/export/runtime remain separate.
+The experimental CPU episode engine now adds ordered whole-episode training,
+boundary checkpoints and identity-checked weight exports. It reuses TBPTT;
+it is not a registered Workbench job or live Runtime recipe. Ledger admission,
+independent splits, durable job orchestration and runtime integration remain
+separate.
 Synthetic cue tests do not prove game strategy or memory generalization.
 
 Connector uses `text-menu-v1`. The Managed session still exposes the legacy

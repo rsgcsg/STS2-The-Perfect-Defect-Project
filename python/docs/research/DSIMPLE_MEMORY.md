@@ -173,4 +173,54 @@ claim: the SpireAgent curation owner keeps that claim in its ledger. A future
 caller must check that owner and fixed split before training. The current
 Human witness source admits native-input labels; the generic bridge preserves
 a separately verified navigation label without manufacturing one from Human
-evidence. No M2 worker, checkpoint, export or runtime path is added here.
+evidence. The bridge itself does not own a worker, checkpoint, export or runtime
+path.
+
+## Bounded CPU episode engine (experimental)
+
+`stpd.workers.memory_ranking.MemoryRankingEngine` adds a callable scratch-M2
+training engine over caller-admitted, fixed-order `MemorySequenceEpisode`
+values. It supports K1, K8, independently constructed reset controls, and the
+existing gated model. It does not replace the default application recipe or
+register a live policy. There is no new Workbench endpoint in this change.
+
+The caller sets `MemoryConfig`, the tokenizer SHA and source identity, and
+configures the declared CPU thread count. Construction copies the input
+tensors and validates every episode, token, candidate binding and label before
+any optimizer step. Positive total/episode/chunk/action limits bound the job;
+they are resource admission limits, not measured RAM guarantees. Input hashes
+bind actual ordered tensor bytes and labels, not just a caller's source name.
+`advance()` trains exactly the next whole episode using the existing bounded
+TBPTT function and its shared chunk plan. It never shuffles or silently repeats
+an episode. Memory starts empty for each episode; the chunk approximation and
+absence of cross-chunk gradients described above still apply.
+
+`checkpoint()` returns bytes only between episodes. It stores model and AdamW
+state, parameter inventory, configuration, input identity, completed position,
+and the participating implementation/runtime identities through the existing
+safe checkpoint codec. Restore validates exact tensors, finite values,
+nonnegative second moments, optimizer counters and optional-state inventory.
+Per-episode CPU RNG seeding permits a new process to reproduce continuation,
+including dropout, without saving active model memory or the caller's RNG.
+Training runtime changes are rejected. A failed episode can have made earlier
+TBPTT updates: that engine is unusable, and recovery requires constructing a
+new engine and explicitly restoring an earlier checkpoint. It does not promise
+mid-episode rollback or resume. The caller owns atomic persistence of the
+returned bytes and durable job status.
+
+`export()` emits weights, configuration, tokenizer and implementation identity;
+`load_memory_export()` validates these and constructs a fresh model. No source
+history, optimizer or active memory travels into inference. Export loading does
+not require the training machine or thread settings. The experimental digest
+currently covers the participating training/model modules, so even a benign
+change there requires an explicit new export; this is not a stable model ABI.
+Unsigned digests check byte integrity and declared identity, not authenticity
+of a claimed training history. Source admission and artifact trust remain with
+their existing owners.
+
+Tests cover fresh-process continuation, exact action-key score correspondence,
+input/runtime drift, optional parameter state, late invalid input before any
+training, episode failure, corrupt checkpoints and mismatched exports. These
+are synthetic CPU regressions. Real source eligibility, independent train/dev
+splits, paired game experiments, Runtime integration and policy quality remain
+separate work.
