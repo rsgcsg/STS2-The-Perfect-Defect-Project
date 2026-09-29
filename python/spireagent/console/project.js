@@ -283,6 +283,8 @@ window.SpireProject = (() => {
       text_menu_capabilities_incompatible: "当前游戏环境不符合此模型的文本菜单要求；尚未登记。",
       registration_metadata_invalid: "本机模型登记资料无法安全确认；请检查恢复状态。",
       verified_export_required: "此模型当前没有可用的已校验导出；请先完成导出校验。",
+      verified_export_receipt_required: "这份较早的 M2 导出缺少校验回执；请点击“重新核验导出”，完成后再明确登记。",
+      registration_timeout: "本次登记校验已超时；请先刷新状态核对结果，再按需明确重试。不会自动加载模型。",
       workspace_changed: "导出来自其他资料空间；请切回原资料空间再登记。",
       source_binding_changed: "先前登记绑定的运行源码已变化；旧选择保留。可明确重新登记并生成新选择，不会改写旧登记。",
       request_unavailable: "暂时无法读取服务，请刷新重试。",
@@ -2917,6 +2919,8 @@ window.SpireProject = (() => {
   function localModelRegistrationReason(code) {
     const known = {
       verified_export_required: "此模型当前没有可用的已校验导出；请先完成导出校验。",
+      verified_export_receipt_required: "这份较早的 M2 导出缺少校验回执；请点击“重新核验导出”，完成后再明确登记。",
+      registration_timeout: "本次登记校验已超时；请先刷新状态核对结果，再按需明确重试。不会自动加载模型。",
       workspace_changed: "导出来自其他资料空间；请切回原资料空间再登记。",
       registration_metadata_invalid: "本机模型登记资料无法安全确认；请检查恢复状态。",
       source_binding_changed: "先前登记绑定的运行源码已变化；旧选择保留。可明确重新登记并生成新选择，不会改写旧登记。",

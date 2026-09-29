@@ -28,6 +28,7 @@ from spireagent.workbench.research_process import private_child
 
 SCHEMA = "stpd/local-model-export-operation-v1"
 SCHEMA_V2 = "stpd/local-model-export-operation-v2"
+RECEIPT_SCHEMA = "stpd/local-memory-export-verification-v1"
 OPERATION_FILE = "local-model-export-operation.json"
 LOCK_FILE = ".local-model-export.lock"
 EXPORT_ROOT = "model-exports"
@@ -207,6 +208,30 @@ class LocalModelExport:
                         or not isinstance(value.get("run_id"), str)):
                     raise ValueError
                 digest(value["run_id"], "local_model_export.run_id")
+                receipt = value.get("verified_receipt")
+                if receipt is not None:
+                    if (value["status"] != "completed" or not isinstance(receipt, dict)
+                            or set(receipt) != {"schema", "operation_id", "store_root",
+                                                    "model_id", "run_id", "result_id",
+                                                    "checkpoint_id", "package_sha256",
+                                                    "package_size", "weights_sha256",
+                                                    "weights_size", "tokenizer_sha256",
+                                                    "tokenizer_size", "payload_bytes"}
+                            or receipt["schema"] != RECEIPT_SCHEMA
+                            or any(receipt[key] != value[key] for key in
+                                   ("operation_id", "store_root", "model_id", "run_id"))):
+                        raise ValueError
+                    for key in ("result_id", "checkpoint_id", "package_sha256",
+                                "weights_sha256", "tokenizer_sha256"):
+                        digest(receipt[key], "local_model_export." + key)
+                    for key in ("package_size", "weights_size", "tokenizer_size",
+                                "payload_bytes"):
+                        if type(receipt[key]) is not int or receipt[key] <= 0:
+                            raise ValueError
+                    if (receipt["payload_bytes"] != receipt["weights_size"]
+                            + receipt["tokenizer_size"]
+                            or receipt["payload_bytes"] != value.get("payload_bytes")):
+                        raise ValueError
             digest(value["model_id"], "local_model_export.model_id")
             digest(value["operation_id"], "local_model_export.operation_id", length=32)
             if value["status"] == "completed" and (
@@ -279,7 +304,9 @@ class LocalModelExport:
 
     def verified_memory_for_registration(self, model_id: object, *,
                                          deadline: float | None = None) -> Path:
-        """Recheck an M2 export and its historical local training admission on POST."""
+        """Bind a child-verified M2 export to current admission and immutable store facts."""
+        from stpd.policy.memory_export import validate_memory_package
+
         identity = digest(model_id, "local_model_export.model_id")
         with self.lock:
             operation = self._read()
@@ -288,6 +315,9 @@ class LocalModelExport:
                     or operation.get("model_id") != identity
                     or operation.get("model_type") != "memory"):
                 raise BoundaryError("local_model_export", "verified_export_required")
+            receipt = operation.get("verified_receipt")
+            if receipt is None:
+                raise BoundaryError("local_model_export", "verified_export_receipt_required")
             workspace = self._workspace()
             root = getattr(getattr(workspace.store, "blobs", None), "root", None)
             if not isinstance(root, Path) or operation["store_root"] != str(root):
@@ -300,28 +330,46 @@ class LocalModelExport:
             destination = self.config.state_dir / EXPORT_ROOT / identity
             if not _ordinary(destination, directory=True):
                 raise BoundaryError("local_model_export", "verified_export_required")
-            # The web process never adjusts global Torch thread identity. Replay and
-            # checkpoint verification happen in the same isolated CLI as export.
-            remaining = deadline - monotonic() if deadline is not None else 15.0
-            if remaining <= 0:
+            if deadline is not None and monotonic() >= deadline:
                 raise BoundaryError("local_model_registration", "registration_timeout")
-            try:
-                result = self._memory_child(uuid.uuid4().hex, workspace.store, model,
-                                            destination, run_id, on_started=lambda: None,
-                                            verify_only=True,
-                                            timeout_seconds=min(15.0, remaining))
-            except BoundaryError as error:
-                if (error.code == "private_child_timeout" and deadline is not None
-                        and monotonic() >= deadline):
-                    raise BoundaryError("local_model_registration",
-                                        "registration_timeout") from error
-                raise
+            package, weights, tokenizer, _ = validate_memory_package(destination)
+            store: Any = workspace.store
+            training_input = store.get_manifest(model.parent("training_input"))
+            run = store.get_manifest(run_id)
+            completed = ObjectStoreRunReporter(store, store.blobs).completed(run_id)
+            if completed is None:
+                raise BoundaryError("local_model_export", "completed_memory_result_required")
+            expected_ids = {"source": training_input.parent("source"),
+                            "training_input": training_input.artifact_id,
+                            "run": run_id, "result": completed.artifact_id,
+                            "checkpoint": completed.parent("checkpoint"),
+                            "model": identity}
+            input_info = training_input.parameters.value()
+            if (package["ids"] != expected_ids
+                    or package["config"] != run.parameters.value().get("config")
+                    or package["input_digest"] != input_info.get("input_digest")
+                    or package["projection_config"] != input_info.get("projection_config")
+                    or package["source_map_sha256"]
+                    != training_input.payload("source_map").sha256
+                    or package["source_event_count"] != input_info.get("source_event_count")
+                    or package["weights"]["sha256"] != model.payload("weights").sha256
+                    or package["weights"]["size"] != model.payload("weights").size
+                    or package["tokenizer"]["sha256"] != model.payload("tokenizer").sha256
+                    or package["tokenizer"]["size"] != model.payload("tokenizer").size
+                    or receipt["result_id"] != completed.artifact_id
+                    or receipt["checkpoint_id"] != completed.parent("checkpoint")):
+                raise BoundaryError("local_model_export", "export_identity_mismatch")
             for name, key in (("model.json", "package_sha256"),
                               ("weights.tensor-tree", "weights_sha256"),
                               ("tokenizer.json", "tokenizer_sha256")):
                 path = destination / name
-                if not _ordinary(path, directory=False) or file_sha256(path) != result[key]:
+                if not _ordinary(path, directory=False) or file_sha256(path) != receipt[key]:
                     raise BoundaryError("local_model_export", "export_identity_mismatch")
+            if (receipt["package_size"] != (destination / "model.json").stat().st_size
+                    or receipt["weights_size"] != len(weights)
+                    or receipt["tokenizer_size"] != len(tokenizer)
+                    or receipt["payload_bytes"] != len(weights) + len(tokenizer)):
+                raise BoundaryError("local_model_export", "export_identity_mismatch")
             return destination
 
     def _finish(self, operation_id: str, **updates: Any) -> None:
@@ -393,26 +441,20 @@ class LocalModelExport:
 
     def _memory_child(self, operation_id: str, store: Any, model: Manifest,
                       destination: Path, run_id: str, *,
-                      on_started: Any, verify_only: bool = False,
-                      timeout_seconds: float | None = None) -> dict[str, Any]:
+                      on_started: Any) -> dict[str, Any]:
         root = getattr(getattr(store, "blobs", None), "root", None)
         if not isinstance(root, Path):
             raise BoundaryError("local_model_export", "unsupported_workspace_store")
-        if verify_only and not _ordinary(destination, directory=True):
-            raise BoundaryError("local_model_export", "verified_export_required")
-        command_name = ("verify-memory-export" if verify_only or destination.exists()
-                        else "export-memory")
+        command_name = "verify-memory-export" if destination.exists() else "export-memory"
         command = [sys.executable, "-m", "spireagent.research_cli", "--store", str(root),
                    command_name, "--run", run_id, "--model", model.artifact_id,
                    "--destination", str(destination)]
         environment = dict(os.environ)
         for name in ("STPD_HUB_ADMIN_TOKEN", "PYTHONPATH", "PYTHONHOME"):
             environment.pop(name, None)
-        log_prefix = "local-model-registration-verify-" if verify_only else "local-model-export-"
-        log_path = self.config.state_dir / (log_prefix + operation_id + ".log")
+        log_path = self.config.state_dir / ("local-model-export-" + operation_id + ".log")
         exit_code, captured = private_child(command, log_path, environment,
-                                            on_started=on_started,
-                                            timeout_seconds=timeout_seconds)
+                                            on_started=on_started)
         if exit_code:
             raise BoundaryError("local_model_export", "memory_export_process_failed")
         try:
@@ -423,6 +465,14 @@ class LocalModelExport:
                     != "stpd/experimental-m2-portable-policy-v1"
                     or type(value.get("payload_bytes")) is not int
                     or value["payload_bytes"] < 1
+                    or any(not isinstance(value.get(key), str)
+                           or len(value[key]) != 64
+                           or any(char not in "0123456789abcdef" for char in value[key])
+                           for key in ("result_id", "checkpoint_id"))
+                    or any(type(value.get(key)) is not int or value[key] <= 0
+                           for key in ("package_size", "weights_size", "tokenizer_size"))
+                    or value["payload_bytes"] != value["weights_size"]
+                    + value["tokenizer_size"]
                     or any(not isinstance(value.get(key), str)
                            or len(value[key]) != 64
                            or any(char not in "0123456789abcdef" for char in value[key])
@@ -451,11 +501,25 @@ class LocalModelExport:
                 count = _verify_export(store, model, destination)
             else:
                 _memory_lineage(store, self._memory_owner(store), model)
-                count = self._memory_child(operation_id, store, model, destination,
-                                           run_id, on_started=mark_started)["payload_bytes"]
+                child = self._memory_child(operation_id, store, model, destination,
+                                           run_id, on_started=mark_started)
+                count = child["payload_bytes"]
             verified = True
             with self.lock:
-                self._finish(operation_id, status="completed", payload_bytes=count)
+                if run_id is None:
+                    self._finish(operation_id, status="completed", payload_bytes=count)
+                else:
+                    root = getattr(getattr(store, "blobs", None), "root", None)
+                    assert isinstance(root, Path)
+                    receipt = {"schema": RECEIPT_SCHEMA, "operation_id": operation_id,
+                               "store_root": str(root), "model_id": model.artifact_id,
+                               "run_id": run_id,
+                               **{key: child[key] for key in (
+                                   "result_id", "checkpoint_id", "package_sha256",
+                                   "package_size", "weights_sha256", "weights_size",
+                                   "tokenizer_sha256", "tokenizer_size", "payload_bytes")}}
+                    self._finish(operation_id, status="completed", payload_bytes=count,
+                                 verified_receipt=receipt)
         except Exception as error:
             if not verified and not child_started:
                 code = error.code if isinstance(error, BoundaryError) else "export_or_verify_failed"

@@ -346,11 +346,16 @@ def main() -> int:
                     raise BoundaryError("memory_export", "run_identity_mismatch")
             result = {"model_id": model_id, "run_id": run_id,
                       "package_schema": package["schema"],
+                      "result_id": package["ids"]["result"],
+                      "checkpoint_id": package["ids"]["checkpoint"],
                       "payload_bytes": package["weights"]["size"]
                       + package["tokenizer"]["size"],
                       "package_sha256": file_sha256(args.destination / "model.json"),
+                      "package_size": (args.destination / "model.json").stat().st_size,
                       "weights_sha256": package["weights"]["sha256"],
-                      "tokenizer_sha256": package["tokenizer"]["sha256"]}
+                      "weights_size": package["weights"]["size"],
+                      "tokenizer_sha256": package["tokenizer"]["sha256"],
+                      "tokenizer_size": package["tokenizer"]["size"]}
         elif args.command == "train":
             config = TrainingConfig(
                 seed=1701, max_steps=args.steps, epochs=5,

@@ -1533,6 +1533,41 @@ test("M2 export stays train-only and offers explicit guarded registration", asyn
   assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
 });
 
+test("older M2 receipt and registration timeout explain explicit recovery without replay", async () => {
+  const model = id("a");
+  let failure = "verified_export_receipt_required";
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    renderOnReload:true,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model);
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed", model_id:model, model_type:"memory", payload_bytes:123,
+      }, {schema:"stpd/local-model-export-operation-v2"});
+      if (url === `/api/local-model-registrations/status?model_id=${model}`) return {
+        schema:"stpd/local-model-registration-v1", model_id:model, status:"not_registered",
+        loaded:false, runtime_profile:"text-menu-m2-v1", csrf_token:"synthetic-csrf",
+      };
+      if (url === "/api/local-model-registrations/register") return {httpStatus:409, error:failure};
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.equal(action(page, "start-local-model-export").textContent, "重新核验导出");
+  await action(page, "register-local-model").onclick();
+  assert.match(text(env.notice), /缺少校验回执.*重新核验导出/);
+  assert.equal(post(env.calls).length, 1);
+  failure = "registration_timeout";
+  await action(env.livePage, "register-local-model").onclick();
+  assert.match(text(env.notice), /刷新状态核对结果.*明确重试/);
+  assert.equal(post(env.calls).length, 2);
+  assert.equal(env.calls.some(call => call.url === "/api/local-models/prepare"
+    || call.url === "/api/local-models/start"), false);
+});
+
 test("late model export completion refreshes current same-profile status without showing the old model result", async () => {
   const model = id("a"), other = id("b");
   let state = modelExportStatus({status:"idle"});

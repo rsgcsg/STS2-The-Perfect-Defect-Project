@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from test_local_model_registration import _caps
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench import local_model_registration as registration_module
 from spireagent.workbench.developer import ROOT, atomic_json
-from spireagent.workbench.local_model_export import LocalModelExport
+from spireagent.workbench.local_model_export import OPERATION_FILE, LocalModelExport
 from spireagent.workbench.local_model_registration import LocalModelRegistration
 from spireagent.workbench.local_models import LocalModelService
 from stpd.memory_policy_installation import PROTOCOL, validate
@@ -21,7 +22,7 @@ from stpd.memory_policy_installation import PROTOCOL, validate
 
 def test_m2_registration_requires_own_install_context_and_preserves_token_roster(
         tmp_path: Path, monkeypatch) -> None:
-    config, _, _, _, _, _, _, model_id = _fixture(tmp_path, monkeypatch)
+    config, owner, _, _, sources, _, _, model_id = _fixture(tmp_path, monkeypatch)
     exported = LocalModelExport(config)
     exported.start(model_id)
     assert _settle(exported)["status"] == "completed"
@@ -77,6 +78,38 @@ def test_m2_registration_requires_own_install_context_and_preserves_token_roster
     assert readiness["status"] == "ready_to_load"
     assert readiness["checks"]["policy_identity"] == {"status": "pass"}
     assert models._run_profile(result["selection_id"], "extended") is True
+    roster = (root / ".local/token-policies-v1.json").read_bytes()
+    journal_path = config.state_dir / OPERATION_FILE
+    journal = json.loads(journal_path.read_bytes())
+    old = dict(journal)
+    old.pop("verified_receipt")
+    atomic_json(journal_path, old)
+    with pytest.raises(BoundaryError, match="verified_export_receipt_required"):
+        service.register(model_id)
+    atomic_json(journal_path, journal)
+    wrong_result = json.loads(journal_path.read_bytes())
+    wrong_result["verified_receipt"]["result_id"] = "0" * 64
+    atomic_json(journal_path, wrong_result)
+    with pytest.raises(BoundaryError, match="export_identity_mismatch"):
+        service.register(model_id)
+    atomic_json(journal_path, journal)
+    wrong_hash = json.loads(journal_path.read_bytes())
+    wrong_hash["verified_receipt"]["weights_sha256"] = "0" * 64
+    atomic_json(journal_path, wrong_hash)
+    with pytest.raises(BoundaryError, match="export_identity_mismatch"):
+        service.register(model_id)
+    atomic_json(journal_path, journal)
+    tokenizer_path = config.state_dir / "model-exports" / model_id / "tokenizer.json"
+    tokenizer = tokenizer_path.read_bytes()
+    tokenizer_path.write_bytes(tokenizer + b" ")
+    with pytest.raises(BoundaryError, match="payload_digest_mismatch"):
+        service.register(model_id)
+    tokenizer_path.write_bytes(tokenizer)
+    with owner.transaction() as db:
+        db.execute("DELETE FROM curation_source_uses WHERE source=?", (sources[0],))
+    with pytest.raises(BoundaryError, match="training_source_use_missing"):
+        service.register(model_id)
+    assert (root / ".local/token-policies-v1.json").read_bytes() == roster
 
 
 def test_m2_context_missing_blocks_before_roster_write(tmp_path: Path, monkeypatch) -> None:

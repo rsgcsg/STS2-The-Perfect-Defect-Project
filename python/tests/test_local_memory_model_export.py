@@ -138,10 +138,8 @@ def test_spawn_failure_is_failed_but_started_child_outcome_is_unknown(
         service.start(model_id)
         assert _settle(service)["status"] == "failed"
 
-    def started_failure(_command, _log_path, _environment, *, on_started,
-                        timeout_seconds):
+    def started_failure(_command, _log_path, _environment, *, on_started):
         on_started()
-        assert timeout_seconds is None
         return 2, b""
 
     with patch("spireagent.workbench.local_model_export.private_child",
@@ -153,7 +151,7 @@ def test_spawn_failure_is_failed_but_started_child_outcome_is_unknown(
     assert not (config.state_dir / EXPORT_ROOT / model_id).exists()
 
 
-def test_registration_reconciles_m2_in_child_without_changing_web_torch_threads(
+def test_registration_uses_completed_child_receipt_without_web_replay(
         tmp_path: Path, monkeypatch) -> None:
     config, _, _, _, _, _, _, model_id = _fixture(tmp_path, monkeypatch)
     service = LocalModelExport(config)
@@ -162,16 +160,46 @@ def test_registration_reconciles_m2_in_child_without_changing_web_torch_threads(
     export_logs = list(config.state_dir.glob("local-model-export-*.log"))
     assert len(export_logs) == 1
     original_log = export_logs[0].read_bytes()
-    previous = torch.get_num_threads()
-    try:
-        torch.set_num_threads(3)  # Deliberately unlike the run's pinned two threads.
-        assert service.verified_memory_for_registration(model_id) == (
-            config.state_dir / EXPORT_ROOT / model_id)
-        assert torch.get_num_threads() == 3
-    finally:
-        torch.set_num_threads(previous)
+    receipt = service._read()["verified_receipt"]
+    assert receipt["model_id"] == model_id
+    with patch.object(service, "_memory_child", side_effect=AssertionError("replayed")):
+        previous = torch.get_num_threads()
+        try:
+            torch.set_num_threads(3)  # Deliberately unlike the run's pinned two threads.
+            assert service.verified_memory_for_registration(model_id) == (
+                config.state_dir / EXPORT_ROOT / model_id)
+            assert torch.get_num_threads() == 3
+        finally:
+            torch.set_num_threads(previous)
     assert export_logs[0].read_bytes() == original_log
-    assert len(list(config.state_dir.glob("local-model-registration-verify-*.log"))) == 1
+    assert not list(config.state_dir.glob("local-model-registration-verify-*.log"))
+
+
+def test_old_completed_m2_requires_explicit_reverify_for_receipt(
+        tmp_path: Path, monkeypatch) -> None:
+    config, _, _, _, _, _, _, model_id = _fixture(tmp_path, monkeypatch)
+    service = LocalModelExport(config)
+    service.start(model_id)
+    assert _settle(service)["status"] == "completed"
+    prior = service._read()
+    destination = config.state_dir / EXPORT_ROOT / model_id
+    original = {path.name: path.read_bytes() for path in destination.iterdir()}
+    invalid_pending = {**prior, "status": "pending"}
+    atomic_json(config.state_dir / OPERATION_FILE, invalid_pending)
+    with pytest.raises(BoundaryError, match="operation_recovery_required"):
+        service.status()
+    atomic_json(config.state_dir / OPERATION_FILE, prior)
+    del prior["verified_receipt"]
+    atomic_json(config.state_dir / OPERATION_FILE, prior)
+    with pytest.raises(BoundaryError, match="verified_export_receipt_required"):
+        service.verified_memory_for_registration(model_id)
+    assert service._read() == prior
+    service.start(model_id)  # Explicit existing-package verify; no implicit receipt mint.
+    assert _settle(service)["status"] == "completed"
+    assert service._read()["operation_id"] != prior["operation_id"]
+    assert service._read()["verified_receipt"]["model_id"] == model_id
+    assert {path.name: path.read_bytes() for path in destination.iterdir()} == original
+    assert len(list(config.state_dir.glob("local-model-export-*.log"))) == 2
 
 
 def test_private_verification_child_timeout_reaps_without_reusing_log(tmp_path: Path) -> None:
