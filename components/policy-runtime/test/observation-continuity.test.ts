@@ -6,7 +6,8 @@ import type { TextMenuAction, TextMenuActionResult, TextMenuSnapshot, TextMenuCa
 import { PlayerEnvironmentRestClient } from "@rsgcsg/sts2-connector-client";
 import { ConnectorPolicyClient } from "../src/connector.js";
 import { candidateOrderDigest } from "../src/digest.js";
-import { type PolicyConnector, type PolicyManifest, type StatefulPolicyDecisionInput, POLICY_PORT_V2_SCHEMA, validatePolicyManifest } from "../src/contracts.js";
+import { type PolicyConnector, type PolicyManifest, type StatefulPolicyDecisionInput, POLICY_PORT_V2_SCHEMA, POLICY_PORT_V3_SCHEMA, validatePolicyManifest } from "../src/contracts.js";
+import type { AgentRunEvidence } from "../src/evidence.js";
 import { NdjsonPolicyPort, serveStatefulPolicyPort } from "../src/policy-port.js";
 import { PolicyRuntime } from "../src/runtime.js";
 import { startPolicyRuntimeHttpServer } from "../src/server.js";
@@ -347,5 +348,137 @@ describe("model-neutral observation continuity v2", () => {
       const response = JSON.parse(line) as { request_id: string; completion: { sequence: number } };
       return [response.request_id, response.completion.sequence];
     })).toEqual([["first", 1], ["second", 2]]);
+  });
+});
+
+describe("confirmed interaction port v3", () => {
+  function v3Manifest(): PolicyManifest {
+    const result = manifest();
+    result.adapter.protocol = "sts2.policy-runtime/decision-only-ndjson-3";
+    return result;
+  }
+  function v3Output(input: StatefulPolicyDecisionInput, selected_index: number | null = 0) {
+    return { output: { candidate_digest: input.candidate_digest, scores: [1], selected_index },
+      completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
+        sequence: input.bundle.observation.sequence,
+        previous_interaction_request_id: input.previous_interaction?.request_id ?? null } };
+  }
+  function evidence(failKind?: string): AgentRunEvidence {
+    return { append: vi.fn(async (kind: string) => { if (kind === failKind) throw new Error("disk failure"); }) } as unknown as AgentRunEvidence;
+  }
+
+  it("requires a real Evidence writer and admits only a text-menu manifest", () => {
+    const f = fixture();
+    expect(() => new PolicyRuntime({ manifest: v3Manifest(), connector: f.connector,
+      statefulPolicy: async input => v3Output(input) })).toThrow("Evidence writer");
+    expect(validatePolicyManifest(v3Manifest()).adapter.protocol).toBe("sts2.policy-runtime/decision-only-ndjson-3");
+    const invalid = v3Manifest(); invalid.representation.input_schema = "sts2.player-environment/snapshot-1";
+    expect(() => validatePolicyManifest(invalid)).toThrow();
+  });
+
+  it("offers a correlated, recorded menu result once on a newer observation", async () => {
+    const f = fixture(), seen: StatefulPolicyDecisionInput[] = [];
+    f.submit.mockImplementation(async (input) => ({ protocol_version: "1.0.0", schema: "sts2.player-environment/text-menu-action-result-1", input_profile: "text-menu-v1",
+      request_id: input.requestId, status: "applied", effect_domain: "text_menu", native_delivery: null,
+      action, reason_code: null, detail: null, retry: "never",
+      successor: page(Number((input as unknown as { expectedSnapshotId: string }).expectedSnapshotId.split("-")[1]) + 1),
+      attribution: null } as TextMenuActionResult));
+    const runtime = new PolicyRuntime({ manifest: v3Manifest(), connector: f.connector, mode: "auto", evidence: evidence(),
+      runtimeIdentity: { version: "test", code_sha256: "a".repeat(64) }, statefulPolicy: async input => {
+        seen.push(input); return v3Output(input);
+      } });
+    expect((await runtime.tick()).type).toBe("navigated");
+    expect(seen[0]!.previous_interaction).toBeNull();
+    expect((await runtime.tick()).type).toBe("navigated"); // Connector still returns the old page.
+    expect(seen[1]!.previous_interaction).toBeNull();
+    f.next(2);
+    expect((await runtime.tick()).type).toBe("navigated");
+    expect(seen[2]!.previous_interaction).toMatchObject({ snapshot_id: "text-1", action_id: "nav-info",
+      effect_domain: "text_menu", result_kind: "menu_applied", candidate_digest: candidateOrderDigest([action.action_id]) });
+    expect(seen[2]!.previous_interaction!.request_id).toMatch(/^request-/);
+    expect(seen[2]!.previous_interaction!.decision_id).toMatch(/^decision-/);
+    expect((await runtime.tick()).type).toBe("navigated");
+    expect(seen[3]!.previous_interaction).toBeNull();
+  });
+
+  it("does not create history after a failed durable result append", async () => {
+    const f = fixture(), seen: StatefulPolicyDecisionInput[] = [];
+    f.submit.mockImplementation(async input => ({ protocol_version: "1.0.0", schema: "sts2.player-environment/text-menu-action-result-1", input_profile: "text-menu-v1",
+      request_id: input.requestId, status: "applied", effect_domain: "text_menu", native_delivery: null,
+      action, reason_code: null, detail: null, retry: "never", successor: page(2), attribution: null } as TextMenuActionResult));
+    const runtime = new PolicyRuntime({ manifest: v3Manifest(), connector: f.connector, mode: "auto", evidence: evidence("menu_navigation"),
+      runtimeIdentity: { version: "test", code_sha256: "a".repeat(64) }, statefulPolicy: async input => {
+        seen.push(input); return v3Output(input);
+      } });
+    await runtime.tick();
+    expect(runtime.status().tainted).toBe(true);
+    f.next(2);
+    expect((await runtime.tick()).type).toBe("not_admitted");
+    expect(seen).toHaveLength(1);
+  });
+
+  it("fences an append that finishes after Human recovery", async () => {
+    const f = fixture(), seen: StatefulPolicyDecisionInput[] = [];
+    let appendStarted!: () => void, finishAppend!: () => void;
+    const started = new Promise<void>(resolve => { appendStarted = resolve; });
+    const held = new Promise<void>(resolve => { finishAppend = resolve; });
+    const writer = { append: vi.fn(async (kind: string) => {
+      if (kind === "menu_navigation") { appendStarted(); await held; }
+    }) } as unknown as AgentRunEvidence;
+    f.submit.mockImplementation(async input => ({ protocol_version: "1.0.0", schema: "sts2.player-environment/text-menu-action-result-1", input_profile: "text-menu-v1",
+      request_id: input.requestId, status: "applied", effect_domain: "text_menu", native_delivery: null,
+      action, reason_code: null, detail: null, retry: "never", successor: page(2), attribution: null } as TextMenuActionResult));
+    const runtime = new PolicyRuntime({ manifest: v3Manifest(), connector: f.connector, mode: "auto", evidence: writer,
+      runtimeIdentity: { version: "test", code_sha256: "a".repeat(64) }, statefulPolicy: async input => {
+        seen.push(input); return v3Output(input);
+      } });
+    const pending = runtime.tick(); await started;
+    const recovery = runtime.setMode("human"); finishAppend();
+    await pending; await recovery;
+    f.next(2); await runtime.setMode("auto");
+    await runtime.tick();
+    expect(seen[1]!.previous_interaction).toBeNull();
+    expect(seen[1]!.continuity_token).not.toBe(seen[0]!.continuity_token);
+  });
+
+  it("records a native delivery as delivery metadata without inferring effect", async () => {
+    const f = fixture(), seen: StatefulPolicyDecisionInput[] = [];
+    const native = { ...action, action_id: "native-end-turn", kind: "native_input" as const,
+      verb: "end_turn", effect_domain: "native_input" as const };
+    const first = page(1);
+    (first.menu_actions.actions as TextMenuAction[])[0] = native;
+    let current = first;
+    f.connector.observeTextMenuContext = vi.fn(async () => ({ schema: "sts2.player-environment/text-menu-observation-context-1" as const,
+      game_continuity_id: "native-run-1", snapshot: current }));
+    f.connector.observeBundle = vi.fn(async () => ({ observation: page(2), reads: [] as [] }));
+    f.submit.mockImplementation(async input => ({ protocol_version: "1.0.0", schema: "sts2.player-environment/text-menu-action-result-1", input_profile: "text-menu-v1",
+      request_id: input.requestId, status: "applied", effect_domain: "native_input", native_delivery: "delivered",
+      action: native, reason_code: null, detail: null, retry: "never", successor: null, attribution: null } as TextMenuActionResult));
+    const m = v3Manifest(); m.support.action_verbs.push("end_turn");
+    const runtime = new PolicyRuntime({ manifest: m, connector: f.connector, mode: "auto", evidence: evidence(),
+      runtimeIdentity: { version: "test", code_sha256: "a".repeat(64) }, statefulPolicy: async input => {
+        seen.push(input); return v3Output(input, seen.length === 1 ? 0 : null);
+      }, successorPoll: { maxAttempts: 1, baseBackoffMs: 0 } });
+    expect((await runtime.tick()).type).toBe("text_native_delivered");
+    current = page(2);
+    expect((await runtime.tick()).type).toBe("not_executed");
+    expect(seen[1]!.previous_interaction).toMatchObject({ action_id: "native-end-turn",
+      effect_domain: "native_input", result_kind: "native_input_delivered", snapshot_id: "text-1" });
+  });
+
+  it("checks v3 child completion echo and keeps v2 completion exact", async () => {
+    const adapter = v3Manifest().adapter;
+    const script = [
+      `process.stdout.write(JSON.stringify({schema:'${POLICY_PORT_V3_SCHEMA}',message_type:'ready',adapter:${JSON.stringify(adapter)}})+'\\n');`,
+      "const readline=require('node:readline').createInterface({input:process.stdin});",
+      "readline.on('line',(line)=>{const r=JSON.parse(line);process.stdout.write(JSON.stringify({schema:r.schema,message_type:'decision',request_id:r.request_id,output:{candidate_digest:r.input.candidate_digest,scores:[1],selected_index:null},completion:{continuity_token:r.input.continuity_token,snapshot_id:r.input.bundle.observation.snapshot_id,sequence:r.input.bundle.observation.sequence,previous_interaction_request_id:'wrong'}})+'\\n');});"
+    ].join("");
+    const port = NdjsonPolicyPort.spawn(process.execPath, ["-e", script]);
+    try {
+      await port.attest(adapter);
+      const input: StatefulPolicyDecisionInput = { run_id: "run", manifest: v3Manifest(), bundle: { observation: page(1), reads: [] },
+        candidate_count: 1, candidate_digest: candidateOrderDigest([action.action_id]), continuity_token: "token", previous_interaction: null };
+      await expect(port.decideV3(input, new AbortController().signal, () => {})).rejects.toThrow("completion watermark mismatch");
+    } finally { port.close(); }
   });
 });
