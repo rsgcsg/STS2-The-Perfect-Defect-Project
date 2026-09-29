@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Lock
 
 import torch
@@ -19,8 +20,9 @@ from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 from ..fullrun.memory_token_inputs import (
     MAX_TOKENIZER_BYTES,
     encode_memory_texts,
-    project_memory_snapshot,
+    project_memory_profile_snapshot,
 )
+from ..fullrun.text_menu_inputs import INPUT_PROFILE, V2_INPUT_PROFILE
 from ..models.dsimple_memory import ExperimentalDSimpleM2
 from ..workers.memory_ranking import MemoryConfig, load_memory_export
 
@@ -48,16 +50,19 @@ class OnlineM2Scorer:
     """
 
     def __init__(self, model: ExperimentalDSimpleM2, tokenizer: Tokenizer,
-                 config: MemoryConfig) -> None:
+                 config: MemoryConfig, *, input_profile: str = INPUT_PROFILE) -> None:
         if (not isinstance(model, ExperimentalDSimpleM2)
                 or not isinstance(tokenizer, Tokenizer)
                 or not isinstance(config, MemoryConfig)
                 or tokenizer.get_vocab_size() != config.vocab_size
-                or tokenizer.truncation is not None or tokenizer.padding is not None):
+                or tokenizer.truncation is not None or tokenizer.padding is not None
+                or not isinstance(input_profile, str)
+                or input_profile not in {INPUT_PROFILE, V2_INPUT_PROFILE}):
             raise BoundaryError("online_m2", "model_tokenizer_config_mismatch")
         self._model = model.eval()
         self._tokenizer = tokenizer
         self._config = config
+        self._input_profile = input_profile
         self._lock = Lock()
         self._memory = model.initial_memory()
         self._continuity: str | None = None
@@ -70,7 +75,8 @@ class OnlineM2Scorer:
 
     @classmethod
     def from_export(cls, weights: bytes, config: MemoryConfig,
-                    tokenizer_bytes: bytes) -> OnlineM2Scorer:
+                    tokenizer_bytes: bytes, *,
+                    input_profile: str = INPUT_PROFILE) -> OnlineM2Scorer:
         if (not isinstance(weights, bytes) or not isinstance(tokenizer_bytes, bytes)
                 or not isinstance(config, MemoryConfig)):
             raise BoundaryError("online_m2", "export_bytes_required")
@@ -85,7 +91,17 @@ class OnlineM2Scorer:
             raise BoundaryError("online_m2", "model_tokenizer_config_mismatch")
         model = load_memory_export(
             weights, config, hashlib.sha256(tokenizer_bytes).hexdigest())
-        return cls(model, tokenizer, config)
+        return cls(model, tokenizer, config, input_profile=input_profile)
+
+    @classmethod
+    def from_package(cls, directory: Path, *,
+                     input_profile: str = INPUT_PROFILE) -> OnlineM2Scorer:
+        """Score detached bytes only under their validated, explicit profile."""
+        from .memory_export import validate_memory_package
+
+        _, weights, tokenizer, config = validate_memory_package(
+            directory, input_profile=input_profile)
+        return cls.from_export(weights, config, tokenizer, input_profile=input_profile)
 
     def observe_and_score(self, *, continuity_token: str,
                           snapshot_bytes: bytes, expected_candidate_digest: str | None = None,
@@ -156,7 +172,7 @@ class OnlineM2Scorer:
         # episode budgets do not govern a live continuity or autonomy duration.
         # The projector renders object insertion order. Normalize that order so
         # equivalent JSON spellings produce the same model input on first read.
-        public = project_memory_snapshot(snapshot)
+        public = project_memory_profile_snapshot(snapshot, self._input_profile)
         if (expected_candidate_digest is not None or expected_candidate_count is not None):
             self._check_candidate_binding(
                 OnlineScores(public.action_ids, (), public.candidate_digest),
