@@ -774,11 +774,19 @@ class LocalModelService:
                     else name + "_missing_or_drifted",
                 }
 
-        adapter = policy_support(entry["adapter"])
         if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter"}:
-            checks.update(adapter.inspect(self.root, entry, manifest, policy_config,
-                                          binding_root=self.entry_root(entry)))
+            from spireagent.workbench.local_model_dependencies import local_models_available
+
+            if local_models_available():
+                adapter = policy_support(entry["adapter"])
+                checks.update(adapter.inspect(self.root, entry, manifest, policy_config,
+                                              binding_root=self.entry_root(entry)))
+            else:
+                checks["policy_identity"] = {
+                    "status": "blocked", "code": "local_models_extra_required",
+                }
         else:
+            adapter = policy_support(entry["adapter"])
             checks.update(adapter.inspect(self.root, entry, manifest, policy_config))
         check("runtime_package", lambda: self._runtime_package(identity) and None)
         check("public_contract", lambda: self._public_manifest_contract(manifest_path, identity))

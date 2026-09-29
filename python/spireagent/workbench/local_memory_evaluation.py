@@ -24,8 +24,8 @@ from spireagent.workbench.developer_server import instance_lock
 from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_evaluation import summary
+from spireagent.workbench.local_model_dependencies import require_local_models
 from spireagent.workbench.local_training import _private_child
-from stpd.workers.memory_run import INPUT_SCHEMA_V2, MODEL_SCHEMA, RUN_SCHEMA
 
 SCHEMA = "stpd/local-memory-evaluation-operation-v1"
 OPERATION_FILE = "local-memory-evaluation-operation.json"
@@ -115,6 +115,8 @@ class LocalMemoryEvaluationService:
 
     @staticmethod
     def _training_source(store: Any, model_id: str) -> tuple[str, str]:
+        from stpd.workers.memory_run import INPUT_SCHEMA_V2, MODEL_SCHEMA, RUN_SCHEMA
+
         model = store.get_manifest(model_id)
         if (model.kind != "model" or model.parameters.value().get("schema") != MODEL_SCHEMA
                 or sorted(parent.role for parent in model.parents)
@@ -169,6 +171,7 @@ class LocalMemoryEvaluationService:
                     and previous["source_id"] == source_id
                     and previous["max_settling_events"] == max_settling_events):
                 return self.status()
+            require_local_models("local_memory_evaluation")
             training_operation_id, train_source_id = self._training_source(store, model_id)
             identity = uuid.uuid4().hex
             operation = {

@@ -224,6 +224,39 @@ def test_optional_runtime_requires_external_pins_and_fixed_inventory(inputs, tmp
     assert "operator.env" not in files
 
 
+@pytest.mark.parametrize("profile", [None, "text-menu-v1", "text-menu-m2-v1",
+                                      "text-menu-m2-v2"])
+def test_verified_kit_runtime_inventory_selects_only_locked_model_extra(profile):
+    from tools.install_developer_kit import KIT_RUNTIME_PAIRS, _environment_extras
+
+    receipt = {pair[4]: "not_bundled" for pair in KIT_RUNTIME_PAIRS.values()}
+    if profile is not None:
+        receipt[KIT_RUNTIME_PAIRS[profile][4]] = "bundled_installation_not_checked"
+    assert _environment_extras(receipt) == (["--extra", "cloud"] if profile is None else
+                                            ["--extra", "cloud", "--extra", "local-models"])
+
+
+@pytest.mark.parametrize("with_model", [False, True])
+def test_register_uses_same_verified_kit_extra_selection(tmp_path, monkeypatch,
+                                                         with_model):
+    from tools import install_developer_kit as install
+
+    prepared = {"tool_release_id": "a" * 64, "m2_v2_runtime": (
+        "bundled_installation_not_checked" if with_model else "not_bundled")}
+    monkeypatch.setattr(install, "status", lambda _directory: prepared)
+    commands = []
+    monkeypatch.setattr(install, "run", lambda args, cwd: commands.append((args, cwd))
+                        or '{"status":"registered"}')
+    target = tmp_path / "release"
+    assert install.register(target, tmp_path / "project.json") == {"status": "registered"}
+    args, cwd = commands.pop()
+    assert cwd == target / "source"
+    assert args[:5] == ["uv", "run", "--project", "python", "--locked"]
+    assert args[5:5 + (4 if with_model else 2)] == (
+        ["--extra", "cloud", "--extra", "local-models"] if with_model else
+        ["--extra", "cloud"])
+
+
 def test_optional_m2_runtime_is_separate_from_text_and_requires_exact_pair(
         inputs, tmp_path, monkeypatch):
     from tools import install_developer_kit as install
@@ -354,9 +387,12 @@ def test_v2_kit_pair_is_inventoried_staged_and_selected_without_caller_path(
                         {"status": "runtime_installed"})
     actual_run = install.run
     owner_steps = []
+    environment_steps = []
     def initialize_run(args, cwd):
         if args[0] == "git":
             return actual_run(args, cwd)
+        if args[0] == "uv":
+            environment_steps.append(args)
         if "setup" in args:
             owner_steps.append("setup")
             config_path.write_text(json.dumps(service.config.to_dict()))
@@ -369,6 +405,10 @@ def test_v2_kit_pair_is_inventoried_staged_and_selected_without_caller_path(
     monkeypatch.setattr(install, "run", initialize_run)
     initialized = install.initialize(target, config_path)
     assert owner_steps == ["setup", "model"]
+    assert len(environment_steps) == 3
+    assert all([
+        item for item in args if item in {"--extra", "cloud", "local-models"}
+    ] == ["--extra", "cloud", "--extra", "local-models"] for args in environment_steps)
     assert initialized["m2_v2_runtime"] == "installed_verified_by_runtime_owner"
     assert owner_install == [((service.directory / "text-menu-m2-v2", pin, {}),
                               {"archive": staged_archive,

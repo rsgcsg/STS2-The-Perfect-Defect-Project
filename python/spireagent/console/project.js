@@ -279,6 +279,7 @@ window.SpireProject = (() => {
       request_unknown: "请求结果尚未确认，请先刷新状态。不会自动重发操作。",
       local_model_export_failed: "本机模型导出与校验未完成。请刷新状态后再按需明确重试。",
       local_model_registration_invalid: "本机模型登记状态格式未知；未发起模型操作。请刷新状态。",
+      local_models_extra_required: "本机模型计算依赖尚未按发行包准备；请先用已验证的开发者工具包初始化模型环境。未启动训练或登记。",
       text_runtime_profile_required: "本机文本菜单运行环境尚未准备；请先完成本机运行环境设置。",
       text_runtime_local_install_required: "本机文本菜单运行组件尚未准备；请检查运行环境状态。",
       trusted_text_runtime_kit_unavailable: "当前工作台没有已选定且可验证的开发者工具包；请先使用已批准的发行包准备本机环境。",
@@ -2966,6 +2967,7 @@ window.SpireProject = (() => {
 
   function localModelRegistrationReason(code) {
     const known = {
+      local_models_extra_required: "本机模型计算依赖尚未按发行包准备；请先用已验证的开发者工具包初始化模型环境。尚未登记。",
       verified_export_required: "此模型当前没有可用的已校验导出；请先完成导出校验。",
       verified_export_receipt_required: "这份较早的记忆模型导出缺少校验回执；请点击“重新核验导出”，完成后再明确登记。",
       registration_timeout: "本次登记校验已超时；请先刷新状态核对结果，再按需明确重试。不会自动加载模型。",
@@ -3281,6 +3283,7 @@ window.SpireProject = (() => {
   }
 
   const localTrainingReasons = {
+    local_models_extra_required: "本机模型计算依赖尚未按发行包准备；请先用已验证的开发者工具包初始化模型环境。尚未启动训练。",
     workspace_required: "本机资料空间尚未建立。",
     curation_preparation_required: "本机数据用途记录尚未准备。",
     curation_owner_recovery_required: "本机用途记录需要恢复核对。",

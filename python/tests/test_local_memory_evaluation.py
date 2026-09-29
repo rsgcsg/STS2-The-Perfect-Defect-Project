@@ -159,6 +159,13 @@ def test_async_workbench_dev_operation_binds_existing_model_and_report(tmp_path,
 
     monkeypatch.setattr("spireagent.workbench.local_memory_evaluation._private_child", child)
     service = LocalMemoryEvaluationService(ProjectConfig(state, "", "", None, combination()))
+    with monkeypatch.context() as missing:
+        missing.setattr("spireagent.workbench.local_model_dependencies.find_spec", lambda _: None)
+        with pytest.raises(BoundaryError, match="local_models_extra_required"):
+            service.start(model_id, dev.artifact_id)
+        assert service._thread is None
+        assert service.status()["operation"]["status"] == "idle"
+        assert admitted == []
     started = service.start(model_id, dev.artifact_id)["operation"]
     assert started["purpose"] == "dev"
     assert service._thread is not None

@@ -16,13 +16,13 @@ from spireagent.storage.store import ArtifactStore
 from ..fullrun.evaluation import action_only_prior, evaluate_samples
 from ..fullrun.token_inputs import FORMAT, LoadedTokenInputs, load_token_inputs
 from ..models.stage1a import recipe_for
+from .report_schemas import TOKEN_EVALUATION_SCHEMA as EVALUATION_SCHEMA
 from .reporting import RunReporter
 from .token_ranking import CHECKPOINT_SCHEMA, TokenConfig, TokenRankingEngine
 from .worker import WorkerResult
 
 RUN_SCHEMA = "stpd/stage1a-run-v1"
 MODEL_SCHEMA = "stpd/stage1a-model-v1"
-EVALUATION_SCHEMA = "stpd/stage1a-ranking-evaluation-v1"
 
 
 def prepare_token_run(store: ArtifactStore, inputs: LoadedTokenInputs, config: TokenConfig,

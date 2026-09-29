@@ -1277,6 +1277,12 @@ l2 = [
     { name = "safetensors" },
     { name = "transformers" },
 ]
+local-models = [
+    { name = "safetensors" },
+    { name = "tokenizers" },
+    { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'win32'" },
+    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
+]
 ml = [
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'win32'" },
     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
@@ -1307,13 +1313,17 @@ requires-dist = [
     { name = "python-dotenv", marker = "extra == 'cloud'", specifier = ">=1.1,<2" },
     { name = "rsgcsg-sts2-platform-evidence", git = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git?subdirectory=components%2Fevidence&rev=ec1fcfa5dee3164040b36430c45b8f932605847a" },
     { name = "safetensors", marker = "extra == 'l2'", specifier = ">=0.5,<1" },
+    { name = "safetensors", marker = "extra == 'local-models'", specifier = ">=0.5,<1" },
     { name = "tokenizers", marker = "extra == 'l1'", specifier = ">=0.21,<1" },
+    { name = "tokenizers", marker = "extra == 'local-models'", specifier = ">=0.21,<1" },
+    { name = "torch", marker = "sys_platform == 'win32' and extra == 'local-models'", specifier = ">=2.7,<3", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch", marker = "sys_platform == 'win32' and extra == 'ml'", specifier = ">=2.7,<3", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torch", marker = "sys_platform != 'win32' and extra == 'local-models'", specifier = ">=2.7,<3" },
     { name = "torch", marker = "sys_platform != 'win32' and extra == 'ml'", specifier = ">=2.7,<3" },
     { name = "transformers", marker = "extra == 'l2'", specifier = ">=5,<6" },
     { name = "waitress", marker = "extra == 'cloud'", specifier = ">=3,<4" },
 ]
-provides-extras = ["cloud", "research", "l1", "ml", "l2"]
+provides-extras = ["cloud", "local-models", "research", "l1", "ml", "l2"]
 
 [package.metadata.requires-dev]
 dev = [

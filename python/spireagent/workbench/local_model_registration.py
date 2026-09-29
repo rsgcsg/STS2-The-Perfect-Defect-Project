@@ -22,6 +22,10 @@ from spireagent.package_identity import PackageIdentityError
 from spireagent.policy_files import _inside, _object_file
 from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
+from spireagent.workbench.local_model_dependencies import (
+    local_models_available,
+    require_local_models,
+)
 from spireagent.workbench.local_model_export import LocalModelExport, _ordinary
 from spireagent.workbench.local_models import LocalModelService, _loopback
 from spireagent.workbench.memory_recipe import (
@@ -37,16 +41,6 @@ from spireagent.workbench.runtime_install import (
     v2_sdk_available,
     validate_runtime_install,
 )
-from stpd.memory_policy_installation import (
-    bind_memory_export,
-)
-from stpd.memory_policy_installation import (
-    code_digest as memory_code_digest,
-)
-from stpd.memory_policy_installation import (
-    validate as validate_memory,
-)
-from stpd.token_policy_installation import bind_text_menu_export, code_digest, validate
 
 SCHEMA = "stpd/local-model-registration-v1"
 PROFILE = "text-menu-v1"
@@ -61,7 +55,7 @@ MEMORY_RECIPE_LABELS = {M2_K1_RECIPE: "M2-K1 训练版",
 
 def _export_memory_profile(export: Path) -> str:
     """Read a closed package projection for display; POST rechecks full lineage."""
-    from stpd.fullrun.memory_sequence_bridge import (
+    from stpd.fullrun.memory_projection_config import (
         parse_episode_projection_config,
         projection_input_profile,
     )
@@ -205,6 +199,19 @@ def _requirements(value: Any, *, input_profile: str = PROFILE
         ) from error
 
 
+def bind_memory_export(*args: Any, **kwargs: Any) -> Any:
+    """Load the ML binding owner only for an explicit registration operation."""
+    from stpd.memory_policy_installation import bind_memory_export as bind
+
+    return bind(*args, **kwargs)
+
+
+def bind_text_menu_export(*args: Any, **kwargs: Any) -> Any:
+    from stpd.token_policy_installation import bind_text_menu_export as bind
+
+    return bind(*args, **kwargs)
+
+
 class LocalModelRegistration:
     def __init__(self, config: ProjectConfig, export: LocalModelExport,
                  models: LocalModelService) -> None:
@@ -227,9 +234,15 @@ class LocalModelRegistration:
                   requirements: dict[str, Any] | None = None,
                   support: dict[str, Any] | None = None, *,
                   profile: str = PROFILE) -> tuple[str | None, bool]:
+        from stpd.token_policy_installation import code_digest, validate
+
         stale = False
-        current_code = (memory_code_digest(self.models.root) if profile in
-                        {M2_PROFILE, V2_M2_PROFILE}
+        memory = profile in {M2_PROFILE, V2_M2_PROFILE}
+        if memory:
+            from stpd.memory_policy_installation import code_digest as memory_code_digest
+            from stpd.memory_policy_installation import validate as validate_memory
+
+        current_code = (memory_code_digest(self.models.root) if memory
                         else code_digest(self.models.root))
         for entry in reversed(self._entries()):
             if entry.get("runtime_profile") != profile:
@@ -244,8 +257,7 @@ class LocalModelRegistration:
                 if manifest.get("adapter", {}).get("code_sha256") != current_code:
                     stale = True
                     continue
-                validator = (validate_memory if profile in {M2_PROFILE, V2_M2_PROFILE}
-                             else validate)
+                validator = validate_memory if memory else validate
                 validator(self.models.root,
                           _inside(self.models.private_root, entry["config"]),
                           _inside(self.models.private_root, entry["manifest"]),
@@ -278,6 +290,9 @@ class LocalModelRegistration:
             export = self.config.state_dir / "model-exports" / identity
             if memory:
                 profile = _export_memory_profile(export)
+            if not local_models_available():
+                return _public(identity, "unavailable",
+                               reason_code="local_models_extra_required", profile=profile)
             found, stale = self._matching(identity, export, profile=profile)
             if found is not None:
                 return _public(identity, "registered", selection_id=found, profile=profile)
@@ -391,16 +406,16 @@ class LocalModelRegistration:
                                 "m2_runtime_contract_unavailable") from error
 
     def register(self, model_id: object) -> dict[str, Any]:
-        from stpd.policy.token_decision import check_model
+        identity = digest(model_id, "local_model_registration.model_id")
 
         deadline = monotonic() + REGISTRATION_SECONDS
-        identity = digest(model_id, "local_model_registration.model_id")
         # Weight/scorer verification and current-store binding are explicit POST work.
         observed = self.export.status()
         operation = observed["operation"]
         memory = (observed.get("schema") == "stpd/local-model-export-operation-v2"
                   and operation.get("model_id") == identity
                   and operation.get("model_type") == "memory")
+        require_local_models("local_model_registration")
         export = (self.export.verified_memory_for_registration(identity, deadline=deadline)
                   if memory else self.export.verified_for_registration(identity))
         _remaining(deadline)
@@ -413,6 +428,8 @@ class LocalModelRegistration:
                 raise BoundaryError("local_model_registration", "unsupported_model_recipe")
             profile = V2_M2_PROFILE if recipe in V2_MEMORY_RECIPES else M2_PROFILE
         else:
+            from stpd.policy.token_decision import check_model
+
             profile = PROFILE
             envelope = _object_file(export / "model.json")
             if envelope.get("model_id") != identity:

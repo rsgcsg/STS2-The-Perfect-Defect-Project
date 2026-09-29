@@ -14,10 +14,16 @@ from stpd.fullrun.evaluation import MODEL_SCHEMA as FULLRUN_MODEL_SCHEMA
 from stpd.fullrun.features import VIEW_SCHEMA as FULLRUN_VIEW_SCHEMA
 from stpd.fullrun.public_bc import LEGACY_VIEW_SCHEMA as LEGACY_PUBLIC_BC_VIEW_SCHEMA
 from stpd.fullrun.public_bc import VIEW_SCHEMA as PUBLIC_BC_VIEW_SCHEMA
-from stpd.models.stage1a import RECIPES
-from stpd.workers.memory_evaluation import EVALUATION_SCHEMA as MEMORY_SCHEMA
-from stpd.workers.memory_evaluation import PROTOCOL as MEMORY_PROTOCOL
-from stpd.workers.token_worker import EVALUATION_SCHEMA as TOKEN_SCHEMA
+from stpd.stage1a_recipes import RECIPES
+from stpd.workers.report_schemas import (
+    MEMORY_EVALUATION_PROTOCOL as MEMORY_PROTOCOL,
+)
+from stpd.workers.report_schemas import (
+    MEMORY_EVALUATION_SCHEMA as MEMORY_SCHEMA,
+)
+from stpd.workers.report_schemas import (
+    TOKEN_EVALUATION_SCHEMA as TOKEN_SCHEMA,
+)
 
 SCHEMA = "stpd/local-offline-evaluation-summary-v1"
 SCOPE = "recorded_report_and_parent_identities"
