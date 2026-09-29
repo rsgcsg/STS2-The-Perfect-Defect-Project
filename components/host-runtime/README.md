@@ -197,9 +197,11 @@ which the Managed native path revalidates. Other complete Managed pages retain
 their current native leaves under the v2 schema; unsupported or incomplete
 catalogs remain unavailable. A v1 observation does not reset a v2 selection.
 Raw mutation, reset, changed source/catalog, and unknown delivery invalidate it.
-Both profiles share the driver's episode and mutation-request fences. This
-JSONL opt-in does not expose a Connector HTTP/controller lease, add a Python
-v2 consumer, or turn historical v1 Human/model inputs into v2 data. The pinned
+Both profiles share the driver's episode and mutation-request fences. The
+public Python consumer opts in with `observe_text_menu(input_profile="text-menu-v2")`
+and `submit_text_menu(..., input_profile="text-menu-v2")`; omitted profile
+still selects v1. This does not expose a Connector HTTP/controller lease or
+turn historical v1 Human/model inputs into v2 data. The pinned
 Connector SDK remains at its older released version. An isolated source-level
 cross-check used the PR106 SDK's strict v2 decoder; this package does not
 claim to consume that unpublished SDK build.
@@ -209,7 +211,11 @@ share one native-child cleanup owner. A Python force-close first closes stdin
 so the Node driver can interrupt an in-flight request and reap its child on
 Windows as well as Unix; only after a bounded wait does Python terminate Node.
 The fallback bounds the client but cannot itself prove native-child cleanup if
-the owner fails. A pending or unknown mutation is never reported as
+the owner fails. The Python client raises a persistent `DriverCleanupError` on
+fallback or nonzero driver exit. Startup failures carry the original exception
+as `DriverInitializationError.__cause__` and a `cleanup_confirmed` flag. A
+valid correlated unknown result is returned unchanged; a later explicit
+`close()` exposes any separate cleanup error. A pending or unknown mutation is never reported as
 `not_delivered` merely because shutdown suppressed a late reply.
 
 Event options retain the game's visible order and locked options remain visible

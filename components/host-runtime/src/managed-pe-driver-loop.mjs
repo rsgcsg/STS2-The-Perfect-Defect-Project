@@ -3,6 +3,7 @@ import readline from "node:readline";
 /** One JSONL owner for explicit close, pipe EOF and process exit signals. */
 export function serveManagedPeDriver(driver, {
   stdin = process.stdin, stdout = process.stdout,
+  stderr = process.stderr,
   signals = process, exit = (code) => process.exit(code)
 } = {}) {
   const input = readline.createInterface({ input: stdin });
@@ -48,7 +49,12 @@ export function serveManagedPeDriver(driver, {
       }
     });
   });
-  input.on("close", () => { void shutdown(!cleanClose).catch(() => undefined); });
+  input.on("close", () => {
+    void shutdown(!cleanClose).catch((error) => {
+      stderr.write(`driver cleanup unconfirmed: ${error instanceof Error ? error.message : String(error)}\n`);
+      exit(1);
+    });
+  });
 
   for (const signal of ["SIGTERM", "SIGINT"]) {
     signals.on(signal, () => {

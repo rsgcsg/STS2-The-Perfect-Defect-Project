@@ -8,7 +8,7 @@ import { serveManagedPeDriver } from "../../src/managed-pe-driver-loop.mjs";
 const marker = process.argv[2];
 if (process.argv.includes("--native")) {
   if (process.argv.includes("--stubborn") && process.platform !== "win32") {
-    process.on("SIGTERM", () => undefined);
+    process.on("SIGTERM", () => writeFileSync(`${marker}.graceful-signal-entered`, "entered"));
   }
   process.stdout.write('{"type":"native_ready"}\n');
   const input = readline.createInterface({ input: process.stdin });
@@ -25,9 +25,15 @@ if (process.argv.includes("--native")) {
   const pending = native.request({ cmd: "hold" }, 30_000);
   pending.catch(() => undefined);
   while (!existsSync(marker)) await new Promise((resolve) => setTimeout(resolve, 5));
+  if (process.argv.includes("--ignore-eof")) {
+    process.stdin.resume();
+    setInterval(() => undefined, 1_000);
+    process.stdout.write(`${JSON.stringify({ type: "ready", native_pid: native.pid })}\n`);
+  } else {
   const session = {
-    async mount() { return pending; },
+    async mount() { writeFileSync(`${marker}.reset-entered`, "entered"); return pending; },
     async close({ force = false, timeoutMs = 5_000 } = {}) {
+      if (process.argv.includes("--reject-close")) throw new Error("synthetic cleanup failed");
       return native.stop({ request: force ? null : { cmd: "quit" }, timeoutMs, force });
     },
     observe() { throw new Error("No mounted page"); },
@@ -38,4 +44,5 @@ if (process.argv.includes("--native")) {
     adapterRuntimeInstanceId: "synthetic" }, environmentFingerprint: "synthetic" });
   serveManagedPeDriver(driver);
   process.stdout.write(`${JSON.stringify({ type: "ready", native_pid: native.pid })}\n`);
+  }
 }

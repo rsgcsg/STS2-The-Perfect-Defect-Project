@@ -1,12 +1,17 @@
+import json
 import sys
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 
 from sts2_headless.client import (
+    DriverCleanupError,
     DriverError,
+    DriverInitializationError,
     FiniteActionView,
     ManagedPlayerEnvironment,
     ThreadedVectorPlayerEnvironment,
@@ -36,9 +41,12 @@ for line in sys.stdin:
     elif request["command"] == "step":
         print(json.dumps({**base,"type":"step_result","receipt":{"delivery":"delivered","successor":snapshot}}), flush=True)
     elif request["command"] == "text_observe":
-        context = {"schema":"sts2.player-environment/text-menu-observation-context-1",
-                   "snapshot":{"schema":"sts2.player-environment/text-menu-snapshot-1",
-                               "input_profile":"text-menu-v1", "snapshot_id":"text-s1",
+        profile = request.get("input_profile", "text-menu-v1")
+        version = "2" if profile == "text-menu-v2" else "1"
+        reported = "text-menu-v1" if len(sys.argv) > 1 and sys.argv[1] == "wrong_profile" else profile
+        context = {"schema":"sts2.player-environment/text-menu-observation-context-"+version,
+                   "snapshot":{"schema":"sts2.player-environment/text-menu-snapshot-"+version,
+                               "input_profile":reported, "snapshot_id":"text-s1",
                                "menu_actions":{"actions":[{"action_id":"text-a1"}]}},
                    "game_continuity_id":"managed_episode_test"}
         print(json.dumps({**base,"type":"text_observe_result","context":context}), flush=True)
@@ -47,17 +55,24 @@ for line in sys.stdin:
         assert request["expected_snapshot_id"] == "text-s1"
         assert request["expected_game_continuity_id"] == "managed_episode_test"
         assert request["mutation_request_id"] == "text-mutation-1"
-        action = {"action_id":"text-a1", "kind":"native_input", "verb":"activate",
-                  "label":"Choose", "subject_referent_id":None, "arguments":[],
-                  "effect_domain":"native_input"}
+        profile = request.get("input_profile", "text-menu-v1")
+        version = "2" if profile == "text-menu-v2" else "1"
+        selection = profile == "text-menu-v2"
+        action = {"action_id":"text-a1", "kind":"system_selection" if selection else "native_input",
+                  "verb":"select_card" if selection else "activate",
+                  "label":"Choose", "subject_referent_id":"card1" if selection else None, "arguments":[],
+                  "effect_domain":"text_menu" if selection else "native_input"}
+        successor = {"schema":"sts2.player-environment/text-menu-snapshot-2",
+                     "input_profile":"text-menu-v2", "snapshot_id":"text-s2"} if selection else None
         print(json.dumps({**base,"type":"text_submit_result","result":{
             "protocol_version":"1.0.0",
-            "schema":"sts2.player-environment/text-menu-action-result-1",
-            "input_profile":"text-menu-v1", "request_id":"text-mutation-1",
-            "status":"applied", "effect_domain":"native_input",
-            "native_delivery":"delivered", "action":action,
+            "schema":"sts2.player-environment/text-menu-action-result-"+version,
+            "input_profile":"text-menu-v1" if len(sys.argv) > 1 and sys.argv[1] == "wrong_result_profile" else profile,
+            "request_id":"text-mutation-1",
+            "status":"applied", "effect_domain":"text_menu" if selection else "native_input",
+            "native_delivery":None if selection else "delivered", "action":action,
             "reason_code":None, "detail":None, "retry":"never",
-            "successor":None, "attribution":None}}), flush=True)
+            "successor":successor, "attribution":None}}), flush=True)
     elif request["command"] == "episode_identity":
         print(json.dumps({**base,"type":"episode_identity_result","identity":{"episode_provenance":{"verdict":"provenance_pass","actual_seed":"SEED"}}}), flush=True)
     elif request["command"] == "close":
@@ -148,8 +163,139 @@ for line in sys.stdin:
         break
 '''
 
+UNKNOWN_IGNORES_EOF_DRIVER = r'''
+import json, sys, time
+print(json.dumps({"type":"ready","protocol":"test"}), flush=True)
+for line in sys.stdin:
+    request = json.loads(line)
+    base = {"request_id":request["request_id"]}
+    if request["command"] == "text_submit":
+        action = {"action_id":request["action_id"], "kind":"native_input", "verb":"play",
+                  "label":"Play", "subject_referent_id":"card1", "arguments":[],
+                  "effect_domain":"native_input"}
+        result = {"protocol_version":"1.0.0",
+                  "schema":"sts2.player-environment/text-menu-action-result-2",
+                  "input_profile":"text-menu-v2", "request_id":request["mutation_request_id"],
+                  "status":"unknown", "effect_domain":"native_input",
+                  "native_delivery":"unknown", "action":action,
+                  "reason_code":None, "detail":None, "retry":"never",
+                  "successor":None, "attribution":None}
+        print(json.dumps({**base,"type":"text_submit_result","result":result}), flush=True)
+        time.sleep(60)
+'''
+
+HELD_EOF_DRIVER = r'''
+import json, pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+print(json.dumps({"type":"ready","protocol":"test"}), flush=True)
+for line in sys.stdin: pass
+(root / "eof-entered").write_text("entered")
+while not (root / "release").exists(): time.sleep(0.005)
+'''
+
 
 class ClientTest(unittest.TestCase):
+    def test_concurrent_close_waits_for_same_real_eof_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment = ManagedPlayerEnvironment(
+                [sys.executable, "-u", "-c", HELD_EOF_DRIVER, temporary],
+                response_timeout_seconds=2,
+            )
+            first_errors = []
+            first = threading.Thread(target=lambda: self._capture_close(environment, first_errors))
+            first.start()
+            try:
+                deadline = time.monotonic() + 2
+                while not (root / "eof-entered").exists() and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertTrue((root / "eof-entered").exists(), "real driver must enter EOF gate")
+                released = threading.Event()
+
+                def release():
+                    time.sleep(0.15)
+                    (root / "release").write_text("go")
+                    released.set()
+
+                gate = threading.Thread(target=release)
+                gate.start()
+                try:
+                    environment.close(force=True)
+                    self.assertTrue(released.is_set(), "second close returned before cleanup gate opened")
+                finally:
+                    gate.join(timeout=2)
+                first.join(timeout=2)
+                self.assertFalse(first.is_alive())
+                self.assertEqual(first_errors, [])
+                self.assertIsNotNone(environment._process.poll())
+            finally:
+                (root / "release").write_text("go")
+                first.join(timeout=2)
+                if environment._process.poll() is None:
+                    environment._process.kill()
+                    environment._process.wait(timeout=2)
+
+    @staticmethod
+    def _capture_close(environment, errors):
+        try:
+            environment.close(force=True)
+        except Exception as error:
+            errors.append(error)
+
+    def test_force_close_reports_unconfirmed_child_cleanup(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is required for the public Host consumer")
+        fixture = (Path(__file__).resolve().parents[3] / "tools" / "test-fixtures"
+                   / "managed-driver-shutdown.mjs")
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = ManagedPlayerEnvironment(
+                [node, str(fixture), str(Path(temporary) / "entered"), "--ignore-eof"],
+                response_timeout_seconds=5,
+            )
+            native_pid = environment.ready["native_pid"]
+            try:
+                with self.assertRaisesRegex(DriverCleanupError, "unconfirmed"):
+                    environment.close(force=True)
+                with self.assertRaises(DriverCleanupError):
+                    environment.close()
+            finally:
+                subprocess.run([node, "-e", "try { process.kill(Number(process.argv[1]), 'SIGKILL'); } "
+                                "catch (error) { if (error.code !== 'ESRCH') throw error; }",
+                                str(native_pid)], check=True)
+
+    def test_constructor_malformed_ready_preserves_cause_and_closes_child(self):
+        with self.assertRaises(DriverInitializationError) as captured:
+            ManagedPlayerEnvironment(
+                [sys.executable, "-u", "-c", "import sys; print('{bad', flush=True); sys.exit(1)"],
+                response_timeout_seconds=2,
+            )
+        self.assertIsInstance(captured.exception.__cause__, json.JSONDecodeError)
+        self.assertFalse(captured.exception.cleanup_confirmed)
+        self.assertIsInstance(captured.exception.cleanup_error, DriverCleanupError)
+        with self.assertRaises(DriverInitializationError) as confirmed:
+            ManagedPlayerEnvironment(
+                [sys.executable, "-u", "-c", "print('{bad', flush=True)"],
+                response_timeout_seconds=2,
+            )
+        self.assertIsInstance(confirmed.exception.__cause__, json.JSONDecodeError)
+        self.assertTrue(confirmed.exception.cleanup_confirmed)
+
+    def test_correlated_v2_unknown_survives_cleanup_failure(self):
+        environment = ManagedPlayerEnvironment(
+            [sys.executable, "-u", "-c", UNKNOWN_IGNORES_EOF_DRIVER],
+            response_timeout_seconds=5,
+        )
+        result = environment.submit_text_menu(
+            "play-card1", "text-s1", "managed_episode_test", request_id="unknown-v2-1",
+            input_profile="text-menu-v2",
+        )
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["native_delivery"], "unknown")
+        self.assertEqual(result["retry"], "never")
+        with self.assertRaises(DriverCleanupError):
+            environment.close()
+
     def test_force_close_uses_eof_to_reap_pending_native_child(self):
         node = shutil.which("node")
         if node is None:
@@ -201,6 +347,39 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(result["retry"], "never")
             with self.assertRaises(ValueError):
                 environment.submit_text_menu(action, "", context["game_continuity_id"])
+
+    def test_public_v2_profile_selection_and_v1_isolation(self):
+        with ManagedPlayerEnvironment([sys.executable, "-u", "-c", FAKE_DRIVER]) as environment:
+            environment.reset("SEED")
+            v1 = environment.observe_text_menu()
+            v2 = environment.observe_text_menu(input_profile="text-menu-v2")
+            self.assertEqual(v1["schema"], "sts2.player-environment/text-menu-observation-context-1")
+            self.assertEqual(v2["schema"], "sts2.player-environment/text-menu-observation-context-2")
+            self.assertEqual(v2["snapshot"]["input_profile"], "text-menu-v2")
+            result = environment.submit_text_menu(
+                "text-a1", "text-s1", v2["game_continuity_id"],
+                request_id="text-mutation-1", input_profile="text-menu-v2",
+            )
+            self.assertEqual(result["action"]["kind"], "system_selection")
+            self.assertEqual(result["effect_domain"], "text_menu")
+            self.assertIsNone(result["native_delivery"])
+            with self.assertRaises(ValueError):
+                environment.observe_text_menu(input_profile="text-menu-v3")
+        with ManagedPlayerEnvironment(
+            [sys.executable, "-u", "-c", FAKE_DRIVER, "wrong_profile"]
+        ) as environment:
+            with self.assertRaisesRegex(DriverError, "observation context is invalid"):
+                environment.observe_text_menu(input_profile="text-menu-v2")
+            self.assertTrue(environment._closed)
+        with ManagedPlayerEnvironment(
+            [sys.executable, "-u", "-c", FAKE_DRIVER, "wrong_result_profile"]
+        ) as environment:
+            with self.assertRaisesRegex(DriverError, "action result is invalid"):
+                environment.submit_text_menu(
+                    "text-a1", "text-s1", "managed_episode_test",
+                    request_id="text-mutation-1", input_profile="text-menu-v2",
+                )
+            self.assertTrue(environment._closed)
 
     def test_post_offer_invalid_text_result_quarantines_before_another_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
