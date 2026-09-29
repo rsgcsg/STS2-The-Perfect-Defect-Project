@@ -1,17 +1,20 @@
 """Read-only, source-verified sequences of observed text-menu inputs.
 
-This projection preserves recorded order and input identity. It is not a
+This projection preserves owner-proved observation order and input identity. It is not a
 canonical game trajectory, a dataset admission path, or a training allowlist.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
+from itertools import groupby
 from typing import Any, Literal
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ArtifactStore
 
+from ..canonical import semantic_hash
 from .managed_text_menu_import import (
     SOURCE_SCHEMA as MANAGED_SOURCE_SCHEMA,
 )
@@ -46,6 +49,8 @@ class ObservedInput:
     source_kind: Literal["agent_decision_inputs", "human_input_stream",
                          "managed_control_input_stream"]
     event_id: str
+    # Observation order within this stream; row2 Human captures use their native
+    # capture ordinal. SourceEventRef always retains the physical append sequence.
     source_sequence: int
     snapshot: dict[str, Any] | None
     observation_mask: bool
@@ -254,17 +259,76 @@ def _agent_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
                              tuple(inputs))
 
 
+def _human_observation_rows(
+    rows: tuple[dict, ...],
+) -> Iterator[tuple[dict, str, int, str | None]]:
+    """Order typed row2 captures without inventing positions for unknown captures.
+
+    A null ordinal taints recurrent edges for its whole run/runtime, or every
+    runtime in that run if its environment is absent. Readable BC inputs remain.
+    Known ordinal gaps are not evidence of missing Human inputs. Watermarks stay
+    in the immutable source; they do not create action history in this view.
+    """
+    for scope, session_rows in groupby(rows, key=lambda row: (
+        row["schema_version"], row["session_id"], row["timeline_id"],
+    )):
+        if scope[0] == 1:
+            for row in session_rows:
+                legacy_identity = (row["session_id"], row["timeline_id"], row["run_id"])
+                yield row, "human:" + ":".join(legacy_identity), row["sequence"], None
+            continue
+        captured: dict[str, list[dict]] = {}
+        unlocated: list[dict] = []
+        uncertain_runs: set[str] = set()
+        uncertain_runtimes: set[tuple[str, str]] = set()
+        for row in session_rows:
+            environment = row.get("environment")
+            runtime = (environment.get("runtime_instance_id")
+                       if isinstance(environment, dict) else None)
+            if row["observation_order"]["capture_ordinal"] is None:
+                unlocated.append(row)
+                if isinstance(runtime, str) and runtime:
+                    uncertain_runtimes.add((row["run_id"], runtime))
+                else:
+                    uncertain_runs.add(row["run_id"])
+            else:
+                if not isinstance(runtime, str) or not runtime:
+                    raise BoundaryError("observed_input_sequence", "human_capture_runtime_missing")
+                captured.setdefault(runtime, []).append(row)
+        for runtime, runtime_rows in captured.items():
+            ordered = sorted(runtime_rows,
+                             key=lambda row: row["observation_order"]["capture_ordinal"])
+            # Sort before splitting runs: nested append order cannot make us
+            # join two stretches of a run across an intervening run or identity.
+            for identity, contiguous in groupby(ordered, key=lambda row: (
+                row["run_id"], row["environment"]["environment_fingerprint"],
+            )):
+                batch = list(contiguous)
+                first = batch[0]["observation_order"]["capture_ordinal"]
+                stream = "human2:" + semantic_hash([*scope[1:], runtime, *identity, first])
+                isolated = (identity[0] in uncertain_runs
+                            or (identity[0], runtime) in uncertain_runtimes)
+                for row in batch:
+                    ordinal = row["observation_order"]["capture_ordinal"]
+                    yield (row, f"{stream}:isolated:{ordinal}" if isolated else stream,
+                           ordinal, "unknown_capture_order" if isolated else None)
+        # These have no known observation position, so each is an independent
+        # missing-observation stream. Their list order claims only append order.
+        for row in unlocated:
+            stream = "human2:unlocated:" + semantic_hash([*scope[1:], row["record_id"]])
+            yield row, stream, row["sequence"], "unknown_capture_order"
+
+
 def _human_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
     _, rows = load_human_text_source(store, source_id)
     inputs: list[ObservedInput] = []
-    current_identity: tuple[str, str, str] | None = None
+    current_identity: tuple[str, ...] | None = None
     previous_sequence = 0
     previous_observation = True
     pending_reset: str | None = None
-    for row in rows:
-        identity = (row["session_id"], row["timeline_id"], row["run_id"])
-        stream_id = "human:" + ":".join(identity)
-        sequence = row["sequence"]
+    for row, stream_id, sequence, forced_reset in _human_observation_rows(rows):
+        identity = ((row["session_id"], row["timeline_id"], row["run_id"])
+                    if row["schema_version"] == 1 else (stream_id,))
         if type(sequence) is not int or sequence < 1:
             raise BoundaryError("observed_input_sequence", "human_input_order_mismatch")
         if identity != current_identity:
@@ -275,6 +339,8 @@ def _human_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
         if sequence <= previous_sequence:
             raise BoundaryError("observed_input_sequence", "human_input_order_mismatch")
         previous_sequence = sequence
+        if forced_reset is not None:
+            pending_reset = forced_reset
         raw_snapshot = row.get("snapshot")
         snapshot = raw_snapshot if isinstance(raw_snapshot, dict) else None
         observation_mask = snapshot is not None
@@ -307,7 +373,7 @@ def _human_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
             delivery_mask=False, successor_snapshot=None, successor_relation="none",
             successor_observation_mask=False, causal_successor_mask=False,
             reset_before=pending_reset is not None, reset_reason=pending_reset,
-            source_events=(SourceEventRef(sequence, "human_text_input", row["record_id"]),),
+            source_events=(SourceEventRef(row["sequence"], "human_text_input", row["record_id"]),),
         ))
         previous_observation = observation_mask
         pending_reset = "after_missing_observation" if not observation_mask else None
