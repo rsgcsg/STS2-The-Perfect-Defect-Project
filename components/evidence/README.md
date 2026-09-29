@@ -3,7 +3,7 @@
 This component verifies typed immutable artifacts and moves their bytes without
 owning gameplay, Human action, or research semantics.
 
-Evidence `0.1.0-rc.20` verifies Policy Runtime adapter protocol v1 and the exact
+Evidence `0.1.0-rc.21` verifies Policy Runtime adapter protocol v1 and the exact
 v2 protocol in the Policy Manifest and adapter attestation. Expected and actual
 adapter identities, manifest digests, and all existing typed event checks remain
 strict. It also verifies the additive
