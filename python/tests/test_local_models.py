@@ -1742,6 +1742,11 @@ def test_v2_sdk_probe_requires_installed_methods(tmp_path):
     sdk.write_text("export class PlayerEnvironmentRestClient {"
                    "textMenuV2Capabilities() {} observeTextMenuV2Context() {} }",
                    encoding="utf-8")
+    assert v2_sdk_available(sdk) is False
+    sdk.write_text("export class PlayerEnvironmentRestClient {"
+                   "textMenuV2Capabilities() {} observeTextMenuV2() {} "
+                   "observeTextMenuV2Context() {} submitTextMenuV2() {} "
+                   "textMenuV2Result() {} }", encoding="utf-8")
     assert v2_sdk_available(sdk) is True
 
 
