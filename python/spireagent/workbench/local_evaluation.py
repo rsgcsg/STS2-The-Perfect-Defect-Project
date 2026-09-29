@@ -7,6 +7,7 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError, decode_json, digest, object_fields
 from spireagent.storage.store import ManifestArtifactStore
+from spireagent.workbench.memory_recipe import recorded_memory_recipe
 from stpd.fullrun.decision_training import VIEW_SCHEMA as DECISION_VIEW_SCHEMA
 from stpd.fullrun.evaluation import EVALUATION_COLUMNS
 from stpd.fullrun.evaluation import EVALUATION_SCHEMA as FULLRUN_SCHEMA
@@ -286,6 +287,8 @@ def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
             "schema": SCHEMA, "validation_scope": SCOPE,
             "evaluation_id": manifest.artifact_id, "evaluation_schema": schema,
             "model_id": model.artifact_id, "evaluation_input_id": evaluation_input.artifact_id,
+            "model_recipe": recorded_memory_recipe(store, model),
+            "evaluation_input_schema": evaluation_input.parameters.value()["schema"],
             "dev_source_id": manifest.parent("source"), "partition": "dev",
             "baseline": "model", "qualification": "engineering_only",
             "scientific_verdict": "not_claimed", "decision_count": overall["count"],

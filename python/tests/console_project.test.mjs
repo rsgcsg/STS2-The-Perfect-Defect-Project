@@ -2661,6 +2661,52 @@ test("offline evaluation detail reads one exact dev recorded-report summary", as
   assert.equal(post(env.calls).length, 0);
 });
 
+test("M2 report displays its exact evaluation input and identified memory recipe", async () => {
+  const evaluation = id("c"), schema = "stpd/experimental-m2-offline-evaluation-v1";
+  for (const recipe of ["stage1a.dsimple.m2.k8.experimental.v2", "stage1a.dsimple.reset.k8.experimental.v2", null]) {
+    const env = setup({
+      identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${evaluation}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+        };
+        if (url === `/api/local-workspace/artifacts/${evaluation}`) return {
+          artifact_id:evaluation, kind:"offline_evaluation", parameters:{schema, partition:"dev"},
+        };
+        if (url === `/api/local-workspace/evaluations/${evaluation}`) return {
+          schema:"stpd/local-offline-evaluation-summary-v1", evaluation_id:evaluation,
+          evaluation_schema:schema, model_id:id("a"), model_recipe:recipe,
+          evaluation_input_id:id("b"), evaluation_input_schema:"stpd/experimental-m2-evaluation-input-v1",
+          dev_source_id:id("d"), partition:"dev", baseline:"model",
+          qualification:"engineering_only", scientific_verdict:"not_claimed",
+          validation_scope:"recorded_report_and_parent_identities", decision_count:31,
+          reported_run_groups:2, multi_candidate_count:31,
+          overall:{count:31, top1:0.4838709677, mrr:0.66, nll:1.33, confidence:0.37, margin:0.33},
+          grouping:"session_scoped_run_group", native_run_independence:false,
+          semantic_overlap:false, strict_deduplicated_benchmark:false,
+          model_selection_exposure:"unknown",
+          interpretation:"producer_recorded_summary_not_full_lineage_or_quality_verification",
+        };
+        throw new Error(`unexpected route ${url}`);
+      },
+    });
+    const page = await env.render();
+    assert.match(text(page), /评估输入/);
+    assert.match(text(page), /输入格式[\s\S]*stpd\/experimental-m2-evaluation-input-v1/);
+    assert.match(text(page), /模型配方/);
+    if (recipe) assert.ok(text(page).includes(recipe));
+    else assert.match(text(page), /模型配方\s+未知/);
+    assert.doesNotMatch(text(page), /模型视图|视图格式/);
+    assert.match(text(page), /0\.4839/);
+    assert.match(text(page), /未重新核验原始数据、模型权重或完整训练来源/);
+    assert.match(text(page), /严格去重基准[\s\S]*未建立/);
+    assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${id("b")}`).textContent,
+      `查看评估输入 · ${id("b").slice(0, 16)}`);
+    assert.equal(env.calls.filter(call => call.url === `/api/local-workspace/evaluations/${evaluation}`).length, 1);
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
 test("Human input report uses session-scoped grouping language and unknown independence conservatively", async () => {
   const evaluation = id("9"), schema = "stpd/stage1a-ranking-evaluation-v1";
   for (const [grouping, independence, expectedLabel, expectedNote, hidden] of [
