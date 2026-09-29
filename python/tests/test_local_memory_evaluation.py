@@ -73,8 +73,9 @@ def test_local_dev_reservation_is_model_specific_and_blocks_later_gold(tmp_path,
     evaluation_operation = "b" * 32
     owner.ledger.use(native[evidence[0].artifact_id], "training", model_operation)
     owner.ledger.use_source(evidence[0].artifact_id, "training", model_operation)
-    owner.reserve_memory_dev(store, sources[0].artifact_id, sources[1].artifact_id,
-                             model_operation, evaluation_operation)
+    assert owner.reserve_memory_dev(
+        store, sources[0].artifact_id, sources[1].artifact_id,
+        model_operation, evaluation_operation) is False
     with owner.transaction() as db:
         assert db.execute("SELECT kind,reference FROM curation_uses WHERE run=?",
                           ("session-b/run-b",)).fetchall() == [
@@ -85,23 +86,42 @@ def test_local_dev_reservation_is_model_specific_and_blocks_later_gold(tmp_path,
     owner.ledger.use({"session-b/run-b"}, "training", "c" * 32)
 
 
-def test_missing_model_use_duplicate_groups_and_test_claim_fail_closed(tmp_path, monkeypatch):
+def test_missing_use_and_exact_origin_fail_but_semantic_neighbor_is_diagnostic(
+    tmp_path, monkeypatch,
+):
     owner, store, sources, evidence, native = setup_sources(tmp_path, monkeypatch)
     with pytest.raises(BoundaryError, match="model_training_use_unproven"):
         owner.reserve_memory_dev(store, sources[0].artifact_id, sources[1].artifact_id,
                                  "a" * 32, "b" * 32)
     owner.ledger.use(native[evidence[0].artifact_id], "training", "a" * 32)
     owner.ledger.use_source(evidence[0].artifact_id, "training", "a" * 32)
+    with pytest.raises(BoundaryError, match="train_dev_source_overlap"):
+        owner.reserve_memory_dev(store, sources[0].artifact_id, sources[0].artifact_id,
+                                 "a" * 32, "b" * 32)
     with owner.transaction() as db:
         db.executemany("INSERT INTO curation_fingerprints VALUES(?,?)",
                        [("same-visible-page", "session-a/run-a"),
                         ("same-visible-page", "session-b/run-b")])
-    with pytest.raises(BoundaryError, match="train_dev_duplicate_run_overlap"):
-        owner.reserve_memory_dev(store, sources[0].artifact_id, sources[1].artifact_id,
-                                 "a" * 32, "b" * 32)
+    assert owner.reserve_memory_dev(
+        store, sources[0].artifact_id, sources[1].artifact_id,
+        "a" * 32, "b" * 32) is True
     with owner.transaction() as db:
         db.execute("DELETE FROM curation_fingerprints")
     owner.ledger.claim("test-claim", "test", {"session-b/run-b"})
+    with pytest.raises(BoundaryError, match="sealed_dev_source_forbidden"):
+        owner.reserve_memory_dev(store, sources[0].artifact_id, sources[1].artifact_id,
+                                 "a" * 32, "b" * 32)
+
+
+def test_gold_semantic_neighbor_still_blocks_dev(tmp_path, monkeypatch):
+    owner, store, sources, evidence, native = setup_sources(tmp_path, monkeypatch)
+    owner.ledger.use(native[evidence[0].artifact_id], "training", "a" * 32)
+    owner.ledger.use_source(evidence[0].artifact_id, "training", "a" * 32)
+    owner.ledger.claim("gold-neighbor", "gold", {"session-g/run-g"})
+    with owner.transaction() as db:
+        db.executemany("INSERT INTO curation_fingerprints VALUES(?,?)",
+                       [("shared-public-input", "session-b/run-b"),
+                        ("shared-public-input", "session-g/run-g")])
     with pytest.raises(BoundaryError, match="sealed_dev_source_forbidden"):
         owner.reserve_memory_dev(store, sources[0].artifact_id, sources[1].artifact_id,
                                  "a" * 32, "b" * 32)
@@ -126,13 +146,14 @@ def test_async_workbench_dev_operation_binds_existing_model_and_report(tmp_path,
     admitted = []
     monkeypatch.setattr(LocalCurationOwner, "reserve_memory_dev",
                         lambda self, _store, train_id, dev_id, model_op, eval_op:
-                        admitted.append((train_id, dev_id, model_op, eval_op)))
+                        admitted.append((train_id, dev_id, model_op, eval_op)) or False)
 
     def child(command, _log, _environment, *, on_started=None):
         if on_started is not None:
             on_started()
         output = evaluate_memory(store, model_id, dev.artifact_id, PRODUCER,
-                                 operation_id=command[command.index("--operation") + 1])
+                                 operation_id=command[command.index("--operation") + 1],
+                                 semantic_overlap=False)
         return 0, json.dumps({"evaluation_id": output.artifact_id,
                               "evaluation_input_id": output.parent("evaluation_input")}).encode()
 

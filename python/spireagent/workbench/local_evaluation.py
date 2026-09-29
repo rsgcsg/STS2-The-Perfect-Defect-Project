@@ -16,6 +16,7 @@ from stpd.fullrun.public_bc import LEGACY_VIEW_SCHEMA as LEGACY_PUBLIC_BC_VIEW_S
 from stpd.fullrun.public_bc import VIEW_SCHEMA as PUBLIC_BC_VIEW_SCHEMA
 from stpd.models.stage1a import RECIPES
 from stpd.workers.memory_evaluation import EVALUATION_SCHEMA as MEMORY_SCHEMA
+from stpd.workers.memory_evaluation import PROTOCOL as MEMORY_PROTOCOL
 from stpd.workers.token_worker import EVALUATION_SCHEMA as TOKEN_SCHEMA
 
 SCHEMA = "stpd/local-offline-evaluation-summary-v1"
@@ -230,8 +231,11 @@ def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
                 or [payload.role for payload in manifest.payloads] != ["metrics"]
                 or manifest.parameters.value().get("qualification") != "engineering_only"
                 or manifest.parameters.value().get("scientific_verdict") != "not_claimed"
-                or manifest.parameters.value().get("native_run_independence")
-                != "unknown_across_sessions"
+                or manifest.parameters.value().get("native_run_independence") is not False
+                or manifest.parameters.value().get("protocol") != MEMORY_PROTOCOL
+                or manifest.parameters.value().get("strict_deduplicated_benchmark") is not False
+                or type(manifest.parameters.value().get("semantic_overlap"))
+                not in {type(None), bool}
                 or manifest.parameters.value().get("model_selection_exposure") != "unknown"
                 or type(manifest.parameters.value().get("train_dev_rendered_overlap_count"))
                 is not int
@@ -248,6 +252,9 @@ def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
                 or evaluation_input.parent("source") != manifest.parent("source")
                 or evaluation_input.parameters.value().get("operation_id")
                 != manifest.parameters.value().get("operation_id")
+                or evaluation_input.parameters.value().get("protocol") != MEMORY_PROTOCOL
+                or evaluation_input.parameters.value().get("semantic_overlap")
+                != manifest.parameters.value().get("semantic_overlap")
                 or evaluation_input.producer != manifest.producer):
             raise BoundaryError("local_evaluation", "invalid_memory_report")
         recorded = object_fields(
@@ -278,7 +285,9 @@ def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
             "scientific_verdict": "not_claimed", "decision_count": overall["count"],
             "reported_run_groups": runs, "multi_candidate_count": multiple,
             "overall": overall, "grouping": "session_scoped_run_group",
-            "native_run_independence": "unknown_across_sessions",
+            "protocol": MEMORY_PROTOCOL, "native_run_independence": False,
+            "strict_deduplicated_benchmark": False,
+            "semantic_overlap": manifest.parameters.value()["semantic_overlap"],
             "train_dev_rendered_overlap_count": manifest.parameters.value()[
                 "train_dev_rendered_overlap_count"],
             "model_selection_exposure": "unknown",

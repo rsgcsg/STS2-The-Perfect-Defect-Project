@@ -13,7 +13,7 @@ from dataclasses import asdict, fields
 from typing import Any
 
 import torch
-from tokenizers import Tokenizer  # type: ignore[import-untyped]
+from tokenizers import Tokenizer
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, digest, json_bytes
@@ -45,6 +45,7 @@ from stpd.workers.memory_run import (
 
 INPUT_SCHEMA = "stpd/experimental-m2-evaluation-input-v1"
 EVALUATION_SCHEMA = "stpd/experimental-m2-offline-evaluation-v1"
+PROTOCOL = "independent-source-retrospective-v1"
 MAX_METRICS_BYTES = 64 * 1024 * 1024
 
 
@@ -183,10 +184,13 @@ def _verify_train_projection(
 def evaluate_memory(
     store: ArtifactStore, model_id: str, dev_source_id: str, producer: Producer, *,
     max_settling_events: int = 0, seed: int = 0, operation_id: str | None = None,
+    semantic_overlap: bool | None = None,
 ) -> Manifest:
     """Publish exact dev projection and metrics; source admission precedes this call."""
     if operation_id is not None:
         digest(operation_id, "memory_evaluation.operation_id", length=32)
+    if type(semantic_overlap) not in {type(None), bool}:
+        raise BoundaryError("memory_evaluation", "semantic_overlap_diagnostic_invalid")
     model_manifest, training, config, train_source_id, tokenizer_bytes = _model_lineage(
         store, model_id)
     train_ancestors = _ancestors(store, train_source_id)
@@ -255,6 +259,7 @@ def evaluate_memory(
     input_raw = json_bytes({
         "schema": INPUT_SCHEMA, "model_id": model_id, "source_id": dev_source_id,
         "operation_id": operation_id,
+        "protocol": PROTOCOL, "semantic_overlap": semantic_overlap,
         "tokenizer_sha256": hashlib.sha256(tokenizer_bytes).hexdigest(),
         "projection": {"renderer": RENDERER_IDENTITY,
                        "max_settling_events": max_settling_events},
@@ -275,6 +280,7 @@ def evaluate_memory(
         (store.put_payload("projection", io.BytesIO(input_raw), "application/json"),),
         FrozenObject.of({"schema": INPUT_SCHEMA, "partition": "dev",
                          "operation_id": operation_id,
+                         "protocol": PROTOCOL, "semantic_overlap": semantic_overlap,
                          "episode_count": len(projection.episodes),
                          "labeled_decisions": len(rows),
                          "train_dev_rendered_overlap_count": rendered_overlap_count,
@@ -291,11 +297,13 @@ def evaluate_memory(
         (store.put_payload("metrics", io.BytesIO(metrics_raw), "application/json"),),
         FrozenObject.of({"schema": EVALUATION_SCHEMA, "partition": "dev",
                          "operation_id": operation_id,
+                         "protocol": PROTOCOL, "semantic_overlap": semantic_overlap,
+                         "strict_deduplicated_benchmark": False,
                          "rows": len(rows), "qualification": "engineering_only",
                          "train_dev_rendered_overlap_count": rendered_overlap_count,
                          "model_selection_exposure": "unknown",
                          "scientific_verdict": "not_claimed",
-                         "native_run_independence": "unknown_across_sessions"}),
+                         "native_run_independence": False}),
     )
     store.publish(evaluation)
     return evaluation

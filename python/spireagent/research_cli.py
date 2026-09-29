@@ -90,6 +90,7 @@ def main() -> int:
     evaluate_memory.add_argument("--source", required=True)
     evaluate_memory.add_argument("--operation", required=True)
     evaluate_memory.add_argument("--max-settling-events", type=int, default=0)
+    evaluate_memory.add_argument("--semantic-overlap", choices=("true", "false"), required=True)
     prepare_memory = commands.add_parser(
         "prepare-workbench-memory", help="prepare a caller-admitted train-only Human M2 run")
     prepare_memory.add_argument("--source", required=True)
@@ -320,7 +321,7 @@ def main() -> int:
             evaluation = evaluate_m2(
                 store, model_id, source_id, runtime,
                 max_settling_events=args.max_settling_events,
-                operation_id=operation_id,
+                operation_id=operation_id, semantic_overlap=args.semantic_overlap == "true",
             )
             result = {"evaluation_id": evaluation.artifact_id,
                       "evaluation_input_id": evaluation.parent("evaluation_input")}

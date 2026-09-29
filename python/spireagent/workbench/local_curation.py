@@ -279,7 +279,7 @@ class LocalCurationOwner:
 
     def reserve_memory_dev(self, store: ManifestArtifactStore, train_source_id: str,
                            dev_source_id: str, model_operation_id: str,
-                           evaluation_operation_id: str) -> None:
+                           evaluation_operation_id: str) -> bool:
         """Reserve one model-specific dev use in the existing local curation ledger."""
         from stpd.fullrun.text_menu_human_import import load_human_text_source
 
@@ -307,6 +307,8 @@ class LocalCurationOwner:
         dev_runs, dev_evidence = evidence_runs(dev_manifest)
         if not train_runs or not dev_runs:
             raise BoundaryError("local_curation", "source_run_identity_missing")
+        if set(train_evidence) & set(dev_evidence) or train_runs & dev_runs:
+            raise BoundaryError("local_curation", "train_dev_exact_origin_overlap")
         with self.transaction() as db:
             def claim(source_id: str) -> tuple[str, set[str]] | None:
                 selected = db.execute(
@@ -323,8 +325,7 @@ class LocalCurationOwner:
                 raise BoundaryError("local_curation", "source_claim_mismatch")
             train_related = self.ledger._groups(db, train_runs)
             dev_related = self.ledger._groups(db, dev_runs)
-            if train_related & dev_related:
-                raise BoundaryError("local_curation", "train_dev_duplicate_run_overlap")
+            semantic_overlap = bool(train_related & dev_related)
             if self.gold_history_unknown(db, dev_related):
                 raise BoundaryError("local_curation", "legacy_exposure_unknown")
             if any(purpose in {"gold", "test"} for purpose, _ in
@@ -333,7 +334,7 @@ class LocalCurationOwner:
             if any(db.execute(
                 "SELECT 1 FROM curation_uses WHERE run=? AND kind='training' "
                 "AND reference=?", (run, model_operation_id),
-            ).fetchone() is None for run in train_related):
+            ).fetchone() is None for run in train_runs):
                 raise BoundaryError("local_curation", "model_training_use_unproven")
             if any(db.execute(
                 "SELECT 1 FROM curation_source_uses WHERE source=? AND kind='training' "
@@ -346,3 +347,4 @@ class LocalCurationOwner:
             db.executemany("INSERT OR IGNORE INTO curation_source_uses VALUES(?,?,?)",
                            ((source, "evaluation", evaluation_operation_id)
                             for source in sorted(dev_evidence)))
+            return semantic_overlap

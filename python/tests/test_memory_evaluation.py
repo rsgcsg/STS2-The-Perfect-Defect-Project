@@ -112,7 +112,9 @@ def test_dev_report_uses_separate_source_and_preserves_frozen_weights(tmp_path, 
     assert payload["summary"]["bootstrap"]["status"] == "unknown"
     public = summary(store, report.artifact_id)
     assert public["decision_count"] == 2
-    assert public["native_run_independence"] == "unknown_across_sessions"
+    assert public["native_run_independence"] is False
+    assert public["strict_deduplicated_benchmark"] is False
+    assert public["protocol"] == "independent-source-retrospective-v1"
 
 
 def test_same_source_evidence_session_rejected_but_natural_page_repeat_counted(

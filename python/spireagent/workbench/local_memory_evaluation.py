@@ -21,6 +21,7 @@ from spireagent.storage.registry import SQLiteRegistry, sync_registry
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
+from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_evaluation import summary
 from spireagent.workbench.local_training import _private_child
@@ -42,11 +43,11 @@ class LocalMemoryEvaluationService:
         return self._selection._selected()
 
     @staticmethod
-    def _path(owner: Any) -> Path:
+    def _path(owner: LocalCurationOwner) -> Path:
         return owner.path.parent / OPERATION_FILE
 
     @staticmethod
-    def _lock_path(owner: Any) -> Path:
+    def _lock_path(owner: LocalCurationOwner) -> Path:
         return owner.path.parent / LOCK_FILE
 
     @staticmethod
@@ -63,6 +64,7 @@ class LocalMemoryEvaluationService:
                     or value.get("status") not in {
                         "pending", "completed", "failed", "interrupted_unknown"}
                     or value.get("purpose") != "dev"
+                    or type(value.get("semantic_overlap")) not in {type(None), bool}
                     or value.get("_owner") != list(identity)
                     or type(value.get("max_settling_events")) is not int
                     or not 0 <= value["max_settling_events"] <= 64):
@@ -85,7 +87,7 @@ class LocalMemoryEvaluationService:
     def _public(value: dict[str, Any]) -> dict[str, Any]:
         return {key: item for key, item in value.items() if key in {
             "status", "purpose", "operation_id", "model_id", "source_id",
-            "evaluation_id", "evaluation_input_id", "error_code",
+            "evaluation_id", "evaluation_input_id", "error_code", "semantic_overlap",
         }}
 
     def status(self) -> dict[str, Any]:
@@ -174,6 +176,7 @@ class LocalMemoryEvaluationService:
                 "operation_id": identity, "model_id": model_id, "source_id": source_id,
                 "training_operation_id": training_operation_id,
                 "train_source_id": train_source_id,
+                "semantic_overlap": None,
                 "max_settling_events": max_settling_events, "_owner": list(owner.identity),
             }
             atomic_json(path, operation)
@@ -210,10 +213,13 @@ class LocalMemoryEvaluationService:
             self._mark_child_started(path, identity)
 
         try:
-            owner.reserve_memory_dev(
+            semantic_overlap = owner.reserve_memory_dev(
                 store, operation["train_source_id"], operation["source_id"],
                 operation["training_operation_id"], identity,
             )
+            if type(semantic_overlap) is not bool:
+                raise BoundaryError("local_memory_evaluation", "admission_result_invalid")
+            self._advance(path, identity, semantic_overlap=semantic_overlap)
             environment = dict(os.environ)
             for name in ("STPD_HUB_ADMIN_TOKEN", "PYTHONPATH", "PYTHONHOME"):
                 environment.pop(name, None)
@@ -222,6 +228,7 @@ class LocalMemoryEvaluationService:
                 "evaluate-memory", "--model", operation["model_id"],
                 "--source", operation["source_id"], "--operation", identity,
                 "--max-settling-events", str(operation["max_settling_events"]),
+                "--semantic-overlap", "true" if semantic_overlap else "false",
             ]
             log_path = owner.path.parent / ("local-memory-evaluation-" + identity + ".log")
             exit_code, captured = _private_child(
