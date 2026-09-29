@@ -96,6 +96,41 @@ function expectPattern(errors, label, value, pattern) {
   if (typeof value !== "string" || !pattern.test(value)) errors.push(`${label}: invalid or missing`);
 }
 
+function parseSemVer(value) {
+  if (typeof value !== "string") return null;
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/u.exec(value);
+  if (!match) return null;
+  const identifiers = (part) => part === undefined ? null : part.split(".");
+  const prerelease = identifiers(match[4]);
+  const build = identifiers(match[5]);
+  if ([prerelease, build].some((part) => part?.some((id) => id.length === 0)) ||
+      prerelease?.some((id) => /^\d+$/u.test(id) && id.length > 1 && id[0] === "0")) return null;
+  return { core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])], prerelease };
+}
+
+function semVerAtLeast(current, minimum) {
+  const actual = parseSemVer(current);
+  const required = parseSemVer(minimum);
+  if (!actual || !required) return false;
+  for (let index = 0; index < 3; index++) {
+    if (actual.core[index] !== required.core[index])
+      return actual.core[index] > required.core[index];
+  }
+  if (actual.prerelease === null) return true;
+  if (required.prerelease === null) return false;
+  for (let index = 0; index < Math.min(actual.prerelease.length, required.prerelease.length); index++) {
+    const left = actual.prerelease[index];
+    const right = required.prerelease[index];
+    if (left === right) continue;
+    const leftNumeric = /^\d+$/u.test(left);
+    const rightNumeric = /^\d+$/u.test(right);
+    if (leftNumeric && rightNumeric) return BigInt(left) > BigInt(right);
+    if (leftNumeric !== rightNumeric) return !leftNumeric;
+    return left > right;
+  }
+  return actual.prerelease.length >= required.prerelease.length;
+}
+
 export async function readBomAuthorities(platformRoot = PLATFORM_ROOT) {
   const recordedBuild = "ab4ee5303c8302ae209dd62c4d766a6764ebec51";
   // Immutable host-runtime/v1.1.0-rc.7 source recorded by the runtime-seal report.
@@ -231,8 +266,11 @@ export function validatePlatformBom(bom, authorities) {
   expectEqual(errors, "Workbench package version", bom.components?.workbench?.version, authorities.workbenchPackage.version);
   expectEqual(errors, "Live UI package version", bom.components?.live_ui?.version, authorities.liveUiPackage.version);
   expectEqual(errors, "Game Mod package version", bom.components?.game_mod?.version, authorities.gameModPackage.version);
-  const dependency = authorities.annotatorManifest.dependencies?.find(({ id }) => id === "STS2_MCP");
-  expectEqual(errors, "Annotator Connector dependency", dependency?.min_version, authorities.connectorManifest.version);
+  const connectorDependencies = Array.isArray(authorities.annotatorManifest.dependencies)
+    ? authorities.annotatorManifest.dependencies.filter((item) => item?.id === "STS2_MCP") : [];
+  if (connectorDependencies?.length !== 1 ||
+      !semVerAtLeast(authorities.connectorManifest.version, connectorDependencies[0].min_version))
+    errors.push("Annotator Connector dependency: require one valid minimum at or below the selected Connector version");
 
   const publicConnector = bom.public_packages?.connector_host;
   const pinnedConnector = authorities.hostConnectorRelease;
