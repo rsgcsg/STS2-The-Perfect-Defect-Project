@@ -257,7 +257,9 @@ The default is Defect at ascension 0. The Host driver accepts an explicit charac
 but does not expose an ascension option, so this smoke rejects other ascensions before
 starting a child. The report distinguishes the requested character/ascension from
 the first text snapshot's observed run/player fields for each episode and stops
-before scoring if they disagree. The exported model package has no character or
+before scoring if they disagree. Use an unambiguous uppercase seed (no I/O); the existing experiment seed owner
+rejects aliases before starting a child, rather than comparing an unnormalized
+request with a normalized native identity. The exported model package has no character or
 ascension admission claim; selecting Defect here is an experiment setting.
 
 The original operational environment patch baseline remains predecessor Headless `v1.0.1`, Managed

@@ -7,7 +7,6 @@ owns only scoring and a finite stop rule; it is not Policy Runtime evidence.
 from __future__ import annotations
 
 import math
-import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +15,7 @@ from uuid import uuid4
 from spireagent.json_boundary import json_bytes
 
 from .fullrun.memory_token_inputs import project_memory_snapshot
+from .game_seed import require_canonical_game_seed
 
 CONTEXT_SCHEMA = "sts2.player-environment/text-menu-observation-context-1"
 RESULT_SCHEMA = "sts2.player-environment/text-menu-action-result-1"
@@ -109,9 +109,14 @@ def validate_smoke_request(seeds: tuple[str, ...], model_id: str,
                            reset_each_step: bool, character: str = "Defect",
                            ascension: int = 0) -> None:
     """Reject invalid experiment inputs before a CLI creates its child."""
-    if (not 1 <= len(seeds) <= 2 or any(not isinstance(seed, str)
-            or re.fullmatch(r"[A-Z0-9]{1,64}", seed) is None for seed in seeds)
-            or not isinstance(model_id, str) or len(model_id) != 64
+    try:
+        valid_seeds = 1 <= len(seeds) <= 2 and all(
+            isinstance(seed, str) and require_canonical_game_seed(seed) == seed
+            for seed in seeds
+        )
+    except ValueError:
+        valid_seeds = False
+    if (not valid_seeds or not isinstance(model_id, str) or len(model_id) != 64
             or type(reset_each_step) is not bool
             or not isinstance(character, str) or character not in SUPPORTED_CHARACTERS
             or type(ascension) is not int or ascension != 0):

@@ -270,6 +270,7 @@ def test_invalid_seed_closes_owned_child_and_cli_never_constructs_it(
         {"ids": {"model": "a" * 64}}, None, None,
         SimpleNamespace(reset_each_step=True)))
     for extra in (("--seed", "invalid-seed"),
+                  ("--seed", "SEEDO"), ("--seed", "SEEDI"),
                   ("--seed", "SEED1", "--character", "not-a-character"),
                   ("--seed", "SEED1", "--ascension", "1")):
         monkeypatch.setattr(sys, "argv", ["managed_memory_smoke.py", "--candidate", "/unused",
@@ -323,6 +324,17 @@ def test_cli_passes_character_and_reports_observed_selection(
     assert report["observed_character"] == character.upper()
     assert report["requested_ascension"] == report["observed_ascension"] == 0
     assert child.closed
+
+
+@pytest.mark.parametrize("seed", ["SEEDO", "SEEDI"])
+def test_ambiguous_game_seed_is_rejected_before_reset(seed: str) -> None:
+    environment = Environment([page("before")])
+    scorer = Scorer()
+    report = run(environment, scorer, seeds=(seed,))
+    assert report["stop_reason"] == "invalid_smoke_request"
+    assert environment.resets == []
+    assert scorer.tokens == []
+    assert environment.closed
 
 
 def test_missing_text_consumer_capability_never_uses_raw_fallback() -> None:
