@@ -15,7 +15,8 @@ function textSnapshotId(snapshotId) {
 }
 
 const REVIEWED_TEXT_MENU_SURFACES = new Set([
-  "map_navigation", "event_option", "rest_site", "deck_upgrade_selection", "combat_turn",
+  "map_navigation", "event_option", "rest_site", "deck_upgrade_selection",
+  "deck_card_selection", "shop_inventory", "combat_turn",
   "treasure_chest", "treasure_relic_selection", "treasure_completion",
   "reward_claim", "card_reward_selection", "reward_completion"
 ]);

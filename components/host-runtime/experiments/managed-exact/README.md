@@ -89,6 +89,33 @@ This is a Headless input presentation for that command, not a native UI or
 Human-evidence claim. Method/signature or callback-order drift requires a new
 exact-build review and native differential probe.
 
+The separate generic deck-card text page is admitted only for the pinned
+`CardSelectCmd.FromDeckGeneric` callback. A scoped invocation carries its
+actual player, preferences, filter and selector into `ICardSelector`, whose
+published callback otherwise loses the preferences. The Host presents the
+ordered original card objects as sequential select/deselect inputs, preview,
+preview return, native-permitted cancellation and confirmation. These steps
+change Host-local tentative selection state; only callback completion resumes
+the game-owned command and its native effects. Execute-time input rechecks
+the exact selector, original card identity, current deck membership and native
+filter. The older unscoped `card_select` page remains visible but unavailable
+to the text adapter; it does not enumerate card combinations or gain inferred
+cancel rights. The purpose-specific deck-upgrade selector retains its own
+separate binding and behavior.
+
+The Managed shop text page admits only a finite complete current catalog with
+exact entry identities, prices, stock and native actionability facts. For card
+removal, the action binds both merchant room and removal entry; a deferred
+callback rechecks both, stock and gold before invoking the native purchase.
+The game's `OneOffSynchronizer.DoMerchantCardRemoval` still owns gold loss and
+deck mutation. When that purchase returns true, the Managed Host calls the
+captured entry's `SetUsed()` in place of the absent
+`NMerchantCardRemoval.OnCardRemovalUsed()` UI callback; cancellation does not.
+The exact private raw-route regression checks cancellation, one confirmed
+purchase, stale and missing bindings, and duplicate rejection. This is a
+source/build and targeted scenario-control result, not a fair-player journey,
+native UI parity, Human evidence or all-selector coverage.
+
 The event-option text page is admitted only when the current native event room,
 event instance, and every ordered option have exact private identities and
 lock facts. Locked options remain visible without an executable action. The

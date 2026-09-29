@@ -36,14 +36,14 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
+    "source_patch_sha256": "bae331c39b0a702df6307a4b952b4290caf3b7304ed31225be4757fe4143a549",
+    "artifact_sha256": "187a891496bc7f74f2ee8d20888448b782111634949bd9d692cc103738d3b9d7",
+    "artifact_mvid": "20012f2f-0831-4f69-b954-8d901578daef"
+  },
+  "previous_candidate_build": {
     "source_patch_sha256": "6a5c5ba332694a1352cc4fe09d906855d61926585991e07ea91333096f1af827",
     "artifact_sha256": "4b04ed1a49e401d46eaa6cf119b5562d5f4abd17e4cfed4ab73df8e5dd929807",
     "artifact_mvid": "0cfb3e2a-cfb0-4d37-ad76-2378f1ee6f70"
-  },
-  "previous_candidate_build": {
-    "source_patch_sha256": "6b4f1743726627a84ebe962615863c510e8339359f487369c7c0c0379991d8ec",
-    "artifact_sha256": "50657b6bf0ec4c8c9541314bd3a6c00cb372835f059cb425f18b7b054208f7a0",
-    "artifact_mvid": "82d31ad0-604f-4e69-9cf0-08ecef8eceb4"
   },
   "last_measured_build": {
     "source_patch_sha256": "56af273801537d4ff3968a8e513c072ec94d3b17e0e771868ede2002e120c770",
@@ -168,6 +168,18 @@
       "kind": "host_presentation_adapter",
       "risk": "medium",
       "effect": "rechecks the exact closed treasure room immediately before delayed native chest rewards; relic selection binds the current room and native relic; raw treasure exit requires the bound room and completed native chest/relic stages while native voting and award retain authority"
+    },
+    {
+      "id": "exact_generic_deck_selector_binding",
+      "kind": "host_presentation_adapter",
+      "risk": "high",
+      "effect": "captures exact FromDeckGeneric preferences and filtered native card objects at the selector callback; staged text selection is Host-local until exact completion resumes the game-owned command"
+    },
+    {
+      "id": "exact_merchant_removal_binding",
+      "kind": "host_presentation_adapter",
+      "risk": "medium",
+      "effect": "rechecks current merchant room, removal entry, stock, and gold inside the deferred native purchase callback; after a successful native purchase only, marks the captured entry used as NMerchantCardRemoval would when its UI is absent"
     },
     {
       "id": "in_process_run_cleanup",
