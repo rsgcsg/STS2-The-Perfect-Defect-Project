@@ -40,6 +40,62 @@ function mapDecision() {
   };
 }
 
+test("observed native loss and win remain terminal text pages with no actions", () => {
+  for (const victory of [false, true]) {
+    const state = { ...mapDecision(), decision: "game_over", victory };
+    const projected = projectManagedCandidateDecision({ state, ...identity });
+    assert.equal(projected.snapshot.status, "observed");
+    const menu = new ManagedTextMenuSessionAdapter({ observe: () => projected.snapshot,
+      async submit() { throw new Error("terminal page must not dispatch"); } }).observe();
+    assert.equal(menu.status, "observed");
+    assert.equal(menu.interaction.kind, "game_over");
+    assert.equal(menu.interaction.content.surface.victory, victory);
+    assert.equal(menu.menu_actions.status, "complete");
+    assert.equal(menu.menu_actions.materialized_count, 0);
+    assert.equal(menu.menu_actions.total_count, 0);
+    assert.deepEqual(menu.menu_actions.actions, []);
+  }
+});
+
+test("empty nonterminal, unknown and untyped terminal facts stay unavailable", () => {
+  const source = projectManagedCandidateDecision({
+    state: { ...mapDecision(), decision: "game_over", victory: false }, ...identity
+  }).snapshot;
+  for (const bad of [
+    { ...source, status: "observed", interaction: { ...source.interaction, kind: "map_navigation" } },
+    { ...source, interaction: { ...source.interaction, content: {
+      ...source.interaction.content, surface: { kind: "game_over", stage: "complete" }
+    } } },
+    { ...source, interaction: { ...source.interaction, content: {
+      ...source.interaction.content, surface: { kind: "game_over", stage: "complete", victory: null }
+    } } }
+  ]) {
+    const menu = new ManagedTextMenuSessionAdapter({ observe: () => bad,
+      async submit() { throw new Error("unsupported page must not dispatch"); } }).observe();
+    assert.equal(menu.status, "visible_unsupported");
+    assert.equal(menu.menu_actions.status, "unavailable");
+    assert.deepEqual(menu.menu_actions.actions, []);
+  }
+  const unknown = projectManagedCandidateDecision({
+    state: { ...mapDecision(), decision: "unknown_native_page" }, ...identity
+  }).snapshot;
+  assert.equal(new ManagedTextMenuSessionAdapter({ observe: () => unknown,
+    async submit() { throw new Error("unknown must not dispatch"); } }).observe().status,
+  "visible_unsupported");
+  for (const state of [
+    { ...mapDecision(), decision: "game_over" },
+    { ...mapDecision(), decision: "game_over", victory: "false" }
+  ]) {
+    const projected = projectManagedCandidateDecision({ state, ...identity }).snapshot;
+    assert.equal(projected.status, "visible_unsupported");
+    assert.equal(projected.interaction.content.surface.victory, null);
+    const text = new ManagedTextMenuSessionAdapter({ observe: () => projected,
+      async submit() { throw new Error("untyped terminal must not dispatch"); } }).observe();
+    assert.equal(text.status, "visible_unsupported");
+    assert.equal(text.menu_actions.status, "unavailable");
+  }
+});
+
 function restDecision() {
   return {
     type: "decision", decision: "rest_site",
