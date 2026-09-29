@@ -54,6 +54,39 @@ narrower embedding design; neither is implemented here.
 No real-data training, policy quality, native independence, or runtime
 qualification has been measured.
 
+## Synchronous exported-model scoring seam
+
+`stpd.policy.memory_scorer.OnlineM2Scorer` loads the exact experimental M2
+weights with `load_memory_export`, the matching unpadded/untruncated tokenizer,
+and the current `text-menu-v1` page projector. Its call is
+`observe_and_score(continuity_token=..., snapshot_bytes=...)`: the caller supplies
+an opaque continuity token and the complete public snapshot bytes. This module
+does not determine what starts a game, whether Human intervened, or whether an
+action was executed. It is a synchronous research component, not a Policy
+Runtime adapter or a live service.
+
+One new, strictly ordered snapshot in the same continuity advances M2 once,
+with `previous_actual_action=None` and `feedback=None`, then scores every
+advertised candidate from the resulting memory. The page is encoded once and
+each complete-catalog action uses the light action encoder. A retry of the
+current snapshot with identical canonical JSON returns immutable cached keys
+and scores without another page read. Canonicalization ignores JSON whitespace
+and object-key order, while preserving every field and array position; duplicate
+keys, nonfinite JSON numbers, missing fields, changed canonical content under the same
+snapshot ID, and reversed sequence are rejected. Returning to a page under a
+new snapshot ID and later sequence is a new observation even if its visible
+content looks familiar.
+
+Changing the caller-owned continuity token starts at zero memory and retires
+the old token. A retired token cannot resume; the bounded retirement set fails
+closed once full, requiring a fresh scorer instance. Runtime/environment
+identity drift within one token is rejected. The entire menu and per-step and
+episode token limits are checked before computation. A provisional memory write
+becomes this scorer's state only after finite full-vector scoring succeeds;
+this is acceptance of an observation, independent of abstention or Connector
+delivery. The scorer returns no mutable memory. A future serialized port owns
+cancelled requests and late responses; this synchronous seam claims neither.
+
 ## Offline sequence computation (experimental)
 
 `stpd.models.dsimple_sequence_training` adds an in-memory sequence loss and one
