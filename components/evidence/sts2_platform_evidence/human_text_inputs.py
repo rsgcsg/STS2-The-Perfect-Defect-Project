@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from bisect import bisect_right
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any
 from .human_session_bundle_v1 import BundleVerificationError, _sha256_file
 
 SCHEMA = "sts2.human-annotator/human-text-input-1"
+SCHEMA_V2 = "sts2.human-annotator/human-text-input-2"
 # Producer-specific provenance is interpreted here, never by the model or its
 # research projection. Several native mechanisms can prove one public verb.
 MECHANISM_VERBS = {
@@ -44,6 +46,7 @@ FIELDS = {
     "native_carrier_witness_id", "native_mechanism", "disposition", "reason_code",
     "external_controller_active",
 }
+FIELDS_V2 = FIELDS | {"observation_order"}
 
 
 def _check(condition: bool, code: str) -> None:
@@ -149,14 +152,28 @@ def _row_and_snapshot_bytes(line: bytes) -> tuple[dict[str, Any], bytes | None]:
 
 
 def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
-                  session: str, timeline: str, runs: set[str], sequence: int) -> None:
-    _check(set(row) <= FIELDS and row.get("schema_version") == 1 and row.get("schema") == SCHEMA,
+                  session: str, timeline: str, runs: set[str], sequence: int,
+                  version: int) -> None:
+    _check(set(row) <= (FIELDS if version == 1 else FIELDS_V2)
+           and row.get("schema_version") == version
+           and row.get("schema") == (SCHEMA if version == 1 else SCHEMA_V2),
            "human_text_input_schema_invalid")
     _check(type(row.get("sequence")) is int and row["sequence"] == sequence
            and all(_nonempty(row.get(key)) for key in ("record_id", "session_id", "timeline_id", "run_id"))
            and row["session_id"] == session and row["timeline_id"] == timeline
            and row["run_id"] in runs,
            "human_text_input_identity_invalid")
+    if version == 2:
+        order = row.get("observation_order")
+        _check(isinstance(order, dict)
+               and set(order) == {"capture_ordinal", "completed_append_watermark"},
+               "human_text_input_capture_order_invalid")
+        ordinal = order["capture_ordinal"]
+        watermark = order["completed_append_watermark"]
+        _check(type(watermark) is int and 0 <= watermark < sequence
+               and (ordinal is None if row.get("snapshot") is None
+                    else type(ordinal) is int and ordinal > 0),
+               "human_text_input_capture_order_invalid")
     _check(_timestamp(row.get("recorded_at")) >= _timestamp(row.get("observed_at")),
            "human_text_input_identity_invalid")
     _check(row.get("external_controller_active") is False,
@@ -277,11 +294,11 @@ def _validate_row(row: Mapping[str, Any], snapshot_bytes: bytes | None,
            and chosen.get("effect_domain") == "native_input"
            and chosen.get("verb") == MECHANISM_VERBS[mechanism]
            and _nonempty(chosen.get("action_id"))
-           and ((_nonempty(chosen.get("subject_referent_id"))
+           and (_nonempty(chosen.get("subject_referent_id"))
                  if MECHANISM_VERBS[mechanism] != "end_turn"
                  else ("subject_referent_id" in chosen
                        and chosen["subject_referent_id"] is None
-                       and chosen.get("arguments") == [])))
+                       and chosen.get("arguments") == []))
            and isinstance(chosen.get("arguments"), list)
            and sum(action == chosen for action in catalog["actions"]) == 1,
            "human_text_input_chosen_action_not_unique")
@@ -296,7 +313,7 @@ def verify_human_text_inputs(raw: Path, recording: Mapping[str, Any],
            "human_text_input_append_failure")
     path = raw / "human-text-inputs.jsonl"
     version = recording.get("text_input_schema_version")
-    _check(version is None or type(version) is int and version == 1,
+    _check(version is None or type(version) is int and version in (1, 2),
            "human_text_input_schema_invalid")
     if version is None:
         _check(not path.exists(), "undeclared_human_text_input_stream")
@@ -312,12 +329,31 @@ def verify_human_text_inputs(raw: Path, recording: Mapping[str, Any],
            "human_text_input_json_invalid")
     rows = []
     seen: set[str] = set()
+    seen_capture: set[tuple[str, int]] = set()
+    capture_prefix: dict[str, tuple[list[int], list[int]]] = {}
     for sequence, line in enumerate(lines, start=1):
         row, snapshot_bytes = _row_and_snapshot_bytes(line[:-1])
         _validate_row(row, snapshot_bytes, str(recording["session_id"]),
-                      str(recording["timeline_id"]), set(run_ids), sequence)
+                      str(recording["timeline_id"]), set(run_ids), sequence, version)
         _check(row["record_id"] not in seen, "human_text_input_duplicate_record_id")
         seen.add(row["record_id"])
+        if version == 2 and row["observation_order"]["capture_ordinal"] is not None:
+            runtime = row["environment"]["runtime_instance_id"]
+            ordinal = row["observation_order"]["capture_ordinal"]
+            _check((runtime, ordinal) not in seen_capture,
+                   "human_text_input_capture_order_invalid")
+            seen_capture.add((runtime, ordinal))
+            # The watermark is a completed append prefix, not a game-state or
+            # run sequence. Nested captures can append out of capture order;
+            # only the same-runtime prefix maximum is comparable. Null
+            # captures remain in the stream but do not enter that maximum.
+            sequences, maxima = capture_prefix.setdefault(runtime, ([], []))
+            count = bisect_right(
+                sequences, row["observation_order"]["completed_append_watermark"])
+            _check(count == 0 or ordinal > maxima[count - 1],
+                   "human_text_input_capture_order_invalid")
+            sequences.append(sequence)
+            maxima.append(max(ordinal, maxima[-1] if maxima else 0))
         rows.append(row)
     _check(type(close_receipt.get("human_text_input_count")) is int
            and close_receipt["human_text_input_count"] == len(rows)
