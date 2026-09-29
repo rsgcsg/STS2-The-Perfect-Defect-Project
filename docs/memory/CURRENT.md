@@ -77,7 +77,8 @@ or published installation merely by existing in Git. Existing v1 Human data,
 tokenizers and M2 exports remain v1. A v2 projector is not a trained v2 policy;
 PR107 subsequently merged as `cc6208fc` after exact head `d0b45832` passed
 full run `36583149955` on Linux, Windows and portable. Its integration run
-`36587399952` is separately pending at this edit; no new OS execution is claimed.
+`36587399952` succeeded with verified same-tree reuse and fresh guards;
+no second OS execution is claimed.
 
 The [v2 M2 engineering candidate](../evidence/STAGE1A_M2_V2_ENGINEERING_2026-09-30.md)
 has now trained one six-step Managed engineering sequence, exported and verified

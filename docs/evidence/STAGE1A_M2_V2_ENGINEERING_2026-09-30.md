@@ -3,7 +3,10 @@
 This is a candidate engineering receipt, not Stage1a acceptance, Human evidence,
 a new independent dataset, a memory-benefit result or a full-game policy result.
 The source dependency is PR107's exact `d0b458327d19f50661843b0d119a7eede2c2eb62`;
-its hosted result is separate from this research/application increment.
+its successful full hosted result is separate from this research/application
+increment. PR107 normally merged as `cc6208fc257796c6721b2f2fdf42d57d39ee48a9`;
+integration run `36587399952` succeeded with verified same-tree reuse of full
+run `36583149955`, not a new full dual-OS execution.
 
 ## Shared boundaries
 
@@ -91,6 +94,61 @@ unknown receipt. It stops without retry, preserves unknown classification and
 closes the child. The earlier fixture incorrectly invented unknown delivery
 on a text-only action; that fixture and its consumer check were corrected before
 this run. Host/Connector legality and protocol were not weakened.
+
+## Actual Workbench report admission
+
+Executed 2026-09-29 15:07:42–15:07:43 UTC on clean application source
+`4d5cda9de12cbdda33783821919bbddb368f53ab`. A separate local Workbench HTTP
+server and private workspace copied only the existing sealed report closure;
+the original archive was read-only. The real browser cookie/Origin/CSRF route
+received an explicit training-purpose import and returned admitted engineering
+source `436d027eb31c95035fe366a9ffa424fcb6873565a37b01739b7cb21c2e698e3c`.
+Read-only binding reported six events, actor `unverified`, engineering scope
+and the original report ID. An explicit identical request returned the same
+source; an explicit conflicting test-purpose request returned HTTP409
+`reservation_identity_conflict`. No training/source uses or pending publication
+markers remained. The environment stayed idle; the dedicated server closed.
+
+This later application import has a different producing source commit from the
+earlier research import, hence a different immutable source ID. It is the same
+six-step report, not six additional unique examples. Shared split identity
+remains `managed:4d6bb76f44c32b0dab9926781dbb5a114e176c19e2ef345c4e64b35ec8530a55`.
+Saving the report does not start training. This HTTP check is separate from the
+Node/VM frontend tests; a real browser click was not exercised in this receipt.
+
+The private driver's first preflight passed the repository root to the existing
+Python source-identity guard instead of the executing Python package root. It
+failed with `executing_package_checkout_mismatch` before creating the workspace
+or server. The corrected invocation above succeeded; production guards were not
+relaxed, and the original failure log was retained.
+
+Independent review found and the owning modules corrected two actual admission
+failure paths: invalid report validation and an already conflicting split purpose
+must fail before creating pending publication state. The shared importer now
+offers its existing complete validation as a read-only preflight; the existing
+purpose ledger performs its own conflict preflight inside the local owner's
+writer transaction and rechecks when reserving the published source. Storage or
+registry failures after publication retain explicit recovery state, not false
+success or automatic relabeling.
+
+## Candidate short checks
+
+On clean `4d5cda9de12cbdda33783821919bbddb368f53ab`, the actual commands were:
+
+```text
+python -m pytest -q -ra tests/test_local_managed_source.py tests/test_managed_memory_smoke.py tests/test_managed_text_menu_import.py tests/test_memory_v2_profile_foundation.py tests/test_memory_v2_run_export.py tests/test_local_curation.py tests/test_memory_sequence_bridge.py
+python -m ruff check <all 20 changed Python files>
+python -m mypy <all 15 changed production/tool Python files>
+node --test python/tests/console_project.test.mjs
+```
+
+These used the private development Python 3.11 environment, from `python/` for
+Python commands and repository root for Node. Results: 130 Python tests passed,
+177 Node tests passed, no skips; Ruff and mypy exit0. Earlier author/independent
+tests additionally cover unchanged v1 exports, ports, datasets and imports;
+their counts are not added to these combination counts. Hosted CI must still
+execute the new candidate's actual selected scope. No duplicate local full gate
+or workflow change is part of this increment.
 
 ## Remaining work
 
