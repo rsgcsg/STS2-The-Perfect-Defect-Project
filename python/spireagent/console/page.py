@@ -51,6 +51,7 @@ def render_shell(mode: str, api_base: str, cloud_url: str = "") -> str:
         ("local-home", "本机工作台", "⌂"),
         ("campaigns", "真人采集", "◉"),
         ("local-models", "模型实战", "▷"),
+        ("local-environment", "环境与场景", "◇"),
         ("local-workspace", "本机资料", "▤"),
     ] if mode == "local" else [])
     shared_primary = [("collections", "数据", "▤")]
