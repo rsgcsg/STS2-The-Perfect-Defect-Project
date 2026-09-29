@@ -23,6 +23,9 @@ node --test python/tests/console_project.test.mjs
 The normal merge of accepted develop `cd09b86d` into this candidate produced
 `27150443` with the same tree `5f93a45552a17d94a77b1c06c0a776b81696c2b1`.
 Later documentation changes do not replace the actual tested/run identity.
+A subsequent normal base merge at `ccbc5f31` includes accepted Host PR100
+(`develop@9732c44e`). The Python subtree is unchanged from `85af80c3`;
+this alignment does not reclassify the earlier local measurements.
 
 ## One new operation, same recorded inputs
 
