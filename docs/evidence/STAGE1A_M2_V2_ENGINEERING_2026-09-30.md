@@ -15,8 +15,10 @@ Archive consistency is not independent actor attestation. Nothing promotes these
 records to Human demonstrations or invents a causal successor label.
 
 The new M2 profile uses `text-menu-v2` and renderer
-`stpd/m2-canonical-current-page-v2`. Its source, tokenizer, run, checkpoint,
-export and online scorer carry that explicit identity. Existing v1 data,
+`stpd/m2-canonical-current-page-v2`. The verified source report and training-input
+projection config bind this profile through the immutable tokenizer/run/checkpoint
+lineage; export and online scoring validate that identity explicitly. This does
+not mean every artifact or raw tokenizer has a separate profile field. Existing v1 data,
 configuration bytes and default entrypoints remain v1. Old Runtime package
 binding/port entrypoints reject v2; there is no implicit consumer promotion.
 
