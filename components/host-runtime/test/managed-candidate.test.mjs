@@ -34,10 +34,10 @@ test("managed candidate source and measured build identity match the manifest", 
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "813cb77d3ee9c896cfbfb0ef601e262b0f0fd2389f40c0946e06336e34e94151");
-  assert.equal(manifest.expected_build.artifact_mvid, "2585772e-1c62-4d61-8568-d39809bf5bec");
-  assert.equal(manifest.previous_candidate_build.artifact_sha256, "ca5f16ce98fbaab2e24a49927d7faec03c04fbaa73df549fa69adf17e8d5a260");
-  assert.equal(manifest.previous_candidate_build.artifact_mvid, "46fba5f2-1db0-4d90-ad83-29d05e3d2139");
+  assert.equal(manifest.expected_build.artifact_sha256, "dd726fba38f4fc097a57e9dd4a5fe7d220bd94ea3527e132be31a31c95963d93");
+  assert.equal(manifest.expected_build.artifact_mvid, "145c95e9-ace0-42b5-bb46-3fef292ac645");
+  assert.equal(manifest.previous_candidate_build.artifact_sha256, "187a891496bc7f74f2ee8d20888448b782111634949bd9d692cc103738d3b9d7");
+  assert.equal(manifest.previous_candidate_build.artifact_mvid, "20012f2f-0831-4f69-b954-8d901578daef");
   assert.equal(manifest.last_measured_build.artifact_sha256, "dd4b10f22606203f8825569c2e0478626d96ac1166d2cd9430591be607d808a6");
   assert.equal(manifest.last_measured_build.artifact_mvid, "61b5b737-724e-4887-a0a4-6664a3c9daea");
   assert.equal(manifest.admission.forbidden_claims.includes("formal H1.0 qualification"), true);
@@ -91,10 +91,14 @@ test("fresh candidate preparation admits added source files into the audited dif
     "utf8"
   );
   assert.deepEqual(addedPatchPaths(patch), [
+    "src/Sts2Headless/DeckGenericCallScope.cs",
+    "src/Sts2Headless/DeckGenericSelection.cs",
     "src/Sts2Headless/DeckUpgradeCallScope.cs",
     "src/Sts2Headless/DeckUpgradeSelection.cs",
     "src/Sts2Headless/NativeEventOptionAdmission.cs",
+    "src/Sts2Headless/NativeMerchantRemovalAdmission.cs",
     "src/Sts2Headless/NativePlayWindowAdmission.cs",
+    "src/Sts2Headless/NativeTreasureChestAdmission.cs",
     "src/Sts2Headless/PerformanceLab.cs",
     "tests/NativePlayWindowAdmissionTests.csproj",
     "tests/Program.cs"
@@ -177,7 +181,7 @@ test("managed probe policy uses advertised semantic operands and fails closed on
   }), {
     cmd: "action",
     action: "select_treasure_relic",
-    args: { relic_ref: "relic-a" }
+    args: { room_ref: "treasure-room-a", relic_ref: "relic-a" }
   });
   assert.deepEqual(chooseManagedCandidateAction({
     decision: "combat_play",

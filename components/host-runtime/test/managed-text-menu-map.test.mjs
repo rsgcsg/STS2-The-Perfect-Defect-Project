@@ -40,6 +40,62 @@ function mapDecision() {
   };
 }
 
+test("observed native loss and win remain terminal text pages with no actions", () => {
+  for (const victory of [false, true]) {
+    const state = { ...mapDecision(), decision: "game_over", victory };
+    const projected = projectManagedCandidateDecision({ state, ...identity });
+    assert.equal(projected.snapshot.status, "observed");
+    const menu = new ManagedTextMenuSessionAdapter({ observe: () => projected.snapshot,
+      async submit() { throw new Error("terminal page must not dispatch"); } }).observe();
+    assert.equal(menu.status, "observed");
+    assert.equal(menu.interaction.kind, "game_over");
+    assert.equal(menu.interaction.content.surface.victory, victory);
+    assert.equal(menu.menu_actions.status, "complete");
+    assert.equal(menu.menu_actions.materialized_count, 0);
+    assert.equal(menu.menu_actions.total_count, 0);
+    assert.deepEqual(menu.menu_actions.actions, []);
+  }
+});
+
+test("empty nonterminal, unknown and untyped terminal facts stay unavailable", () => {
+  const source = projectManagedCandidateDecision({
+    state: { ...mapDecision(), decision: "game_over", victory: false }, ...identity
+  }).snapshot;
+  for (const bad of [
+    { ...source, status: "observed", interaction: { ...source.interaction, kind: "map_navigation" } },
+    { ...source, interaction: { ...source.interaction, content: {
+      ...source.interaction.content, surface: { kind: "game_over", stage: "complete" }
+    } } },
+    { ...source, interaction: { ...source.interaction, content: {
+      ...source.interaction.content, surface: { kind: "game_over", stage: "complete", victory: null }
+    } } }
+  ]) {
+    const menu = new ManagedTextMenuSessionAdapter({ observe: () => bad,
+      async submit() { throw new Error("unsupported page must not dispatch"); } }).observe();
+    assert.equal(menu.status, "visible_unsupported");
+    assert.equal(menu.menu_actions.status, "unavailable");
+    assert.deepEqual(menu.menu_actions.actions, []);
+  }
+  const unknown = projectManagedCandidateDecision({
+    state: { ...mapDecision(), decision: "unknown_native_page" }, ...identity
+  }).snapshot;
+  assert.equal(new ManagedTextMenuSessionAdapter({ observe: () => unknown,
+    async submit() { throw new Error("unknown must not dispatch"); } }).observe().status,
+  "visible_unsupported");
+  for (const state of [
+    { ...mapDecision(), decision: "game_over" },
+    { ...mapDecision(), decision: "game_over", victory: "false" }
+  ]) {
+    const projected = projectManagedCandidateDecision({ state, ...identity }).snapshot;
+    assert.equal(projected.status, "visible_unsupported");
+    assert.equal(projected.interaction.content.surface.victory, null);
+    const text = new ManagedTextMenuSessionAdapter({ observe: () => projected,
+      async submit() { throw new Error("untyped terminal must not dispatch"); } }).observe();
+    assert.equal(text.status, "visible_unsupported");
+    assert.equal(text.menu_actions.status, "unavailable");
+  }
+});
+
 function restDecision() {
   return {
     type: "decision", decision: "rest_site",
@@ -67,6 +123,84 @@ function eventDecision() {
     player: mapDecision().player
   };
 }
+
+function treasureDecision(stage = "treasure_chest") {
+  const common = { type: "decision", decision: stage,
+    context: { ...mapDecision().context, floor: 6, total_floor: 6, room_type: "Treasure" },
+    room_ref: "native-treasure-room", player: mapDecision().player };
+  if (stage === "treasure_relic") return { ...common, can_skip: true,
+    relics: [
+      { index: 0, native_ref: "native-relic-a", id: "RELIC.A", name: "First relic", rarity: "Common" },
+      { index: 1, native_ref: "native-relic-b", id: "RELIC.B", name: "Second relic", rarity: "Uncommon" }
+    ] };
+  return common;
+}
+
+test("treasure text menu preserves the current three-stage native choices", async () => {
+  for (const [state, kind, labels] of [
+    [treasureDecision(), "treasure_chest", ["Open treasure chest"]],
+    [treasureDecision("treasure_relic"), "treasure_relic_selection",
+      ["Take First relic", "Take Second relic", "Skip treasure relic"]],
+    [treasureDecision("treasure_complete"), "treasure_completion", ["Proceed to map"]]
+  ]) {
+    const projected = projectManagedCandidateDecision({ state, ...identity });
+    const menu = new ManagedTextMenuSessionAdapter({ observe: () => projected.snapshot,
+      async submit() { throw new Error("observation must not dispatch"); } }).observe();
+    assert.equal(menu.interaction.kind, kind);
+    assert.equal(menu.menu_actions.status, "complete");
+    assert.deepEqual(menu.menu_actions.actions.map((action) => action.label), labels);
+    assert.equal(JSON.stringify(menu).includes("native-treasure-room"), false);
+    const requests = [...projected.bindings.values()].map((binding) => binding.raw_request);
+    if (kind === "treasure_relic_selection") assert.deepEqual(requests, [
+      { cmd: "action", action: "select_treasure_relic",
+        args: { room_ref: "native-treasure-room", relic_ref: "native-relic-a" } },
+      { cmd: "action", action: "select_treasure_relic",
+        args: { room_ref: "native-treasure-room", relic_ref: "native-relic-b" } },
+      { cmd: "action", action: "skip_treasure_relic",
+        args: { room_ref: "native-treasure-room" } }
+    ]);
+  }
+});
+
+test("treasure callback error after dispatch stays unknown and cannot be retried", async () => {
+  let nativeCalls = 0;
+  const process = { async request(request) {
+    if (request.cmd === "start_run") return treasureDecision();
+    nativeCalls += 1;
+    return { type: "error", message: "The bound closed treasure chest changed before native invocation." };
+  } };
+  const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+  await session.mount({ seed: "TREASURE-UNKNOWN" });
+  const adapter = new ManagedTextMenuSessionAdapter(session);
+  const page = adapter.observe();
+  const request = { request_id: "treasure-callback-unknown", expected_snapshot_id: page.snapshot_id,
+    action_id: page.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE };
+  const first = await adapter.submit(request);
+  assert.equal(first.status, "unknown");
+  assert.equal(first.native_delivery, "unknown");
+  assert.equal(first.retry, "never");
+  assert.equal(first.successor, null);
+  assert.equal(session.tainted, true);
+  assert.deepEqual(await adapter.submit(request), first);
+  assert.equal(nativeCalls, 1);
+  assert.equal((await adapter.submit({ ...request, request_id: "treasure-later" })).status,
+    "not_applied");
+  assert.equal(nativeCalls, 1);
+});
+
+test("treasure catalog rejects null, duplicate, and unknown skip facts without dropping rows", () => {
+  for (const bad of [
+    { ...treasureDecision("treasure_relic"), relics: [null] },
+    { ...treasureDecision("treasure_relic"), relics: [
+      treasureDecision("treasure_relic").relics[0],
+      { ...treasureDecision("treasure_relic").relics[1], native_ref: "native-relic-a" }] },
+    { ...treasureDecision("treasure_relic"), can_skip: null }
+  ]) {
+    const projected = projectManagedCandidateDecision({ state: bad, ...identity });
+    assert.equal(projected.snapshot.bound_actions.status, "unavailable");
+    assert.equal(projected.snapshot.interaction.content.surface.relics.length, bad.relics.length);
+  }
+});
 
 function deckUpgradeDecision(stage = "selecting", cardRefs = ["native-card-a", "native-card-b"]) {
   const preview = stage === "preview";
