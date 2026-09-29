@@ -264,6 +264,18 @@ def test_implementation_identity_is_checked_on_restore():
 def test_export_reload_replays_scores_with_exact_candidate_order_and_config(
     slots: int, gated: bool, reset: bool,
 ):
+    def assert_keyed_scores(actual, actual_keys, original, original_keys):
+        assert len(actual_keys) == len(original_keys) == len(actual)
+        assert len(set(original_keys)) == len(original_keys)
+        assert set(actual_keys) == set(original_keys)
+        assert bool(torch.isfinite(actual).all()), "nonfinite reordered scores"
+        assert bool(torch.isfinite(original).all()), "nonfinite original scores"
+        by_key = dict(zip(original_keys, original, strict=True))
+        expected = torch.stack([by_key[key] for key in actual_keys])
+        # Reordering a candidate batch can change the FP32 reduction path on
+        # Windows while each score must still belong to its exact action key.
+        torch.testing.assert_close(actual, expected, atol=1.3e-6, rtol=1e-5)
+
     settings = config(episode_count=1, slots=slots, gated=gated, reset_each_step=reset)
     inputs = source(count=1)
     engine = MemoryRankingEngine(inputs, settings)
@@ -285,10 +297,26 @@ def test_export_reload_replays_scores_with_exact_candidate_order_and_config(
                     step.page, step.actions, memory, reset_before=step.reset_before,
                 )
                 scores.append(value)
-            permuted = subject.score(memory, item.steps[-1].actions[::-1])
-            torch.testing.assert_close(
-                permuted, subject.score(memory, item.steps[-1].actions).flip(0), atol=0, rtol=0,
-            )
+            final = item.steps[-1]
+            original = subject.score(memory, final.actions)
+            permuted = subject.score(memory, final.actions[::-1])
+            assert_keyed_scores(permuted, final.action_keys[::-1], original, final.action_keys)
+            # The fixture's two actions have distinct real model scores, so
+            # attaching the original keys to the reordered scores must fail.
+            assert abs(float(original[0] - original[1])) > 1e-3
+            with pytest.raises(AssertionError):
+                assert_keyed_scores(permuted, final.action_keys, original, final.action_keys)
+            outside_tolerance = permuted.clone()
+            outside_tolerance[0] += 1e-3
+            with pytest.raises(AssertionError):
+                assert_keyed_scores(outside_tolerance, final.action_keys[::-1],
+                                    original, final.action_keys)
+            for invalid in (float("nan"), float("inf"), -float("inf")):
+                nonfinite = permuted.clone()
+                nonfinite[0] = invalid
+                with pytest.raises(AssertionError, match="nonfinite reordered scores"):
+                    assert_keyed_scores(nonfinite, final.action_keys[::-1],
+                                        original, final.action_keys)
         if subject is engine.model:
             reference = (memory, scores, permuted)
         else:
