@@ -1490,7 +1490,7 @@ test("local model export status is read-only until one explicit export click", a
     "replacement render preserves backend pending eligibility");
 });
 
-test("M2 export is explicit, train-only, and offers no registration", async () => {
+test("M2 export stays train-only and offers explicit guarded registration", async () => {
   const model = id("a"), run = id("b");
   let state = modelExportStatus({status:"idle"});
   const env = setup({
@@ -1502,6 +1502,11 @@ test("M2 export is explicit, train-only, and offers no registration", async () =
       };
       if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model);
       if (url === "/api/local-model-exports/status") return state;
+      if (url.startsWith("/api/local-model-registrations/status?")) return {
+        schema:"stpd/local-model-registration-v1", model_id:model,
+        status:"not_registered", loaded:false, runtime_profile:"text-menu-m2-v1",
+        csrf_token:"synthetic-csrf",
+      };
       if (url === "/api/local-model-exports/start") {
         assert.equal(options.method, "POST");
         assert.deepEqual(body({options}), {model_id:model});
@@ -1518,14 +1523,14 @@ test("M2 export is explicit, train-only, and offers no registration", async () =
   assert.match(text(page), /实验性 D-Simple M2-K1/);
   assert.match(text(page), /仅训练完成；没有独立评估/);
   assert.match(text(page), /没有独立评估/);
-  assert.match(text(page), /不能登记或加载到游戏/);
+  assert.match(text(page), /才能登记或加载/);
   assert.equal(post(env.calls).length, 0);
-  assert.equal(env.calls.some(call => call.url.includes("local-model-registrations")), false);
+  assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
   await action(page, "start-local-model-export").onclick();
   assert.equal(post(env.calls).length, 1);
   assert.match(text(env.livePage), /没有独立评估/);
-  assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), false);
-  assert.equal(env.calls.some(call => call.url.includes("local-model-registrations")), false);
+  assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), true);
+  assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
 });
 
 test("late model export completion refreshes current same-profile status without showing the old model result", async () => {

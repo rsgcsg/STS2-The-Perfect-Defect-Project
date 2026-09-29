@@ -2827,7 +2827,7 @@ window.SpireProject = (() => {
       overview.append(fields([
         ["训练配方", "实验性 D-Simple M2-K1"],
         ["结果类型", "仅训练完成；没有独立评估"],
-        ["运行状态", "尚未具备本机游戏登记与加载条件"],
+        ["运行状态", "需先具备单独固定的 M2 运行包与当前环境能力，才能登记或加载"],
       ]));
       return overview;
     }
@@ -2924,11 +2924,15 @@ window.SpireProject = (() => {
       text_runtime_local_install_required: "本机文本菜单运行组件尚未准备；请检查运行环境状态。",
       text_menu_capabilities_unavailable: "暂时无法核对当前游戏的文本菜单能力。请打开游戏后刷新，再明确重试。",
       text_menu_capabilities_incompatible: "当前游戏环境不符合此模型的文本菜单要求；尚未登记。",
+      observation_context_unavailable: "当前环境没有可验证的原子观察上下文；M2 尚未登记。",
+      m2_runtime_contract_unavailable: "固定的 M2 运行组件不支持所需决策协议；M2 尚未登记。",
     };
     return known[code] || "当前无法完成登记。请查看本机模型页的环境状态后，再按需明确重试。";
   }
 
   async function localModelRegistrationCard(ctx, model) {
+    const memory = model.parameters?.schema === "stpd/experimental-m2-model-v1";
+    const expectedProfile = memory ? "text-menu-m2-v1" : "text-menu-v1";
     const card = panel(
       "登记到模型列表",
       "登记会依据本机文本菜单运行环境建立模型选择项；不会安装运行组件、加载模型或进入游戏。之后仍需在模型页单独检查条件并选择加载。",
@@ -2948,7 +2952,7 @@ window.SpireProject = (() => {
       && status.schema === "stpd/local-model-registration-v1"
       && status.model_id === model.artifact_id
       && ["not_registered", "registered", "unavailable"].includes(status.status)
-      && status.loaded === false && status.runtime_profile === "text-menu-v1";
+      && status.loaded === false && status.runtime_profile === expectedProfile;
     if (!validStatus || (status.status === "registered" && !selectionId(status.selection_id))) {
       card.append(el("p", "登记状态格式未知；未发起模型操作。", "small muted"));
       card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
@@ -2962,7 +2966,7 @@ window.SpireProject = (() => {
         const result = await request(ctx, "/api/local-model-registrations/register", {model_id:model.artifact_id}, csrf);
         if (result.schema !== "stpd/local-model-registration-v1"
             || result.model_id !== model.artifact_id || result.status !== "registered"
-            || result.loaded !== false || result.runtime_profile !== "text-menu-v1"
+            || result.loaded !== false || result.runtime_profile !== expectedProfile
             || !selectionId(result.selection_id))
           throw new Error("local_model_registration_invalid");
       } catch (error) {
@@ -3006,7 +3010,7 @@ window.SpireProject = (() => {
   async function localModelExportCard(ctx, model) {
     const memory = model.parameters?.schema === "stpd/experimental-m2-model-v1";
     const card = panel("导出并校验", memory
-      ? "导出只保存并检查实验性 M2 训练模型；它没有独立评估，当前不能登记或加载到游戏。服务端会重新核对训练来源与模型身份。"
+      ? "导出只保存并检查实验性 M2 训练模型；它没有独立评估。登记前需单独固定 M2 运行包并核对环境；导出不会自动登记或加载。"
       : "导出只保存并检查本机模型文件；不会登记为游戏模型或加载，也不检查游戏兼容性。服务端会重新验证模型身份。");
     const path = "/api/local-model-exports/status";
     let status;
@@ -3093,14 +3097,12 @@ window.SpireProject = (() => {
     } else if (operation.status === "completed" && sameModel) {
       label = "重新核验导出";
       card.append(el("p", memory
-        ? "M2 训练模型已导出并校验；仍没有独立评估，当前不能登记或加载到游戏。"
+        ? "M2 训练模型已导出并校验；仍没有独立评估。登记还需核对 M2 运行包与环境，加载另行操作。"
         : "导出校验本身不会加载模型；当前运行状态请到模型页查看。游戏兼容性仍须单独检查。", "small muted"));
       if (Number.isSafeInteger(operation.payload_bytes) && operation.payload_bytes >= 0)
         card.append(fields([["导出大小", bytes(operation.payload_bytes)]]));
-      if (!memory) {
-        const registration = await localModelRegistrationCard(ctx, model);
-        if (live(ctx)) card.append(registration);
-      }
+      const registration = await localModelRegistrationCard(ctx, model);
+      if (live(ctx)) card.append(registration);
     } else if (operation.status === "failed" && sameModel) {
       label = "重新导出并校验";
       card.append(el("p", "上次导出未完成。你可以明确再次发起；不会自动重试。", "small muted"));

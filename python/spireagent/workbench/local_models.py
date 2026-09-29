@@ -47,6 +47,11 @@ RUN_PROFILES = {
     "extended": {"max_submissions": 2_000, "max_policy_calls": 4_000,
                  "deadline_ms": 1_800_000},
 }
+TEXT_PROFILES = {"text-menu-v1": ("token-v1", ".local/text-menu-runtime-v1.json",
+                                  "stpd/local-text-runtime-v1", "text-menu-v1"),
+                 "text-menu-m2-v1": ("stpd-m2-decision-adapter",
+                                     ".local/text-menu-m2-runtime-v1.json",
+                                     "stpd/local-text-m2-runtime-v1", "text-menu-m2-v1")}
 _BUDGET_STATES = frozenset({"inactive", "active", "exhausted"})
 _BUDGET_EXHAUSTION = frozenset({"submission_attempt_limit", "policy_call_limit", "deadline"})
 _BUDGET_END = frozenset({"human_recovery", "mode_changed", "stopped"})
@@ -321,7 +326,7 @@ class LocalModelService:
         ):
             raise BoundaryError("local_model", "unsupported_registry")
         # Operator-created local registrations complement the shipped catalog.
-        # They can select only the token adapter, never a command or downloaded code.
+        # They can select only reviewed adapters, never a command or downloaded code.
         # A text profile refers to a separate operator-pinned local Runtime bundle.
         local_path = self.root / ".local/token-policies-v1.json"
         if local_path.exists():
@@ -329,7 +334,11 @@ class LocalModelService:
             object_fields(local, {"schema", "policies"}, "local_model.local_registry")
             if (local["schema"] != "stpd/local-token-policies-v1"
                     or not isinstance(local["policies"], list)
-                    or any(not isinstance(entry, dict) or entry.get("adapter") != "token-v1"
+                    or any(not isinstance(entry, dict)
+                           or entry.get("adapter") not in {"token-v1",
+                                                            "stpd-m2-decision-adapter"}
+                           or (entry.get("adapter") == "stpd-m2-decision-adapter"
+                               and entry.get("runtime_profile") != "text-menu-m2-v1")
                            for entry in local["policies"])):
                 raise BoundaryError("local_model", "invalid_local_token_registry")
             value["policies"] = [*value["policies"], *local["policies"]]
@@ -339,7 +348,8 @@ class LocalModelService:
                 raise BoundaryError("local_model", "invalid_policy_entry")
             profile = entry.get("runtime_profile")
             if "runtime_profile" in entry and (
-                profile != "text-menu-v1" or entry.get("adapter") != "token-v1"
+                profile not in TEXT_PROFILES
+                or entry.get("adapter") != TEXT_PROFILES[profile][0]
             ):
                 raise BoundaryError("local_model", "unsupported_runtime_profile")
             object_fields(
@@ -368,31 +378,34 @@ class LocalModelService:
     def runtime_profile(self, identity: str | None = None) -> tuple[Path, dict[str, Any]]:
         """Resolve operator-owned pins; a downloaded model cannot select executable code."""
         entry = self.selection(identity) if identity is not None else None
-        if entry is not None and entry.get("runtime_profile") == "text-menu-v1":
+        if entry is not None and entry.get("runtime_profile") in TEXT_PROFILES:
             manifest = _object_file(_inside(self.root, entry["manifest"]))
             representation = manifest.get("representation")
             if not isinstance(representation, dict) or representation.get("input_schema") != (
                 "sts2.player-environment/text-menu-snapshot-1"
             ):
                 raise BoundaryError("local_model", "text_runtime_requires_text_model")
-            directory, pin = self.text_runtime_profile()
+            directory, pin = self.text_runtime_profile(entry["runtime_profile"])
         else:
             directory, pin = self.directory, self.registry()["runtime_package"]
         if not isinstance(pin, dict) or pin.get("package") != RUNTIME_PACKAGE:
             raise BoundaryError("local_model", "runtime_package_not_pinned")
         return directory, pin
 
-    def text_runtime_profile(self) -> tuple[Path, dict[str, Any]]:
+    def text_runtime_profile(self, profile_id: str = "text-menu-v1") -> tuple[Path, dict[str, Any]]:
         """Resolve the exact private text profile before a selection exists."""
-        profile = _object_file(_inside(self.root, ".local/text-menu-runtime-v1.json"))
+        if profile_id not in TEXT_PROFILES:
+            raise BoundaryError("local_model", "unsupported_runtime_profile")
+        _, profile_path, schema, slot = TEXT_PROFILES[profile_id]
+        profile = _object_file(_inside(self.root, profile_path))
         object_fields(profile, {"schema", "runtime_package"}, "local_model.runtime_profile")
         pin = profile["runtime_package"]
-        if (profile["schema"] != "stpd/local-text-runtime-v1"
+        if (profile["schema"] != schema
                 or not isinstance(pin, dict)
                 or pin.get("dependency_layout") != "bundled_source_candidate"
                 or pin.get("package") != RUNTIME_PACKAGE):
             raise BoundaryError("local_model", "unsupported_runtime_profile")
-        directory = self.directory / "text-menu-v1"
+        directory = self.directory / slot
         if directory.is_symlink():
             raise BoundaryError("local_model", "runtime_install_path_unsafe")
         return directory, pin
@@ -471,7 +484,7 @@ class LocalModelService:
         entries = []
         for entry in self.registry()["policies"]:
             manifest = _object_file(_inside(self.root, entry["manifest"]))
-            text_menu = entry.get("runtime_profile") == "text-menu-v1"
+            text_menu = entry.get("runtime_profile") in TEXT_PROFILES
             profiles = [{"id": "short", "label": "短时检查" if text_menu else "默认运行",
                          "limits": RUN_PROFILES["short"] if text_menu else None}]
             if text_menu:
@@ -687,7 +700,7 @@ class LocalModelService:
     def _run_profile(self, identity: str, profile: str) -> bool:
         if not isinstance(profile, str) or profile not in RUN_PROFILES:
             raise BoundaryError("local_model", "unsupported_run_profile")
-        text_menu = self.selection(identity).get("runtime_profile") == "text-menu-v1"
+        text_menu = self.selection(identity).get("runtime_profile") in TEXT_PROFILES
         if profile == "extended" and not text_menu:
             raise BoundaryError("local_model", "extended_requires_text_menu_runtime")
         return text_menu

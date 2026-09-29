@@ -28,10 +28,20 @@ from spireagent.workbench.runtime_install import (
     RUNTIME_PACKAGE,
     validate_runtime_install,
 )
+from stpd.memory_policy_installation import (
+    bind_memory_export,
+)
+from stpd.memory_policy_installation import (
+    code_digest as memory_code_digest,
+)
+from stpd.memory_policy_installation import (
+    validate as validate_memory,
+)
 from stpd.token_policy_installation import bind_text_menu_export, code_digest, validate
 
 SCHEMA = "stpd/local-model-registration-v1"
 PROFILE = "text-menu-v1"
+M2_PROFILE = "text-menu-m2-v1"
 RECIPE_LABELS = {"stage1a.b.s.v2": "B", "stage1a.dsimple.s.v1": "D-Simple"}
 REGISTRY = ".local/token-policies-v1.json"
 LOCK = ".local/token-policies-v1.lock"
@@ -75,12 +85,19 @@ const result = await new PlayerEnvironmentRestClient(process.argv[2], 5000)
   .textMenuCapabilities();
 process.stdout.write(JSON.stringify(result.data));
 """
+_CONTEXT_SCRIPT = """
+const {PlayerEnvironmentRestClient} = await import(process.argv[1]);
+const result = await new PlayerEnvironmentRestClient(process.argv[2], 5000)
+  .observeTextMenuContext();
+process.stdout.write(JSON.stringify({schema:result.data.schema,
+  continuity_available:result.data.game_continuity_id !== null}));
+"""
 
 
 def _public(model_id: str, status: str, *, selection_id: str | None = None,
-            reason_code: str | None = None) -> dict[str, Any]:
+            reason_code: str | None = None, profile: str = PROFILE) -> dict[str, Any]:
     result: dict[str, Any] = {"schema": SCHEMA, "model_id": model_id, "status": status,
-                              "loaded": False, "runtime_profile": PROFILE}
+                              "loaded": False, "runtime_profile": profile}
     if selection_id is not None:
         result["selection_id"] = selection_id
     if reason_code is not None:
@@ -155,11 +172,13 @@ class LocalModelRegistration:
 
     def _matching(self, model_id: str, export: Path,
                   requirements: dict[str, Any] | None = None,
-                  support: dict[str, Any] | None = None) -> tuple[str | None, bool]:
+                  support: dict[str, Any] | None = None, *,
+                  profile: str = PROFILE) -> tuple[str | None, bool]:
         stale = False
-        current_code = code_digest(self.models.root)
+        current_code = (memory_code_digest(self.models.root) if profile == M2_PROFILE
+                        else code_digest(self.models.root))
         for entry in reversed(self._entries()):
-            if entry.get("runtime_profile") != PROFILE:
+            if entry.get("runtime_profile") != profile:
                 continue
             try:
                 config = _object_file(_inside(self.models.root, entry["config"]))
@@ -171,8 +190,9 @@ class LocalModelRegistration:
                 if manifest.get("adapter", {}).get("code_sha256") != current_code:
                     stale = True
                     continue
-                validate(self.models.root, _inside(self.models.root, entry["config"]),
-                         _inside(self.models.root, entry["manifest"]))
+                validator = validate_memory if profile == M2_PROFILE else validate
+                validator(self.models.root, _inside(self.models.root, entry["config"]),
+                          _inside(self.models.root, entry["manifest"]))
                 if (requirements is not None and manifest.get("requirements") != requirements
                         or support is not None and manifest.get("support") != support):
                     continue
@@ -186,22 +206,28 @@ class LocalModelRegistration:
         identity = digest(model_id, "local_model_registration.model_id")
         observed = self.export.status()
         operation = observed["operation"]
+        profile = (M2_PROFILE if operation.get("model_id") == identity
+                   and operation.get("model_type") == "memory" else PROFILE)
         if observed.get("availability") == "workspace_changed":
-            return _public(identity, "unavailable", reason_code="workspace_changed")
+            return _public(identity, "unavailable", reason_code="workspace_changed",
+                           profile=profile)
         if (observed.get("availability") != "ready"
                 or operation.get("status") != "completed"
                 or operation.get("model_id") != identity):
-            return _public(identity, "unavailable", reason_code="verified_export_required")
+            return _public(identity, "unavailable", reason_code="verified_export_required",
+                           profile=profile)
         try:
             export = self.config.state_dir / "model-exports" / identity
-            found, stale = self._matching(identity, export)
+            found, stale = self._matching(identity, export, profile=profile)
             if found is not None:
-                return _public(identity, "registered", selection_id=found)
+                return _public(identity, "registered", selection_id=found, profile=profile)
             if stale:
-                return _public(identity, "not_registered", reason_code="source_binding_changed")
-            return _public(identity, "not_registered")
+                return _public(identity, "not_registered", reason_code="source_binding_changed",
+                               profile=profile)
+            return _public(identity, "not_registered", profile=profile)
         except (BoundaryError, OSError, ValueError):
-            return _public(identity, "unavailable", reason_code="registration_metadata_invalid")
+            return _public(identity, "unavailable", reason_code="registration_metadata_invalid",
+                           profile=profile)
 
     def _capabilities(self, sdk: Path) -> dict[str, Any]:
         node = shutil.which("node")
@@ -225,21 +251,84 @@ class LocalModelRegistration:
             raise BoundaryError("local_model_registration",
                                 "text_menu_capabilities_unavailable") from error
 
+    def _context_available(self, sdk: Path) -> None:
+        """Require the opt-in atomic context route; a menu may have no current run."""
+        node = shutil.which("node")
+        if node is None:
+            raise BoundaryError("local_model_registration", "observation_context_unavailable")
+        endpoint = _loopback(self.config.platform_url or "http://127.0.0.1:15526")
+        environment = {key: value for key, value in os.environ.items() if key in
+                       {"PATH", "SYSTEMROOT", "SystemRoot", "TMPDIR", "TEMP", "TMP"}}
+        try:
+            result = subprocess.run(
+                [node, "--input-type=module", "-e", _CONTEXT_SCRIPT, sdk.as_uri(), endpoint],
+                capture_output=True, check=False, timeout=12, env=environment,
+            )
+            if result.returncode or len(result.stdout) > 1024:
+                raise ValueError
+            value = json.loads(result.stdout)
+            if (not isinstance(value, dict) or set(value) != {"schema", "continuity_available"}
+                    or value["schema"] !=
+                    "sts2.player-environment/text-menu-observation-context-1"
+                    or type(value["continuity_available"]) is not bool):
+                raise ValueError
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            raise BoundaryError("local_model_registration",
+                                "observation_context_unavailable") from error
+
+    def _m2_runtime_manifest_compatible(self, node_modules: Path,
+                                        manifest_path: Path) -> None:
+        node = shutil.which("node")
+        if node is None:
+            raise BoundaryError("local_model_registration", "m2_runtime_contract_unavailable")
+        script = ("import {readFile} from 'node:fs/promises';"
+                  "const {validatePolicyManifest}=await import(process.argv[1]);"
+                  "validatePolicyManifest(JSON.parse(await readFile(process.argv[2],'utf8')));")
+        environment = {key: value for key, value in os.environ.items() if key in
+                       {"PATH", "SYSTEMROOT", "SystemRoot", "TMPDIR", "TEMP", "TMP"}}
+        try:
+            result = subprocess.run(
+                [node, "--input-type=module", "-e", script,
+                 (node_modules / RUNTIME_PACKAGE / "dist/index.js").as_uri(),
+                 str(manifest_path)],
+                capture_output=True, check=False, timeout=12, env=environment,
+            )
+            if result.returncode:
+                raise ValueError
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            raise BoundaryError("local_model_registration",
+                                "m2_runtime_contract_unavailable") from error
+
     def register(self, model_id: object) -> dict[str, Any]:
         from stpd.policy.token_decision import check_model
 
         identity = digest(model_id, "local_model_registration.model_id")
         # Weight/scorer verification and current-store binding are explicit POST work.
-        export = self.export.verified_for_registration(identity)
-        envelope = _object_file(export / "model.json")
-        if envelope.get("model_id") != identity:
-            raise BoundaryError("local_model_registration", "export_identity_mismatch")
-        artifact = Manifest.from_bytes(json_bytes(envelope.get("model")), identity)
-        recipe = check_model(artifact)[0].recipe
-        if recipe not in RECIPE_LABELS:
-            raise BoundaryError("local_model_registration", "unsupported_model_recipe")
+        observed = self.export.status()
+        operation = observed["operation"]
+        memory = (observed.get("schema") == "stpd/local-model-export-operation-v2"
+                  and operation.get("model_id") == identity
+                  and operation.get("model_type") == "memory")
+        profile = M2_PROFILE if memory else PROFILE
+        export = (self.export.verified_memory_for_registration(identity) if memory
+                  else self.export.verified_for_registration(identity))
+        if memory:
+            from stpd.policy.memory_export import validate_memory_package
+
+            package, _, _, _ = validate_memory_package(export)
+            if package["ids"]["model"] != identity:
+                raise BoundaryError("local_model_registration", "export_identity_mismatch")
+            recipe = "stage1a.dsimple.m2.k1.experimental.v1"
+        else:
+            envelope = _object_file(export / "model.json")
+            if envelope.get("model_id") != identity:
+                raise BoundaryError("local_model_registration", "export_identity_mismatch")
+            artifact = Manifest.from_bytes(json_bytes(envelope.get("model")), identity)
+            recipe = check_model(artifact)[0].recipe
+            if recipe not in RECIPE_LABELS:
+                raise BoundaryError("local_model_registration", "unsupported_model_recipe")
         try:
-            directory, pin = self.models.text_runtime_profile()
+            directory, pin = self.models.text_runtime_profile(profile)
             node_modules = directory / "runtime" / "node_modules"
             validate_runtime_install(node_modules, pin, self.models._connector_pin())
         except (BoundaryError, OSError, PackageIdentityError, ValueError) as error:
@@ -248,6 +337,8 @@ class LocalModelRegistration:
         sdk = (node_modules / RUNTIME_PACKAGE / "node_modules" / CONNECTOR_PACKAGE
                / "dist" / "index.js")
         requirements, support = _requirements(self._capabilities(sdk))
+        if memory:
+            self._context_available(sdk)
         private = self.models.root / ".local"
         if private.exists() or private.is_symlink():
             if not _ordinary(private, directory=True):
@@ -260,9 +351,11 @@ class LocalModelRegistration:
             raise BoundaryError("local_model_registration", "registration_metadata_invalid")
         try:
             with instance_lock(lock_path):
-                found, _ = self._matching(identity, export, requirements, support)
+                found, _ = self._matching(identity, export, requirements, support,
+                                           profile=profile)
                 if found is not None:
-                    return _public(identity, "registered", selection_id=found)
+                    return _public(identity, "registered", selection_id=found,
+                                   profile=profile)
                 folder = self.models.root / REGISTRATIONS
                 if folder.exists() or folder.is_symlink():
                     if not _ordinary(folder, directory=True):
@@ -271,27 +364,37 @@ class LocalModelRegistration:
                         )
                 else:
                     folder.mkdir(mode=0o700)
-                selection = "local-text-b-" + uuid.uuid4().hex
+                selection = ("local-text-m2-" if memory else "local-text-b-") + uuid.uuid4().hex
                 target = folder / selection
                 target.mkdir(mode=0o700)
                 config_path, manifest_path = target / "config.json", target / "manifest.json"
-                bind_text_menu_export(
-                    self.models.root, export, config_path, manifest_path,
-                    manifest_id=selection,
-                    policy={"id": selection, "version": "1.0.0", "provider": "stpd",
-                            "architecture": recipe},
-                    requirements=requirements, support=support,
-                )
+                binder = bind_memory_export if memory else bind_text_menu_export
+                binder(self.models.root, export, config_path, manifest_path,
+                       manifest_id=selection,
+                       policy={"id": selection, "version": "1.0.0", "provider": "stpd",
+                               "architecture": recipe},
+                       requirements=requirements, support=support)
+                if memory:
+                    try:
+                        self._m2_runtime_manifest_compatible(node_modules, manifest_path)
+                    except Exception:
+                        config_path.unlink(missing_ok=True)
+                        manifest_path.unlink(missing_ok=True)
+                        target.rmdir()
+                        raise
                 entries = self._entries()
+                label = "M2 训练版" if memory else RECIPE_LABELS[recipe]
                 entry = {"id": selection,
-                         "label": "本机文字菜单 " + RECIPE_LABELS[recipe] + " " + identity[:8],
-                         "adapter": "token-v1", "runtime_profile": PROFILE,
+                         "label": "本机文字菜单 " + label + " " + identity[:8],
+                         "adapter": "stpd-m2-decision-adapter" if memory else "token-v1",
+                         "runtime_profile": profile,
                          "manifest": manifest_path.relative_to(self.models.root).as_posix(),
                          "config": config_path.relative_to(self.models.root).as_posix()}
                 atomic_json(self.models.root / REGISTRY,
                             {"schema": "stpd/local-token-policies-v1",
                              "policies": [*entries, entry]})
-                return _public(identity, "registered", selection_id=selection)
+                return _public(identity, "registered", selection_id=selection,
+                               profile=profile)
         except BoundaryError as error:
             if error.code == "already_running":
                 raise BoundaryError(

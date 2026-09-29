@@ -162,8 +162,8 @@ exists may be retried explicitly; an existing run with an unknown outcome needs
 reconciliation first. Completion verifies the exact result and indexes its model.
 The default recipe also indexes its development report; M2 records `not_run`
 evaluation status and no evaluation artifact. Links open those artifacts in the
-same local library. M2 is not registered for game inference. These are engineering
-results, not policy quality or scientific qualification.
+same local library. M2 remains a train-only engineering result, not policy quality
+or scientific qualification.
 
 An explicit model-page export can also package a completed M2 train-only model.
 The Workbench rechecks its immutable completed run/result/model chain, the published
@@ -172,9 +172,15 @@ starting a private export child. This admission remains valid after later local
 trainings replace the current training-status slot. The exported package contains
 only pinned model weights, tokenizer, projection/configuration and artifact IDs;
 it excludes Human pages, the source map, optimizer state and active memory. Its
-status remains `not_run` for independent evaluation. Export does not register,
-load or qualify M2 for game decisions; that later integration requires a separate
-reviewed Runtime package and local environment checks.
+status remains `not_run` for independent evaluation. Registration is a separate
+explicit POST: it rechecks the exported package and the historical training-use
+ledger, requires an installed, explicitly pinned M2 Runtime profile and its
+port-2 manifest validator, and probes the Connector SDK's atomic observation
+context route. It adds a reviewed selection to the existing local roster without
+loading weights or taking game control. The private `text-menu-m2-v1` Runtime
+profile is separate from the Connector's unchanged `text-menu-v1` input profile
+and the older token Runtime installation. Readiness and loading remain separate;
+none of these steps proves independent evaluation or game qualification.
 
 ## Cloud login and connection
 

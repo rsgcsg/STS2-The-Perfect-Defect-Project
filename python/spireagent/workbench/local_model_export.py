@@ -275,6 +275,34 @@ class LocalModelExport:
             _verify_export(workspace.store, model, destination)
             return destination
 
+    def verified_memory_for_registration(self, model_id: object) -> Path:
+        """Recheck an M2 export and its historical local training admission on POST."""
+        from stpd.policy.memory_export import verify_memory_package
+
+        identity = digest(model_id, "local_model_export.model_id")
+        with self.lock:
+            operation = self._read()
+            if (operation.get("schema") != SCHEMA_V2
+                    or operation.get("status") != "completed"
+                    or operation.get("model_id") != identity
+                    or operation.get("model_type") != "memory"):
+                raise BoundaryError("local_model_export", "verified_export_required")
+            workspace = self._workspace()
+            root = getattr(getattr(workspace.store, "blobs", None), "root", None)
+            if not isinstance(root, Path) or operation["store_root"] != str(root):
+                raise BoundaryError("local_model_export", "workspace_changed")
+            model = workspace.store.get_manifest(identity)
+            run_id = _memory_lineage(workspace.store,
+                                     self._memory_owner(workspace.store), model)
+            if operation["run_id"] != run_id:
+                raise BoundaryError("local_model_export", "memory_lineage_mismatch")
+            destination = self.config.state_dir / EXPORT_ROOT / identity
+            selected_store = LocalDatasetService(self.config)._selected()[1]
+            verify_memory_package(workspace.store,
+                                  ObjectStoreRunReporter(workspace.store, selected_store.blobs),
+                                  identity, destination)
+            return destination
+
     def _finish(self, operation_id: str, **updates: Any) -> None:
         current = self._read()
         if (current.get("operation_id") != operation_id
