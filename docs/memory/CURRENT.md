@@ -1,7 +1,7 @@
 # Current project context, 2026-09-29
 
 Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; accepted develop
-anchor `004f0afeac46f627025360f7b0e7c890f6510393` after PR105.
+anchor `2b428b3aae904a4eedc3ef0241f071cb3d2db91c` after PR106.
 Resolve live GitHub refs before work; current authorities override this file.
 Source, CI, installation, Human operation and scientific results are separate.
 No complete Stage1a or policy-quality qualification is claimed. See the
@@ -70,8 +70,11 @@ Merged PR104/105 extend Managed merchant exit and consumer recovery. PR105
 head `33d0f295` passed full run `36567189499`; normal merge `004f0afe` retained
 its tree and integration run `36570628523` succeeded using verified same-tree
 reuse. A private 32-submission M2 continuation ended at its declared budget,
-not at a game terminal. The separate text-menu-v2 Connector candidate PR106
-is not implied accepted by these checks; resolve its current head and CI.
+not at a game terminal. PR106's text-menu-v2 Connector candidate `a2f0bbcdb`
+passed its own full run `36570764380` (Linux, Windows and portable success).
+Normal merge `2b428b3a` preserved candidate tree
+`182addae2bb4d070f2fddcb71859c45f39ca0c78`. Its separate integration run is
+`36577386158`; resolve that run before claiming integration checks complete.
 
 The [Managed v2 / environment Workbench candidate receipt](../evidence/STAGE1A_MANAGED_TEXT_V2_WORKBENCH_2026-09-29.md)
 records an exact temporary rc.20 package, text-only card/target intentions,

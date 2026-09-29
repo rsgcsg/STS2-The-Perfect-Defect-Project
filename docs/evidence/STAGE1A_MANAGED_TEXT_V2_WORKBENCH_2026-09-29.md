@@ -117,6 +117,22 @@ browser CSRF from authenticated environment status. Its 207 shell/project
 JavaScript tests and focused HTTP test passed. These tests do not replace
 the subsequent browser verification of the integrated source.
 
+At clean source `497c8746a8c6cf01fd8c181b2ac5647ffa86781c`, Safari's direct
+environment link opened the correct page without cloud login. Clicking Start
+created an isolated seeded instance; clicking the offered map action reached
+combat. This verifies the visible entry and one native submission, not the
+six-step sequence through the browser. Later automation could not reliably
+address the rerendered window, so the public authenticated HTTP Stop was used.
+The resulting report contains exactly one event:
+`a97e88ab8ec2e7b0e2faecd28e446fdf044c272097634d465c257f11d4801367`.
+At 13:44 UTC the session reported stopped, the temporary Workbench reported
+not_running, and a process check found no matching private driver/native child.
+
+The page remains an engineering entry: generic map-node labels and repeated
+action-button captions make inspection harder than the native page. Complete
+public context is retained, but the readable summary needs a separate
+presentation improvement. This is not evidence of a polished all-scenario UI.
+
 ### Source checks
 
 On final Host source `35dcf11a`, `npm --prefix components/host-runtime run check`
