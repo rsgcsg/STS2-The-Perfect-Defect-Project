@@ -334,9 +334,40 @@ reprojects it with the persisted tokenizer/configuration, and checks the map and
 episodes against that result. The exact immutable training-input artifact is
 already in the run and checkpoint parent chain; the M2 engine input digest and
 v1 checkpoints are unchanged. Existing experimental-v1 inputs without a map
-remain readable and are never rewritten. Both forms are train-only and create
-no dev report. The map records observation projection only; it does not claim
+remain readable and are never rewritten. Both forms are train-only. The map
+records observation projection only; it does not claim
 Human execution, delivery, Commit, or causal successor evidence.
+
+### Separate observed-source dev evaluation
+
+`stpd.workers.memory_evaluation.evaluate_memory` accepts a completed V2 M2
+model trained from a verified Human observed-input source and a separate verified
+dev observed-input source. Its caller must establish
+dev purpose and prior-use eligibility with the existing local curation owner
+before calling it. This research API does not grant source admission. It rejects
+shared source or evidence ancestry, session/native-stream overlap, and identical
+rendered current page plus complete catalog. It re-fits the tokenizer on the
+verified Human train source and requires exact saved bytes, then reprojects the
+train source against saved tensors and event map. Dev projection uses those same
+saved tokenizer bytes and never fits on dev. Arbitrary caller-tokenized V2
+models have no fit-origin proof and are excluded.
+
+Each dev episode starts from empty memory; unlabeled observations advance memory
+without a metric, and labeled decisions contribute candidate-aligned metrics.
+The frozen model runs in inference mode without an optimizer. Evaluation publishes
+an immutable `analysis` artifact with the `evaluation_input` parent role and an
+`offline_evaluation` with model, source, tokenizer, projection and event
+membership identities. `local_evaluation.summary` can display its recorded dev
+summary. This is an engineering retrospective, with native-run independence and
+scientific verdict unclaimed. A Reset result requires a separately trained
+`reset_each_step=True` model export; changing the config of an M2 export fails
+identity validation.
+
+There is no public `evaluate-memory` CLI yet: the local Workbench's curation
+ledger owns prior training-use exposure, and it currently has no read-only dev
+admission predicate for this new evaluation workflow. A caller must supply that
+gate before using the research API on real data. The train-only run is not
+retrospectively split into dev.
 
 After a run has been prepared with that Python API at the **same exact source
 identity**, the existing research CLI can execute it:

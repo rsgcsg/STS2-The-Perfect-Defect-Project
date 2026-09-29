@@ -15,6 +15,7 @@ from stpd.fullrun.features import VIEW_SCHEMA as FULLRUN_VIEW_SCHEMA
 from stpd.fullrun.public_bc import LEGACY_VIEW_SCHEMA as LEGACY_PUBLIC_BC_VIEW_SCHEMA
 from stpd.fullrun.public_bc import VIEW_SCHEMA as PUBLIC_BC_VIEW_SCHEMA
 from stpd.models.stage1a import RECIPES
+from stpd.workers.memory_evaluation import EVALUATION_SCHEMA as MEMORY_SCHEMA
 from stpd.workers.token_worker import EVALUATION_SCHEMA as TOKEN_SCHEMA
 
 SCHEMA = "stpd/local-offline-evaluation-summary-v1"
@@ -215,12 +216,66 @@ def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
     """Open one recorded report; full typed revalidation remains a separate owner path."""
     manifest = store.get_manifest(digest(evaluation_id, "local_evaluation.artifact_id"))
     schema = manifest.parameters.value().get("schema")
-    if manifest.kind != "offline_evaluation" or schema not in {FULLRUN_SCHEMA, TOKEN_SCHEMA}:
+    if manifest.kind != "offline_evaluation" or schema not in {
+        FULLRUN_SCHEMA, TOKEN_SCHEMA, MEMORY_SCHEMA,
+    }:
         raise BoundaryError("local_evaluation", "unsupported_evaluation")
     if manifest.parameters.value().get("partition") != "dev":
         raise BoundaryError("local_evaluation", "sealed_test_evaluation")
     if schema == TOKEN_SCHEMA:
         return _token_summary(store, manifest)
+    if schema == MEMORY_SCHEMA:
+        if (sorted(parent.role for parent in manifest.parents)
+                != ["evaluation_input", "model", "source"]
+                or [payload.role for payload in manifest.payloads] != ["metrics"]
+                or manifest.parameters.value().get("qualification") != "engineering_only"
+                or manifest.parameters.value().get("scientific_verdict") != "not_claimed"
+                or manifest.parameters.value().get("native_run_independence")
+                != "unknown_across_sessions"):
+            raise BoundaryError("local_evaluation", "invalid_memory_report")
+        model = store.get_manifest(manifest.parent("model"))
+        evaluation_input = store.get_manifest(manifest.parent("evaluation_input"))
+        if (model.kind != "model"
+                or model.parameters.value().get("schema") != "stpd/experimental-m2-model-v1"
+                or evaluation_input.kind != "analysis"
+                or evaluation_input.parameters.value().get("schema")
+                != "stpd/experimental-m2-evaluation-input-v1"
+                or evaluation_input.parent("model") != model.artifact_id
+                or evaluation_input.parent("source") != manifest.parent("source")
+                or model.producer != manifest.producer
+                or evaluation_input.producer != manifest.producer):
+            raise BoundaryError("local_evaluation", "invalid_memory_report")
+        recorded = object_fields(
+            _payload(store, manifest, "metrics", MAX_TOKEN_METRICS),
+            {"rows", "summary"}, "local_evaluation.memory_metrics",
+        )
+        if not isinstance(recorded["rows"], list):
+            raise BoundaryError("local_evaluation", "invalid_report_structure")
+        for row in recorded["rows"]:
+            if (not isinstance(row, dict) or set(row) != EVALUATION_COLUMNS
+                    or row.get("split") != "dev"
+                    or type(row.get("candidate_count")) is not int
+                    or row["candidate_count"] < 1
+                    or any(not isinstance(row.get(key), str) or not row[key]
+                           for key in ("transition_id", "run_id", "surface", "family"))):
+                raise BoundaryError("local_evaluation", "invalid_report_structure")
+            _overall({"count": 1, **{key: row[key] for key in METRICS}})
+        overall, runs, multiple = _report(recorded["summary"], human_input=True)
+        if (len(recorded["rows"]) != manifest.parameters.value().get("rows")
+                or len(recorded["rows"]) != overall["count"]):
+            raise BoundaryError("local_evaluation", "invalid_report_summary")
+        return {
+            "schema": SCHEMA, "validation_scope": SCOPE,
+            "evaluation_id": manifest.artifact_id, "evaluation_schema": schema,
+            "model_id": model.artifact_id, "evaluation_input_id": evaluation_input.artifact_id,
+            "dev_source_id": manifest.parent("source"), "partition": "dev",
+            "baseline": "model", "qualification": "engineering_only",
+            "scientific_verdict": "not_claimed", "decision_count": overall["count"],
+            "reported_run_groups": runs, "multi_candidate_count": multiple,
+            "overall": overall, "grouping": "session_scoped_run_group",
+            "native_run_independence": "unknown_across_sessions",
+            "interpretation": "producer_recorded_summary_not_full_lineage_or_quality_verification",
+        }
     if ({payload.role for payload in manifest.payloads} != {"metrics", "summary"}
             or manifest.parameters.value().get("scientific_verdict") != "not_claimed"
             or manifest.parameters.value().get("baseline")
