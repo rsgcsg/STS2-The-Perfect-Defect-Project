@@ -135,3 +135,37 @@ def test_failed_attempt_cannot_implicitly_retry(tmp_path):
                for event in reporter.events(run.artifact_id))
     with pytest.raises(BoundaryError, match="existing_attempt_requires_explicit_resume"):
         execute_memory_run(store, reporter, run.artifact_id, PRODUCER)
+
+
+def test_failed_checkpoint_write_resumes_only_from_last_durable_episode(tmp_path):
+    store, reporter, _, _, run = setup(tmp_path)
+    original_put = store.put_payload
+    writes = 0
+
+    def fail_second_checkpoint(role, stream, media_type="application/octet-stream"):
+        nonlocal writes
+        if role == "checkpoint":
+            writes += 1
+            if writes == 2:
+                raise RuntimeError("synthetic checkpoint storage failure")
+        return original_put(role, stream, media_type)
+
+    with (patch.object(store, "put_payload", side_effect=fail_second_checkpoint),
+          pytest.raises(RuntimeError, match="checkpoint storage failure")):
+        execute_memory_run(store, reporter, run.artifact_id, PRODUCER)
+    events = reporter.events(run.artifact_id)
+    good = [event.parameters.value()["details"]["checkpoint_id"] for event in events
+            if event.parameters.value()["kind"] == "checkpoint"]
+    assert len(good) == 1
+    failed = [event for event in events if event.parameters.value()["kind"] == "failed"]
+    assert len(failed) == 1
+    assert failed[0].parameters.value()["details"]["last_checkpoint"] == good[0]
+    assert reporter.completed(run.artifact_id) is None
+    with pytest.raises(BoundaryError, match="existing_attempt_requires_explicit_resume"):
+        execute_memory_run(store, reporter, run.artifact_id, PRODUCER)
+
+    resumed = execute_memory_run(store, reporter, run.artifact_id, PRODUCER, resume=good[0])
+    assert resumed.state == "completed" and resumed.result_id
+    assert store.get_manifest(resumed.result_id).parent("checkpoint") != good[0]
+    assert any(event.parameters.value()["kind"] == "failed"
+               for event in reporter.events(run.artifact_id))

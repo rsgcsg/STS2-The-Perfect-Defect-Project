@@ -64,6 +64,18 @@ def finish(engine: MemoryRankingEngine) -> bytes:
     return engine.checkpoint()
 
 
+def test_snapshot_input_is_independent_of_live_engine():
+    engine = MemoryRankingEngine(source(), config())
+    before = engine.checkpoint()
+    first = engine.snapshot_input()
+    second = engine.snapshot_input()
+    first.episodes[0].steps[0].page[0] = 11
+    first.episodes[1].steps[1].previous_actual_action[0] = 12
+    assert second.episodes[0].steps[0].page.tolist() == [1, 2]
+    assert second.episodes[1].steps[1].previous_actual_action.tolist() == [8]
+    assert engine.checkpoint() == before
+
+
 def test_same_and_new_process_resume_match_uninterrupted_with_dropout(tmp_path: Path):
     inputs, settings = source(), config()
     baseline = MemoryRankingEngine(inputs, settings)

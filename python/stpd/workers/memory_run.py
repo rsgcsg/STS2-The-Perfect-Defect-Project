@@ -92,7 +92,7 @@ def prepare_memory_run(
     # A parent is lineage only. Its kind or identifier never grants admission.
     store.get_manifest(source.source_id)
     engine = MemoryRankingEngine(source, config)
-    raw = _input_bytes(engine._episodes)
+    raw = _input_bytes(engine.snapshot_input().episodes)
     if len(raw) > MAX_INPUT_BYTES:
         raise BoundaryError("memory_run", "input_size_limit")
     episode_payload = store.put_payload("episodes", io.BytesIO(raw),
