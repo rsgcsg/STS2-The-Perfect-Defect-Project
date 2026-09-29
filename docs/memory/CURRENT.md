@@ -1,7 +1,7 @@
 # Current project context, 2026-09-29
 
 Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Develop anchor:
-`185737cc230b856f03476b97cb71212732f2d197`, after #86 and #88.
+`05be8a6af4983adcc3c2a93e204a005a9df6454f`, after #86, #88 and #89.
 Resolve live GitHub refs before work; current authorities override this file. Source, CI, installation, Human evidence and scientific results are
 separate. No complete Stage1a or policy-quality qualification is claimed.
 
@@ -14,7 +14,7 @@ separate. No complete Stage1a or policy-quality qualification is claimed.
   unknown. Verified import/preview preserved raw hashes. The dataset owner then
   saved the 537-label source for training; its split is unchecked and it has
   not trained a model. Two recorded run IDs do not prove two independent games.
-- **Potion correction:** #88 merged at the anchor above. Candidate full run
+- **Potion correction:** #88 is merged. Candidate full run
   [36459424937](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36459424937)
   passed. Merge run 36463472731 reused verified same-tree execution plus fresh
   guards; it did not repeat both OS suites. The
@@ -35,16 +35,16 @@ separate. No complete Stage1a or policy-quality qualification is claimed.
 
 D-Simple is the default application recipe. [M2 computation and sequence
 notes](../../python/docs/research/DSIMPLE_MEMORY.md) describe a separate
-experimental model, not a live recipe. The observed-source bridge in #90 turns
-caller-verified sequences into bounded complete-prefix windows; ledger admission,
-independent splits, a real-data worker, export and runtime are still separate.
+experimental model, not a live recipe. PR90 adds bounded prefix/episode bridges and TBPTT.
+Explicit verified settling retains event provenance without updating memory.
+Ledger admission, independent splits, worker/export/runtime remain separate.
 Synthetic cue tests do not prove game strategy or memory generalization.
 
 Connector uses `text-menu-v1`. The Managed session still exposes the legacy
-Player Environment contract; #89 adds an opt-in in-process map-only text adapter.
-Its current CI and head must be read from the PR. It is not a public multi-client
-service, all-scene support or cross-Host equivalence. Source merges do not update
-running processes automatically.
+Player Environment contract. Merged #89 adds a map-only text adapter: exact
+CI and isolated map-to-combat process smoke passed; combat stays unsupported.
+This is not a public multi-client service or cross-Host equivalence. Merging
+source does not update running processes.
 
 ## Remaining Platform non-claims
 
