@@ -24,6 +24,15 @@ events; text-menu runs cannot mix in generic Receipt/Successor events, and each
 dispatch records exact cumulative menu/native attempt counts. Unknown delivery
 has no retry or successor. This is ordinary Agent-run
 integrity verification, not Human origin or research admission.
+`text_menu_dispatch_cancelled` records the Runtime's `recovery_before_submit`
+disposition for one previously recorded dispatch attempt. It consumes that
+attempt without inventing a Connector result, native delivery or successor.
+Cancellation has exact fields `decision_id` and `reason`; missing attempts,
+duplicate dispositions, later results and successors are rejected. Attempt
+counters include this preparation and do not prove actual submission. This
+verifier checks the producer's ordered evidence, not whether the game executed
+an action independently. The event requires Evidence rc.23 or later; older
+strict verifiers must not be used to qualify such a run.
 Older finalized runs remain readable. A verifier pinned to an earlier strict
 Evidence version rejects runs containing this new event, so consumers must pin
 the rc.18 candidate before claiming verification of such runs.

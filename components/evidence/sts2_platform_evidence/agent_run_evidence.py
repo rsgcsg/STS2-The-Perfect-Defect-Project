@@ -466,6 +466,7 @@ _EVENT_KINDS = {
     "text_decision_input",
     "text_observation_not_admitted",
     "text_menu_dispatch_attempt",
+    "text_menu_dispatch_cancelled",
     "menu_navigation",
     "text_native_delivery",
     "text_native_unknown",
@@ -535,7 +536,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             raise AgentRunEvidenceError("unsupported_event_kind", f"unsupported event kind: {kind}", _EVENTS_FILE)
         if input_schema in _TEXT_SNAPSHOT_SCHEMAS and kind in {"receipt", "receipt_rejected", "successor"}:
             raise AgentRunEvidenceError("text_profile_association", "text-menu run cannot use generic receipt or successor evidence", _EVENTS_FILE)
-        if v2_unknown_seen and kind in {"text_decision_input", "text_menu_dispatch_attempt", "menu_navigation",
+        if v2_unknown_seen and kind in {"text_decision_input", "text_menu_dispatch_attempt", "text_menu_dispatch_cancelled", "menu_navigation",
                                         "text_native_delivery", "text_native_unknown", "text_menu_not_applied",
                                         "text_menu_result_rejected", "text_observed_successor"}:
             raise AgentRunEvidenceError("unknown_retry", "v2 unknown native delivery cannot continue text decisions or delivery", _EVENTS_FILE)
@@ -685,6 +686,16 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             # an actual dispatch proves an active budget, never a fresh reset.
             autonomy_mode = True
             text_dispatches[decision_id] = payload
+        elif kind == "text_menu_dispatch_cancelled":
+            # This is a Runtime pre-submit disposition, never a Connector receipt.
+            _exact_keys(payload, {"decision_id", "reason"}, "text dispatch cancellation")
+            decision_id = _text(payload, "decision_id", _EVENTS_FILE)
+            _enum(payload, "reason", {"recovery_before_submit"}, _EVENTS_FILE)
+            if decision_id not in text_dispatches:
+                raise AgentRunEvidenceError("text_dispatch_binding", "cancellation lacks a prior dispatch attempt", _EVENTS_FILE)
+            if decision_id in text_outcomes:
+                raise AgentRunEvidenceError("duplicate_text_result", "multiple text outcomes for one decision", _EVENTS_FILE)
+            text_outcomes[decision_id] = kind
         elif kind in {"menu_navigation", "text_native_delivery", "text_native_unknown", "text_menu_not_applied", "text_menu_result_rejected"}:
             decision_id = _verify_text_outcome(kind, payload, manifest, environment, decisions, text_inputs, text_dispatches, input_schema)
             if decision_id in text_outcomes:

@@ -757,6 +757,60 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         self._rewrite_events(directory, events)
         return directory
 
+    def test_cancelled_dispatch_seals_without_fabricating_connector_result(self) -> None:
+        for protocol in (2, 3):
+            for native in (False, True):
+                with self.subTest(protocol=protocol, native=native):
+                    directory = self._text_evidence(
+                        f"cancelled-{protocol}-{native}", native=native,
+                        adapter_protocol=f"sts2.policy-runtime/decision-only-ndjson-{protocol}",
+                    )
+                    events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+                    cancellation = {**events[5], "kind": "text_menu_dispatch_cancelled",
+                                    "payload": {"decision_id": "decision-1", "reason": "recovery_before_submit"}}
+                    events = [*events[:5], cancellation, events[-1]]
+                    self._rewrite_events(directory, [{**event, "sequence": index} for index, event in enumerate(events, 1)])
+                    result = AgentRunEvidenceVerifier().verify(directory)
+                    self.assertTrue(result.passed, result.findings)
+
+    def test_cancelled_dispatch_rejects_missing_attempt_bad_reason_and_duplicate_outcome(self) -> None:
+        for case in ("no_attempt", "wrong_decision", "bad_reason", "extra_result", "duplicate",
+                     "late_result", "after_result", "successor"):
+            with self.subTest(case=case):
+                directory = self._text_evidence("cancelled-" + case, native=True)
+                original = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+                cancellation = {**original[5], "kind": "text_menu_dispatch_cancelled",
+                                "payload": {"decision_id": "decision-1", "reason": "recovery_before_submit"}}
+                events = [*original[:5], cancellation, original[-1]]
+                code = "text_dispatch_binding"
+                if case == "no_attempt":
+                    del events[4]
+                elif case == "wrong_decision":
+                    cancellation["payload"]["decision_id"] = "not-this-decision"
+                elif case == "bad_reason":
+                    cancellation["payload"]["reason"] = "connector_rejected"
+                    code = "invalid_value"
+                elif case == "extra_result":
+                    cancellation["payload"]["result"] = original[5]["payload"]["result"]
+                    code = "schema_keys"
+                elif case == "duplicate":
+                    events.insert(6, cancellation)
+                    code = "duplicate_text_result"
+                elif case == "late_result":
+                    events.insert(6, original[5])
+                    code = "duplicate_text_result"
+                elif case == "after_result":
+                    events.insert(5, original[5])
+                    code = "duplicate_text_result"
+                elif case == "successor":
+                    events.insert(6, original[6])
+                    code = "successor_association"
+                # Rehash the actual bundle: failures must be semantic, not stale digests.
+                self._rewrite_events(directory, [{**event, "sequence": index} for index, event in enumerate(events, 1)])
+                result = AgentRunEvidenceVerifier().verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, code)
+
     def test_v2_connector_selection_fixture_is_verified(self) -> None:
         directory = self._text_v2_evidence("v2-selection")
         self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
