@@ -151,14 +151,19 @@ gameplay contract. A consumer owns policy. Future training adapters may encode
 observations, masks, and rewards, but those do not become STS2 truth.
 
 The experimental `ManagedTextMenuSessionAdapter` is an in-process opt-in
-projection of complete current Managed map, rest-site, deck-upgrade, and combat
+projection of complete current Managed map, event, rest-site, deck-upgrade, and combat
 catalogs to `text-menu-v1`. It admits only those reviewed surfaces and requires
 complete finite action counts plus unique, internally referenced bindings; it
 preserves every advertised action and argument in source order. The earlier
 `ManagedTextMenuMapSessionAdapter` import remains an alias. It keeps exact
 native bindings private and rechecks the current page before dispatch.
 
-Rest-site option submission carries the observed native option identity for
+Event options retain the game's visible order and locked options remain visible
+but non-executable. An executable event choice carries the current native room,
+event, and option identities as private operands; the native handler rechecks
+those identities, the index, and unlocked state before calling the game's
+choice. An unfinished event with no options is unsupported. Rest-site option
+submission carries the observed native option identity for
 execute-time validation. Deck-upgrade selection carries the exact native
 invocation preferences and original card references: selection enters a
 preview, preview cancellation returns to selection, and confirmation completes

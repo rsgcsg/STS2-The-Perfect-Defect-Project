@@ -53,6 +53,21 @@ function restDecision() {
   };
 }
 
+function eventDecision() {
+  return {
+    type: "decision", decision: "event_choice",
+    context: { ...mapDecision().context, floor: 1, total_floor: 1, room_type: "Event" },
+    room_ref: "native-event-room", event_ref: "native-event-instance",
+    event_name: "Neow", description: "Choose a boon.",
+    options: [
+      { index: 0, native_ref: "native-option-a", title: "First boon", description: "Gain a boon.", is_locked: false },
+      { index: 1, native_ref: "native-option-b", title: "Second boon", description: "Another boon.", is_locked: false },
+      { index: 2, native_ref: "native-option-locked", title: "Locked boon", description: "Unavailable.", is_locked: true }
+    ],
+    player: mapDecision().player
+  };
+}
+
 function deckUpgradeDecision(stage = "selecting", cardRefs = ["native-card-a", "native-card-b"]) {
   const preview = stage === "preview";
   return {
@@ -105,6 +120,39 @@ function rewardDecision(kind = "reward_set") {
     ] };
   return { ...common, decision: "combat_rewards_complete", room_ref: "combat-room", is_boss: false };
 }
+
+test("event text menu keeps every visible option and exact current private bindings", async () => {
+  const projected = projectManagedCandidateDecision({ state: eventDecision(), ...identity });
+  const adapter = new ManagedTextMenuSessionAdapter({ observe: () => projected.snapshot,
+    async submit() { throw new Error("observation must not dispatch"); } });
+  const menu = adapter.observe();
+  assert.equal(menu.interaction.kind, "event_option");
+  assert.equal(menu.menu_actions.status, "complete");
+  assert.equal(menu.interaction.content.surface.options.length, 3);
+  assert.deepEqual(menu.menu_actions.actions.map((action) => action.label),
+    ["First boon", "Second boon"]);
+  assert.deepEqual([...projected.bindings.values()].map((binding) => binding.raw_request.args), [
+    { option_index: 0, room_ref: "native-event-room", event_ref: "native-event-instance", option_ref: "native-option-a" },
+    { option_index: 1, room_ref: "native-event-room", event_ref: "native-event-instance", option_ref: "native-option-b" }
+  ]);
+  assert.equal(JSON.stringify(menu).includes("native-event-instance"), false);
+  assert.equal(JSON.stringify(menu).includes("native-option-a"), false);
+
+  for (const bad of [
+    { ...eventDecision(), room_ref: null },
+    { ...eventDecision(), event_ref: null },
+    { ...eventDecision(), options: [{ ...eventDecision().options[0], native_ref: null }] },
+    { ...eventDecision(), options: [{ ...eventDecision().options[0], index: 1 }] },
+    { ...eventDecision(), options: [{ ...eventDecision().options[0], is_locked: null }] },
+    { ...eventDecision(), options: [] }
+  ]) {
+    const unavailable = projectManagedCandidateDecision({ state: bad, ...identity }).snapshot;
+    assert.equal(unavailable.bound_actions.status, "unavailable");
+    assert.equal(new ManagedTextMenuSessionAdapter({ observe: () => unavailable,
+      async submit() { throw new Error("incomplete event dispatched"); } }).observe().menu_actions.status,
+    "unavailable");
+  }
+});
 
 test("reward text menu preserves every current callback choice and native binding", async () => {
   const projected = projectManagedCandidateDecision({ state: rewardDecision("card_reward"), ...identity });

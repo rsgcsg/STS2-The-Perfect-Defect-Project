@@ -36,6 +36,11 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
+    "source_patch_sha256": "21d7fc1b9360f83007dd795161ee1977c55df131295ea247df4d2c4cd2145f60",
+    "artifact_sha256": "b223141f4bde996d06b86960e32bbd14e69e3fdf74894b4c35fe58c0edc662bd",
+    "artifact_mvid": "29167d9c-6a36-4753-8215-608722a062f2"
+  },
+  "previous_accepted_build": {
     "source_patch_sha256": "93c90b690490f7490eea1c66e2feea658c94306ed88d0194ab131d61ceb1bada",
     "artifact_sha256": "ca5f16ce98fbaab2e24a49927d7faec03c04fbaa73df549fa69adf17e8d5a260",
     "artifact_mvid": "46fba5f2-1db0-4d90-ad83-29d05e3d2139"
@@ -151,6 +156,12 @@
       "kind": "host_lifecycle_adapter",
       "risk": "high",
       "effect": "tracks the one game-owned event, rest, or merchant task that may suspend on a player selection before successor observation"
+    },
+    {
+      "id": "exact_event_option_binding",
+      "kind": "host_presentation_adapter",
+      "risk": "medium",
+      "effect": "requires the current native event room, event instance, option object, index, and unlocked state before the game-owned event choice"
     },
     {
       "id": "in_process_run_cleanup",

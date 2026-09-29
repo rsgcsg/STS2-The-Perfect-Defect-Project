@@ -15,7 +15,7 @@ function textSnapshotId(snapshotId) {
 }
 
 const REVIEWED_TEXT_MENU_SURFACES = new Set([
-  "map_navigation", "rest_site", "deck_upgrade_selection", "combat_turn",
+  "map_navigation", "event_option", "rest_site", "deck_upgrade_selection", "combat_turn",
   "reward_claim", "card_reward_selection", "reward_completion"
 ]);
 
