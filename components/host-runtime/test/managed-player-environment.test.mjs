@@ -44,11 +44,13 @@ function eventState() {
     type: "decision",
     decision: "event_choice",
     context: { act: 1, floor: 1, room_type: "Event" },
+    room_ref: "event-room-a",
+    event_ref: "event-a",
     event_name: "Neow",
     description: "Choose.",
     options: [
-      { index: 0, title: "Open", description: "Available", is_locked: false },
-      { index: 1, title: "Locked", description: "Unavailable", is_locked: true }
+      { index: 0, native_ref: "event-option-open", title: "Open", description: "Available", is_locked: false },
+      { index: 1, native_ref: "event-option-locked", title: "Locked", description: "Unavailable", is_locked: true }
     ],
     player: player()
   };
@@ -363,6 +365,21 @@ test("projects native reward sets without exposing exact reward or room operands
   const requests = [...projection.bindings.values()].map((binding) => binding.raw_request);
   assert.equal(requests.some((request) => request.args?.reward_ref === "reward-gold-a"), true);
   assert.equal(requests.some((request) => request.args?.room_ref === "combat-room-a"), true);
+});
+
+test("a non-skippable terminal reward set offers claims without proceed", () => {
+  const projection = projectManagedCandidateDecision({
+    ...projectionIdentity,
+    state: {
+      type: "decision", decision: "reward_set",
+      context: { act: 1, floor: 2, room_type: "Monster" },
+      rewards: [{ index: 0, native_ref: "required-reward", kind: "gold", name: "Gold" }],
+      potion_slots_full: false, can_skip: false, is_terminal: true, can_proceed: false,
+      room_ref: "combat-room", is_boss: false, player: player()
+    }
+  });
+  assert.deepEqual([...projection.bindings.values()].map((binding) => binding.raw_request.action),
+    ["select_reward"]);
 });
 
 test("blocks a full-belt potion reward and publishes exact native potion discards", () => {

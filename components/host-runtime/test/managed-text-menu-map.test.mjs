@@ -53,6 +53,21 @@ function restDecision() {
   };
 }
 
+function eventDecision() {
+  return {
+    type: "decision", decision: "event_choice",
+    context: { ...mapDecision().context, floor: 1, total_floor: 1, room_type: "Event" },
+    room_ref: "native-event-room", event_ref: "native-event-instance",
+    event_name: "Neow", description: "Choose a boon.",
+    options: [
+      { index: 0, native_ref: "native-option-a", title: "First boon", description: "Gain a boon.", is_locked: false },
+      { index: 1, native_ref: "native-option-b", title: "Second boon", description: "Another boon.", is_locked: false },
+      { index: 2, native_ref: "native-option-locked", title: "Locked boon", description: "Unavailable.", is_locked: true }
+    ],
+    player: mapDecision().player
+  };
+}
+
 function deckUpgradeDecision(stage = "selecting", cardRefs = ["native-card-a", "native-card-b"]) {
   const preview = stage === "preview";
   return {
@@ -88,6 +103,177 @@ function combatDecision() {
     }] }
   };
 }
+
+function rewardDecision(kind = "reward_set") {
+  const common = { type: "decision", context: { ...mapDecision().context, floor: 2,
+    total_floor: 2, room_type: "Monster" }, player: mapDecision().player };
+  if (kind === "reward_set") return { ...common, decision: kind,
+    rewards: [{ index: 0, native_ref: "reward-card", kind: "card_choice", name: "Add a card" }],
+    potion_slots_full: false, can_skip: true, is_terminal: true, can_proceed: true,
+    room_ref: "combat-room", is_boss: false };
+  if (kind === "card_reward") return { ...common, decision: kind,
+    cards: [{ index: 0, native_ref: "creation-result-a", id: "CARD.STRIKE", name: "Strike" }],
+    alternatives: [
+      { index: 0, native_ref: "alternative-skip", id: "Skip", name: "Skip" },
+      { index: 1, native_ref: "alternative-reroll", id: "REROLL", name: "Reroll" },
+      { index: 2, native_ref: "alternative-sacrifice", id: "SACRIFICE", name: "Sacrifice" }
+    ] };
+  return { ...common, decision: "combat_rewards_complete", room_ref: "combat-room", is_boss: false };
+}
+
+test("event text menu keeps every visible option and exact current private bindings", async () => {
+  const projected = projectManagedCandidateDecision({ state: eventDecision(), ...identity });
+  const adapter = new ManagedTextMenuSessionAdapter({ observe: () => projected.snapshot,
+    async submit() { throw new Error("observation must not dispatch"); } });
+  const menu = adapter.observe();
+  assert.equal(menu.interaction.kind, "event_option");
+  assert.equal(menu.menu_actions.status, "complete");
+  assert.equal(menu.interaction.content.surface.options.length, 3);
+  assert.deepEqual(menu.menu_actions.actions.map((action) => action.label),
+    ["First boon", "Second boon"]);
+  assert.deepEqual([...projected.bindings.values()].map((binding) => binding.raw_request.args), [
+    { option_index: 0, room_ref: "native-event-room", event_ref: "native-event-instance", option_ref: "native-option-a" },
+    { option_index: 1, room_ref: "native-event-room", event_ref: "native-event-instance", option_ref: "native-option-b" }
+  ]);
+  assert.equal(JSON.stringify(menu).includes("native-event-instance"), false);
+  assert.equal(JSON.stringify(menu).includes("native-option-a"), false);
+
+  for (const bad of [
+    { ...eventDecision(), room_ref: null },
+    { ...eventDecision(), event_ref: null },
+    { ...eventDecision(), options: [{ ...eventDecision().options[0], native_ref: null }] },
+    { ...eventDecision(), options: [{ ...eventDecision().options[0], index: 1 }] },
+    { ...eventDecision(), options: [{ ...eventDecision().options[0], is_locked: null }] },
+    { ...eventDecision(), options: [null, eventDecision().options[1]] },
+    { ...eventDecision(), options: [eventDecision().options[0],
+      { ...eventDecision().options[1], native_ref: "native-option-a" }] },
+    { ...eventDecision(), options: [] }
+  ]) {
+    const unavailable = projectManagedCandidateDecision({ state: bad, ...identity }).snapshot;
+    assert.equal(unavailable.bound_actions.status, "unavailable");
+    assert.equal(unavailable.interaction.content.surface.options.length, bad.options.length);
+    assert.equal(new ManagedTextMenuSessionAdapter({ observe: () => unavailable,
+      async submit() { throw new Error("incomplete event dispatched"); } }).observe().menu_actions.status,
+    "unavailable");
+  }
+});
+
+test("event callback failure after dispatch remains unknown and cannot be retried", async () => {
+  let nativeCalls = 0;
+  const process = { async request(request) {
+    if (request.cmd === "start_run") return eventDecision();
+    nativeCalls += 1;
+    return { type: "error", message: "The bound event option changed before native invocation." };
+  } };
+  const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+  await session.mount({ seed: "EVENT-UNKNOWN" });
+  const adapter = new ManagedTextMenuSessionAdapter(session);
+  const page = adapter.observe();
+  const request = { request_id: "event-callback-unknown", expected_snapshot_id: page.snapshot_id,
+    action_id: page.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE };
+  const first = await adapter.submit(request);
+  assert.equal(first.status, "unknown");
+  assert.equal(first.native_delivery, "unknown");
+  assert.equal(first.retry, "never");
+  assert.equal(first.successor, null);
+  assert.equal(session.tainted, true);
+  assert.deepEqual(await adapter.submit(request), first);
+  assert.equal(nativeCalls, 1);
+  const later = await adapter.submit({ ...request, request_id: "event-callback-later" });
+  assert.equal(later.status, "not_applied");
+  assert.equal(nativeCalls, 1);
+});
+
+test("reward text menu preserves every current callback choice and native binding", async () => {
+  const projected = projectManagedCandidateDecision({ state: rewardDecision("card_reward"), ...identity });
+  assert.equal(projected.snapshot.bound_actions.status, "complete");
+  const adapter = new ManagedTextMenuSessionAdapter({ observe: () => projected.snapshot,
+    async submit() { throw new Error("observation does not dispatch"); } });
+  const menu = adapter.observe();
+  assert.equal(menu.menu_actions.status, "complete");
+  assert.deepEqual(menu.menu_actions.actions.map((action) => action.label),
+    ["Take Strike", "Skip", "Reroll", "Sacrifice"]);
+  assert.deepEqual([...projected.bindings.values()].map((binding) => binding.raw_request), [
+    { cmd: "action", action: "select_card_reward", args: { card_ref: "creation-result-a" } },
+    { cmd: "action", action: "select_card_reward_alternative", args: { alternative_ref: "alternative-skip" } },
+    { cmd: "action", action: "select_card_reward_alternative", args: { alternative_ref: "alternative-reroll" } },
+    { cmd: "action", action: "select_card_reward_alternative", args: { alternative_ref: "alternative-sacrifice" } }
+  ]);
+  assert.equal(JSON.stringify(menu).includes("alternative-reroll"), false);
+
+  for (const bad of [
+    { ...rewardDecision("card_reward"), alternatives: undefined },
+    { ...rewardDecision("card_reward"), alternatives: {} },
+    { ...rewardDecision("card_reward"), alternatives: "Skip" },
+    { ...rewardDecision("card_reward"), alternatives: [null] },
+    { ...rewardDecision("card_reward"), alternatives: [{ index: 0, native_ref: "alternative-skip", id: 42, name: "Skip" }] },
+    { ...rewardDecision("card_reward"), alternatives: [{ index: 0, native_ref: "alternative-skip", id: "Skip", name: {} }] },
+    { ...rewardDecision("card_reward"), cards: null },
+    { ...rewardDecision("card_reward"), cards: {} },
+    { ...rewardDecision("card_reward"), cards: [null] },
+    { ...rewardDecision("card_reward"), cards: [{ index: 0, native_ref: 42, name: "Strike" }] },
+    { ...rewardDecision("card_reward"), cards: [{ index: 0, native_ref: "creation-result-a", id: 42, name: "Strike" }] },
+    { ...rewardDecision("card_reward"), cards: [{ index: 0, native_ref: "creation-result-a", id: "CARD.STRIKE", name: {} }] },
+    { ...rewardDecision("card_reward"), alternatives: [] , cards: [] },
+    { ...rewardDecision("card_reward"), alternatives: [{ index: 0, id: "SACRIFICE", name: "Sacrifice" }] },
+    { ...rewardDecision("card_reward"), alternatives: [{ index: 0, native_ref: "creation-result-a", id: "SACRIFICE", name: "Sacrifice" }] }
+  ]) {
+    const unavailable = projectManagedCandidateDecision({ state: bad, ...identity }).snapshot;
+    assert.equal(unavailable.bound_actions.status, "unavailable");
+    assert.equal(new ManagedTextMenuSessionAdapter({ observe: () => unavailable,
+      async submit() { throw new Error("incomplete callback dispatched"); } }).observe().menu_actions.status,
+    "unavailable");
+  }
+  const noSkip = rewardDecision("card_reward");
+  noSkip.alternatives = noSkip.alternatives.slice(1).map((option, index) => ({ ...option, index }));
+  const noSkipSnapshot = projectManagedCandidateDecision({ state: noSkip, ...identity }).snapshot;
+  assert.equal(noSkipSnapshot.interaction.content.surface.can_skip, false);
+  assert.equal(noSkipSnapshot.bound_actions.actions.some((action) => action.verb === "skip"), false);
+  for (const kind of ["reward_set", "combat_rewards_complete"]) {
+    const snapshot = projectManagedCandidateDecision({ state: rewardDecision(kind), ...identity }).snapshot;
+    assert.equal(new ManagedTextMenuSessionAdapter({ observe: () => snapshot,
+      async submit() { throw new Error("observation does not dispatch"); } }).observe().menu_actions.status,
+    "complete", kind);
+  }
+});
+
+test("reward text leaves submit through MPE and rebind each native successor", async () => {
+  let current = rewardDecision("reward_set");
+  const raw = [];
+  const process = { async request(request) {
+    if (request.cmd === "start_run") return current;
+    if (request.cmd === "run_identity") return { type: "run_identity", seed: "REWARDCHAIN" };
+    raw.push(request);
+    if (request.action === "select_reward") current = rewardDecision("card_reward");
+    else if (request.action === "select_card_reward") current = rewardDecision("combat_rewards_complete");
+    else if (request.action === "proceed") current = mapDecision();
+    else throw new Error(`unexpected native action ${request.action}`);
+    return current;
+  } };
+  const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+  await session.mount({ seed: "REWARDCHAIN" });
+  const adapter = new ManagedTextMenuSessionAdapter(session);
+  let page = adapter.observe();
+  for (const [kind, label, successor] of [
+    ["reward_claim", /Claim Add a card/u, "card_reward_selection"],
+    ["card_reward_selection", /Take Strike/u, "reward_completion"],
+    ["reward_completion", /Proceed to map/u, "map_navigation"]
+  ]) {
+    assert.equal(page.interaction.kind, kind);
+    const action = page.menu_actions.actions.find((entry) => label.test(entry.label));
+    assert.ok(action);
+    const receipt = await adapter.submit({ request_id: `reward-${kind}`,
+      expected_snapshot_id: page.snapshot_id, action_id: action.action_id,
+      input_profile: MANAGED_TEXT_MENU_PROFILE });
+    assert.equal(receipt.status, "applied");
+    assert.equal(receipt.successor.interaction.kind, successor);
+    page = receipt.successor;
+  }
+  assert.deepEqual(raw.filter((request) => request.cmd === "action").map((request) => request.action),
+    ["select_reward", "select_card_reward", "proceed"]);
+  assert.deepEqual(raw.filter((request) => request.cmd === "action")[1].args,
+    { card_ref: "creation-result-a" });
+});
 
 test("deck upgrade exposes staged exact card, preview, confirm, and cancel inputs", async () => {
   let current = deckUpgradeDecision();
@@ -431,7 +617,7 @@ test("text menu defers combat legality to MPE and accepts only reviewed surfaces
   assert.deepEqual(unsupportedFor(futureVerb).menu_actions.actions.map((action) => action.verb),
     ["future_exact_mpe_action", "end_turn", "use", "activate"]);
 
-  for (const surface of ["event_choice", "card_reward_selection", "bundle_selection"]) {
+  for (const surface of ["event_choice", "bundle_selection"]) {
     const unreviewed = structuredClone(base);
     unreviewed.interaction.kind = surface;
     assert.equal(unsupportedFor(unreviewed).menu_actions.status, "unavailable", surface);

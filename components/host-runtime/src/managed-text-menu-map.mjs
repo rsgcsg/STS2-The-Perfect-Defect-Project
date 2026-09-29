@@ -15,7 +15,8 @@ function textSnapshotId(snapshotId) {
 }
 
 const REVIEWED_TEXT_MENU_SURFACES = new Set([
-  "map_navigation", "rest_site", "deck_upgrade_selection", "combat_turn"
+  "map_navigation", "event_option", "rest_site", "deck_upgrade_selection", "combat_turn",
+  "reward_claim", "card_reward_selection", "reward_completion"
 ]);
 
 function completeCurrentLeaf(snapshot) {
@@ -88,7 +89,7 @@ function project(snapshot, allowActions = true) {
   };
 }
 
-/** In-process projection of complete current Managed map, rest, deck-upgrade, and direct combat leaves. */
+/** In-process projection of reviewed complete current Managed decision leaves. */
 export class ManagedTextMenuSessionAdapter {
   #session;
   #bindings = new Map();

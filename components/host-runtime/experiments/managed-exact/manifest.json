@@ -36,9 +36,14 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "40d2e4cde715954c75125c12f30cc31cdf2b08dffd619bf95ca28f9913e7e030",
-    "artifact_sha256": "9a1d9445971d54f471701a84a6f95ed4984a2d60dc1319e1846f068eda1fd02b",
-    "artifact_mvid": "a75a426d-db7c-45a6-9d34-1179b2e35003"
+    "source_patch_sha256": "041e5314a42851392fb4a50eec0558a10b5d8a6b218f10eb5adfee7130a8d042",
+    "artifact_sha256": "813cb77d3ee9c896cfbfb0ef601e262b0f0fd2389f40c0946e06336e34e94151",
+    "artifact_mvid": "2585772e-1c62-4d61-8568-d39809bf5bec"
+  },
+  "previous_candidate_build": {
+    "source_patch_sha256": "93c90b690490f7490eea1c66e2feea658c94306ed88d0194ab131d61ceb1bada",
+    "artifact_sha256": "ca5f16ce98fbaab2e24a49927d7faec03c04fbaa73df549fa69adf17e8d5a260",
+    "artifact_mvid": "46fba5f2-1db0-4d90-ad83-29d05e3d2139"
   },
   "last_measured_build": {
     "source_patch_sha256": "56af273801537d4ff3968a8e513c072ec94d3b17e0e771868ede2002e120c770",
@@ -48,7 +53,7 @@
   "platform_baselines": [
     {
       "baseline_id": "win32-x64-v0.111.0-41cef1ea-managed-candidate",
-      "status": "windows_candidate_separate_provenance",
+      "status": "historical_windows_candidate_previous_patch",
       "exact_game": {
         "platform": "win32",
         "architecture": "x64",
@@ -64,6 +69,7 @@
         "artifact_mvid": "387bc1a3-5a3f-4f76-babb-698a770cdb8b"
       },
       "non_claims": [
+        "This Windows artifact belongs to the previous patch and is not a build admission for the current source patch.",
         "This Windows build has separate provenance and does not inherit macOS qualification.",
         "Admission is candidate-local and does not establish formal H1.0 support."
       ]
@@ -150,6 +156,12 @@
       "kind": "host_lifecycle_adapter",
       "risk": "high",
       "effect": "tracks the one game-owned event, rest, or merchant task that may suspend on a player selection before successor observation"
+    },
+    {
+      "id": "exact_event_option_binding",
+      "kind": "host_presentation_adapter",
+      "risk": "medium",
+      "effect": "requires the current native event room, event instance, option object, index, and unlocked state before the game-owned event choice"
     },
     {
       "id": "in_process_run_cleanup",
