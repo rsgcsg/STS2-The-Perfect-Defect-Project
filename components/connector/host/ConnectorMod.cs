@@ -21,7 +21,7 @@ namespace STS2Connector;
 #endif
 public static partial class ConnectorMod
 {
-    public const string Version = "1.3.0-rc.5";
+    public const string Version = "1.3.0-rc.6";
     public const int DefaultPort = 15526;
     internal const string ConfigFileName = "STS2_MCP.conf";
     internal const string PortEnvironmentVariable = "STS2_CONNECTOR_PORT";
@@ -306,6 +306,13 @@ public static partial class ConnectorMod
             {
                 if (request.HttpMethod == "GET")
                     HandleGetPlayerEnvironmentSnapshot(request, response);
+                else
+                    SendError(response, 405, "Method not allowed");
+            }
+            else if (path == "/api/player-environment/text-menu/observation-context")
+            {
+                if (request.HttpMethod == "GET")
+                    HandleGetTextMenuObservationContext(response);
                 else
                     SendError(response, 405, "Method not allowed");
             }

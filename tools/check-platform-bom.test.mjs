@@ -24,6 +24,44 @@ test("BOM check rejects component and public Connector pin drift", async () => {
   assert.ok(errors.some((error) => error.startsWith("public Connector archive SHA:")));
 });
 
+test("Connector dependency is a strict SemVer minimum, not a current-version lockstep pin", () => {
+  const bom = JSON.parse(fs.readFileSync(path.join(root, "platform-bom.json"), "utf8"));
+  const authorities = structuredClone(authoritySnapshot);
+  authorities.connectorManifest.version = "1.3.0-rc.6"; // Fixed comparison fixture; future source versions may advance.
+  const dependencies = authorities.annotatorManifest.dependencies;
+  const connector = dependencies.find(({ id }) => id === "STS2_MCP");
+  const dependencyErrors = () => validatePlatformBom(bom, authorities).filter((error) =>
+    error.startsWith("Annotator Connector dependency:"));
+
+  assert.deepEqual(dependencyErrors(), []); // rc.5 is a valid minimum for rc.6.
+  connector.min_version = "1.3.0-rc.7";
+  assert.equal(dependencyErrors().length, 1);
+  connector.min_version = "1.3.0-rc.10";
+  assert.equal(dependencyErrors().length, 1); // Numeric prerelease order.
+  connector.min_version = "1.3.0-rc.x";
+  assert.equal(dependencyErrors().length, 1); // Valid SemVer, later than numeric rc.6.
+  connector.min_version = "1.3.0";
+  assert.equal(dependencyErrors().length, 1); // Stable is later than rc.6.
+  connector.min_version = "1.3.0-rc.5";
+  authorities.connectorManifest.version = "1.3.0";
+  assert.deepEqual(dependencyErrors(), []); // Stable satisfies its prerelease minimum.
+  authorities.connectorManifest.version = "1.3.0-rc.6";
+  for (const invalid of ["", "1.3", "1.3.0-rc.06", "1.3.0+bad..meta"]) {
+    connector.min_version = invalid;
+    assert.equal(dependencyErrors().length, 1, invalid);
+  }
+  connector.min_version = "1.3.0-rc.5";
+  dependencies.push({ id: "STS2_MCP", min_version: "1.0.0" });
+  assert.equal(dependencyErrors().length, 1); // Ambiguous duplicate is invalid.
+  dependencies.pop();
+  connector.min_version = "1.3.0-rc.5";
+  authorities.connectorManifest.version = "1.3.0-rc.06";
+  assert.equal(dependencyErrors().length, 1); // Selected version must also be valid.
+  authorities.connectorManifest.version = "1.3.0-rc.6";
+  dependencies.pop();
+  assert.equal(dependencyErrors().length, 1); // Missing dependency is invalid.
+});
+
 test("BOM keeps historical policy evidence separate from the standalone package source", async () => {
   const bom = JSON.parse(fs.readFileSync(path.join(root, "platform-bom.json"), "utf8"));
   const policy = bom.unified_platform_runtime_candidate.policy_runtime;

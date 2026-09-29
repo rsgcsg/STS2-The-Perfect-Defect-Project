@@ -2,9 +2,9 @@
 
 Four identities are intentionally separate:
 
-1. **Connector release** (`1.2.0-rc.5` current Platform candidate;
-   predecessor releases remain immutable): source/product packaging and native
-   implementation version.
+1. **Connector source candidate** (`1.3.0-rc.6`; published package identity is
+   recorded separately in the Platform BOM): source/product packaging and
+   native implementation version.
 2. **Player Environment protocol** (`1.0.0`): wire compatibility.
 3. **Capabilities**: loaded features, exact game/Modset and observation/input
    availability.
@@ -16,6 +16,12 @@ protocol-compatible consumer still checks capabilities and exact environment.
 SpireAgent and other consumers version independently; they declare a supported
 protocol range and a versioned SDK dependency rather than sharing a branch or
 release number.
+
+An Annotator Mod dependency `min_version` is a compatibility floor, not an
+equality pin to the current Connector source candidate. The Platform BOM still
+checks exact selected component source/tree/digest and preserves historical
+artifact identities. This additive, read-only observation route does not by
+itself establish installed-game compatibility or change Annotator's minimum.
 
 ## Compatibility
 

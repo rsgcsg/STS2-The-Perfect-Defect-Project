@@ -6,14 +6,15 @@ import type {
   PlayerEnvironmentReceipt,
   PlayerEnvironmentSnapshot
 } from "@rsgcsg/sts2-connector-client";
-import type { TextMenuAction, TextMenuActionResult, TextMenuCapabilities, TextMenuSnapshot } from "@rsgcsg/sts2-connector-client";
+import type { TextMenuAction, TextMenuActionResult, TextMenuCapabilities, TextMenuSnapshot, TextMenuObservationContext } from "@rsgcsg/sts2-connector-client";
 
 export const POLICY_MANIFEST_SCHEMA = "sts2.policy-runtime/policy-manifest-1" as const;
 export const POLICY_DECISION_SCHEMA = "sts2.policy-runtime/decision-1" as const;
 export const AGENT_RUN_SCHEMA = "sts2.policy-runtime/agent-run-1" as const;
 export const POLICY_PORT_SCHEMA = "sts2.policy-runtime/policy-port-1" as const;
+export const POLICY_PORT_V2_SCHEMA = "sts2.policy-runtime/policy-port-2" as const;
 export const EVIDENCE_MANIFEST_SCHEMA = "sts2.policy-runtime/immutable-evidence-manifest-1" as const;
-export const POLICY_RUNTIME_VERSION = "0.1.0-rc.11" as const;
+export const POLICY_RUNTIME_VERSION = "0.1.0-rc.12" as const;
 export const RUNTIME_ENVIRONMENT_SCHEMA = "sts2.policy-runtime/environment-1" as const;
 
 /** Read-only observation used by control clients before preparing a command. */
@@ -58,7 +59,7 @@ export interface PolicyManifest {
   schema: typeof POLICY_MANIFEST_SCHEMA;
   manifest_id: string;
   policy: { id: string; version: string; provider: string; architecture: string };
-  adapter: { id: string; version: string; protocol: "sts2.policy-runtime/decision-only-ndjson-1"; code_sha256: string };
+  adapter: { id: string; version: string; protocol: "sts2.policy-runtime/decision-only-ndjson-1" | "sts2.policy-runtime/decision-only-ndjson-2"; code_sha256: string };
   artifact: { id: string; path: string; sha256: string };
   representation: { id: string; version: string; input_schema: "sts2.player-environment/snapshot-1" | "sts2.player-environment/text-menu-snapshot-1" };
   requirements: {
@@ -144,6 +145,26 @@ export interface PolicyDecisionInput {
   candidate_count: number;
 }
 
+/** Runtime-owned scheduling token; the Connector run identity stays outside model text. */
+export interface StatefulPolicyDecisionInput extends PolicyDecisionInput {
+  continuity_token: string;
+}
+
+export interface ObservationCompletion {
+  continuity_token: string;
+  snapshot_id: string;
+  sequence: number;
+}
+
+export interface StatefulAdapterDecision {
+  output: AdapterDecision;
+  completion: ObservationCompletion;
+}
+
+/** In-process implementations mark their call as offered at invocation. */
+export type StatefulPolicy = (input: StatefulPolicyDecisionInput, signal: AbortSignal,
+  onOffer: () => void) => Promise<StatefulAdapterDecision> | StatefulAdapterDecision;
+
 /**
  * A policy receives a recovery signal for the current decision attempt. Policy
  * implementations should stop work when it is aborted; the Runtime also
@@ -155,10 +176,15 @@ export interface PolicyPortDecisionRequest { schema: typeof POLICY_PORT_SCHEMA; 
 export interface PolicyPortReadyResponse { schema: typeof POLICY_PORT_SCHEMA; message_type: "ready"; adapter: PolicyManifest["adapter"] }
 export interface PolicyPortDecisionResponse { schema: typeof POLICY_PORT_SCHEMA; message_type: "decision"; request_id: string; output: AdapterDecision }
 export interface PolicyPortErrorResponse { schema: typeof POLICY_PORT_SCHEMA; message_type: "error"; request_id: string; error: { code: string; message: string } }
+export interface PolicyPortV2DecisionRequest { schema: typeof POLICY_PORT_V2_SCHEMA; message_type: "decide"; request_id: string; input: StatefulPolicyDecisionInput }
+export interface PolicyPortV2ReadyResponse { schema: typeof POLICY_PORT_V2_SCHEMA; message_type: "ready"; adapter: PolicyManifest["adapter"] }
+export interface PolicyPortV2DecisionResponse { schema: typeof POLICY_PORT_V2_SCHEMA; message_type: "decision"; request_id: string; output: AdapterDecision; completion: ObservationCompletion }
+export interface PolicyPortV2ErrorResponse { schema: typeof POLICY_PORT_V2_SCHEMA; message_type: "error"; request_id: string; error: { code: string; message: string } }
 
 export interface PolicyConnector {
   capabilities(options?: { fresh?: boolean; inputProfile?: "text-menu-v1" }): Promise<PlayerEnvironmentCapabilities | TextMenuCapabilities>;
   observeBundle(requiredReadKinds: readonly string[], inputProfile?: "text-menu-v1"): Promise<AnyDecisionBundle>;
+  observeTextMenuContext?(): Promise<TextMenuObservationContext>;
   acquireController(): Promise<void>;
   releaseController(): Promise<void>;
   submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string; inputProfile?: "text-menu-v1" }): Promise<DecisionResult>;
@@ -243,6 +269,7 @@ export interface ConnectorAdapterClient {
   observe(): Promise<DecodedPlayerPayload<PlayerEnvironmentSnapshot>>;
   textMenuCapabilities(): Promise<DecodedPlayerPayload<TextMenuCapabilities>>;
   observeTextMenu(): Promise<DecodedPlayerPayload<TextMenuSnapshot>>;
+  observeTextMenuContext(): Promise<DecodedPlayerPayload<TextMenuObservationContext>>;
   read(readId: string, expectedSnapshotId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReadResponse>>;
   submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string; clientSessionId: string; controllerLeaseId: string; controllerGeneration: number }): Promise<DecodedPlayerPayload<PlayerEnvironmentReceipt>>;
   submitTextMenu(input: { requestId: string; expectedSnapshotId: string; boundActionId: string; clientSessionId: string; controllerLeaseId: string; controllerGeneration: number }): Promise<DecodedPlayerPayload<TextMenuActionResult>>;
@@ -257,13 +284,14 @@ export function validatePolicyManifest(value: unknown): PolicyManifest {
   exactKeys(root, ["schema", "manifest_id", "policy", "adapter", "artifact", "representation", "requirements", "support", "adapter_config", "claims"]);
   literal(root, "schema", POLICY_MANIFEST_SCHEMA); nonEmpty(root, "manifest_id");
   const policy = object(root.policy, "manifest.policy"); exactKeys(policy, ["id", "version", "provider", "architecture"]); nonEmpty(policy, "id"); nonEmpty(policy, "version"); nonEmpty(policy, "provider"); nonEmpty(policy, "architecture");
-  const adapter = object(root.adapter, "manifest.adapter"); exactKeys(adapter, ["id", "version", "protocol", "code_sha256"]); nonEmpty(adapter, "id"); nonEmpty(adapter, "version"); literal(adapter, "protocol", "sts2.policy-runtime/decision-only-ndjson-1"); sha256Field(adapter, "code_sha256");
+  const adapter = object(root.adapter, "manifest.adapter"); exactKeys(adapter, ["id", "version", "protocol", "code_sha256"]); nonEmpty(adapter, "id"); nonEmpty(adapter, "version"); enumField(adapter, "protocol", ["sts2.policy-runtime/decision-only-ndjson-1", "sts2.policy-runtime/decision-only-ndjson-2"]); sha256Field(adapter, "code_sha256");
   const artifact = object(root.artifact, "manifest.artifact"); exactKeys(artifact, ["id", "path", "sha256"]); nonEmpty(artifact, "id"); nonEmpty(artifact, "path"); sha256Field(artifact, "sha256");
   const representation = object(root.representation, "manifest.representation"); exactKeys(representation, ["id", "version", "input_schema"]); nonEmpty(representation, "id"); nonEmpty(representation, "version"); enumField(representation, "input_schema", ["sts2.player-environment/snapshot-1", "sts2.player-environment/text-menu-snapshot-1"]);
   const requirements = object(root.requirements, "manifest.requirements"); exactKeys(requirements, ["connector_protocol_version", "environment", "reads", "whole_decision_admission", "candidate_order_digest", "score_count_matches_candidate_count", "selected_index", "successor_required"]); nonEmpty(requirements, "connector_protocol_version");
   const environment = object(requirements.environment, "manifest.requirements.environment"); exactKeys(environment, ["host_kind", "connector_version", "connector_source_revision", "connector_artifact_sha256", "connector_module_version_id", "modset_status", "modset_fingerprint", "loaded_mod_ids"]); enumField(environment, "host_kind", ["live_ui", "headless", "replay", "test"]); nonEmpty(environment, "connector_version"); nonEmpty(environment, "connector_source_revision"); sha256Field(environment, "connector_artifact_sha256"); nonEmpty(environment, "connector_module_version_id"); nonEmpty(environment, "modset_status"); nonEmpty(environment, "modset_fingerprint"); stringArray(environment, "loaded_mod_ids"); uniqueStringArray(environment, "loaded_mod_ids");
   stringArray(requirements, "reads"); uniqueStringArray(requirements, "reads"); literal(requirements, "whole_decision_admission", true); literal(requirements, "candidate_order_digest", representation.input_schema === "sts2.player-environment/text-menu-snapshot-1" ? "sha256-json-menu-action-id-order" : "sha256-json-bound-action-id-order"); literal(requirements, "score_count_matches_candidate_count", true); literal(requirements, "selected_index", true); literal(requirements, "successor_required", true);
   if (representation.input_schema === "sts2.player-environment/text-menu-snapshot-1" && (requirements.reads as string[]).length !== 0) throw new Error("text menu profile has no Reads");
+  if (adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-2" && representation.input_schema !== "sts2.player-environment/text-menu-snapshot-1") throw new Error("stateful policy port requires text menu input");
   const support = object(root.support, "manifest.support"); exactKeys(support, ["game_versions", "game_commits", "interaction_kinds", "action_verbs"]); nonEmptyUniqueStringArray(support, "game_versions"); nonEmptyUniqueStringArray(support, "game_commits"); nonEmptyUniqueStringArray(support, "interaction_kinds"); nonEmptyUniqueStringArray(support, "action_verbs");
   object(root.adapter_config, "manifest.adapter_config");
   const claims = object(root.claims, "manifest.claims"); exactKeys(claims, ["full_run", "selector", "catalog_filtered", "creates_action_authority", "creates_native_operands"]); booleanField(claims, "full_run"); booleanField(claims, "selector"); literal(claims, "catalog_filtered", false); literal(claims, "creates_action_authority", false); literal(claims, "creates_native_operands", false);

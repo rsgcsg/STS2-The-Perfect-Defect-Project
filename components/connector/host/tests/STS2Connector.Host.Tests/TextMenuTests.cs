@@ -12,6 +12,56 @@ namespace STS2Connector;
 public sealed class TextMenuTests
 {
     [Fact]
+    public void ObservationContextBindsWholeCaptureToOneOpaqueRunObject()
+    {
+        var entities = new NativeEntityRegistry();
+        object first = new();
+        object second = new();
+        object? current = first;
+        TextMenuFrame Capture() => PlayerEnvironmentService.CaptureWithRunIdentity(
+            () => current, () => Frame(), run => entities.GetId(run, "run"));
+        var executor = Executor(Capture);
+        var firstContext = executor.ObserveContext();
+        Assert.Equal(TextMenuContract.ObservationContextSchema, firstContext.Schema);
+        Assert.Equal(entities.GetId(first, "run"), firstContext.GameContinuityId);
+        Assert.Equal(firstContext.GameContinuityId, executor.ObserveContext().GameContinuityId);
+        Assert.Equal(firstContext.Snapshot.SnapshotId, executor.Observe().SnapshotId);
+        Assert.True(ConnectorMod.IsSafeProtocolIdentifier(firstContext.GameContinuityId!, 128));
+
+        // A saved load or fresh run supplies a different RunState reference.
+        current = second;
+        Assert.Equal(entities.GetId(second, "run"), executor.ObserveContext().GameContinuityId);
+        Assert.NotEqual(firstContext.GameContinuityId, executor.ObserveContext().GameContinuityId);
+        current = null;
+        Assert.Null(executor.ObserveContext().GameContinuityId);
+
+        current = second;
+        var terminal = Frame();
+        terminal = terminal with { Page = terminal.Page with { Interaction = terminal.Page.Interaction with
+        { Kind = "game_over" } } };
+        var terminalContext = PlayerEnvironmentService.CaptureWithRunIdentity(
+            () => current, () => terminal, run => entities.GetId(run, "run"));
+        Assert.Equal(entities.GetId(second, "run"), terminalContext.GameContinuityId);
+        Assert.DoesNotContain("game_continuity_id", JsonSerializer.Serialize(firstContext.Snapshot,
+            ConnectorMod._jsonOptions));
+        Assert.Contains("game_continuity_id", JsonSerializer.Serialize(firstContext,
+            ConnectorMod._jsonOptions));
+    }
+
+    [Fact]
+    public void MidCaptureRunChangeRejectsPacketBeforePresentationAdvances()
+    {
+        object first = new();
+        object? current = first;
+        var entities = new NativeEntityRegistry();
+        var executor = Executor(() => PlayerEnvironmentService.CaptureWithRunIdentity(
+            () => current, () => { current = new object(); return Frame(); },
+            run => entities.GetId(run, "run")));
+        Assert.Throws<TextMenuRunContinuityChangedException>(() => executor.ObserveContext());
+        Assert.Throws<TextMenuRunContinuityChangedException>(() => executor.Observe());
+    }
+
+    [Fact]
     public void PassiveRenderedTipStaysOnCurrentPageWithoutReplacingNativeActions()
     {
         TextMenuFrame frame = Frame();

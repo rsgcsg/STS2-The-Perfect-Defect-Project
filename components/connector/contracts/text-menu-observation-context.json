@@ -1,0 +1,10 @@
+{
+  "schema": "sts2.player-environment/text-menu-observation-context-contract-1",
+  "route": "/api/player-environment/text-menu/observation-context",
+  "method": "GET",
+  "response_schema": "sts2.player-environment/text-menu-observation-context-1",
+  "snapshot_schema": "sts2.player-environment/text-menu-snapshot-1",
+  "required_fields": ["schema", "snapshot", "game_continuity_id"],
+  "game_continuity_id": "opaque_process_local_run_object_identity_or_null",
+  "run_change_error": "run_continuity_changed_during_capture"
+}

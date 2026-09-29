@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { PlayerEnvironmentRestClient, TEXT_MENU_PROFILE, TEXT_MENU_SNAPSHOT_SCHEMA,
-  TEXT_MENU_RESULT_SCHEMA, decodePlayerSnapshot, decodePlayerReceipt,
+  TEXT_MENU_RESULT_SCHEMA, TEXT_MENU_OBSERVATION_CONTEXT_SCHEMA,
+  decodePlayerSnapshot, decodePlayerReceipt, decodeTextMenuObservationContext,
   decodeTextMenuCapabilities, decodeTextMenuSnapshot, decodeTextMenuActionResult } from "../src/index.js";
 
 const fixture = (name: string): any => JSON.parse(readFileSync(
@@ -25,6 +26,32 @@ const capabilities = () => ({
 });
 
 describe("text-menu-v1", () => {
+  it("strictly decodes the opt-in atomic context without widening the legacy snapshot", () => {
+    const context = { schema: TEXT_MENU_OBSERVATION_CONTEXT_SCHEMA, snapshot: page(),
+      game_continuity_id: "run_process_1" };
+    expect(decodeTextMenuObservationContext(context).data.snapshot).toEqual(decodeTextMenuSnapshot(page()).data);
+    expect(decodeTextMenuObservationContext({ ...context, game_continuity_id: null }).data.game_continuity_id)
+      .toBeNull();
+    expect(() => decodeTextMenuSnapshot(context)).toThrow();
+    expect(() => decodeTextMenuObservationContext({ ...context, extra: true })).toThrow();
+    expect(() => decodeTextMenuObservationContext({ schema: context.schema, snapshot: page() })).toThrow();
+    expect(() => decodeTextMenuObservationContext({ ...context, game_continuity_id: "" })).toThrow();
+    expect(() => decodeTextMenuObservationContext({ ...context, snapshot: { ...page(), menu: {} } })).toThrow();
+  });
+
+  it("uses a distinct opt-in route and propagates unsupported Host responses", async () => {
+    const context = { schema: TEXT_MENU_OBSERVATION_CONTEXT_SCHEMA, snapshot: page(),
+      game_continuity_id: null };
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL) => new Response(JSON.stringify(context)));
+    const client = new PlayerEnvironmentRestClient("http://test", 1000, fetchImpl as typeof fetch);
+    expect((await client.observeTextMenuContext()).data).toEqual(context);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain(
+      "/api/player-environment/text-menu/observation-context");
+    fetchImpl.mockImplementationOnce(async () => new Response(JSON.stringify({ error: "not_found" }), { status: 404 }));
+    await expect(client.observeTextMenuContext()).rejects.toThrow(/HTTP 404/u);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("decodes only its explicit profile and preserves legacy closure", () => {
     expect(decodeTextMenuCapabilities(capabilities()).data.receipt_schema).toBe(TEXT_MENU_RESULT_SCHEMA);
     expect(decodeTextMenuCapabilities(capabilities()).data.verbs).toContain("begin_card_play");
