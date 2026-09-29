@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 from test_text_menu_data import snapshot as text_snapshot
@@ -20,8 +23,13 @@ def page(name: str) -> dict:
 def terminal(name: str) -> dict:
     value = page(name)
     value["status"] = "observed"
-    value["interaction"] = {"kind": "game_over", "stage": "complete", "capabilities": [],
-                            "content": {"surface": {"kind": "game_over", "victory": False}}}
+    value["interaction"] = {
+        "interaction_id": f"opaque-interaction-{name}", "kind": "game_over",
+        "stage": "complete", "content_schema": "sts2.player-environment/surface/game_over-1",
+        "capabilities": [], "content": {
+            "surface": {"kind": "game_over", "stage": "complete", "victory": False},
+            "context": {"kind": "terminal"}}}
+    value["completeness"]["missing"] = []
     value["menu_actions"].update(status="complete", actions=[], materialized_count=0,
                                  total_count=0)
     return value
@@ -146,6 +154,24 @@ def test_complete_terminal_has_no_model_call_or_submission() -> None:
     assert environment.closed
 
 
+def test_malformed_terminal_menu_cannot_count_as_complete() -> None:
+    broken = terminal("done")
+    del broken["menu"]
+    environment = Environment([broken])
+    report = run(environment, Scorer())
+    assert report["status"] == "stopped"
+    assert report["stop_reason"] == "terminal_incomplete"
+    assert report["terminal_observed"] == report["submissions"] == 0
+    assert environment.closed
+
+    successor_environment = Environment([page("before")], successor=broken)
+    successor_report = run(successor_environment, Scorer())
+    assert successor_report["stop_reason"] == "terminal_incomplete"
+    assert successor_report["native_delivered"] == 1
+    assert successor_report["terminal_observed"] == 0
+    assert successor_environment.closed
+
+
 def test_reset_rotates_continuity_even_for_same_seed() -> None:
     environment = Environment([terminal("first"), terminal("second")],
                               continuities=["same-game", "same-game"])
@@ -188,6 +214,59 @@ def test_submission_budget_and_wall_budget_close_child() -> None:
     assert report["stop_reason"] == "wall_budget_exhausted"
     assert timed.submissions == []
     assert timed.closed
+
+
+def test_post_submit_deadline_preserves_known_native_receipt_and_stops() -> None:
+    environment = Environment([page("before"), page("next")],
+                              successor=terminal("after"))
+    report = run(environment, Scorer(), seeds=("SEED1", "SEED2"),
+                 limits=SmokeLimits(max_seconds=1),
+                 clock=lambda: 2.0 if environment.submissions else 0.0)
+    assert report["stop_reason"] == "wall_budget_exhausted"
+    assert report["native_delivered"] == report["terminal_observed"] == 1
+    assert report["submissions"] == 1
+    assert environment.resets == ["SEED1"]
+    assert environment.closed
+
+
+def test_invalid_seed_closes_owned_child_and_cli_never_constructs_it(
+    monkeypatch, capsys,
+) -> None:
+    environment = Environment([page("before")])
+    report = run(environment, Scorer(), seeds=("invalid-seed",))
+    assert report["stop_reason"] == "invalid_smoke_request"
+    assert environment.resets == []
+    assert environment.closed
+
+    script = Path(__file__).resolve().parents[1] / "tools" / "managed_memory_smoke.py"
+    spec = importlib.util.spec_from_file_location("managed_memory_smoke_cli_test", script)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    constructed: list[object] = []
+
+    class Child:
+        def observe_text_menu(self) -> None:
+            pass
+
+        def submit_text_menu(self) -> None:
+            pass
+
+        def __init__(self, *args, **kwargs) -> None:
+            constructed.append((args, kwargs))
+
+    monkeypatch.setitem(sys.modules, "sts2_headless",
+                        SimpleNamespace(ManagedPlayerEnvironment=Child))
+    monkeypatch.setattr(cli, "activate_host_runtime_client", lambda *args: None)
+    monkeypatch.setattr(cli, "load_host_runtime_pin", lambda *args: {})
+    monkeypatch.setattr(cli, "validate_memory_package", lambda *args: (
+        {"ids": {"model": "a" * 64}}, None, None,
+        SimpleNamespace(reset_each_step=True)))
+    monkeypatch.setattr(sys, "argv", ["managed_memory_smoke.py", "--candidate", "/unused",
+                                     "--model-export", "/unused", "--seed", "invalid-seed"])
+    assert cli.main() == 2
+    assert constructed == []
+    assert '"status": "unavailable"' in capsys.readouterr().out
 
 
 def test_missing_text_consumer_capability_never_uses_raw_fallback() -> None:

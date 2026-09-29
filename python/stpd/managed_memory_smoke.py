@@ -46,20 +46,72 @@ class SmokeLimits:
 
 def _terminal(snapshot: dict[str, Any]) -> bool:
     if (snapshot.get("status") != "observed"
-            or snapshot.get("interaction", {}).get("kind") != "game_over"):
+            or not isinstance(snapshot.get("interaction"), dict)
+            or snapshot["interaction"].get("kind") != "game_over"):
         return False
     interaction = snapshot["interaction"]
-    catalog = snapshot.get("menu_actions", {})
-    surface = interaction.get("content", {}).get("surface", {})
-    if (snapshot.get("schema") != SNAPSHOT_SCHEMA or snapshot.get("input_profile") != "text-menu-v1"
-            or snapshot.get("completeness", {}).get("status") != "complete"
+    catalog = snapshot.get("menu_actions")
+    menu = snapshot.get("menu")
+    content = interaction.get("content")
+    if not isinstance(catalog, dict) or not isinstance(content, dict):
+        raise SmokeBoundaryError("terminal_incomplete")
+    surface = content.get("surface", {})
+    context = content.get("context", {})
+    if not isinstance(surface, dict) or not isinstance(context, dict):
+        raise SmokeBoundaryError("terminal_incomplete")
+    session = snapshot.get("session", {})
+    completeness = snapshot.get("completeness", {})
+    policy = snapshot.get("information_policy", {})
+    if (set(snapshot) != {"protocol_version", "schema", "input_profile", "snapshot_id",
+                            "sequence", "observed_at", "status", "persistent", "interaction",
+                            "referents", "completeness", "session", "information_policy",
+                            "menu", "menu_actions"}
+            or snapshot.get("protocol_version") != "1.0.0"
+            or snapshot.get("schema") != SNAPSHOT_SCHEMA
+            or snapshot.get("input_profile") != "text-menu-v1"
+            or not isinstance(snapshot.get("snapshot_id"), str) or not snapshot["snapshot_id"]
+            or type(snapshot.get("sequence")) is not int or snapshot["sequence"] < 1
+            or not isinstance(snapshot.get("observed_at"), str) or not snapshot["observed_at"]
+            or not isinstance(session, dict)
+            or not isinstance(session.get("runtime_instance_id"), str)
+            or not session["runtime_instance_id"]
+            or not isinstance(session.get("environment_fingerprint"), str)
+            or not session["environment_fingerprint"]
+            or not isinstance(snapshot.get("referents"), list)
+            or not isinstance(policy, dict)
+            or policy.get("includes_hidden_information") is not False
+            or not isinstance(menu, dict) or menu.get("cursor") != "root"
+            or type(menu.get("revision")) is not int or menu["revision"] < 0
+            or not isinstance(menu.get("native_snapshot_id"), str)
+            or not menu["native_snapshot_id"]
+            or not isinstance(completeness, dict) or completeness.get("status") != "complete"
+            or completeness.get("missing") != []
+            or not isinstance(interaction.get("interaction_id"), str)
+            or not interaction["interaction_id"]
+            or interaction.get("kind") != "game_over"
             or interaction.get("stage") != "complete"
+            or interaction.get("content_schema") !=
+                "sts2.player-environment/surface/game_over-1"
             or interaction.get("capabilities") != []
             or catalog.get("status") != "complete" or catalog.get("actions") != []
             or catalog.get("total_count") != 0 or catalog.get("materialized_count") != 0
-            or surface.get("kind") != "game_over" or type(surface.get("victory")) is not bool):
+            or not isinstance(catalog.get("ordering_semantics"), str)
+            or not catalog["ordering_semantics"]
+            or surface.get("kind") != "game_over" or surface.get("stage") != "complete"
+            or type(surface.get("victory")) is not bool
+            or context.get("kind") != "terminal"):
         raise SmokeBoundaryError("terminal_incomplete")
     return True
+
+
+def validate_smoke_request(seeds: tuple[str, ...], model_id: str,
+                           reset_each_step: bool) -> None:
+    """Reject invalid experiment inputs before a CLI creates its child."""
+    if (not 1 <= len(seeds) <= 2 or any(not isinstance(seed, str)
+            or re.fullmatch(r"[A-Z0-9]{1,64}", seed) is None for seed in seeds)
+            or not isinstance(model_id, str) or len(model_id) != 64
+            or type(reset_each_step) is not bool):
+        raise SmokeBoundaryError("invalid_smoke_request")
 
 
 def run_managed_memory_smoke(
@@ -68,11 +120,6 @@ def run_managed_memory_smoke(
     clock: Any = time.monotonic,
 ) -> dict[str, Any]:
     """Run at most two explicit episodes, closing the dedicated child on every exit."""
-    if (not 1 <= len(seeds) <= 2 or any(not isinstance(seed, str)
-            or re.fullmatch(r"[A-Z0-9]{1,64}", seed) is None for seed in seeds)
-            or not isinstance(model_id, str) or len(model_id) != 64
-            or type(reset_each_step) is not bool):
-        raise SmokeBoundaryError("invalid_smoke_request")
     limits = limits if limits is not None else SmokeLimits()
     report: dict[str, Any] = {
         "schema": "stpd/managed-memory-engineering-smoke-v1",
@@ -90,6 +137,7 @@ def run_managed_memory_smoke(
             raise SmokeBoundaryError("wall_budget_exhausted")
 
     try:
+        validate_smoke_request(seeds, model_id, reset_each_step)
         if (not callable(getattr(environment, "observe_text_menu", None))
                 or not callable(getattr(environment, "submit_text_menu", None))):
             raise SmokeBoundaryError("text_menu_consumer_unavailable")
@@ -157,7 +205,6 @@ def run_managed_memory_smoke(
                 report["submissions"] += 1
                 result = environment.submit_text_menu(action_id, snapshot["snapshot_id"],
                                                       continuity, request_id)
-                within_budget()
                 if (not isinstance(result, dict) or result.get("schema") != RESULT_SCHEMA
                         or result.get("input_profile") != "text-menu-v1"
                         or result.get("request_id") != request_id):
@@ -181,8 +228,13 @@ def run_managed_memory_smoke(
                     raise SmokeBoundaryError("text_successor_identity_invalid")
                 if native:
                     report["native_delivered"] += 1
-                if _terminal(successor):
+                terminal = _terminal(successor)
+                if terminal:
                     report["terminal_observed"] += 1
+                # The native call may cross the deadline. Its returned receipt is still
+                # a known outcome and must be accounted before stopping further calls.
+                within_budget()
+                if terminal:
                     report["stop_reason"] = "terminal_observed"
                     break
                 if report["submissions"] >= limits.max_submissions:

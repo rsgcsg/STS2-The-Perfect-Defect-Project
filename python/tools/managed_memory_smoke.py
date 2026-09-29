@@ -18,7 +18,11 @@ from stpd.host_runtime_client import (  # noqa: E402
     activate_host_runtime_client,
     load_host_runtime_pin,
 )
-from stpd.managed_memory_smoke import SmokeLimits, run_managed_memory_smoke  # noqa: E402
+from stpd.managed_memory_smoke import (  # noqa: E402
+    SmokeLimits,
+    run_managed_memory_smoke,
+    validate_smoke_request,
+)
 from stpd.policy.memory_export import validate_memory_package  # noqa: E402
 from stpd.policy.memory_scorer import OnlineM2Scorer  # noqa: E402
 from stpd.training_smoke import driver_command  # noqa: E402
@@ -47,6 +51,8 @@ def main() -> int:
                 or not callable(getattr(ManagedPlayerEnvironment, "submit_text_menu", None))):
             raise RuntimeError("text_menu_consumer_unavailable")
         package, weights, tokenizer, config = validate_memory_package(args.model_export)
+        validate_smoke_request(tuple(args.seed), package["ids"]["model"],
+                               config.reset_each_step)
         import torch
 
         torch.set_num_threads(config.cpu_threads)
