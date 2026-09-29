@@ -3871,7 +3871,8 @@ window.SpireProject = (() => {
       box.append(panel(heading, `本机对象 · ${value.artifact_id.slice(0, 16)}`));
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1")
         box.append(localDatasetOverview(value));
-      if (value.kind === "model" && value.parameters?.schema === "stpd/stage1a-model-v1")
+      if (value.kind === "model" && ["stpd/stage1a-model-v1",
+          "stpd/experimental-m2-model-v1"].includes(value.parameters?.schema))
         box.append(localModelOverview(value));
       if (supportsLocalModelExport(value)) {
         const exportCard = await localModelExportCard(ctx, value);

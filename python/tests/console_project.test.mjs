@@ -1514,6 +1514,9 @@ test("M2 export is explicit, train-only, and offers no registration", async () =
     },
   });
   const page = await env.render();
+  assert.match(text(page), /模型概览/);
+  assert.match(text(page), /实验性 D-Simple M2-K1/);
+  assert.match(text(page), /仅训练完成；没有独立评估/);
   assert.match(text(page), /没有独立评估/);
   assert.match(text(page), /不能登记或加载到游戏/);
   assert.equal(post(env.calls).length, 0);
