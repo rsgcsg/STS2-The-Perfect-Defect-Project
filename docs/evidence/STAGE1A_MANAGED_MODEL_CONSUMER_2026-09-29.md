@@ -132,3 +132,43 @@ coverage of every new scene. It neither establishes Live/Managed input equality
 nor proves cross-episode model memory reset in a real terminal-to-new-game run.
 Current exports and this experiment remain text-menu-v1 and observation-only M2.
 The separately proposed text-menu-v2 profile does not relabel them.
+
+## Legacy S1 decision import boundary
+
+The first PR #105 full run `36564851362` (attempt 1, head
+`4120e6401df711cf52686df76aabb6f07becf565`) exposed three Linux failures
+in the local-model readiness and S1 manifest tests. The reported policy source
+digest was `8d22bde95d5b2b8bf05d356a8048fd4040e103c8c8ba000ac9d0d51f5fd8166d`,
+while historical v6 pinned
+`f5c00cfea077b7ac52289f84d2f055e5db1bb1206ced086d41fc22229eb721ee`.
+The three failures also reproduced locally before the repair; they were not
+model scoring or native delivery failures.
+
+The first incorrect dependency was the eager `stpd.environment` package export:
+importing its decision projector also imported runtime collection, training smoke
+and installed Host activation. Commit `a85936ef45e1c81cb1832963b166891a1b779eea`
+makes only the three runtime-collection exports lazy, preserving their public
+API. S1's explicit source closure still equals its fresh-process loaded source
+set; no actually imported module is exempted from identity verification. A new
+subprocess regression fails on the original import chain, checks the absent Host
+modules, then resolves the real legacy collection exports. Existing collection
+behavior regressions also remain.
+
+The historical v6 manifest is byte-for-byte unchanged. New v7 changes only the
+adapter identity (`1.0.2`) and implementation digest; trained policy, weights,
+config hashes, support restrictions and Runtime consumer pin remain unchanged.
+The final implementation digest is
+`48acd27bcdd8e70834f27661e46cf24a3a418ca9cd931b53ff98b5835f9cec83`.
+Default S1 entrypoints now reference v7; this does not install/reload a policy.
+
+On final working bytes preceding that commit, the private Python 3.11 interpreter
+ran `pytest -q -ra tests/test_policy_adapter.py tests/test_local_models.py
+tests/test_environment_collector.py tests/test_environment_identity.py
+tests/test_runtime_collection.py tests/test_managed_memory_smoke.py
+tests/test_host_runtime_client.py`: exit 0, **178 passed, 1 skipped**, 25.70 s.
+The skip requires the optional exact Policy Runtime installation; no substitute
+live test is claimed. Scoped Ruff check/format and mypy returned exit 0. The
+initial Ruff import-format failure was corrected and retained in the earlier
+local log. Independent review confirmed the owning import boundary, preserved
+legacy exports, exact closure check and immutable v6. A new hosted gate is still
+required for the corrected PR head; the original failed run remains evidence.
