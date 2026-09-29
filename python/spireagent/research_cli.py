@@ -351,6 +351,9 @@ def main() -> int:
                 verify_memory_package,
             )
             from stpd.workers.memory_ranking import MemoryConfig
+            from stpd.fullrun.memory_sequence_bridge import (
+                parse_episode_projection_config, projection_input_profile,
+            )
 
             run_id = digest(args.run, "memory_export.run")
             model_id = digest(args.model, "memory_export.model")
@@ -358,6 +361,12 @@ def main() -> int:
             info = selected.parameters.value()
             if (selected.kind != "run" or not isinstance(info.get("config"), dict)):
                 raise BoundaryError("memory_export", "run_identity_mismatch")
+            training_input = store.get_manifest(selected.parent("training_input"))
+            try:
+                input_profile = projection_input_profile(parse_episode_projection_config(
+                    training_input.parameters.value().get("projection_config")))
+            except (TypeError, ValueError) as error:
+                raise BoundaryError("memory_export", "projection_config_invalid") from error
             torch.set_num_threads(MemoryConfig(**info["config"]).cpu_threads)
             reporter = ObjectStoreRunReporter(store, store.blobs)
             if args.command == "export-memory":
@@ -365,10 +374,12 @@ def main() -> int:
                 if completed is None or completed.parent("model") != model_id:
                     raise BoundaryError("memory_export", "completed_model_mismatch")
                 package = export_memory_package(store, reporter, run_id, args.destination)
-                verify_memory_package(store, reporter, model_id, args.destination)
+                verify_memory_package(store, reporter, model_id, args.destination,
+                                      input_profile=input_profile)
             else:
                 package = verify_memory_package(store, reporter, model_id,
-                                                args.destination)
+                                                args.destination,
+                                                input_profile=input_profile)
                 if package["ids"]["run"] != run_id:
                     raise BoundaryError("memory_export", "run_identity_mismatch")
             result = {"model_id": model_id, "run_id": run_id,

@@ -62,7 +62,10 @@ TEXT_PROFILES = {"text-menu-v1": ("token-v1", ".local/text-menu-runtime-v1.json"
                                   "stpd/local-text-runtime-v1", "text-menu-v1"),
                  "text-menu-m2-v1": ("stpd-m2-decision-adapter",
                                      ".local/text-menu-m2-runtime-v1.json",
-                                     "stpd/local-text-m2-runtime-v1", "text-menu-m2-v1")}
+                                     "stpd/local-text-m2-runtime-v1", "text-menu-m2-v1"),
+                 "text-menu-m2-v2": ("stpd-m2-decision-adapter",
+                                     ".local/text-menu-m2-runtime-v2.json",
+                                     "stpd/local-text-m2-runtime-v2", "text-menu-m2-v2")}
 KIT_TEXT_FILES = {
     "text-menu-v1": (TEXT_RUNTIME_DESTINATION, TEXT_ARCHIVE_DESTINATION,
                      "text_runtime", "text_runtime_identity"),
@@ -362,7 +365,8 @@ class LocalModelService:
                            or entry.get("adapter") not in {"token-v1",
                                                             "stpd-m2-decision-adapter"}
                            or (entry.get("adapter") == "stpd-m2-decision-adapter"
-                               and entry.get("runtime_profile") != "text-menu-m2-v1")
+                               and entry.get("runtime_profile") not in
+                               {"text-menu-m2-v1", "text-menu-m2-v2"})
                            for entry in local["policies"])):
                 raise BoundaryError("local_model", "invalid_local_token_registry")
             value["policies"] = [*shipped, *local["policies"]]
@@ -425,9 +429,11 @@ class LocalModelService:
         if entry is not None and entry.get("runtime_profile") in TEXT_PROFILES:
             manifest = _object_file(self.entry_path(entry, "manifest"))
             representation = manifest.get("representation")
-            if not isinstance(representation, dict) or representation.get("input_schema") != (
-                "sts2.player-environment/text-menu-snapshot-1"
-            ):
+            expected_schema = ("sts2.player-environment/text-menu-snapshot-2"
+                               if entry["runtime_profile"] == "text-menu-m2-v2" else
+                               "sts2.player-environment/text-menu-snapshot-1")
+            if (not isinstance(representation, dict)
+                    or representation.get("input_schema") != expected_schema):
                 raise BoundaryError("local_model", "text_runtime_requires_text_model")
             directory, pin = self.text_runtime_profile(entry["runtime_profile"])
         else:
@@ -544,6 +550,8 @@ class LocalModelService:
 
     def _selected_kit_text_runtime(self, profile_id: str) -> tuple[bytes, Path, dict[str, Any]]:
         """Read one fixed pair from this process's already selected release only."""
+        if profile_id == "text-menu-m2-v2":
+            raise BoundaryError("local_model", "trusted_text_runtime_asset_not_bundled")
         source = self.root.parent
         release = source.parent
         if (self.root.name != "python" or source.name != "source"
