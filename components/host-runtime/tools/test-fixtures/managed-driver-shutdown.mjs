@@ -7,12 +7,6 @@ import { serveManagedPeDriver } from "../../src/managed-pe-driver-loop.mjs";
 
 const marker = process.argv[2];
 if (process.argv.includes("--native")) {
-  if (process.argv.includes("--hold-after-eof")) {
-    // A rejected cleanup is a negative control: pipe EOF must not happen to
-    // reap this child for us. Keep an explicit handle, with an orphan backstop.
-    setTimeout(() => process.exit(0), 30_000);
-    process.stdin.once("end", () => writeFileSync(`${marker}.eof-kept-alive`, "entered"));
-  }
   if (process.argv.includes("--stubborn") && process.platform !== "win32") {
     process.on("SIGTERM", () => writeFileSync(`${marker}.graceful-signal-entered`, "entered"));
   }
@@ -26,8 +20,7 @@ if (process.argv.includes("--native")) {
 } else {
   const native = new JsonLineProcess({ command: process.execPath,
     args: [fileURLToPath(import.meta.url), marker, "--native",
-      ...(process.argv.includes("--stubborn") ? ["--stubborn"] : []),
-      ...(process.argv.includes("--reject-close") ? ["--hold-after-eof"] : [])] });
+      ...(process.argv.includes("--stubborn") ? ["--stubborn"] : [])] });
   await native.nextMessage();
   const pending = native.request({ cmd: "hold" }, 30_000);
   pending.catch(() => undefined);
@@ -40,7 +33,10 @@ if (process.argv.includes("--native")) {
   const session = {
     async mount() { writeFileSync(`${marker}.reset-entered`, "entered"); return pending; },
     async close({ force = false, timeoutMs = 5_000 } = {}) {
-      if (process.argv.includes("--reject-close")) throw new Error("synthetic cleanup failed");
+      if (process.argv.includes("--reject-close")) {
+        writeFileSync(`${marker}.cleanup-rejected`, "entered");
+        throw new Error("synthetic cleanup failed");
+      }
       return native.stop({ request: force ? null : { cmd: "quit" }, timeoutMs, force });
     },
     observe() { throw new Error("No mounted page"); },

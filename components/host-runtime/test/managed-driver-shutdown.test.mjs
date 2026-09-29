@@ -22,9 +22,12 @@ async function exercise(mode) {
     ...(mode === "reject" ? ["--reject-close"] : [])],
     { stdio: ["pipe", "pipe", "pipe"] });
   const output = [];
+  let errors = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => { errors += chunk; });
   const lines = readline.createInterface({ input: child.stdout });
   lines.on("line", (line) => output.push(JSON.parse(line)));
-  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+  const exited = new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
   let nativePid;
   try {
     const deadline = Date.now() + 3_000;
@@ -64,14 +67,10 @@ async function exercise(mode) {
     ]).finally(() => clearTimeout(timeout));
     if (mode === "reject") {
       assert.equal(exit.code, 1, "failed cleanup must be a nonzero driver exit");
-      const eofEntered = `${marker}.eof-kept-alive`;
-      const until = Date.now() + 3_000;
-      while (!existsSync(eofEntered) && Date.now() < until) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      assert.equal(existsSync(eofEntered), true,
-        "the negative control must observe parent EOF while retaining a live handle");
-      assert.equal(isAlive(nativePid), true, "the negative control leaves its synthetic child alive");
+      assert.equal(existsSync(`${marker}.cleanup-rejected`), true,
+        "the actual session cleanup must reject before the driver exits");
+      assert.match(errors, /driver cleanup unconfirmed: synthetic cleanup failed/,
+        "the original cleanup failure must remain observable");
     } else {
       assert.ok(exit.code === 0 || exit.signal === "SIGTERM");
       assert.equal(isAlive(nativePid), false, "the owner must reap its synthetic native child");
