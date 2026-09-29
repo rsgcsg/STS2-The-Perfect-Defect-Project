@@ -689,34 +689,44 @@ function currentSurface(state, ctx) {
         label: "Opened treasure chest",
         properties: { stage: "relic_selection" }
       });
-      const nativeIdentityComplete = (state.relics ?? []).every((relic) =>
-        typeof relic.native_ref === "string" && relic.native_ref.length > 0);
-      const relics = (state.relics ?? []).map((relic, index) => {
+      const currentRelics = Array.isArray(state.relics) ? state.relics : [];
+      const nativeIdentityComplete = Array.isArray(state.relics)
+        && currentRelics.length > 0 && currentRelics.length <= ACTION_LIMIT
+        && currentRelics.every((relic, index) => relic?.index === index
+          && typeof relic.native_ref === "string" && relic.native_ref.length > 0
+          && typeof relic.id === "string" && relic.id.length > 0
+          && typeof relic.name === "string" && relic.name.length > 0)
+        && new Set(currentRelics.map((relic) => relic.native_ref)).size === currentRelics.length;
+      const roomIdentityComplete = typeof state.room_ref === "string" && state.room_ref.length > 0;
+      const skipFactComplete = typeof state.can_skip === "boolean";
+      const complete = roomIdentityComplete && nativeIdentityComplete && skipFactComplete;
+      const relics = currentRelics.map((relic, index) => {
         const item = ctx.referent({
           role: "relic",
-          label: relic.name ?? `Relic ${index + 1}`,
+          label: relic?.name ?? `Unavailable relic ${index + 1}`,
+          enabled: complete,
           occurrence: index,
           properties: {
-            index: relic.index ?? index,
-            definition_id: definitionId(relic.id ?? relic.name),
-            name: relic.name ?? null,
-            description: relic.description ?? null,
-            rarity: relic.rarity ?? null
+            index: relic?.index ?? index,
+            definition_id: relic == null ? null : definitionId(relic.id ?? relic.name),
+            name: relic?.name ?? null,
+            description: relic?.description ?? null,
+            rarity: relic?.rarity ?? null
           }
         });
-        ctx.action({
+        if (complete) ctx.action({
           verb: "select",
           subject: item,
           label: `Take ${relic.name ?? `relic ${index + 1}`}`,
           raw: {
             cmd: "action",
             action: "select_treasure_relic",
-            args: { relic_ref: relic.native_ref }
+            args: { room_ref: state.room_ref, relic_ref: relic.native_ref }
           }
         });
         return item.properties;
       });
-      if (state.can_skip === true) {
+      if (complete && state.can_skip === true) {
         ctx.action({
           verb: "skip",
           subject: room,
@@ -728,8 +738,6 @@ function currentSurface(state, ctx) {
           }
         });
       }
-      const roomIdentityComplete = typeof state.room_ref === "string" && state.room_ref.length > 0;
-      const complete = roomIdentityComplete && nativeIdentityComplete && relics.length > 0;
       return {
         kind: "treasure_relic_selection",
         stage: "choosing",
@@ -747,7 +755,7 @@ function currentSurface(state, ctx) {
         missing: [
           ...(roomIdentityComplete ? [] : ["native_treasure_room_identity"]),
           ...(nativeIdentityComplete ? [] : ["native_treasure_relic_identity"]),
-          ...(relics.length > 0 ? [] : ["visible_treasure_relics"])
+          ...(skipFactComplete ? [] : ["native_treasure_skip_actionability"])
         ]
       };
     }
@@ -1111,51 +1119,132 @@ function currentSurface(state, ctx) {
         missing: exact ? [] : ["exact_current_deck_upgrade_selection_binding"]
       };
     }
-    case "card_select": {
-      const cardReferents = (state.cards ?? []).map((card, index) => ctx.referent({
+    case "deck_card_select": {
+      const cards = Array.isArray(state.cards) ? state.cards : [];
+      const selectedRefs = Array.isArray(state.selected_refs) ? state.selected_refs : [];
+      const cardRefs = cards.map((card) => card?.native_ref);
+      const stage = state.stage;
+      const selectedCount = selectedRefs.length;
+      const exact = state.origin === "deck_generic"
+        && typeof state.selector_ref === "string" && state.selector_ref.length > 0
+        && (stage === "selecting" || stage === "preview")
+        && typeof state.prompt === "string" && state.prompt.length > 0
+        && cards.length > 0 && cards.length <= ACTION_LIMIT - 3
+        && Number.isSafeInteger(state.min_select) && state.min_select >= 0
+        && Number.isSafeInteger(state.max_select) && state.max_select >= state.min_select
+        && state.max_select <= cards.length
+        && cards.every((card, index) => card?.index === index
+          && typeof card.native_ref === "string" && card.native_ref.length > 0
+          && typeof card.name === "string" && card.name.length > 0
+          && typeof card.is_selected === "boolean"
+          && typeof card.is_selectable === "boolean"
+          && typeof card.is_deselectable === "boolean")
+        && new Set(cardRefs).size === cards.length
+        && selectedRefs.every((ref) => typeof ref === "string" && cardRefs.includes(ref))
+        && new Set(selectedRefs).size === selectedCount
+        && selectedCount <= state.max_select
+        && cards.every((card) => card.is_selected === selectedRefs.includes(card.native_ref))
+        && typeof state.cancelable === "boolean"
+        && typeof state.require_manual_confirmation === "boolean"
+        && typeof state.can_cancel_selection === "boolean"
+        && typeof state.can_preview === "boolean"
+        && typeof state.can_cancel_preview === "boolean"
+        && typeof state.can_confirm === "boolean"
+        && state.can_cancel_selection === (stage === "selecting" && state.cancelable)
+        && state.can_preview === (stage === "selecting"
+          && state.min_select !== state.max_select && selectedCount >= state.min_select)
+        && state.can_cancel_preview === (stage === "preview")
+        && state.can_confirm === (stage === "preview"
+          && selectedCount >= state.min_select && selectedCount <= state.max_select)
+        && cards.every((card) => card.is_selectable === (stage === "selecting"
+          && !card.is_selected && selectedCount < state.max_select)
+          && card.is_deselectable === (stage === "selecting" && card.is_selected));
+      const referents = cards.map((card, index) => ctx.referent({
         role: "card",
-        label: card.name ?? `Card ${index + 1}`,
+        label: card?.name ?? `Unavailable card ${index + 1}`,
         occurrence: index,
-        properties: { index: card.index ?? index, ...cardProperties(card) }
+        enabled: exact && (card.is_selectable || card.is_deselectable),
+        selected: card?.is_selected === true,
+        id: exact && typeof card?.native_ref === "string"
+          ? ctx.id("card", ctx.snapshotId, card.native_ref) : null,
+        properties: { index, ...(card == null ? {} : cardProperties(card)),
+          is_selected: card?.is_selected === true }
       }));
-      const min = Number.isSafeInteger(state.min_select) ? state.min_select : 1;
-      const max = Number.isSafeInteger(state.max_select) ? state.max_select : min;
-      const selections = enumerateSelections(cardReferents, min, max, ACTION_LIMIT + 1);
-      if (selections.length > ACTION_LIMIT) {
-        return {
-          kind: "card_selection",
-          stage: "choosing",
-          prompt: null,
-          surface: { kind: "card_selection", stage: "choosing", cards: cardReferents.map((item) => item.properties), min_select: min, max_select: max },
-          context: { ...commonContext, kind: "selection" },
-          complete: false,
-          missing: ["finite_selection_projection_exceeds_limit"],
-          totalCount: selections.length
-        };
-      }
-      for (const selected of selections) {
-        if (selected.length === 0) {
-          ctx.action({ verb: "skip", label: "Skip selection", raw: { cmd: "action", action: "skip_select" } });
-        } else {
-          ctx.action({
-            verb: "confirm",
-            arguments: selected.map((referent) => ({ role: "selected_card", referent })),
-            label: `Confirm ${selected.map((item) => item.label).join(", ")}`,
-            raw: {
-              cmd: "action",
-              action: "select_cards",
-              args: { indices: selected.map((item) => item.properties.index).join(",") }
-            }
+      if (exact) {
+        for (const [index, card] of cards.entries()) {
+          const subject = referents[index];
+          if (card.is_selectable) ctx.action({
+            verb: "select", subject, label: `Select ${subject.label}`,
+            raw: { cmd: "action", action: "select_deck_card", args: {
+              selector_ref: state.selector_ref, card_ref: card.native_ref
+            } }
+          });
+          if (card.is_deselectable) ctx.action({
+            verb: "deselect", subject, label: `Deselect ${subject.label}`,
+            raw: { cmd: "action", action: "deselect_deck_card", args: {
+              selector_ref: state.selector_ref, card_ref: card.native_ref
+            } }
           });
         }
+        if (state.can_preview) ctx.action({
+          verb: "preview", label: "Preview card selection",
+          raw: { cmd: "action", action: "preview_deck_selection", args: {
+            selector_ref: state.selector_ref
+          } }
+        });
+        if (state.can_cancel_selection) ctx.action({
+          verb: "cancel", label: "Cancel card selection",
+          raw: { cmd: "action", action: "cancel_deck_selection", args: {
+            selector_ref: state.selector_ref
+          } }
+        });
+        if (state.can_cancel_preview) ctx.action({
+          verb: "cancel", label: "Return to card selection",
+          raw: { cmd: "action", action: "cancel_deck_preview", args: {
+            selector_ref: state.selector_ref
+          } }
+        });
+        if (state.can_confirm) ctx.action({
+          verb: "confirm", label: "Confirm card selection",
+          raw: { cmd: "action", action: "confirm_deck_selection", args: {
+            selector_ref: state.selector_ref, selected_refs: selectedRefs.join(",")
+          } }
+        });
       }
       return {
-        kind: "card_selection",
-        stage: "choosing",
-        prompt: null,
-        surface: { kind: "card_selection", stage: "choosing", cards: cardReferents.map((item) => item.properties), min_select: min, max_select: max },
+        kind: "deck_card_selection", stage, prompt: state.prompt ?? null,
+        surface: { kind: "deck_card_selection", stage,
+          cards: referents.map((item) => item.properties),
+          min_select: state.min_select, max_select: state.max_select,
+          selected_count: selectedCount,
+          selected_card_entity_ids: referents.filter((_, index) => cards[index]?.is_selected)
+            .map((item) => item.referent_id),
+          cancelable: state.cancelable,
+          require_manual_confirmation: state.require_manual_confirmation,
+          can_cancel_selection: state.can_cancel_selection,
+          can_preview: state.can_preview,
+          can_cancel_preview: state.can_cancel_preview,
+          can_confirm: state.can_confirm },
         context: { ...commonContext, kind: "selection" },
-        ...supported
+        ...supported,
+        complete: exact,
+        missing: exact ? [] : ["exact_current_deck_card_selection_binding"]
+      };
+    }
+    case "card_select": {
+      const cards = Array.isArray(state.cards) ? state.cards : [];
+      const referents = cards.map((card, index) => ctx.referent({
+        role: "card", label: card?.name ?? `Unavailable card ${index + 1}`,
+        occurrence: index, enabled: false,
+        properties: { index, ...(card == null ? {} : cardProperties(card)) }
+      }));
+      return {
+        kind: "card_selection", stage: "choosing", prompt: null,
+        surface: { kind: "card_selection", stage: "choosing",
+          cards: referents.map((item) => item.properties),
+          min_select: state.min_select, max_select: state.max_select },
+        context: { ...commonContext, kind: "selection" },
+        complete: false, missing: ["unknown_native_card_selector_purpose_and_preferences"]
       };
     }
     case "combat_play": {
@@ -1431,27 +1520,49 @@ function currentSurface(state, ctx) {
         kind: "game_over",
         stage: "complete",
         prompt: null,
-        surface: { kind: "game_over", stage: "complete", victory: state.victory === true },
+        surface: { kind: "game_over", stage: "complete",
+          victory: typeof state.victory === "boolean" ? state.victory : null },
         context: { ...commonContext, kind: "terminal" },
-        ...supported
+        ...supported,
+        complete: typeof state.victory === "boolean",
+        missing: typeof state.victory === "boolean" ? [] : ["native_terminal_victory_fact"]
       };
     case "shop": {
-      const cards = (state.cards ?? []).map((card, index) => {
-        const canPurchase = card.can_purchase === true;
+      const rawCards = Array.isArray(state.cards) ? state.cards : [];
+      const rawRelics = Array.isArray(state.relics) ? state.relics : [];
+      const rawPotions = Array.isArray(state.potions) ? state.potions : [];
+      const rawItems = [...rawCards, ...rawRelics, ...rawPotions];
+      const rawEntries = [...rawItems,
+        ...(state.card_removal == null ? [] : [state.card_removal])];
+      const entryRefs = rawEntries.map((entry) => entry?.native_ref);
+      const catalogComplete = Array.isArray(state.cards) && Array.isArray(state.relics)
+        && Array.isArray(state.potions) && Object.hasOwn(state, "card_removal")
+        && (state.card_removal === null || plainObject(state.card_removal))
+        && rawEntries.length + 1 <= ACTION_LIMIT
+        && rawItems.every((entry) => typeof entry?.name === "string" && entry.name.length > 0)
+        && rawEntries.every((entry) => entry != null
+          && typeof entry.native_ref === "string" && entry.native_ref.length > 0
+          && Number.isSafeInteger(entry.cost) && entry.cost >= 0
+          && typeof entry.is_stocked === "boolean"
+          && typeof entry.can_purchase === "boolean"
+          && (!entry.can_purchase || entry.is_stocked))
+        && new Set(entryRefs).size === rawEntries.length;
+      const cards = rawCards.map((card, index) => {
+        const canPurchase = catalogComplete && card?.can_purchase === true;
         const item = ctx.referent({
           role: "shop_card",
-          label: card.name ?? `Card ${index + 1}`,
+          label: card?.name ?? `Unavailable card ${index + 1}`,
           enabled: canPurchase,
           occurrence: index,
           properties: {
-            ...cardProperties({ ...card, cost: card.card_cost }),
-            price: card.cost ?? null,
-            is_stocked: card.is_stocked === true,
+            ...cardProperties({ ...card, cost: card?.card_cost }),
+            price: card?.cost ?? null,
+            is_stocked: card?.is_stocked === true,
             can_purchase: canPurchase,
-            on_sale: card.on_sale === true
+            on_sale: card?.on_sale === true
           }
         });
-        if (canPurchase && typeof card.native_ref === "string") {
+        if (canPurchase) {
           ctx.action({
             verb: "activate",
             subject: item,
@@ -1461,22 +1572,22 @@ function currentSurface(state, ctx) {
         }
         return item.properties;
       });
-      const relics = (state.relics ?? []).map((relic, index) => {
-        const canPurchase = relic.can_purchase === true;
+      const relics = rawRelics.map((relic, index) => {
+        const canPurchase = catalogComplete && relic?.can_purchase === true;
         const item = ctx.referent({
           role: "shop_relic",
-          label: relic.name ?? `Relic ${index + 1}`,
+          label: relic?.name ?? `Unavailable relic ${index + 1}`,
           enabled: canPurchase,
           occurrence: index,
           properties: {
-            name: relic.name ?? null,
-            description: relic.description ?? null,
-            price: relic.cost ?? null,
-            is_stocked: relic.is_stocked === true,
+            name: relic?.name ?? null,
+            description: relic?.description ?? null,
+            price: relic?.cost ?? null,
+            is_stocked: relic?.is_stocked === true,
             can_purchase: canPurchase
           }
         });
-        if (canPurchase && typeof relic.native_ref === "string") {
+        if (canPurchase) {
           ctx.action({
             verb: "activate",
             subject: item,
@@ -1486,22 +1597,22 @@ function currentSurface(state, ctx) {
         }
         return item.properties;
       });
-      const potions = (state.potions ?? []).map((potion, index) => {
-        const canPurchase = potion.can_purchase === true;
+      const potions = rawPotions.map((potion, index) => {
+        const canPurchase = catalogComplete && potion?.can_purchase === true;
         const item = ctx.referent({
           role: "shop_potion",
-          label: potion.name ?? `Potion ${index + 1}`,
+          label: potion?.name ?? `Unavailable potion ${index + 1}`,
           enabled: canPurchase,
           occurrence: index,
           properties: {
-            name: potion.name ?? null,
-            description: potion.description ?? null,
-            price: potion.cost ?? null,
-            is_stocked: potion.is_stocked === true,
+            name: potion?.name ?? null,
+            description: potion?.description ?? null,
+            price: potion?.cost ?? null,
+            is_stocked: potion?.is_stocked === true,
             can_purchase: canPurchase
           }
         });
-        if (canPurchase && typeof potion.native_ref === "string") {
+        if (canPurchase) {
           ctx.action({
             verb: "activate",
             subject: item,
@@ -1513,7 +1624,7 @@ function currentSurface(state, ctx) {
       });
       let cardRemoval = null;
       if (plainObject(state.card_removal)) {
-        const canPurchase = state.card_removal.can_purchase === true;
+        const canPurchase = catalogComplete && state.card_removal.can_purchase === true;
         const item = ctx.referent({
           role: "shop_service",
           label: "Card removal",
@@ -1525,7 +1636,7 @@ function currentSurface(state, ctx) {
             can_purchase: canPurchase
           }
         });
-        if (canPurchase && typeof state.card_removal.native_ref === "string") {
+        if (canPurchase) {
           ctx.action({
             verb: "activate",
             subject: item,
@@ -1533,7 +1644,7 @@ function currentSurface(state, ctx) {
             raw: {
               cmd: "action",
               action: "remove_card",
-              args: { entry_ref: state.card_removal.native_ref }
+              args: { room_ref: state.room_ref, entry_ref: state.card_removal.native_ref }
             }
           });
         }
@@ -1547,19 +1658,7 @@ function currentSurface(state, ctx) {
           raw: { cmd: "action", action: "leave_shop", args: { room_ref: state.room_ref } }
         });
       }
-      const entryIdentityComplete = [
-        ...(state.cards ?? []),
-        ...(state.relics ?? []),
-        ...(state.potions ?? []),
-        ...(plainObject(state.card_removal) ? [state.card_removal] : [])
-      ].every((entry) => typeof entry.native_ref === "string" && entry.native_ref.length > 0);
-      const actionabilityComplete = [
-        ...(state.cards ?? []),
-        ...(state.relics ?? []),
-        ...(state.potions ?? []),
-        ...(plainObject(state.card_removal) ? [state.card_removal] : [])
-      ].every((entry) => typeof entry.can_purchase === "boolean");
-      const complete = roomIdentityComplete && entryIdentityComplete && actionabilityComplete;
+      const complete = roomIdentityComplete && catalogComplete;
       return {
         kind: "shop_inventory",
         stage: "choosing",
@@ -1578,8 +1677,7 @@ function currentSurface(state, ctx) {
         interactionDiscovery: "derived_from_same_current_native_shop_interaction_as_execution",
         missing: [
           ...(roomIdentityComplete ? [] : ["native_shop_owner_identity"]),
-          ...(entryIdentityComplete ? [] : ["stable_shop_operand_identity"]),
-          ...(actionabilityComplete ? [] : ["native_shop_entry_actionability"])
+          ...(catalogComplete ? [] : ["complete_ordered_shop_catalog_and_actionability"])
         ]
       };
     }
@@ -1594,29 +1692,6 @@ function currentSurface(state, ctx) {
         missing: ["unsupported_managed_decision"]
       };
   }
-}
-
-function enumerateSelections(items, min, max, stopAfter) {
-  const result = [];
-  const upper = Math.min(Math.max(max, 0), items.length);
-  const lower = Math.max(0, Math.min(min, upper));
-  function visit(start, selected, target) {
-    if (result.length >= stopAfter) return;
-    if (selected.length === target) {
-      result.push([...selected]);
-      return;
-    }
-    for (let index = start; index < items.length; index += 1) {
-      selected.push(items[index]);
-      visit(index + 1, selected, target);
-      selected.pop();
-      if (result.length >= stopAfter) return;
-    }
-  }
-  for (let count = lower; count <= upper && result.length < stopAfter; count += 1) {
-    visit(0, [], count);
-  }
-  return result;
 }
 
 function capabilities(actions, referents) {
@@ -1785,7 +1860,7 @@ export function projectManagedCandidateDecision({
     observed_at: new Date().toISOString(),
     status: actionProjectionComplete && ctx.actions.length > 0
       ? "interactive"
-      : terminal ? "observed" : "visible_unsupported",
+      : terminal && contractComplete ? "observed" : "visible_unsupported",
     persistent: persistent.content,
     interaction: {
       interaction_id: ctx.interactionId,

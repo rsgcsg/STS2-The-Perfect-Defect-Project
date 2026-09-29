@@ -15,7 +15,9 @@ function textSnapshotId(snapshotId) {
 }
 
 const REVIEWED_TEXT_MENU_SURFACES = new Set([
-  "map_navigation", "event_option", "rest_site", "deck_upgrade_selection", "combat_turn",
+  "map_navigation", "event_option", "rest_site", "deck_upgrade_selection",
+  "deck_card_selection", "shop_inventory", "combat_turn",
+  "treasure_chest", "treasure_relic_selection", "treasure_completion",
   "reward_claim", "card_reward_selection", "reward_completion"
 ]);
 
@@ -59,8 +61,28 @@ function completeCurrentLeaf(snapshot) {
   });
 }
 
+function completeObservedTerminal(snapshot) {
+  const surface = snapshot?.interaction?.content?.surface;
+  const bound = snapshot?.bound_actions;
+  return snapshot?.status === "observed"
+    && snapshot?.interaction?.kind === "game_over"
+    && snapshot.interaction.stage === "complete"
+    && typeof snapshot.interaction.interaction_id === "string"
+    && snapshot.interaction.interaction_id.length > 0
+    && Array.isArray(snapshot.interaction.capabilities)
+    && snapshot.interaction.capabilities.length === 0
+    && surface?.kind === "game_over" && surface.stage === "complete"
+    && typeof surface.victory === "boolean"
+    && snapshot.completeness?.status === "complete"
+    && Array.isArray(snapshot.referents)
+    && bound?.status === "complete"
+    && bound.materialized_count === 0 && bound.total_count === 0
+    && Array.isArray(bound.actions) && bound.actions.length === 0;
+}
+
 function project(snapshot, allowActions = true) {
   const supported = allowActions && completeCurrentLeaf(snapshot);
+  const terminal = completeObservedTerminal(snapshot);
   const actions = supported ? snapshot.bound_actions.actions.map((bound) => ({
     action_id: stableActionId(snapshot.snapshot_id, bound.bound_action_id),
     kind: "native_input",
@@ -76,14 +98,16 @@ function project(snapshot, allowActions = true) {
     snapshot_id: textSnapshotId(snapshot.snapshot_id),
     schema: MANAGED_TEXT_MENU_SNAPSHOT_SCHEMA,
     input_profile: MANAGED_TEXT_MENU_PROFILE,
-    status: supported && actions.length > 0 ? "interactive" : "visible_unsupported",
+    status: supported && actions.length > 0 ? "interactive"
+      : terminal ? "observed" : "visible_unsupported",
     interaction: { ...snapshot.interaction, capabilities: [] },
     menu: { cursor: "root", revision: 0, native_snapshot_id: snapshot.snapshot_id },
     menu_actions: {
-      status: supported ? "complete" : "unavailable",
+      status: supported || terminal ? "complete" : "unavailable",
       materialized_count: actions.length,
       total_count: supported ? actions.length : 0,
-      ordering_semantics: supported ? snapshot.bound_actions.ordering_semantics : "unavailable",
+      ordering_semantics: supported || terminal
+        ? snapshot.bound_actions.ordering_semantics : "unavailable",
       actions
     }
   };
