@@ -545,28 +545,41 @@ function currentSurface(state, ctx) {
       };
     }
     case "event_choice": {
-      const options = (state.options ?? []).map((option, index) => {
-        const unlocked = option.is_locked !== true;
+      const currentOptions = Array.isArray(state.options) ? state.options : [];
+      const optionRefs = new Set();
+      const complete = typeof state.room_ref === "string" && state.room_ref.length > 0
+        && typeof state.event_ref === "string" && state.event_ref.length > 0
+        && currentOptions.length > 0 && currentOptions.length <= ACTION_LIMIT
+        && currentOptions.every((option, index) => option?.index === index
+          && typeof option.native_ref === "string" && option.native_ref.length > 0
+          && !optionRefs.has(option.native_ref) && optionRefs.add(option.native_ref)
+          && typeof option.is_locked === "boolean"
+          && typeof option.title === "string" && option.title.length > 0);
+      const options = currentOptions.map((option, index) => {
+        const unlocked = option?.is_locked === false;
         const item = ctx.referent({
           role: "option",
-          label: option.title ?? `Option ${index + 1}`,
-          enabled: unlocked,
+          label: option?.title ?? `Unavailable option ${index + 1}`,
+          enabled: unlocked && complete,
           occurrence: index,
           properties: {
-            index: option.index,
-            title: option.title ?? null,
-            description: option.description ?? null,
-            text_key: option.text_key ?? null,
-            is_locked: !unlocked,
-            variables: option.vars ?? null
+            index: option?.index ?? index,
+            title: option?.title ?? null,
+            description: option?.description ?? null,
+            text_key: option?.text_key ?? null,
+            is_locked: option?.is_locked ?? null,
+            variables: option?.vars ?? null
           }
         });
-        if (unlocked) {
+        if (unlocked && complete) {
           ctx.action({
             verb: "activate",
             subject: item,
             label: String(option.title ?? `Choose option ${index + 1}`),
-            raw: { cmd: "action", action: "choose_option", args: { option_index: option.index } }
+            raw: { cmd: "action", action: "choose_option", args: {
+              option_index: option.index, room_ref: state.room_ref,
+              event_ref: state.event_ref, option_ref: option.native_ref
+            } }
           });
         }
         return item.properties;
@@ -583,7 +596,9 @@ function currentSurface(state, ctx) {
           options
         },
         context: { ...commonContext, kind: "event" },
-        ...supported
+        ...supported,
+        complete,
+        missing: complete ? [] : ["exact_current_event_option_binding"]
       };
     }
     case "rest_site": {

@@ -44,11 +44,13 @@ function eventState() {
     type: "decision",
     decision: "event_choice",
     context: { act: 1, floor: 1, room_type: "Event" },
+    room_ref: "event-room-a",
+    event_ref: "event-a",
     event_name: "Neow",
     description: "Choose.",
     options: [
-      { index: 0, title: "Open", description: "Available", is_locked: false },
-      { index: 1, title: "Locked", description: "Unavailable", is_locked: true }
+      { index: 0, native_ref: "event-option-open", title: "Open", description: "Available", is_locked: false },
+      { index: 1, native_ref: "event-option-locked", title: "Locked", description: "Unavailable", is_locked: true }
     ],
     player: player()
   };

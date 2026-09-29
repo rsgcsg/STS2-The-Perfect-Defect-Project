@@ -34,8 +34,10 @@ test("managed candidate source and measured build identity match the manifest", 
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "ca5f16ce98fbaab2e24a49927d7faec03c04fbaa73df549fa69adf17e8d5a260");
-  assert.equal(manifest.expected_build.artifact_mvid, "46fba5f2-1db0-4d90-ad83-29d05e3d2139");
+  assert.equal(manifest.expected_build.artifact_sha256, "813cb77d3ee9c896cfbfb0ef601e262b0f0fd2389f40c0946e06336e34e94151");
+  assert.equal(manifest.expected_build.artifact_mvid, "2585772e-1c62-4d61-8568-d39809bf5bec");
+  assert.equal(manifest.previous_accepted_build.artifact_sha256, "ca5f16ce98fbaab2e24a49927d7faec03c04fbaa73df549fa69adf17e8d5a260");
+  assert.equal(manifest.previous_accepted_build.artifact_mvid, "46fba5f2-1db0-4d90-ad83-29d05e3d2139");
   assert.equal(manifest.last_measured_build.artifact_sha256, "dd4b10f22606203f8825569c2e0478626d96ac1166d2cd9430591be607d808a6");
   assert.equal(manifest.last_measured_build.artifact_mvid, "61b5b737-724e-4887-a0a4-6664a3c9daea");
   assert.equal(manifest.admission.forbidden_claims.includes("formal H1.0 qualification"), true);
@@ -91,6 +93,7 @@ test("fresh candidate preparation admits added source files into the audited dif
   assert.deepEqual(addedPatchPaths(patch), [
     "src/Sts2Headless/DeckUpgradeCallScope.cs",
     "src/Sts2Headless/DeckUpgradeSelection.cs",
+    "src/Sts2Headless/NativeEventOptionAdmission.cs",
     "src/Sts2Headless/NativePlayWindowAdmission.cs",
     "src/Sts2Headless/PerformanceLab.cs",
     "tests/NativePlayWindowAdmissionTests.csproj",
