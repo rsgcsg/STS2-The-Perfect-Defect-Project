@@ -35,6 +35,7 @@ def legacy(tmp_path: Path, monkeypatch):
     }))
     monkeypatch.setattr(migration, "running", lambda _: None)
     monkeypatch.setattr(migration, "validate_runtime_install", lambda *_: {})
+    monkeypatch.setattr(migration, "_check_runtime_port", lambda _: None)
     return config, old_root
 
 
@@ -65,6 +66,15 @@ def test_migration_rejects_active_owner_and_profile_collision(legacy, monkeypatc
     with pytest.raises(BoundaryError, match="private_profile_collision"):
         migration.migrate_legacy_model_state(config, old_root)
     assert not (private / "legacy-archive").exists()
+
+
+def test_migration_rejects_busy_runtime_port_before_archiving(legacy, monkeypatch):
+    config, old_root = legacy
+    monkeypatch.setattr(migration, "_check_runtime_port", lambda _: (
+        _ for _ in ()).throw(BoundaryError("local_model", "runtime_port_already_in_use")))
+    with pytest.raises(BoundaryError, match="runtime_port_already_in_use"):
+        migration.migrate_legacy_model_state(config, old_root)
+    assert not (config.state_dir / "models/legacy-archive").exists()
 
 
 @pytest.mark.parametrize("bad", ["../../outside.json", ".local/../outside.json"])
