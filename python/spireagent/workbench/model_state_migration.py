@@ -7,8 +7,11 @@ archived as history; their source and environment identities are never rebased.
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError
@@ -42,6 +45,28 @@ def _legacy_entry_file(old: Path, relative: object) -> tuple[str, bytes]:
         if parent.is_symlink():
             raise BoundaryError("local_model", "legacy_metadata_unsafe")
     return inner.as_posix(), _ordinary_file(path)
+
+
+def _write_new_file(path: Path, raw: bytes) -> None:
+    """Write a staging file completely before it can become an owner record."""
+    with path.open("xb") as handle:
+        handle.write(raw)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _publish_profile(destination: Path, raw: bytes) -> None:
+    """Publish a complete pin only when no different pin owns the final name."""
+    temporary = destination.with_name(destination.name + ".stage-" + uuid4().hex)
+    try:
+        _write_new_file(temporary, raw)
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            if _ordinary_file(destination) != raw:
+                raise BoundaryError("local_model", "private_profile_collision") from None
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def migrate_legacy_model_state(config: ProjectConfig, legacy_python_root: Path) -> dict[str, Any]:
@@ -127,20 +152,31 @@ def migrate_legacy_model_state(config: ProjectConfig, legacy_python_root: Path) 
                 if _ordinary_file(_inside(archive, name)) != raw:
                     raise BoundaryError("local_model", "legacy_archive_collision")
         else:
-            archive.mkdir(parents=True, mode=0o700)
-            for name, raw in files.items():
-                target = _inside(archive, name)
-                target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-                target.write_bytes(raw)
-            atomic_json(archive / "inventory.json", {
-                "schema": "stpd/legacy-model-state-archive-v1",
-                "legacy_python_root": str(legacy_python_root.resolve()), "files": inventory,
-            })
+            archive.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            stage = archive.with_name(".stage-" + archive_id + "-" + uuid4().hex)
+            stage.mkdir(mode=0o700)
+            try:
+                for name, raw in files.items():
+                    target = _inside(stage, name)
+                    target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+                    _write_new_file(target, raw)
+                atomic_json(stage / "inventory.json", {
+                    "schema": "stpd/legacy-model-state-archive-v1",
+                    "legacy_python_root": str(legacy_python_root.resolve()),
+                    "files": inventory,
+                })
+                for name, raw in files.items():
+                    if _ordinary_file(_inside(stage, name)) != raw:
+                        raise BoundaryError("local_model", "legacy_archive_staging_invalid")
+                stage.rename(archive)
+            finally:
+                if stage.exists():
+                    shutil.rmtree(stage)
         models.private_root.mkdir(parents=True, exist_ok=True)
         for name, raw in pins.items():
             destination = models.private_root / name
             if not destination.exists():
-                destination.write_bytes(raw)
+                _publish_profile(destination, raw)
         return {"schema": "stpd/model-state-migration-v1", "status": "archived",
                 "archive_id": archive_id, "imported_profiles": sorted(pins),
                 "legacy_selections": legacy_selection_count,

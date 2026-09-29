@@ -86,3 +86,57 @@ def test_migration_rejects_symlinked_profile(legacy, tmp_path: Path):
     profile.symlink_to(other)
     with pytest.raises(BoundaryError, match="legacy_metadata_unsafe"):
         migration.migrate_legacy_model_state(config, old_root)
+
+
+def test_archive_mid_write_failure_never_publishes_and_retry_keeps_originals(
+        legacy, monkeypatch):
+    config, old_root = legacy
+    old = old_root / ".local/token-policies-v1.json"
+    original = old.read_bytes()
+    write = migration._write_new_file
+    calls = 0
+
+    def interrupted(path, raw):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            path.write_bytes(raw[:3])
+            raise OSError("simulated full disk after partial file write")
+        write(path, raw)
+
+    monkeypatch.setattr(migration, "_write_new_file", interrupted)
+    with pytest.raises(OSError, match="simulated full disk"):
+        migration.migrate_legacy_model_state(config, old_root)
+    archive_parent = config.state_dir / "models/legacy-archive"
+    assert list(archive_parent.iterdir()) == []
+    assert old.read_bytes() == original
+    monkeypatch.setattr(migration, "_write_new_file", write)
+    completed = migration.migrate_legacy_model_state(config, old_root)
+    assert (archive_parent / completed["archive_id"] / "inventory.json").is_file()
+    assert old.read_bytes() == original
+
+
+def test_profile_mid_write_failure_leaves_complete_archive_and_retries(legacy, monkeypatch):
+    config, old_root = legacy
+    old_profile = old_root / ".local/text-menu-m2-runtime-v1.json"
+    original = old_profile.read_bytes()
+    write = migration._write_new_file
+
+    def interrupted(path, raw):
+        if path.name.startswith("text-menu-m2-runtime-v1.json.stage-"):
+            path.write_bytes(raw[:4])
+            raise OSError("simulated partial pin write")
+        write(path, raw)
+
+    monkeypatch.setattr(migration, "_write_new_file", interrupted)
+    with pytest.raises(OSError, match="partial pin write"):
+        migration.migrate_legacy_model_state(config, old_root)
+    private = config.state_dir / "models"
+    assert not (private / "text-menu-m2-runtime-v1.json").exists()
+    archives = list((private / "legacy-archive").iterdir())
+    assert len(archives) == 1 and (archives[0] / "inventory.json").is_file()
+    assert old_profile.read_bytes() == original
+    monkeypatch.setattr(migration, "_write_new_file", write)
+    result = migration.migrate_legacy_model_state(config, old_root)
+    assert archives[0] == private / "legacy-archive" / result["archive_id"]
+    assert (private / "text-menu-m2-runtime-v1.json").read_bytes() == original
