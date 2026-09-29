@@ -169,6 +169,9 @@ def verify_memory_package(store: ArtifactStore, reporter: ObjectStoreRunReporter
     run_id = package["ids"]["run"]
     candidate = store.get_manifest(run_id)
     run, training_input, config, engine = _load_run(store, run_id, candidate.producer)
+    if any(step.previous_actual_action is not None or step.public_feedback is not None
+           for episode in engine.snapshot_input().episodes for step in episode.steps):
+        raise BoundaryError("m2_package", "unsupported_optional_history_channel")
     result = reporter.completed(run_id)
     if result is None:
         raise BoundaryError("m2_package", "completed_result_required")
