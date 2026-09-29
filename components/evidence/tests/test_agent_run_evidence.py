@@ -347,7 +347,7 @@ class AgentRunEvidenceTests(unittest.TestCase):
     def test_adapter_protocol_unknown_and_attestation_drift_fail_closed(self) -> None:
         directory = self._evidence(
             "run-unknown-adapter",
-            adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3",
+            adapter_protocol="sts2.policy-runtime/decision-only-ndjson-999",
         )
         result = AgentRunEvidenceVerifier().verify(directory)
         self.assertFalse(result.passed)
@@ -545,6 +545,49 @@ if __name__ == "__main__":
     unittest.main()
 
 class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
+    def test_exact_v3_adapter_keeps_text_menu_and_native_delivery_validation(self) -> None:
+        for native in (False, True):
+            with self.subTest(native=native):
+                directory = self._text_evidence(
+                    f"run-v3-native-{native}", native=native,
+                    adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3",
+                )
+                result = AgentRunEvidenceVerifier().verify(directory)
+                self.assertTrue(result.passed, result.findings)
+                # An opt-in protocol is not permission to change what happened.
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+                events[5]["payload"]["result"]["native_delivery"] = None if native else "delivered"
+                self._rewrite_events(directory, events)
+                rejected = AgentRunEvidenceVerifier().verify(directory)
+                self.assertFalse(rejected.passed)
+
+    def test_v3_adapter_rejects_legacy_snapshot_and_attestation_drift(self) -> None:
+        directory = self._evidence(
+            "run-v3-legacy", adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3",
+        )
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "adapter_representation")
+
+        directory = self._text_evidence(
+            "run-v3-attestation", adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3",
+        )
+        attestation_path = directory / "adapter-attestation.json"
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+        attestation["actual"]["protocol"] = "sts2.policy-runtime/decision-only-ndjson-2"
+        attestation_path.write_bytes(canonical(attestation))
+        self._rewrite_events(directory, [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()])
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "adapter_association")
+
+    def test_v3_adapter_accepts_exact_v2_connector_selection_fixture(self) -> None:
+        directory = self._text_v2_evidence(
+            "v3-v2-selection", adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3",
+        )
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertTrue(result.passed, result.findings)
+
     def test_exact_v2_adapter_with_text_menu_manifest_is_supported(self) -> None:
         result = AgentRunEvidenceVerifier().verify(
             self._text_evidence(
@@ -663,8 +706,10 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         self._rewrite_events(directory, events)
         return directory
 
-    def _text_v2_evidence(self, name: str) -> Path:
-        directory = self._text_evidence(name, adapter_protocol="sts2.policy-runtime/decision-only-ndjson-2")
+    def _text_v2_evidence(
+        self, name: str, *, adapter_protocol: str = "sts2.policy-runtime/decision-only-ndjson-2",
+    ) -> Path:
+        directory = self._text_evidence(name, adapter_protocol=adapter_protocol)
         policy_path = directory / "policy-manifest.json"
         policy = json.loads(policy_path.read_text())
         policy["representation"] = {"id": "text", "version": "2", "input_schema": "sts2.player-environment/text-menu-snapshot-2"}

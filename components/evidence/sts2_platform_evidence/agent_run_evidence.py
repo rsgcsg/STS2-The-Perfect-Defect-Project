@@ -285,17 +285,20 @@ def _verify_policy_provenance(directory: Path, manifest: Mapping[str, Any]) -> b
     artifact = _object(policy_manifest.get("artifact"), "policy manifest artifact")
     adapter = _object(policy_manifest.get("adapter"), "policy manifest adapter")
     _verify_adapter_identity(adapter, _POLICY_MANIFEST_FILE)
-    if adapter["protocol"] == "sts2.policy-runtime/decision-only-ndjson-2":
+    if adapter["protocol"] in {
+        "sts2.policy-runtime/decision-only-ndjson-2",
+        "sts2.policy-runtime/decision-only-ndjson-3",
+    }:
         representation = _object(policy_manifest.get("representation"), "policy manifest representation")
         if representation.get("input_schema") not in _TEXT_SNAPSHOT_SCHEMAS:
             raise AgentRunEvidenceError(
                 "adapter_representation",
-                "decision-only-ndjson-2 requires a declared text-menu snapshot representation",
+                "stateful adapter requires a declared text-menu snapshot representation",
                 _POLICY_MANIFEST_FILE,
             )
     elif isinstance(policy_manifest.get("representation"), dict) and policy_manifest["representation"].get("input_schema") == _TEXT_V2_SNAPSHOT_SCHEMA:
         raise AgentRunEvidenceError(
-            "adapter_representation", "text-menu-snapshot-2 requires decision-only-ndjson-2", _POLICY_MANIFEST_FILE,
+            "adapter_representation", "text-menu-snapshot-2 requires a stateful adapter", _POLICY_MANIFEST_FILE,
         )
     if isinstance(policy_manifest.get("representation"), dict) and policy_manifest["representation"].get("input_schema") == _TEXT_V2_SNAPSHOT_SCHEMA:
         _verify_v2_policy_manifest(policy_manifest)
@@ -436,6 +439,7 @@ def _verify_adapter_identity(value: Mapping[str, Any], path: str) -> None:
         {
             "sts2.policy-runtime/decision-only-ndjson-1",
             "sts2.policy-runtime/decision-only-ndjson-2",
+            "sts2.policy-runtime/decision-only-ndjson-3",
         },
         path,
     )

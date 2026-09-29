@@ -3,8 +3,11 @@
 This component verifies typed immutable artifacts and moves their bytes without
 owning gameplay, Human action, or research semantics.
 
-Evidence `0.1.0-rc.21` verifies Policy Runtime adapter protocol v1 and the exact
-v2 protocol in the Policy Manifest and adapter attestation. Expected and actual
+Evidence `0.1.0-rc.23` verifies Policy Runtime adapter protocols v1, v2 and v3
+in the Policy Manifest and adapter attestation. The opt-in v3 interaction-memory
+port requires a declared text-menu representation, just as v2 does. This verifier
+checks the existing immutable input/result events; it does not infer model memory
+writes, native effects or causal successors from a protocol version. Expected and actual
 adapter identities, manifest digests, and all existing typed event checks remain
 strict. It also verifies the additive
 `text_observation_not_admitted` Agent-run event against a prior admitted
