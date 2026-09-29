@@ -39,13 +39,17 @@ class AgentRunEvidenceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def _evidence(self, name: str = "run-1") -> Path:
+    def _evidence(
+        self,
+        name: str = "run-1",
+        adapter_protocol: str = "sts2.policy-runtime/decision-only-ndjson-1",
+    ) -> Path:
         directory = self.root / name
         directory.mkdir()
         adapter = {
             "id": "fixture-adapter",
             "version": "1.0.0",
-            "protocol": "sts2.policy-runtime/decision-only-ndjson-1",
+            "protocol": adapter_protocol,
             "code_sha256": "d" * 64,
         }
         policy_manifest = {
@@ -54,6 +58,7 @@ class AgentRunEvidenceTests(unittest.TestCase):
             "policy": {"id": "policy-1", "version": "1.0.0"},
             "adapter": adapter,
             "artifact": {"sha256": "b" * 64},
+            "representation": {"id": "snapshot", "version": "1", "input_schema": "sts2.player-environment/snapshot-1"},
         }
         policy_manifest_sha256 = sha256(
             json.dumps(
@@ -326,6 +331,48 @@ class AgentRunEvidenceTests(unittest.TestCase):
         self.assertEqual(result.require_value().event_count, 2)
         self.assertEqual(detect_agent_run_type(directory), "policy-runtime-agent-run")
 
+    def test_adapter_protocol_v1_and_exact_v2_are_supported(self) -> None:
+        legacy = AgentRunEvidenceVerifier().verify(self._evidence("run-v1"))
+        self.assertTrue(legacy.passed, legacy.findings)
+
+    def test_v2_adapter_with_legacy_snapshot_representation_is_rejected(self) -> None:
+        directory = self._evidence(
+            "run-v2-legacy-snapshot",
+            adapter_protocol="sts2.policy-runtime/decision-only-ndjson-2",
+        )
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "adapter_representation")
+
+    def test_adapter_protocol_unknown_and_attestation_drift_fail_closed(self) -> None:
+        directory = self._evidence(
+            "run-unknown-adapter",
+            adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3",
+        )
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "invalid_value")
+
+        directory = self._evidence("run-expected-adapter-drift")
+        attestation_path = directory / "adapter-attestation.json"
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+        attestation["expected"]["protocol"] = "sts2.policy-runtime/decision-only-ndjson-2"
+        attestation_path.write_bytes(canonical(attestation))
+        self._rewrite_events(directory, [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()])
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "adapter_association")
+
+        directory = self._evidence("run-actual-adapter-drift")
+        attestation_path = directory / "adapter-attestation.json"
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+        attestation["actual"]["protocol"] = "sts2.policy-runtime/decision-only-ndjson-2"
+        attestation_path.write_bytes(canonical(attestation))
+        self._rewrite_events(directory, [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()])
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "adapter_association")
+
     def test_policy_manifest_and_adapter_attestation_are_verified(self) -> None:
         directory = self._evidence("run-policy-manifest-drift")
         policy_manifest_path = directory / "policy-manifest.json"
@@ -498,6 +545,16 @@ if __name__ == "__main__":
     unittest.main()
 
 class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
+    def test_exact_v2_adapter_with_text_menu_manifest_is_supported(self) -> None:
+        result = AgentRunEvidenceVerifier().verify(
+            self._text_evidence(
+                "run-v2",
+                native=True,
+                adapter_protocol="sts2.policy-runtime/decision-only-ndjson-2",
+            )
+        )
+        self.assertTrue(result.passed, result.findings)
+
     def _game_over_intro(self, snapshot: dict[str, Any], result: str) -> dict[str, Any]:
         page = json.loads(json.dumps(snapshot))
         page["interaction"].update(
@@ -559,8 +616,14 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         snapshot["menu_actions"] = {"status": "complete", "materialized_count": 1, "total_count": 1, "ordering_semantics": "connector_order", "actions": [action]}
         return snapshot
 
-    def _text_evidence(self, name: str, *, native: bool = False) -> Path:
-        directory = self._evidence(name)
+    def _text_evidence(
+        self,
+        name: str,
+        *,
+        native: bool = False,
+        adapter_protocol: str = "sts2.policy-runtime/decision-only-ndjson-1",
+    ) -> Path:
+        directory = self._evidence(name, adapter_protocol=adapter_protocol)
         policy_path = directory / "policy-manifest.json"
         policy = json.loads(policy_path.read_text())
         policy["representation"] = {"id": "text", "version": "1", "input_schema": "sts2.player-environment/text-menu-snapshot-1"}
@@ -573,6 +636,8 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         attestation_path = directory / "adapter-attestation.json"
         attestation = json.loads(attestation_path.read_text())
         attestation["policy_manifest_sha256"] = digest
+        attestation["expected"] = policy["adapter"]
+        attestation["actual"] = policy["adapter"]
         attestation_path.write_bytes(canonical(attestation))
         events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
         action = {"action_id": "native-end" if native else "nav-info", "kind": "native_input" if native else "system_navigation", "verb": "end_turn" if native else "open_information", "label": "End turn" if native else "Information", "subject_referent_id": None, "arguments": [], "effect_domain": "native_input" if native else "text_menu"}

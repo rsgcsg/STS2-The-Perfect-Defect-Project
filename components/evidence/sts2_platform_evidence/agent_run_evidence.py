@@ -283,6 +283,14 @@ def _verify_policy_provenance(directory: Path, manifest: Mapping[str, Any]) -> b
     artifact = _object(policy_manifest.get("artifact"), "policy manifest artifact")
     adapter = _object(policy_manifest.get("adapter"), "policy manifest adapter")
     _verify_adapter_identity(adapter, _POLICY_MANIFEST_FILE)
+    if adapter["protocol"] == "sts2.policy-runtime/decision-only-ndjson-2":
+        representation = _object(policy_manifest.get("representation"), "policy manifest representation")
+        if representation.get("input_schema") != "sts2.player-environment/text-menu-snapshot-1":
+            raise AgentRunEvidenceError(
+                "adapter_representation",
+                "decision-only-ndjson-2 requires text-menu-snapshot-1 representation",
+                _POLICY_MANIFEST_FILE,
+            )
 
     canonical_digest = _sha256_bytes(_canonical_json(policy_manifest).encode("utf-8"))
     if canonical_digest != manifest["policy_manifest_sha256"]:
@@ -346,7 +354,15 @@ def _verify_adapter_identity(value: Mapping[str, Any], path: str) -> None:
     _exact_keys(value, {"id", "version", "protocol", "code_sha256"}, "adapter identity")
     _text(value, "id", path)
     _text(value, "version", path)
-    _literal(value, "protocol", "sts2.policy-runtime/decision-only-ndjson-1", path)
+    _enum(
+        value,
+        "protocol",
+        {
+            "sts2.policy-runtime/decision-only-ndjson-1",
+            "sts2.policy-runtime/decision-only-ndjson-2",
+        },
+        path,
+    )
     digest = _text(value, "code_sha256", path)
     if not _SHA256.fullmatch(digest):
         raise AgentRunEvidenceError("invalid_digest", "adapter code_sha256 is invalid", path)
