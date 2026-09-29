@@ -740,7 +740,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     if parsed.query:
                         raise ValueError
                     if parsed.path == "/api/local-environment":
-                        value = app.local_environment.status()
+                        value = {
+                            **app.local_environment.status(),
+                            "csrf_token": app.account.csrf,
+                        }
                     elif parsed.path == "/api/local-environment/reports":
                         value = app.local_environment.reports()
                     elif parsed.path.startswith("/api/local-environment/events/"):

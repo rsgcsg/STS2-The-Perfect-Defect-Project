@@ -296,7 +296,7 @@ test('device selection changes request scope and invalidates prior response cont
   assert.equal(ui.api('collections', '?limit=25'), '/api/project/collections?limit=25&device=pc');
 });
 
-function pageSetup(view, identity, connectContent = async () => 'connection facts', flow = '', mode = 'cloud', search = undefined, cloudUrl = '') {
+function pageSetup(view, identity, connectContent = async () => 'connection facts', flow = '', mode = 'cloud', search = undefined, cloudUrl = '', watchNetwork = false) {
   const nodes = new Map();
   const element = () => Object.assign(new Element('div'), {
     textContent: '', attributes: {}, addEventListener() {},
@@ -308,26 +308,45 @@ function pageSetup(view, identity, connectContent = async () => 'connection fact
   };
   get('connection').textContent = '正在读取状态…';
   let scope = 'owner';
-  const refreshes = [], projectScopes = [];
+  const refreshes = [], projectScopes = [], projectCalls = [], networkCalls = [];
   let projectRenders = 0;
+  const location = {search: search === undefined ? ('?view=' + view + (flow ? '&flow=' + flow : '')) : search};
+  let navClick;
+  const environmentNav = {
+    dataset: {view: 'local-environment'},
+    classList: {toggle() {}},
+    addEventListener(type, callback) { if (type === 'click') navClick = callback; },
+  };
   const context = vm.createContext({
     document: {body: {dataset: {mode, cloudUrl}}, getElementById: get,
-      createElement: element, createDocumentFragment: element, querySelectorAll: () => [], addEventListener() {}},
+      createElement: element, createDocumentFragment: element,
+      querySelectorAll: selector => watchNetwork && selector === '[data-view]' ? [environmentNav] : [],
+      addEventListener() {}},
     Node: Element,
     window: {addEventListener() {}, SpireProject: {
       datasetContext: () => '',
-      render: () => { projectRenders++; return 'team page'; },
+      render: (selectedView, selectedIdentity) => {
+        projectRenders++;
+        projectCalls.push([selectedView, selectedIdentity?.status]);
+        return 'team page';
+      },
     }, SpireIdentity: {
       context: () => scope, isLocal: () => false, refresh: async force => { refreshes.push(force); return identity; },
       renderDevices: () => 'account facts', renderConnect: connectContent,
       ensureProjectScope() { projectScopes.push(true); },
       localOnly() { scope = 'local'; return {status: 'local_only'}; }, connect() {},
     }},
-    location: {search: search === undefined ? ('?view=' + view + (flow ? '&flow=' + flow : '')) : search}, history: {}, Date, URLSearchParams,
+    location, history: {pushState(_state, _title, url) { location.search = url; }}, Date, URLSearchParams,
+    ...(watchNetwork ? {fetch(url, options) {
+      networkCalls.push([url, options?.method || 'GET']);
+      throw new Error('unexpected network request');
+    }} : {}),
     setInterval() {},
   });
   vm.runInContext(readFileSync(new URL('../spireagent/console/console.js', import.meta.url), 'utf8'), context);
-  return {get, context, refreshes, projectScopes, projectRenders: () => projectRenders,
+  return {get, context, refreshes, projectScopes, projectCalls, networkCalls,
+    projectRenders: () => projectRenders,
+    clickEnvironmentNav: () => navClick({preventDefault() {}}),
     changeScope: () => {scope = 'other';}};
 }
 const settled = () => new Promise(resolve => setImmediate(resolve));
@@ -347,6 +366,33 @@ test('no-cloud local root selects the local home without identity, cloud reads, 
   assert.match(flatten(content), /本机模型与资料查看不需要云端登录/);
   assert.match(flatten(content), /上传另需设备授权、开启上传设置且本机投递服务实际运行/);
   assert.equal(vm.runInContext('views.campaigns[1]', context).includes("后台自动上传"), false);
+});
+
+test('local environment deep link and navigation dispatch the project page without cloud or write requests', async () => {
+  const direct = pageSetup(
+    'local-environment', null, undefined, '', 'local', '?view=local-environment',
+    'https://hub.example', true,
+  );
+  await settled();
+  assert.equal(vm.runInContext('state.view', direct.context), 'local-environment');
+  assert.equal(direct.get('title').textContent, '环境与场景');
+  assert.equal(direct.get('connection').textContent, '本机工作台');
+  assert.deepEqual(direct.get('content').children, ['team page']);
+  assert.deepEqual(direct.projectCalls, [['local-environment', 'local_only']]);
+  assert.deepEqual(direct.refreshes, []);
+  assert.deepEqual(direct.projectScopes, []);
+  assert.deepEqual(direct.networkCalls, []);
+
+  const navigation = pageSetup('local-home', null, undefined, '', 'local', '', '', true);
+  await settled();
+  navigation.clickEnvironmentNav();
+  await settled();
+  assert.equal(vm.runInContext('location.search', navigation.context), '?view=local-environment');
+  assert.equal(vm.runInContext('state.view', navigation.context), 'local-environment');
+  assert.deepEqual(navigation.projectCalls, [['local-environment', 'local_only']]);
+  assert.deepEqual(navigation.refreshes, []);
+  assert.deepEqual(navigation.projectScopes, []);
+  assert.deepEqual(navigation.networkCalls, []);
 });
 
 test('no-cloud local team deep links explain the boundary and offer working local pages', async () => {
@@ -391,6 +437,9 @@ test('local browser still hides login when Hub is not configured', () => {
 test('cloud shell cannot select the local-only home through a query string', async () => {
   const {context} = pageSetup('local-home', {status: 'signed_out'}, undefined, '', 'cloud', '?view=local-home');
   assert.equal(vm.runInContext('state.view', context), 'collections');
+  const environment = pageSetup('local-environment', {status: 'signed_out'}, undefined, '',
+    'cloud', '?view=local-environment');
+  assert.equal(vm.runInContext('state.view', environment.context), 'collections');
 });
 
 test('local campaign deep links remain available and cloud links appear only when configured', async () => {
