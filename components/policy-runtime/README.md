@@ -62,9 +62,35 @@ child computation. After too many outstanding cancelled request IDs the port
 closes and kills that child rather than forgetting old IDs. This contract does
 not claim native action execution, actual-action feedback, or model quality.
 
+## Confirmed interaction port (opt-in)
+
+`sts2.policy-runtime/decision-only-ndjson-3` uses `policy-port-3` with an
+existing text-menu representation and a configured Agent Evidence writer.
+Its decision input adds required nullable `previous_interaction`. A non-null
+value binds the prior recorded decision, scored snapshot, complete candidate
+digest, submitted action and Connector request to either `menu_applied` or
+`native_input_delivered`. It carries no reward, inferred effect or native
+Commit claim. The response completion adds required nullable
+`previous_interaction_request_id`, which must echo the offered value.
+
+Runtime offers a recorded interaction at most once, on a newer observation in
+the same continuity segment. A failed Evidence append, unknown or unapplied
+result, Shadow decision, or abandoned decision creates no interaction. An
+offered request that fails or is cancelled rotates the v3 continuity; Human,
+mode changes, One-Step completion, budget handoff, Stop, taint and game identity
+changes synchronously clear the pending interaction. The v1 and v2 port
+contracts keep their original wire shapes and lifecycle rules.
+
+`text_menu_dispatch_attempt` and its counters record an intended dispatch,
+not Connector delivery. If Human, Stop or the budget deadline cancels while
+that event is being written, Runtime records `text_menu_dispatch_cancelled`
+with `recovery_before_submit` and never calls Connector submit. An already
+submitted native input still waits for its Connector result. A failed
+cancellation-event write taints the Agent Run because its evidence is incomplete.
+
 ## Standalone consumer package
 
-Version `0.1.0-rc.13` provides a candidate package for external consumers. Build
+Version `0.1.0-rc.14` provides a candidate package for external consumers. Build
 from a committed component checkout with the checked-in lockfile:
 
 ```bash
@@ -73,7 +99,7 @@ npm --prefix components/policy-runtime run check
 npm --prefix components/policy-runtime run package -- --output /absolute/package-output
 ```
 
-The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.13.tgz`,
+The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.14.tgz`,
 `policy-runtime-package.json` and `checksums.sha256`. It requires committed
 component source and does not publish anything. The package contains compiled
 JavaScript/declarations, CLI entries, license, a component identity record and

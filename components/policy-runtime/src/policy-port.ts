@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { decodeTextMenuSnapshot, decodeTextMenuV2Snapshot } from "@rsgcsg/sts2-connector-client";
-import type { Policy, AdapterDecision, PolicyDecisionInput, PolicyManifest, PolicyPortDecisionRequest, PolicyPortDecisionResponse, PolicyPortErrorResponse, PolicyPortReadyResponse, PolicyPortV2DecisionRequest, PolicyPortV2DecisionResponse, PolicyPortV2ErrorResponse, PolicyPortV2ReadyResponse, StatefulAdapterDecision, StatefulPolicy, StatefulPolicyDecisionInput } from "./contracts.js";
-import { POLICY_PORT_SCHEMA, POLICY_PORT_V2_SCHEMA, assertAdapterDecision, validateAdapterDecision, validatePolicyManifest } from "./contracts.js";
+import type { Policy, AdapterDecision, PolicyDecisionInput, PolicyManifest, PolicyPortDecisionRequest, PolicyPortDecisionResponse, PolicyPortErrorResponse, PolicyPortReadyResponse, PolicyPortV2DecisionRequest, PolicyPortV2DecisionResponse, PolicyPortV2ErrorResponse, PolicyPortV2ReadyResponse, PolicyPortV3ReadyResponse, PolicyPortV3DecisionResponse, PolicyPortV3ErrorResponse, StatefulAdapterDecision, StatefulPolicy, StatefulPolicyDecisionInput } from "./contracts.js";
+import { POLICY_PORT_SCHEMA, POLICY_PORT_V2_SCHEMA, POLICY_PORT_V3_SCHEMA, assertAdapterDecision, validateAdapterDecision, validatePolicyManifest } from "./contracts.js";
 import { admitWholeDecisionBundle } from "./runtime.js";
 
 export const DEFAULT_POLICY_ADAPTER_STARTUP_TIMEOUT_MS = 30_000;
@@ -87,10 +87,18 @@ export class NdjsonPolicyPort {
   }
 
   decideV2(input: StatefulPolicyDecisionInput, signal: AbortSignal, onOffer: () => void): Promise<StatefulAdapterDecision> {
+    return this.decideStateful(input, signal, onOffer, POLICY_PORT_V2_SCHEMA);
+  }
+
+  decideV3(input: StatefulPolicyDecisionInput, signal: AbortSignal, onOffer: () => void): Promise<StatefulAdapterDecision> {
+    return this.decideStateful(input, signal, onOffer, POLICY_PORT_V3_SCHEMA);
+  }
+
+  private decideStateful(input: StatefulPolicyDecisionInput, signal: AbortSignal, onOffer: () => void, schema: typeof POLICY_PORT_V2_SCHEMA | typeof POLICY_PORT_V3_SCHEMA): Promise<StatefulAdapterDecision> {
     if (this.closed) return Promise.reject(new Error("policy child port is closed"));
     if (signal.aborted) return Promise.reject(new Error("policy decision cancelled"));
     const requestId = randomUUID();
-    const request: PolicyPortV2DecisionRequest = { schema: POLICY_PORT_V2_SCHEMA,
+    const request = { schema,
       message_type: "decide", request_id: requestId, input };
     let wire: string;
     try { wire = `${JSON.stringify(request)}\n`; }
@@ -171,11 +179,11 @@ export class NdjsonPolicyPort {
     try { value = JSON.parse(line); } catch { this.failAll(new Error("policy child port emitted invalid JSON")); return; }
     if (value === null || typeof value !== "object" || Array.isArray(value)) { this.failAll(new Error("policy child port emitted a non-object")); return; }
     const response = value as { schema?: unknown; request_id?: unknown; message_type?: unknown; adapter?: unknown; error?: { message?: unknown }; output?: unknown };
-    if ((response.schema === POLICY_PORT_SCHEMA || response.schema === POLICY_PORT_V2_SCHEMA) && response.message_type === "ready") {
+    if ((response.schema === POLICY_PORT_SCHEMA || response.schema === POLICY_PORT_V2_SCHEMA || response.schema === POLICY_PORT_V3_SCHEMA) && response.message_type === "ready") {
       try {
         if (this.readyAdapter) throw new Error("policy child emitted duplicate startup attestation");
         const adapter = validateReadyAdapter(response.adapter);
-        if (response.schema !== (adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-2" ? POLICY_PORT_V2_SCHEMA : POLICY_PORT_SCHEMA)) throw new Error("policy child ready schema/protocol mismatch");
+        if (response.schema !== (adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-3" ? POLICY_PORT_V3_SCHEMA : adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-2" ? POLICY_PORT_V2_SCHEMA : POLICY_PORT_SCHEMA)) throw new Error("policy child ready schema/protocol mismatch");
         this.readyAdapter = adapter;
         this.resolveReady(adapter);
       } catch (error) {
@@ -183,7 +191,7 @@ export class NdjsonPolicyPort {
       }
       return;
     }
-    if (response.schema === POLICY_PORT_V2_SCHEMA) {
+    if (response.schema === POLICY_PORT_V2_SCHEMA || response.schema === POLICY_PORT_V3_SCHEMA) {
       this.handleV2Response(response as Record<string, unknown>);
       return;
     }
@@ -215,6 +223,8 @@ export class NdjsonPolicyPort {
       return;
     }
     this.pendingV2.delete(response.request_id);
+    const expectedSchema = pending.input.manifest.adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-3" ? POLICY_PORT_V3_SCHEMA : POLICY_PORT_V2_SCHEMA;
+    if (response.schema !== expectedSchema) { pending.reject(new Error("policy child response schema mismatch")); return; }
     if (response.message_type === "error") {
       if (!exactKeys(response, ["schema", "message_type", "request_id", "error"]) ||
           !isPortError(response.error)) pending.reject(new Error("policy child emitted malformed v2 error"));
@@ -229,7 +239,8 @@ export class NdjsonPolicyPort {
       const input = pending.input;
       const completion = response.completion;
       if (completion === null || typeof completion !== "object" || Array.isArray(completion) ||
-          !exactKeys(completion as Record<string, unknown>, ["continuity_token", "snapshot_id", "sequence"]) ||
+          !exactKeys(completion as Record<string, unknown>, expectedSchema === POLICY_PORT_V3_SCHEMA ? ["continuity_token", "snapshot_id", "sequence", "previous_interaction_request_id"] : ["continuity_token", "snapshot_id", "sequence"]) ||
+          (expectedSchema === POLICY_PORT_V3_SCHEMA && (completion as Record<string, unknown>).previous_interaction_request_id !== (input.previous_interaction?.request_id ?? null)) ||
           (completion as Record<string, unknown>).continuity_token !== input.continuity_token ||
           (completion as Record<string, unknown>).snapshot_id !== input.bundle.observation.snapshot_id ||
           (completion as Record<string, unknown>).sequence !== input.bundle.observation.sequence) {
@@ -263,7 +274,7 @@ function validateReadyAdapter(value: unknown): PolicyManifest["adapter"] {
   if (Object.keys(adapter).sort().join(",") !== "code_sha256,id,protocol,version"
       || typeof adapter.id !== "string" || !adapter.id
       || typeof adapter.version !== "string" || !adapter.version
-      || (adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-1" && adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-2")
+      || (adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-1" && adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-2" && adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-3")
       || typeof adapter.code_sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(adapter.code_sha256)) {
     throw new Error("policy child emitted an invalid startup adapter identity");
   }
@@ -302,46 +313,48 @@ export async function servePolicyPort(policy: Policy, input: NodeJS.ReadableStre
 /** Serial v2 child loop. A later reset token is processed only after older work ends. */
 export async function serveStatefulPolicyPort(policy: StatefulPolicy,
   input: NodeJS.ReadableStream = process.stdin,
-  output: NodeJS.WritableStream = process.stdout): Promise<void> {
+  output: NodeJS.WritableStream = process.stdout, protocol: "sts2.policy-runtime/decision-only-ndjson-2" | "sts2.policy-runtime/decision-only-ndjson-3" = "sts2.policy-runtime/decision-only-ndjson-2"): Promise<void> {
+  const schema = protocol === "sts2.policy-runtime/decision-only-ndjson-3" ? POLICY_PORT_V3_SCHEMA : POLICY_PORT_V2_SCHEMA;
   const lines = createInterface({ input });
   for await (const line of lines) {
     let value: unknown;
     try { value = JSON.parse(line); }
-    catch { writePort(output, { schema: POLICY_PORT_V2_SCHEMA, message_type: "error",
+    catch { writePort(output, { schema, message_type: "error",
       request_id: "unknown", error: { code: "invalid_json", message: "request was not JSON" } }); continue; }
     try {
-      const request = validateV2Request(value);
+      const request = validateV2Request(value, schema);
       const result = await policy(request.input, new AbortController().signal, () => {});
       assertAdapterDecision(result.output);
       validateAdapterDecision(result.output, request.input.candidate_digest, request.input.candidate_count);
-      validateCompletion(result.completion, request.input);
-      writePort(output, { schema: POLICY_PORT_V2_SCHEMA, message_type: "decision",
+      validateCompletion(result.completion, request.input, schema);
+      writePort(output, { schema, message_type: "decision",
         request_id: request.request_id, output: result.output, completion: result.completion });
     } catch (error) {
       const requestId = value !== null && typeof value === "object" &&
         typeof (value as Record<string, unknown>).request_id === "string"
         ? String((value as Record<string, unknown>).request_id) : "unknown";
-      writePort(output, { schema: POLICY_PORT_V2_SCHEMA, message_type: "error",
+      writePort(output, { schema, message_type: "error",
         request_id: requestId, error: { code: "policy_error", message: error instanceof Error ? error.message : String(error) } });
     }
   }
 }
 
-function validateV2Request(value: unknown): PolicyPortV2DecisionRequest {
+function validateV2Request(value: unknown, schema: typeof POLICY_PORT_V2_SCHEMA | typeof POLICY_PORT_V3_SCHEMA): PolicyPortV2DecisionRequest {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("v2 request must be an object");
   const request = value as Record<string, unknown>;
   if (!exactKeys(request, ["schema", "message_type", "request_id", "input"]) ||
-      request.schema !== POLICY_PORT_V2_SCHEMA || request.message_type !== "decide" ||
+      request.schema !== schema || request.message_type !== "decide" ||
       typeof request.request_id !== "string" || !request.request_id) throw new Error("invalid v2 request contract");
   const input = request.input;
   if (input === null || typeof input !== "object" || Array.isArray(input)) throw new Error("v2 input must be an object");
   const typed = input as Record<string, unknown>;
-  if (!exactKeys(typed, ["run_id", "manifest", "bundle", "candidate_digest", "candidate_count", "continuity_token"]) ||
+  if (!exactKeys(typed, schema === POLICY_PORT_V3_SCHEMA ? ["run_id", "manifest", "bundle", "candidate_digest", "candidate_count", "continuity_token", "previous_interaction"] : ["run_id", "manifest", "bundle", "candidate_digest", "candidate_count", "continuity_token"]) ||
       typeof typed.run_id !== "string" || !typed.run_id || typeof typed.continuity_token !== "string" || !typed.continuity_token ||
       typeof typed.candidate_digest !== "string" || !/^[a-f0-9]{64}$/u.test(typed.candidate_digest) ||
       !Number.isSafeInteger(typed.candidate_count) || Number(typed.candidate_count) < 0) throw new Error("invalid v2 input contract");
   const manifest = validatePolicyManifest(typed.manifest);
-  if (manifest.adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-2") throw new Error("v2 request requires v2 manifest");
+  if (manifest.adapter.protocol !== (schema === POLICY_PORT_V3_SCHEMA ? "sts2.policy-runtime/decision-only-ndjson-3" : "sts2.policy-runtime/decision-only-ndjson-2")) throw new Error("stateful request requires matching manifest");
+  if (schema === POLICY_PORT_V3_SCHEMA) validateConfirmedInteraction(typed.previous_interaction);
   const bundle = typed.bundle;
   if (bundle === null || typeof bundle !== "object" || Array.isArray(bundle) ||
       !exactKeys(bundle as Record<string, unknown>, ["observation", "reads"]) ||
@@ -359,9 +372,21 @@ function validateV2Request(value: unknown): PolicyPortV2DecisionRequest {
   return request as unknown as PolicyPortV2DecisionRequest;
 }
 
-function validateCompletion(completion: StatefulAdapterDecision["completion"], input: StatefulPolicyDecisionInput): void {
+function validateConfirmedInteraction(value: unknown): void {
+  if (value === null) return;
+  if (value === undefined || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid confirmed interaction");
+  const interaction = value as Record<string, unknown>;
+  if (!exactKeys(interaction, ["decision_id", "snapshot_id", "candidate_digest", "action_id", "request_id", "effect_domain", "result_kind"]) ||
+      ["decision_id", "snapshot_id", "action_id", "request_id"].some(key => typeof interaction[key] !== "string" || interaction[key] === "") ||
+      typeof interaction.candidate_digest !== "string" || !/^[a-f0-9]{64}$/u.test(interaction.candidate_digest) ||
+      !((interaction.effect_domain === "text_menu" && interaction.result_kind === "menu_applied") ||
+        (interaction.effect_domain === "native_input" && interaction.result_kind === "native_input_delivered"))) throw new Error("invalid confirmed interaction");
+}
+
+function validateCompletion(completion: StatefulAdapterDecision["completion"], input: StatefulPolicyDecisionInput, schema: typeof POLICY_PORT_V2_SCHEMA | typeof POLICY_PORT_V3_SCHEMA): void {
   if (completion === null || typeof completion !== "object" ||
-      !exactKeys(completion as unknown as Record<string, unknown>, ["continuity_token", "snapshot_id", "sequence"]) ||
+      !exactKeys(completion as unknown as Record<string, unknown>, schema === POLICY_PORT_V3_SCHEMA ? ["continuity_token", "snapshot_id", "sequence", "previous_interaction_request_id"] : ["continuity_token", "snapshot_id", "sequence"]) ||
+      (schema === POLICY_PORT_V3_SCHEMA && completion.previous_interaction_request_id !== (input.previous_interaction?.request_id ?? null)) ||
       completion.continuity_token !== input.continuity_token ||
       completion.snapshot_id !== input.bundle.observation.snapshot_id ||
       completion.sequence !== input.bundle.observation.sequence ||
@@ -389,6 +414,6 @@ function errorResponse(requestId: string, code: string, message: string): Policy
   return { schema: POLICY_PORT_SCHEMA, message_type: "error", request_id: requestId, error: { code, message } };
 }
 
-function writePort(output: NodeJS.WritableStream, value: PolicyPortReadyResponse | PolicyPortDecisionResponse | PolicyPortErrorResponse | PolicyPortV2ReadyResponse | PolicyPortV2DecisionResponse | PolicyPortV2ErrorResponse): void {
+function writePort(output: NodeJS.WritableStream, value: PolicyPortReadyResponse | PolicyPortDecisionResponse | PolicyPortErrorResponse | PolicyPortV2ReadyResponse | PolicyPortV2DecisionResponse | PolicyPortV2ErrorResponse | PolicyPortV3ReadyResponse | PolicyPortV3DecisionResponse | PolicyPortV3ErrorResponse): void {
   output.write(`${JSON.stringify(value)}\n`);
 }

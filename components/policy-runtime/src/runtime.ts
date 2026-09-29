@@ -3,7 +3,7 @@ import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvi
 import { admitWholeDecision } from "./admission.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { candidateOrderDigest } from "./digest.js";
-import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type DecisionAction, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
+import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type ConfirmedInteraction, type DecisionAction, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
 import { StaleWholeBundleError } from "./connector.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 
@@ -94,6 +94,7 @@ export class PolicyRuntime {
   private recoveryEpochExhausted = false;
   private activePolicy: { controller: AbortController } | null = null;
   private continuity: { token: string; gameId: string; runtimeId: string; environment: string } | null = null;
+  private confirmedInteraction: { value: ConfirmedInteraction; sequence: number; epoch: number } | null = null;
   private autonomyBudgetTimer: ReturnType<typeof setTimeout> | undefined;
   private autonomyBudgetGeneration = 0;
   private autonomyBudgetHandoffQueued = false;
@@ -120,8 +121,9 @@ export class PolicyRuntime {
 
   constructor(private readonly options: RuntimeOptions) {
     validatePolicyManifest(options.manifest);
-    if (this.stateful && !options.statefulPolicy) throw new Error("v2 adapter requires a stateful policy");
+    if (this.stateful && !options.statefulPolicy) throw new Error("stateful adapter requires a stateful policy");
     if (!this.stateful && !options.policy) throw new Error("v1 adapter requires a policy");
+    if (this.interactionPort && !options.evidence) throw new Error("v3 confirmed interaction requires an Evidence writer");
     if (options.evidence && !/^[a-f0-9]{64}$/u.test(options.runtimeIdentity?.code_sha256 ?? "")) {
       throw new Error("Agent evidence requires an exact Policy Runtime code SHA-256");
     }
@@ -154,7 +156,11 @@ export class PolicyRuntime {
   }
 
   private get stateful(): boolean {
-    return this.options.manifest.adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-2";
+    return this.options.manifest.adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-1";
+  }
+
+  private get interactionPort(): boolean {
+    return this.options.manifest.adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-3";
   }
 
   private bindContinuity(gameId: string, snapshot: AnyDecisionBundle["observation"]): string {
@@ -162,6 +168,7 @@ export class PolicyRuntime {
     const environment = snapshot.session.environment_fingerprint;
     if (!this.continuity || this.continuity.gameId !== gameId ||
         this.continuity.runtimeId !== runtimeId || this.continuity.environment !== environment) {
+      this.confirmedInteraction = null;
       this.continuity = { token: randomUUID(), gameId, runtimeId, environment };
     }
     return this.continuity.token;
@@ -171,9 +178,16 @@ export class PolicyRuntime {
     if (this.continuity) this.continuity = { ...this.continuity, token: randomUUID() };
   }
 
+  private resetInteractionContinuity(): void {
+    if (!this.interactionPort) return;
+    this.confirmedInteraction = null;
+    this.rotateContinuity();
+  }
+
   private validateCompletion(completion: ObservationCompletion, input: StatefulPolicyDecisionInput): void {
     if (completion === null || typeof completion !== "object" ||
-        Object.keys(completion).sort().join(",") !== "continuity_token,sequence,snapshot_id" ||
+        Object.keys(completion).sort().join(",") !== (this.interactionPort ? "continuity_token,previous_interaction_request_id,sequence,snapshot_id" : "continuity_token,sequence,snapshot_id") ||
+        (this.interactionPort && completion.previous_interaction_request_id !== (input.previous_interaction?.request_id ?? null)) ||
         completion.continuity_token !== input.continuity_token ||
         completion.snapshot_id !== input.bundle.observation.snapshot_id ||
         completion.sequence !== input.bundle.observation.sequence ||
@@ -239,6 +253,7 @@ export class PolicyRuntime {
     // this owner, even when an existing operation still holds the mutation queue.
     if (mode === "human") {
       this.advanceRecoveryEpoch();
+      this.resetInteractionContinuity();
       this.cancelActivePolicy();
     }
     if (mode === "human" || expected === undefined) this.requestedMode = mode;
@@ -249,6 +264,7 @@ export class PolicyRuntime {
           this.requestedMode = mode;
         }
         if (this.stopped) throw new Error("runtime is stopped");
+        if (mode !== this.mode) this.resetInteractionContinuity();
         if (this.tainted && mode !== "human") throw new Error(`runtime is tainted: ${this.taintReason}`);
         if (mode === "human") {
           this.mode = "human";
@@ -405,9 +421,20 @@ export class PolicyRuntime {
     let offered = false;
     try {
       if (this.stateful) {
+        const continuityToken = this.bindContinuity(gameContinuityId!, bundle.observation);
+        const pendingInteraction = this.confirmedInteraction;
+        const previousInteraction = pendingInteraction && pendingInteraction.epoch === this.recoveryEpoch
+          && bundle.observation.sequence > pendingInteraction.sequence
+          && bundle.observation.snapshot_id !== pendingInteraction.value.snapshot_id
+          ? pendingInteraction.value : null;
         const statefulInput: StatefulPolicyDecisionInput = { ...input,
-          continuity_token: this.bindContinuity(gameContinuityId!, bundle.observation) };
-        const onOffer = () => { offered = true; };
+          continuity_token: continuityToken,
+          ...(this.interactionPort ? { previous_interaction: previousInteraction } : {}) };
+        const onOffer = () => {
+          offered = true;
+          if (this.interactionPort && previousInteraction && this.confirmedInteraction === pendingInteraction)
+            this.confirmedInteraction = null;
+        };
         if (this.options.statefulOfferBoundary !== "port_write") onOffer();
         const result = await withTimeout(
           Promise.resolve(this.options.statefulPolicy!(statefulInput, policyController.signal, onOffer)),
@@ -428,6 +455,7 @@ export class PolicyRuntime {
         // Fence that request before another continuity token can be offered.
         policyController.abort();
         this.rotateContinuity();
+        if (this.interactionPort) this.confirmedInteraction = null;
       }
       if (this.autonomyBudgetState.exhaustedReason === "deadline") {
         await this.handoffAutonomyBudget();
@@ -440,6 +468,10 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "policy_failed", status: this.status() };
     } finally {
       if (this.activePolicy?.controller === policyController) this.activePolicy = null;
+    }
+    if (this.recoveryEpoch !== policyRecoveryEpoch || this.mutationCancellationRequested()) {
+      this.resetInteractionContinuity();
+      return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
     }
     const decision = makeDecision(this.options.manifest, this.runId, bundle, adapterDecision, admission, this.now());
     this.lastPolicySnapshotId = bundle.observation.snapshot_id;
@@ -492,7 +524,7 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
     }
     if (textMenu) {
-      return this.submitTextMenuDecision(decision, resolved as TextAction, bundle.observation as TextSnapshot, requestId);
+      return this.submitTextMenuDecision(decision, resolved as TextAction, bundle.observation as TextSnapshot, requestId, this.recoveryEpoch);
     }
     this.submittedRequestIds.add(requestId);
     let receipt: PlayerEnvironmentReceipt;
@@ -550,15 +582,28 @@ export class PolicyRuntime {
     }
   }
 
-  private async submitTextMenuDecision(decision: PolicyDecision, action: TextAction, previous: TextSnapshot, requestId: string): Promise<TickResult> {
+  private async submitTextMenuDecision(decision: PolicyDecision, action: TextAction, previous: TextSnapshot, requestId: string, submissionEpoch: number): Promise<TickResult> {
     if (action.effect_domain === "text_menu") this.lastReceipt = null;
     if (!(await this.appendEvidence("text_menu_dispatch_attempt", { decision_id: decision.decision_id, action_id: action.action_id, effect_domain: action.effect_domain, native_submissions_used: this.nativeSubmissionsUsed + (action.effect_domain === "native_input" ? 1 : 0), menu_navigations_used: this.menuNavigationsUsed + (action.effect_domain === "text_menu" ? 1 : 0) }))) {
-      await this.failClosed("agent_evidence_write_failed_before_submit");
+      await this.taint("agent_evidence_write_failed_before_submit");
       return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
     }
-    this.submittedRequestIds.add(requestId);
+    // These are dispatch attempt counts, including an attempt cancelled before
+    // Connector submission. Evidence has already recorded the same increment.
     if (action.effect_domain === "text_menu") this.menuNavigationsUsed += 1;
     else this.nativeSubmissionsUsed += 1;
+    // Human/Stop/budget can enter while the durable append is pending. There
+    // is no await between this fence and submit: a cancelled intent must not
+    // issue a new Connector mutation. No Connector result exists to record.
+    if (submissionEpoch !== this.recoveryEpoch || this.mutationCancellationRequested()) {
+      if (!(await this.appendEvidence("text_menu_dispatch_cancelled", {
+        decision_id: decision.decision_id, reason: "recovery_before_submit"
+      }))) await this.taint("agent_evidence_dispatch_cancel_write_failed");
+      if (await this.finishAutonomyBudgetHandoffIfRequested())
+        return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
+      return { type: "not_admitted", reason: "mode_changed_before_submit", status: this.status() };
+    }
+    this.submittedRequestIds.add(requestId);
     let result: TextActionResult;
     try {
       result = await this.options.connector.submit({ requestId, expectedSnapshotId: previous.snapshot_id,
@@ -595,13 +640,17 @@ export class PolicyRuntime {
         await this.taint("menu_navigation_successor_invalid");
         return { type: "unknown", decision, receipt: result, error: "menu_navigation_successor_invalid", status: this.status() };
       }
-      if (!(await this.appendEvidence("menu_navigation", { decision_id: decision.decision_id, action_id: action.action_id, result }))) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
+      const navigationRecorded = await this.appendEvidence("menu_navigation", { decision_id: decision.decision_id, action_id: action.action_id, result });
+      if (!navigationRecorded) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
+      else this.rememberConfirmedInteraction(decision, action, requestId, previous, submissionEpoch);
       this.setObservedSnapshot(result.successor);
       if (this.mode === "one_step") await this.completeOneStep();
       return { type: "navigated", decision, action, result, successor: result.successor, status: this.status() };
     }
     this.lastReceipt = { request_id: result.request_id, delivery: "delivered", reason_code: result.reason_code, successor_snapshot_id: result.successor?.snapshot_id ?? null };
-    if (!(await this.appendEvidence("text_native_delivery", { decision_id: decision.decision_id, result }))) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
+    const deliveryRecorded = await this.appendEvidence("text_native_delivery", { decision_id: decision.decision_id, result });
+    if (!deliveryRecorded) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
+    else this.rememberConfirmedInteraction(decision, action, requestId, previous, submissionEpoch);
     try {
       const successor = await this.stableSuccessor(previous);
       if (this.mutationCancellationRequested()) {
@@ -622,6 +671,17 @@ export class PolicyRuntime {
     }
   }
 
+  private rememberConfirmedInteraction(decision: PolicyDecision, action: TextAction, requestId: string, previous: TextSnapshot, submissionEpoch: number): void {
+    if (!this.interactionPort || submissionEpoch !== this.recoveryEpoch || this.mutationCancellationRequested()
+        || this.tainted || this.mode === "human") return;
+    this.confirmedInteraction = { value: {
+      decision_id: decision.decision_id, snapshot_id: previous.snapshot_id,
+      candidate_digest: decision.candidate_digest, action_id: action.action_id,
+      request_id: requestId, effect_domain: action.effect_domain,
+      result_kind: action.effect_domain === "text_menu" ? "menu_applied" : "native_input_delivered"
+    }, sequence: previous.sequence, epoch: submissionEpoch };
+  }
+
   private validTextMenuSuccessor(previous: TextSnapshot, next: TextSnapshot, navigation: boolean): boolean {
     return next.schema === previous.schema && next.input_profile === previous.input_profile
       && next.snapshot_id !== previous.snapshot_id && next.sequence > previous.sequence
@@ -637,6 +697,7 @@ export class PolicyRuntime {
 
   async stop(): Promise<RuntimeStatus> {
     this.advanceRecoveryEpoch();
+    this.resetInteractionContinuity();
     this.stopRequested = true;
     this.cancelActivePolicy();
     return this.serialize(async () => {
@@ -688,11 +749,11 @@ export class PolicyRuntime {
       throw new Error(reason);
     }
   }
-  private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("handoff_to_human", { reason }); }
-  private async completeOneStep(): Promise<void> { this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("one_step_completed", { autonomy_budget: this.autonomyBudgetStatus() }); }
-  private async failClosed(reason: string): Promise<void> { this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("fail_closed", { reason }); }
+  private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { this.resetInteractionContinuity(); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("handoff_to_human", { reason }); }
+  private async completeOneStep(): Promise<void> { this.resetInteractionContinuity(); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("one_step_completed", { autonomy_budget: this.autonomyBudgetStatus() }); }
+  private async failClosed(reason: string): Promise<void> { this.resetInteractionContinuity(); this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("fail_closed", { reason }); }
   private async taint(reason: string): Promise<void> { await this.taintWithoutEvidence(reason); await this.appendEvidence("runtime_tainted", { reason, retry: false }); }
-  private async taintWithoutEvidence(reason: string, release = true): Promise<void> { this.tainted = true; this.taintReason = reason; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); if (release) try { await this.releaseController(); } catch { /* retain held state; a failed release is not confirmation */ } }
+  private async taintWithoutEvidence(reason: string, release = true): Promise<void> { this.resetInteractionContinuity(); this.tainted = true; this.taintReason = reason; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); if (release) try { await this.releaseController(); } catch { /* retain held state; a failed release is not confirmation */ } }
   private async appendEvidence(kind: string, payload: Record<string, unknown>): Promise<boolean> { try { await this.options.evidence?.append(kind, payload, this.now()); return true; } catch (error) { const reason = `agent_evidence_write_failed:${message(error)}`; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); return false; } }
 
   private beginAutonomyBudget(): void {
@@ -814,6 +875,7 @@ export class PolicyRuntime {
     if (!this.autonomyBudgetRecoveryFenced) {
       this.autonomyBudgetRecoveryFenced = true;
       this.advanceRecoveryEpoch();
+      this.resetInteractionContinuity();
       this.cancelActivePolicy();
       this.mode = "human";
     }
