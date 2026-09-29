@@ -49,6 +49,12 @@ public static partial class ConnectorMod
                 SendJson(response, menuTask.GetAwaiter().GetResult());
                 return;
             }
+            if (inputProfile == TextMenuV2Contract.Profile)
+            {
+                var menuTask = RunOnMainThread(PlayerEnvironmentService.ObserveTextMenuV2);
+                SendJson(response, menuTask.GetAwaiter().GetResult());
+                return;
+            }
             var task = RunOnMainThread(() => PlayerEnvironmentService.Observe(inputProfile));
             SendJson(response, task.GetAwaiter().GetResult());
         }
@@ -58,10 +64,23 @@ public static partial class ConnectorMod
         }
     }
 
-    private static void HandleGetTextMenuObservationContext(HttpListenerResponse response)
+    private static void HandleGetTextMenuObservationContext(
+        HttpListenerRequest request, HttpListenerResponse response)
     {
         try
         {
+            if (request.QueryString["input_profile"] == TextMenuV2Contract.Profile)
+            {
+                var v2Task = RunOnMainThread(PlayerEnvironmentService.ObserveTextMenuV2Context);
+                SendJson(response, v2Task.GetAwaiter().GetResult());
+                return;
+            }
+            if (request.QueryString["input_profile"] is { } profile
+                && profile != TextMenuContract.Profile)
+            {
+                SendApiError(response, 400, "unsupported_input_profile", "Unsupported text menu profile.");
+                return;
+            }
             var task = RunOnMainThread(PlayerEnvironmentService.ObserveTextMenuContext);
             SendJson(response, task.GetAwaiter().GetResult());
         }
@@ -170,6 +189,17 @@ public static partial class ConnectorMod
             {
                 var menuTask = RunOnMainThread(() => PlayerEnvironmentService.SubmitTextMenu(action));
                 TextMenuActionResult result = menuTask.GetAwaiter().GetResult();
+                response.StatusCode = result.Status switch
+                {
+                    "applied" => 200, "unknown" => 202, _ => 409
+                };
+                SendJson(response, result);
+                return;
+            }
+            if (action.InputProfile == TextMenuV2Contract.Profile)
+            {
+                var menuTask = RunOnMainThread(() => PlayerEnvironmentService.SubmitTextMenuV2(action));
+                TextMenuV2ActionResult result = menuTask.GetAwaiter().GetResult();
                 response.StatusCode = result.Status switch
                 {
                     "applied" => 200, "unknown" => 202, _ => 409
@@ -327,6 +357,17 @@ public static partial class ConnectorMod
             if (result == null)
             {
                 SendApiError(response, 404, "request_not_found", "No text-menu result exists for this request ID.");
+                return;
+            }
+            SendJson(response, result);
+            return;
+        }
+        if (inputProfile == TextMenuV2Contract.Profile)
+        {
+            TextMenuV2ActionResult? result = PlayerEnvironmentService.FindTextMenuV2Result(requestId);
+            if (result == null)
+            {
+                SendApiError(response, 404, "request_not_found", "No text-menu-v2 result exists for this request ID.");
                 return;
             }
             SendJson(response, result);

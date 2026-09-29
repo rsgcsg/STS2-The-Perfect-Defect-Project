@@ -75,18 +75,22 @@ internal static partial class PlayerEnvironmentService
                 ? PlayerEnvironmentContract.SnapshotSchema
                 : inputProfile == TextMenuContract.Profile
                     ? TextMenuContract.SnapshotSchema
+                : inputProfile == TextMenuV2Contract.Profile
+                    ? TextMenuV2Contract.SnapshotSchema
                 : inputProfile == PlayerEnvironmentContract.RewardPotionPageProfile
                     ? PlayerEnvironmentContract.RewardPotionSnapshotSchema
                     : PlayerEnvironmentContract.OrdinaryRewardSnapshotSchema,
             PlayerEnvironmentContract.ActionSchema,
             inputProfile == TextMenuContract.Profile
-                ? TextMenuContract.ResultSchema : PlayerEnvironmentContract.ReceiptSchema,
+                ? TextMenuContract.ResultSchema
+                : inputProfile == TextMenuV2Contract.Profile
+                    ? TextMenuV2Contract.ResultSchema : PlayerEnvironmentContract.ReceiptSchema,
             PlayerEnvironmentContract.ControlSchema,
             "implemented",
             ToHostIdentity(host),
             ToGameIdentity(game),
             ToSessionReference(host, game).EnvironmentFingerprint,
-            inputProfile == TextMenuContract.Profile ? new[]
+            inputProfile is TextMenuContract.Profile or TextMenuV2Contract.Profile ? new[]
             {
                 "activate", "select", "deselect", "confirm", "cancel", "play", "target",
                 "use", "end_turn", "skip", "open", "close", "purchase", "navigate",
@@ -102,7 +106,9 @@ internal static partial class PlayerEnvironmentService
                 "return_native_information", "return_native_map", "return_relic_inspect", "return_native_tips",
                 "inspect_deck_card", "inspect_bundle_card", "return_card_inspect", "previous_inspect_card", "next_inspect_card",
                 "toggle_card_upgrade_preview", "previous_relic", "next_relic"
-            } : new[]
+            }.Concat(inputProfile == TextMenuV2Contract.Profile
+                ? new[] { "select_card", "select_target", "cancel_selection" }
+                : Array.Empty<string>()).ToArray() : new[]
             {
                 "activate", "select", "deselect", "confirm", "cancel", "play",
                 "target", "use", "end_turn", "skip", "open", "close"
@@ -118,12 +124,14 @@ internal static partial class PlayerEnvironmentService
                 "Delivered means native UI input was delivered, not that a business transaction settled.",
                 "D annotations are outside the C observation and never authorize bound actions.",
                 "Build or install does not prove this artifact is loaded or Live-exercised."
-            }.Concat(inputProfile == TextMenuContract.Profile
+            }.Concat(inputProfile is TextMenuContract.Profile or TextMenuV2Contract.Profile
                 ? new[] {
                     "Text navigation changes only the presentation cursor; it never reports native delivery.",
                     "The current menu is complete at its cursor; deeper information leaves remain reachable through explicit navigation.",
                     "Only in-run pages are in scope. No start, load, character or process actions are granted."
-                }
+                }.Concat(inputProfile == TextMenuV2Contract.Profile
+                    ? new[] { "Card and target selection changes only the text menu; native play occurs only at the final bound play leaf." }
+                    : Array.Empty<string>())
                 : inputProfile == PlayerEnvironmentContract.RewardPotionPageProfile
                 ? new[] {
                     "This profile covers ordinary reward controls and exact potion navigation only; other top-bar controls and later targeting pages are outside its action scope."
@@ -134,6 +142,7 @@ internal static partial class PlayerEnvironmentService
     internal static bool IsSupportedInputProfile(string? inputProfile) =>
         inputProfile == null
         || string.Equals(inputProfile, TextMenuContract.Profile, StringComparison.Ordinal)
+        || string.Equals(inputProfile, TextMenuV2Contract.Profile, StringComparison.Ordinal)
         || string.Equals(inputProfile, PlayerEnvironmentContract.OrdinaryRewardPageProfile,
             StringComparison.Ordinal)
         || string.Equals(inputProfile, PlayerEnvironmentContract.RewardPotionPageProfile,
