@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from spireagent.encoding import canonical_json
-from spireagent.json_boundary import BoundaryError, json_bytes, object_fields
+from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
 from spireagent.package_identity import file_sha256
 from spireagent.policy_files import _inside, _object_file
 
@@ -121,7 +121,9 @@ def bind_memory_export(root: Path, export_path: Path, config_path: Path,
     package, _, _, _ = validate_memory_package(export_path, input_profile=input_profile)
     config_schema = V2_CONFIG_SCHEMA if input_profile == V2_INPUT_PROFILE else CONFIG_SCHEMA
     config = {"schema": config_schema, "export_path": str(export_path),
-              "export_manifest_sha256": file_sha256(export_path / MANIFEST_NAME),
+              # The package validator requires canonical bytes. Pin the bytes
+              # already validated, rather than re-reading a replaceable path.
+              "export_manifest_sha256": hashlib.sha256(json_bytes(package)).hexdigest(),
               "model_id": package["ids"]["model"]}
     if input_profile == V2_INPUT_PROFILE:
         config["input_profile"] = V2_INPUT_PROFILE
@@ -165,6 +167,7 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
                             manifest_path.resolve().relative_to(binding_root).as_posix())
     config = _object_file(config_path)
     input_profile = input_profile_for_config(config)
+    manifest_pin = digest(config["export_manifest_sha256"], "m2_policy.export_manifest_sha256")
     manifest = object_fields(_object_file(manifest_path), {
         "schema", "manifest_id", "policy", "adapter", "artifact", "representation",
         "requirements", "support", "adapter_config", "claims",
@@ -172,9 +175,10 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
     export = Path(config["export_path"])
     if not export.is_absolute():
         raise BoundaryError("m2_policy", "unsupported_config")
-    package, _, _, _ = validate_memory_package(export, input_profile=input_profile)
-    if (config["model_id"] != package["ids"]["model"]
-            or config["export_manifest_sha256"] != file_sha256(export / MANIFEST_NAME)):
+    package, _, _, _ = validate_memory_package(
+        export, input_profile=input_profile,
+        expected_manifest_sha256=manifest_pin)
+    if config["model_id"] != package["ids"]["model"]:
         raise BoundaryError("m2_policy", "export_identity_drift")
     expected_pin = {"code_digest_scope": CODE_SCOPE,
                     "config": {"path": config_path.relative_to(binding_root).as_posix(),

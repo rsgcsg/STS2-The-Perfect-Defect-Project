@@ -28,7 +28,8 @@ class MemoryPolicyAdapter:
             ROOT, config_path, manifest_path, binding_root=binding_root)
         self.input_profile = input_profile_for_config(self.config)
         package, weights, tokenizer, settings = validate_memory_package(
-            Path(self.config["export_path"]), input_profile=self.input_profile)
+            Path(self.config["export_path"]), input_profile=self.input_profile,
+            expected_manifest_sha256=self.config["export_manifest_sha256"])
         if package["ids"]["model"] != self.config["model_id"]:
             raise BoundaryError("m2_policy", "model_identity_mismatch")
         self.scorer = OnlineM2Scorer.from_export(

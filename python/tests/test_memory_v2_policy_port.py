@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 from unittest.mock import patch
@@ -121,6 +122,9 @@ def test_explicit_v2_binding_and_port_reject_cross_profile_before_memory_write(
     config_path.write_bytes(json_bytes(changed_config))
     with pytest.raises(BoundaryError):
         validate(config_path.parent, config_path, manifest_path)
+    config_path.write_bytes(json_bytes({**config, "export_manifest_sha256": None}))
+    with pytest.raises(BoundaryError):
+        validate(config_path.parent, config_path, manifest_path)
 
 
 @pytest.mark.parametrize("change", [
@@ -136,3 +140,38 @@ def test_binding_configuration_is_closed_before_loading_weights(change):
     assert input_profile_for_config(config) == "text-menu-v2"
     with pytest.raises(BoundaryError):
         input_profile_for_config({**config, **change})
+
+
+def test_port_rejects_same_model_package_replacement_between_validation_and_load(
+    package, tmp_path, monkeypatch,
+):
+    from stpd.policy import memory_port
+    from stpd.policy.memory_export import validate_memory_package
+    from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
+    from stpd.workers.memory_ranking import _tensor_digest
+
+    _, _, config_path, manifest_path, _ = _bind(package, tmp_path, monkeypatch)
+    directory, original, *_ = package
+    weights_path = directory / "weights.tensor-tree"
+    exported = decode_checkpoint(weights_path.read_bytes())
+    name = next(iter(exported["weights"]))
+    exported["weights"][name] = exported["weights"][name] + 0.1
+    exported["weights_digest"] = _tensor_digest(exported["weights"])
+    replacement = encode_checkpoint(exported)
+    changed = copy.deepcopy(original)
+    changed["weights"].update(sha256=hashlib.sha256(replacement).hexdigest(),
+                              size=len(replacement))
+    original_validate = memory_port.validate
+
+    def replace_after_checked_binding(*args, **kwargs):
+        checked = original_validate(*args, **kwargs)
+        weights_path.write_bytes(replacement)
+        (directory / "model.json").write_bytes(json_bytes(changed))
+        # A detached, internally consistent package with the same model id is
+        # insufficient: the already checked external binding must also match.
+        assert validate_memory_package(directory, input_profile="text-menu-v2")[0] == changed
+        return checked
+
+    monkeypatch.setattr(memory_port, "validate", replace_after_checked_binding)
+    with pytest.raises(BoundaryError, match="manifest_digest_mismatch"):
+        MemoryPolicyAdapter(config_path, manifest_path)
