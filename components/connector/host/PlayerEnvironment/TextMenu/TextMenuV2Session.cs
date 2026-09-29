@@ -80,6 +80,19 @@ internal sealed class TextMenuV2Session
         });
         if (snapshotId != lastSnapshotId) { sequence++; lastSnapshotId = snapshotId; }
         var choices = new Dictionary<string, TextMenuV2Choice>(StringComparer.Ordinal);
+        string SelectionLabel(string role, string id, IReadOnlyList<string> ids)
+        {
+            PlayerEnvironmentReferent referent = frame.Page.Referents.Single(item =>
+                item.ReferentId == id);
+            string? label = string.IsNullOrWhiteSpace(referent.Label) ? null : referent.Label;
+            string[] matching = frame.Page.Referents
+                .Where(item => ids.Contains(item.ReferentId, StringComparer.Ordinal)
+                    && (string.IsNullOrWhiteSpace(item.Label) ? null : item.Label) == label)
+                .Select(item => item.ReferentId).ToArray();
+            string disambiguation = matching.Length < 2 ? ""
+                : $" ({Array.IndexOf(matching, id) + 1} of {matching.Length} shown)";
+            return $"Choose {role}{(label == null ? "" : " " + label)}{disambiguation}";
+        }
         void Add(string key, string kind, string verb, string label, string? subject,
             IReadOnlyList<PlayerEnvironmentBoundActionArgument> arguments,
             TextMenuLeaf? leaf = null, string? destination = null,
@@ -98,15 +111,18 @@ internal sealed class TextMenuV2Session
                 Add(leaf.Key, "native_input", leaf.Verb, leaf.Label,
                     leaf.SubjectReferentId, leaf.Arguments, leaf);
             if (combat)
+            {
+                string[] cardIds = pairs.Select(leaf => leaf.SubjectReferentId!)
+                    .Distinct(StringComparer.Ordinal).ToArray();
                 foreach (var group in pairs.GroupBy(leaf => leaf.SubjectReferentId,
                     StringComparer.Ordinal))
                 {
-                    TextMenuLeaf first = group.First();
                     Add("select_card:" + group.Key, "system_selection", "select_card",
-                        "Choose " + first.Label, group.Key,
+                        SelectionLabel("card", group.Key!, cardIds), group.Key,
                         Array.Empty<PlayerEnvironmentBoundActionArgument>(),
                         selectedCard: group.Key);
                 }
+            }
             if (hasInformation)
                 Add("information", "system_navigation", "open_information",
                     "Information", null, Array.Empty<PlayerEnvironmentBoundActionArgument>(),
@@ -114,11 +130,13 @@ internal sealed class TextMenuV2Session
         }
         else if (ready && cursor == "card_targets" && cardId != null)
         {
+            string[] targetIds = pairs.Where(leaf => leaf.SubjectReferentId == cardId)
+                .Select(leaf => leaf.Arguments.Single().ReferentId).ToArray();
             foreach (TextMenuLeaf pair in pairs.Where(leaf => leaf.SubjectReferentId == cardId))
             {
                 string target = pair.Arguments.Single().ReferentId;
                 Add("select_target:" + target, "system_selection", "select_target",
-                    "Choose target " + target, target,
+                    SelectionLabel("target", target, targetIds), target,
                     Array.Empty<PlayerEnvironmentBoundActionArgument>(),
                     selectedTarget: target);
             }

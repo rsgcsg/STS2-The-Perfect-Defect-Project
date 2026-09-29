@@ -32,7 +32,7 @@ route.
 
 The two JSON examples in `sdk/typescript/test/fixtures/text-menu-root.json` and `text-menu-system-result.json` are portable contract fixtures. They are synthetic and do not prove native behavior.
 
-## SDK-only v2 contract candidate
+## Opt-in v2 Reference Host source candidate
 
 The SDK also exports strict `text-menu-v2` decoders and synthetic card-selection
 fixtures. In this Connector source candidate the Reference Host accepts an
