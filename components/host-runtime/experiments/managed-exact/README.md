@@ -111,6 +111,11 @@ requires both observed room and relic identities and still awards through the
 native treasure synchronizer. A callback error after dispatch remains unknown
 with no retry. This is source/build evidence for the Managed text path, not
 native UI parity, a complete journey, or Human qualification.
+The raw Host `leave_room` path now requires that exact treasure room and rejects
+exit until the native chest and relic stages have completed, including while a
+deferred operation or selection remains pending. Other room exits retain their
+existing contract. The proprietary exact-candidate regression exercises the
+raw action path through pre-open, pending relic, and completed stages.
 
 The raw Managed combat action path and its Player Environment projection admit
 play/end-turn mutations only while the exact current run, living player turn,
