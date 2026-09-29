@@ -663,6 +663,221 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         self._rewrite_events(directory, events)
         return directory
 
+    def _text_v2_evidence(self, name: str) -> Path:
+        directory = self._text_evidence(name, adapter_protocol="sts2.policy-runtime/decision-only-ndjson-2")
+        policy_path = directory / "policy-manifest.json"
+        policy = json.loads(policy_path.read_text())
+        policy["representation"] = {"id": "text", "version": "2", "input_schema": "sts2.player-environment/text-menu-snapshot-2"}
+        policy["policy"].update(provider="fixture", architecture="fixture")
+        policy["artifact"].update(id="fixture-artifact", path="fixture-artifact.bin")
+        policy["requirements"] = {
+            "connector_protocol_version": "1.0.0",
+            "environment": {"host_kind": "test", "connector_version": "1.2.0-rc.6", "connector_source_revision": "source-fixture",
+                            "connector_artifact_sha256": "d" * 64, "connector_module_version_id": "mvid-fixture",
+                            "modset_status": "fixture", "modset_fingerprint": "modset-fixture", "loaded_mod_ids": ["fixture-mod"]},
+            "reads": [], "whole_decision_admission": True,
+            "candidate_order_digest": "sha256-json-menu-action-id-order", "score_count_matches_candidate_count": True,
+            "selected_index": True, "successor_required": True,
+        }
+        policy["support"] = {"game_versions": ["v0.111.0"], "game_commits": ["41cef1ea"],
+                             "interaction_kinds": ["combat_turn"], "action_verbs": ["select_card", "select_target", "cancel_selection", "play", "open_information", "back"]}
+        policy["adapter_config"] = {}
+        policy["claims"] = {"full_run": False, "selector": False, "catalog_filtered": False,
+                            "creates_action_authority": False, "creates_native_operands": False}
+        policy_path.write_bytes(canonical(policy))
+        digest = sha256(json.dumps(policy, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True).encode())
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["policy_manifest_sha256"] = digest
+        manifest_path.write_bytes(canonical(manifest))
+        attestation_path = directory / "adapter-attestation.json"
+        attestation = json.loads(attestation_path.read_text())
+        attestation["policy_manifest_sha256"] = digest
+        attestation_path.write_bytes(canonical(attestation))
+        fixtures = Path(__file__).resolve().parents[2] / "connector" / "sdk" / "typescript" / "test" / "fixtures"
+        first = json.loads((fixtures / "text-menu-v2-targeted-root.json").read_text())
+        result = json.loads((fixtures / "text-menu-v2-targeted-select.json").read_text())
+        for snapshot in (first, result["successor"]):
+            snapshot["session"] = {"runtime_instance_id": "runtime-fixture", "environment_fingerprint": "environment-fixture"}
+        action = first["menu_actions"]["actions"][0]
+        result["request_id"] = f"request-{name}-decision-1"
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        decision = events[2]
+        decision["payload"]["decision"].update(snapshot_id=first["snapshot_id"], candidate_digest=sha256(json.dumps([action["action_id"]], separators=(",", ":")).encode()), candidate_count=1, scores=[1.0], selected_index=0, disposition="admit")
+        decision["payload"]["resolved_bound_action_id"] = action["action_id"]
+        events[1]["payload"]["snapshot"] = first
+        events[4]["payload"].update(action_id=action["action_id"], effect_domain="text_menu", native_submissions_used=0, menu_navigations_used=1)
+        events[5]["payload"].update(action_id=action["action_id"], result=result)
+        self._rewrite_events(directory, events)
+        return directory
+
+    def test_v2_connector_selection_fixture_is_verified(self) -> None:
+        directory = self._text_v2_evidence("v2-selection")
+        self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def test_v2_system_navigation_has_only_menu_effect(self) -> None:
+        directory = self._text_v2_evidence("v2-navigation")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        action = {"action_id": "v2-nav-info", "kind": "system_navigation", "verb": "open_information",
+                  "label": "Information", "subject_referent_id": None, "arguments": [], "effect_domain": "text_menu"}
+        first = events[1]["payload"]["snapshot"]
+        first["menu_actions"].update(actions=[action], materialized_count=1, total_count=1)
+        successor = events[5]["payload"]["result"]["successor"]
+        successor["menu"].update(cursor="information", selection=[])
+        successor["menu_actions"].update(actions=[{**action, "action_id": "v2-nav-back", "verb": "back", "label": "Back"}], materialized_count=1, total_count=1)
+        decision = events[2]["payload"]["decision"]
+        decision["candidate_digest"] = sha256(json.dumps([action["action_id"]], separators=(",", ":")).encode())
+        events[2]["payload"]["resolved_bound_action_id"] = action["action_id"]
+        events[4]["payload"]["action_id"] = action["action_id"]
+        events[5]["payload"]["action_id"] = action["action_id"]
+        events[5]["payload"]["result"]["action"] = action
+        self._rewrite_events(directory, events)
+        self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
+        events[5]["payload"]["result"]["native_delivery"] = "delivered"
+        self._rewrite_events(directory, events)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
+    def _text_v2_native(self, name: str, *, unknown: bool) -> Path:
+        directory = self._text_v2_evidence(name)
+        fixtures = Path(__file__).resolve().parents[2] / "connector" / "sdk" / "typescript" / "test" / "fixtures"
+        first = json.loads((fixtures / "text-menu-v2-card-only-select.json").read_text())["successor"]
+        first["session"] = {"runtime_instance_id": "runtime-fixture", "environment_fingerprint": "environment-fixture"}
+        action = first["menu_actions"]["actions"][0]
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[1]["payload"]["snapshot"] = first
+        decision = events[2]["payload"]["decision"]
+        decision.update(snapshot_id=first["snapshot_id"], candidate_count=2,
+                        candidate_digest=sha256(json.dumps([item["action_id"] for item in first["menu_actions"]["actions"]], separators=(",", ":")).encode()),
+                        scores=[1.0, 0.0], selected_index=0)
+        events[2]["payload"]["resolved_bound_action_id"] = action["action_id"]
+        events[4]["payload"].update(action_id=action["action_id"], effect_domain="native_input", native_submissions_used=1, menu_navigations_used=0)
+        events[5]["kind"] = "text_native_unknown" if unknown else "text_native_delivery"
+        events[5]["payload"] = {"decision_id": "decision-1", "result": {
+            "protocol_version": "1.0.0", "schema": "sts2.player-environment/text-menu-action-result-2", "input_profile": "text-menu-v2",
+            "request_id": f"request-{name}-decision-1", "status": "unknown" if unknown else "applied",
+            "effect_domain": "native_input", "native_delivery": "unknown" if unknown else "delivered", "action": action,
+            "reason_code": None, "detail": None, "retry": "never", "successor": None, "attribution": None,
+        }}
+        if unknown:
+            manifest_path = directory / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest.update(status="tainted", tainted=True)
+            manifest_path.write_bytes(canonical(manifest))
+        else:
+            successor = json.loads((fixtures / "text-menu-v2-card-only-root.json").read_text())
+            successor.update(snapshot_id="v2-menu-22", sequence=22)
+            successor["menu"].update(native_snapshot_id="managed-source-22", revision=0)
+            successor["session"] = first["session"]
+            events.insert(6, {"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0, "recorded_at": "2026-08-25T00:00:03.000Z",
+                              "kind": "text_observed_successor", "payload": {"decision_id": "decision-1", "successor": successor}})
+        for index, event in enumerate(events, 1):
+            event["sequence"] = index
+        self._rewrite_events(directory, events)
+        return directory
+
+    def test_v2_full_catalog_order_and_selection_are_bound(self) -> None:
+        directory = self._text_v2_native("v2-native-catalog", unknown=False)
+        verifier = AgentRunEvidenceVerifier()
+        self.assertTrue(verifier.verify(directory).passed)
+        original = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        for change in ("order", "count", "selection", "leaf", "result_profile", "successor_profile"):
+            events = json.loads(json.dumps(original))
+            snapshot = events[1]["payload"]["snapshot"]
+            if change == "order":
+                snapshot["menu_actions"]["actions"].reverse()
+            elif change == "count":
+                snapshot["menu_actions"]["total_count"] = 3
+            elif change == "selection":
+                snapshot["menu"]["selection"][0]["referent_id"] = "missing-card"
+            elif change == "leaf":
+                snapshot["menu_actions"]["actions"][0]["subject_referent_id"] = "missing-card"
+            elif change == "result_profile":
+                events[5]["payload"]["result"]["input_profile"] = "text-menu-v1"
+            else:
+                events[6]["payload"]["successor"]["schema"] = "sts2.player-environment/text-menu-snapshot-1"
+            self._rewrite_events(directory, events)
+            self.assertFalse(verifier.verify(directory).passed, change)
+        self._rewrite_events(directory, original)
+        self.assertTrue(verifier.verify(directory).passed)
+
+    def test_v2_unknown_keeps_exact_native_action_and_never_claims_successor(self) -> None:
+        directory = self._text_v2_native("v2-native-unknown", unknown=True)
+        verifier = AgentRunEvidenceVerifier()
+        self.assertTrue(verifier.verify(directory).passed)
+        original = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        for field, value in (("action", {**original[5]["payload"]["result"]["action"], "action_id": "other"}),
+                             ("retry", "reobserve"), ("successor", original[1]["payload"]["snapshot"])):
+            events = json.loads(json.dumps(original))
+            events[5]["payload"]["result"][field] = value
+            self._rewrite_events(directory, events)
+            self.assertFalse(verifier.verify(directory).passed, field)
+        self._rewrite_events(directory, original)
+        continued = json.loads(json.dumps(original))
+        continued.append({"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": len(continued) + 1,
+                          "recorded_at": "2026-08-25T00:00:04.000Z", "kind": "text_decision_input",
+                          "payload": {"decision_id": "decision-2", "snapshot": original[1]["payload"]["snapshot"]}})
+        self._rewrite_events(directory, continued)
+        self.assertEqual(verifier.verify(directory).findings[0].code, "unknown_retry")
+
+    def test_v2_native_delivery_is_sealed_by_existing_evidence_inventory(self) -> None:
+        directory = self._text_v2_native("v2-sealed-native", unknown=False)
+        verifier = AgentRunEvidenceVerifier()
+        verified = verifier.verify(directory)
+        self.assertTrue(verified.passed)
+        self.assertEqual(verified.require_value().content_id, self._content_id(directory))
+        events_path = directory / "events.jsonl"
+        events_path.write_bytes(events_path.read_bytes().replace(b"v2-play-card-C", b"v2-play-card-X", 1))
+        self.assertEqual(verifier.verify(directory).findings[0].code, "checksum_mismatch")
+
+    def test_v2_native_not_delivered_has_no_observed_successor(self) -> None:
+        directory = self._text_v2_native("v2-native-not-delivered", unknown=False)
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[5]["kind"] = "text_menu_not_applied"
+        events[5]["payload"]["result"].update(status="not_applied", native_delivery="not_delivered", retry="reobserve")
+        events.pop(6)
+        for index, event in enumerate(events, 1):
+            event["sequence"] = index
+        self._rewrite_events(directory, events)
+        verifier = AgentRunEvidenceVerifier()
+        self.assertTrue(verifier.verify(directory).passed)
+        events[5]["payload"]["result"]["native_delivery"] = "delivered"
+        self._rewrite_events(directory, events)
+        self.assertFalse(verifier.verify(directory).passed)
+
+    def test_v2_manifest_port_and_renderer_profile_are_closed(self) -> None:
+        directory = self._text_v2_evidence("v2-manifest")
+        verifier = AgentRunEvidenceVerifier()
+        self.assertTrue(verifier.verify(directory).passed)
+        for change in ("port", "digest", "reads"):
+            policy_path = directory / "policy-manifest.json"
+            policy = json.loads(policy_path.read_text())
+            if change == "port":
+                policy["adapter"]["protocol"] = "sts2.policy-runtime/decision-only-ndjson-1"
+            elif change == "digest":
+                policy["requirements"]["candidate_order_digest"] = "sha256-json-bound-action-id-order"
+            else:
+                policy["requirements"]["reads"] = ["surface_card"]
+            policy_path.write_bytes(canonical(policy))
+            digest = sha256(json.dumps(policy, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True).encode())
+            manifest_path = directory / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["policy_manifest_sha256"] = digest
+            manifest_path.write_bytes(canonical(manifest))
+            attestation_path = directory / "adapter-attestation.json"
+            attestation = json.loads(attestation_path.read_text())
+            attestation["policy_manifest_sha256"] = digest
+            attestation["expected"] = policy["adapter"]
+            attestation["actual"] = policy["adapter"]
+            attestation_path.write_bytes(canonical(attestation))
+            self._rewrite_events(directory, [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()])
+            self.assertFalse(verifier.verify(directory).passed, change)
+            directory = self._text_v2_evidence("v2-manifest-" + change)
+        directory = self._text_v2_evidence("v2-renderer-profile")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[1]["payload"]["snapshot"]["schema"] = "sts2.player-environment/text-menu-snapshot-1"
+        self._rewrite_events(directory, events)
+        self.assertEqual(verifier.verify(directory).findings[0].code, "schema_literal")
+
     def test_text_navigation_is_verified_without_native_receipt(self) -> None:
         directory = self._text_evidence("text-nav")
         self.assertTrue(AgentRunEvidenceVerifier().verify(directory).passed)
