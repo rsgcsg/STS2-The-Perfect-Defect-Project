@@ -1,4 +1,4 @@
-"""Bounded engineering smoke for an exported M2/Reset model on Managed text-menu-v1.
+"""Bounded engineering smoke for an exported M2/Reset model on Managed text menus.
 
 The Host owns game state, current action binding and delivery. This experiment
 owns only scoring and a finite stop rule; it is not Policy Runtime evidence.
@@ -14,7 +14,8 @@ from uuid import uuid4
 
 from spireagent.json_boundary import json_bytes
 
-from .fullrun.memory_token_inputs import project_memory_snapshot
+from .fullrun.memory_token_inputs import project_memory_profile_snapshot
+from .fullrun.text_menu_inputs import INPUT_PROFILE, V2_INPUT_PROFILE
 from .game_seed import require_canonical_game_seed
 
 CONTEXT_SCHEMA = "sts2.player-environment/text-menu-observation-context-1"
@@ -45,7 +46,17 @@ class SmokeLimits:
             raise SmokeBoundaryError("invalid_smoke_limits")
 
 
-def _terminal(snapshot: dict[str, Any]) -> bool:
+def _profile_schemas(input_profile: str) -> tuple[str, str, str]:
+    if input_profile == INPUT_PROFILE:
+        return CONTEXT_SCHEMA, RESULT_SCHEMA, SNAPSHOT_SCHEMA
+    if input_profile == V2_INPUT_PROFILE:
+        return ("sts2.player-environment/text-menu-observation-context-2",
+                "sts2.player-environment/text-menu-action-result-2",
+                "sts2.player-environment/text-menu-snapshot-2")
+    raise SmokeBoundaryError("unknown_text_menu_profile")
+
+
+def _terminal(snapshot: dict[str, Any], input_profile: str = INPUT_PROFILE) -> bool:
     if (snapshot.get("status") != "observed"
             or not isinstance(snapshot.get("interaction"), dict)
             or snapshot["interaction"].get("kind") != "game_over"):
@@ -63,13 +74,14 @@ def _terminal(snapshot: dict[str, Any]) -> bool:
     session = snapshot.get("session", {})
     completeness = snapshot.get("completeness", {})
     policy = snapshot.get("information_policy", {})
+    _, _, snapshot_schema = _profile_schemas(input_profile)
     if (set(snapshot) != {"protocol_version", "schema", "input_profile", "snapshot_id",
                             "sequence", "observed_at", "status", "persistent", "interaction",
                             "referents", "completeness", "session", "information_policy",
                             "menu", "menu_actions"}
             or snapshot.get("protocol_version") != "1.0.0"
-            or snapshot.get("schema") != SNAPSHOT_SCHEMA
-            or snapshot.get("input_profile") != "text-menu-v1"
+            or snapshot.get("schema") != snapshot_schema
+            or snapshot.get("input_profile") != input_profile
             or not isinstance(snapshot.get("snapshot_id"), str) or not snapshot["snapshot_id"]
             or type(snapshot.get("sequence")) is not int or snapshot["sequence"] < 1
             or not isinstance(snapshot.get("observed_at"), str) or not snapshot["observed_at"]
@@ -82,6 +94,7 @@ def _terminal(snapshot: dict[str, Any]) -> bool:
             or not isinstance(policy, dict)
             or policy.get("includes_hidden_information") is not False
             or not isinstance(menu, dict) or menu.get("cursor") != "root"
+            or (input_profile == V2_INPUT_PROFILE and menu.get("selection") != [])
             or type(menu.get("revision")) is not int or menu["revision"] < 0
             or not isinstance(menu.get("native_snapshot_id"), str)
             or not menu["native_snapshot_id"]
@@ -107,7 +120,8 @@ def _terminal(snapshot: dict[str, Any]) -> bool:
 
 def validate_smoke_request(seeds: tuple[str, ...], model_id: str,
                            reset_each_step: bool, character: str = "Defect",
-                           ascension: int = 0) -> None:
+                           ascension: int = 0, *,
+                           input_profile: str = INPUT_PROFILE) -> None:
     """Reject invalid experiment inputs before a CLI creates its child."""
     try:
         valid_seeds = 1 <= len(seeds) <= 2 and all(
@@ -116,7 +130,8 @@ def validate_smoke_request(seeds: tuple[str, ...], model_id: str,
         )
     except ValueError:
         valid_seeds = False
-    if (not valid_seeds or not isinstance(model_id, str) or len(model_id) != 64
+    if (input_profile not in {INPUT_PROFILE, V2_INPUT_PROFILE}
+            or not valid_seeds or not isinstance(model_id, str) or len(model_id) != 64
             or type(reset_each_step) is not bool
             or not isinstance(character, str) or character not in SUPPORTED_CHARACTERS
             or type(ascension) is not int or ascension != 0):
@@ -140,6 +155,7 @@ def run_managed_memory_smoke(
     environment: Any, scorer: Any, *, seeds: tuple[str, ...],
     model_id: str, reset_each_step: bool, limits: SmokeLimits | None = None,
     character: str = "Defect", ascension: int = 0,
+    input_profile: str = INPUT_PROFILE,
     clock: Any = time.monotonic,
 ) -> dict[str, Any]:
     """Run at most two explicit episodes, closing the dedicated child on every exit."""
@@ -154,6 +170,8 @@ def run_managed_memory_smoke(
         "episodes_started": 0, "observations": 0, "policy_calls": 0,
         "submissions": 0, "native_delivered": 0, "terminal_observed": 0,
     }
+    if input_profile == V2_INPUT_PROFILE:
+        report["input_profile"] = V2_INPUT_PROFILE
     deadline = clock() + limits.max_seconds
     previous_continuity: str | None = None
 
@@ -162,7 +180,9 @@ def run_managed_memory_smoke(
             raise SmokeBoundaryError("wall_budget_exhausted")
 
     try:
-        validate_smoke_request(seeds, model_id, reset_each_step, character, ascension)
+        validate_smoke_request(seeds, model_id, reset_each_step, character, ascension,
+                               input_profile=input_profile)
+        context_schema, result_schema, snapshot_schema = _profile_schemas(input_profile)
         if (not callable(getattr(environment, "observe_text_menu", None))
                 or not callable(getattr(environment, "submit_text_menu", None))):
             raise SmokeBoundaryError("text_menu_consumer_unavailable")
@@ -181,10 +201,12 @@ def run_managed_memory_smoke(
                 within_budget()
                 if report["observations"] >= limits.max_observations:
                     raise SmokeBoundaryError("observation_budget_exhausted")
-                context = environment.observe_text_menu()
+                context = (environment.observe_text_menu(input_profile=input_profile)
+                           if input_profile == V2_INPUT_PROFILE else
+                           environment.observe_text_menu())
                 report["observations"] += 1
                 within_budget()
-                if not isinstance(context, dict) or context.get("schema") != CONTEXT_SCHEMA:
+                if not isinstance(context, dict) or context.get("schema") != context_schema:
                     raise SmokeBoundaryError("text_context_invalid")
                 snapshot = context.get("snapshot")
                 continuity = context.get("game_continuity_id")
@@ -204,7 +226,7 @@ def run_managed_memory_smoke(
                     episode_continuity = continuity
                 elif continuity != episode_continuity:
                     raise SmokeBoundaryError("continuity_changed_within_episode")
-                if _terminal(snapshot):
+                if _terminal(snapshot, input_profile):
                     report["terminal_observed"] += 1
                     report["stop_reason"] = "terminal_observed"
                     break
@@ -214,7 +236,7 @@ def run_managed_memory_smoke(
                     raise SmokeBoundaryError("policy_call_budget_exhausted")
                 if report["submissions"] >= limits.max_submissions:
                     raise SmokeBoundaryError("submission_budget_exhausted")
-                public = project_memory_snapshot(snapshot)
+                public = project_memory_profile_snapshot(snapshot, input_profile)
                 report["policy_calls"] += 1
                 scored = scorer.observe_and_score(
                     continuity_token=continuity, snapshot_bytes=json_bytes(snapshot),
@@ -235,13 +257,23 @@ def run_managed_memory_smoke(
                     raise SmokeBoundaryError("selected_action_unbound")
                 request_id = uuid4().hex
                 report["submissions"] += 1
-                result = environment.submit_text_menu(action_id, snapshot["snapshot_id"],
-                                                      continuity, request_id)
-                if (not isinstance(result, dict) or result.get("schema") != RESULT_SCHEMA
-                        or result.get("input_profile") != "text-menu-v1"
+                result = (environment.submit_text_menu(
+                    action_id, snapshot["snapshot_id"], continuity, request_id,
+                    input_profile=input_profile) if input_profile == V2_INPUT_PROFILE else
+                    environment.submit_text_menu(action_id, snapshot["snapshot_id"],
+                                                 continuity, request_id))
+                if (not isinstance(result, dict) or result.get("schema") != result_schema
+                        or result.get("input_profile") != input_profile
                         or result.get("request_id") != request_id):
                     raise SmokeBoundaryError("text_result_invalid")
                 if result.get("status") == "unknown":
+                    if input_profile == V2_INPUT_PROFILE and (
+                        result.get("action") is not None
+                        or result.get("effect_domain") != "native_input"
+                        or result.get("native_delivery") != "unknown"
+                        or result.get("successor") is not None or result.get("retry") != "never"
+                    ):
+                        raise SmokeBoundaryError("text_result_invalid")
                     report["stop_reason"] = "native_delivery_unknown"
                     break
                 if result.get("status") != "applied":
@@ -254,13 +286,13 @@ def run_managed_memory_smoke(
                         or not isinstance(result.get("successor"), dict)):
                     raise SmokeBoundaryError("text_result_binding_invalid")
                 successor = result["successor"]
-                if (successor.get("schema") != SNAPSHOT_SCHEMA
-                        or successor.get("input_profile") != "text-menu-v1"
+                if (successor.get("schema") != snapshot_schema
+                        or successor.get("input_profile") != input_profile
                         or successor.get("session") != snapshot.get("session")):
                     raise SmokeBoundaryError("text_successor_identity_invalid")
                 if native:
                     report["native_delivered"] += 1
-                terminal = _terminal(successor)
+                terminal = _terminal(successor, input_profile)
                 if terminal:
                     report["terminal_observed"] += 1
                 # The native call may cross the deadline. Its returned receipt is still

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import sys
@@ -11,7 +12,10 @@ from types import SimpleNamespace
 import pytest
 from test_text_menu_data import snapshot as text_snapshot
 
-from stpd.fullrun.memory_token_inputs import project_memory_snapshot
+from stpd.fullrun.memory_token_inputs import (
+    project_memory_profile_snapshot,
+    project_memory_snapshot,
+)
 from stpd.managed_memory_smoke import SmokeLimits, run_managed_memory_smoke
 
 
@@ -37,6 +41,48 @@ def terminal(name: str) -> dict:
     value["menu_actions"].update(status="complete", actions=[], materialized_count=0,
                                  total_count=0)
     return value
+
+
+V2_FIXTURES = Path(__file__).parent / "fixtures" / "text_menu_v2"
+
+
+def v2_fixture(name: str) -> dict:
+    return json.loads((V2_FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def v2_page(name: str) -> dict:
+    value = v2_fixture(name)
+    value["persistent"] = copy.deepcopy(page("before")["persistent"])
+    value["session"] = {"runtime_instance_id": "managed-runtime",
+                        "environment_fingerprint": "exact-candidate"}
+    return value
+
+
+def v2_trajectory() -> list[dict]:
+    root = v2_page("targeted-root")
+    selected = v2_fixture("targeted-select")["successor"]
+    selected["persistent"] = copy.deepcopy(root["persistent"])
+    selected["session"] = copy.deepcopy(root["session"])
+    confirmation = copy.deepcopy(selected)
+    confirmation["snapshot_id"] = "v2-menu-22"
+    confirmation["sequence"] += 1
+    confirmation["menu"].update(cursor="card_confirmation", revision=2,
+                                selection=[{"role": "card", "referent_id": "card-C"},
+                                           {"role": "target", "referent_id": "enemy-E"}])
+    confirmation["menu_actions"]["actions"] = [
+        {"action_id": "v2-play-card-C-on-E", "kind": "native_input", "verb": "play",
+         "label": "Play Strike on Jaw Worm", "subject_referent_id": "card-C",
+         "arguments": [{"role": "target", "referent_id": "enemy-E"}],
+         "effect_domain": "native_input"},
+        {"action_id": "v2-cancel-target-E", "kind": "system_selection",
+         "verb": "cancel_selection", "label": "Cancel target selection",
+         "subject_referent_id": None, "arguments": [], "effect_domain": "text_menu"},
+    ]
+    confirmation["menu_actions"].update(materialized_count=2, total_count=2)
+    done = v2_page("managed-game-over")
+    for snapshot in (root, selected, confirmation):
+        project_memory_profile_snapshot(snapshot, "text-menu-v2")
+    return [root, selected, confirmation, done]
 
 
 class Environment:
@@ -103,6 +149,64 @@ class Scorer:
             action_ids=(tuple(reversed(public.action_ids)) if self.wrong_binding
                         else public.action_ids),
             candidate_digest=public.candidate_digest, scores=self.scores)
+
+
+class V2Environment(Environment):
+    def __init__(self, trajectory: list[dict], *, unknown: bool = False) -> None:
+        super().__init__([trajectory[0]])
+        self.trajectory = trajectory
+        self.position = 0
+        self.unknown = unknown
+        self.profiles: list[str] = []
+
+    def observe_text_menu(self, *, input_profile: str) -> dict:
+        self.profiles.append(input_profile)
+        return {"schema": "sts2.player-environment/text-menu-observation-context-2",
+                "snapshot": self.trajectory[self.position], "game_continuity_id": "game-0"}
+
+    def submit_text_menu(self, action_id: str, expected_snapshot_id: str,
+                         expected_game_continuity_id: str, request_id: str, *,
+                         input_profile: str) -> dict:
+        self.profiles.append(input_profile)
+        source = self.trajectory[self.position]
+        self.submissions.append((action_id, expected_snapshot_id,
+                                 expected_game_continuity_id, request_id))
+        assert expected_snapshot_id == source["snapshot_id"]
+        assert expected_game_continuity_id == "game-0"
+        action = next(item for item in source["menu_actions"]["actions"]
+                      if item["action_id"] == action_id)
+        result = v2_fixture("targeted-select")
+        result.update(input_profile=input_profile, request_id=request_id,
+                      action=action, effect_domain=action["effect_domain"])
+        if self.unknown:
+            result.update(status="unknown", action=None, effect_domain="native_input",
+                          native_delivery="unknown", successor=None, retry="never",
+                          reason_code="native_delivery_unknown", attribution=None)
+            return result
+        self.position += 1
+        result.update(native_delivery="delivered" if action["effect_domain"] == "native_input"
+                      else None, successor=self.trajectory[self.position])
+        return result
+
+
+class V2Scorer:
+    def __init__(self, *, wrong_binding: bool = False) -> None:
+        self.wrong_binding = wrong_binding
+        self.tokens: list[str] = []
+
+    def observe_and_score(self, *, continuity_token: str, snapshot_bytes: bytes,
+                          expected_candidate_digest: str,
+                          expected_candidate_count: int) -> SimpleNamespace:
+        public = project_memory_profile_snapshot(json.loads(snapshot_bytes), "text-menu-v2")
+        assert expected_candidate_digest == public.candidate_digest
+        assert expected_candidate_count == len(public.action_ids)
+        self.tokens.append(continuity_token)
+        return SimpleNamespace(
+            action_ids=public.action_ids,
+            candidate_digest=("wrong-digest" if self.wrong_binding
+                              else public.candidate_digest),
+            scores=tuple(1.0 if index == 0 else 0.0 for index in range(len(public.action_ids))),
+        )
 
 
 def run(environment: Environment, scorer: Scorer, *, seeds: tuple[str, ...] = ("SEED1",),
@@ -397,3 +501,169 @@ def test_post_submit_exception_never_retries_and_closes_child() -> None:
     assert report["submissions"] == len(environment.submissions) == 1
     assert environment.resets == ["SEED1"]
     assert environment.closed
+
+
+def test_v2_text_selection_counts_as_submission_but_not_native_delivery() -> None:
+    trajectory = v2_trajectory()
+    environment = V2Environment(trajectory)
+    scorer = V2Scorer()
+    report = run_managed_memory_smoke(
+        environment, scorer, seeds=("SEED1",), model_id="a" * 64,
+        reset_each_step=True, input_profile="text-menu-v2")
+    assert report["input_profile"] == "text-menu-v2"
+    assert report["status"] == "stopped"
+    assert report["stop_reason"] == "submission_budget_exhausted"
+    assert report["submissions"] == 1 and report["native_delivered"] == 0
+    assert environment.submissions[0][:3] == (
+        trajectory[0]["menu_actions"]["actions"][0]["action_id"],
+        trajectory[0]["snapshot_id"], "game-0")
+    assert environment.profiles == ["text-menu-v2", "text-menu-v2"]
+    assert scorer.tokens == ["game-0"]
+    assert environment.closed
+
+
+def test_v2_complete_bound_selection_target_native_leaf_and_observed_terminal() -> None:
+    trajectory = v2_trajectory()
+    environment = V2Environment(trajectory)
+    report = run_managed_memory_smoke(
+        environment, V2Scorer(), seeds=("SEED1",), model_id="a" * 64,
+        reset_each_step=True, input_profile="text-menu-v2",
+        limits=SmokeLimits(max_submissions=3, max_policy_calls=3))
+    assert report["status"] == "engineering_smoke_complete"
+    assert report["stop_reason"] == "terminal_observed"
+    assert report["submissions"] == report["policy_calls"] == 3
+    assert report["native_delivered"] == report["terminal_observed"] == 1
+    assert [item[0] for item in environment.submissions] == [
+        snapshot["menu_actions"]["actions"][0]["action_id"]
+        for snapshot in trajectory[:3]]
+    assert [item[1] for item in environment.submissions] == [
+        snapshot["snapshot_id"] for snapshot in trajectory[:3]]
+    assert set(environment.profiles) == {"text-menu-v2"}
+    assert environment.closed
+
+
+def test_v2_unknown_and_wrong_score_binding_never_retry() -> None:
+    for environment, scorer, reason, submissions in (
+        (V2Environment(v2_trajectory(), unknown=True), V2Scorer(),
+         "native_delivery_unknown", 1),
+        (V2Environment(v2_trajectory()), V2Scorer(wrong_binding=True),
+         "score_binding_invalid", 0),
+    ):
+        report = run_managed_memory_smoke(
+            environment, scorer, seeds=("SEED1", "SEED2"), model_id="a" * 64,
+            reset_each_step=True, input_profile="text-menu-v2",
+            limits=SmokeLimits(max_submissions=3))
+        assert report["stop_reason"] == reason
+        assert report["episodes_started"] == 1
+        assert len(environment.submissions) == submissions
+        assert environment.closed
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ("request", "text_result_invalid"),
+    ("schema", "text_result_invalid"),
+    ("action", "text_result_binding_invalid"),
+    ("session", "text_successor_identity_invalid"),
+    ("continuity", "continuity_changed_within_episode"),
+])
+def test_v2_wrong_result_or_next_page_binding_stops_without_another_submit(
+    mutation: str, reason: str,
+) -> None:
+    class Mutated(V2Environment):
+        def submit_text_menu(self, action_id: str, expected_snapshot_id: str,
+                             expected_game_continuity_id: str, request_id: str, *,
+                             input_profile: str) -> dict:
+            result = super().submit_text_menu(action_id, expected_snapshot_id,
+                                              expected_game_continuity_id, request_id,
+                                              input_profile=input_profile)
+            if mutation == "request":
+                result["request_id"] = "other-request"
+            elif mutation == "schema":
+                result["schema"] = "sts2.player-environment/text-menu-action-result-1"
+            elif mutation == "action":
+                result["action"] = self.trajectory[1]["menu_actions"]["actions"][0]
+            elif mutation == "session":
+                result["successor"] = copy.deepcopy(result["successor"])
+                result["successor"]["session"]["runtime_instance_id"] = "other-runtime"
+            return result
+
+        def observe_text_menu(self, *, input_profile: str) -> dict:
+            context = super().observe_text_menu(input_profile=input_profile)
+            if mutation == "continuity" and self.position > 0:
+                context["game_continuity_id"] = "other-game"
+            return context
+
+    environment = Mutated(v2_trajectory())
+    report = run_managed_memory_smoke(
+        environment, V2Scorer(), seeds=("SEED1",), model_id="a" * 64,
+        reset_each_step=True, input_profile="text-menu-v2",
+        limits=SmokeLimits(max_submissions=3))
+    assert report["stop_reason"] == reason
+    assert len(environment.submissions) == 1
+    assert environment.closed
+
+
+def test_v2_terminal_is_only_observed_and_malformed_selection_is_rejected() -> None:
+    done = v2_page("managed-game-over")
+    environment = V2Environment([done])
+    report = run_managed_memory_smoke(
+        environment, V2Scorer(), seeds=("SEED1",), model_id="a" * 64,
+        reset_each_step=True, input_profile="text-menu-v2")
+    assert report["stop_reason"] == "terminal_observed"
+    assert report["terminal_observed"] == 1 and report["native_delivered"] == 0
+    assert report["status"] == "stopped"
+    assert environment.closed
+
+    done["menu"]["selection"] = [{"role": "card", "referent_id": "opaque"}]
+    malformed = V2Environment([done])
+    bad_report = run_managed_memory_smoke(
+        malformed, V2Scorer(), seeds=("SEED1",), model_id="a" * 64,
+        reset_each_step=True, input_profile="text-menu-v2")
+    assert bad_report["stop_reason"] == "terminal_incomplete"
+    assert bad_report["terminal_observed"] == 0
+    assert malformed.closed
+
+
+def test_cli_explicit_v2_profile_reaches_package_scorer_public_host_and_budget(
+    monkeypatch, capsys,
+) -> None:
+    script = Path(__file__).resolve().parents[1] / "tools" / "managed_memory_smoke.py"
+    spec = importlib.util.spec_from_file_location("managed_memory_smoke_v2_cli_test", script)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    calls: list[tuple[str, object]] = []
+    children: list[V2Environment] = []
+
+    class Child(V2Environment):
+        def __init__(self, command: list[str], **kwargs) -> None:
+            assert command == ["node", "/exact/driver.mjs", "--character", "Defect",
+                               "--timeout-ms", "5000"]
+            super().__init__(v2_trajectory())
+            children.append(self)
+
+    def validate(path: Path, *, input_profile: str) -> tuple:
+        calls.append(("package", input_profile))
+        return ({"ids": {"model": "a" * 64}}, None, None,
+                SimpleNamespace(reset_each_step=True, cpu_threads=2))
+
+    def scorer(*args, input_profile: str) -> V2Scorer:
+        calls.append(("scorer", input_profile))
+        return V2Scorer()
+
+    monkeypatch.setitem(sys.modules, "sts2_headless",
+                        SimpleNamespace(ManagedPlayerEnvironment=Child))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(set_num_threads=lambda _: None))
+    monkeypatch.setattr(cli, "activate_host_runtime_client", lambda *args: None)
+    monkeypatch.setattr(cli, "load_host_runtime_pin", lambda *args: {})
+    monkeypatch.setattr(cli, "validate_memory_package", validate)
+    monkeypatch.setattr(cli.OnlineM2Scorer, "from_export", scorer)
+    monkeypatch.setattr(cli, "driver_command", lambda *args: ["node", "/exact/driver.mjs"])
+    monkeypatch.setattr(sys, "argv", ["managed_memory_smoke.py", "--candidate", "/unused",
+                                     "--model-export", "/unused", "--seed", "SEED1",
+                                     "--input-profile", "text-menu-v2",
+                                     "--max-policy-calls", "3", "--max-submissions", "3"])
+    assert cli.main() == 0
+    assert calls == [("package", "text-menu-v2"), ("scorer", "text-menu-v2")]
+    assert len(children) == 1 and children[0].closed
+    assert json.loads(capsys.readouterr().out)["native_delivered"] == 1
