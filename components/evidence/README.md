@@ -33,9 +33,10 @@ counters include this preparation and do not prove actual submission. This
 verifier checks the producer's ordered evidence, not whether the game executed
 an action independently. The event requires Evidence rc.23 or later; older
 strict verifiers must not be used to qualify such a run.
-Older finalized runs remain readable. A verifier pinned to an earlier strict
-Evidence version rejects runs containing this new event, so consumers must pin
-the rc.18 candidate before claiming verification of such runs.
+Older finalized runs remain readable. The original text-menu-v2 contract was
+introduced in rc.18; the cancellation event and protocol-v3 attestation require
+rc.23. Earlier strict verifiers reject those newer records rather than silently
+ignoring them. Consumer pins must match the event and adapter contracts in use.
 
 ```text
 producer bundle
