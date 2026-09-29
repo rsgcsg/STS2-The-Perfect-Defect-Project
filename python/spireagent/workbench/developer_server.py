@@ -527,7 +527,8 @@ class Application:
         return self.local_datasets.start_publish(preview_id)
 
     def start_local_training(self, dataset_id: object, *,
-                             after_completed_operation_id: object | None = None) -> dict[str, Any]:
+                             after_completed_operation_id: object | None = None,
+                             recipe: object = "stage1a.dsimple.s.v1") -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_training", "running_instance_unavailable")
         try:
@@ -540,7 +541,8 @@ class Application:
                 or runtime.get("configuration_id") != configuration_id(self.config)):
             raise BoundaryError("local_training", "running_configuration_mismatch")
         return self.local_training.start(
-            dataset_id, after_completed_operation_id=after_completed_operation_id)
+            dataset_id, after_completed_operation_id=after_completed_operation_id,
+            recipe=recipe)
 
     def start_local_model_export(self, model_id: object) -> dict[str, Any]:
         if self.config_path is None:
@@ -1095,16 +1097,18 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(404, b'{"error":"route_not_found"}')
                     return
                 try:
-                    body = self.json_body(maximum=192)
-                    if set(body) not in ({"dataset_id"},
-                                         {"dataset_id", "after_completed_operation_id"}):
+                    body = self.json_body(maximum=256)
+                    if not {"dataset_id"} <= set(body) or not set(body) <= {
+                        "dataset_id", "after_completed_operation_id", "recipe"
+                    }:
                         raise ValueError
                     if ("after_completed_operation_id" in body
                             and not isinstance(body["after_completed_operation_id"], str)):
                         raise ValueError
                     value = app.start_local_training(
                         body["dataset_id"],
-                        after_completed_operation_id=body.get("after_completed_operation_id"))
+                        after_completed_operation_id=body.get("after_completed_operation_id"),
+                        recipe=body.get("recipe", "stage1a.dsimple.s.v1"))
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
