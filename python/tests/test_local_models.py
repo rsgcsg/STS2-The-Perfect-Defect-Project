@@ -1182,10 +1182,10 @@ def test_local_token_registry_adds_models_without_commands_or_runtime_override(s
     registry.parent.mkdir(parents=True)
     shipped = json.loads((service.root / "configs/developer/local-policies-v1.json").read_text())
     registry.write_text(json.dumps(shipped))
-    private = root / ".local/token-policies-v1.json"
+    private = service.private_root / "token-policies-v1.json"
     private.parent.mkdir()
     entry = {"id": "stage1a-b-s", "label": "B-S", "adapter": "token-v1",
-             "config": ".local/b-s/config.json", "manifest": ".local/b-s/manifest.json"}
+             "config": "b-s/config.json", "manifest": "b-s/manifest.json"}
     local = {"schema": "stpd/local-token-policies-v1", "policies": [entry]}
     private.write_text(json.dumps(local))
     service.root = root
@@ -1213,10 +1213,10 @@ def text_runtime_profile(service, tmp_path):
     registry = root / "configs/developer/local-policies-v1.json"
     registry.parent.mkdir(parents=True)
     registry.write_bytes((service.root / "configs/developer/local-policies-v1.json").read_bytes())
-    private = root / ".local"
-    private.mkdir()
+    private = service.private_root
+    private.mkdir(parents=True, exist_ok=True)
     entry = {"id": "text-b", "label": "Text B", "adapter": "token-v1",
-             "config": ".local/config.json", "manifest": ".local/manifest.json",
+             "config": "config.json", "manifest": "manifest.json",
              "runtime_profile": "text-menu-v1"}
     (private / "token-policies-v1.json").write_text(json.dumps({
         "schema": "stpd/local-token-policies-v1", "policies": [entry],
@@ -1508,7 +1508,7 @@ def test_text_run_profile_cli_and_both_budget_attestations(
         "version": "0.1.0-rc.10", "code_sha256": "b" * 64,
     })
     monkeypatch.setattr(service, "start_observer", lambda: None)
-    manifest = json.loads((service.root / entry["manifest"]).read_text())
+    manifest = json.loads((service.private_root / entry["manifest"]).read_text())
     limits = local_models.RUN_PROFILES[profile]
     startup_budget = {
         "maxSubmissions": limits["max_submissions"],
@@ -1581,7 +1581,7 @@ def test_local_registry_rejects_unrecognized_runtime_profile(
 ):
     entry, _ = text_runtime_profile
     entry["runtime_profile"] = profile
-    (service.root / ".local/token-policies-v1.json").write_text(json.dumps({
+    (service.private_root / "token-policies-v1.json").write_text(json.dumps({
         "schema": "stpd/local-token-policies-v1", "policies": [entry],
     }), encoding="utf-8")
     with pytest.raises(BoundaryError, match="unsupported_runtime_profile"):
@@ -1595,7 +1595,7 @@ def test_text_runtime_cannot_be_selected_by_legacy_or_malformed_model(
     service, text_runtime_profile, representation,
 ):
     entry, _ = text_runtime_profile
-    path = service.root / entry["manifest"]
+    path = service.private_root / entry["manifest"]
     manifest = json.loads(path.read_text(encoding="utf-8"))
     manifest["representation"] = representation
     path.write_text(json.dumps(manifest), encoding="utf-8")
