@@ -1,0 +1,135 @@
+using System;
+using System.Collections.Concurrent;
+using STS2Connector.Authority;
+using STS2Connector.PlayerEnvironment.Protocol;
+
+namespace STS2Connector.PlayerEnvironment;
+
+/// <summary>V2 shares the existing controller gate and request namespace.
+/// Its text selections never dispatch a native input.</summary>
+internal sealed class TextMenuV2Executor(
+    object submissionGate,
+    ConcurrentDictionary<string, string> requestFingerprints,
+    Func<TextMenuFrame> capture,
+    Func<MutationAuthorizationRequest, MutationAdmission> authorize,
+    Func<string?>? currentController = null)
+{
+    private readonly TextMenuV2Session session = new();
+    private readonly ConcurrentDictionary<string, TextMenuV2ActionResult> results = new(StringComparer.Ordinal);
+    private string? previousController;
+
+    private void SynchronizeControl()
+    {
+        if (currentController == null) return;
+        string? controller = currentController();
+        if (controller != previousController) session.ResetSelection();
+        previousController = controller;
+    }
+
+    internal TextMenuV2Snapshot Observe()
+    {
+        lock (submissionGate)
+        {
+            SynchronizeControl();
+            return session.Observe(capture()).Snapshot;
+        }
+    }
+
+    internal TextMenuV2ObservationContext ObserveContext()
+    {
+        lock (submissionGate)
+        {
+            SynchronizeControl();
+            TextMenuFrame frame = capture();
+            return new(TextMenuV2Contract.ObservationContextSchema,
+                session.Observe(frame).Snapshot, frame.GameContinuityId);
+        }
+    }
+
+    internal TextMenuV2ActionResult? Find(string requestId) =>
+        results.TryGetValue(requestId, out var result) ? result : null;
+
+    internal TextMenuV2ActionResult Submit(PlayerEnvironmentActionRequest request)
+    {
+        string id = request.RequestId ?? "";
+        TextMenuV2ActionResult Result(string status, TextMenuAction? action,
+            string? delivery, string? code, string detail, TextMenuV2Snapshot? successor,
+            PlayerEnvironmentAttribution? attribution = null) => new(
+                PlayerEnvironmentContract.ProtocolVersion, TextMenuV2Contract.ResultSchema,
+                TextMenuV2Contract.Profile, id, status, action?.EffectDomain, delivery,
+                action, code, detail, status == "not_applied" ? "reobserve" : "never",
+                successor, attribution);
+        if (request.InputProfile != TextMenuV2Contract.Profile || string.IsNullOrWhiteSpace(id))
+            return Result("not_applied", null, null, "invalid_text_menu_request",
+                "An exact text-menu-v2 profile and request ID are required.", null);
+
+        lock (submissionGate)
+        {
+            string fingerprint = PlayerEnvironmentService.ActionRequestFingerprint(request);
+            if (requestFingerprints.TryGetValue(id, out string? previous))
+                return previous == fingerprint && results.TryGetValue(id, out var replay)
+                    ? replay
+                    : Result("not_applied", null, null, "request_id_conflict",
+                        "This request ID already belongs to another exact action or profile.", null);
+
+            SynchronizeControl();
+            TextMenuFrame frame = capture();
+            TextMenuV2Projection projection = session.Observe(frame);
+            projection.Choices.TryGetValue(request.BoundActionId ?? "", out var choice);
+            requestFingerprints[id] = fingerprint;
+            TextMenuV2ActionResult Save(TextMenuV2ActionResult result)
+            {
+                results[id] = result;
+                return result;
+            }
+            TextMenuV2ActionResult Reject(string code, string detail) => Save(Result(
+                "not_applied", choice?.Action,
+                choice?.Leaf != null ? "not_delivered" : null,
+                code, detail, projection.Snapshot));
+            if (request.ExpectedSnapshotId != projection.Snapshot.SnapshotId)
+                return Reject("stale_snapshot", "The native page or text selection changed; observe again.");
+            if (projection.Snapshot.MenuActions.Status != "complete" || choice == null)
+                return Reject("menu_action_not_current", "This action is not in the current complete menu.");
+            MutationAdmission admission = authorize(new MutationAuthorizationRequest(
+                request.ClientSessionId, request.ControllerLeaseId, request.ControllerGeneration));
+            if (!admission.Accepted)
+                return Reject(admission.ErrorCode ?? "controller_rejected",
+                    admission.Detail ?? "The current controller did not authorize this request.");
+            var source = admission.Attribution;
+            PlayerEnvironmentAttribution? attribution = source == null ? null : new(
+                source.RuntimeInstanceId, source.ClientSessionId, source.ClientInstanceId,
+                source.ProductId, source.ProductName, source.ProductVersion,
+                source.ControllerLeaseId, source.ControllerGeneration);
+
+            if (choice.Action.Kind != "native_input")
+            {
+                TextMenuV2Snapshot next = session.Apply(frame,
+                    projection.Snapshot.SnapshotId, choice.Action.ActionId);
+                return Save(Result("applied", choice.Action, null, null,
+                    "Only the text menu selection changed; no native input was delivered.",
+                    next, attribution));
+            }
+            try
+            {
+                NativeUi.NativeInputResult native = choice.Leaf!.Dispatch();
+                if (!native.Accepted)
+                    return Reject(native.ErrorCode ?? "native_input_rejected",
+                        native.Detail ?? "Native execute-time validation rejected this input.");
+            }
+            catch (Exception exception)
+            {
+                session.ResetSelection();
+                return Save(Result("unknown", choice.Action, "unknown", "input_delivery_unknown",
+                    $"Native input may have been delivered before {exception.GetType().Name}; never retry this request.",
+                    null, attribution));
+            }
+            TextMenuV2Snapshot? observed = null;
+            try { observed = session.Observe(capture()).Snapshot; }
+            catch (Exception) { /* Delivery is known; failed observation cannot undo it. */ }
+            return Save(Result("applied", choice.Action, "delivered",
+                observed == null ? "successor_observation_unavailable" : null,
+                "Native input was delivered. The successor is an immediate observation, not causal settlement.",
+                observed, attribution));
+        }
+    }
+}

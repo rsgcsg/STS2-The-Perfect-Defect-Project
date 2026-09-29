@@ -23,7 +23,8 @@ internal static partial class PlayerEnvironmentService
         string? inputProfile = null,
         bool textMenuCapture = false)
     {
-        if (!IsSupportedInputProfile(inputProfile) || inputProfile == TextMenuContract.Profile)
+        if (!IsSupportedInputProfile(inputProfile)
+            || inputProfile is TextMenuContract.Profile or TextMenuV2Contract.Profile)
             throw new ArgumentException("Unsupported Player Environment input profile.", nameof(inputProfile));
         T Measure<T>(string phase, Func<T> operation) =>
             captureProfiler == null ? operation() : captureProfiler.Measure(phase, operation);

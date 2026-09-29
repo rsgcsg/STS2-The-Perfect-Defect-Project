@@ -25,6 +25,14 @@ internal sealed record TextMenuFrame(
 {
     [JsonIgnore]
     internal string? GameContinuityId { get; init; }
+
+    // Only the opt-in v2 capture populates these host-private native semantic
+    // play pairs. The v1 native holder/target path ignores them entirely.
+    [JsonIgnore]
+    internal IReadOnlyList<TextMenuLeaf> CardPlays { get; init; } = Array.Empty<TextMenuLeaf>();
+
+    [JsonIgnore]
+    internal bool CardPlayCatalogComplete { get; init; }
 }
 
 internal sealed record TextMenuChoice(TextMenuAction Action, TextMenuLeaf? Leaf, string? TargetCursor);
