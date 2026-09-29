@@ -105,3 +105,29 @@ complete private pair witness, so changing a schema string cannot migrate them.
 Managed v2, research projection/data admission and an installed Live canary need
 their own owner work. Noncombat surfaces retain their existing scope; this card
 staging change does not prove every game scene, strategy quality or Stage1a done.
+
+## Candidate package lock correction
+
+The first PR #106 full run `36565688487` (attempt 1; head
+`c33d8dd8045c22947f82a330691a259361909243`) failed on both operating systems.
+Policy Runtime's own workspace lock still named Connector SDK `1.3.0-rc.3`,
+while its bundled workspace source was `1.3.0-rc.4`. `check:package` rejected
+the mismatch at `tools/package.mjs:38`; this failure is retained and not a
+Runtime behavior failure or a successful full gate.
+
+Commit `25bb1116440f0cf158abff7f2ba00bbaee49161b` changes only that lock
+entry to the exact workspace version. No dependency source, production code,
+assertion, consumer pin or component version changes. The original lock
+reproduced exit 1; the corrected component `npm --prefix components/policy-runtime
+run check` returned exit 0 (142/142 tests, typecheck, build, deterministic
+package and installed CPU smoke). A clean-commit `check:package` also returned
+exit 0. The installed smoke used a temporary package and synthetic Connector;
+it did not install a production Runtime or contact a game. Independent review
+confirmed the one-field diff and the source SDK version.
+
+Path identity now records Policy Runtime source
+`25bb1116440f0cf158abff7f2ba00bbaee49161b`, tree
+`a641eda77a7ac2da90bb84ef7b8c3c8700147cec`, digest
+`361def1aefe2f83d6fe81d6a7dd79518660aa48122e494d6acbe1de46220f0d3`.
+Connector identity and all historical installed/loaded evidence remain unchanged.
+The corrected integrated head requires its own selected hosted gate.
