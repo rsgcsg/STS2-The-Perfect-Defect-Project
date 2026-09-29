@@ -133,6 +133,8 @@ class AgentRunEvidenceVerifier:
         representation = policy_manifest.get("representation")
         input_schema = representation.get("input_schema") if isinstance(representation, dict) else None
         events = _verify_events(directory / _EVENTS_FILE, manifest, input_schema)
+        if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA:
+            _verify_v2_run_association(policy_manifest, events)
         if any(event["kind"] == "decision" for event in events) and not adapter_attested:
             raise AgentRunEvidenceError(
                 "adapter_not_attested",
@@ -285,12 +287,18 @@ def _verify_policy_provenance(directory: Path, manifest: Mapping[str, Any]) -> b
     _verify_adapter_identity(adapter, _POLICY_MANIFEST_FILE)
     if adapter["protocol"] == "sts2.policy-runtime/decision-only-ndjson-2":
         representation = _object(policy_manifest.get("representation"), "policy manifest representation")
-        if representation.get("input_schema") != "sts2.player-environment/text-menu-snapshot-1":
+        if representation.get("input_schema") not in _TEXT_SNAPSHOT_SCHEMAS:
             raise AgentRunEvidenceError(
                 "adapter_representation",
-                "decision-only-ndjson-2 requires text-menu-snapshot-1 representation",
+                "decision-only-ndjson-2 requires a declared text-menu snapshot representation",
                 _POLICY_MANIFEST_FILE,
             )
+    elif isinstance(policy_manifest.get("representation"), dict) and policy_manifest["representation"].get("input_schema") == _TEXT_V2_SNAPSHOT_SCHEMA:
+        raise AgentRunEvidenceError(
+            "adapter_representation", "text-menu-snapshot-2 requires decision-only-ndjson-2", _POLICY_MANIFEST_FILE,
+        )
+    if isinstance(policy_manifest.get("representation"), dict) and policy_manifest["representation"].get("input_schema") == _TEXT_V2_SNAPSHOT_SCHEMA:
+        _verify_v2_policy_manifest(policy_manifest)
 
     canonical_digest = _sha256_bytes(_canonical_json(policy_manifest).encode("utf-8"))
     if canonical_digest != manifest["policy_manifest_sha256"]:
@@ -348,6 +356,74 @@ def _verify_policy_provenance(directory: Path, manifest: Mapping[str, Any]) -> b
             raise AgentRunEvidenceError("adapter_attestation", "non-attested adapter must not claim actual identity", _ADAPTER_ATTESTATION_FILE)
         return False
     raise AgentRunEvidenceError("adapter_attestation", "adapter attestation status is invalid", _ADAPTER_ATTESTATION_FILE)
+
+
+def _verify_v2_policy_manifest(value: Mapping[str, Any]) -> None:
+    """Verify the existing Policy Manifest fields required by the v2 text port."""
+    path = _POLICY_MANIFEST_FILE
+    _exact_keys(value, {"schema", "manifest_id", "policy", "adapter", "artifact", "representation", "requirements", "support", "adapter_config", "claims"}, "v2 policy manifest")
+    policy = _object(value["policy"], "v2 policy")
+    _exact_keys(policy, {"id", "version", "provider", "architecture"}, "v2 policy")
+    for key in policy:
+        _text(policy, key, path)
+    artifact = _object(value["artifact"], "v2 artifact")
+    _exact_keys(artifact, {"id", "path", "sha256"}, "v2 artifact")
+    for key in ("id", "path", "sha256"):
+        _text(artifact, key, path)
+    representation = _object(value["representation"], "v2 representation")
+    _exact_keys(representation, {"id", "version", "input_schema"}, "v2 representation")
+    _text(representation, "id", path)
+    _text(representation, "version", path)
+    _literal(representation, "input_schema", _TEXT_V2_SNAPSHOT_SCHEMA, path)
+    requirements = _object(value["requirements"], "v2 requirements")
+    _exact_keys(requirements, {"connector_protocol_version", "environment", "reads", "whole_decision_admission", "candidate_order_digest", "score_count_matches_candidate_count", "selected_index", "successor_required"}, "v2 requirements")
+    _text(requirements, "connector_protocol_version", path)
+    _literal(requirements, "reads", [], path)
+    _literal(requirements, "candidate_order_digest", "sha256-json-menu-action-id-order", path)
+    for key in ("whole_decision_admission", "score_count_matches_candidate_count", "selected_index", "successor_required"):
+        _literal(requirements, key, True, path)
+    environment = _object(requirements["environment"], "v2 required environment")
+    _exact_keys(environment, {"host_kind", "connector_version", "connector_source_revision", "connector_artifact_sha256", "connector_module_version_id", "modset_status", "modset_fingerprint", "loaded_mod_ids"}, "v2 required environment")
+    _enum(environment, "host_kind", {"live_ui", "headless", "replay", "test"}, path)
+    for key in ("connector_version", "connector_source_revision", "connector_module_version_id", "modset_status", "modset_fingerprint"):
+        _text(environment, key, path)
+    if not _SHA256.fullmatch(_text(environment, "connector_artifact_sha256", path)):
+        raise AgentRunEvidenceError("invalid_digest", "v2 required Connector artifact is invalid", path)
+    _string_array(environment, "loaded_mod_ids", path)
+    support = _object(value["support"], "v2 support")
+    _exact_keys(support, {"game_versions", "game_commits", "interaction_kinds", "action_verbs"}, "v2 support")
+    for key in support:
+        _string_array(support, key, path)
+        if not support[key] or len(set(support[key])) != len(support[key]):
+            raise AgentRunEvidenceError("schema_value", f"v2 support {key} is empty or duplicated", path)
+    _object(value["adapter_config"], "v2 adapter config")
+    claims = _object(value["claims"], "v2 claims")
+    _exact_keys(claims, {"full_run", "selector", "catalog_filtered", "creates_action_authority", "creates_native_operands"}, "v2 claims")
+    for key in ("full_run", "selector"):
+        _boolean(claims, key, path)
+    for key in ("catalog_filtered", "creates_action_authority", "creates_native_operands"):
+        _literal(claims, key, False, path)
+
+
+def _verify_v2_run_association(policy_manifest: Mapping[str, Any], events: list[Mapping[str, Any]]) -> None:
+    requirements = policy_manifest["requirements"]
+    required_environment = requirements["environment"]
+    support = policy_manifest["support"]
+    for event in events:
+        if event["kind"] == "environment_admitted":
+            environment = event["payload"]["environment"]
+            if environment["connector_protocol_version"] != requirements["connector_protocol_version"] or any(
+                environment[key] != required_environment[key] for key in required_environment
+            ):
+                raise AgentRunEvidenceError("environment_association", "v2 admitted environment differs from Policy Manifest requirements", _EVENTS_FILE)
+            if environment["game_version"] not in support["game_versions"] or environment["game_commit"] not in support["game_commits"]:
+                raise AgentRunEvidenceError("environment_association", "v2 game identity is outside Policy Manifest support", _EVENTS_FILE)
+        elif event["kind"] == "text_decision_input":
+            snapshot = event["payload"]["snapshot"]
+            if snapshot["interaction"]["kind"] not in support["interaction_kinds"] or any(
+                action["verb"] not in support["action_verbs"] for action in snapshot["menu_actions"]["actions"]
+            ):
+                raise AgentRunEvidenceError("manifest_support", "v2 complete menu is outside Policy Manifest support", _EVENTS_FILE)
 
 
 def _verify_adapter_identity(value: Mapping[str, Any], path: str) -> None:
@@ -429,6 +505,10 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
     text_outcomes: dict[str, str] = {}
     text_successors: set[str] = set()
     pending_text_input: str | None = None
+    v2_unknown_seen = False
+    native_submissions_used = 0
+    menu_navigations_used = 0
+    autonomy_mode = False
     for sequence, content in enumerate(lines[:-1], start=1):
         if content.endswith(b"\r"):
             content = content[:-1]
@@ -447,11 +527,17 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             raise AgentRunEvidenceError("invalid_event_payload", f"event payload is not an object at line {sequence}", _EVENTS_FILE)
         if kind not in _EVENT_KINDS:
             raise AgentRunEvidenceError("unsupported_event_kind", f"unsupported event kind: {kind}", _EVENTS_FILE)
+        if input_schema in _TEXT_SNAPSHOT_SCHEMAS and kind in {"receipt", "receipt_rejected", "successor"}:
+            raise AgentRunEvidenceError("text_profile_association", "text-menu run cannot use generic receipt or successor evidence", _EVENTS_FILE)
+        if v2_unknown_seen and kind in {"text_decision_input", "text_menu_dispatch_attempt", "menu_navigation",
+                                        "text_native_delivery", "text_native_unknown", "text_menu_not_applied",
+                                        "text_menu_result_rejected", "text_observed_successor"}:
+            raise AgentRunEvidenceError("unknown_retry", "v2 unknown native delivery cannot continue text decisions or delivery", _EVENTS_FILE)
         payload = value["payload"]
         if pending_text_input is not None and kind not in {"decision", "fail_closed", "runtime_tainted"}:
             raise AgentRunEvidenceError("text_decision_order", "text input must immediately precede its decision", _EVENTS_FILE)
         if kind.startswith("text_") or kind == "menu_navigation":
-            if input_schema != "sts2.player-environment/text-menu-snapshot-1":
+            if input_schema not in _TEXT_SNAPSHOT_SCHEMAS:
                 raise AgentRunEvidenceError("text_profile_association", "text event requires a text-menu policy representation", _EVENTS_FILE)
         if kind == "text_decision_input":
             if environment is None:
@@ -461,7 +547,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             if decision_id in text_inputs or decision_id in decisions:
                 raise AgentRunEvidenceError("duplicate_decision", "duplicate text decision input", _EVENTS_FILE)
             snapshot = _object(payload["snapshot"], "text decision snapshot")
-            _verify_text_snapshot(snapshot, environment, "text decision snapshot")
+            _verify_text_snapshot(snapshot, environment, "text decision snapshot", input_schema)
             if snapshot["status"] != "interactive" or snapshot["completeness"]["status"] != "complete" or snapshot["menu_actions"]["status"] != "complete" or not snapshot["menu_actions"]["actions"]:
                 raise AgentRunEvidenceError("text_input_incomplete", "text decision requires a complete executable menu", _EVENTS_FILE)
             text_inputs[decision_id] = snapshot
@@ -472,7 +558,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _exact_keys(payload, {"reason", "snapshot"}, "text_observation_not_admitted payload")
             reason = _text(payload, "reason", _EVENTS_FILE)
             snapshot = _object(payload["snapshot"], "nonadmitted text snapshot")
-            _verify_text_snapshot(snapshot, environment, "nonadmitted text snapshot")
+            _verify_text_snapshot(snapshot, environment, "nonadmitted text snapshot", input_schema)
             if snapshot["status"] == "settling":
                 raise AgentRunEvidenceError("text_observation_admission", "settling observations are not recorded as rejection events", _EVENTS_FILE)
             if snapshot["status"] != "interactive":
@@ -490,6 +576,15 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _mode(payload, "mode", _EVENTS_FILE)
             if "autonomy_budget" in payload:
                 _verify_autonomy_budget(payload["autonomy_budget"])
+            next_autonomy_mode = payload["mode"] in {"one_step", "auto"}
+            if next_autonomy_mode and not autonomy_mode:
+                if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA and (
+                    "autonomy_budget" not in payload or payload["autonomy_budget"]["state"] != "active"
+                ):
+                    raise AgentRunEvidenceError("budget_association", "v2 autonomy entry requires an active budget", _EVENTS_FILE)
+                native_submissions_used = 0
+                menu_navigations_used = 0
+            autonomy_mode = next_autonomy_mode
         elif kind == "autonomy_budget_exhausted":
             _exact_keys(payload, {"reason", "budget", "controller"}, "autonomy_budget_exhausted payload")
             _enum(payload, "reason", {"submission_attempt_limit", "policy_call_limit", "deadline"}, _EVENTS_FILE)
@@ -509,7 +604,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 )
             decision, resolved_action_id = _verify_decision_event(payload, manifest)
             decision_id = str(decision["decision_id"])
-            if input_schema == "sts2.player-environment/text-menu-snapshot-1":
+            if input_schema in _TEXT_SNAPSHOT_SCHEMAS:
                 if pending_text_input != decision_id or decision_id not in text_inputs:
                     raise AgentRunEvidenceError("text_decision_order", "text decision has no immediately preceding input", _EVENTS_FILE)
                 _verify_text_decision_binding(decision, resolved_action_id, text_inputs[decision_id])
@@ -569,39 +664,52 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             successors[decision_id] = successor
         elif kind == "text_menu_dispatch_attempt":
             decision_id = _verify_text_dispatch(payload, decisions, text_inputs, text_dispatches)
+            expected_native = native_submissions_used + (1 if payload["effect_domain"] == "native_input" else 0)
+            expected_menu = menu_navigations_used + (1 if payload["effect_domain"] == "text_menu" else 0)
+            if payload["native_submissions_used"] != expected_native or payload["menu_navigations_used"] != expected_menu:
+                raise AgentRunEvidenceError("text_dispatch_binding", "text dispatch counters differ from cumulative selected action domains", _EVENTS_FILE)
+            native_submissions_used = expected_native
+            menu_navigations_used = expected_menu
             text_dispatches[decision_id] = payload
         elif kind in {"menu_navigation", "text_native_delivery", "text_native_unknown", "text_menu_not_applied", "text_menu_result_rejected"}:
-            decision_id = _verify_text_outcome(kind, payload, manifest, environment, decisions, text_inputs, text_dispatches)
+            decision_id = _verify_text_outcome(kind, payload, manifest, environment, decisions, text_inputs, text_dispatches, input_schema)
             if decision_id in text_outcomes:
                 raise AgentRunEvidenceError("duplicate_text_result", "multiple text outcomes for one decision", _EVENTS_FILE)
             text_outcomes[decision_id] = kind
+            if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA and kind == "text_native_unknown":
+                v2_unknown_seen = True
         elif kind == "text_observed_successor":
-            decision_id = _verify_text_observed_successor(payload, environment, text_inputs, text_outcomes)
+            decision_id = _verify_text_observed_successor(payload, environment, text_inputs, text_outcomes, input_schema)
             if decision_id in text_successors:
                 raise AgentRunEvidenceError("duplicate_successor", "duplicate text successor", _EVENTS_FILE)
             text_successors.add(decision_id)
         elif kind == "handoff_to_human":
             _exact_keys(payload, {"reason"}, "handoff_to_human payload")
             _text(payload, "reason", _EVENTS_FILE)
+            autonomy_mode = False
         elif kind == "one_step_completed":
             if set(payload) not in (set(), {"autonomy_budget"}):
                 raise AgentRunEvidenceError("schema_keys", "one_step_completed payload has invalid fields", _EVENTS_FILE)
             if "autonomy_budget" in payload:
                 _verify_autonomy_budget(payload["autonomy_budget"])
+            autonomy_mode = False
         elif kind == "stopped":
             if set(payload) not in (set(), {"autonomy_budget", "controller"}):
                 raise AgentRunEvidenceError("schema_keys", "stopped payload has invalid fields", _EVENTS_FILE)
             if "autonomy_budget" in payload:
                 _verify_autonomy_budget(payload["autonomy_budget"])
                 _enum(payload, "controller", {"held", "released"}, _EVENTS_FILE)
+            autonomy_mode = False
         elif kind == "fail_closed":
             pending_text_input = None
             _exact_keys(payload, {"reason"}, "fail_closed payload")
             _text(payload, "reason", _EVENTS_FILE)
+            autonomy_mode = False
         elif kind == "runtime_tainted":
             _exact_keys(payload, {"reason", "retry"}, "runtime_tainted payload")
             _text(payload, "reason", _EVENTS_FILE)
             _literal(payload, "retry", False, _EVENTS_FILE)
+            autonomy_mode = False
         events.append(value)
     if pending_text_input is not None and manifest["status"] != "tainted":
         raise AgentRunEvidenceError("text_decision_order", "unmatched text input in finalized run", _EVENTS_FILE)
@@ -1315,16 +1423,24 @@ __all__ = [
 
 _TEXT_SNAPSHOT_SCHEMA = "sts2.player-environment/text-menu-snapshot-1"
 _TEXT_RESULT_SCHEMA = "sts2.player-environment/text-menu-action-result-1"
+_TEXT_V2_SNAPSHOT_SCHEMA = "sts2.player-environment/text-menu-snapshot-2"
+_TEXT_V2_RESULT_SCHEMA = "sts2.player-environment/text-menu-action-result-2"
+_TEXT_SNAPSHOT_SCHEMAS = {_TEXT_SNAPSHOT_SCHEMA, _TEXT_V2_SNAPSHOT_SCHEMA}
 _TEXT_TRANSPORT_ID = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 _TEXT_CONTENT_SCHEMA = re.compile(r"^sts2\.player-environment/surface/[a-z0-9_]+-1$")
 _TEXT_CURSORS = {"root", "information", "relic_inspect", "relic_tips", "card_tips", "power_tips", "intent_tips", "orb_tips", "topbar_tips"}
+_TEXT_V2_STAGED_CURSORS = {"card_targets", "card_confirmation"}
 _TEXT_NAVIGATION = {"open_information", "open_relic_inspect", "open_relic_tips", "open_card_tips", "open_power_tips", "open_intent_tips", "open_orb_tips", "open_topbar_tips", "back"}
+_TEXT_SELECTION = {"select_card", "select_target", "cancel_selection"}
+_TEXT_CARD_ROLES = {"card", "playable_card"}
+_TEXT_TARGET_ROLES = {"target", "enemy", "ally", "creature", "player", "companion"}
 
 
-def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, Any], label: str) -> None:
+def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, Any], label: str, input_schema: str | None) -> None:
     _exact_keys(value, {"protocol_version", "schema", "input_profile", "snapshot_id", "sequence", "observed_at", "status", "persistent", "interaction", "referents", "completeness", "session", "information_policy", "menu", "menu_actions"}, label)
-    _literal(value, "schema", _TEXT_SNAPSHOT_SCHEMA, _EVENTS_FILE)
-    _literal(value, "input_profile", "text-menu-v1", _EVENTS_FILE)
+    v2 = input_schema == _TEXT_V2_SNAPSHOT_SCHEMA
+    _literal(value, "schema", _TEXT_V2_SNAPSHOT_SCHEMA if v2 else _TEXT_SNAPSHOT_SCHEMA, _EVENTS_FILE)
+    _literal(value, "input_profile", "text-menu-v2" if v2 else "text-menu-v1", _EVENTS_FILE)
     if value["protocol_version"] != environment["connector_protocol_version"]:
         raise AgentRunEvidenceError("runtime_association", f"{label} protocol differs", _EVENTS_FILE)
     if not _TEXT_TRANSPORT_ID.fullmatch(_text(value, "snapshot_id", _EVENTS_FILE)):
@@ -1372,6 +1488,7 @@ def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, An
     if not isinstance(referents, list):
         raise AgentRunEvidenceError("snapshot_schema", f"{label} referents are invalid", _EVENTS_FILE)
     ids: set[str] = set()
+    public_referents: dict[str, Mapping[str, Any]] = {}
     for raw in referents:
         referent = _object(raw, f"{label} referent")
         required_referent = {"referent_id", "role", "kind", "state"}
@@ -1381,6 +1498,7 @@ def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, An
         if referent_id in ids:
             raise AgentRunEvidenceError("snapshot_schema", f"{label} duplicate referent", _EVENTS_FILE)
         ids.add(referent_id)
+        public_referents[referent_id] = referent
         _text(referent, "role", _EVENTS_FILE)
         _enum(referent, "kind", {"entity", "control"}, _EVENTS_FILE)
         _nullable_text(referent, "label", _EVENTS_FILE)
@@ -1411,10 +1529,19 @@ def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, An
         _text(policy, key, _EVENTS_FILE)
     _literal(policy, "includes_hidden_information", False, _EVENTS_FILE)
     menu = _object(value["menu"], f"{label} menu")
-    _exact_keys(menu, {"cursor", "revision", "native_snapshot_id"}, f"{label} menu")
-    _enum(menu, "cursor", _TEXT_CURSORS, _EVENTS_FILE)
+    _exact_keys(menu, {"cursor", "revision", "native_snapshot_id"} | ({"selection"} if v2 else set()), f"{label} menu")
+    _enum(menu, "cursor", _TEXT_CURSORS | (_TEXT_V2_STAGED_CURSORS if v2 else set()), _EVENTS_FILE)
     _nonnegative_int(menu, "revision", _EVENTS_FILE)
     _text(menu, "native_snapshot_id", _EVENTS_FILE)
+    selection: list[Mapping[str, Any]] = []
+    if v2:
+        selection = _verify_text_selection(menu["selection"], public_referents)
+        cursor = menu["cursor"]
+        if ((cursor not in _TEXT_V2_STAGED_CURSORS and selection)
+            or (cursor == "card_targets" and (len(selection) != 1 or selection[0]["role"] != "card"))
+            or (cursor == "card_confirmation" and (not selection or selection[0]["role"] != "card" or
+                len(selection) == 2 and selection[1]["role"] != "target"))):
+            raise AgentRunEvidenceError("snapshot_schema", f"{label} cursor and selection disagree", _EVENTS_FILE)
     catalog = _object(value["menu_actions"], f"{label} menu actions")
     _exact_keys(catalog, {"status", "materialized_count", "total_count", "ordering_semantics", "actions"}, f"{label} menu actions")
     _enum(catalog, "status", {"complete", "truncated", "unavailable"}, _EVENTS_FILE)
@@ -1426,9 +1553,12 @@ def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, An
         raise AgentRunEvidenceError("snapshot_schema", f"{label} menu actions are not an array", _EVENTS_FILE)
     action_ids: set[str] = set()
     nav_verbs: set[str] = set()
+    selection_edges: set[tuple[str, str | None]] = set()
+    selection_actions: list[Mapping[str, Any]] = []
+    native_actions: list[Mapping[str, Any]] = []
     for raw in actions:
         action = _object(raw, f"{label} menu action")
-        _verify_text_action(action, ids)
+        _verify_text_action(action, ids, v2=v2)
         action_id = action["action_id"]
         if action_id in action_ids:
             raise AgentRunEvidenceError("snapshot_schema", f"{label} duplicate action ID", _EVENTS_FILE)
@@ -1438,6 +1568,17 @@ def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, An
             if action["verb"] not in allowed or action["verb"] in nav_verbs:
                 raise AgentRunEvidenceError("snapshot_schema", f"{label} illegal or duplicate menu edge", _EVENTS_FILE)
             nav_verbs.add(action["verb"])
+        elif v2 and action["kind"] == "system_selection":
+            selection_actions.append(action)
+            edge = (action["verb"], action["subject_referent_id"])
+            if edge in selection_edges or not _text_selectable(public_referents, action["subject_referent_id"],
+                _TEXT_CARD_ROLES if action["verb"] == "select_card" else _TEXT_TARGET_ROLES) and action["verb"] != "cancel_selection":
+                raise AgentRunEvidenceError("snapshot_schema", f"{label} illegal or duplicate selection edge", _EVENTS_FILE)
+            selection_edges.add(edge)
+        elif v2:
+            native_actions.append(action)
+    if v2:
+        _verify_text_v2_menu(value, selection, selection_actions, native_actions)
     if catalog["materialized_count"] != len(actions) or catalog["materialized_count"] > catalog["total_count"]:
         raise AgentRunEvidenceError("snapshot_schema", f"{label} menu counts differ", _EVENTS_FILE)
     if catalog["status"] == "complete" and catalog["materialized_count"] != catalog["total_count"]:
@@ -1448,11 +1589,60 @@ def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, An
         raise AgentRunEvidenceError("snapshot_schema", f"{label} interactive menu state differs", _EVENTS_FILE)
 
 
-def _verify_text_action(value: Mapping[str, Any], referent_ids: set[str] | None) -> None:
+def _text_selectable(referents: Mapping[str, Mapping[str, Any]], referent_id: str | None, roles: set[str]) -> bool:
+    referent = referents.get(referent_id) if referent_id is not None else None
+    if referent is None:
+        return False
+    state = referent["state"]
+    return referent["kind"] == "entity" and referent["role"] in roles and state["visible"] is True and state.get("enabled") is not False
+
+
+def _verify_text_selection(value: object, referents: Mapping[str, Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    if not isinstance(value, list) or len(value) > 2:
+        raise AgentRunEvidenceError("snapshot_schema", "text menu selection is invalid", _EVENTS_FILE)
+    for raw in value:
+        selected = _object(raw, "text menu selection")
+        _exact_keys(selected, {"role", "referent_id"}, "text menu selection")
+        _enum(selected, "role", {"card", "target"}, _EVENTS_FILE)
+        referent_id = _text(selected, "referent_id", _EVENTS_FILE)
+        if not _text_selectable(referents, referent_id, _TEXT_CARD_ROLES if selected["role"] == "card" else _TEXT_TARGET_ROLES):
+            raise AgentRunEvidenceError("text_binding", "text menu selection is not a visible enabled public referent", _EVENTS_FILE)
+    return value
+
+
+def _verify_text_v2_menu(snapshot: Mapping[str, Any], selection: list[Mapping[str, Any]],
+                         system: list[Mapping[str, Any]], leaves: list[Mapping[str, Any]]) -> None:
+    menu = snapshot["menu"]
+    cursor = menu["cursor"]
+    interaction = snapshot["interaction"]
+    if (cursor in _TEXT_V2_STAGED_CURSORS or system) and (
+        interaction["kind"] != "combat_turn" or interaction["stage"] != "ready" or
+        interaction["content_schema"] != "sts2.player-environment/surface/combat_turn-1" or
+        interaction["content"]["surface"]["kind"] != "combat_turn"
+    ):
+        raise AgentRunEvidenceError("snapshot_schema", "v2 card staging requires a ready public combat page", _EVENTS_FILE)
+    allowed = ({"select_card"} if cursor == "root" else
+               {"select_target", "cancel_selection"} if cursor == "card_targets" else
+               {"cancel_selection"} if cursor == "card_confirmation" else set())
+    if any(action["verb"] not in allowed for action in system):
+        raise AgentRunEvidenceError("snapshot_schema", "v2 selection edge is invalid for menu cursor", _EVENTS_FILE)
+    if cursor == "card_targets" and (leaves or not any(action["verb"] == "select_target" for action in system)
+                                     or not any(action["verb"] == "cancel_selection" for action in system)):
+        raise AgentRunEvidenceError("snapshot_schema", "card target menu lacks valid target and cancel choices", _EVENTS_FILE)
+    if cursor == "card_confirmation":
+        expected_arguments = ([{"role": "target", "referent_id": selection[1]["referent_id"]}]
+                              if len(selection) == 2 else [])
+        if (len(leaves) != 1 or not any(action["verb"] == "cancel_selection" for action in system)
+            or leaves[0]["verb"] != "play" or leaves[0]["subject_referent_id"] != selection[0]["referent_id"]
+            or leaves[0]["arguments"] != expected_arguments):
+            raise AgentRunEvidenceError("text_binding", "card confirmation leaf differs from selected public card and target", _EVENTS_FILE)
+
+
+def _verify_text_action(value: Mapping[str, Any], referent_ids: set[str] | None, *, v2: bool = False) -> None:
     _exact_keys(value, {"action_id", "kind", "verb", "label", "subject_referent_id", "arguments", "effect_domain"}, "text menu action")
     if not _TEXT_TRANSPORT_ID.fullmatch(_text(value, "action_id", _EVENTS_FILE)):
         raise AgentRunEvidenceError("text_binding", "text action ID is not a transport identifier", _EVENTS_FILE)
-    _enum(value, "kind", {"system_navigation", "native_input"}, _EVENTS_FILE)
+    _enum(value, "kind", {"system_navigation", "native_input"} | ({"system_selection"} if v2 else set()), _EVENTS_FILE)
     _text(value, "verb", _EVENTS_FILE)
     _text(value, "label", _EVENTS_FILE)
     _enum(value, "effect_domain", {"text_menu", "native_input"}, _EVENTS_FILE)
@@ -1469,10 +1659,15 @@ def _verify_text_action(value: Mapping[str, Any], referent_ids: set[str] | None)
             _exact_keys(argument, {"role", "referent_id"}, "text action argument")
             _text(argument, "role", _EVENTS_FILE)
             _text(argument, "referent_id", _EVENTS_FILE)
-    if (value["kind"] == "system_navigation") != (value["effect_domain"] == "text_menu"):
+    if (value["kind"] != "native_input") != (value["effect_domain"] == "text_menu"):
         raise AgentRunEvidenceError("text_binding", "text action kind and effect differ", _EVENTS_FILE)
     if value["kind"] == "system_navigation" and (value["verb"] not in _TEXT_NAVIGATION or value["subject_referent_id"] is not None or value["arguments"]):
         raise AgentRunEvidenceError("text_binding", "system navigation has illegal operand or verb", _EVENTS_FILE)
+    if v2 and value["kind"] == "system_selection" and (value["verb"] not in _TEXT_SELECTION or value["arguments"]
+        or (value["subject_referent_id"] is None) != (value["verb"] == "cancel_selection")):
+        raise AgentRunEvidenceError("text_binding", "system selection has illegal operand or verb", _EVENTS_FILE)
+    if v2 and value["kind"] == "native_input" and value["verb"] in _TEXT_SELECTION:
+        raise AgentRunEvidenceError("text_binding", "menu selection verb cannot claim native delivery", _EVENTS_FILE)
 
 
 def _verify_text_decision_binding(decision: Mapping[str, Any], resolved: str | None, snapshot: Mapping[str, Any]) -> None:
@@ -1500,12 +1695,13 @@ def _verify_text_dispatch(payload: Mapping[str, Any], decisions: Mapping[str, Ma
     return decision_id
 
 
-def _verify_text_result(result: Mapping[str, Any], environment: Mapping[str, Any]) -> None:
+def _verify_text_result(result: Mapping[str, Any], environment: Mapping[str, Any], input_schema: str | None) -> None:
     _exact_keys(result, {"protocol_version", "schema", "input_profile", "request_id", "status", "effect_domain", "native_delivery", "action", "reason_code", "detail", "retry", "successor", "attribution"}, "text result")
     if result["protocol_version"] != environment["connector_protocol_version"]:
         raise AgentRunEvidenceError("runtime_association", "text result protocol differs", _EVENTS_FILE)
-    _literal(result, "schema", _TEXT_RESULT_SCHEMA, _EVENTS_FILE)
-    _literal(result, "input_profile", "text-menu-v1", _EVENTS_FILE)
+    v2 = input_schema == _TEXT_V2_SNAPSHOT_SCHEMA
+    _literal(result, "schema", _TEXT_V2_RESULT_SCHEMA if v2 else _TEXT_RESULT_SCHEMA, _EVENTS_FILE)
+    _literal(result, "input_profile", "text-menu-v2" if v2 else "text-menu-v1", _EVENTS_FILE)
     _text(result, "request_id", _EVENTS_FILE)
     _enum(result, "status", {"applied", "not_applied", "unknown"}, _EVENTS_FILE)
     if result["effect_domain"] is not None:
@@ -1513,12 +1709,12 @@ def _verify_text_result(result: Mapping[str, Any], environment: Mapping[str, Any
     if result["native_delivery"] is not None:
         _enum(result, "native_delivery", {"delivered", "not_delivered", "unknown"}, _EVENTS_FILE)
     if result["action"] is not None:
-        _verify_text_action(_object(result["action"], "text result action"), None)
+        _verify_text_action(_object(result["action"], "text result action"), None, v2=v2)
     for key in ("reason_code", "detail"):
         _nullable_text(result, key, _EVENTS_FILE)
     _enum(result, "retry", {"never", "reobserve"}, _EVENTS_FILE)
     if result["successor"] is not None:
-        _verify_text_snapshot(_object(result["successor"], "text result successor"), environment, "text result successor")
+        _verify_text_snapshot(_object(result["successor"], "text result successor"), environment, "text result successor", input_schema)
     if result["attribution"] is not None:
         attribution = _object(result["attribution"], "text result attribution")
         _exact_keys(attribution, {"runtime_instance_id", "client_session_id", "client_instance_id", "product_id", "product_name", "product_version", "controller_lease_id", "controller_generation"}, "text result attribution")
@@ -1529,7 +1725,7 @@ def _verify_text_result(result: Mapping[str, Any], environment: Mapping[str, Any
         _positive_int(attribution, "controller_generation", _EVENTS_FILE)
 
 
-def _verify_text_outcome(kind: str, payload: Mapping[str, Any], manifest: Mapping[str, Any], environment: Mapping[str, Any] | None, decisions: Mapping[str, Mapping[str, Any]], inputs: Mapping[str, Mapping[str, Any]], dispatches: Mapping[str, Mapping[str, Any]]) -> str:
+def _verify_text_outcome(kind: str, payload: Mapping[str, Any], manifest: Mapping[str, Any], environment: Mapping[str, Any] | None, decisions: Mapping[str, Mapping[str, Any]], inputs: Mapping[str, Mapping[str, Any]], dispatches: Mapping[str, Mapping[str, Any]], input_schema: str | None) -> str:
     expected_keys = {"decision_id", "action_id", "result"} if kind == "menu_navigation" else {"decision_id", "expected_request_id", "expected_action_id", "result"} if kind == "text_menu_result_rejected" else {"decision_id", "result"}
     _exact_keys(payload, expected_keys, f"{kind} payload")
     decision_id = _text(payload, "decision_id", _EVENTS_FILE)
@@ -1538,7 +1734,9 @@ def _verify_text_outcome(kind: str, payload: Mapping[str, Any], manifest: Mappin
     selected_id = decisions[decision_id]["resolved_action_id"]
     action = next(item for item in inputs[decision_id]["menu_actions"]["actions"] if item["action_id"] == selected_id)
     result = _object(payload["result"], "text result")
-    _verify_text_result(result, environment)
+    _verify_text_result(result, environment, input_schema)
+    if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA:
+        _verify_text_v2_result_status(result)
     expected_request = _request_id(str(manifest["run_id"]), decision_id)
     if kind == "text_menu_result_rejected":
         if payload["expected_request_id"] != expected_request or payload["expected_action_id"] != selected_id:
@@ -1561,6 +1759,8 @@ def _verify_text_outcome(kind: str, payload: Mapping[str, Any], manifest: Mappin
         if action["effect_domain"] != "text_menu" or result["status"] != "applied" or result["native_delivery"] is not None or result["retry"] != "never" or result["successor"] is None:
             raise AgentRunEvidenceError("text_result_binding", "navigation falsely claims native delivery or lacks successor", _EVENTS_FILE)
         _verify_text_successor_progress(inputs[decision_id], result["successor"], navigation=True)
+        if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA:
+            _verify_text_v2_menu_successor(inputs[decision_id], action, result["successor"])
     elif kind == "text_native_delivery":
         if action["effect_domain"] != "native_input" or result["status"] != "applied" or result["native_delivery"] != "delivered" or result["retry"] != "never":
             raise AgentRunEvidenceError("text_result_binding", "native delivery is invalid", _EVENTS_FILE)
@@ -1580,13 +1780,72 @@ def _verify_text_successor_progress(previous: Mapping[str, Any], next_snapshot: 
         raise AgentRunEvidenceError("successor_association", "system navigation did not advance menu cursor", _EVENTS_FILE)
 
 
-def _verify_text_observed_successor(payload: Mapping[str, Any], environment: Mapping[str, Any] | None, inputs: Mapping[str, Mapping[str, Any]], outcomes: Mapping[str, str]) -> str:
+def _verify_text_v2_result_status(result: Mapping[str, Any]) -> None:
+    action = result["action"]
+    status = result["status"]
+    effect = result["effect_domain"]
+    delivery = result["native_delivery"]
+    successor = result["successor"]
+    if status == "applied":
+        valid = (action is not None and effect == action["effect_domain"] and result["retry"] == "never"
+                 and delivery == (None if effect == "text_menu" else "delivered")
+                 and (effect != "text_menu" or successor is not None))
+    elif status == "unknown":
+        valid = (action is not None and action["kind"] == "native_input" and effect == "native_input"
+                 and delivery == "unknown" and result["retry"] == "never" and successor is None)
+    else:
+        valid = (delivery not in {"delivered", "unknown"} and
+                 (effect != "text_menu" or delivery is None) and
+                 (action is not None or effect is None) and
+                 (action is None or effect == action["effect_domain"]) and
+                 (successor is None or result["retry"] == "reobserve"))
+    if not valid:
+        raise AgentRunEvidenceError("text_result_binding", "v2 result contradicts action delivery semantics", _EVENTS_FILE)
+
+
+def _verify_text_v2_menu_successor(previous: Mapping[str, Any], action: Mapping[str, Any], next_snapshot: Mapping[str, Any]) -> None:
+    current = previous["menu"]
+    target = next_snapshot["menu"]
+    if (target["native_snapshot_id"] != current["native_snapshot_id"] or
+        target["revision"] <= current["revision"]):
+        raise AgentRunEvidenceError("successor_association", "v2 system menu successor changed native state or failed to advance", _EVENTS_FILE)
+    cursor = current["cursor"]
+    next_cursor = target["cursor"]
+    selection = current["selection"]
+    next_selection = target["selection"]
+    verb = action["verb"]
+    subject = action["subject_referent_id"]
+    if action["kind"] == "system_selection":
+        if verb == "select_card":
+            valid = (cursor == "root" and next_cursor in {"card_targets", "card_confirmation"} and
+                     next_selection == [{"role": "card", "referent_id": subject}])
+        elif verb == "select_target":
+            valid = (cursor == "card_targets" and next_cursor == "card_confirmation" and
+                     next_selection == [*selection, {"role": "target", "referent_id": subject}])
+        else:
+            valid = next_cursor == "root" and next_selection == []
+    elif verb == "back":
+        if cursor == "card_confirmation":
+            valid = (next_cursor == "card_targets" and next_selection == selection[:1]) if len(selection) == 2 else (next_cursor == "root" and next_selection == [])
+        elif cursor == "card_targets":
+            valid = next_cursor == "root" and next_selection == []
+        else:
+            valid = next_cursor == ("root" if cursor == "information" else "information") and next_selection == []
+    elif verb == "open_information":
+        valid = cursor == "root" and next_cursor == "information" and next_selection == []
+    else:
+        valid = cursor == "information" and next_cursor == verb.removeprefix("open_") and next_selection == []
+    if not valid:
+        raise AgentRunEvidenceError("successor_association", "v2 system menu successor contradicts selected action", _EVENTS_FILE)
+
+
+def _verify_text_observed_successor(payload: Mapping[str, Any], environment: Mapping[str, Any] | None, inputs: Mapping[str, Mapping[str, Any]], outcomes: Mapping[str, str], input_schema: str | None) -> str:
     _exact_keys(payload, {"decision_id", "successor"}, "text observed successor")
     decision_id = _text(payload, "decision_id", _EVENTS_FILE)
     if environment is None or outcomes.get(decision_id) != "text_native_delivery":
         raise AgentRunEvidenceError("successor_association", "observed text successor lacks native delivery", _EVENTS_FILE)
     successor = _object(payload["successor"], "observed text successor")
-    _verify_text_snapshot(successor, environment, "observed text successor")
+    _verify_text_snapshot(successor, environment, "observed text successor", input_schema)
     _verify_text_successor_progress(inputs[decision_id], successor, navigation=False)
     return decision_id
 
