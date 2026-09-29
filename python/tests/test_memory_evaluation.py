@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import sys
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -13,6 +15,7 @@ import torch
 from test_memory_sequence_bridge import observed
 from tokenizers import Tokenizer
 
+from spireagent import research_cli
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json
 from spireagent.storage.local import LocalBlobStore
@@ -96,6 +99,30 @@ def prepared(tmp_path: Path, monkeypatch, *, reset_each_step: bool = False,
     result = execute_memory_run(store, reporter, run.artifact_id, PRODUCER)
     model_id = store.get_manifest(result.result_id).parent("model")
     return store, model_id, train_source, dev_source, views, config, run
+
+
+def test_evaluate_memory_cli_selects_exported_cpu_threads(tmp_path, monkeypatch, capsys):
+    store, model_id, _, dev, _, config, _ = prepared(tmp_path, monkeypatch)
+    assert config.cpu_threads == 2
+    monkeypatch.setattr(research_cli, "open_store", lambda _path: store)
+    monkeypatch.setattr(research_cli, "source_identity", lambda _path: PRODUCER)
+    seen = []
+
+    def fake_evaluate(_store, _model, _source, _producer, **_options):
+        seen.append(torch.get_num_threads())
+        return SimpleNamespace(artifact_id="a" * 64,
+                               parent=lambda _role: "b" * 64)
+
+    monkeypatch.setattr("stpd.workers.memory_evaluation.evaluate_memory", fake_evaluate)
+    monkeypatch.setattr(sys, "argv", ["research_cli", "--store", str(tmp_path),
+                                      "evaluate-memory", "--model", model_id,
+                                      "--source", dev.artifact_id,
+                                      "--operation", "c" * 32,
+                                      "--semantic-overlap", "false"])
+    torch.set_num_threads(1)
+    assert research_cli.main() == 0
+    assert seen == [config.cpu_threads]
+    assert '"evaluation_id"' in capsys.readouterr().out
 
 
 def test_dev_report_uses_separate_source_and_preserves_frozen_weights(tmp_path, monkeypatch):
