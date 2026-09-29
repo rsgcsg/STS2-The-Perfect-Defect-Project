@@ -64,6 +64,12 @@ def test_m2_registration_requires_own_install_context_and_preserves_token_roster
     assert manifest["adapter"]["protocol"] == PROTOCOL
     assert models.registry()["policies"][-2] == old
     assert service.register(model_id) == result
+    monkeypatch.setattr(models, "_runtime_package", lambda _identity: {"version": "synthetic"})
+    monkeypatch.setattr(models, "_public_manifest_contract", lambda *_: None)
+    readiness = models.readiness(result["selection_id"])
+    assert readiness["status"] == "ready_to_load"
+    assert readiness["checks"]["policy_identity"] == {"status": "pass"}
+    assert models._run_profile(result["selection_id"], "extended") is True
 
 
 def test_m2_context_missing_blocks_before_roster_write(tmp_path: Path, monkeypatch) -> None:
