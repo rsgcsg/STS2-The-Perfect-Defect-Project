@@ -272,7 +272,8 @@ def _install_runtime(
     archive: Path | None,
 ) -> dict[str, Any]:
     expected = digest(pin.get("release_asset_sha256"), "local_model.runtime_archive")
-    if pin.get("package") != RUNTIME_PACKAGE or not shutil.which("npm"):
+    npm = shutil.which("npm")
+    if pin.get("package") != RUNTIME_PACKAGE or npm is None:
         raise BoundaryError("local_model", "pinned_runtime_or_npm_missing")
     # Never replace the package beneath a runtime, including a previous workbench's process.
     with socket.socket() as probe:
@@ -345,9 +346,11 @@ def _install_runtime(
                 "NPM_CONFIG_CACHE": str(directory / "npm-cache"),
             }
         )
+        npm_args = [str(npm), "install", "--ignore-scripts", "--omit=dev",
+                    "--no-audit", "--no-fund"]
         with (stage / "install.log").open("wb") as log:
             result = subprocess.run(
-                ["npm", "install", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund"],
+                npm_args,
                 cwd=stage,
                 env=environment,
                 stdin=subprocess.DEVNULL,

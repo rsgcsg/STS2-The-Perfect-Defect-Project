@@ -24,6 +24,18 @@ uv run --locked --extra cloud python tools/install_developer_kit.py initialize -
 source, verifies lock/combination/manifest, stages the published native bytes and
 publishes the directory. Dependencies initialize **after** placement so virtualenv
 paths remain stable. Neither step changes the game, profile, queues or cloud.
+A kit may additionally contain an independently approved `text-runtime/profile.json`
+and `text-runtime/runtime.tgz`. Its inventory and external ZIP SHA256 bind both;
+the packager verifies the archive through the ordinary bundled Runtime installer in
+a disposable directory. `prepare` stages these bytes in the release source's
+ignored `.local/` area. For such a kit, `initialize` creates a local no-login
+project profile if absent, using the config path's directory for state, then
+installs the text Runtime in its separate `models/text-menu-v1` slot through the
+selected release's CLI. It does not register a model, load weights or start a
+Runtime. A kit without these files provides no text Runtime preparation; its
+original initialization behavior remains. If initialization fails after profile
+creation, retain and inspect that profile and retry only after checking the
+reported failure and stopped Workbench state.
 A prepared directory is never overwritten; `status --directory ...` rechecks its
 original archive, source, tool and staged bytes. Failed temporary preparation is
 removed; initialization can be retried in the same directory while its Workbench

@@ -22,6 +22,13 @@ from typing import Any, NoReturn
 from sts2_platform_evidence.collection_tool import CollectionTool
 
 from spireagent.json_boundary import BoundaryError, decode_json, digest
+from spireagent.workbench.kit_runtime import (
+    TEXT_ARCHIVE_DESTINATION,
+    TEXT_RUNTIME_ARCHIVE,
+    TEXT_RUNTIME_DESTINATION,
+    TEXT_RUNTIME_PROFILE,
+    text_runtime_pin,
+)
 
 REPOSITORY = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git"
 LIMIT = 256 * 1024 * 1024
@@ -49,6 +56,26 @@ def reject(code: str) -> NoReturn:
 
 def sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def text_runtime_files(manifest: dict[str, Any], files: dict[str, bytes]) -> bool:
+    identity = manifest.get("text_runtime")
+    if identity is None:
+        if TEXT_RUNTIME_PROFILE in files or TEXT_RUNTIME_ARCHIVE in files:
+            reject("text_runtime_inventory_incomplete")
+        return False
+    if (not isinstance(identity, dict)
+            or set(identity) != {"profile_sha256", "archive_sha256"}
+            or TEXT_RUNTIME_PROFILE not in files
+            or TEXT_RUNTIME_ARCHIVE not in files):
+        reject("text_runtime_inventory_incomplete")
+    for field, name in (("profile_sha256", TEXT_RUNTIME_PROFILE),
+                        ("archive_sha256", TEXT_RUNTIME_ARCHIVE)):
+        digest(identity[field], "kit_install.text_runtime_identity")
+        if identity[field] != sha(files[name]):
+            reject("text_runtime_inventory_mismatch")
+    text_runtime_pin(files[TEXT_RUNTIME_PROFILE], files[TEXT_RUNTIME_ARCHIVE])
+    return True
 
 
 def verified_archive(archive: Path, expected: str) -> tuple[dict[str, Any], dict[str, bytes]]:
@@ -102,6 +129,7 @@ def verified_archive(archive: Path, expected: str) -> tuple[dict[str, Any], dict
             reject("composition_identity_mismatch")
     if not set(STAGING).issubset(files):
         reject("native_installation_files_missing")
+    text_runtime_files(manifest, files)
     return manifest, files
 
 
@@ -109,15 +137,16 @@ def run(command: list[str], cwd: Path, *, environment: dict[str, str] | None = N
     executable = shutil.which(command[0])
     if executable is None:
         reject("required_program_missing_" + command[0])
+    if command[0] == "uv":
+        # A release checkout must use its own project and interpreter. Keep ordinary
+        # network/certificate settings, but remove inherited import and uv targets.
+        environment = dict(os.environ if environment is None else environment)
+        for name in (
+            "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT",
+            "UV_WORKING_DIR", "UV_PROJECT", "UV_PYTHON", "UV_CONFIG_FILE", "UV_ENV_FILE",
+        ):
+            environment.pop(name, None)
     args = [str(executable), *command[1:]]
-    if os.name == "nt" and Path(str(executable)).suffix.lower() in {".cmd", ".bat"}:
-        args = [
-            os.environ.get("COMSPEC", "cmd.exe"),
-            "/d",
-            "/s",
-            "/c",
-            subprocess.list2cmdline(args),
-        ]
     result = subprocess.run(
         args, cwd=cwd, env=environment, capture_output=True, text=True, timeout=900
     )
@@ -163,6 +192,16 @@ def prepare(archive: Path, expected: str, releases: Path) -> dict[str, Any]:
             destination = source / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(files[name])
+        if text_runtime_files(manifest, files):
+            for name, relative in ((TEXT_RUNTIME_PROFILE, TEXT_RUNTIME_DESTINATION),
+                                   (TEXT_RUNTIME_ARCHIVE, TEXT_ARCHIVE_DESTINATION)):
+                destination = source / relative
+                if any(p.is_symlink() for p in destination.parents):
+                    reject("text_runtime_staging_path_unsafe")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if destination.exists() or destination.is_symlink():
+                    reject("text_runtime_staging_exists")
+                destination.write_bytes(files[name])
         if run(["git", "status", "--porcelain"], source).strip():
             reject("staging_changed_tracked_source")
         # Rename before uv: virtualenv interpreter paths must use the permanent location.
@@ -188,6 +227,13 @@ def status(directory: Path) -> dict[str, Any]:
     for name, relative in STAGING.items():
         if sha((source / relative).read_bytes()) != manifest["files"][name]:
             reject("staged_native_changed")
+    if text_runtime_files(manifest, files):
+        for name, relative in ((TEXT_RUNTIME_PROFILE, TEXT_RUNTIME_DESTINATION),
+                               (TEXT_RUNTIME_ARCHIVE, TEXT_ARCHIVE_DESTINATION)):
+            staged = source / relative
+            if (any(p.is_symlink() for p in (staged, *staged.parents))
+                    or sha(staged.read_bytes()) != manifest["files"][name]):
+                reject("staged_text_runtime_changed")
     CollectionTool(directory / "kit/collection-tool", manifest["collection_tool_release_id"])
     return {
         "status": "prepared",
@@ -198,6 +244,8 @@ def status(directory: Path) -> dict[str, Any]:
         "installed": "not_checked",
         "loaded": "not_checked",
         "next": "initialize; then follow the native owner deploy/cold-load steps",
+        "text_runtime": ("bundled_installation_not_checked" if "text_runtime" in manifest
+                         else "not_bundled"),
     }
 
 
@@ -276,24 +324,46 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
 
     if not config_path.is_absolute() or config_path.is_symlink():
         reject("absolute_private_profile_path_required")
-    config = (
-        ProjectConfig.load(config_path, require_current_combination=False)
-        if config_path.exists()
-        else None
-    )
-    # Reuse the running Workbench's OS lock, not a second process tracker.
-    with (
-        instance_lock(directory / "initialize.lock"),
-        instance_lock(config.state_dir / "instance.lock") if config else nullcontext(),
-    ):
-        status(directory)
+    with instance_lock(directory / "initialize.lock"):
+        prepared = status(directory)
         source = directory / "source"
-        run(["npm", "ci"], source)
-        # Workbench's transport SDKs are a separate locked consumer environment.
-        # Root native dependencies alone cannot satisfy its doctor/start checks.
-        run(["npm", "ci", "--prefix", "python"], source)
-        run(["uv", "sync", "--project", "python", "--locked", "--extra", "cloud"], source)
-        result = status(directory)
+        if (prepared.get("text_runtime") == "bundled_installation_not_checked"
+                and not config_path.exists()):
+            # New members do not yet have a selection or even a project profile.
+            # Let the selected release own the profile and its default private state.
+            report = json.loads(run([
+                "uv", "run", "--project", "python", "--locked", "--extra", "cloud",
+                "python", "-m", "spireagent.workbench", "project", "setup",
+                "--skip-install", "--config", str(config_path),
+                "--state-dir", str(config_path.parent),
+            ], source))
+            if report.get("status") != "configured":
+                reject("project_profile_setup_failed")
+        config = (
+            ProjectConfig.load(config_path, require_current_combination=False)
+            if config_path.exists() else None
+        )
+        # Reuse the running Workbench's OS lock, not a second process tracker.
+        with instance_lock(config.state_dir / "instance.lock") if config else nullcontext():
+            status(directory)
+            run(["npm", "ci"], source)
+            # Workbench's transport SDKs are a separate locked consumer environment.
+            run(["npm", "ci", "--prefix", "python"], source)
+            run(["uv", "sync", "--project", "python", "--locked", "--extra", "cloud"], source)
+            result = status(directory)
+        if result.get("text_runtime") == "bundled_installation_not_checked":
+            # The selected CLI takes this same lock and checks Runtime liveness.
+            report = json.loads(run([
+                "uv", "run", "--project", "python", "--locked", "--extra", "cloud",
+                "python", "-m", "spireagent.workbench", "project", "model",
+                "--config", str(config_path), "--action", "install-runtime",
+                "--runtime-profile", "text-menu-v1", "--runtime-archive",
+                str(source / TEXT_ARCHIVE_DESTINATION),
+            ], source))
+            if report.get("status") != "runtime_installed":
+                reject("text_runtime_install_failed")
+            result = status(directory)
+            result["text_runtime"] = "installed_verified_by_runtime_owner"
         result["environment"] = "initialized"
         return result
 
