@@ -96,6 +96,8 @@ def main() -> int:
         "prepare-workbench-memory", help="prepare a caller-admitted train-only Human M2 run")
     prepare_memory.add_argument("--source", required=True)
     prepare_memory.add_argument("--operation", required=True)
+    from spireagent.workbench.memory_recipe import MEMORY_RECIPES
+    prepare_memory.add_argument("--recipe", choices=sorted(MEMORY_RECIPES), required=True)
     memory_export = commands.add_parser(
         "export-memory", help="export an exact completed train-only M2 run")
     memory_export.add_argument("--run", required=True)
@@ -295,7 +297,7 @@ def main() -> int:
             operation_id = digest(args.operation, "memory_run.operation", length=32)
             try:
                 run_id, input_id = prepare_workbench_memory(
-                    store, source_id, runtime, operation_id)
+                    store, source_id, runtime, operation_id, args.recipe)
             except BoundaryError as error:
                 print(json_bytes({"error_code": error.code}).decode())
                 return 2

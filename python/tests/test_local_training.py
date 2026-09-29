@@ -42,6 +42,7 @@ from spireagent.workbench.local_training import (
     OPERATION_FILE,
     LocalTrainingService,
 )
+from spireagent.workbench.memory_recipe import RESET_K1_RECIPE
 
 
 def _ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, runs: int = 3,
@@ -284,13 +285,32 @@ def test_claimed_human_m2_train_only_subprocess(tmp_path: Path, monkeypatch) -> 
     assert (store.get_manifest(second["run_id"]).parameters.value()["operation_id"]
             == second["operation_id"])
 
+    reset_started = service.start(
+        dataset_id, recipe=RESET_K1_RECIPE,
+        after_completed_operation_id=second["operation_id"],
+    )["operation"]
+    assert reset_started["recipe"] == RESET_K1_RECIPE
+    assert reset_started["result_type"] == "train_only"
+    reset = _settle(service)
+    assert reset["status"] == "completed", reset
+    assert reset["recipe"] == RESET_K1_RECIPE
+    assert reset["run_id"] != second["run_id"]
+    assert reset["model_id"] != second["model_id"]
+    assert reset["result_id"] != second["result_id"]
+    assert reset["input_id"] == second["input_id"]
+    assert reset["previous_completed"]["result_id"] == second["result_id"]
+    assert reset["previous_completed"]["model_id"] == second["model_id"]
+    persistent_config = store.get_manifest(second["run_id"]).parameters.value()["config"]
+    reset_config = store.get_manifest(reset["run_id"]).parameters.value()["config"]
+    assert reset_config == {**persistent_config, "reset_each_step": True}
+
     # A later default experiment stays available with an explicit predecessor.
     def parked(held, _path, _identity, _owner, _store):
         held.__exit__(None, None, None)
 
     monkeypatch.setattr(service, "_run", parked)
     default = service.start(dataset_id,
-                            after_completed_operation_id=second["operation_id"])["operation"]
+                            after_completed_operation_id=reset["operation_id"])["operation"]
     assert default["schema"] == "stpd/local-training-operation-v2"
     assert default["recipe"] == "stage1a.dsimple.s.v1"
     assert default["result_type"] == "evaluated"
@@ -741,7 +761,7 @@ def test_http_readonly_status_and_exact_browser_write(tmp_path: Path) -> None:
         app.close()
 
 
-@pytest.mark.parametrize("recipe", [DEFAULT_RECIPE, MEMORY_RECIPE])
+@pytest.mark.parametrize("recipe", [DEFAULT_RECIPE, MEMORY_RECIPE, RESET_K1_RECIPE])
 def test_http_explicit_new_recipe_accepts_bounded_body_and_rejects_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recipe: str,
 ) -> None:
