@@ -376,11 +376,12 @@ def project_memory_episodes(
         ) for item in view.inputs
     }
     for diagnostic in diagnostics:
-        item = event_mapping.get(diagnostic.first_event_id)
-        if item is not None:
-            event_mapping[item.event_id] = MemoryEventMapping(
-                item.source_id, item.stream_id, item.event_id, item.source_sequence,
-                "excluded", None, None, diagnostic.reason, item.reset_reason,
+        mapped_event = event_mapping.get(diagnostic.first_event_id)
+        if mapped_event is not None:
+            event_mapping[mapped_event.event_id] = MemoryEventMapping(
+                mapped_event.source_id, mapped_event.stream_id, mapped_event.event_id,
+                mapped_event.source_sequence, "excluded", None, None, diagnostic.reason,
+                mapped_event.reset_reason,
             )
     for segment in segments:
         first = segment[0]

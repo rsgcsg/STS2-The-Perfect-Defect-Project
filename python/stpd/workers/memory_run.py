@@ -34,6 +34,8 @@ if TYPE_CHECKING:
         MemoryEpisodeProjectionConfig,
         MemoryEventMapping,
     )
+    from stpd.fullrun.observed_input_sequence import ObservedInputView
+    from stpd.models.dsimple_memory import ExperimentalDSimpleM2
 
 INPUT_SCHEMA = "stpd/experimental-m2-training-input-v1"
 INPUT_SCHEMA_V2 = "stpd/experimental-m2-training-input-v2"
@@ -113,6 +115,7 @@ def prepare_memory_run(
     if len(raw) > MAX_INPUT_BYTES:
         raise BoundaryError("memory_run", "input_size_limit")
     mapping_raw = None
+    mapping_parameters: dict[str, object] = {}
     if source_mapping is not None:
         from stpd.fullrun.memory_sequence_bridge import MemoryEpisodeProjectionConfig
 
@@ -123,6 +126,13 @@ def prepare_memory_run(
                                  source_mapping)
         if len(mapping_raw) > MAX_SOURCE_MAP_BYTES:
             raise BoundaryError("memory_run", "source_map_size_limit")
+        mapping_parameters = {
+            "source_map_schema": SOURCE_MAP_SCHEMA,
+            "source_event_count": len(source_mapping),
+            "projection_config": asdict(projection_config),
+        }
+    elif projection_config is not None:
+        raise BoundaryError("memory_run", "projection_config_without_source_map")
     episode_payload = store.put_payload("episodes", io.BytesIO(raw),
                                         "application/vnd.stpd.tensor-tree")
     tokenizer_payload = store.put_payload("tokenizer", io.BytesIO(tokenizer_bytes))
@@ -132,8 +142,6 @@ def prepare_memory_run(
         mapping_payload = store.put_payload("source_map", io.BytesIO(mapping_raw),
                                             "application/json")
         schema = INPUT_SCHEMA_V2
-    elif projection_config is not None:
-        raise BoundaryError("memory_run", "projection_config_without_source_map")
     payloads = (episode_payload, tokenizer_payload) + (
         (mapping_payload,) if mapping_payload is not None else ()
     )
@@ -143,10 +151,7 @@ def prepare_memory_run(
         FrozenObject.of({"schema": schema, "input_digest": engine.input_digest,
                          "tokenizer_sha256": source.tokenizer_sha256,
                          "episode_count": config.episode_count,
-                         **({"source_map_schema": SOURCE_MAP_SCHEMA,
-                             "source_event_count": len(source_mapping),
-                             "projection_config": asdict(projection_config)}
-                            if mapping_payload is not None else {}),
+                         **mapping_parameters,
                          "qualification": "engineering_only"}),
     )
     store.publish(training_input)
@@ -232,7 +237,7 @@ def _source_map_bytes(mapping: tuple[MemoryEventMapping, ...]) -> bytes:
 
 def _validate_source_mapping(source_id: str, episodes: tuple[MemorySequenceEpisode, ...],
                              mapping: tuple[MemoryEventMapping, ...], *,
-                             view: object | None = None) -> None:
+                             view: ObservedInputView | None = None) -> None:
     from stpd.fullrun.memory_sequence_bridge import MemoryEventMapping
 
     if not isinstance(mapping, tuple) or not mapping or any(
@@ -287,7 +292,7 @@ def _validate_source_mapping(source_id: str, episodes: tuple[MemorySequenceEpiso
             raise BoundaryError("memory_run", "source_map_observed_event_coverage_mismatch")
 
 
-def _projection_model(config: MemoryConfig) -> object:
+def _projection_model(config: MemoryConfig) -> ExperimentalDSimpleM2:
     import torch
 
     from stpd.models.dsimple_memory import ExperimentalDSimpleM2
@@ -402,7 +407,7 @@ def _load_run(store: ArtifactStore, run_id: str, runtime: Producer,
 
 def _verify_observed_projection(source_id: str, tokenizer_bytes: bytes,
                                 config: MemoryConfig, saved: MemoryTrainingInput,
-                                mapping: tuple[MemoryEventMapping, ...], view: object,
+                                mapping: tuple[MemoryEventMapping, ...], view: ObservedInputView,
                                 projection_config: MemoryEpisodeProjectionConfig) -> None:
     """Rebuild typed bridge output so v2 mappings cannot be decorative metadata."""
     from tokenizers import Tokenizer

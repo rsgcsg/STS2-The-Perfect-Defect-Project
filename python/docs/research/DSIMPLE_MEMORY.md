@@ -248,7 +248,7 @@ separate `run-memory` command remains the execution entry.
 Observed-source preparation writes a v2 `training_input` with the same source
 parent and the existing episodes and tokenizer payloads, plus a source-event map
 and the versioned projection choice for per-episode settling allowance.
-The map accounts for every verified source event, its stream/sequence/reset
+The map accounts for every verified observed-input event, its stream/sequence/reset
 reason, and its disposition as a model step, a verified settling skip, or an
 explicit exclusion. Run loading re-verifies the source,
 reprojects it with the persisted tokenizer/configuration, and checks the map and
@@ -275,3 +275,5 @@ the immutable run configuration, and the CLI derives producer identity from
 the executing clean checkout. A repeated completed request verifies the
 existing result and does not optimize again. These commands are synthetic
 engineering infrastructure, not a real-data training or live policy entry.
+
+The v2 map covers the verified observed-input view, not one row for every raw archive event. Raw decision, dispatch, outcome and successor records retain their original archive identities and source-event references; the map does not promote them into additional model observations.
