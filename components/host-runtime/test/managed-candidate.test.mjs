@@ -106,7 +106,7 @@ test("managed candidate selects Windows as separate provenance without changing 
     "0d8c916365f0a64a0ed5cfc706186811e33708c841fef82e1f73c6a33dcfcc4d"
   );
   assert.equal(manifest.exact_game.platform, "darwin");
-  assert.equal(manifest.expected_build.artifact_mvid, "4a9b280b-685d-4ff4-a4eb-396d18276548");
+  assert.equal(manifest.expected_build.artifact_mvid, "61b5b737-724e-4887-a0a4-6664a3c9daea");
 });
 
 test("managed setup converts drive-qualified Windows paths for Git Bash", () => {
