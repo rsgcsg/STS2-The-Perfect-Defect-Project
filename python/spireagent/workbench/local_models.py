@@ -287,6 +287,10 @@ class LocalModelService:
         self.config, self.hub = config, hub
         self.root = ROOT
         self.directory = config.state_dir / "models"
+        # The checkout supplies executable code and the shipped catalog. This
+        # application-owned directory survives a change of checkout.
+        self.private_root = self.directory
+        self._private_ids: set[str] = set()
         self.lock = threading.RLock()
         self.control_send_lock = threading.Lock()
         self.intent_generation = 0
@@ -319,6 +323,8 @@ class LocalModelService:
                 self.state.update(status="recovery_required", error_code="session_record_invalid")
 
     def registry(self) -> dict[str, Any]:
+        if self.private_root.is_symlink():
+            raise BoundaryError("local_model", "private_model_state_unsafe")
         value = _object_file(self.root / "configs/developer/local-policies-v1.json")
         object_fields(value, {"schema", "runtime_package", "policies"}, "local_model.registry")
         if value["schema"] != "stpd/local-policy-registry-v1" or not isinstance(
@@ -328,8 +334,9 @@ class LocalModelService:
         # Operator-created local registrations complement the shipped catalog.
         # They can select only reviewed adapters, never a command or downloaded code.
         # A text profile refers to a separate operator-pinned local Runtime bundle.
-        local_path = self.root / ".local/token-policies-v1.json"
-        if local_path.exists():
+        shipped = value["policies"]
+        local_path = self.private_root / "token-policies-v1.json"
+        if local_path.exists() or local_path.is_symlink():
             local = _object_file(local_path)
             object_fields(local, {"schema", "policies"}, "local_model.local_registry")
             if (local["schema"] != "stpd/local-token-policies-v1"
@@ -341,9 +348,10 @@ class LocalModelService:
                                and entry.get("runtime_profile") != "text-menu-m2-v1")
                            for entry in local["policies"])):
                 raise BoundaryError("local_model", "invalid_local_token_registry")
-            value["policies"] = [*value["policies"], *local["policies"]]
+            value["policies"] = [*shipped, *local["policies"]]
         seen = set()
-        for entry in value["policies"]:
+        private_ids: set[str] = set()
+        for index, entry in enumerate(value["policies"]):
             if not isinstance(entry, dict):
                 raise BoundaryError("local_model", "invalid_policy_entry")
             profile = entry.get("runtime_profile")
@@ -365,9 +373,28 @@ class LocalModelService:
             if entry["id"] in seen:
                 raise BoundaryError("local_model", "duplicate_policy_selection")
             seen.add(entry["id"])
-            _inside(self.root, entry["manifest"])
-            _inside(self.root, entry["config"])
+            owner = self.root if index < len(shipped) else self.private_root
+            _inside(owner, entry["manifest"])
+            _inside(owner, entry["config"])
+            if index >= len(shipped):
+                private_ids.add(entry["id"])
+        self._private_ids = private_ids
         return value
+
+    def entry_root(self, entry: dict[str, Any]) -> Path:
+        return self.private_root if entry["id"] in self._private_ids else self.root
+
+    def entry_path(self, entry: dict[str, Any], key: str) -> Path:
+        return _inside(self.entry_root(entry), entry[key])
+
+    def adapter_arguments(self, entry: dict[str, Any]) -> list[str]:
+        if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter"}:
+            return ["-m", "stpd.policy.token_port" if entry["adapter"] == "token-v1"
+                    else "stpd.policy.memory_port", "--config",
+                    str(self.entry_path(entry, "config")), "--manifest",
+                    str(self.entry_path(entry, "manifest")), "--binding-root",
+                    str(self.entry_root(entry))]
+        return cast(list[str], policy_support(entry["adapter"]).arguments(entry))
 
     def selection(self, identity: str) -> dict[str, Any]:
         for entry in self.registry()["policies"]:
@@ -379,7 +406,7 @@ class LocalModelService:
         """Resolve operator-owned pins; a downloaded model cannot select executable code."""
         entry = self.selection(identity) if identity is not None else None
         if entry is not None and entry.get("runtime_profile") in TEXT_PROFILES:
-            manifest = _object_file(_inside(self.root, entry["manifest"]))
+            manifest = _object_file(self.entry_path(entry, "manifest"))
             representation = manifest.get("representation")
             if not isinstance(representation, dict) or representation.get("input_schema") != (
                 "sts2.player-environment/text-menu-snapshot-1"
@@ -397,14 +424,24 @@ class LocalModelService:
         if profile_id not in TEXT_PROFILES:
             raise BoundaryError("local_model", "unsupported_runtime_profile")
         _, profile_path, schema, slot = TEXT_PROFILES[profile_id]
-        profile = _object_file(_inside(self.root, profile_path))
-        object_fields(profile, {"schema", "runtime_package"}, "local_model.runtime_profile")
+        profile_name = Path(profile_path).name
+        profile_file = self.private_root / profile_name
+        if self.private_root.is_symlink() or profile_file.is_symlink():
+            raise BoundaryError("local_model", "runtime_profile_path_unsafe")
+        if not profile_file.exists() and not profile_file.is_symlink():
+            raise BoundaryError("local_model", "text_runtime_profile_required")
+        try:
+            profile = _object_file(_inside(self.private_root, profile_name))
+            object_fields(profile, {"schema", "runtime_package"},
+                          "local_model.runtime_profile")
+        except BoundaryError as error:
+            raise BoundaryError("local_model", "text_runtime_profile_invalid") from error
         pin = profile["runtime_package"]
         if (profile["schema"] != schema
                 or not isinstance(pin, dict)
                 or pin.get("dependency_layout") != "bundled_source_candidate"
                 or pin.get("package") != RUNTIME_PACKAGE):
-            raise BoundaryError("local_model", "unsupported_runtime_profile")
+            raise BoundaryError("local_model", "text_runtime_profile_invalid")
         directory = self.directory / slot
         if directory.is_symlink():
             raise BoundaryError("local_model", "runtime_install_path_unsafe")
@@ -483,7 +520,7 @@ class LocalModelService:
     def catalog(self) -> dict[str, Any]:
         entries = []
         for entry in self.registry()["policies"]:
-            manifest = _object_file(_inside(self.root, entry["manifest"]))
+            manifest = _object_file(self.entry_path(entry, "manifest"))
             text_menu = entry.get("runtime_profile") in TEXT_PROFILES
             profiles = [{"id": "short", "label": "短时检查" if text_menu else "默认运行",
                          "limits": RUN_PROFILES["short"] if text_menu else None}]
@@ -560,8 +597,8 @@ class LocalModelService:
     def readiness(self, identity: str) -> dict[str, Any]:
         entry = self.selection(identity)
         checks: dict[str, dict[str, str]] = {}
-        manifest_path = _inside(self.root, entry["manifest"])
-        config_path = _inside(self.root, entry["config"])
+        manifest_path = self.entry_path(entry, "manifest")
+        config_path = self.entry_path(entry, "config")
         manifest, policy_config = _object_file(manifest_path), _object_file(config_path)
 
         def check(name: str, operation: Callable[[], object]) -> None:
@@ -582,9 +619,12 @@ class LocalModelService:
                     else name + "_missing_or_drifted",
                 }
 
-        checks.update(policy_support(entry["adapter"]).inspect(
-            self.root, entry, manifest, policy_config
-        ))
+        adapter = policy_support(entry["adapter"])
+        if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter"}:
+            checks.update(adapter.inspect(self.root, entry, manifest, policy_config,
+                                          binding_root=self.entry_root(entry)))
+        else:
+            checks.update(adapter.inspect(self.root, entry, manifest, policy_config))
         check("runtime_package", lambda: self._runtime_package(identity) and None)
         check("public_contract", lambda: self._public_manifest_contract(manifest_path, identity))
         checks["node"] = {
@@ -806,7 +846,7 @@ class LocalModelService:
         if report["status"] != "ready_to_load":
             raise BoundaryError("local_model", "model_readiness_blocked")
         entry = self.selection(identity)
-        manifest_path = _inside(self.root, entry["manifest"])
+        manifest_path = self.entry_path(entry, "manifest")
         manifest = _object_file(manifest_path)
         package = self._runtime_package(identity)
         _check_runtime_port(15527)
@@ -820,7 +860,7 @@ class LocalModelService:
             sys.executable,
             "--adapter-cwd",
             str(self.root),
-            *["--adapter-arg=" + arg for arg in policy_support(entry["adapter"]).arguments(entry)],
+            *["--adapter-arg=" + arg for arg in self.adapter_arguments(entry)],
             "--connector-endpoint",
             connector,
             "--listen-port",
@@ -1050,7 +1090,7 @@ class LocalModelService:
             return
         startup = previous.get("startup")
         entry = self.selection(previous.get("selection_id", ""))
-        manifest = _object_file(_inside(self.root, entry["manifest"]))
+        manifest = _object_file(self.entry_path(entry, "manifest"))
         package = self._runtime_package(entry["id"])
         if not isinstance(startup, dict) or any(
             startup.get(key) != expected

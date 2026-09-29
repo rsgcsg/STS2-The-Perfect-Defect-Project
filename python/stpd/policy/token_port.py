@@ -28,8 +28,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class TokenPolicyAdapter:
-    def __init__(self, config_path: Path, manifest_path: Path) -> None:
-        self.config, self.manifest = validate(ROOT, config_path, manifest_path)
+    def __init__(self, config_path: Path, manifest_path: Path,
+                 binding_root: Path | None = None) -> None:
+        self.config, self.manifest = validate(
+            ROOT, config_path, manifest_path, binding_root=binding_root)
         snapshot = self.config["qwen_snapshot"]
         self.scorer = TokenDecisionScorer(
             Path(self.config["export_path"]),
@@ -154,13 +156,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--binding-root", type=Path)
     args = parser.parse_args()
     # Match the engineering training thread budget; stdout is protocol-only.
     import torch
 
     torch.set_num_threads(2)
     return serve(
-        TokenPolicyAdapter(args.config.resolve(), args.manifest.resolve()), sys.stdin, sys.stdout
+        TokenPolicyAdapter(args.config.resolve(), args.manifest.resolve(), args.binding_root),
+        sys.stdin, sys.stdout
     )
 
 

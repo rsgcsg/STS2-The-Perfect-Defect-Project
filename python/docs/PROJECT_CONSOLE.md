@@ -361,6 +361,25 @@ Readiness checks artifact/config/source hashes, the installed Runtime/Connector,
 checkpoint evidence and backend. Model weights are checked during loading; native compatibility
 is checked by the Runtime before decisions. A download or `ready_to_load` does not prove either.
 
+The reviewed source checkout owns shipped adapter code and its code digest. The private
+`state_dir/models` directory owns text Runtime profiles, local selections and new registration
+bindings. Switching to a checkout with identical adapter source preserves a private selection;
+changed source blocks its old binding until an explicit verified export registration creates a
+new selection. An explicit offline Runtime install can stage its kit-verified profile into this
+private directory. A missing private profile is reported separately from a missing or drifted
+Runtime install.
+
+For checkout-era metadata, close the Workbench and use
+`python -m spireagent.workbench project migrate-model-state --config /ABS/project.json --legacy-python-root /ABS/old-checkout/python`.
+The same explicit operation is available to a setup/prepare control through the owning
+`migrate_legacy_model_state(config, legacy_python_root)` API after the operator selects that
+old checkout; catalog and readiness reads never run it.
+This validates the old profile against the current exact local Runtime/Connector install,
+archives old private records without changing them, and imports only matching profile pins.
+Old selections remain historical and non-loadable; export verification and explicit registration
+create a current selection. Repeating the same migration is idempotent; divergent private pins
+or unsafe paths block it. The command does not move weights or search other checkouts.
+
 The registered executable selection is the retained **S1 Defect A0 ordinary-combat** lane, bounded
 by its exact policy support manifest (`combat_turn`, play/end-turn; no selector or Full Run).
 It requires its original checkpoint/support files and CUDA/BF16 backend; a Mac does not become
