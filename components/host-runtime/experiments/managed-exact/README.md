@@ -24,6 +24,7 @@ builds with .NET 9+, and records provenance.
 npm run experiment:managed -- prepare
 npm run experiment:managed -- audit --candidate .local/candidates/<candidate>
 npm run experiment:managed -- native-gates --candidate .local/candidates/<candidate>
+npm run experiment:managed -- save-roundtrip --candidate .local/candidates/<candidate>
 npm run experiment:managed -- pe-probe --candidate .local/candidates/<candidate> --episodes 3 --max-actions 600
 npm run experiment:managed -- engine-lab --candidate .local/candidates/<candidate> --episodes 5
 npm run experiment:managed -- pe-profile --candidate .local/candidates/<candidate> --profile qualification --episodes 5
@@ -80,6 +81,38 @@ The built-in catalog is not a save library. Managed manifest entries such as
 `load_save` and `write_continue_save` do not provide Host save listing, copying,
 branching, replay, or restoration. Native run saves remain game-owned; profile
 templates represent user-data configuration and are not run checkpoints.
+
+`save-roundtrip` is a private qualification probe, not a public restore API or
+save library. It starts Defect A0 with a fixed seed (default
+`M2H0ST20260929A`) and refuses any starting page other than a complete, quiescent
+map. It uses the native `write_continue_save` only at that boundary and requires
+the native result to identify `MapRoom`; the candidate's non-map save path does
+not establish a pre-room restore contract and is never exercised. The probe
+creates its own private temporary directory, accepts no player save path, and
+attempts to remove its original save and two independent restore copies on
+completion or failure; cleanup failure also fails the probe and is reported
+separately from any primary failure. The eight-MiB file bound and every
+request/shutdown are finite.
+
+Three exact, distinct runtime processes run sequentially: the seeded reference
+writes the save and takes one current bound map action; two fresh processes each
+load their own copy and take the same semantic choice using their own fresh
+binding. Existing `canonical-player-decision-1` comparison covers the public
+Snapshot and complete finite action catalog before and after that one action.
+Its established referent normalization permits different opaque process-local
+IDs without arbitrary raw-field ignore filters. Candidate identity, quiescence,
+save digest and byte size, semantic equality, and clean exits must all pass.
+Saving is followed by a new native map read and run-position check; the raw
+protocol has no full-page observe command, so this is not a second complete
+post-save page observation. Two independent load comparisons check the full
+public projection. Native errors, unknown transport outcomes or drift end the
+probe without retry. Reports contain identities, hashes and verdicts, never
+save bytes or raw pages. The synthetic map-to-map tests exercise the real
+projection and comparator but are source/test evidence only; an
+exact-game invocation must separately qualify the candidate. Passing does not
+prove hidden-state/RNG equivalence, Read payload equality, arbitrary scene or
+mid-combat restore, long-horizon replay, shipped-host parity, or a new public
+Receipt/Commit contract. No save or restore operation reaches a model menu.
 
 `probe` and `capacity` exercise the upstream-shaped raw protocol and cannot
 support Player Environment claims. `pe-probe` and `pe-capacity` use the strict

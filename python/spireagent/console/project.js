@@ -3250,14 +3250,16 @@ window.SpireProject = (() => {
       const hasGroupingMetadata = value.grouping !== undefined
         || value.native_run_independence !== undefined;
       const memoryReport = schema === "stpd/experimental-m2-offline-evaluation-v1";
+      const inputId = memoryReport ? value.evaluation_input_id : value.model_view_id;
+      const inputSchema = memoryReport ? value.evaluation_input_schema : value.view_schema;
       const sessionScopedGroups = value.grouping === "session_scoped_run_group"
         && value.native_run_independence === "unknown_across_sessions";
       const facts = [
         ["评估格式", value.evaluation_schema || schema || "未知"],
         ["模型", hex(value.model_id) ? value.model_id.slice(0, 16) : "未知"],
-        ["模型视图", hex(value.model_view_id) ? value.model_view_id.slice(0, 16) : "未知"],
+        [memoryReport ? "评估输入" : "模型视图", hex(inputId) ? inputId.slice(0, 16) : "未知"],
         ["模型配方", typeof value.model_recipe === "string" && value.model_recipe ? value.model_recipe : "未知"],
-        ["视图格式", typeof value.view_schema === "string" && value.view_schema ? value.view_schema : "未知"],
+        [memoryReport ? "输入格式" : "视图格式", typeof inputSchema === "string" && inputSchema ? inputSchema : "未知"],
         ["记录中的决策数", count(value.decision_count)],
         [sessionScopedGroups ? "录制分组数（不代表独立游戏局）" : "记录中的对局分组数（未复核独立性）",
           count(value.reported_run_groups)],
@@ -3277,7 +3279,7 @@ window.SpireProject = (() => {
       summary.append(fields(facts));
       const related = el("div", null, "project-actions");
       if (hex(value.model_id)) related.append(link(`查看本机模型 · ${value.model_id.slice(0, 16)}`, route("local-workspace", value.model_id)));
-      if (hex(value.model_view_id)) related.append(link(`查看本机模型视图 · ${value.model_view_id.slice(0, 16)}`, route("local-workspace", value.model_view_id)));
+      if (hex(inputId)) related.append(link(`${memoryReport ? "查看评估输入" : "查看本机模型视图"} · ${inputId.slice(0, 16)}`, route("local-workspace", inputId)));
       if (memoryReport && hex(value.dev_source_id)) related.append(link(`查看开发来源 · ${value.dev_source_id.slice(0, 16)}`, route("local-workspace", value.dev_source_id)));
       if (related.children.length) summary.append(el("h3", "关联对象"), related);
       summary.append(el("h3", "总体记录指标"), offlineEvaluationMetrics(value.overall));

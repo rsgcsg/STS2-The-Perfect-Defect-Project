@@ -23,6 +23,7 @@ import {
 import { runManagedPlayerEnvironmentShardedCapacity } from "../src/managed-sharded-capacity.mjs";
 import { runManagedNativeBindingGates } from "../src/managed-native-binding-gates.mjs";
 import { runManagedRecoveryProbe } from "../src/managed-recovery-probe.mjs";
+import { runManagedSaveRoundtripProbe } from "../src/managed-save-roundtrip-probe.mjs";
 import { canonicalizeEpisodeSeed } from "../src/episode-provenance.mjs";
 import {
   createManagedExactHostDriver,
@@ -98,7 +99,7 @@ async function main() {
     return;
   }
   const candidateDirectory = option(args, "--candidate");
-  if (["audit", "probe", "pe-probe", "pe-profile", "pe-capacity", "pe-sharded-capacity", "engine-lab", "native-gates", "recovery", "capacity", "cross-host", "repeatability"].includes(command)
+  if (["audit", "probe", "pe-probe", "pe-profile", "pe-capacity", "pe-sharded-capacity", "engine-lab", "native-gates", "recovery", "save-roundtrip", "capacity", "cross-host", "repeatability"].includes(command)
       && !candidateDirectory) {
     throw new Error(`${command} requires --candidate <prepared-directory>.`);
   }
@@ -186,6 +187,19 @@ async function main() {
       stage_totals: result.report.performance.stage_totals
     }, null, 2));
     process.exitCode = result.report.status === "candidate_failure" ? 3 : 0;
+    return;
+  }
+  if (command === "save-roundtrip") {
+    const result = await runManagedSaveRoundtripProbe({
+      root: ROOT, candidateDirectory, diskIdentity: diskIdentity(),
+      seed: option(args, "--seed", "M2H0ST20260929A"),
+      requestTimeoutMs: Number(option(args, "--timeout-ms", "10000")),
+      evidenceRoot: path.join(LOCAL, "evidence")
+    });
+    console.log(JSON.stringify({ status: result.report.status, report_file: result.reportFile,
+      gates: result.report.gates, failure: result.report.failure,
+      cleanup_failures: result.report.cleanup_failures }, null, 2));
+    process.exitCode = result.report.status === "managed_map_save_roundtrip_pass" ? 0 : 3;
     return;
   }
   if (command === "recovery") {
@@ -477,6 +491,7 @@ Commands:
   pe-sharded-capacity --candidate DIR [--profile NAME] [--workers 1,2,4] [--episodes N]
   native-gates --candidate DIR [--seed SEED]
   recovery --candidate DIR [--seed SEED]
+  save-roundtrip --candidate DIR [--seed SEED] [--timeout-ms N]
   cross-host --candidate DIR [--seed SEED] [--start-kind KIND] [--discovery-actions N] [--max-actions N] [--template ID]
   repeatability --candidate DIR (--scenario scenario.json | --scenario-id ID) [--scenario-timeout-ms N]
   capacity --candidate DIR [--workers 1,2,4] [--episodes N] [--max-actions N]
