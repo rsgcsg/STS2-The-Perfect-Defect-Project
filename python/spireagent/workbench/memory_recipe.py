@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from spireagent.json_boundary import BoundaryError
+
+if TYPE_CHECKING:
+    from spireagent.artifact_contracts import Manifest
+    from spireagent.storage.store import ArtifactStore
 
 M2_K1_RECIPE = "stage1a.dsimple.m2.k1.experimental.v1"
 RESET_K1_RECIPE = "stage1a.dsimple.reset.k1.experimental.v1"
@@ -93,3 +100,37 @@ def recipe_for_memory_config(config: object, *,
         raise ValueError("unsupported_workbench_memory_projection") from error
     settings = MemoryRecipeSettings(config["slots"], config["reset_each_step"], profile)
     return next(recipe for recipe, candidate in _RECIPES.items() if candidate == settings)
+
+
+def recorded_memory_recipe(store: ArtifactStore, model: Manifest) -> str | None:
+    """Recognize existing Workbench metadata; never verify weights or read data payloads."""
+    parameters = model.parameters.value()
+    try:
+        config = parameters.get("config")
+        if (model.kind != "model"
+                or parameters.get("schema") != "stpd/experimental-m2-model-v1"
+                or parameters.get("partition") != "train"
+                or parameters.get("qualification") != "engineering_only"
+                or type(parameters.get("episodes")) is not int
+                or parameters["episodes"] <= 0
+                or not isinstance(config, dict)
+                or parameters["episodes"] != config.get("episode_count")):
+            raise ValueError("unsupported_workbench_memory_model")
+        run = store.get_manifest(model.parent("run"))
+        training_input = store.get_manifest(model.parent("training_input"))
+        source = store.get_manifest(training_input.parent("source"))
+        if (run.parent("training_input") != training_input.artifact_id
+                or run.parameters.value().get("config") != config
+                or training_input.parameters.value().get("schema")
+                != "stpd/experimental-m2-training-input-v2"):
+            raise ValueError("memory_lineage_mismatch")
+        projection = training_input.parameters.value().get("projection_config")
+        recipe = recipe_for_memory_config(config, projection_config=projection)
+        expected_source = (
+            "stpd/managed-text-menu-observed-source-v1" if recipe.endswith(".v2")
+            else "stpd/human-text-input-source-v1")
+        if source.parameters.value().get("schema") != expected_source:
+            raise ValueError("memory_source_profile_mismatch")
+        return recipe
+    except (BoundaryError, KeyError, ValueError):
+        return None

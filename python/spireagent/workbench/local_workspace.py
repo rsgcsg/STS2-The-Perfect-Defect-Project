@@ -18,7 +18,7 @@ from spireagent.storage.registry import Registry, SQLiteRegistry
 from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
 from spireagent.workbench.dashboard import _safe_value
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig
-from spireagent.workbench.memory_recipe import recipe_for_memory_config
+from spireagent.workbench.memory_recipe import recorded_memory_recipe
 
 INVENTORY_SCHEMA = "stpd/local-workspace-inventory-v1"
 ARTIFACT_SCHEMA = "stpd/local-workspace-artifact-v1"
@@ -185,33 +185,7 @@ class LocalWorkspace:
         parameters = manifest.parameters.value()
         if (manifest.kind == "model"
                 and parameters.get("schema") == "stpd/experimental-m2-model-v1"):
-            try:
-                config = parameters.get("config")
-                if (parameters.get("partition") != "train"
-                        or parameters.get("qualification") != "engineering_only"
-                        or type(parameters.get("episodes")) is not int
-                        or parameters["episodes"] <= 0
-                        or not isinstance(config, dict)
-                        or parameters["episodes"] != config.get("episode_count")):
-                    raise ValueError("unsupported_workbench_memory_model")
-                run = self.store.get_manifest(manifest.parent("run"))
-                training_input = self.store.get_manifest(manifest.parent("training_input"))
-                source = self.store.get_manifest(training_input.parent("source"))
-                if (run.parent("training_input") != training_input.artifact_id
-                        or run.parameters.value().get("config") != config
-                        or training_input.parameters.value().get("schema")
-                        != "stpd/experimental-m2-training-input-v2"):
-                    raise ValueError("memory_lineage_mismatch")
-                projection = training_input.parameters.value().get("projection_config")
-                recipe = recipe_for_memory_config(config, projection_config=projection)
-                expected_source = (
-                    "stpd/managed-text-menu-observed-source-v1" if recipe.endswith(".v2")
-                    else "stpd/human-text-input-source-v1")
-                if source.parameters.value().get("schema") != expected_source:
-                    raise ValueError("memory_source_profile_mismatch")
-                result["workbench_memory_recipe"] = recipe
-            except (BoundaryError, KeyError, ValueError):
-                result["workbench_memory_recipe"] = None
+            result["workbench_memory_recipe"] = recorded_memory_recipe(self.store, manifest)
         return result
 
 
