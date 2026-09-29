@@ -176,8 +176,16 @@ status remains `not_run` for independent evaluation. Registration is a separate
 explicit POST: it rechecks the exported package and the historical training-use
 ledger, requires an installed, explicitly pinned M2 Runtime profile and its
 port-2 manifest validator, and probes the Connector SDK's atomic observation
-context route. It adds a reviewed selection to the existing local roster without
-loading weights or taking game control. The private `text-menu-m2-v1` Runtime
+context route. Export stores a durable verification receipt bound to the operation,
+run/result/checkpoint and package bytes. Registration checks that receipt, current
+training-use admission and immutable store pins without replaying the training
+engine in the Web process. An older completed export without a receipt remains
+readable but needs the explicit “重新核验导出” action before registration.
+Registration uses one 22-second deadline and checks it before writing the roster;
+timeout never automatically retries or activates a model. The user checks current
+status before explicitly retrying an unregistered model. It adds a selection to
+the existing local roster without starting a live policy or taking game control.
+The private `text-menu-m2-v1` Runtime
 profile is separate from the Connector's unchanged `text-menu-v1` input profile
 and the older token Runtime installation. Readiness and loading remain separate;
 none of these steps proves independent evaluation or game qualification.

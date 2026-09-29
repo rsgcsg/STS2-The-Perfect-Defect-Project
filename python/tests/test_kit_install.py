@@ -275,6 +275,8 @@ def test_initialize_new_profile_runs_real_owner_setup_without_selection(tmp_path
     directory.mkdir()
     profile = tmp_path / "private/project.json"
     source = Path(__file__).resolve().parents[2]
+    registry = source / "python/.local/token-policies-v1.json"
+    original_registry = registry.read_bytes() if registry.exists() else None
     monkeypatch.setattr(install, "status", lambda _: {
         "status": "prepared", "text_runtime": "bundled_installation_not_checked"})
     calls = []
@@ -291,7 +293,8 @@ def test_initialize_new_profile_runs_real_owner_setup_without_selection(tmp_path
             with instance_lock(selected.state_dir / "instance.lock"):
                 pass
             assert selected.state_dir == profile.parent
-            assert not (source / "python/.local/token-policies-v1.json").exists()
+            assert "--selection" not in args
+            assert (registry.read_bytes() if registry.exists() else None) == original_registry
             return '{"status":"runtime_installed"}'
         return ""
     monkeypatch.setattr(install, "run", run)

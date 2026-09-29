@@ -1,9 +1,11 @@
 # Experimental D-Simple M2 computation
 
-`ExperimentalDSimpleM2` is a standalone mathematical prototype. It is not a
-registered Stage1a recipe, a runtime policy, a training dataset projection, or
-native game evidence. The existing D-Simple scorer and its checkpoints are
-unchanged.
+`ExperimentalDSimpleM2` is the independently usable computation core of the
+experimental M2 path described below. It is separate from the legacy four-family
+Stage1a recipe registry; the existing D-Simple scorer and checkpoints are unchanged.
+The core itself does not own dataset admission, runtime lifecycle, or native game
+evidence. The explicit Workbench M2-K1 integration is documented in
+[Project Console](../PROJECT_CONSOLE.md#run-a-local-training-operation).
 
 For one caller-owned observation, `advance(page, memory, ...)` places the old
 `K × width` memory, an optional light encoding of the **confirmed previously
@@ -51,8 +53,9 @@ embedding tables account for `2 × V × d`, which is expensive at a large Qwen
 vocabulary and width. This is only a small-vocabulary prototype. A future Qwen
 integration would need its own measured memory/cost study and perhaps a
 narrower embedding design; neither is implemented here.
-No real-data training, policy quality, native independence, or runtime
-qualification has been measured.
+These in-module measurements are synthetic. They do not establish policy quality,
+native independence, or runtime qualification; separate application receipts are
+required for actual training and activation.
 
 ## Synchronous exported-model scoring seam
 
@@ -85,9 +88,10 @@ decision-only NDJSON port-2 candidate: the request adds only an opaque
 output has a sibling completion receipt with that token, snapshot ID and
 sequence. The adapter checks the entire text-menu catalog, support and exact
 candidate binding before the scorer's observation write. It creates no native
-operands, delivery callback, game identity, or quality claim. No Workbench
-registration, Runtime profile/pin, Connector behavior, or live activation is
-part of this research package.
+operands, delivery callback, game identity, or quality claim. Workbench registration,
+Runtime profile/pin and activation are separate application responsibilities; the
+research package does not create or infer them. The application integration uses
+an explicit, separately installed M2 Runtime profile and current Connector facts.
 The current observed-input-v2 bridge trains with
 `previous_actual_action=None` and `public_feedback=None`, and port-2 inference
 uses those same absent optional channels. The port does not reinterpret a
@@ -261,7 +265,8 @@ path.
 training engine over caller-admitted, fixed-order `MemorySequenceEpisode`
 values. It supports K1, K8, independently constructed reset controls, and the
 existing gated model. It does not replace the default application recipe or
-register a live policy. There is no new Workbench endpoint in this change.
+register a live policy. The engine alone adds no Workbench endpoint; the separate
+application integration supplies the explicit training and registration commands.
 
 The caller sets `MemoryConfig`, the tokenizer SHA and source identity, and
 configures the declared CPU thread count. Construction copies the input
@@ -384,4 +389,6 @@ it is not an artifact admission service. The compute export identity does not
 certify text projection/source eligibility, and manually prepared v1 tensors are
 not thereby verified text-menu training data. A product loader must verify the
 model artifact's admitted source/projection lineage before registering a live
-recipe; this candidate provides neither that registration nor a Runtime port.
+recipe. The Workbench owner now supplies explicit registration and port-2 binding
+after its independent admission checks; those authorities do not belong to this
+compute loader.
