@@ -11,6 +11,7 @@ namespace STS2Connector.PlayerEnvironment
     internal static partial class PlayerEnvironmentService
     {
         private static long _textMenuWitnessCaptureOrdinal;
+        private static bool _textMenuWitnessCaptureInProgress;
 
         internal static ProcessLocalTextMenuWitnessFrame CaptureTextMenuWitness()
         {
@@ -35,12 +36,22 @@ namespace STS2Connector.PlayerEnvironment
         {
             lock (SubmissionGate)
             {
-                long ordinal = checked(_textMenuWitnessCaptureOrdinal + 1);
-                ProcessLocalTextMenuWitnessFrame result = freeze(ordinal);
-                if (result == null || result.CaptureOrdinal != ordinal)
-                    throw new InvalidOperationException("A frozen text-menu witness must retain its capture ordinal.");
-                _textMenuWitnessCaptureOrdinal = ordinal;
-                return result;
+                if (_textMenuWitnessCaptureInProgress)
+                    throw new InvalidOperationException("A text-menu witness freeze cannot be nested.");
+                _textMenuWitnessCaptureInProgress = true;
+                try
+                {
+                    long ordinal = checked(_textMenuWitnessCaptureOrdinal + 1);
+                    ProcessLocalTextMenuWitnessFrame result = freeze(ordinal);
+                    if (result == null || result.CaptureOrdinal != ordinal)
+                        throw new InvalidOperationException("A frozen text-menu witness must retain its capture ordinal.");
+                    _textMenuWitnessCaptureOrdinal = ordinal;
+                    return result;
+                }
+                finally
+                {
+                    _textMenuWitnessCaptureInProgress = false;
+                }
             }
         }
     }

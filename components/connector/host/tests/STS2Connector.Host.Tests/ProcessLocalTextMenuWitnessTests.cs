@@ -43,6 +43,9 @@ public sealed class ProcessLocalTextMenuWitnessTests
         Assert.Throws<InvalidOperationException>(() =>
             PlayerEnvironmentService.CaptureTextMenuWitnessCore(_ =>
                 throw new InvalidOperationException("native freeze failed")));
+        Assert.Throws<InvalidOperationException>(() =>
+            PlayerEnvironmentService.CaptureTextMenuWitnessCore(_ =>
+                PlayerEnvironmentService.CaptureTextMenuWitnessCore(Freeze)));
         var second = PlayerEnvironmentService.CaptureTextMenuWitnessCore(Freeze);
 
         Assert.Equal(first.CaptureOrdinal + 1, second.CaptureOrdinal);
