@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -209,3 +210,93 @@ def test_loaded_recovery_and_unknown_profile_do_not_prepare(service, monkeypatch
     service.state.update(loaded=False, status="recovery_required")
     with pytest.raises(BoundaryError, match="previous_operation_requires_recovery"):
         service.prepare_text_runtime("text-menu-v1")
+
+
+def test_load_completed_at_begin_boundary_cannot_admit_preparation(service, monkeypatch):
+    reached_begin, allow_begin = threading.Event(), threading.Event()
+    original = service._begin
+    errors = []
+
+    def interleaved(*args, **kwargs):
+        reached_begin.set()
+        assert allow_begin.wait(timeout=3)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_begin", interleaved)
+    monkeypatch.setattr(service, "_selected_kit_text_runtime",
+                        lambda *_: pytest.fail("loaded Runtime must not prepare"))
+
+    def request():
+        try:
+            service.prepare_text_runtime("text-menu-v1")
+        except BoundaryError as error:
+            errors.append(error.code)
+
+    requester = threading.Thread(target=request)
+    requester.start()
+    assert reached_begin.wait(timeout=3)
+    with service.lock:
+        service.state.update(status="loaded", loaded=True)
+    allow_begin.set()
+    requester.join(timeout=3)
+    assert not requester.is_alive()
+    assert errors == ["stop_runtime_before_install"]
+    assert service.state["status"] == "loaded"
+    assert service.state["operation"] is None
+
+
+def test_late_loaded_state_cannot_be_replaced_by_reuse_receipt(service, monkeypatch):
+    profile = service.private_root / "text-menu-runtime-v1.json"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(json.dumps({
+        "schema": "stpd/local-text-runtime-v1", "runtime_package": {
+            "package": "@rsgcsg/sts2-policy-runtime",
+            "dependency_layout": "bundled_source_candidate",
+        },
+    }))
+    validating, complete_validation = threading.Event(), threading.Event()
+
+    def validate(*_args):
+        validating.set()
+        assert complete_validation.wait(timeout=3)
+        return {"verified": True}
+
+    monkeypatch.setattr(local_models, "validate_runtime_install", validate)
+    monkeypatch.setattr(service, "_selected_kit_text_runtime",
+                        lambda *_: pytest.fail("no kit in reuse path"))
+    service.prepare_text_runtime("text-menu-v1")
+    assert validating.wait(timeout=3)
+    with service.lock:
+        service.state.update(status="loaded", loaded=True)
+    complete_validation.set()
+    state = finished(service)
+    assert state["operation"]["status"] == "failed"
+    assert state["error_code"] == "stop_runtime_before_install"
+    assert state["loaded"] is True
+    assert state["status"] != "idle"
+    assert "last_text_runtime_preparation" not in state
+
+
+def test_late_loaded_state_blocks_pin_publication_and_install(
+        service, tmp_path, monkeypatch):
+    staged, _raw, _archive = pair(service, tmp_path, monkeypatch, "text-menu-v1")
+    reading_kit, complete_read = threading.Event(), threading.Event()
+    original = service._selected_kit_text_runtime
+
+    def checked(profile_id):
+        result = original(profile_id)
+        reading_kit.set()
+        assert complete_read.wait(timeout=3)
+        return result
+
+    monkeypatch.setattr(service, "_selected_kit_text_runtime", checked)
+    monkeypatch.setattr(local_models, "install_runtime",
+                        lambda *_a, **_k: pytest.fail("loaded Runtime must not install"))
+    service.prepare_text_runtime("text-menu-v1")
+    assert reading_kit.wait(timeout=3)
+    with service.lock:
+        service.state.update(status="loaded", loaded=True)
+    complete_read.set()
+    state = finished(service)
+    assert state["error_code"] == "stop_runtime_before_install"
+    assert not (service.private_root / staged.name).exists()

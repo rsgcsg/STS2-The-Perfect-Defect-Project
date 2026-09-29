@@ -534,6 +534,14 @@ class LocalModelService:
 
         return self._begin("install-runtime", install)
 
+    def _require_stopped_runtime(self) -> None:
+        with self.lock:
+            if self.closed:
+                raise BoundaryError("local_model", "service_closed")
+            if (self.client is not None or self.state["loaded"]
+                    or self.process is not None and self.process.poll() is None):
+                raise BoundaryError("local_model", "stop_runtime_before_install")
+
     def _selected_kit_text_runtime(self, profile_id: str) -> tuple[bytes, Path, dict[str, Any]]:
         """Read one fixed pair from this process's already selected release only."""
         source = self.root.parent
@@ -584,12 +592,9 @@ class LocalModelService:
         """Explicitly prepare an exact private text Runtime; never load a model."""
         if not isinstance(profile_id, str) or profile_id not in TEXT_PROFILES:
             raise BoundaryError("local_model", "unsupported_runtime_profile")
-        with self.lock:
-            if (self.client is not None or self.state["loaded"]
-                    or self.process is not None and self.process.poll() is None):
-                raise BoundaryError("local_model", "stop_runtime_before_install")
 
         def prepare() -> None:
+            self._require_stopped_runtime()
             try:
                 directory, pin = self.text_runtime_profile(profile_id)
             except BoundaryError as error:
@@ -604,6 +609,7 @@ class LocalModelService:
                     installed = None
                 if installed is not None:
                     with self.lock:
+                        self._require_stopped_runtime()
                         self.state.update(status="idle", last_text_runtime_preparation={
                             "runtime_profile": profile_id, "status": "ready", "reused": True,
                         })
@@ -611,6 +617,7 @@ class LocalModelService:
             profile_raw, archive, kit_pin = self._selected_kit_text_runtime(profile_id)
             if pin is not None and pin != kit_pin:
                 raise BoundaryError("local_model", "private_profile_collision")
+            self._require_stopped_runtime()
             if pin is None:
                 # The durable state owner publishes complete bytes, without
                 # replacing a different operator pin or touching the source tree.
@@ -624,16 +631,19 @@ class LocalModelService:
             directory, current_pin = self.text_runtime_profile(profile_id)
             if current_pin != kit_pin:
                 raise BoundaryError("local_model", "private_profile_collision")
+            self._require_stopped_runtime()
             installed = install_runtime(directory, current_pin, self._connector_pin(),
                                         archive=archive)
             with self.lock:
+                self._require_stopped_runtime()
                 self.state.update(status="idle", last_runtime_install=installed,
                                   last_text_runtime_preparation={
                                       "runtime_profile": profile_id, "status": "ready",
                                       "reused": False,
                                   })
 
-        return self._begin("prepare-text-runtime", prepare)
+        return self._begin("prepare-text-runtime", prepare,
+                           admission=self._require_stopped_runtime)
 
     def catalog(self) -> dict[str, Any]:
         entries = []
@@ -766,7 +776,8 @@ class LocalModelService:
         atomic_json(self.directory / "session.json", self.state)
 
     def _begin(
-        self, action: str, operation: Callable[[], None], *, recovery: bool = False
+        self, action: str, operation: Callable[[], None], *, recovery: bool = False,
+        admission: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             if self.closed:
@@ -775,6 +786,8 @@ class LocalModelService:
                 raise BoundaryError("local_model", "operation_in_progress")
             if self.state["status"] in {"command_unknown", "recovery_required"} and not recovery:
                 raise BoundaryError("local_model", "previous_operation_requires_recovery")
+            if admission is not None:
+                admission()
             current = {"id": uuid4().hex, "action": action, "status": "pending"}
             self.state["operation"] = current
             self._save()
