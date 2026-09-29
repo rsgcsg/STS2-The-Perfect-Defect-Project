@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import tomllib
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
@@ -27,6 +28,7 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.__main__ import main
 from spireagent.workbench.developer import (
     ROOT,
+    LocalResearchWorkspaceConfig,
     ProjectConfig,
     combination,
     doctor,
@@ -103,6 +105,88 @@ def test_project_config_optional_local_research_workspace_preserves_legacy_files
     Draft202012Validator(schema).validate(loaded.to_dict())
     setup(path, state_dir=config.state_dir, install=False)
     assert ProjectConfig.load(path).research_workspace == loaded.research_workspace
+
+
+@pytest.fixture
+def research_project(project, tmp_path):
+    path, config = project
+    workspace = LocalResearchWorkspaceConfig(
+        tmp_path / "existing-store", tmp_path / "existing-registry.sqlite")
+    workspace.store_dir.mkdir()
+    (workspace.store_dir / "retained-artifact").write_bytes(b"immutable artifact")
+    workspace.registry_path.write_bytes(b"existing research index")
+    (workspace.store_dir / "curation.sqlite").write_bytes(b"existing use ledger")
+    selected = replace(config, research_workspace=workspace)
+    path.write_text(json.dumps(selected.to_dict()))
+    return path, selected
+
+
+@pytest.mark.parametrize("relocate", [False, True])
+def test_explicit_setup_upgrade_preserves_selected_research_workspace(
+    research_project, tmp_path, relocate,
+):
+    path, selected = research_project
+    before = json.loads(path.read_bytes())
+    before["combination"]["evidence_source_revision"] = "f" * 40
+    path.write_text(json.dumps(before))
+    workspace = selected.research_workspace
+    assert workspace is not None
+    retained = {item: item.read_bytes() for item in (
+        workspace.store_dir / "retained-artifact", workspace.registry_path,
+        workspace.store_dir / "curation.sqlite")}
+    state = tmp_path / "new-state" if relocate else selected.state_dir
+
+    result = setup(path, state_dir=state, install=False, replace_config=True)
+
+    assert result["status"] == "configured"
+    assert ProjectConfig.load(path) == replace(selected, state_dir=state)
+    assert all(item.read_bytes() == contents for item, contents in retained.items())
+    assert set(workspace.store_dir.iterdir()) == {
+        workspace.store_dir / "retained-artifact", workspace.store_dir / "curation.sqlite"}
+    assert not (state / "curation.sqlite").exists()
+    assert not (state / "existing-store").exists()
+
+
+def test_setup_upgrade_requires_explicit_replacement(research_project):
+    path, selected = research_project
+    previous = selected.to_dict()
+    previous["combination"] = {**previous["combination"], "evidence_source_revision": "f" * 40}
+    path.write_text(json.dumps(previous))
+    before = path.read_bytes()
+
+    with pytest.raises(BoundaryError, match="combination_changed_rerun_setup"):
+        setup(path, state_dir=selected.state_dir, install=False)
+
+    assert path.read_bytes() == before
+
+
+def test_new_setup_does_not_adopt_another_configs_research_workspace(research_project, tmp_path):
+    original, selected = research_project
+    before = original.read_bytes()
+    fresh = tmp_path / "fresh-project.json"
+
+    setup(fresh, state_dir=selected.state_dir, install=False, replace_config=True)
+
+    assert ProjectConfig.load(fresh).research_workspace is None
+    assert "research_workspace" not in json.loads(fresh.read_bytes())
+    assert original.read_bytes() == before
+
+
+@pytest.mark.parametrize("locked_state", ["current", "new"])
+def test_setup_replacement_respects_both_state_locks(research_project, tmp_path, locked_state):
+    path, selected = research_project
+    before = path.read_bytes()
+    destination = tmp_path / "new-state"
+    lock = selected.state_dir if locked_state == "current" else destination
+
+    with (
+        instance_lock(lock / "instance.lock"),
+        pytest.raises(BoundaryError, match="already_running"),
+    ):
+        setup(path, state_dir=destination, install=False, replace_config=True)
+
+    assert path.read_bytes() == before
+    assert not (destination / "logs").exists()
 
 
 def test_project_config_rejects_explicit_null_research_workspace(project):
