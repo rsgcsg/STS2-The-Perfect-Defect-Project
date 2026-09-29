@@ -508,7 +508,9 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
     v2_unknown_seen = False
     native_submissions_used = 0
     menu_navigations_used = 0
-    autonomy_mode = False
+    # No initial mode event is required. None is initial unknown, not Human.
+    autonomy_mode: bool | None = None
+    observed_mode: str | None = None
     for sequence, content in enumerate(lines[:-1], start=1):
         if content.endswith(b"\r"):
             content = content[:-1]
@@ -576,7 +578,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _mode(payload, "mode", _EVENTS_FILE)
             if "autonomy_budget" in payload:
                 _verify_autonomy_budget(payload["autonomy_budget"])
-            next_autonomy_mode = payload["mode"] in {"one_step", "auto", "shadow"}
+            observed_mode = payload["mode"]
+            next_autonomy_mode = observed_mode in {"one_step", "auto", "shadow"}
             if next_autonomy_mode and not autonomy_mode:
                 if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA and (
                     "autonomy_budget" not in payload or payload["autonomy_budget"]["state"] != "active"
@@ -665,6 +668,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 raise AgentRunEvidenceError("duplicate_successor", f"duplicate successor for decision: {decision_id}", _EVENTS_FILE)
             successors[decision_id] = successor
         elif kind == "text_menu_dispatch_attempt":
+            if autonomy_mode is False or observed_mode == "shadow":
+                raise AgentRunEvidenceError("text_dispatch_binding", "text dispatch requires an active executing mode after handoff", _EVENTS_FILE)
             decision_id = _verify_text_dispatch(payload, decisions, text_inputs, text_dispatches)
             expected_native = native_submissions_used + (1 if payload["effect_domain"] == "native_input" else 0)
             expected_menu = menu_navigations_used + (1 if payload["effect_domain"] == "text_menu" else 0)

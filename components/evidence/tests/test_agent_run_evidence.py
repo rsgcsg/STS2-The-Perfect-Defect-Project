@@ -1029,6 +1029,37 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
                 if not expected:
                     self.assertEqual(result.findings[0].code, "text_dispatch_binding")
 
+    def test_v2_dispatch_requires_new_active_mode_after_handoff(self) -> None:
+        budget = {"state": "exhausted", "max_submissions": 4, "submissions_used": 0,
+                  "max_policy_calls": 4, "policy_calls_used": 0, "deadline_ms": 10000,
+                  "elapsed_ms": 10000, "remaining_ms": 0, "exhausted_reason": "deadline",
+                  "ended_reason": None}
+        active = {**budget, "state": "active", "elapsed_ms": 0, "remaining_ms": 10000,
+                  "exhausted_reason": None}
+        for name, kind, payload in (
+            ("exhausted", "autonomy_budget_exhausted", {
+                "reason": "deadline", "budget": budget, "controller": "released"}),
+            ("human", "mode_changed", {"mode": "human"}),
+            ("shadow", "mode_changed", {"mode": "shadow", "autonomy_budget": active}),
+            ("handoff", "handoff_to_human", {"reason": "auto_surface_not_admitted"}),
+            ("one-step", "one_step_completed", {}),
+            ("closed", "fail_closed", {"reason": "policy_unavailable"}),
+        ):
+            with self.subTest(name=name):
+                directory, events = self._v2_cumulative_dispatches("v2-no-resume-" + name)
+                release = next(index for index, item in enumerate(events)
+                               if item["kind"] == "controller_released")
+                events.insert(release + 1, {
+                    "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                    "recorded_at": "2026-08-25T00:00:03.000Z", "kind": kind,
+                    "payload": payload})
+                for sequence, item in enumerate(events, 1):
+                    item["sequence"] = sequence
+                self._rewrite_events(directory, events)
+                report = AgentRunEvidenceVerifier().verify(directory)
+                self.assertFalse(report.passed)
+                self.assertEqual(report.findings[0].code, "text_dispatch_binding")
+
     def test_v2_manifest_port_and_renderer_profile_are_closed(self) -> None:
         directory = self._text_v2_evidence("v2-manifest")
         verifier = AgentRunEvidenceVerifier()
