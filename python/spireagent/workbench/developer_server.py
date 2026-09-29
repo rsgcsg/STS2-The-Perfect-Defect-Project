@@ -185,6 +185,7 @@ class Application:
         from spireagent.workbench.evaluation_sharing import EvaluationSharing
         from spireagent.workbench.inplace_curation import InplaceCurationPreparation
         from spireagent.workbench.local_dataset import LocalDatasetService
+        from spireagent.workbench.local_environment import LocalEnvironmentService
         from spireagent.workbench.local_memory_evaluation import LocalMemoryEvaluationService
         from spireagent.workbench.local_model_export import LocalModelExport
         from spireagent.workbench.local_model_registration import LocalModelRegistration
@@ -213,6 +214,7 @@ class Application:
             config, self.hub, self.delivery_environment, self.delivery_process, self.identity
         )
         self.models = LocalModelService(config, hub=self.hub)
+        self.local_environment = LocalEnvironmentService(config)
         self.local_recordings = LocalRecordingCatalog(config)
         # Keep command-time owner observations separate from concurrent browser GET scans.
         self.local_recording_import = LocalRecordingImporter(config, LocalRecordingCatalog(config))
@@ -431,6 +433,20 @@ class Application:
 
         return inspect_managed_workspace(self.config.state_dir)
 
+    def check_environment_instance(self) -> None:
+        """Mutations belong to this exact running Workbench configuration."""
+        if self.config_path is None:
+            raise BoundaryError("local_environment", "running_instance_unavailable")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_bytes())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError("local_environment", "running_instance_unavailable") from error
+        if (current != self.config or not isinstance(runtime, dict)
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_environment", "running_configuration_mismatch")
+
     def create_managed_local_workspace(self) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("managed_workspace", "running_instance_unavailable")
@@ -594,6 +610,7 @@ class Application:
         return self.local_model_registration.register(model_id)
 
     def close(self) -> None:
+        self.local_environment.close()
         self.evaluation_sharing.close()
         self.members.close()
         self.models.close()
@@ -712,6 +729,40 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(200, json.dumps({"instance_id": app.instance_id}).encode())
             elif parsed.path == "/api/status":
                 self.respond(200, json.dumps(_safe_value(app.snapshot())).encode())
+            elif parsed.path == "/api/local-environment" or parsed.path == (
+                "/api/local-environment/reports"
+            ) or parsed.path.startswith(("/api/local-environment/reports/",
+                                          "/api/local-environment/events/")):
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                try:
+                    if parsed.query:
+                        raise ValueError
+                    if parsed.path == "/api/local-environment":
+                        value = app.local_environment.status()
+                    elif parsed.path == "/api/local-environment/reports":
+                        value = app.local_environment.reports()
+                    elif parsed.path.startswith("/api/local-environment/events/"):
+                        match = re.fullmatch(
+                            r"/api/local-environment/events/([a-f0-9]{64})", parsed.path
+                        )
+                        if match is None:
+                            raise BoundaryError("local_environment", "event_not_found")
+                        value = app.local_environment.event(match[1])
+                    else:
+                        match = re.fullmatch(
+                            r"/api/local-environment/reports/([a-f0-9]{64})", parsed.path
+                        )
+                        if match is None:
+                            raise BoundaryError("local_environment", "report_not_found")
+                        value = app.local_environment.report(match[1])
+                    self.respond(200, json.dumps(value, ensure_ascii=False).encode())
+                except BoundaryError as error:
+                    status = 404 if error.code in {"report_not_found", "event_not_found"} else 409
+                    self.respond(status, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, KeyError):
+                    self.respond(400, b'{"error":"invalid_local_environment_request"}')
             elif parsed.path.startswith(("/api/member/", "/api/local-models")):
                 if not self.authenticated_browser() and not (
                     parsed.path.startswith("/api/local-models") and self.control_client()
@@ -1035,6 +1086,39 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(404, b"{}")
 
         def do_POST(self) -> None:
+            if self.path.startswith("/api/local-environment/"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                try:
+                    body = self.json_body(maximum=512)
+                    if self.path == "/api/local-environment/start" and set(body) == {
+                        "scenario_id"
+                    }:
+                        app.check_environment_instance()
+                        value = app.local_environment.start(body["scenario_id"])
+                    elif self.path == "/api/local-environment/submit" and set(body) == {
+                        "session_id", "action_id", "expected_snapshot_id",
+                        "expected_game_continuity_id"
+                    }:
+                        app.check_environment_instance()
+                        value = app.local_environment.submit(
+                            body["session_id"], body["action_id"],
+                            body["expected_snapshot_id"],
+                            body["expected_game_continuity_id"],
+                        )
+                    elif self.path == "/api/local-environment/stop" and set(body) == {
+                        "session_id"
+                    }:
+                        value = app.local_environment.stop(body["session_id"])
+                    else:
+                        raise ValueError
+                    self.respond(200, json.dumps(value, ensure_ascii=False).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, KeyError, TypeError):
+                    self.respond(400, b'{"error":"invalid_local_environment_request"}')
+                return
             if self.path.startswith("/api/local-workspace/curation/"):
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')

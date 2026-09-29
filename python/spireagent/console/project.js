@@ -31,6 +31,7 @@ window.SpireProject = (() => {
     "downloads",
     "research",
     "local-models",
+    "local-environment",
     "local-workspace",
     "campaigns",
     "collection-overview",
@@ -4011,6 +4012,147 @@ window.SpireProject = (() => {
     return {section, selectors};
   }
 
+  async function localEnvironment(ctx) {
+    const box = el("div", null, "project-page");
+    const data = await request(ctx, "/api/local-environment");
+    if (data.schema !== "stpd/local-managed-environment-v1" ||
+        !Array.isArray(data.scenarios) || !data.session) throw new Error("request_unavailable");
+    box.append(panel("环境与场景", "固定种子会重新开一局；这不是房间存档或决策点恢复。此入口只提供人工文字单步，不启动模型。"));
+    const session = data.session;
+    const ready = data.availability === "configured";
+    const setup = panel("本机 Managed 环境", ready
+      ? `已配置 ${data.input_profile}。启动时仍会复核安装包、候选和游戏身份。`
+      : "环境未准备。请由本机环境维护者完成受信任的精确包与候选配置；此页面不接受文件路径或命令。");
+    box.append(setup);
+    const csrf = ctx.identity?.csrf_token;
+    const sessionId = typeof session.session_id === "string" && /^[a-f0-9]{32}$/.test(session.session_id)
+      ? session.session_id : null;
+    const currentStatus = session.status;
+    box.append(panel("当前实例", {
+      idle:"尚未启动游戏实例。", starting:"正在启动独占实例，请刷新状态。",
+      active:"实例正在运行；每次动作都要明确选择当前菜单。",
+      submitting:"动作已提交，结果尚未确定；请刷新状态，不要重试。",
+      stopping:"正在停止；结束结果尚待确认。",
+      stopped:"实例已停止。",
+      stopped_outcome_unknown:"实例已关闭，动作交付或后续页面未确认。",
+      failed:"启动失败，未开始可操作的新局。", unknown:"动作交付或后续页面未确认，不能继续操作；请明确停止。",
+      interrupted_unknown:"上次工作台中断，旧实例结果未知；请尝试停止，若清理未确认则请维护者处理。",
+      cleanup_unknown:"实例清理尚未确认，不能启动新局；请联系本机环境维护者。",
+    }[currentStatus] || "当前实例状态未知，不能操作。"));
+    if (session.error_code) box.append(el("p", `诊断：${session.error_code}`, "small muted"));
+    if (["stopped", "stopped_outcome_unknown", "failed"].includes(currentStatus) &&
+        !session.report_artifact_id) {
+      box.append(el("p", "本次报告尚未保存；请明确重试归档。", "small muted"));
+    }
+    box.append(command(ctx, "environment-refresh", "刷新实例状态", () => reload(ctx)));
+    if (sessionId && (["starting", "active", "submitting", "unknown", "interrupted_unknown", "cleanup_unknown"].includes(currentStatus) ||
+        (["stopped", "stopped_outcome_unknown", "failed"].includes(currentStatus) && !session.report_artifact_id))) {
+      box.append(command(ctx, "environment-stop", currentStatus === "failed" || currentStatus.startsWith("stopped")
+        ? "重试归档报告" : "停止当前实例", async () => {
+        await request(ctx, "/api/local-environment/stop", {session_id:sessionId}, csrf);
+        await reload(ctx);
+      }, {danger:true, disabled:!csrf}));
+    }
+    if (["idle", "stopped", "stopped_outcome_unknown", "failed"].includes(currentStatus)) {
+      for (const scenario of data.scenarios) {
+        const section = panel(scenario.label, scenario.scope);
+        section.append(fields([["起点", `新局固定种子 ${scenario.seed}`], ["角色", scenario.character]]));
+        section.append(command(ctx, `environment-start-${scenario.id}`, "启动独占实例", async () => {
+          await request(ctx, "/api/local-environment/start", {scenario_id:scenario.id}, csrf);
+          await reload(ctx);
+        }, {primary:true, disabled:!ready || !csrf}));
+        box.append(section);
+      }
+    }
+    const context = session.context;
+    const snapshot = context?.snapshot;
+    const expectedSnapshotSchema = data.input_profile === "text-menu-v2"
+      ? "sts2.player-environment/text-menu-snapshot-2" : "sts2.player-environment/text-menu-snapshot-1";
+    if (currentStatus === "active" && snapshot?.schema === expectedSnapshotSchema &&
+        snapshot?.input_profile === data.input_profile) {
+      const content = snapshot.interaction?.content || {};
+      const surface = content.surface || {};
+      const run = snapshot.persistent?.content?.run || {};
+      const player = snapshot.persistent?.content?.player || {};
+      const page = panel("当前文字页", surface.title || surface.kind || snapshot.interaction?.kind || "当前公开页");
+      const prompt = surface.description || surface.prompt || snapshot.interaction?.prompt;
+      if (prompt) page.append(el("p", prompt));
+      page.append(fields([
+        ["位置", Number.isSafeInteger(run.floor) ? `第 ${run.floor} 层` : "当前页"],
+        ["角色", player.character_name || player.character_definition_id || "未提供"],
+        ["生命", Number.isSafeInteger(player.hp) && Number.isSafeInteger(player.max_hp)
+          ? `${player.hp} / ${player.max_hp}` : "未提供"],
+        ["金币", Number.isSafeInteger(player.gold) ? String(player.gold) : "未提供"],
+      ]));
+      if (Array.isArray(snapshot.referents) && snapshot.referents.length) {
+        page.append(el("h3", `当前页公开对象 · ${snapshot.referents.length} 项`));
+        const objects = el("ul");
+        for (const item of snapshot.referents) {
+          objects.append(el("li", `${item.label || item.name || item.role || "公开对象"}${item.state?.enabled === false ? "（当前不可用）" : ""}`));
+        }
+        page.append(objects);
+      }
+      if (Array.isArray(snapshot.menu?.selection) && snapshot.menu.selection.length) {
+        const referentLabels = new Map((snapshot.referents || []).map(item => [item.referent_id, item.label]));
+        page.append(el("p", `当前选择：${snapshot.menu.selection.map(item =>
+          `${item.role} ${referentLabels.get(item.referent_id) || "公开对象"}`).join(" → ")}`));
+      }
+      page.append(technical(snapshot, "查看完整公开快照与诊断"));
+      const menu = snapshot.menu_actions;
+      if (menu?.status === "complete" && Array.isArray(menu.actions) &&
+          menu.materialized_count === menu.actions.length && menu.total_count === menu.actions.length) {
+        page.append(el("h3", `完整菜单 · ${menu.actions.length} 项`));
+        for (const item of menu.actions) {
+          const row = el("div", null, "project-card");
+          row.append(el("strong", `${item.label || item.verb || "未命名动作"}`));
+          row.append(el("p", `${item.verb || ""} · ${item.effect_domain || ""}`, "small muted"));
+          if (item.arguments?.length) row.append(technical(item.arguments, "查看目标和参数"));
+          if (typeof item.action_id === "string" && item.action_id && sessionId) {
+            row.append(command(ctx, `environment-action-${item.action_id}`, "执行此动作", async () => {
+              await request(ctx, "/api/local-environment/submit", {
+                session_id:sessionId, action_id:item.action_id,
+                expected_snapshot_id:snapshot.snapshot_id,
+                expected_game_continuity_id:context.game_continuity_id,
+              }, csrf);
+              await reload(ctx);
+            }, {disabled:!csrf}));
+          }
+          page.append(row);
+        }
+      } else page.append(el("p", "当前页没有完整可执行菜单；不会猜测或补全动作。", "small muted"));
+      box.append(page);
+    }
+    const eventCard = (event, key) => {
+      const card = panel("动作记录", `${event.result_status || "结果未留存"} · ${event.native_delivery || "无原生交付"}${event.error_code ? ` · ${event.error_code}` : ""}`);
+      if (/^[a-f0-9]{64}$/.test(event.event_artifact_id || "")) {
+        card.append(command(ctx, `environment-event-${key}`, "查看完整动作 Receipt", async () => {
+          const detail = await request(ctx, `/api/local-environment/events/${event.event_artifact_id}`);
+          card.append(technical(detail, "完整公开动作记录"));
+        }));
+      } else card.append(el("p", "完整动作记录未能归档；当前摘要保留可确认的交付状态。", "small muted"));
+      return card;
+    };
+    if (session.events?.length) {
+      const recent = session.events.at(-1);
+      box.append(eventCard(recent, `current-${recent.request_id}`));
+    }
+    const reports = await request(ctx, "/api/local-environment/reports");
+    const archive = panel("已保留的运行报告", "只记录此工程入口的公开文字页、动作 Receipt 和精确身份；不作为 Human 或模型评估。 ");
+    for (const item of reports.items || []) {
+      if (/^[a-f0-9]{64}$/.test(item.artifact_id || "")) {
+        archive.append(command(ctx, `environment-report-${item.artifact_id}`, `查看 ${item.status} · ${item.artifact_id.slice(0, 12)}`, async () => {
+          const report = await request(ctx, `/api/local-environment/reports/${item.artifact_id}`);
+          const detail = panel("已归档报告", `${report.status} · ${report.events?.length || 0} 次明确动作`);
+          detail.append(technical(report, "查看报告索引与身份"));
+          for (const event of report.events || []) detail.append(eventCard(event, `${item.artifact_id}-${event.request_id}`));
+          archive.append(detail);
+        }));
+      }
+    }
+    box.append(archive);
+    return box;
+  }
+
   async function localWorkspace(ctx) {
     const box = el("div", null, "project-page");
     const id = new URLSearchParams(ctx.search).get("id");
@@ -4341,7 +4483,7 @@ window.SpireProject = (() => {
     datasetContext: () => `${datasetTab()}:${drafts.get("dataset-task-id") || ""}`,
     async render(view, identity, mount) {
       if (!supported.has(view)) throw new Error("unsupported_project_view");
-      if (view === "local-workspace" && !local) throw new Error("unsupported_project_view");
+      if (["local-workspace", "local-environment"].includes(view) && !local) throw new Error("unsupported_project_view");
       const nextAccount = `${identity?.principal?.subject || "anonymous"}:${identity?.principal?.role || ""}:${identity?.status || ""}`;
       if (account !== nextAccount) {
         account = nextAccount;
@@ -4369,7 +4511,7 @@ window.SpireProject = (() => {
       }
       if (view !== "local-models") stopModelWatch();
       commandControls.clear();
-      if (!(["local-models", "local-workspace", "evaluations"].includes(view) || (local && ["campaigns", "collection-overview"].includes(view))) && !signedIn(ctx)) return authNotice(ctx);
+      if (!(["local-models", "local-workspace", "local-environment", "evaluations"].includes(view) || (local && ["campaigns", "collection-overview"].includes(view))) && !signedIn(ctx)) return authNotice(ctx);
       try {
         return await {
           members: admin,
@@ -4380,6 +4522,7 @@ window.SpireProject = (() => {
           research,
           evaluations,
           "local-models": localModels,
+          "local-environment": localEnvironment,
           "local-workspace": localWorkspace,
           campaigns,
           "collection-overview": (ctx) => collectionFlow(ctx, true),
