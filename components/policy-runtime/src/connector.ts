@@ -78,6 +78,10 @@ export class ConnectorPolicyClient implements PolicyConnector {
     }
   }
 
+  async observeTextMenuContext() {
+    return (await this.client.observeTextMenuContext()).data;
+  }
+
   async acquireController(): Promise<void> {
     if (this.controller) {
       if (this.controller.bridge.closing) throw new Error("controller_release_unconfirmed");

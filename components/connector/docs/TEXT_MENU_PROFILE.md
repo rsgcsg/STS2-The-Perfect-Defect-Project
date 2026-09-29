@@ -8,6 +8,28 @@ A `system_navigation` action has `effect_domain=text_menu`. Its applied result c
 
 TypeScript clients call `textMenuCapabilities`, `observeTextMenu`, `submitTextMenu`, and `textMenuResult`. The strict decoder rejects legacy payloads, missing profile/result fields, illegal system edges, unknown current referents, duplicate IDs, incomplete executable catalogs and system results pretending to deliver native input. Reference and Managed Hosts must each prove their native leaf bindings and fair-player facts; schema compatibility alone is not cross-Host qualification.
 
+## Atomic observation context (opt-in source candidate)
+
+`GET /api/player-environment/text-menu/observation-context` returns exactly
+`{schema: "sts2.player-environment/text-menu-observation-context-1", snapshot,
+game_continuity_id}`. `snapshot` is the unchanged `text-menu-v1` Snapshot.
+`game_continuity_id` is an opaque, process-local scheduling identity for the
+current native `RunState` object, or `null` when no run object exists. It is not
+a start witness, player-visible fact, model input, action operand, or evidence
+of a fresh game. The Reference Host captures the object before the whole
+synchronous page build and verifies the same reference afterward on the game
+thread under the shared submission gate. A changed reference rejects the
+packet with HTTP 409 `run_continuity_changed_during_capture`; no mixed context
+is returned. A terminal page can retain its last run object. A new/load run
+object gets a different ID, while a return to menu with no run has `null`.
+
+Clients opt in through `observeTextMenuContext` and strictly decode the outer
+schema and inner Snapshot. A Host without the route returns 404; clients must
+not infer continuity from an ordinary `observeTextMenu` response. The legacy
+Snapshot and capabilities schemas are unchanged. Other Hosts must implement
+their own native run identity and atomic capture proof before claiming this
+route.
+
 The two JSON examples in `sdk/typescript/test/fixtures/text-menu-root.json` and `text-menu-system-result.json` are portable contract fixtures. They are synthetic and do not prove native behavior.
 
 ## Semantic interaction versus native input device

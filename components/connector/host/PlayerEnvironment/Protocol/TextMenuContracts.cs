@@ -11,7 +11,15 @@ public static class TextMenuContract
     public const string Profile = "text-menu-v1";
     public const string SnapshotSchema = "sts2.player-environment/text-menu-snapshot-1";
     public const string ResultSchema = "sts2.player-environment/text-menu-action-result-1";
+    public const string ObservationContextSchema =
+        "sts2.player-environment/text-menu-observation-context-1";
 }
+
+/// <summary>Scheduling identity captured with an unchanged public text-menu page.
+/// The opaque run token is not a model input, run-start witness or action authority.</summary>
+public sealed record TextMenuObservationContext(
+    string Schema, TextMenuSnapshot Snapshot,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? GameContinuityId);
 
 public sealed record TextMenuCursor(string Cursor, long Revision, string NativeSnapshotId);
 

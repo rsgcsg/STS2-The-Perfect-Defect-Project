@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const workspace = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relative) => readFileSync(path.join(workspace, relative), "utf8");
 const contract = JSON.parse(read("contracts/player-environment-contract.json"));
+const textContext = JSON.parse(read("contracts/text-menu-observation-context.json"));
 const csharp = read("host/PlayerEnvironment/Protocol/PlayerEnvironmentContracts.cs");
 const service = read("host/PlayerEnvironment/Core/PlayerEnvironmentService.cs");
 const projection = read("host/PlayerEnvironment/Projection/BoundActionProjection.cs");
@@ -14,6 +15,10 @@ const reads = read("host/PlayerEnvironment/Reads/ReadService.cs")
   + read("host/LiveHost/PlayerVisibleReadBuilder.cs");
 const typescript = read("sdk/typescript/src/protocol.ts");
 const rewardPage = read("sdk/typescript/src/rewardPage.ts");
+const textMenu = read("sdk/typescript/src/textMenu.ts");
+const textContextHost = read("host/PlayerEnvironment/Protocol/TextMenuContracts.cs")
+  + read("host/PlayerEnvironment/TextMenu/TextMenuService.cs")
+  + read("host/PlayerEnvironment/TextMenu/TextMenuExecutor.cs");
 const client = read("sdk/typescript/src/client.ts");
 const transport = read("host/ConnectorMod.cs")
   + read("host/PlayerEnvironment/Transport/ConnectorMod.PlayerEnvironment.cs");
@@ -81,6 +86,17 @@ for (const profile of contract.input_profiles ?? []) {
 }
 
 requireIn(python, '_environment_get("snapshot")', "Python snapshot route");
+
+requireIn(transport, textContext.route, "text menu context route");
+requireIn(transport, "RunOnMainThread(PlayerEnvironmentService.ObserveTextMenuContext)",
+  "text menu context game-thread capture");
+requireIn(transport, textContext.run_change_error, "text menu context atomic rejection");
+requireIn(client, textContext.route, "text menu context SDK route");
+requireIn(textMenu, textContext.response_schema, "text menu context SDK schema");
+requireIn(textMenu, "decodeTextMenuSnapshot(raw.snapshot)", "text menu context inner snapshot");
+requireIn(textContextHost, textContext.response_schema, "text menu context Host schema");
+requireIn(textContextHost, "ReferenceEquals(before, currentRun())", "whole-capture run reference check");
+requireIn(textContextHost, "Entities.GetId(run, \"run\")", "process-local run identity");
 
 if (failures.length > 0) {
   console.error(["Player Environment contract checks failed:", ...failures.map((item) => `- ${item}`)].join("\n"));

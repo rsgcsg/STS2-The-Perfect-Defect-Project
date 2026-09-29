@@ -8,10 +8,14 @@ from tokenizers import Tokenizer
 
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 
+from .text_menu_inputs import VERSION as TEXT_MENU_VERSION
 from .text_menu_inputs import TextMenuInput, project_text_menu_snapshot
-from .token_inputs import TokenRow, input_texts
+from .token_inputs import FORMAT, TokenRow, input_texts
 
 MAX_TOKENIZER_BYTES = 16 * 1024 * 1024
+RENDERER_IDENTITY = {"id": "stpd/m2-canonical-current-page-v1",
+                     "text_menu_version": TEXT_MENU_VERSION,
+                     "wrapper": FORMAT}
 
 
 def project_memory_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:

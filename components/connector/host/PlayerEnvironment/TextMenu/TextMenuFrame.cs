@@ -21,7 +21,11 @@ internal sealed record TextMenuLeaf(
     [property: JsonIgnore] TextMenuNativeWitnessBinding? NativeWitness = null);
 
 internal sealed record TextMenuFrame(
-    PlayerEnvironmentSnapshot Page, string OwnerKey, IReadOnlyList<TextMenuLeaf> Leaves);
+    PlayerEnvironmentSnapshot Page, string OwnerKey, IReadOnlyList<TextMenuLeaf> Leaves)
+{
+    [JsonIgnore]
+    internal string? GameContinuityId { get; init; }
+}
 
 internal sealed record TextMenuChoice(TextMenuAction Action, TextMenuLeaf? Leaf, string? TargetCursor);
 internal sealed record TextMenuProjection(
