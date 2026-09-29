@@ -3771,6 +3771,35 @@ test("verified report shows action, delivery and budget facts without claiming a
   assert.doesNotMatch(failed, /select\s+5|自主运行时间已到限额|本次记录观察到的结局页\s+失败/);
 });
 
+test("model page summarizes returned evaluation history while evaluation page keeps every report", async () => {
+  const records = Array.from({length:14}, (_, index) => ({
+    evaluation_id:id((index + 1).toString(16)), selection_id:`selection-${index}`,
+    run_id:`run-${index}`, event_count:1117 + index, game_outcome:"not_measured",
+    evidence_verification:index < 9 ? "pass" : index < 11 ? "fail"
+      : index === 11 ? "failed" : index === 12 ? "unknown" : undefined,
+  }));
+  const env = setup({view:"local-models", identity:{status:"signed_out"}, handler:url =>
+    url === "/api/local-models" ? {evaluations:records} :
+      url === "/api/local-models/status" ? {status:"idle", loaded:false} : emptyList()});
+  const overview = await env.render();
+  assert.match(text(overview), /本次展示\s+14/);
+  assert.match(text(overview), /证据核验通过\s+9/);
+  assert.match(text(overview), /证据核验未通过\s+3/);
+  assert.match(text(overview), /核验状态未知或未提供\s+2/);
+  assert.doesNotMatch(text(overview), /本机已封装的评估记录|事件数\s+1117/);
+  assert.equal(find(overview, element => element.tagName === "A"
+    && element.href === "?view=evaluations").textContent,
+    "查看本机实战记录与完整报告");
+  env.navigate("evaluations");
+  const history = await env.render();
+  assert.equal(walk(history).filter(element => element.textContent === "本机已封装的评估记录").length, 14);
+  assert.match(text(history), /事件数\s+1,117/);
+  assert.match(text(history), /证据验证\s+fail/);
+  assert.match(text(history), /证据验证\s+unknown/);
+  assert.match(text(history), /证据验证\s+未提供/);
+  assert.equal(post(env.calls).length, 0);
+});
+
 test("accepted model load converges from pending by read-only status without another click", async () => {
   let status = {status:"idle", loaded:false, operation:null};
   const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) => {

@@ -2681,16 +2681,23 @@ window.SpireProject = (() => {
       downloads.append(downloaded);
     }
     box.append(downloads);
-    if (catalog?.evaluations?.length) {
-      const evaluations = panel(
-        "本机评估历史",
-        "最多保留展示 100 条已校验的本地评估记录；不会自动上传。",
-      );
-      for (const value of catalog.evaluations)
-        evaluations.append(evaluationPanel(value));
-      evaluations.append(link("查看与分享实战记录", route("evaluations")));
-      box.append(evaluations);
+    const evaluations = panel("本机评估历史",
+      "这里只概览本次返回的本机记录（至多 100 条）；完整报告在评估结果页，不会自动上传。");
+    if (Array.isArray(catalog?.evaluations)) {
+      const records = catalog.evaluations;
+      const passed = records.filter(value => value?.evidence_verification === "pass").length;
+      const failed = records.filter(value => ["fail", "failed"].includes(value?.evidence_verification)).length;
+      evaluations.append(fields([
+        ["本次展示", count(records.length)],
+        ["证据核验通过", count(passed)],
+        ["证据核验未通过", count(failed)],
+        ["核验状态未知或未提供", count(records.length - passed - failed)],
+      ]));
+    } else {
+      evaluations.append(el("p", "本机评估历史暂不可用；未按空记录处理。", "small muted"));
     }
+    evaluations.append(link("查看本机实战记录与完整报告", route("evaluations")));
+    box.append(evaluations);
     if (live(ctx)) watchLocalModel(ctx, state, budgetHost);
     return box;
   }

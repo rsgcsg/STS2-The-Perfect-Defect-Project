@@ -246,6 +246,11 @@ processes running as the same OS user; separate OS accounts provide that boundar
 | 成员管理（管理员） | invitation, quotas and revocation |
 | 设置与诊断 | detailed source/readiness, maintenance and administrator collection explanation settings |
 
+The local model page summarizes only the evaluation records returned in its current catalog
+read (at most 100), with passed, failed and unconfirmed verification kept separate. Open
+**评估结果** for each full local report and its explicit sharing control; the model-page
+summary does not imply a complete history, a latest result or a game outcome.
+
 Existing view URLs remain usable. Secondary statistics/download/detail views belong to these
 main tasks. See [the unified member flow](UNIFIED_TASK_FLOW.zh-CN.md) for first-use and daily use.
 
