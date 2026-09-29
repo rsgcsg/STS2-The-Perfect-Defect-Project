@@ -285,7 +285,8 @@ def test_implementation_identity_is_checked_on_restore():
 
 
 @pytest.mark.parametrize(
-    ("slots", "gated", "reset"), [(1, False, False), (8, True, False), (1, False, True)]
+    ("slots", "gated", "reset"), [(1, False, False), (8, True, False),
+                                  (1, False, True), (8, False, False), (8, False, True)]
 )
 def test_export_reload_replays_scores_with_exact_candidate_order_and_config(
     slots: int, gated: bool, reset: bool,
