@@ -261,6 +261,26 @@ def test_long_episode_projects_all_observations_and_source_event_ids():
     assert result.sources[0].source_id == "verified-fixture-source"
 
 
+def test_episode_source_map_covers_unlabelled_missing_reset_and_label_free_events():
+    items = (
+        observed("labelled", 1, reset=True, action="opaque-play"),
+        observed("unlabelled", 2, action=None),
+        observed("missing", 3, action=None, missing=True),
+        observed("blocked", 4, action=None),
+        observed("label_free", 5, reset=True, action=None),
+    )
+    result = project_memory_episodes(
+        view(*items), tokenizer(), model(), max_observations=8, max_input_tokens=4096,
+    )
+    mapping = {item.event_id: item for item in result.event_mapping}
+    assert set(mapping) == {item.event_id for item in items}
+    assert (mapping["labelled"].disposition, mapping["labelled"].position) == ("step", 0)
+    assert (mapping["unlabelled"].disposition, mapping["unlabelled"].position) == ("step", 1)
+    assert mapping["missing"].reason == "missing_observation"
+    assert mapping["blocked"].reason == "reset_required"
+    assert mapping["label_free"].reason == "no_learn_span_label"
+
+
 def test_episode_binding_permutation_and_unknown_delivery_keep_source_boundary():
     subject = model()
     first = observed("first", 1, reset=True, action=None)
@@ -528,3 +548,59 @@ def test_settling_opt_in_rejects_unproved_skips(mutation: str, reason: str):
     )
     assert not result.episodes
     assert [item.reason for item in result.diagnostics] == [reason]
+
+
+@pytest.mark.parametrize("slots", [1, 8])
+@pytest.mark.parametrize("projection", [project_memory_windows, project_memory_episodes])
+def test_m2_bridge_keeps_independently_encoded_long_actions(slots, projection):
+    from stpd.fullrun.text_menu_inputs import project_text_menu_snapshot
+    from stpd.fullrun.token_inputs import input_texts
+
+    item = observed("long-menu", 1, reset=True)
+    page = deepcopy(item.snapshot)
+    page["menu_actions"]["actions"][1]["label"] = "Play " + "Defend " * 160
+    item = replace(item, snapshot=page)
+    token = tokenizer()
+    public = project_text_menu_snapshot(page)
+    state, actions = input_texts(public.state_text, public.action_texts)
+    page_size = len(token.encode(state).ids)
+    action_sizes = tuple(len(token.encode(action).ids) for action in actions)
+    capacity = max(page_size + 2 * slots, *action_sizes)
+    assert page_size + max(action_sizes) + 1 > capacity  # Old B joint cap rejects this.
+    subject = ExperimentalDSimpleM2(
+        ScratchTokenCore(ScratchShape(32, 8, 1, 2, 16, 0.0, capacity)), slots=slots)
+    kwargs = ({"max_observations": 1, "max_input_tokens": 4096}
+              if projection is project_memory_episodes else {})
+    result = projection(view(item), token, subject, **kwargs)
+    assert not result.diagnostics
+    steps = (result.episodes[0].steps if projection is project_memory_episodes
+             else result.windows[0].steps)
+    step = steps[0]
+    assert step is not None and step.action_keys == public.action_ids
+    assert step.page.numel() == page_size
+    assert tuple(action.numel() for action in step.actions) == action_sizes
+    scores, memory = subject.step(step.page, step.actions, subject.initial_memory())
+    assert scores.shape == (2,) and scores.isfinite().all()
+    assert memory.shape == (slots, subject.core.width) and memory.isfinite().all()
+
+
+@pytest.mark.parametrize("slots", [1, 8])
+@pytest.mark.parametrize("projection", [project_memory_windows, project_memory_episodes])
+def test_m2_bridge_rejects_whole_page_without_room_for_memory(slots, projection):
+    from stpd.fullrun.text_menu_inputs import project_text_menu_snapshot
+    from stpd.fullrun.token_inputs import input_texts
+
+    item = observed("memory-capacity", 1, reset=True)
+    token = tokenizer()
+    public = project_text_menu_snapshot(item.snapshot)
+    state, _ = input_texts(public.state_text, public.action_texts)
+    capacity = len(token.encode(state).ids) + 2 * slots - 1
+    subject = ExperimentalDSimpleM2(
+        ScratchTokenCore(ScratchShape(32, 8, 1, 2, 16, 0.0, capacity)), slots=slots)
+    kwargs = ({"max_observations": 1, "max_input_tokens": 4096}
+              if projection is project_memory_episodes else {})
+    with patch.object(subject.core, "contextualize") as compute:
+        result = projection(view(item), token, subject, **kwargs)
+        compute.assert_not_called()
+    assert not (result.episodes if projection is project_memory_episodes else result.windows)
+    assert [entry.reason for entry in result.diagnostics] == ["m2_limit_exceeded_no_truncation"]
