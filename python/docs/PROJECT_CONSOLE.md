@@ -137,33 +137,33 @@ operation keeps its identity and reason; an explicit recovery checks for an exac
 result before publishing anything again. Dataset purpose is not evidence of model quality,
 native run independence or complete historical use across other stores.
 
-### Run a local small-B engineering sample
+### Run a local training operation
 
-A curated **training** Dataset has one explicit small-sample training command. The
-current preset uses scratch B v2 with shared observation computation, width 48,
-one layer, two attention heads, feedforward width 96, three optimizer steps and two
-CPU threads. It does not download Qwen or require team login. The fixed allocation
-uses at most 32 training and 8 development decisions; this is a pipeline check,
-not a useful-policy or full-game quality claim.
+A claimed **training** Dataset has an explicit no-login command. The default is
+D-Simple-S v1: width 48, one layer, two heads, feedforward width 96, three
+optimizer steps and two CPU threads. Its engineering allocation admits at most
+32 train and 8 development decisions. An explicit experimental D-Simple M2-K1
+choice accepts only a published Human observed-input source with the same local
+training claim and complete source index. M2 fits a fresh tokenizer on current
+complete public pages, retains unlabeled observations and verified settling
+provenance, and runs a bounded CPU episode job. It has no development split or
+independent evaluation. Two recorder run IDs do not establish two games.
 
-The owner verifies the Dataset membership and durable training claim, then records
-source/run exposure before publishing derivatives. This entry currently builds the
-public compact-v2 BC view from canonical decisions with exact public-H bindings.
-It rejects missing bindings or an empty train/dev projection instead of falling back
-to native/private features. Human text-menu input labels remain a separate mode;
-their research token support does not yet make them curated datasets in this UI.
-The Human text v1/v2 research path revalidates its typed view before tokenization.
-Its different recording sessions do not prove independent native runs: model and
-baseline reports retain descriptive metrics but suppress whole-run confidence
-intervals; comparisons identify reported session groups rather than independent runs.
+The owner records source/run training use before any derivative or tokenizer fit.
+The default path keeps its public compact-v2 BC view and exact public-H bindings.
+M2 uses the shared canonical observed-page projection and rejects whole episodes
+or pages outside its declared limits instead of truncating. Its immutable run
+input retains the tokenizer, observed-event map, projection config and source.
 
 The store has one training slot shared across local profiles. GET, rendering and
 refresh never launch work. A pending operation retains its identity; loss of its
 supervisor is an unknown outcome, not permission to restart. A failure before a run
 exists may be retried explicitly; an existing run with an unknown outcome needs
-reconciliation first. Completion verifies the exact result and indexes its model and
-development report. Links open those artifacts in the same local library. This does
-not register the model for game inference or silently replace a loaded model.
+reconciliation first. Completion verifies the exact result and indexes its model.
+The default recipe also indexes its development report; M2 records `not_run`
+evaluation status and no evaluation artifact. Links open those artifacts in the
+same local library. M2 is not registered for game inference. These are engineering
+results, not policy quality or scientific qualification.
 
 ## Cloud login and connection
 

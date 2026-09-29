@@ -422,6 +422,34 @@ def test_opted_in_verified_settling_keeps_event_provenance_without_model_step():
                for step in episode.steps)
 
 
+def test_workbench_tokenizer_keeps_unlabeled_pages_and_verified_settling_boundary():
+    from stpd.fullrun.memory_training_prepare import fit_observed_memory_tokenizer
+
+    items = (
+        session_observed("ready-1", 1, reset=True),
+        session_observed("settling", 2, status="settling"),
+        session_observed("ready-2", 3, action=None),
+        session_observed("ready-3", 4),
+    )
+    raw, count = fit_observed_memory_tokenizer(view(*items), max_settling_events=1)
+    assert count == 1
+    fitted = Tokenizer.from_str(raw.decode("utf-8"))
+    assert fitted.truncation is None and fitted.padding is None
+    fitted_model = ExperimentalDSimpleM2(ScratchTokenCore(ScratchShape(
+        fitted.get_vocab_size(), 8, 1, 2, 16, 0.0, 1024,
+    )))
+    projected = project_memory_episodes(
+        view(*items), fitted, fitted_model,
+        max_observations=3, max_input_tokens=10_000, max_settling_events=1,
+    )
+    assert not projected.diagnostics
+    assert len(projected.episodes[0].steps) == 3
+    assert projected.episodes[0].steps[1].label_key is None
+    assert [item.disposition for item in projected.event_mapping] == [
+        "step", "settling", "step", "step",
+    ]
+
+
 @pytest.mark.parametrize(
     ("mutation", "reason"),
     [
