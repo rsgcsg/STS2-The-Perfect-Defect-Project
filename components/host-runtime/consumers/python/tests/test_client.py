@@ -28,6 +28,21 @@ for line in sys.stdin:
         print(json.dumps({**base,"type":"read_result","read":{"kind":"detail"}}), flush=True)
     elif request["command"] == "step":
         print(json.dumps({**base,"type":"step_result","receipt":{"delivery":"delivered","successor":snapshot}}), flush=True)
+    elif request["command"] == "text_observe":
+        context = {"schema":"sts2.player-environment/text-menu-observation-context-1",
+                   "snapshot":{"schema":"sts2.player-environment/text-menu-snapshot-1",
+                               "input_profile":"text-menu-v1", "snapshot_id":"text-s1",
+                               "menu_actions":{"actions":[{"action_id":"text-a1"}]}},
+                   "game_continuity_id":"managed_episode_test"}
+        print(json.dumps({**base,"type":"text_observe_result","context":context}), flush=True)
+    elif request["command"] == "text_submit":
+        assert request["action_id"] == "text-a1"
+        assert request["expected_snapshot_id"] == "text-s1"
+        assert request["expected_game_continuity_id"] == "managed_episode_test"
+        assert request["mutation_request_id"] == "text-mutation-1"
+        print(json.dumps({**base,"type":"text_submit_result","result":{
+            "schema":"sts2.player-environment/text-menu-action-result-1",
+            "status":"applied", "request_id":"text-mutation-1"}}), flush=True)
     elif request["command"] == "episode_identity":
         print(json.dumps({**base,"type":"episode_identity_result","identity":{"episode_provenance":{"verdict":"provenance_pass","actual_seed":"SEED"}}}), flush=True)
     elif request["command"] == "close":
@@ -69,6 +84,20 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(receipt["delivery"], "delivered")
             self.assertEqual(environment.observe()["snapshot_id"], "s1")
             self.assertEqual(environment.episode_identity()["episode_provenance"]["actual_seed"], "SEED")
+
+    def test_public_text_menu_context_and_exact_submission(self):
+        with ManagedPlayerEnvironment([sys.executable, "-u", "-c", FAKE_DRIVER]) as environment:
+            environment.reset("SEED")
+            context = environment.observe_text_menu()
+            self.assertEqual(context["snapshot"]["input_profile"], "text-menu-v1")
+            action = context["snapshot"]["menu_actions"]["actions"][0]["action_id"]
+            result = environment.submit_text_menu(
+                action, context["snapshot"]["snapshot_id"],
+                context["game_continuity_id"], request_id="text-mutation-1",
+            )
+            self.assertEqual(result["status"], "applied")
+            with self.assertRaises(ValueError):
+                environment.submit_text_menu(action, "", context["game_continuity_id"])
 
     def test_rejects_incomplete_action_projection(self):
         with self.assertRaises(DriverError):

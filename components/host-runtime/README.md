@@ -166,6 +166,22 @@ preserves every advertised action and argument in source order. The earlier
 `ManagedTextMenuMapSessionAdapter` import remains an alias. It keeps exact
 native bindings private and rechecks the current page before dispatch.
 
+The public `sts2-managed-pe-driver` JSONL transport now exposes `text_observe`
+and `text_submit` beside raw `observe`/`step`. `text_observe` returns the existing
+text observation context shape (`schema`, `snapshot`, `game_continuity_id`) from
+one Managed session. `text_submit` requires an advertised `action_id`, exact
+`expected_snapshot_id`, `expected_game_continuity_id`, and stable
+`mutation_request_id`; the driver supplies the fixed `text-menu-v1` profile to
+the adapter. A successful reset rotates the Host-owned Managed episode ID,
+including for a repeated seed. A failed reset disables both public action
+routes until a successful reset, since native reset may already have replaced
+the simulator. Close ends the session. Unknown native delivery cannot be
+retried or bypassed by raw `step`; the process must be replaced. These are
+Managed JSONL consumer semantics, not a Reference HTTP lease or native
+RunState attestation. The locked Connector SDK package has no text context
+decoder export yet; this driver emits its existing context shape while the
+real adapter and raw snapshot SDK retain their respective checks.
+
 Event options retain the game's visible order and locked options remain visible
 but non-executable. An executable event choice carries the current native room,
 event, and option identities as private operands; the native handler rechecks
