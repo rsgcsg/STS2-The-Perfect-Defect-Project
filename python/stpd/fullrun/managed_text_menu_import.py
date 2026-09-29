@@ -103,46 +103,14 @@ def _snapshot(value: Any, *, interactive: bool) -> dict[str, Any]:
     if interactive:
         project_text_menu_v2_snapshot(value)
     else:
-        # Public result observations may be terminal or temporarily settling.
-        # They carry no candidate label and never enter the next input unless
-        # another complete interactive page was actually recorded.
+        # A final noninteractive U' is retained from exact result bytes. It is
+        # not a decoded public model input or a canonical game successor.
         if value.get("status") == "interactive":
             project_text_menu_v2_snapshot(value)
         elif (value.get("status") not in {"observed", "settling", "visible_unsupported"}
-              or set(value) != {"protocol_version", "schema", "input_profile",
-                                "snapshot_id", "sequence", "observed_at", "status",
-                                "persistent", "interaction", "referents", "completeness",
-                                "session", "information_policy", "menu", "menu_actions"}
               or value.get("protocol_version") != "1.0.0"
-              or not isinstance(value.get("observed_at"), str)
-              or not value["observed_at"]
-              or not isinstance(value.get("interaction"), dict)
-              or value["interaction"].get("capabilities") != []
-              or not isinstance(value["interaction"].get("content"), dict)
-              or not isinstance(value.get("referents"), list)
-              or not isinstance(value.get("completeness"), dict)
               or not isinstance(value.get("information_policy"), dict)
-              or value["information_policy"].get("includes_hidden_information") is not False
-              or not isinstance(value.get("menu"), dict)
-              or set(value["menu"]) != {
-                  "cursor", "revision", "native_snapshot_id", "selection"}
-              or value["menu"].get("cursor") != "root"
-              or value["menu"].get("selection") != []
-              or type(value["menu"].get("revision")) is not int
-              or value["menu"]["revision"] < 0
-              or not isinstance(value["menu"].get("native_snapshot_id"), str)
-              or not value["menu"]["native_snapshot_id"]
-              or not isinstance(value.get("menu_actions"), dict)
-              or set(value["menu_actions"]) != {
-                  "status", "materialized_count", "total_count",
-                  "ordering_semantics", "actions"}
-              or value["menu_actions"].get("actions") != []
-              or value["menu_actions"].get("materialized_count") != 0
-              or value["menu_actions"].get("total_count") != 0
-              or value["menu_actions"].get("status") != (
-                  "complete" if value["status"] == "observed" else "unavailable")
-              or not isinstance(value["menu_actions"].get("ordering_semantics"), str)
-              or not value["menu_actions"]["ordering_semantics"]):
+              or value["information_policy"].get("includes_hidden_information") is not False):
             _fail("noninteractive_successor_invalid")
     if (type(value.get("sequence")) is not int or value["sequence"] < 1
             or not isinstance(value.get("snapshot_id"), str)
@@ -162,44 +130,6 @@ def _context(value: Any) -> dict[str, Any]:
         _fail("context_invalid")
     _snapshot(value["snapshot"], interactive=True)
     return dict(value)
-
-
-def _ui_successor(action: dict[str, Any], before: dict[str, Any],
-                  after: dict[str, Any]) -> None:
-    current, next_menu = before["menu"], after["menu"]
-    if (after["status"] != "interactive"
-            or next_menu["native_snapshot_id"] != current["native_snapshot_id"]
-            or next_menu["revision"] <= current["revision"]):
-        _fail("menu_successor_mismatch")
-    verb = action["verb"]
-    selection = current["selection"]
-    next_selection = next_menu["selection"]
-    if verb == "select_card":
-        valid = (current["cursor"] == "root"
-                 and next_menu["cursor"] in {"card_targets", "card_confirmation"}
-                 and next_selection == [{"role": "card",
-                                         "referent_id": action["subject_referent_id"]}])
-    elif verb == "select_target":
-        valid = (current["cursor"] == "card_targets"
-                 and next_menu["cursor"] == "card_confirmation"
-                 and next_selection == selection + [{
-                     "role": "target", "referent_id": action["subject_referent_id"]}])
-    elif verb == "cancel_selection":
-        valid = next_menu["cursor"] == "root" and next_selection == []
-    elif verb == "back":
-        if current["cursor"] == "card_confirmation" and len(selection) == 2:
-            valid = (next_menu["cursor"] == "card_targets"
-                     and next_selection == selection[:1])
-        else:
-            target = "information" if current["cursor"] not in {
-                "card_confirmation", "card_targets", "information"} else "root"
-            valid = next_menu["cursor"] == target and next_selection == []
-    elif verb == "open_information":
-        valid = current["cursor"] == "root" and next_menu["cursor"] == "information"
-    else:
-        valid = next_menu["cursor"] == verb.removeprefix("open_")
-    if not valid:
-        _fail("menu_successor_mismatch")
 
 
 def _closed_report(store: ArtifactStore, report_id: str, *,
@@ -353,8 +283,6 @@ def _closed_report(store: ArtifactStore, report_id: str, *,
                 or successor["snapshot_id"] == snapshot["snapshot_id"]
                 or index < len(report["events"]) - 1 and successor["status"] != "interactive"):
             _fail("successor_identity_or_order_mismatch")
-        if selected["effect_domain"] == "text_menu":
-            _ui_successor(selected, snapshot, successor)
         prior = {"schema": CONTEXT_SCHEMA, "snapshot": successor,
                  "game_continuity_id": before["game_continuity_id"]}
         inputs.append(ManagedInput(index + 1, parent.artifact_id, request, action,

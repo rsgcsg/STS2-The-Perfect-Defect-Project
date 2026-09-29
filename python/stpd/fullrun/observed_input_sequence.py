@@ -115,6 +115,8 @@ def _managed_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
     for item in source.inputs:
         result = item.result
         native = result["effect_domain"] == "native_input"
+        successor = result["successor"]
+        projectable_successor = successor["status"] == "interactive"
         inputs.append(ObservedInput(
             stream_id=stream_id, source_kind="managed_control_input_stream",
             event_id=f"managed:{item.event_artifact_id}:{item.request_id}",
@@ -123,9 +125,10 @@ def _managed_view(store: ArtifactStore, source_id: str) -> ObservedInputView:
             selected_action_id=item.action_id, choice_mask=True,
             delivery_status="delivered" if native else "not_applicable",
             delivery_mask=native,
-            successor_snapshot=result["successor"],
-            successor_relation="post_native_observation" if native else "ui_navigation",
-            successor_observation_mask=True, causal_successor_mask=False,
+            successor_snapshot=successor if projectable_successor else None,
+            successor_relation=("post_native_observation" if native else "ui_navigation")
+            if projectable_successor else "unknown",
+            successor_observation_mask=projectable_successor, causal_successor_mask=False,
             reset_before=item.sequence == 1,
             reset_reason="stream_start" if item.sequence == 1 else None,
             source_events=(SourceEventRef(item.sequence, "managed_run_event",
