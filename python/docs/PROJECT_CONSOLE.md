@@ -165,6 +165,17 @@ evaluation status and no evaluation artifact. Links open those artifacts in the
 same local library. M2 is not registered for game inference. These are engineering
 results, not policy quality or scientific qualification.
 
+An explicit model-page export can also package a completed M2 train-only model.
+The Workbench rechecks its immutable completed run/result/model chain, the published
+Human source, and exact training claim and use records for that operation before
+starting a private export child. This admission remains valid after later local
+trainings replace the current training-status slot. The exported package contains
+only pinned model weights, tokenizer, projection/configuration and artifact IDs;
+it excludes Human pages, the source map, optimizer state and active memory. Its
+status remains `not_run` for independent evaluation. Export does not register,
+load or qualify M2 for game decisions; that later integration requires a separate
+reviewed Runtime package and local environment checks.
+
 ## Cloud login and connection
 
 Choose **打开云端** from the local page, or open the configured Hub's `/app/` from another device.

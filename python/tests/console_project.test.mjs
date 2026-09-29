@@ -61,6 +61,13 @@ const textMenuScratchModel = (artifactId = id("a"), recipe = "stage1a.b.s.v2") =
   parents:[],
   payloads:[],
 });
+const memoryModel = (artifactId = id("a")) => ({
+  artifact_id:artifactId, kind:"model",
+  parameters:{schema:"stpd/experimental-m2-model-v1", partition:"train",
+    qualification:"engineering_only", episodes:1,
+    config:{slots:1, reset_each_step:false}},
+  parents:[], payloads:[],
+});
 const modelExportStatus = (operation, extra = {}) => ({
   schema:"stpd/local-model-export-operation-v1",
   availability:"ready",
@@ -1481,6 +1488,44 @@ test("local model export status is read-only until one explicit export click", a
   assert.equal(writes[0].options.headers["X-CSRF-Token"], "export-csrf");
   assert.equal(action(env.livePage, "start-local-model-export").disabled, true,
     "replacement render preserves backend pending eligibility");
+});
+
+test("M2 export is explicit, train-only, and offers no registration", async () => {
+  const model = id("a"), run = id("b");
+  let state = modelExportStatus({status:"idle"});
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    renderOnReload:true,
+    handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model);
+      if (url === "/api/local-model-exports/status") return state;
+      if (url === "/api/local-model-exports/start") {
+        assert.equal(options.method, "POST");
+        assert.deepEqual(body({options}), {model_id:model});
+        state = modelExportStatus({status:"completed", model_id:model,
+          model_type:"memory", run_id:run, payload_bytes:123},
+        {schema:"stpd/local-model-export-operation-v2"});
+        return state;
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /模型概览/);
+  assert.match(text(page), /实验性 D-Simple M2-K1/);
+  assert.match(text(page), /仅训练完成；没有独立评估/);
+  assert.match(text(page), /没有独立评估/);
+  assert.match(text(page), /不能登记或加载到游戏/);
+  assert.equal(post(env.calls).length, 0);
+  assert.equal(env.calls.some(call => call.url.includes("local-model-registrations")), false);
+  await action(page, "start-local-model-export").onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.match(text(env.livePage), /没有独立评估/);
+  assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), false);
+  assert.equal(env.calls.some(call => call.url.includes("local-model-registrations")), false);
 });
 
 test("late model export completion refreshes current same-profile status without showing the old model result", async () => {
