@@ -126,6 +126,14 @@ test("reward text menu preserves every current callback choice and native bindin
   for (const bad of [
     { ...rewardDecision("card_reward"), alternatives: undefined },
     { ...rewardDecision("card_reward"), alternatives: {} },
+    { ...rewardDecision("card_reward"), alternatives: "Skip" },
+    { ...rewardDecision("card_reward"), alternatives: [null] },
+    { ...rewardDecision("card_reward"), alternatives: [{ index: 0, native_ref: "alternative-skip", id: 42, name: "Skip" }] },
+    { ...rewardDecision("card_reward"), alternatives: [{ index: 0, native_ref: "alternative-skip", id: "Skip", name: {} }] },
+    { ...rewardDecision("card_reward"), cards: null },
+    { ...rewardDecision("card_reward"), cards: {} },
+    { ...rewardDecision("card_reward"), cards: [null] },
+    { ...rewardDecision("card_reward"), cards: [{ index: 0, native_ref: 42, name: "Strike" }] },
     { ...rewardDecision("card_reward"), alternatives: [] , cards: [] },
     { ...rewardDecision("card_reward"), alternatives: [{ index: 0, id: "SACRIFICE", name: "Sacrifice" }] },
     { ...rewardDecision("card_reward"), alternatives: [{ index: 0, native_ref: "creation-result-a", id: "SACRIFICE", name: "Sacrifice" }] }
