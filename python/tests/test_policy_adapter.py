@@ -332,11 +332,39 @@ print(json.dumps(paths))
     assert set(loaded) == set(ADAPTER_SOURCE_CLOSURE) - {"tools/policy_adapter.py"}
 
 
-def test_v6_preserves_trained_policy_and_versions_encoder_implementation() -> None:
+def test_decision_import_is_isolated_from_host_collection_but_public_exports_remain() -> None:
+    script = """
+import sys
+import stpd.policy.adapter
+for name in ('stpd.environment.runtime_collection', 'stpd.training_smoke',
+             'stpd.host_runtime_client', 'stpd.game_seed', 'sts2_headless'):
+    assert name not in sys.modules, name
+import stpd.environment
+assert not hasattr(stpd.environment, 'unknown_collection_export')
+from stpd.environment import (
+    RuntimeCollection, collect_managed_runtime, token_profile_records,
+)
+from stpd.environment import runtime_collection
+assert RuntimeCollection is runtime_collection.RuntimeCollection
+assert collect_managed_runtime is runtime_collection.collect_managed_runtime
+assert token_profile_records is runtime_collection.token_profile_records
+assert 'sts2_headless' not in sys.modules
+"""
+    subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=DEFAULT_MANIFEST.parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_v7_preserves_trained_policy_and_versions_isolated_adapter_implementation() -> None:
     root = DEFAULT_MANIFEST.parents[1]
     current = json.loads(DEFAULT_MANIFEST.read_text())
-    old = json.loads((root / "policy-manifests/s1-policy-adapter-v5.json").read_text())
-    assert DEFAULT_MANIFEST.name == "s1-policy-adapter-v6.json"
+    old = json.loads((root / "policy-manifests/s1-policy-adapter-v6.json").read_text())
+    assert DEFAULT_MANIFEST.name == "s1-policy-adapter-v7.json"
+    assert current["adapter"]["version"] != old["adapter"]["version"]
     assert current["manifest_id"] != old["manifest_id"]
     assert current["adapter"]["code_sha256"] == adapter_code_sha256()
     assert "code_digest_scope" not in current["adapter"]

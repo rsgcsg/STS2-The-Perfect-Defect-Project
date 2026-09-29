@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stageAssemblyFingerprintProject } from "../src/assembly-fingerprint-project.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -55,10 +56,17 @@ if (!existsSync(assembly)) throw new Error("source-audit requires --assembly <ex
 const outputRoot = path.resolve(option(args, "--output", path.join(ROOT, ".local", "source-audit")));
 mkdirSync(outputRoot, { recursive: true });
 
-const fingerprint = spawnSync("dotnet", [
-  "run", "--project", path.join(ROOT, "tools", "dotnet", "AssemblyFingerprint"),
-  "--configuration", "Release", "--", "--assembly", assembly
-], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+const staged = stageAssemblyFingerprintProject(ROOT);
+let fingerprint;
+try {
+  fingerprint = spawnSync("dotnet", [
+    "run", "--project", staged.project,
+    "--configuration", "Release", "--", "--assembly", assembly
+  ], { cwd: staged.directory, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+} finally {
+  staged.cleanup();
+}
+if (fingerprint.error) throw fingerprint.error;
 if (fingerprint.status !== 0) throw new Error(fingerprint.stderr || "Assembly fingerprint failed.");
 const inventory = JSON.parse(fingerprint.stdout);
 const identity = inventory.assembly;
