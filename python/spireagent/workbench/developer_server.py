@@ -185,6 +185,7 @@ class Application:
         from spireagent.workbench.evaluation_sharing import EvaluationSharing
         from spireagent.workbench.inplace_curation import InplaceCurationPreparation
         from spireagent.workbench.local_dataset import LocalDatasetService
+        from spireagent.workbench.local_memory_evaluation import LocalMemoryEvaluationService
         from spireagent.workbench.local_model_export import LocalModelExport
         from spireagent.workbench.local_model_registration import LocalModelRegistration
         from spireagent.workbench.local_recording_import import LocalRecordingImporter
@@ -218,6 +219,7 @@ class Application:
         self.local_recording_preview = LocalRecordingPreview(self.local_research_workspace)
         self.local_datasets = LocalDatasetService(config)
         self.local_training = LocalTrainingService(config)
+        self.local_memory_evaluation = LocalMemoryEvaluationService(config)
         self.local_model_export = LocalModelExport(config)
         self.local_model_registration = LocalModelRegistration(
             config, self.local_model_export, self.models,
@@ -544,6 +546,23 @@ class Application:
             dataset_id, after_completed_operation_id=after_completed_operation_id,
             recipe=recipe)
 
+    def start_local_memory_evaluation(self, model_id: object, source_id: object,
+                                      *, max_settling_events: object = 0) -> dict[str, Any]:
+        if self.config_path is None:
+            raise BoundaryError("local_memory_evaluation", "running_instance_unavailable")
+        try:
+            current = ProjectConfig.load(self.config_path)
+            runtime = json.loads((self.config.state_dir / "runtime.json").read_text())
+        except (OSError, ValueError, TypeError, BoundaryError) as error:
+            raise BoundaryError(
+                "local_memory_evaluation", "running_instance_unavailable") from error
+        if (not isinstance(runtime, dict) or current != self.config
+                or runtime.get("instance_id") != self.instance_id
+                or runtime.get("configuration_id") != configuration_id(self.config)):
+            raise BoundaryError("local_memory_evaluation", "running_configuration_mismatch")
+        return self.local_memory_evaluation.start(
+            model_id, source_id, max_settling_events=max_settling_events)
+
     def start_local_model_export(self, model_id: object) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_model_export", "running_instance_unavailable")
@@ -795,6 +814,15 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(400, b'{"error":"invalid_local_training_request"}')
                     return
                 value = {**app.local_training.status(), "csrf_token": app.account.csrf}
+                self.respond(200, json.dumps(value).encode())
+            elif parsed.path == "/api/local-memory-evaluations/status":
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                if parsed.query:
+                    self.respond(400, b'{"error":"invalid_local_memory_evaluation_request"}')
+                    return
+                value = {**app.local_memory_evaluation.status(), "csrf_token": app.account.csrf}
                 self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/api/local-model-exports/status":
                 if not self.authenticated_browser():
@@ -1114,6 +1142,29 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_local_training_request"}')
+                return
+            if self.path.startswith("/api/local-memory-evaluations/"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                if self.path != "/api/local-memory-evaluations/start":
+                    self.respond(404, b'{"error":"route_not_found"}')
+                    return
+                try:
+                    body = self.json_body(maximum=256)
+                    if (not {"model_id", "source_id"} <= set(body)
+                            or not set(body) <= {
+                                "model_id", "source_id", "max_settling_events"}):
+                        raise ValueError
+                    value = app.start_local_memory_evaluation(
+                        body["model_id"], body["source_id"],
+                        max_settling_events=body.get("max_settling_events", 0),
+                    )
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_local_memory_evaluation_request"}')
                 return
             if self.path.startswith("/api/local-model-exports/"):
                 if not self.browser_write():

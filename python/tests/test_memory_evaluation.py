@@ -53,7 +53,8 @@ def _view(source_id: str, session: str, *events: str) -> ObservedInputView:
 
 def prepared(tmp_path: Path, monkeypatch, *, reset_each_step: bool = False,
              train_events: tuple[str, ...] = ("train-cue", "train-choice"),
-             dev_events: tuple[str, ...] = ("dev-cue", "dev-choice")):
+             dev_events: tuple[str, ...] = ("dev-cue", "dev-choice"),
+             operation_id: str | None = None):
     store = ManifestArtifactStore(LocalBlobStore(tmp_path / "objects"))
     evidence_a = Manifest("evidence", PRODUCER)
     evidence_b = Manifest("evidence", replace(PRODUCER, source_revision="c" * 40))
@@ -89,6 +90,7 @@ def prepared(tmp_path: Path, monkeypatch, *, reset_each_step: bool = False,
         source_mapping=projection.event_mapping,
         projection_config=MemoryEpisodeProjectionConfig(
             "stpd/memory-episode-projection-config-v1", 0),
+        operation_id=operation_id,
     )
     reporter = ObjectStoreRunReporter(store, store.blobs)
     result = execute_memory_run(store, reporter, run.artifact_id, PRODUCER)
@@ -113,7 +115,9 @@ def test_dev_report_uses_separate_source_and_preserves_frozen_weights(tmp_path, 
     assert public["native_run_independence"] == "unknown_across_sessions"
 
 
-def test_same_source_evidence_session_and_rendered_input_rejected(tmp_path, monkeypatch):
+def test_same_source_evidence_session_rejected_but_natural_page_repeat_counted(
+    tmp_path, monkeypatch,
+):
     store, model_id, train, dev, views, _, _ = prepared(tmp_path, monkeypatch)
     with pytest.raises(BoundaryError, match="train_dev_source_or_evidence_overlap"):
         evaluate_memory(store, model_id, train.artifact_id, PRODUCER)
@@ -130,8 +134,8 @@ def test_same_source_evidence_session_and_rendered_input_rejected(tmp_path, monk
     with pytest.raises(BoundaryError, match="train_dev_session_or_stream_overlap"):
         evaluate_memory(store, model_id, dev.artifact_id, PRODUCER)
     views[dev.artifact_id] = _view(dev.artifact_id, "dev-session", "train-cue")
-    with pytest.raises(BoundaryError, match="train_dev_rendered_input_overlap"):
-        evaluate_memory(store, model_id, dev.artifact_id, PRODUCER)
+    report = evaluate_memory(store, model_id, dev.artifact_id, PRODUCER)
+    assert report.parameters.value()["train_dev_rendered_overlap_count"] == 1
 
 
 def test_no_labeled_dev_and_exact_reset_config(tmp_path, monkeypatch):

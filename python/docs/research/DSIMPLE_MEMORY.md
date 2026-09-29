@@ -345,8 +345,10 @@ model trained from a verified Human observed-input source and a separate verifie
 dev observed-input source. Its caller must establish
 dev purpose and prior-use eligibility with the existing local curation owner
 before calling it. This research API does not grant source admission. It rejects
-shared source or evidence ancestry, session/native-stream overlap, and identical
-rendered current page plus complete catalog. It re-fits the tokenizer on the
+shared source or evidence ancestry and session/native-stream overlap. Identical
+rendered current pages plus complete catalogs across distinct sources are counted
+as a diagnostic; a naturally repeated public menu in independent runs is not
+itself proof of leakage. It re-fits the tokenizer on the
 verified Human train source and requires exact saved bytes, then reprojects the
 train source against saved tensors and event map. Dev projection uses those same
 saved tokenizer bytes and never fits on dev. Arbitrary caller-tokenized V2
@@ -363,11 +365,21 @@ scientific verdict unclaimed. A Reset result requires a separately trained
 `reset_each_step=True` model export; changing the config of an M2 export fails
 identity validation.
 
-There is no public `evaluate-memory` CLI yet: the local Workbench's curation
-ledger owns prior training-use exposure, and it currently has no read-only dev
-admission predicate for this new evaluation workflow. A caller must supply that
-gate before using the research API on real data. The train-only run is not
-retrospectively split into dev.
+The Workbench backend exposes an explicit model-detail operation at
+`POST /api/local-memory-evaluations/start` and a separate status read. The
+operation requires an exact completed M2 model lineage, with its immutable run,
+checkpoint, tokenizer and train source. It does not depend on which model the
+mutable Workbench training journal currently displays. The local curation owner
+compares typed, indexed native runs and their
+duplicate-connected groups against the separate dev source, rejects Gold/test
+claims, and reserves an evaluation exposure before starting the private worker.
+That reservation is scoped to the model operation; another experiment may train
+on the source. A later local Gold claim cannot seal an exposed dev group. The
+`evaluate-memory` CLI command is the private child computation entry after
+this owner gate, not a source-admission command. Prior model-selection exposure
+has no durable source record in the existing ledger, so this first path reports
+that boundary as unknown and makes only an engineering dev claim.
+The train-only run is not retrospectively split into dev.
 
 After a run has been prepared with that Python API at the **same exact source
 identity**, the existing research CLI can execute it:

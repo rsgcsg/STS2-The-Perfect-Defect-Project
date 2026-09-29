@@ -16,7 +16,7 @@ import torch
 from tokenizers import Tokenizer  # type: ignore[import-untyped]
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
-from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, json_bytes
+from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, digest, json_bytes
 from spireagent.storage.store import ArtifactStore
 from stpd.fullrun.evaluation import candidate_metrics, summarize_rows
 from stpd.fullrun.memory_sequence_bridge import (
@@ -182,13 +182,13 @@ def _verify_train_projection(
 
 def evaluate_memory(
     store: ArtifactStore, model_id: str, dev_source_id: str, producer: Producer, *,
-    max_settling_events: int = 0, seed: int = 0,
+    max_settling_events: int = 0, seed: int = 0, operation_id: str | None = None,
 ) -> Manifest:
     """Publish exact dev projection and metrics; source admission precedes this call."""
+    if operation_id is not None:
+        digest(operation_id, "memory_evaluation.operation_id", length=32)
     model_manifest, training, config, train_source_id, tokenizer_bytes = _model_lineage(
         store, model_id)
-    if model_manifest.producer != producer:
-        raise BoundaryError("memory_evaluation", "producer_mismatch")
     train_ancestors = _ancestors(store, train_source_id)
     dev_ancestors = _ancestors(store, dev_source_id)
     if train_ancestors & dev_ancestors:
@@ -199,8 +199,7 @@ def evaluate_memory(
         raise BoundaryError("memory_evaluation", "empty_observed_source")
     if _stream_scope(train_view) & _stream_scope(dev_view):
         raise BoundaryError("memory_evaluation", "train_dev_session_or_stream_overlap")
-    if _rendered_inputs(train_view) & _rendered_inputs(dev_view):
-        raise BoundaryError("memory_evaluation", "train_dev_rendered_input_overlap")
+    rendered_overlap_count = len(_rendered_inputs(train_view) & _rendered_inputs(dev_view))
     try:
         tokenizer = Tokenizer.from_str(tokenizer_bytes.decode("utf-8"))
     except Exception as error:
@@ -255,9 +254,11 @@ def evaluate_memory(
     event_mapping = [asdict(item) for item in projection.event_mapping]
     input_raw = json_bytes({
         "schema": INPUT_SCHEMA, "model_id": model_id, "source_id": dev_source_id,
+        "operation_id": operation_id,
         "tokenizer_sha256": hashlib.sha256(tokenizer_bytes).hexdigest(),
         "projection": {"renderer": RENDERER_IDENTITY,
                        "max_settling_events": max_settling_events},
+        "train_dev_rendered_overlap_count": rendered_overlap_count,
         "events": event_mapping, "episodes": [
             {"episode_id": episode.episode_id, "stream_id": source.stream_id,
              "step_event_ids": source.step_event_ids,
@@ -273,8 +274,10 @@ def evaluate_memory(
         (Parent("model", model_id), Parent("source", dev_source_id)),
         (store.put_payload("projection", io.BytesIO(input_raw), "application/json"),),
         FrozenObject.of({"schema": INPUT_SCHEMA, "partition": "dev",
+                         "operation_id": operation_id,
                          "episode_count": len(projection.episodes),
                          "labeled_decisions": len(rows),
+                         "train_dev_rendered_overlap_count": rendered_overlap_count,
                          "qualification": "engineering_only"}),
     )
     store.publish(evaluation_input)
@@ -287,7 +290,10 @@ def evaluate_memory(
          Parent("model", model_id), Parent("source", dev_source_id)),
         (store.put_payload("metrics", io.BytesIO(metrics_raw), "application/json"),),
         FrozenObject.of({"schema": EVALUATION_SCHEMA, "partition": "dev",
+                         "operation_id": operation_id,
                          "rows": len(rows), "qualification": "engineering_only",
+                         "train_dev_rendered_overlap_count": rendered_overlap_count,
+                         "model_selection_exposure": "unknown",
                          "scientific_verdict": "not_claimed",
                          "native_run_independence": "unknown_across_sessions"}),
     )

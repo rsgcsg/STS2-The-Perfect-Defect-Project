@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 from sts2_platform_evidence.human_session_bundle_v3 import HumanSessionBundleV3
 
+from spireagent.artifact_contracts import Manifest
 from spireagent.hub.database import create_private_database
 from spireagent.json_boundary import BoundaryError, digest
 from spireagent.research_curation import CurationLedger, InventoryPending
@@ -267,5 +269,80 @@ class LocalCurationOwner:
 
     def _historical_claim_guard(self, db: sqlite3.Connection, purpose: str,
                                 related: set[str]) -> None:
+        if purpose == "gold" and any(
+            db.execute("SELECT 1 FROM curation_uses WHERE run=? AND kind='evaluation'",
+                       (run,)).fetchone() for run in related
+        ):
+            raise BoundaryError("local_curation", "gold_previously_used_for_evaluation")
         if purpose == "gold" and self.gold_history_unknown(db, related):
             raise BoundaryError("local_curation", "legacy_gold_history_unknown")
+
+    def reserve_memory_dev(self, store: ManifestArtifactStore, train_source_id: str,
+                           dev_source_id: str, model_operation_id: str,
+                           evaluation_operation_id: str) -> None:
+        """Reserve one model-specific dev use in the existing local curation ledger."""
+        from stpd.fullrun.text_menu_human_import import load_human_text_source
+
+        digest(model_operation_id, "local_curation.model_operation", length=32)
+        digest(evaluation_operation_id, "local_curation.evaluation_operation", length=32)
+        train_manifest, _ = load_human_text_source(store, train_source_id)
+        dev_manifest, _ = load_human_text_source(store, dev_source_id)
+        if train_manifest.artifact_id == dev_manifest.artifact_id:
+            raise BoundaryError("local_curation", "train_dev_source_overlap")
+
+        def evidence_runs(manifest: Manifest) -> tuple[set[str], tuple[str, ...]]:
+            parents = tuple(parent.artifact_id for parent in manifest.parents)
+            if not parents:
+                raise BoundaryError("local_curation", "source_evidence_required")
+            runs: set[str] = set()
+            for source in parents:
+                native = self._human_runs(store, source)
+                indexed = self.ledger.source_runs(source)
+                if indexed is None or not native <= indexed:
+                    raise BoundaryError("local_curation", "source_index_incomplete")
+                runs.update(native)
+            return runs, parents
+
+        train_runs, train_evidence = evidence_runs(train_manifest)
+        dev_runs, dev_evidence = evidence_runs(dev_manifest)
+        if not train_runs or not dev_runs:
+            raise BoundaryError("local_curation", "source_run_identity_missing")
+        with self.transaction() as db:
+            def claim(source_id: str) -> tuple[str, set[str]] | None:
+                selected = db.execute(
+                    "SELECT id,purpose FROM curation_claims WHERE artifact=?", (source_id,)
+                ).fetchone()
+                if selected is None:
+                    return None
+                return selected[1], {row[0] for row in db.execute(
+                    "SELECT run FROM curation_claim_runs WHERE claim=?", (selected[0],)
+                )}
+
+            if (claim(train_source_id) != ("training", train_runs)
+                    or claim(dev_source_id) != ("training", dev_runs)):
+                raise BoundaryError("local_curation", "source_claim_mismatch")
+            train_related = self.ledger._groups(db, train_runs)
+            dev_related = self.ledger._groups(db, dev_runs)
+            if train_related & dev_related:
+                raise BoundaryError("local_curation", "train_dev_duplicate_run_overlap")
+            if self.gold_history_unknown(db, dev_related):
+                raise BoundaryError("local_curation", "legacy_exposure_unknown")
+            if any(purpose in {"gold", "test"} for purpose, _ in
+                   self.ledger._claims(db, dev_related).values()):
+                raise BoundaryError("local_curation", "sealed_dev_source_forbidden")
+            if any(db.execute(
+                "SELECT 1 FROM curation_uses WHERE run=? AND kind='training' "
+                "AND reference=?", (run, model_operation_id),
+            ).fetchone() is None for run in train_related):
+                raise BoundaryError("local_curation", "model_training_use_unproven")
+            if any(db.execute(
+                "SELECT 1 FROM curation_source_uses WHERE source=? AND kind='training' "
+                "AND reference=?", (source, model_operation_id),
+            ).fetchone() is None for source in train_evidence):
+                raise BoundaryError("local_curation", "model_training_use_unproven")
+            db.executemany("INSERT OR IGNORE INTO curation_uses VALUES(?,?,?,?)",
+                           ((run, "evaluation", evaluation_operation_id, time.time())
+                            for run in sorted(dev_related)))
+            db.executemany("INSERT OR IGNORE INTO curation_source_uses VALUES(?,?,?)",
+                           ((source, "evaluation", evaluation_operation_id)
+                            for source in sorted(dev_evidence)))

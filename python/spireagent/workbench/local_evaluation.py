@@ -231,7 +231,11 @@ def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
                 or manifest.parameters.value().get("qualification") != "engineering_only"
                 or manifest.parameters.value().get("scientific_verdict") != "not_claimed"
                 or manifest.parameters.value().get("native_run_independence")
-                != "unknown_across_sessions"):
+                != "unknown_across_sessions"
+                or manifest.parameters.value().get("model_selection_exposure") != "unknown"
+                or type(manifest.parameters.value().get("train_dev_rendered_overlap_count"))
+                is not int
+                or manifest.parameters.value()["train_dev_rendered_overlap_count"] < 0):
             raise BoundaryError("local_evaluation", "invalid_memory_report")
         model = store.get_manifest(manifest.parent("model"))
         evaluation_input = store.get_manifest(manifest.parent("evaluation_input"))
@@ -242,7 +246,8 @@ def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
                 != "stpd/experimental-m2-evaluation-input-v1"
                 or evaluation_input.parent("model") != model.artifact_id
                 or evaluation_input.parent("source") != manifest.parent("source")
-                or model.producer != manifest.producer
+                or evaluation_input.parameters.value().get("operation_id")
+                != manifest.parameters.value().get("operation_id")
                 or evaluation_input.producer != manifest.producer):
             raise BoundaryError("local_evaluation", "invalid_memory_report")
         recorded = object_fields(
@@ -274,6 +279,9 @@ def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
             "reported_run_groups": runs, "multi_candidate_count": multiple,
             "overall": overall, "grouping": "session_scoped_run_group",
             "native_run_independence": "unknown_across_sessions",
+            "train_dev_rendered_overlap_count": manifest.parameters.value()[
+                "train_dev_rendered_overlap_count"],
+            "model_selection_exposure": "unknown",
             "interpretation": "producer_recorded_summary_not_full_lineage_or_quality_verification",
         }
     if ({payload.role for payload in manifest.payloads} != {"metrics", "summary"}
