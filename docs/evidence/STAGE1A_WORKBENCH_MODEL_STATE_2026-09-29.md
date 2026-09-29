@@ -92,11 +92,33 @@ training completed, and stopped that Workbench through its lifecycle owner. An
 explicit owner read-back at 2026-09-29 10:44:02 UTC reported `not_running`.
 No Runtime Stop or game action was issued by this Workbench switch.
 
+## Actual preparation button
+
+At clean source `cf92b0bb5c894e9cbf4a5dbbf9a0235474500d8b`, the operator
+opened the model page in Safari and explicitly clicked the memory-model
+environment preparation button once. Instance
+`f96a13148e568a1cffa18ab887580be8` recorded operation
+`ffb5dcf5f0334b0a97edeccbc35251d8`. Read-back at
+2026-09-29 10:45:48 UTC returned `completed`, profile `text-menu-m2-v1`,
+`ready`, `reused=true`, application `idle` and `loaded=false`. The browser
+then displayed the completed operation and verified preparation message.
+This exercised the exact existing-install reuse path, not fresh package download
+or first installation. It neither registered nor loaded a model and submitted
+no game action.
+
+A separately reviewed UI-only increment `29b7ff9700fd383a2c2c1efb2cfd96dcdd81f4d3`
+removes duplicate expanded history from the model-control page. It summarizes
+only the returned slice (at most 100 records), separately counting passed,
+failed and unknown verification, with the existing full-detail page retained.
+Its 166 Node tests passed, including a 14-record mixed-status fixture and
+render-without-POST assertions. This is not a claim about the complete archive
+or chronological latest run.
+
 ## Remaining boundary
 
 The migration receipt used the explicit operator API and an already validated
-local text-profile installation. The preparation candidate is source/test
-validation until its actual application use is recorded separately. It does not establish a new user's complete
+local text-profile installation. The preparation button reused the verified existing installation as recorded
+above. Fresh selected-kit installation is covered by synthetic tests only. It does not establish a new user's complete
 one-click setup, released rc.12 asset availability, native Reset operation or
 cross-machine portability. Raw private paths, records, tokens and weights stay
 local. Old stores, packages and archives are preserved for rollback; any return
