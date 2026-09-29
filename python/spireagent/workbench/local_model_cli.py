@@ -25,7 +25,7 @@ def model_command(
 ) -> dict[str, Any]:
     if runtime_profile is not None and (action != "install-runtime" or runtime_archive is None):
         raise BoundaryError("local_model", "runtime_profile_requires_offline_install")
-    if runtime_profile not in {None, "text-menu-v1"}:
+    if runtime_profile not in {None, "text-menu-v1", "text-menu-m2-v1"}:
         raise BoundaryError("local_model", "unsupported_runtime_profile")
     if runtime_archive is not None:
         if action != "install-runtime":
@@ -39,12 +39,14 @@ def model_command(
             service = LocalModelService(config)
             if service.state["status"] == "recovery_required":
                 raise BoundaryError("local_model", "previous_operation_requires_recovery")
-            if runtime_profile == "text-menu-v1":
+            if runtime_profile in {"text-menu-v1", "text-menu-m2-v1"}:
                 if selection is not None:
                     selected = service.selection(selection)
                     if selected.get("runtime_profile") != runtime_profile:
                         raise BoundaryError("local_model", "selection_runtime_profile_mismatch")
-                directory, pin = service.text_runtime_profile()
+                directory, pin = (service.text_runtime_profile()
+                                  if runtime_profile == "text-menu-v1"
+                                  else service.text_runtime_profile(runtime_profile))
             else:
                 directory, pin = service.runtime_profile(selection)
             return install_runtime(

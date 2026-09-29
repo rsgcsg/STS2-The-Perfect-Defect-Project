@@ -1,66 +1,74 @@
 # Current project context, 2026-09-29
 
-Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Develop anchor:
-`05be8a6af4983adcc3c2a93e204a005a9df6454f`, after #86, #88 and #89.
-Resolve live GitHub refs before work; current authorities override this file. Source, CI, installation, Human evidence and scientific results are
-separate. No complete Stage1a or policy-quality qualification is claimed.
+Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`; accepted develop
+anchor `ce56880990df0b518c22112e3b9c10db89bebca5` after PR90–98.
+Resolve live GitHub refs before work; current authorities override this file.
+Source, CI, installation, Human operation and scientific results are separate.
+No complete Stage1a or policy-quality qualification is claimed. See the
+[dated M2 integration ledger](../evidence/STAGE1A_M2_INTEGRATION_2026-09-29.md)
+for exact PR/CI and candidate-runtime receipts.
 
 ## Observed state
 
-- **Full-run recording:** [dated audit](../evidence/FULL_RUN_POTION_EXECUTION_2026-09-29.md)
-  confirms fresh native start through defeat without recorder pause/resume.
-  There are 537 accepted Human inputs and 722 canonical transitions: separate,
-  non-additive views. Three potion projections failed; the final successor is
-  unknown. Verified import/preview preserved raw hashes. The dataset owner then
-  saved the 537-label source for training; its split is unchecked and it has
-  not trained a model. Two recorded run IDs do not prove two independent games.
-- **Potion correction:** #88 is merged. Candidate full run
-  [36459424937](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36459424937)
-  passed. Merge run 36463472731 reused verified same-tree execution plus fresh
-  guards; it did not repeat both OS suites. The
-  [installation receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/88#issuecomment-5875712254)
-  proves exact build/install/cold load, not a new live potion action. Old failed
-  evidence remains unchanged.
-- **Local application:** [actual workflow receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/86#issuecomment-5875711849)
-  records Workbench source `01320f4f53f2ddba44e3870b7245ca59c21b9346`, tree equal
-  to develop `30fd5f7bcd7fae146e850046313907d957aa546f`. Safari completed a new
-  D-Simple-S v1 three-step CPU training, export, registration, Human-mode load
-  and Stop. It used the old 31-label source (26 train/5 dev), not the full run
-  or M2; dev Top-1 was 0/5, native-run independence unknown. Runtime made zero
-  policy calls/submissions. A missing private Runtime profile required operator
-  recovery, so one-click installation remains unproved. Matching CollectionTool
-  registration and Workbench restart retained artifacts; model idle/unloaded.
+- The [full-run native audit](../evidence/FULL_RUN_POTION_EXECUTION_2026-09-29.md)
+  records fresh start through defeat without recorder pause/resume. Its 537
+  accepted Human inputs and 722 canonical transitions are separate views;
+  three potion projections failed and the final successor is unknown. The
+  same 537-label source subsequently produced the train-only M2 experiment
+  below through its observed-sequence projection. It has no independent dev
+  split. Two recorded run IDs do not prove two independent games.
+- The older [PR86 D-Simple-S workflow](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/86#issuecomment-5875711849)
+  trained, exported, registered, Human-loaded and Stopped using 31 labels
+  (26 train/5 dev). Dev Top-1 was 0/5; policy calls/submissions were zero.
+  Manual profile recovery left one-click installation unproved.
+- Merged [PR96](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/96)
+  added explicit train-only Workbench M2-K1 experiments. Open
+  [PR99](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/99)
+  adds export, receipt, registration and an M2 Runtime profile. Its local
+  candidate used one admitted episode / 548 observations; revalidation,
+  registration and the initial Human load/Stop completed. A later bounded
+  native session recorded 20 decisions and 17 delivered actions across event,
+  reward, card choice, map and combat. Stop left Human/released. The installed
+  Evidence verifier rejected port-2 provenance; hash-correct sealing is not
+  typed Evidence verification. The owner fix remains under independent review.
+  Head `5eff996c` and
+  [CI run 36538202566](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36538202566)
+  remained an open Draft with selected full CI successful at 08:05 UTC. The
+  [later live receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/99#issuecomment-5886092505)
+  records bounded native decisions, not full-game or policy-quality proof.
+  Candidate installation does not make PR99 accepted develop or a release.
+- Merged [PR88](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/88)
+  repaired potion staging; its installation did not prove a new live potion
+  action. Old failed evidence remains.
 
 ## Research and environment candidates
 
-D-Simple is the default application recipe. [M2 computation and sequence
-notes](../../python/docs/research/DSIMPLE_MEMORY.md) describe a separate
-experimental model, not a live recipe. PR90 adds bounded prefix/episode bridges and TBPTT.
-Explicit verified settling retains event provenance without updating memory.
-The experimental CPU episode engine now adds ordered whole-episode training,
-boundary checkpoints and identity-checked weight exports. It reuses TBPTT;
-it is not a registered Workbench job or live Runtime recipe. Ledger admission,
-independent splits, durable job orchestration and runtime integration remain
-separate.
-Synthetic cue tests do not prove game strategy or memory generalization.
+D-Simple-S remains the default application recipe. Merged PR90/91/95 provide
+observed-sequence M2 training, durable checkpoints and read-only online scoring;
+[PR97](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/97)
+adds atomic Connector observation/context, model-neutral Runtime continuity
+and a portable M2 port-2 adapter. Game identity stays outside unchanged
+`text-menu-v1` page text. M2 is observation-only here: no executed-action or
+feedback memory input is invented. Synthetic tests and one episode prove neither
+strategy nor memory generalization.
 
-Connector uses `text-menu-v1`. The Managed session still exposes the legacy
-Player Environment contract. Merged #89 adds a map-only text adapter: exact
-CI and isolated map-to-combat process smoke passed; combat stays unsupported.
-This is not a public multi-client service or cross-Host equivalence. Merging
-source does not update running processes.
+Managed text surfaces now cover map, rest, deck upgrade and bounded combat
+through PR89/93/94 and [PR98](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/98).
+Reward/event/unreviewed selectors and full-flow equivalence remain unproved.
+Selected PR90–98 CI passed; PR97/98 develop integration reused verified
+same-tree OS execution with fresh guards, as detailed in the dated ledger.
+Source/test success is not gameplay qualification.
 
 ## Remaining Platform non-claims
 
 Follow the [Stage1a order](../plans/STAGE1A_TASKS.zh-CN.md) and
-[environment/scenario plan](../plans/ENVIRONMENT_AND_SCENARIOS.zh-CN.md): finish
-native scene/continuation coverage, Managed text and repeatable scenarios,
-M2/Reset paired data and runtime, the bounded roughly-10k experiment, Qwen/Z/O
-comparisons, and the local/team/distribution product journey. No Gold or
-independent-run corpus qualification is established. Preserve old model/data
-identities, pending/unknown evidence, active runtime worktrees and rollback.
-
-Earlier [Workbench/M2 evidence](../evidence/STAGE1A_DSIMPLE_WORKBENCH_2026-09-29.md)
-and [two-fragment evidence](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
-retain their original source and limitations; they are not current activation
-or full-game proof. Exact installation and runtime receipts outrank this summary.
+[scenario plan](../plans/ENVIRONMENT_AND_SCENARIOS.zh-CN.md): native coverage,
+Managed repeatability, M2/Reset controls, bounded roughly-10k data work,
+Qwen/Z/O and the product journey remain. No Gold,
+independent-run corpus, native M2 continuity/reset, full-game success or
+policy-quality qualification is established. Preserve old identities,
+pending/unknown evidence and rollback. Earlier
+[Workbench](../evidence/STAGE1A_DSIMPLE_WORKBENCH_2026-09-29.md) and
+[two-fragment](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
+receipts retain their original limitations. The bounded native candidate
+receipt does not qualify a full run or a real new-game memory reset.

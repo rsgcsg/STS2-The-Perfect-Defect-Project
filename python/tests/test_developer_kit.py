@@ -224,6 +224,82 @@ def test_optional_runtime_requires_external_pins_and_fixed_inventory(inputs, tmp
     assert "operator.env" not in files
 
 
+def test_optional_m2_runtime_is_separate_from_text_and_requires_exact_pair(
+        inputs, tmp_path, monkeypatch):
+    from tools import install_developer_kit as install
+
+    archive = tmp_path / "m2-runtime.tgz"
+    archive.write_bytes(b"independent synthetic M2 archive")
+    profile = tmp_path / "m2-profile.json"
+    profile.write_text(json.dumps({
+        "schema": "stpd/local-text-m2-runtime-v1",
+        "runtime_package": synthetic_text_pin(archive.read_bytes()),
+    }))
+    provided = PinnedFile(profile, sha256(profile.read_bytes()))
+    with pytest.raises(BoundaryError, match="m2_runtime_profile_and_archive_required"):
+        package(**{**inputs, "m2_runtime_profile": provided})
+    wrong = synthetic_text_pin(archive.read_bytes())
+    wrong["release_asset_sha256"] = "0" * 64
+    profile.write_text(json.dumps({"schema": "stpd/local-text-m2-runtime-v1",
+                                   "runtime_package": wrong}))
+    with pytest.raises(BoundaryError, match="text_runtime_archive_checksum_mismatch"):
+        package(**{**inputs, "m2_runtime_profile": PinnedFile(
+            profile, sha256(profile.read_bytes())),
+            "m2_runtime_archive": PinnedFile(archive, sha256(archive.read_bytes()))})
+    profile.write_text(json.dumps({"schema": "stpd/local-text-m2-runtime-v1",
+                                   "runtime_package": synthetic_text_pin(archive.read_bytes())}))
+    provided = PinnedFile(profile, sha256(profile.read_bytes()))
+    calls = []
+    monkeypatch.setattr("tools.package_developer_kit.install_runtime",
+                        lambda directory, pin, connector, archive: calls.append(
+                            (directory, pin, archive.read_bytes())))
+    package(**{**inputs, "m2_runtime_profile": provided,
+               "m2_runtime_archive": PinnedFile(archive, sha256(archive.read_bytes()))})
+    assert len(calls) == 1 and calls[0][0].name == "text-menu-m2-v1"
+    manifest, files = install.verified_archive(
+        inputs["output"], sha256(inputs["output"].read_bytes()))
+    assert manifest["m2_runtime"]["archive_sha256"] == sha256(archive.read_bytes())
+    assert manifest.get("text_runtime") is None
+    assert files[install.M2_RUNTIME_ARCHIVE] == archive.read_bytes()
+    del manifest["m2_runtime"]
+    with pytest.raises(BoundaryError, match="text_runtime_inventory_incomplete"):
+        install.text_runtime_files(manifest, files, memory=True)
+
+
+def test_text_and_m2_kit_profiles_coexist_and_staged_m2_drift_blocks_status(
+        inputs, tmp_path, monkeypatch):
+    from tools import install_developer_kit as install
+
+    supplied = {}
+    for name, schema in (("text", "stpd/local-text-runtime-v1"),
+                         ("m2", "stpd/local-text-m2-runtime-v1")):
+        archive = tmp_path / f"{name}.tgz"
+        archive.write_bytes(name.encode() + b" synthetic runtime")
+        profile = tmp_path / f"{name}.json"
+        profile.write_text(json.dumps({
+            "schema": schema,
+            "runtime_package": synthetic_text_pin(archive.read_bytes()),
+        }))
+        supplied[f"{name}_runtime_profile"] = PinnedFile(profile, sha256(profile.read_bytes()))
+        supplied[f"{name}_runtime_archive"] = PinnedFile(archive, sha256(archive.read_bytes()))
+    monkeypatch.setattr("tools.package_developer_kit.install_runtime", lambda *a, **k: None)
+    package(**{**inputs, **supplied})
+    monkeypatch.setattr(install, "REPOSITORY", str(inputs["root"]))
+    releases = tmp_path / "releases"
+    expected = sha256(inputs["output"].read_bytes())
+    receipt = install.prepare(inputs["output"], expected, releases)
+    target = releases / expected
+    assert receipt["text_runtime"] == "bundled_installation_not_checked"
+    assert receipt["m2_runtime"] == "bundled_installation_not_checked"
+    assert (target / "source" / install.TEXT_RUNTIME_DESTINATION).read_bytes() == (
+        supplied["text_runtime_profile"].path.read_bytes())
+    m2_staged = target / "source" / install.M2_RUNTIME_DESTINATION
+    assert m2_staged.read_bytes() == supplied["m2_runtime_profile"].path.read_bytes()
+    m2_staged.write_bytes(b"changed")
+    with pytest.raises(BoundaryError, match="staged_text_runtime_changed"):
+        install.status(target)
+
+
 @pytest.mark.parametrize("mutation", ["archive", "profile", "closure"])
 def test_optional_runtime_invalid_inputs_never_publish(inputs, tmp_path, monkeypatch,
                                                        mutation):
