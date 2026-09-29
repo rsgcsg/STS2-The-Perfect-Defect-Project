@@ -238,6 +238,17 @@ def test_optional_m2_runtime_is_separate_from_text_and_requires_exact_pair(
     provided = PinnedFile(profile, sha256(profile.read_bytes()))
     with pytest.raises(BoundaryError, match="m2_runtime_profile_and_archive_required"):
         package(**{**inputs, "m2_runtime_profile": provided})
+    wrong = synthetic_text_pin(archive.read_bytes())
+    wrong["release_asset_sha256"] = "0" * 64
+    profile.write_text(json.dumps({"schema": "stpd/local-text-m2-runtime-v1",
+                                   "runtime_package": wrong}))
+    with pytest.raises(BoundaryError, match="text_runtime_archive_checksum_mismatch"):
+        package(**{**inputs, "m2_runtime_profile": PinnedFile(
+            profile, sha256(profile.read_bytes())),
+            "m2_runtime_archive": PinnedFile(archive, sha256(archive.read_bytes()))})
+    profile.write_text(json.dumps({"schema": "stpd/local-text-m2-runtime-v1",
+                                   "runtime_package": synthetic_text_pin(archive.read_bytes())}))
+    provided = PinnedFile(profile, sha256(profile.read_bytes()))
     calls = []
     monkeypatch.setattr("tools.package_developer_kit.install_runtime",
                         lambda directory, pin, connector, archive: calls.append(
@@ -265,8 +276,10 @@ def test_text_and_m2_kit_profiles_coexist_and_staged_m2_drift_blocks_status(
         archive = tmp_path / f"{name}.tgz"
         archive.write_bytes(name.encode() + b" synthetic runtime")
         profile = tmp_path / f"{name}.json"
-        profile.write_text(json.dumps({"schema": schema,
-                                       "runtime_package": synthetic_text_pin(archive.read_bytes())}))
+        profile.write_text(json.dumps({
+            "schema": schema,
+            "runtime_package": synthetic_text_pin(archive.read_bytes()),
+        }))
         supplied[f"{name}_runtime_profile"] = PinnedFile(profile, sha256(profile.read_bytes()))
         supplied[f"{name}_runtime_archive"] = PinnedFile(archive, sha256(archive.read_bytes()))
     monkeypatch.setattr("tools.package_developer_kit.install_runtime", lambda *a, **k: None)
