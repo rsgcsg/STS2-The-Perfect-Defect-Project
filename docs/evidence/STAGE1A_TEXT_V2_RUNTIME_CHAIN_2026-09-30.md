@@ -135,8 +135,10 @@ qualification. This candidate still requires its own hosted result.
 
 On clean application source `e4fe8ca9486277bd526a0b56856232ec49ee0693`,
 an independent private project used the exact locked Python rc.21 consumer and
-its own three Node consumer packages installed from the existing lock. The
-normal `doctor()` passed and the normal `serve()` entrypoint launched. Real
+its own two direct Node consumer packages installed from the existing lock.
+The v2 Policy Runtime was separately pinned and installed from the exact
+private archive above. The normal `doctor()` passed and the normal `serve()`
+entrypoint launched. Real
 cookie/Origin/CSRF-protected HTTP routes performed six-step engineering-source
 training, worker export and registration. This used the ordinary fixed
 `stage1a.dsimple.m2.k1.experimental.v2` recipe (width 48, one layer), not the
