@@ -352,6 +352,12 @@ try {
   const v3Events = (await readFile("v3-evidence/installed-v3/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
   assert.ok(v3Events.some(event => event.kind === "menu_navigation"));
   assert.ok(v3Events.some(event => event.kind === "text_native_delivery"));
+  const v3RecordedInputs = v3Events.filter(event => event.kind === "text_decision_input").map(event => event.payload);
+  assert.deepEqual(v3RecordedInputs[0].observation_context, {
+    continuity_token: v3Inputs[0].continuity_token, previous_interaction_request_id: null });
+  assert.deepEqual(v3RecordedInputs[1].observation_context, {
+    continuity_token: v3Inputs[1].continuity_token,
+    previous_interaction_request_id: v3Inputs[1].previous_interaction.request_id });
 
   menuV2Current = menuV2Root;
   const cancelledEvidence = await AgentRunEvidence.create({ root: "v3-evidence", runId: "installed-v3-cancel",
@@ -386,6 +392,7 @@ try {
   const cancelledEvents = (await readFile("v3-evidence/installed-v3-cancel/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
   assert.equal(cancelledEvents.filter(event => event.kind === "text_menu_dispatch_cancelled").length, 1);
   assert.equal(cancelledEvents.filter(event => event.kind === "menu_navigation" || event.kind === "text_native_delivery").length, 0);
+  assert.equal(cancelledEvents.filter(event => event.kind === "text_decision_input")[0].payload.observation_context.previous_interaction_request_id, null);
 } finally { await new Promise(resolve => textHost.close(resolve)); }
 
 // Launch the actual installed CLI in Human mode. It never contacts a game.
