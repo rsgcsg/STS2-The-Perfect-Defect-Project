@@ -42,9 +42,10 @@ def v2_sdk_available(sdk: Path) -> bool:
     if node is None or not sdk.is_file() or sdk.is_symlink():
         return False
     script = ("const {PlayerEnvironmentRestClient}=await import(process.argv[1]);"
-              "if(typeof PlayerEnvironmentRestClient.prototype.textMenuV2Capabilities"
-              "!=='function'||typeof PlayerEnvironmentRestClient.prototype."
-              "observeTextMenuV2Context!=='function')process.exit(1);")
+              "const methods=['textMenuV2Capabilities','observeTextMenuV2',"
+              "'observeTextMenuV2Context','submitTextMenuV2','textMenuV2Result'];"
+              "if(methods.some(name=>typeof PlayerEnvironmentRestClient.prototype[name]"
+              "!=='function'))process.exit(1);")
     environment = {key: value for key, value in os.environ.items() if key in
                    {"PATH", "SYSTEMROOT", "SystemRoot", "TMPDIR", "TEMP", "TMP"}}
     try:

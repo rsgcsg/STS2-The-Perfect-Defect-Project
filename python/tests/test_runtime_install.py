@@ -246,7 +246,9 @@ def test_v2_contract_promotes_only_validated_stage(
     (sdk / "dist").mkdir()
     (sdk / "dist/index.js").write_text(
         "export class PlayerEnvironmentRestClient {"
-        "textMenuV2Capabilities() {} observeTextMenuV2Context() {} }"
+        "textMenuV2Capabilities() {} observeTextMenuV2() {} "
+        "observeTextMenuV2Context() {} submitTextMenuV2() {} "
+        "textMenuV2Result() {} }"
     )
     pin["bundled_connector_pin"]["bundle_sha256"] = runtime_install._bundled_hashes(
         sdk, root / "node_modules/zod",
