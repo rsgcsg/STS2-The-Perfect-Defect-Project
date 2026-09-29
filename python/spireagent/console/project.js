@@ -2977,6 +2977,7 @@ window.SpireProject = (() => {
       text_menu_capabilities_incompatible: "当前游戏环境不符合此模型的文本菜单要求；尚未登记。",
       observation_context_unavailable: "当前环境没有可验证的原子观察上下文；记忆模型尚未登记。",
       m2_runtime_contract_unavailable: "固定的记忆模型运行组件不支持所需决策协议；记忆模型尚未登记。",
+      v2_runtime_contract_unavailable: "本机记忆模型运行组件缺少 text-menu-v2 SDK 合同；尚未登记。",
     };
     return known[code] || "当前无法完成登记。请查看本机模型页的环境状态后，再按需明确重试。";
   }

@@ -71,11 +71,12 @@ def test_managed_v2_m2_reset_train_export_and_registration_gate(
         registration = LocalModelRegistration(config, exporter, LocalModelService(config))
         status = registration.status(completed["model_id"])
         assert status["runtime_profile"] == "text-menu-m2-v2"
-        assert status["status"] == "not_registered"
+        assert status["status"] == "unavailable"
+        assert status["reason_code"] == "text_runtime_profile_required"
         with pytest.raises(BoundaryError, match="text_runtime_profile_required"):
             registration.register(completed["model_id"])
         assert not (registration.models.private_root / "token-policies-v1.json").exists()
-    assert _uses(owner) == (2, 1)
+    assert _uses(owner) == (2, 2)
 
 
 def test_test_purpose_cannot_start_v2_training(

@@ -93,6 +93,23 @@ def _caps() -> dict:
                                 "loaded_mod_ids": []}}}
 
 
+def test_v2_capabilities_require_exact_profile_schemas_and_selection_verbs() -> None:
+    caps = _caps()
+    caps.update(input_profile="text-menu-v2",
+                snapshot_schema="sts2.player-environment/text-menu-snapshot-2",
+                receipt_schema="sts2.player-environment/text-menu-action-result-2",
+                verbs=[*VERBS, "select_card", "select_target", "cancel_selection"])
+    requirements, support = _requirements(caps, input_profile="text-menu-v2")
+    assert requirements["whole_decision_admission"] is True
+    assert support["action_verbs"][-3:] == [
+        "select_card", "select_target", "cancel_selection"]
+    for changed in ({**caps, "input_profile": "text-menu-v1"},
+                    {**caps, "snapshot_schema": "sts2.player-environment/text-menu-snapshot-1"},
+                    {**caps, "verbs": list(VERBS)}):
+        with pytest.raises(BoundaryError, match="text_menu_capabilities_incompatible"):
+            _requirements(changed, input_profile="text-menu-v2")
+
+
 def test_exact_export_binds_existing_policy_contract_and_is_idempotent(registration):
     service, config, model_id, root, models = registration
     assert service.status(model_id) == {

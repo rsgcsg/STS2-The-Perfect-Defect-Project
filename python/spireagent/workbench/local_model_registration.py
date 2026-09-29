@@ -68,6 +68,26 @@ def _export_memory_profile(export: Path) -> str:
     except (TypeError, ValueError) as error:
         raise BoundaryError("local_model_registration", "export_profile_invalid") from error
     return V2_M2_PROFILE if profile == "text-menu-v2" else M2_PROFILE
+
+
+def _v2_sdk_available(sdk: Path) -> bool:
+    """Inspect the exact installed SDK without opening a game or mutating state."""
+    node = shutil.which("node")
+    if node is None or not sdk.is_file() or sdk.is_symlink():
+        return False
+    script = ("const {PlayerEnvironmentRestClient}=await import(process.argv[1]);"
+              "if(typeof PlayerEnvironmentRestClient.prototype.textMenuV2Capabilities"
+              "!=='function'||typeof PlayerEnvironmentRestClient.prototype."
+              "observeTextMenuV2Context!=='function')process.exit(1);")
+    environment = {key: value for key, value in os.environ.items() if key in
+                   {"PATH", "SYSTEMROOT", "SystemRoot", "TMPDIR", "TEMP", "TMP"}}
+    try:
+        return subprocess.run(
+            [node, "--input-type=module", "-e", script, sdk.as_uri()],
+            capture_output=True, check=False, timeout=5, env=environment,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 REGISTRY = "token-policies-v1.json"
 LOCK = "token-policies-v1.lock"
 REGISTRATIONS = "model-registrations"
@@ -276,6 +296,25 @@ class LocalModelRegistration:
             if stale:
                 return _public(identity, "not_registered", reason_code="source_binding_changed",
                                profile=profile)
+            if profile == V2_M2_PROFILE:
+                try:
+                    directory, pin = self.models.text_runtime_profile(profile)
+                except BoundaryError as error:
+                    return _public(identity, "unavailable", reason_code=error.code,
+                                   profile=profile)
+                try:
+                    node_modules = directory / "runtime" / "node_modules"
+                    validate_runtime_install(node_modules, pin, self.models._connector_pin())
+                    sdk = (node_modules / RUNTIME_PACKAGE / "node_modules" /
+                           CONNECTOR_PACKAGE / "dist" / "index.js")
+                    if not _v2_sdk_available(sdk):
+                        return _public(identity, "unavailable",
+                                       reason_code="v2_runtime_contract_unavailable",
+                                       profile=profile)
+                except (BoundaryError, OSError, PackageIdentityError, ValueError):
+                    return _public(identity, "unavailable",
+                                   reason_code="text_runtime_local_install_required",
+                                   profile=profile)
             return _public(identity, "not_registered", profile=profile)
         except (BoundaryError, OSError, ValueError):
             return _public(identity, "unavailable", reason_code="registration_metadata_invalid",
@@ -410,6 +449,8 @@ class LocalModelRegistration:
                                 "text_runtime_local_install_required") from error
         sdk = (node_modules / RUNTIME_PACKAGE / "node_modules" / CONNECTOR_PACKAGE
                / "dist" / "index.js")
+        if profile == V2_M2_PROFILE and not _v2_sdk_available(sdk):
+            raise BoundaryError("local_model_registration", "v2_runtime_contract_unavailable")
         _remaining(deadline)
         input_profile = "text-menu-v2" if profile == V2_M2_PROFILE else PROFILE
         capabilities = (self._capabilities(sdk, deadline=deadline,
