@@ -30,6 +30,10 @@ try {
   assert.equal(zodEntry?.inBundle, true);
   assert.equal(fileTreeSha256(path.join(installed, "node_modules", "zod")), first.identity.connector_sdk.transitive_zod.bundle_sha256);
   copyFileSync(path.join(componentRoot, "tools/installed-smoke.mjs"), path.join(root, "smoke.mjs"));
+  for (const name of ["text-menu-v2-card-only-root", "text-menu-v2-card-only-select"]) {
+    copyFileSync(path.join(componentRoot, `../connector/sdk/typescript/test/fixtures/${name}.json`),
+      path.join(root, `${name}.json`));
+  }
   const smoke = spawnSync(process.execPath, ["smoke.mjs"], { cwd: root, encoding: "utf8", timeout: 20000 });
   if (smoke.error) throw smoke.error;
   assert.equal(smoke.status, 0, smoke.stderr || smoke.stdout);

@@ -3,9 +3,11 @@ import {
   PlayerEnvironmentHttpError,
   prefetchPlayerEnvironmentDecisionBundle,
   type EnvironmentControlClient,
-  type EnvironmentControllerSession as ControllerSession
+  type EnvironmentControllerSession as ControllerSession,
+  type TextMenuV2Snapshot
 } from "@rsgcsg/sts2-connector-client";
 import { POLICY_RUNTIME_VERSION, type AnyDecisionBundle, type ConnectorAdapterClient, type PolicyConnector } from "./contracts.js";
+import type { TextInputProfile } from "./contracts.js";
 
 export class StaleWholeBundleError extends Error {
   readonly code = "stale_state" as const;
@@ -38,8 +40,9 @@ export class ConnectorPolicyClient implements PolicyConnector {
     };
   }
 
-  async capabilities(options?: { fresh?: boolean; inputProfile?: "text-menu-v1" }) {
+  async capabilities(options?: { fresh?: boolean; inputProfile?: TextInputProfile }) {
     if (options?.inputProfile === "text-menu-v1") return (await this.client.textMenuCapabilities()).data;
+    if (options?.inputProfile === "text-menu-v2") return (await this.client.textMenuV2Capabilities()).data;
     // A control precondition must observe the actual endpoint. Never overwrite
     // an admitted/cached identity merely because that endpoint was replaced.
     if (options?.fresh) return (await this.client.capabilities()).data;
@@ -47,10 +50,14 @@ export class ConnectorPolicyClient implements PolicyConnector {
     return this.capabilitiesValue;
   }
 
-  async observeBundle(requiredReadKinds: readonly string[], inputProfile?: "text-menu-v1"): Promise<AnyDecisionBundle> {
+  async observeBundle(requiredReadKinds: readonly string[], inputProfile?: TextInputProfile): Promise<AnyDecisionBundle> {
     if (inputProfile === "text-menu-v1") {
       if (requiredReadKinds.length !== 0) throw new Error("text_menu_reads_unsupported");
       return { observation: (await this.client.observeTextMenu()).data, reads: [] };
+    }
+    if (inputProfile === "text-menu-v2") {
+      if (requiredReadKinds.length !== 0) throw new Error("text_menu_reads_unsupported");
+      return { observation: (await this.client.observeTextMenuV2()).data, reads: [] };
     }
     const observation = (await this.client.observe()).data;
     const required = new Set(requiredReadKinds);
@@ -78,8 +85,10 @@ export class ConnectorPolicyClient implements PolicyConnector {
     }
   }
 
-  async observeTextMenuContext() {
-    return (await this.client.observeTextMenuContext()).data;
+  async observeTextMenuContext(inputProfile: TextInputProfile = "text-menu-v1") {
+    return inputProfile === "text-menu-v2"
+      ? (await this.client.observeTextMenuV2Context()).data
+      : (await this.client.observeTextMenuContext()).data;
   }
 
   async acquireController(): Promise<void> {
@@ -114,7 +123,7 @@ export class ConnectorPolicyClient implements PolicyConnector {
     this.controller = undefined;
   }
 
-  async submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string; inputProfile?: "text-menu-v1" }) {
+  async submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string; inputProfile?: TextInputProfile; previousSnapshot?: TextMenuV2Snapshot }) {
     if (this.controller?.bridge.closing) throw new Error("controller_release_unconfirmed");
     if (!this.controller) throw new Error("Policy Runtime requires an acquired Connector controller");
     const credentials = await this.controller.session.credentials();
@@ -126,9 +135,9 @@ export class ConnectorPolicyClient implements PolicyConnector {
       controllerLeaseId: credentials.controllerLeaseId,
       controllerGeneration: credentials.controllerGeneration
     };
-    return input.inputProfile === "text-menu-v1"
-      ? (await this.client.submitTextMenu(payload)).data
-      : (await this.client.submit(payload)).data;
+    if (input.inputProfile === "text-menu-v1") return (await this.client.submitTextMenu(payload)).data;
+    if (input.inputProfile === "text-menu-v2") return (await this.client.submitTextMenuV2(payload, input.previousSnapshot)).data;
+    return (await this.client.submit(payload)).data;
   }
 }
 

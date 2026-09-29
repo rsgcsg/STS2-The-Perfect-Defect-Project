@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { decodeTextMenuSnapshot } from "@rsgcsg/sts2-connector-client";
+import { decodeTextMenuSnapshot, decodeTextMenuV2Snapshot } from "@rsgcsg/sts2-connector-client";
 import type { Policy, AdapterDecision, PolicyDecisionInput, PolicyManifest, PolicyPortDecisionRequest, PolicyPortDecisionResponse, PolicyPortErrorResponse, PolicyPortReadyResponse, PolicyPortV2DecisionRequest, PolicyPortV2DecisionResponse, PolicyPortV2ErrorResponse, PolicyPortV2ReadyResponse, StatefulAdapterDecision, StatefulPolicy, StatefulPolicyDecisionInput } from "./contracts.js";
 import { POLICY_PORT_SCHEMA, POLICY_PORT_V2_SCHEMA, assertAdapterDecision, validateAdapterDecision, validatePolicyManifest } from "./contracts.js";
 import { admitWholeDecisionBundle } from "./runtime.js";
@@ -348,8 +348,10 @@ function validateV2Request(value: unknown): PolicyPortV2DecisionRequest {
       !Array.isArray((bundle as Record<string, unknown>).reads) ||
       ((bundle as Record<string, unknown>).reads as unknown[]).length !== 0 ||
       ((bundle as Record<string, unknown>).observation as { schema?: unknown } | null)?.schema !==
-      "sts2.player-environment/text-menu-snapshot-1") throw new Error("v2 request requires a text-menu bundle without Reads");
-  const observation = decodeTextMenuSnapshot((bundle as Record<string, unknown>).observation).data;
+      manifest.representation.input_schema) throw new Error("v2 request requires a text-menu bundle without Reads");
+  const observation = manifest.representation.input_schema === "sts2.player-environment/text-menu-snapshot-2"
+    ? decodeTextMenuV2Snapshot((bundle as Record<string, unknown>).observation).data
+    : decodeTextMenuSnapshot((bundle as Record<string, unknown>).observation).data;
   const admission = admitWholeDecisionBundle({ observation, reads: [] }, manifest);
   if (!admission.admitted || admission.candidateDigest !== typed.candidate_digest ||
       admission.candidateCount !== typed.candidate_count)

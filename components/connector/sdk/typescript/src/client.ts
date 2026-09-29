@@ -24,6 +24,13 @@ import {
   type TextMenuActionResult, type TextMenuObservationContext
 } from "./textMenu.js";
 import {
+  TEXT_MENU_V2_PROFILE, TEXT_MENU_V2_RESULT_SCHEMA,
+  decodeTextMenuV2Capabilities, decodeTextMenuV2Snapshot,
+  decodeTextMenuV2ActionResult, decodeTextMenuV2ObservationContext,
+  type TextMenuV2Capabilities, type TextMenuV2Snapshot,
+  type TextMenuV2ActionResult, type TextMenuV2ObservationContext
+} from "./textMenuV2.js";
+import {
   decodePlayerClientRegistration,
   decodePlayerCapabilities,
   decodePlayerControllerLeaseResponse,
@@ -72,6 +79,11 @@ export class PlayerEnvironmentRestClient {
       `/api/player-environment/capabilities?input_profile=${TEXT_MENU_PROFILE}`));
   }
 
+  async textMenuV2Capabilities(): Promise<DecodedPlayerPayload<TextMenuV2Capabilities>> {
+    return decodeTextMenuV2Capabilities(await this.get(
+      `/api/player-environment/capabilities?input_profile=${TEXT_MENU_V2_PROFILE}`));
+  }
+
   async observe(): Promise<DecodedPlayerPayload<PlayerEnvironmentSnapshot>> {
     return decodePlayerSnapshot(await this.get("/api/player-environment/snapshot"));
   }
@@ -91,9 +103,19 @@ export class PlayerEnvironmentRestClient {
       `/api/player-environment/snapshot?input_profile=${TEXT_MENU_PROFILE}`));
   }
 
+  async observeTextMenuV2(): Promise<DecodedPlayerPayload<TextMenuV2Snapshot>> {
+    return decodeTextMenuV2Snapshot(await this.get(
+      `/api/player-environment/snapshot?input_profile=${TEXT_MENU_V2_PROFILE}`));
+  }
+
   async observeTextMenuContext(): Promise<DecodedPlayerPayload<TextMenuObservationContext>> {
     return decodeTextMenuObservationContext(await this.get(
       "/api/player-environment/text-menu/observation-context"));
+  }
+
+  async observeTextMenuV2Context(): Promise<DecodedPlayerPayload<TextMenuV2ObservationContext>> {
+    return decodeTextMenuV2ObservationContext(await this.get(
+      `/api/player-environment/text-menu/observation-context?input_profile=${TEXT_MENU_V2_PROFILE}`));
   }
 
   async read(readId: string, expectedSnapshotId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReadResponse>> {
@@ -177,6 +199,25 @@ export class PlayerEnvironmentRestClient {
     }, true));
   }
 
+  async submitTextMenuV2(input: {
+    requestId: string;
+    expectedSnapshotId: string;
+    boundActionId: string;
+    clientSessionId: string;
+    controllerLeaseId: string;
+    controllerGeneration: number;
+  }, previous?: TextMenuV2Snapshot): Promise<DecodedPlayerPayload<TextMenuV2ActionResult>> {
+    return decodeTextMenuV2ActionResult(await this.post("/api/player-environment/actions", {
+      request_id: input.requestId,
+      expected_snapshot_id: input.expectedSnapshotId,
+      bound_action_id: input.boundActionId,
+      client_session_id: input.clientSessionId,
+      controller_lease_id: input.controllerLeaseId,
+      controller_generation: input.controllerGeneration,
+      input_profile: TEXT_MENU_V2_PROFILE
+    }, true), previous);
+  }
+
   async poll(requestId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReceipt>> {
     return decodePlayerReceipt(await this.get(`/api/player-environment/actions/${encodeURIComponent(requestId)}`));
   }
@@ -194,6 +235,11 @@ export class PlayerEnvironmentRestClient {
   async textMenuResult(requestId: string): Promise<DecodedPlayerPayload<TextMenuActionResult>> {
     return decodeTextMenuActionResult(await this.get(
       `/api/player-environment/actions/${encodeURIComponent(requestId)}?input_profile=${TEXT_MENU_PROFILE}`));
+  }
+
+  async textMenuV2Result(requestId: string): Promise<DecodedPlayerPayload<TextMenuV2ActionResult>> {
+    return decodeTextMenuV2ActionResult(await this.get(
+      `/api/player-environment/actions/${encodeURIComponent(requestId)}?input_profile=${TEXT_MENU_V2_PROFILE}`));
   }
 
   async registerClient(input: {
@@ -262,7 +308,8 @@ export class PlayerEnvironmentRestClient {
     const value: unknown = await response.json().catch(() => ({}));
     const isReceipt = isJsonObject(value)
       && (value.schema === "sts2.player-environment/receipt-1"
-        || value.schema === TEXT_MENU_RESULT_SCHEMA);
+        || value.schema === TEXT_MENU_RESULT_SCHEMA
+        || value.schema === TEXT_MENU_V2_RESULT_SCHEMA);
     if (!response.ok && !(acceptReceiptOnError && isReceipt)) {
       throw new PlayerEnvironmentHttpError(
         `Player Environment request failed with HTTP ${response.status}: ${safeMessage(value)}`,

@@ -135,6 +135,15 @@ function textFrame(number, cursor, action) {
 let textCurrent = textFrame(1, "root", textAction);
 let textPosts = 0;
 let v2Current = textFrame(10, "root", textAction);
+const menuV2Session = { runtime_instance_id: "fixture-runtime", environment_fingerprint: "fixture-env" };
+const menuV2Root = { ...JSON.parse(await readFile("text-menu-v2-card-only-root.json", "utf8")), session: menuV2Session };
+let menuV2Current = menuV2Root;
+const selectedFixture = JSON.parse(await readFile("text-menu-v2-card-only-select.json", "utf8"));
+const menuV2Selected = { ...selectedFixture,
+  successor: { ...selectedFixture.successor, session: menuV2Session } };
+let menuV2Posts = 0;
+let menuV2ContextReads = 0;
+let menuV2SnapshotReads = 0;
 let v2GameId = "native-game-a";
 let v2ContextReads = 0;
 let legacySnapshotReads = 0;
@@ -155,18 +164,30 @@ const textHost = createHttpServer(async (request, response) => {
   const url = new URL(request.url, "http://127.0.0.1");
   let output;
   if (url.pathname.endsWith("/capabilities")) {
-    const text = url.searchParams.get("input_profile") === "text-menu-v1";
-    output = { ...capCommon, input_profile: text ? "text-menu-v1" : undefined,
-      snapshot_schema: text ? "sts2.player-environment/text-menu-snapshot-1" : "sts2.player-environment/snapshot-1",
-      receipt_schema: text ? "sts2.player-environment/text-menu-action-result-1" : "sts2.player-environment/receipt-1",
-      verbs: text ? ["open_information", "end_turn"] : ["end_turn"] };
-    if (!text) delete output.input_profile;
+    const profile = url.searchParams.get("input_profile");
+    output = { ...capCommon, input_profile: profile ?? undefined,
+      snapshot_schema: profile === "text-menu-v2" ? "sts2.player-environment/text-menu-snapshot-2"
+        : profile === "text-menu-v1" ? "sts2.player-environment/text-menu-snapshot-1" : "sts2.player-environment/snapshot-1",
+      receipt_schema: profile === "text-menu-v2" ? "sts2.player-environment/text-menu-action-result-2"
+        : profile === "text-menu-v1" ? "sts2.player-environment/text-menu-action-result-1" : "sts2.player-environment/receipt-1",
+      verbs: profile === "text-menu-v2" ? ["select_card", "play", "cancel_selection"]
+        : profile === "text-menu-v1" ? ["open_information", "end_turn"] : ["end_turn"] };
+    if (!profile) delete output.input_profile;
   } else if (url.pathname.endsWith("/text-menu/observation-context")) {
-    v2ContextReads++;
-    output = { schema: "sts2.player-environment/text-menu-observation-context-1", snapshot: v2Current, game_continuity_id: v2GameId };
+    if (url.searchParams.get("input_profile") === "text-menu-v2") {
+      menuV2ContextReads++;
+      output = { schema: "sts2.player-environment/text-menu-observation-context-2", snapshot: menuV2Current, game_continuity_id: v2GameId };
+    } else {
+      v2ContextReads++;
+      output = { schema: "sts2.player-environment/text-menu-observation-context-1", snapshot: v2Current, game_continuity_id: v2GameId };
+    }
   } else if (url.pathname.endsWith("/snapshot")) {
-    legacySnapshotReads++;
-    assert.equal(url.searchParams.get("input_profile"), "text-menu-v1"); output = textCurrent;
+    if (url.searchParams.get("input_profile") === "text-menu-v2") {
+      menuV2SnapshotReads++; output = menuV2Current;
+    } else {
+      legacySnapshotReads++;
+      assert.equal(url.searchParams.get("input_profile"), "text-menu-v1"); output = textCurrent;
+    }
   } else if (url.pathname.endsWith("/clients/register")) {
     controlClientInstanceId = body.client_instance_id;
     output = { protocol_version: "1.0.0", schema: "sts2.player-environment/control-1", runtime_instance_id: "fixture-runtime", client: { client_session_id: "client-1", client_instance_id: controlClientInstanceId }, controller: null };
@@ -178,14 +199,35 @@ const textHost = createHttpServer(async (request, response) => {
     // The real Host omits null controller when serializing a successful release.
     output = { protocol_version: "1.0.0", schema: "sts2.player-environment/control-1", runtime_instance_id: "fixture-runtime", status: "controller_released", detail: "", client: { client_session_id: "client-1", client_instance_id: controlClientInstanceId } };
   } else if (url.pathname.endsWith("/actions")) {
-    assert.equal(body.input_profile, "text-menu-v1"); assert.ok(controlHeld);
-    const action = textCurrent.menu_actions.actions[0];
-    assert.equal(body.bound_action_id, action.action_id); assert.equal(body.expected_snapshot_id, textCurrent.snapshot_id);
-    textPosts++;
-    textCurrent = action.kind === "system_navigation" ? textFrame(2, "information", nativeAction) : textFrame(3, "information", nativeAction);
-    output = { protocol_version: "1.0.0", schema: "sts2.player-environment/text-menu-action-result-1", input_profile: "text-menu-v1",
-      request_id: body.request_id, status: "applied", effect_domain: action.effect_domain, native_delivery: action.kind === "system_navigation" ? null : "delivered",
-      action, reason_code: null, detail: null, retry: "never", successor: textCurrent, attribution: null };
+    assert.ok(controlHeld);
+    if (body.input_profile === "text-menu-v2") {
+      const action = menuV2Current.menu_actions.actions.find(item => item.action_id === body.bound_action_id);
+      assert.ok(action); assert.equal(body.expected_snapshot_id, menuV2Current.snapshot_id);
+      menuV2Posts++;
+      if (action.kind === "system_selection") {
+        menuV2Current = menuV2Selected.successor;
+        output = { ...menuV2Selected, request_id: body.request_id };
+      } else {
+        const old = menuV2Current;
+        menuV2Current = { ...menuV2Root,
+          snapshot_id: "v2-menu-card-only-22", sequence: old.sequence + 1,
+          menu: { ...menuV2Root.menu,
+            native_snapshot_id: "managed-source-21" } };
+        output = { protocol_version: "1.0.0", schema: "sts2.player-environment/text-menu-action-result-2",
+          input_profile: "text-menu-v2", request_id: body.request_id, status: "applied",
+          effect_domain: "native_input", native_delivery: "delivered", action,
+          reason_code: null, detail: null, retry: "never", successor: null, attribution: null };
+      }
+    } else {
+      assert.equal(body.input_profile, "text-menu-v1");
+      const action = textCurrent.menu_actions.actions[0];
+      assert.equal(body.bound_action_id, action.action_id); assert.equal(body.expected_snapshot_id, textCurrent.snapshot_id);
+      textPosts++;
+      textCurrent = action.kind === "system_navigation" ? textFrame(2, "information", nativeAction) : textFrame(3, "information", nativeAction);
+      output = { protocol_version: "1.0.0", schema: "sts2.player-environment/text-menu-action-result-1", input_profile: "text-menu-v1",
+        request_id: body.request_id, status: "applied", effect_domain: action.effect_domain, native_delivery: action.kind === "system_navigation" ? null : "delivered",
+        action, reason_code: null, detail: null, retry: "never", successor: textCurrent, attribution: null };
+    }
   } else { response.statusCode = 404; output = { error: "missing" }; }
   response.setHeader("content-type", "application/json"); response.end(JSON.stringify(output));
 });
@@ -252,6 +294,30 @@ try {
   assert.equal(v2ContextReads, 5);
   assert.equal(legacySnapshotReads, legacyBeforeV2, "v2 must not fetch a separate v1 snapshot");
   assert.equal(textPosts, 2, "v2 abstention must not submit native or menu actions");
+
+  // The new profile is explicit in the Manifest and every Connector request.
+  // The first text selection has no native delivery; the second action is a
+  // Connector-owned native leaf resolved from its new complete catalog.
+  const menuV2Manifest = structuredClone(v2Manifest);
+  menuV2Manifest.representation = { id: "installed-text-menu-v2", version: "2",
+    input_schema: "sts2.player-environment/text-menu-snapshot-2" };
+  menuV2Manifest.support.action_verbs = ["select_card", "play", "cancel_selection"];
+  const menuV2Runtime = new PolicyRuntime({ manifest: menuV2Manifest, connector: textConnector,
+    mode: "one_step", runId: "installed-menu-v2", successorPoll: { maxAttempts: 2, baseBackoffMs: 0 },
+    statefulPolicy: input => ({ output: { candidate_digest: input.candidate_digest,
+      scores: input.bundle.observation.menu_actions.actions.map((_action, index) => -index), selected_index: 0 },
+      completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
+        sequence: input.bundle.observation.sequence } }) });
+  assert.equal((await menuV2Runtime.tick()).type, "navigated");
+  assert.equal(menuV2Runtime.status().last_receipt, null);
+  await menuV2Runtime.setMode("one_step");
+  assert.equal((await menuV2Runtime.tick()).type, "text_native_delivered");
+  assert.equal(menuV2Runtime.status().last_receipt.delivery, "delivered");
+  assert.equal(menuV2Posts, 2);
+  assert.equal(menuV2ContextReads, 2);
+  assert.equal(menuV2SnapshotReads, 1);
+  assert.equal(controlHeld, false);
+  await menuV2Runtime.stop();
 } finally { await new Promise(resolve => textHost.close(resolve)); }
 
 // Launch the actual installed CLI in Human mode. It never contacts a game.
@@ -290,4 +356,4 @@ try {
     child.kill("SIGTERM"); await childExit;
   }
 }
-console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, text_menu_http_sdk: true, text_menu_navigation_and_native_submissions: textPosts, installed_v2_atomic_context_reads: v2ContextReads, installed_v2_token_rotation_and_completion_validation: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));
+console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, text_menu_http_sdk: true, text_menu_navigation_and_native_submissions: textPosts, installed_v2_atomic_context_reads: v2ContextReads, installed_v2_token_rotation_and_completion_validation: true, installed_text_menu_v2_context_reads: menuV2ContextReads, installed_text_menu_v2_system_selection_and_native_submissions: menuV2Posts, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));

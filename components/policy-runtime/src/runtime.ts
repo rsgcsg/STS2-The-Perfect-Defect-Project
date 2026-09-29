@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvironmentSnapshot, TextMenuAction, TextMenuActionResult, TextMenuSnapshot } from "@rsgcsg/sts2-connector-client";
+import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvironmentSnapshot, TextMenuV2Snapshot } from "@rsgcsg/sts2-connector-client";
 import { admitWholeDecision } from "./admission.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { candidateOrderDigest } from "./digest.js";
-import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type DecisionAction, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TickResult } from "./contracts.js";
+import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type DecisionAction, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
 import { StaleWholeBundleError } from "./connector.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 
@@ -49,7 +49,7 @@ export function admitWholeDecisionBundle(bundle: AnyDecisionBundle, manifest?: P
   return { admitted: true, reason: "whole_decision_admitted", candidateDigest, candidateCount: actions.length };
 }
 
-export async function refreshWholeDecisionBundle(connector: PolicyConnector, requiredReadKinds: readonly string[], options: { maxAttempts: number; baseBackoffMs: number; sleep?: (milliseconds: number) => Promise<void>; onStale?: (attempt: number, delayMs: number) => Promise<void> | void; inputProfile?: "text-menu-v1" }): Promise<AnyDecisionBundle | null> {
+export async function refreshWholeDecisionBundle(connector: PolicyConnector, requiredReadKinds: readonly string[], options: { maxAttempts: number; baseBackoffMs: number; sleep?: (milliseconds: number) => Promise<void>; onStale?: (attempt: number, delayMs: number) => Promise<void> | void; inputProfile?: TextInputProfile }): Promise<AnyDecisionBundle | null> {
   if (!Number.isSafeInteger(options.maxAttempts) || options.maxAttempts < 1) throw new Error("maxAttempts must be a positive integer");
   if (options.baseBackoffMs < 0) throw new Error("baseBackoffMs must be non-negative");
   const sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
@@ -304,8 +304,10 @@ export class PolicyRuntime {
   }
 
   private async tickOnce(): Promise<TickResult> {
-    const textMenu = this.options.manifest.representation.input_schema === "sts2.player-environment/text-menu-snapshot-1";
-    const inputProfile = textMenu ? "text-menu-v1" as const : undefined;
+    const representation = this.options.manifest.representation.input_schema;
+    const inputProfile: TextInputProfile | undefined = representation === "sts2.player-environment/text-menu-snapshot-1"
+      ? "text-menu-v1" : representation === "sts2.player-environment/text-menu-snapshot-2" ? "text-menu-v2" : undefined;
+    const textMenu = inputProfile !== undefined;
     if (this.stopped) return { type: "not_admitted", reason: "runtime_stopped", status: this.status() };
     if (this.tainted) return { type: "not_admitted", reason: "runtime_tainted", status: this.status() };
     if (this.mode === "human") return { type: "human", status: this.status() };
@@ -344,8 +346,10 @@ export class PolicyRuntime {
     try {
       if (this.stateful) {
         if (!this.options.connector.observeTextMenuContext) throw new Error("text_menu_context_unsupported");
-        const context = await this.options.connector.observeTextMenuContext();
-        if (context.schema !== "sts2.player-environment/text-menu-observation-context-1") throw new Error("text_menu_context_schema_mismatch");
+        const context = await this.options.connector.observeTextMenuContext(inputProfile);
+        if (context.schema !== (inputProfile === "text-menu-v2"
+          ? "sts2.player-environment/text-menu-observation-context-2"
+          : "sts2.player-environment/text-menu-observation-context-1")) throw new Error("text_menu_context_schema_mismatch");
         gameContinuityId = context.game_continuity_id;
         bundle = { observation: context.snapshot, reads: [] };
       } else {
@@ -363,7 +367,7 @@ export class PolicyRuntime {
       await this.failClosed("game_continuity_unavailable");
       return { type: "not_admitted", reason: "game_continuity_unavailable", status: this.status() };
     }
-    if (isTextMenuSnapshot(bundle.observation) !== textMenu) {
+    if (isTextMenuSnapshot(bundle.observation) !== textMenu || bundle.observation.schema !== representation) {
       await this.failClosed("snapshot_profile_drift");
       return { type: "not_admitted", reason: "snapshot_profile_drift", status: this.status() };
     }
@@ -488,7 +492,7 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
     }
     if (textMenu) {
-      return this.submitTextMenuDecision(decision, resolved as TextMenuAction, bundle.observation as TextMenuSnapshot, requestId);
+      return this.submitTextMenuDecision(decision, resolved as TextAction, bundle.observation as TextSnapshot, requestId);
     }
     this.submittedRequestIds.add(requestId);
     let receipt: PlayerEnvironmentReceipt;
@@ -546,7 +550,7 @@ export class PolicyRuntime {
     }
   }
 
-  private async submitTextMenuDecision(decision: PolicyDecision, action: TextMenuAction, previous: TextMenuSnapshot, requestId: string): Promise<TickResult> {
+  private async submitTextMenuDecision(decision: PolicyDecision, action: TextAction, previous: TextSnapshot, requestId: string): Promise<TickResult> {
     if (action.effect_domain === "text_menu") this.lastReceipt = null;
     if (!(await this.appendEvidence("text_menu_dispatch_attempt", { decision_id: decision.decision_id, action_id: action.action_id, effect_domain: action.effect_domain, native_submissions_used: this.nativeSubmissionsUsed + (action.effect_domain === "native_input" ? 1 : 0), menu_navigations_used: this.menuNavigationsUsed + (action.effect_domain === "text_menu" ? 1 : 0) }))) {
       await this.failClosed("agent_evidence_write_failed_before_submit");
@@ -555,9 +559,11 @@ export class PolicyRuntime {
     this.submittedRequestIds.add(requestId);
     if (action.effect_domain === "text_menu") this.menuNavigationsUsed += 1;
     else this.nativeSubmissionsUsed += 1;
-    let result: TextMenuActionResult;
+    let result: TextActionResult;
     try {
-      result = await this.options.connector.submit({ requestId, expectedSnapshotId: previous.snapshot_id, boundActionId: action.action_id, inputProfile: "text-menu-v1" }) as TextMenuActionResult;
+      result = await this.options.connector.submit({ requestId, expectedSnapshotId: previous.snapshot_id,
+        boundActionId: action.action_id, inputProfile: previous.input_profile,
+        previousSnapshot: previous.schema === "sts2.player-environment/text-menu-snapshot-2" ? previous : undefined }) as TextActionResult;
     } catch (error) {
       await this.taint(`unknown_delivery_after_submit:${message(error)}`);
       return { type: "unknown", decision, receipt: null, error: message(error), status: this.status() };
@@ -616,8 +622,9 @@ export class PolicyRuntime {
     }
   }
 
-  private validTextMenuSuccessor(previous: TextMenuSnapshot, next: TextMenuSnapshot, navigation: boolean): boolean {
-    return next.snapshot_id !== previous.snapshot_id && next.sequence > previous.sequence
+  private validTextMenuSuccessor(previous: TextSnapshot, next: TextSnapshot, navigation: boolean): boolean {
+    return next.schema === previous.schema && next.input_profile === previous.input_profile
+      && next.snapshot_id !== previous.snapshot_id && next.sequence > previous.sequence
       && next.session.runtime_instance_id === previous.session.runtime_instance_id
       && next.session.environment_fingerprint === previous.session.environment_fingerprint
       && (!navigation || next.menu.cursor !== previous.menu.cursor || next.menu.revision > previous.menu.revision);
@@ -844,10 +851,11 @@ export class PolicyRuntime {
     for (let attempt = 1; attempt <= this.successorPoll.maxAttempts; attempt += 1) {
       if (this.mutationCancellationRequested()) return null;
       // One observation per attempt: do not multiply nested retry budgets.
-      const next = await refreshWholeDecisionBundle(this.options.connector, [], { maxAttempts: 1, baseBackoffMs: 0, inputProfile: isTextMenuSnapshot(previous) ? "text-menu-v1" : undefined, sleep: this.sleep });
+      const next = await refreshWholeDecisionBundle(this.options.connector, [], { maxAttempts: 1, baseBackoffMs: 0,
+        inputProfile: isTextMenuSnapshot(previous) ? previous.input_profile : undefined, sleep: this.sleep });
       if (next) {
         const observed = next.observation;
-        if (isTextMenuSnapshot(observed) !== isTextMenuSnapshot(previous)) throw new Error("successor_profile_drift");
+        if (observed.schema !== previous.schema) throw new Error("successor_profile_drift");
         if (observed.session.runtime_instance_id !== previous.session.runtime_instance_id
             || observed.session.environment_fingerprint !== previous.session.environment_fingerprint) {
           throw new Error("successor_environment_identity_drift");
@@ -910,10 +918,11 @@ function makeDecision(manifest: PolicyManifest, runId: string, bundle: AnyDecisi
 function isStale(error: unknown): boolean { return error instanceof StaleWholeBundleError || (error instanceof Error && (error as Error & { code?: string }).code === "stale_state"); }
 function manifestCompatibilityReason(manifest: PolicyManifest, capabilities: Awaited<ReturnType<PolicyConnector["capabilities"]>>): string | null {
   if (capabilities.protocol_version !== manifest.requirements.connector_protocol_version) return "connector_protocol_unsupported";
-  if (manifest.representation.input_schema === "sts2.player-environment/text-menu-snapshot-1") {
-    if (!("input_profile" in capabilities) || capabilities.input_profile !== "text-menu-v1"
-        || capabilities.snapshot_schema !== "sts2.player-environment/text-menu-snapshot-1"
-        || capabilities.receipt_schema !== "sts2.player-environment/text-menu-action-result-1") return "connector_text_menu_profile_unsupported";
+  if (manifest.representation.input_schema !== "sts2.player-environment/snapshot-1") {
+    const v2 = manifest.representation.input_schema === "sts2.player-environment/text-menu-snapshot-2";
+    if (!("input_profile" in capabilities) || capabilities.input_profile !== (v2 ? "text-menu-v2" : "text-menu-v1")
+        || capabilities.snapshot_schema !== manifest.representation.input_schema
+        || capabilities.receipt_schema !== (v2 ? "sts2.player-environment/text-menu-action-result-2" : "sts2.player-environment/text-menu-action-result-1")) return "connector_text_menu_profile_unsupported";
   } else if (capabilities.snapshot_schema !== "sts2.player-environment/snapshot-1"
       || capabilities.receipt_schema !== "sts2.player-environment/receipt-1") return "connector_legacy_profile_unsupported";
   const environment = manifest.requirements.environment;
