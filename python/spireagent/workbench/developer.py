@@ -238,9 +238,10 @@ def _setup_unlocked(
         delivery_value = decode_json(delivery_config.read_bytes())
         if isinstance(delivery_value, dict):
             hub_url = endpoint(delivery_value.get("hub_url"))
+    # Setup replaces composition/settings, not the independently selected workspace.
     current_config = (
         ProjectConfig.load(path, require_current_combination=False)
-        if path.exists() and not replace_config
+        if path.exists()
         else None
     )
     config = ProjectConfig(
