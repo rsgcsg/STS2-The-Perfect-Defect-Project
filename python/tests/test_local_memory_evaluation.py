@@ -127,10 +127,14 @@ def test_gold_semantic_neighbor_still_blocks_dev(tmp_path, monkeypatch):
                                  "a" * 32, "b" * 32)
 
 
-def test_async_workbench_dev_operation_binds_existing_model_and_report(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("history", "settling"), [(False, 0), (True, 64)])
+def test_async_workbench_dev_operation_binds_existing_model_and_report(
+    tmp_path, monkeypatch, history, settling,
+):
     (tmp_path / "workspace").mkdir()
     source_store, model_id, train, dev, _, _, _ = prepared(
-        tmp_path / "synthetic-model", monkeypatch, operation_id="a" * 32)
+        tmp_path / "synthetic-model", monkeypatch, operation_id="a" * 32,
+        history=history)
     state, directory, owner = create(tmp_path / "workspace")
     store = ManifestArtifactStore(LocalBlobStore(directory / "store", create=False))
     result = next(source_store.get_manifest(identity) for identity in source_store.manifest_ids()
@@ -152,6 +156,8 @@ def test_async_workbench_dev_operation_binds_existing_model_and_report(tmp_path,
         if on_started is not None:
             on_started()
         output = evaluate_memory(store, model_id, dev.artifact_id, PRODUCER,
+                                 max_settling_events=int(command[
+                                     command.index("--max-settling-events") + 1]),
                                  operation_id=command[command.index("--operation") + 1],
                                  semantic_overlap=False)
         return 0, json.dumps({"evaluation_id": output.artifact_id,
@@ -159,6 +165,10 @@ def test_async_workbench_dev_operation_binds_existing_model_and_report(tmp_path,
 
     monkeypatch.setattr("spireagent.workbench.local_memory_evaluation._private_child", child)
     service = LocalMemoryEvaluationService(ProjectConfig(state, "", "", None, combination()))
+    if history:
+        with pytest.raises(BoundaryError, match="dev_projection_config_mismatch"):
+            service.start(model_id, dev.artifact_id, max_settling_events=0)
+        assert service.status()["operation"]["status"] == "idle"
     with monkeypatch.context() as missing:
         missing.setattr("spireagent.workbench.local_model_dependencies.find_spec", lambda _: None)
         with pytest.raises(BoundaryError, match="local_models_extra_required"):
@@ -168,6 +178,7 @@ def test_async_workbench_dev_operation_binds_existing_model_and_report(tmp_path,
         assert admitted == []
     started = service.start(model_id, dev.artifact_id)["operation"]
     assert started["purpose"] == "dev"
+    assert service._read(service._path(owner), owner.identity)["max_settling_events"] == settling
     assert service._thread is not None
     service._thread.join(timeout=10)
     assert not service._thread.is_alive()
@@ -215,7 +226,7 @@ def test_http_model_detail_evaluation_action_is_explicit_and_browser_bound(tmp_p
         with urlopen(Request(root + "/api/local-memory-evaluations/start",
                              data=body, headers=headers), timeout=3) as response:
             assert json.load(response)["operation"] == {"status": "pending", "purpose": "dev"}
-        assert calls == [("a" * 64, "b" * 64, {"max_settling_events": 0})]
+        assert calls == [("a" * 64, "b" * 64, {"max_settling_events": None})]
         with urlopen(Request(root + "/api/local-memory-evaluations/status",
                              headers={"Cookie": headers["Cookie"]}), timeout=3) as response:
             assert json.load(response)["operation"]["status"] == "idle"

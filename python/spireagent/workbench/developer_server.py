@@ -565,7 +565,7 @@ class Application:
             recipe=recipe)
 
     def start_local_memory_evaluation(self, model_id: object, source_id: object,
-                                      *, max_settling_events: object = 0) -> dict[str, Any]:
+                                      *, max_settling_events: object = None) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_memory_evaluation", "running_instance_unavailable")
         try:
@@ -1316,7 +1316,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         raise ValueError
                     value = app.start_local_memory_evaluation(
                         body["model_id"], body["source_id"],
-                        max_settling_events=body.get("max_settling_events", 0),
+                        max_settling_events=body.get("max_settling_events"),
                     )
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
