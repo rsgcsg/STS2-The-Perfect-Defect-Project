@@ -2245,46 +2245,59 @@ internal static partial class RecorderRuntime
     private static void ObserveNativeDecisionOwnerReady(
         NativeDecisionOwnerReadyObservation observation)
     {
-        if (_store == null)
-            return;
-        try
+        string observedSessionId;
+        string observedRunId;
+        lock (Gate)
         {
-            if (!_semanticBoundaryTraceHealthy)
+            if (_store == null || SessionId == null)
                 return;
-            lock (Gate)
+            observedSessionId = SessionId;
+            observedRunId = _currentRunId;
+        }
+        TerminalSeal.CompleteDecisionOwnerReady(
+            observedSessionId,
+            observedRunId,
+            observation.Domain,
+            observeBoundary: () =>
             {
-                if (!BoundaryTracker.NeedsBoundaryObservation)
-                    return;
-            }
-            ProcessLocalNativeWitnessFrame frame = CaptureSemanticFrame();
-            if (!string.Equals(
-                    frame.Snapshot.Interaction.Kind,
-                    observation.Domain,
-                    StringComparison.Ordinal))
-            {
-                return;
-            }
+                try
+                {
+                    if (!_semanticBoundaryTraceHealthy)
+                        return;
+                    lock (Gate)
+                    {
+                        if (!BoundaryTracker.NeedsBoundaryObservation)
+                            return;
+                    }
+                    ProcessLocalNativeWitnessFrame frame = CaptureSemanticFrame();
+                    if (!string.Equals(
+                            frame.Snapshot.Interaction.Kind,
+                            observation.Domain,
+                            StringComparison.Ordinal))
+                        return;
 
-            ObserveSemanticDecisionBoundary(
-                frame,
-                SemanticBoundaryWitnessKinds.NativeDecisionOwnerReady,
-                nativeDecisionOwnerReady: new NativeDecisionOwnerReadyEvidence(
-                    observation.Domain,
-                    NativeWitnessIdentity.Get(observation.NativeOwner, "decision_owner"),
-                    observation.NativeOwnerType,
-                    observation.NativeMechanism));
-        }
-        catch (Exception exception)
-        {
-            DisableSemanticBoundaryTrace(exception);
-        }
-        finally
-        {
-            // This synchronous native-ready callback is the last chance to
-            // persist the terminal causal boundary before automatic closure.
-            // An incomplete capture remains unknown under the ordinary Close.
-            SealAfterNativeTerminal(observation.Domain);
-        }
+                    lock (Gate)
+                    {
+                        if (_store == null
+                            || !string.Equals(SessionId, observedSessionId, StringComparison.Ordinal)
+                            || !string.Equals(_currentRunId, observedRunId, StringComparison.Ordinal))
+                            return;
+                        ObserveSemanticDecisionBoundary(
+                            frame,
+                            SemanticBoundaryWitnessKinds.NativeDecisionOwnerReady,
+                            nativeDecisionOwnerReady: new NativeDecisionOwnerReadyEvidence(
+                                observation.Domain,
+                                NativeWitnessIdentity.Get(observation.NativeOwner, "decision_owner"),
+                                observation.NativeOwnerType,
+                                observation.NativeMechanism));
+                    }
+                }
+                catch (Exception exception)
+                {
+                    DisableSemanticBoundaryTrace(exception);
+                }
+            },
+            close: () => ExecuteTerminalAutoSeal(observedSessionId, observedRunId));
     }
 
     private static CurrentDecisionFrame FreezeSemanticBoundary(
@@ -4782,20 +4795,32 @@ internal static partial class RecorderRuntime
         PublishApplicationEvent(RecordingEventKind.RunStarted, detail: journalKind);
     }
 
-    private static void SealAfterNativeTerminal(string? readyDomain = null)
+    private static void SealAfterNativeTerminal()
     {
         bool seal;
         string? sessionId;
+        string runId;
         lock (Gate)
         {
             sessionId = SessionId;
-            seal = readyDomain == null
-                ? TerminalSeal.TakeOnProcessFrame(sessionId, _currentRunId)
-                : TerminalSeal.TakeOnDecisionOwnerReady(sessionId, _currentRunId, readyDomain);
+            runId = _currentRunId;
+            seal = TerminalSeal.TakeOnProcessFrame(sessionId, runId);
         }
         if (seal)
-            ExecuteRecordingCommand(new RecordingCommand($"auto-seal-{Guid.NewGuid():N}",
-                RecordingCommandKind.Close), new RecordingSessionExpectation(sessionId!), automatic: true);
+            ExecuteTerminalAutoSeal(sessionId!, runId);
+    }
+
+    private static void ExecuteTerminalAutoSeal(string sessionId, string runId)
+    {
+        lock (Gate)
+        {
+            if (_store == null
+                || !string.Equals(SessionId, sessionId, StringComparison.Ordinal)
+                || !string.Equals(_currentRunId, runId, StringComparison.Ordinal))
+                return;
+        }
+        ExecuteRecordingCommand(new RecordingCommand($"auto-seal-{Guid.NewGuid():N}",
+            RecordingCommandKind.Close), new RecordingSessionExpectation(sessionId), automatic: true);
     }
 
     internal static void ObserveNativeRunCleanup(bool graceful)

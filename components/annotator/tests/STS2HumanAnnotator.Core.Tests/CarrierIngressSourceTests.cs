@@ -10,22 +10,23 @@ public sealed class CarrierIngressSourceTests
         int start = runtime.IndexOf("private static void ObserveNativeDecisionOwnerReady(");
         int end = runtime.IndexOf("private static CurrentDecisionFrame FreezeSemanticBoundary", start);
         string callback = runtime[start..end];
-        int tryStart = callback.IndexOf("try\n");
+        int coordinator = callback.IndexOf("TerminalSeal.CompleteDecisionOwnerReady(");
         int noPending = callback.IndexOf("!BoundaryTracker.NeedsBoundaryObservation");
         int capture = callback.IndexOf("CaptureSemanticFrame()");
         int persist = callback.IndexOf("ObserveSemanticDecisionBoundary(");
-        int finalizer = callback.IndexOf("finally");
-        int seal = callback.IndexOf("SealAfterNativeTerminal(observation.Domain)");
-        Assert.True(tryStart >= 0 && noPending > tryStart && capture > noPending
-            && persist > capture && finalizer > persist && seal > finalizer);
-        Assert.Contains("if (!_semanticBoundaryTraceHealthy)\n                return;", callback[tryStart..finalizer]);
+        int close = callback.IndexOf("close: () => ExecuteTerminalAutoSeal(observedSessionId, observedRunId)");
+        Assert.True(coordinator >= 0 && noPending > coordinator && capture > noPending
+            && persist > capture && close > persist);
+        Assert.Contains("observedSessionId = SessionId", callback);
+        Assert.Contains("observedRunId = _currentRunId", callback);
+        Assert.Contains("string.Equals(SessionId, observedSessionId, StringComparison.Ordinal)", callback);
+        Assert.Contains("string.Equals(_currentRunId, observedRunId, StringComparison.Ordinal)", callback);
         Assert.Contains("DisableSemanticBoundaryTrace(exception)", callback);
 
-        int sealStart = runtime.IndexOf("private static void SealAfterNativeTerminal(");
+        int sealStart = runtime.IndexOf("private static void ExecuteTerminalAutoSeal(");
         int cleanup = runtime.IndexOf("internal static void ObserveNativeRunCleanup(", sealStart);
         string closing = runtime[sealStart..cleanup];
-        Assert.Contains("TakeOnDecisionOwnerReady(sessionId, _currentRunId, readyDomain)", closing);
-        Assert.Contains("new RecordingSessionExpectation(sessionId!)", closing);
+        Assert.Contains("new RecordingSessionExpectation(sessionId)", closing);
     }
 
     [Fact]
