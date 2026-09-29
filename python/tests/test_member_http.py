@@ -120,6 +120,10 @@ def test_loopback_models_and_member_actions_need_correct_credential(tmp_path, mo
     monkeypatch.setattr(app.models, "command", lambda action: calls.append(action) or {"ok": True})
     monkeypatch.setattr(app.models, "catalog", lambda: {"policies": []})
     monkeypatch.setattr(
+        app.models, "prepare_text_runtime",
+        lambda profile: calls.append("runtime:" + profile) or {"status": "pending"},
+    )
+    monkeypatch.setattr(
         app.models,
         "prepare_and_load",
         lambda selection, profile="short": calls.append("prepare:" + selection + ":" + profile)
@@ -189,6 +193,19 @@ def test_loopback_models_and_member_actions_need_correct_credential(tmp_path, mo
         assert calls == ["human", "prepare:audited:short", "prepare:audited:extended",
                          "start:audited:extended",
                          ("a" * 64, True)]
+        route = root + "/api/local-models/prepare-text-runtime"
+        with pytest.raises(HTTPError) as denied:
+            client.open(Request(route, data=b'{"runtime_profile":"text-menu-v1"}',
+                                headers={**headers, "Origin": "https://evil"}))
+        assert denied.value.code == 403
+        with client.open(Request(route, data=b'{"runtime_profile":"text-menu-m2-v1"}',
+                                 headers=headers)) as response:
+            assert json.load(response) == {"status": "pending"}
+        assert calls[-1] == "runtime:text-menu-m2-v1"
+        with pytest.raises(HTTPError) as invalid_runtime_body:
+            client.open(Request(route, data=b'{"runtime_profile":"text-menu-v1","path":"/tmp"}',
+                                headers=headers))
+        assert invalid_runtime_body.value.code == 409
         with pytest.raises(HTTPError) as invalid:
             client.open(Request(
                 root + "/api/local-models/prepare",
