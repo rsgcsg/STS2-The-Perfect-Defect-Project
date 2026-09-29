@@ -15,6 +15,10 @@ function textSnapshotId(snapshotId) {
 }
 
 function completeCurrentLeaf(snapshot) {
+  const restReferents = (snapshot?.referents ?? []).filter((referent) =>
+    (referent.role === "rest_option" || referent.role === "rest_room")
+    && referent.state.enabled === true);
+  const restCanProceed = snapshot?.interaction?.content?.surface?.can_proceed === true;
   const map = snapshot?.interaction?.kind === "map_navigation"
     && snapshot.status === "interactive"
     && snapshot.completeness?.visible_information === "contract_complete_for_visible_singleplayer_map_navigation"
@@ -24,11 +28,10 @@ function completeCurrentLeaf(snapshot) {
     && snapshot.status === "interactive"
     && snapshot.completeness?.visible_information === "contract_complete_for_current_native_interaction"
     && snapshot.completeness?.interaction_discovery === "derived_from_same_current_native_interaction_as_execution"
-    && snapshot.bound_actions?.actions.length === snapshot.referents.filter((referent) =>
-      referent.role === "rest_option" && referent.state.enabled === true).length
-    && snapshot.bound_actions.actions.every((action) => snapshot.referents.some((referent) =>
-      referent.referent_id === action.subject_referent_id
-      && referent.role === "rest_option" && referent.state.enabled === true));
+    && restReferents.filter((referent) => referent.role === "rest_room").length === (restCanProceed ? 1 : 0)
+    && snapshot.bound_actions?.actions.length === restReferents.length
+    && snapshot.bound_actions.actions.every((action) => restReferents.some((referent) =>
+      referent.referent_id === action.subject_referent_id));
   return (map || rest)
     && snapshot.bound_actions?.status === "complete"
     && snapshot.bound_actions.actions.length > 0

@@ -291,6 +291,37 @@ test("rest raw probe requires the exact option reference and a matching native i
   assert.deepEqual(invalid.snapshot.bound_actions.actions, []);
 });
 
+test("rest proceed is a separate room-bound input while remaining options stay visible", () => {
+  const state = {
+    type: "decision", decision: "rest_site", context: { act: 1, floor: 5, room_type: "RestSite" },
+    options: [
+      { index: 0, native_ref: "rest-option-b", option_id: "SMITH", name: "Smith", is_enabled: false },
+      { index: 1, native_ref: "rest-option-c", option_id: "DIG", name: "Dig", is_enabled: true }
+    ],
+    room_ref: "rest-room-a", can_proceed: true, player: player()
+  };
+  const projection = projectManagedCandidateDecision({ ...projectionIdentity, state });
+  assert.equal(decodePlayerSnapshot(projection.snapshot).data.interaction.content.surface.can_proceed, true);
+  assert.deepEqual(projection.snapshot.interaction.content.surface.options.map((option) => option.name), ["Smith", "Dig"]);
+  assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.label), ["Dig", "Proceed"]);
+  assert.deepEqual([...projection.bindings.values()].map((binding) => binding.raw_request), [
+    { cmd: "action", action: "choose_option", args: { option_index: 1, option_ref: "rest-option-c" } },
+    { cmd: "action", action: "proceed", args: { room_ref: "rest-room-a" } }
+  ]);
+  assert.equal(JSON.stringify(projection.snapshot).includes("rest-room-a"), false);
+  const exhausted = projectManagedCandidateDecision({
+    ...projectionIdentity, state: { ...state, options: [] }
+  });
+  assert.deepEqual(exhausted.snapshot.bound_actions.actions.map((action) => action.label), ["Proceed"]);
+  assert.deepEqual(chooseManagedCandidateAction(state), {
+    cmd: "action", action: "proceed", args: { room_ref: "rest-room-a" }
+  });
+  assert.equal(chooseManagedCandidateAction({ ...state, room_ref: null }), null);
+  const missing = projectManagedCandidateDecision({ ...projectionIdentity, state: { ...state, room_ref: null } });
+  assert.equal(missing.snapshot.status, "visible_unsupported");
+  assert.deepEqual(missing.snapshot.bound_actions.actions, []);
+});
+
 test("projects native reward sets without exposing exact reward or room operands", () => {
   const projection = projectManagedCandidateDecision({
     ...projectionIdentity,

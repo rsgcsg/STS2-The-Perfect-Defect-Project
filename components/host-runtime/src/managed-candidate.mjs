@@ -505,6 +505,11 @@ export function chooseManagedCandidateAction(state) {
         : { cmd: "action", action: "choose_option", args: { option_index: option.index } };
     }
     case "rest_site": {
+      if (state.can_proceed === true) {
+        return typeof state.room_ref === "string" && state.room_ref.length > 0
+          ? { cmd: "action", action: "proceed", args: { room_ref: state.room_ref } }
+          : null;
+      }
       const options = (state.options ?? []).filter((entry) => entry.is_enabled !== false);
       const option = options.find((entry) => entry.option_id === "HEAL") ?? sortedBy(options, ["option_id"])[0];
       return option == null || typeof option.native_ref !== "string" || option.native_ref.length === 0
