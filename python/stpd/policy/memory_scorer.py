@@ -9,14 +9,15 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass
+from threading import Lock
 
 import torch
 from tokenizers import Tokenizer
 
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 
+from ..fullrun.memory_token_inputs import encode_memory_texts
 from ..fullrun.text_menu_inputs import project_text_menu_snapshot
-from ..fullrun.token_inputs import encode_texts
 from ..models.dsimple_memory import ExperimentalDSimpleM2
 from ..workers.memory_ranking import MemoryConfig, load_memory_export
 
@@ -53,6 +54,7 @@ class OnlineM2Scorer:
         self._model = model.eval()
         self._tokenizer = tokenizer
         self._config = config
+        self._lock = Lock()
         self._memory = model.initial_memory()
         self._continuity: str | None = None
         self._retired: set[str] = set()
@@ -61,8 +63,6 @@ class OnlineM2Scorer:
         self._sequence = 0
         self._snapshot_digest: str | None = None
         self._cached: OnlineScores | None = None
-        self._observations = 0
-        self._input_tokens = 0
 
     @classmethod
     def from_export(cls, weights: bytes, config: MemoryConfig,
@@ -72,7 +72,7 @@ class OnlineM2Scorer:
             raise BoundaryError("online_m2", "export_bytes_required")
         try:
             tokenizer = Tokenizer.from_str(tokenizer_bytes.decode("utf-8"))
-        except (UnicodeError, ValueError) as error:
+        except Exception as error:
             raise BoundaryError("online_m2", "tokenizer_invalid") from error
         if (tokenizer.truncation is not None or tokenizer.padding is not None
                 or tokenizer.get_vocab_size() != config.vocab_size):
@@ -83,6 +83,16 @@ class OnlineM2Scorer:
 
     def observe_and_score(self, *, continuity_token: str,
                           snapshot_bytes: bytes) -> OnlineScores:
+        if not self._lock.acquire(blocking=False):
+            raise BoundaryError("online_m2", "concurrent_observation")
+        try:
+            return self._observe_and_score(continuity_token=continuity_token,
+                                           snapshot_bytes=snapshot_bytes)
+        finally:
+            self._lock.release()
+
+    def _observe_and_score(self, *, continuity_token: str,
+                           snapshot_bytes: bytes) -> OnlineScores:
         if (not isinstance(continuity_token, str) or not continuity_token
                 or not isinstance(snapshot_bytes, bytes)):
             raise BoundaryError("online_m2", "observation_identity_required")
@@ -91,9 +101,10 @@ class OnlineM2Scorer:
             raise BoundaryError("online_m2", "snapshot_object_required")
         if set(snapshot) != SNAPSHOT_FIELDS:
             raise BoundaryError("online_m2", "snapshot_fields_mismatch")
-        # Hash the complete parsed JSON, including metadata and array order. JSON
-        # whitespace and object-key order do not create a new observation.
-        digest = hashlib.sha256(json_bytes(snapshot)).hexdigest()
+        # Connector samples observed_at at each Observe, while TextMenuSession
+        # excludes it from snapshot identity. Preserve every other field/order.
+        identity = {key: value for key, value in snapshot.items() if key != "observed_at"}
+        digest = hashlib.sha256(json_bytes(identity)).hexdigest()
         snapshot_id = snapshot.get("snapshot_id")
         sequence = snapshot.get("sequence")
         session = snapshot.get("session")
@@ -125,19 +136,18 @@ class OnlineM2Scorer:
             if sequence <= self._sequence:
                 raise BoundaryError("online_m2", "observation_order_reversed")
 
-        # All projection, catalog, token and episode limits precede any memory
-        # write. An accepted observation is independent of a chosen/delivered act.
-        public = project_text_menu_snapshot(snapshot)
+        # Catalog and per-page encoding limits precede any memory write. Training
+        # episode budgets do not govern a live continuity or autonomy duration.
+        # The projector renders object insertion order. Normalize that order so
+        # equivalent JSON spellings produce the same model input on first read.
+        public = project_text_menu_snapshot(decode_json(json_bytes(snapshot)))
         if len(public.action_ids) > self._config.max_actions_per_step:
             raise BoundaryError("online_m2", "catalog_limit_no_truncation")
-        row = encode_texts(self._tokenizer, public.state_text, public.action_texts,
-                           max_tokens=self._model.core.max_tokens)
+        row = encode_memory_texts(
+            self._tokenizer, public.state_text, public.action_texts,
+            max_tokens=self._model.core.max_tokens, slots=self._model.slots)
         input_tokens = len(row.state) + sum(map(len, row.actions))
-        prior_observations = 0 if changed else self._observations
-        prior_tokens = 0 if changed else self._input_tokens
-        if (input_tokens > self._config.max_chunk_input_tokens
-                or prior_observations + 1 > self._config.max_episode_observations
-                or prior_tokens + input_tokens > self._config.max_episode_input_tokens):
+        if input_tokens > self._config.max_chunk_input_tokens:
             raise BoundaryError("online_m2", "observation_budget_no_truncation")
         device = self._model.write_queries.device
         page = torch.tensor(row.state, dtype=torch.long, device=device)
@@ -169,6 +179,4 @@ class OnlineM2Scorer:
         self._sequence = sequence
         self._snapshot_digest = digest
         self._cached = result
-        self._observations = prior_observations + 1
-        self._input_tokens = prior_tokens + input_tokens
         return result

@@ -69,23 +69,38 @@ One new, strictly ordered snapshot in the same continuity advances M2 once,
 with `previous_actual_action=None` and `feedback=None`, then scores every
 advertised candidate from the resulting memory. The page is encoded once and
 each complete-catalog action uses the light action encoder. A retry of the
-current snapshot with identical canonical JSON returns immutable cached keys
-and scores without another page read. Canonicalization ignores JSON whitespace
-and object-key order, while preserving every field and array position; duplicate
-keys, nonfinite JSON numbers, missing fields, changed canonical content under the same
-snapshot ID, and reversed sequence are rejected. Returning to a page under a
+current snapshot with identical canonical JSON apart from `observed_at` returns
+immutable cached keys and scores without another page read. Connector
+`Observation/SnapshotBuilder.cs` samples that timestamp on each Observe, while
+`TextMenu/TextMenuSession.cs` excludes it from snapshot identity. The digest
+preserves every other field and array position, ignoring JSON whitespace and
+object-key order. The projector receives the canonical object-key order on its
+first read too, so equivalent JSON spellings use the same model input. Duplicate
+keys, nonfinite JSON numbers, missing fields,
+changed bound content under the same snapshot ID, and reversed sequence are
+rejected. Returning to a page under a
 new snapshot ID and later sequence is a new observation even if its visible
 content looks familiar.
 
 Changing the caller-owned continuity token starts at zero memory and retires
 the old token. A retired token cannot resume; the bounded retirement set fails
 closed once full, requiring a fresh scorer instance. Runtime/environment
-identity drift within one token is rejected. The entire menu and per-step and
-episode token limits are checked before computation. A provisional memory write
+identity drift within one token is rejected. The entire menu, per-text encoder
+limit, and per-page aggregate input limit (`max_chunk_input_tokens` reused as a
+single-page scoring resource guard) are checked before computation. The
+training episode length and cumulative token budgets do not cap online
+continuity; Policy Runtime owns its finite autonomy budget. A provisional memory write
 becomes this scorer's state only after finite full-vector scoring succeeds;
 this is acceptance of an observation, independent of abstention or Connector
-delivery. The scorer returns no mutable memory. A future serialized port owns
-cancelled requests and late responses; this synchronous seam claims neither.
+delivery. The scorer returns no mutable memory. A nonblocking single-owner lock
+rejects overlapping calls with `concurrent_observation`; a future serialized
+port still owns cancelled requests and late responses.
+
+`stpd.fullrun.memory_token_inputs.encode_memory_texts` is the shared M2 input
+budget: page tokens plus two memory-slot groups and any actual feedback markers
+must fit the page core, while each complete-catalog action is encoded separately
+and must fit its own token bound. This matches M2's light action encoder; the
+legacy four-family joint page-plus-action budget remains unchanged.
 
 ## Offline sequence computation (experimental)
 
