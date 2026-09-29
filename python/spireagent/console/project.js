@@ -2829,7 +2829,7 @@ window.SpireProject = (() => {
       const overview = panel("模型概览", "以下是本机模型清单中的训练记录；此处不读取权重或评估模型质量。");
       overview.append(fields([
         ["训练配方", "实验性 D-Simple M2-K1"],
-        ["结果类型", "训练产物；后续评估结果另见关联报告"],
+        ["结果类型", "训练产物；开发集评估请在下方单独查看或启动"],
         ["运行状态", "需先具备单独固定的 M2 运行包与当前环境能力，才能登记或加载"],
       ]));
       return overview;
@@ -3102,7 +3102,7 @@ window.SpireProject = (() => {
     } else if (operation.status === "completed" && sameModel) {
       label = "重新核验导出";
       card.append(el("p", memory
-        ? "M2 训练模型已导出并校验；评估结果另见关联报告。登记还需核对 M2 运行包与环境，加载另行操作。"
+        ? "M2 训练模型已导出并校验；评估须在独立区域核对。登记还需核对 M2 运行包与环境，加载另行操作。"
         : "导出校验本身不会加载模型；当前运行状态请到模型页查看。游戏兼容性仍须单独检查。", "small muted"));
       if (Number.isSafeInteger(operation.payload_bytes) && operation.payload_bytes >= 0)
         card.append(fields([["导出大小", bytes(operation.payload_bytes)]]));
@@ -3440,7 +3440,7 @@ window.SpireProject = (() => {
       }
     } else if (currentForDataset && operation.status === "completed") {
       card.append(el("p", operation.result_type === "train_only"
-        ? "M2 训练任务已完成；此任务不包含开发集评估指标，也没有加载到游戏。后续评估结果另见模型关联报告。"
+        ? "M2 训练任务已完成；此任务不包含开发集评估指标，也没有加载到游戏。开发集评估可从模型详情单独查看或启动。"
         : "本机训练已完成；这不表示模型已加载到游戏或具备已验证的策略质量。", "small muted"));
     } else if (!(["idle", "completed", "failed"].includes(operation.status))) {
       card.append(el("p", "本机训练状态暂不支持启动；请查看诊断信息。", "small muted"));

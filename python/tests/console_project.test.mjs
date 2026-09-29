@@ -1634,7 +1634,7 @@ test("M2 export describes its own scope alongside a completed dev report and gua
   const page = await env.render();
   assert.match(text(page), /模型概览/);
   assert.match(text(page), /实验性 D-Simple M2-K1/);
-  assert.match(text(page), /训练产物；后续评估结果另见关联报告/);
+  assert.match(text(page), /训练产物；开发集评估请在下方单独查看或启动/);
   assert.match(text(page), /导出校验不包含评估结论/);
   assert.match(text(page), /开发用途离线工程评估已完成/);
   assert.doesNotMatch(text(page), /没有独立评估|仍没有独立评估/);
@@ -1645,10 +1645,37 @@ test("M2 export describes its own scope alongside a completed dev report and gua
   assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
   await action(page, "start-local-model-export").onclick();
   assert.equal(post(env.calls).length, 1);
-  assert.match(text(env.livePage), /评估结果另见关联报告/);
+  assert.match(text(env.livePage), /评估须在独立区域核对/);
   assert.doesNotMatch(text(env.livePage), /没有独立评估|仍没有独立评估/);
   assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), true);
   assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
+});
+
+test("idle M2 evaluation leaves overview and verified export neutral about report existence", async () => {
+  const model = id("a");
+  const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model);
+      if (url === "/api/local-memory-evaluations/status") return {
+        schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready",
+        operation:{status:"idle"}, csrf_token:"memory-csrf"};
+      if (url.startsWith("/api/local-workspace?")) return {
+        schema:"stpd/local-workspace-inventory-v1", items:[], total:0};
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed", model_id:model, model_type:"memory", payload_bytes:123},
+      {schema:"stpd/local-model-export-operation-v2"});
+      if (url.startsWith("/api/local-model-registrations/status?")) return {
+        schema:"stpd/local-model-registration-v1", model_id:model,
+        status:"not_registered", loaded:false, runtime_profile:"text-menu-m2-v1"};
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.match(text(page), /开发集评估请在下方单独查看或启动/);
+  assert.match(text(page), /评估须在独立区域核对/);
+  assert.doesNotMatch(text(page), /查看开发集报告|已完成.*评估|评估结果另见关联报告|没有独立评估/);
+  assert.equal(post(env.calls).length, 0);
 });
 
 test("older M2 receipt and registration timeout explain explicit recovery without replay", async () => {
