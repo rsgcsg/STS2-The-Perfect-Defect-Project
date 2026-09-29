@@ -1,7 +1,7 @@
 # Stage1a M2 and Managed integration ledger — 2026-09-29
 
 This is a dated source/CI and local-candidate ledger for
-`rsgcsg/STS2-The-Perfect-Defect-Project`, checked at 07:51 UTC. Live PR refs,
+`rsgcsg/STS2-The-Perfect-Defect-Project`, with CI and local provenance checked at 08:05 UTC. Live PR refs,
 installed bytes and later native observations can supersede it. It does not
 grant source, game, Human-evidence or research qualification.
 
@@ -46,13 +46,22 @@ feedback channels.
 [PR99](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/99)
 was open at head `5eff996c50ecc0b754c49372f8dc8aba15af9426` against develop
 `ce568809`. Its [current-head run 36538202566](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36538202566)
-was in progress; PR97/98 greens cannot qualify this diff. PR99's body is the
+completed successfully with plan, Linux, Windows and portable selected;
+docs was unselected. This qualifies only `5eff996c` source/test checks, not
+the pending Evidence-owner fix or candidate integration. PR99's body is the
 source for the following **local operational candidate**, separate from
 hosted acceptance:
 
 - One admitted M2 episode / 548 observations trained a train-only model. It
-  has no independent evaluation or demonstrated memory benefit. The separate
-  full-run 537-label dataset did not produce this model.
+  has no independent evaluation or demonstrated memory benefit. Its source
+  `63c0198a37d18039e47bce29a3abe6e4cd81b09902a9452bf52fb49fb363d3ef`
+  is the full-run 537-accepted-label source, not a separate recording. The
+  immutable source names session
+  `session-20260928T162157Z-2b0c0cbd78874df382d89a1b630f2f5a` and verified
+  Human bundle `ea98b0c7f16ccfffcacef6d7b71e4168ea896b17d9f8275e2afe5775c7c1536a`.
+  Its 584 input dispositions and the M2 projection's 548 observations
+  (including 36 verified settling events) are different, non-additive views.
+  The audit originally did not train; this later operation did.
 - Explicit export revalidation completed for 4,659,080 package bytes without
   retraining. Registration on final candidate source returned HTTP 200 in
   8.899 seconds, and readiness was `ready_to_load`.
@@ -66,9 +75,19 @@ hosted acceptance:
   returned null continuity. It does not prove same-game/new-game M2 behavior
   during a native run.
 
-No later Shadow/native experiment, native M2 action, Reset control, dev/test
-score, Gold admission, roughly-10k run, full-game result or package release is
-claimed here. Historical failed projections and old model/data identities
+The [subsequent native receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/99#issuecomment-5886092505)
+records run `run-7cf94f48-e156-4b3c-97a6-c80d090df786`: three Shadow
+decisions, one One-Step and 16 Auto deliveries, 20 decisions in total.
+All 17 native deliveries were classified applied/delivered; budget exhaustion
+released control and explicit Stop sealed 107 events with no taint. The
+installed Evidence rc.19 verifier nevertheless rejected port-2 provenance
+with `schema_literal`. Inventory hashes do not override that typed failure.
+A separate Evidence-owner compatibility fix is under independent review; it
+must retain protocol/profile and attestation checks. Private deterministic
+replay reproduced the recorded scores but is not native new-game reset proof.
+
+No Reset control, independent dev/test score, Gold admission, roughly-10k run,
+full-game result or package release is claimed here. Historical failed projections and old model/data identities
 retain their original meaning. The exact private operational receipt remains
 in PR99's body; no private package path, weights, raw Human data or game file
 is copied into this ledger.

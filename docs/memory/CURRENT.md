@@ -14,8 +14,9 @@ for exact PR/CI and candidate-runtime receipts.
   records fresh start through defeat without recorder pause/resume. Its 537
   accepted Human inputs and 722 canonical transitions are separate views;
   three potion projections failed and the final successor is unknown. The
-  saved 537-label source has an unchecked split and has not trained a model.
-  Two run IDs do not prove independent games; this is not the M2 source.
+  same 537-label source subsequently produced the train-only M2 experiment
+  below through its observed-sequence projection. It has no independent dev
+  split. Two recorded run IDs do not prove two independent games.
 - The older [PR86 D-Simple-S workflow](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/86#issuecomment-5875711849)
   trained, exported, registered, Human-loaded and Stopped using 31 labels
   (26 train/5 dev). Dev Top-1 was 0/5; policy calls/submissions were zero.
@@ -25,11 +26,17 @@ for exact PR/CI and candidate-runtime receipts.
   [PR99](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/99)
   adds export, receipt, registration and an M2 Runtime profile. Its local
   candidate used one admitted episode / 548 observations; revalidation,
-  registration, Human load and Stop completed with zero policy submissions.
+  registration and the initial Human load/Stop completed. A later bounded
+  native session recorded 20 decisions and 17 delivered actions across event,
+  reward, card choice, map and combat. Stop left Human/released. The installed
+  Evidence verifier rejected port-2 provenance; hash-correct sealing is not
+  typed Evidence verification. The owner fix remains under independent review.
   Head `5eff996c` and
   [CI run 36538202566](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36538202566)
-  were open/in progress when checked at 07:51 UTC. Local installed/load proof
-  is not accepted develop, publication or native M2 decision proof.
+  remained an open Draft with selected full CI successful at 08:05 UTC. The
+  [later live receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/99#issuecomment-5886092505)
+  records bounded native decisions, not full-game or policy-quality proof.
+  Candidate installation does not make PR99 accepted develop or a release.
 - Merged [PR88](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/88)
   repaired potion staging; its installation did not prove a new live potion
   action. Old failed evidence remains.
@@ -63,5 +70,5 @@ policy-quality qualification is established. Preserve old identities,
 pending/unknown evidence and rollback. Earlier
 [Workbench](../evidence/STAGE1A_DSIMPLE_WORKBENCH_2026-09-29.md) and
 [two-fragment](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
-receipts retain their original limitations. Ongoing Shadow/native experiments
-are omitted until separately verified.
+receipts retain their original limitations. The bounded native candidate
+receipt does not qualify a full run or a real new-game memory reset.
