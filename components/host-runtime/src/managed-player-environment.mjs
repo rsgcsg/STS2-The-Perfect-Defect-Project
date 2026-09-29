@@ -568,6 +568,8 @@ function currentSurface(state, ctx) {
       };
     }
     case "rest_site": {
+      const exactOptions = (state.options ?? []).every((option, index) =>
+        option.index === index && typeof option.native_ref === "string" && option.native_ref.length > 0);
       const options = (state.options ?? []).map((option, index) => {
         const enabled = option.is_enabled !== false;
         const item = ctx.referent({
@@ -583,12 +585,14 @@ function currentSurface(state, ctx) {
             is_enabled: enabled
           }
         });
-        if (enabled) {
+        if (enabled && exactOptions) {
           ctx.action({
             verb: "activate",
             subject: item,
             label: String(option.name ?? option.option_id ?? `Choose option ${index + 1}`),
-            raw: { cmd: "action", action: "choose_option", args: { option_index: option.index } }
+            raw: { cmd: "action", action: "choose_option", args: {
+              option_index: option.index, option_ref: option.native_ref
+            } }
           });
         }
         return item.properties;
@@ -599,7 +603,9 @@ function currentSurface(state, ctx) {
         prompt: null,
         surface: { kind: "rest_site", stage: "choosing", options },
         context: { ...commonContext, kind: "rest" },
-        ...supported
+        ...supported,
+        complete: exactOptions,
+        missing: exactOptions ? [] : ["exact_current_rest_option_identity"]
       };
     }
     case "treasure_chest": {

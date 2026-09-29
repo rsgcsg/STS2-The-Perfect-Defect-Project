@@ -10,6 +10,7 @@ import {
   projectManagedCandidateDecision
 } from "../src/managed-player-environment.mjs";
 import { chooseManagedPlayerEnvironmentAction } from "../src/managed-player-environment-probe.mjs";
+import { chooseManagedCandidateAction } from "../src/managed-candidate.mjs";
 
 const projectionIdentity = {
   runtimeInstanceId: "managed-runtime-test",
@@ -237,8 +238,8 @@ test("projects game-owned rest option text and native actionability", () => {
       decision: "rest_site",
       context: { act: 1, floor: 5, room_type: "RestSite" },
       options: [
-        { index: 0, option_id: "REST", name: "Rest", description: "Heal 24 HP.", is_enabled: true },
-        { index: 1, option_id: "SMITH", name: "Smith", description: "Upgrade a card.", is_enabled: false }
+        { index: 0, native_ref: "rest-option-a", option_id: "REST", name: "Rest", description: "Heal 24 HP.", is_enabled: true },
+        { index: 1, native_ref: "rest-option-b", option_id: "SMITH", name: "Smith", description: "Upgrade a card.", is_enabled: false }
       ],
       player: player()
     }
@@ -253,6 +254,41 @@ test("projects game-owned rest option text and native actionability", () => {
     { name: "Smith", description: "Upgrade a card.", is_enabled: false }
   ]);
   assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.label), ["Rest"]);
+  assert.equal(JSON.stringify(projection.snapshot).includes("rest-option-a"), false);
+  assert.deepEqual([...projection.bindings.values()][0].raw_request, {
+    cmd: "action", action: "choose_option", args: { option_index: 0, option_ref: "rest-option-a" }
+  });
+});
+
+test("rest options without exact native identity remain visible but expose no action", () => {
+  const projection = projectManagedCandidateDecision({
+    ...projectionIdentity,
+    state: {
+      type: "decision", decision: "rest_site", context: { act: 1, floor: 5, room_type: "RestSite" },
+      options: [{ index: 0, option_id: "REST", name: "Rest", description: "Heal.", is_enabled: true }],
+      player: player()
+    }
+  });
+  assert.equal(projection.snapshot.status, "visible_unsupported");
+  assert.equal(projection.snapshot.interaction.content.surface.options[0].name, "Rest");
+  assert.deepEqual(projection.snapshot.bound_actions.actions, []);
+});
+
+test("rest raw probe requires the exact option reference and a matching native index", () => {
+  const state = {
+    type: "decision", decision: "rest_site", context: { act: 1, floor: 5, room_type: "RestSite" },
+    options: [{ index: 0, native_ref: "rest-option-a", option_id: "HEAL", name: "Rest", is_enabled: true }],
+    player: player()
+  };
+  assert.deepEqual(chooseManagedCandidateAction(state), {
+    cmd: "action", action: "choose_option", args: { option_index: 0, option_ref: "rest-option-a" }
+  });
+  assert.equal(chooseManagedCandidateAction({ ...state, options: [{ ...state.options[0], native_ref: null }] }), null);
+  const invalid = projectManagedCandidateDecision({
+    ...projectionIdentity, state: { ...state, options: [{ ...state.options[0], index: 2 }] }
+  });
+  assert.equal(invalid.snapshot.status, "visible_unsupported");
+  assert.deepEqual(invalid.snapshot.bound_actions.actions, []);
 });
 
 test("projects native reward sets without exposing exact reward or room operands", () => {
