@@ -52,6 +52,115 @@ function restDecision() {
   };
 }
 
+function deckUpgradeDecision(stage = "selecting", cardRefs = ["native-card-a", "native-card-b"]) {
+  const preview = stage === "preview";
+  return {
+    type: "decision", decision: "deck_upgrade_select",
+    context: restDecision().context, player: mapDecision().player,
+    selector_ref: "native-selector-a", stage, prompt: "Choose a card to upgrade.",
+    min_select: 1, max_select: 1, cancelable: true, require_manual_confirmation: true,
+    selected_refs: preview ? [cardRefs[0]] : [],
+    can_cancel_selection: !preview, can_cancel_preview: preview, can_confirm: preview,
+    cards: cardRefs.map((ref, index) => ({
+      index, native_ref: ref, id: "CARD.STRIKE", name: "Strike",
+      cost: 1, type: "Attack", rarity: "Basic", upgraded: false,
+      is_selected: preview && index === 0, is_selectable: !preview,
+      is_deselectable: false
+    }))
+  };
+}
+
+test("deck upgrade exposes staged exact card, preview, confirm, and cancel inputs", async () => {
+  let current = deckUpgradeDecision();
+  const raw = [];
+  const process = { async request(request) {
+    if (request.cmd === "start_run") return current;
+    raw.push(request);
+    if (request.action === "select_upgrade_card") current = deckUpgradeDecision("preview");
+    else if (request.action === "cancel_upgrade_preview") current = deckUpgradeDecision();
+    else if (request.action === "confirm_upgrade_selection") current = restDecision();
+    return current;
+  } };
+  const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+  await session.mount({ seed: "TUPGRADE" });
+  const adapter = new ManagedTextMenuSessionAdapter(session);
+  const initial = adapter.observe();
+  assert.equal(initial.interaction.kind, "deck_upgrade_selection");
+  assert.deepEqual(initial.menu_actions.actions.map((action) => action.verb),
+    ["select", "select", "cancel"]);
+  assert.notEqual(initial.menu_actions.actions[0].subject_referent_id,
+    initial.menu_actions.actions[1].subject_referent_id);
+  assert.equal(JSON.stringify(initial).includes("native-card-a"), false);
+  assert.equal(JSON.stringify(initial).includes("native-selector-a"), false);
+  const select = await adapter.submit({ request_id: "upgrade-select",
+    expected_snapshot_id: initial.snapshot_id,
+    action_id: initial.menu_actions.actions[0].action_id,
+    input_profile: MANAGED_TEXT_MENU_PROFILE });
+  const preview = select.successor;
+  assert.equal(preview.interaction.stage, "preview");
+  assert.deepEqual(preview.menu_actions.actions.map((action) => action.verb), ["cancel", "confirm"]);
+  assert.deepEqual(raw[0], { cmd: "action", action: "select_upgrade_card",
+    args: { selector_ref: "native-selector-a", card_ref: "native-card-a" } });
+  const back = await adapter.submit({ request_id: "upgrade-back",
+    expected_snapshot_id: preview.snapshot_id, action_id: preview.menu_actions.actions[0].action_id,
+    input_profile: MANAGED_TEXT_MENU_PROFILE });
+  assert.equal(back.successor.interaction.stage, "selecting");
+  assert.equal(raw[1].action, "cancel_upgrade_preview");
+  const again = await adapter.submit({ request_id: "upgrade-select-again",
+    expected_snapshot_id: back.successor.snapshot_id,
+    action_id: back.successor.menu_actions.actions[0].action_id,
+    input_profile: MANAGED_TEXT_MENU_PROFILE });
+  const confirmed = await adapter.submit({ request_id: "upgrade-confirm",
+    expected_snapshot_id: again.successor.snapshot_id,
+    action_id: again.successor.menu_actions.actions[1].action_id,
+    input_profile: MANAGED_TEXT_MENU_PROFILE });
+  assert.equal(confirmed.successor.interaction.kind, "rest_site");
+  assert.deepEqual(raw[3], { cmd: "action", action: "confirm_upgrade_selection",
+    args: { selector_ref: "native-selector-a", selected_refs: "native-card-a" } });
+  assert.deepEqual(await adapter.submit({ request_id: "upgrade-confirm",
+    expected_snapshot_id: again.successor.snapshot_id,
+    action_id: again.successor.menu_actions.actions[1].action_id,
+    input_profile: MANAGED_TEXT_MENU_PROFILE }), confirmed);
+  assert.equal(raw.length, 4);
+});
+
+test("deck upgrade with missing exact facts or changed option identity has no stale dispatch", async () => {
+  const missing = deckUpgradeDecision();
+  delete missing.selector_ref;
+  const incomplete = projectManagedCandidateDecision({ state: missing, ...identity }).snapshot;
+  assert.equal(incomplete.status, "visible_unsupported");
+  assert.equal(incomplete.bound_actions.actions.length, 0);
+  const notCancelable = deckUpgradeDecision();
+  notCancelable.cancelable = false;
+  notCancelable.can_cancel_selection = false;
+  const noCancel = projectManagedCandidateDecision({ state: notCancelable, ...identity }).snapshot;
+  assert.deepEqual(noCancel.bound_actions.actions.map((action) => action.verb), ["select", "select"]);
+  for (const [mode, refs] of [
+    ["reordered", ["native-card-b", "native-card-a"]],
+    ["replaced", ["native-card-a", "native-card-replacement"]]
+  ]) {
+    let next = null;
+    let dispatched = 0;
+    const process = { async request(request) {
+      if (request.cmd === "start_run") return deckUpgradeDecision();
+      if (request.cmd === "reset_run") return next;
+      dispatched += 1;
+      return next;
+    } };
+    const session = new ManagedPlayerEnvironmentSession({ process, ...identity });
+    await session.mount({ seed: "TUPGRADE" });
+    const adapter = new ManagedTextMenuSessionAdapter(session);
+    const old = adapter.observe();
+    next = deckUpgradeDecision("selecting", refs);
+    await session.mount({ seed: "TUPGRADE", reset: true });
+    const stale = await adapter.submit({ request_id: `upgrade-stale-${mode}`,
+      expected_snapshot_id: old.snapshot_id, action_id: old.menu_actions.actions[0].action_id,
+      input_profile: MANAGED_TEXT_MENU_PROFILE });
+    assert.equal(stale.reason_code, "stale_snapshot");
+    assert.equal(dispatched, 0);
+  }
+});
+
 test("projects complete rest options in native order and submits only bound enabled leaves", async () => {
   let rawAction = null;
   const process = { async request(request) {

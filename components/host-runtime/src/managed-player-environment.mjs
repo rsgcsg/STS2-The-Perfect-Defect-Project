@@ -944,6 +944,103 @@ function currentSurface(state, ctx) {
         ...supported
       };
     }
+    case "deck_upgrade_select": {
+      const cards = Array.isArray(state.cards) ? state.cards : [];
+      const selectedRefs = Array.isArray(state.selected_refs) ? state.selected_refs : [];
+      const cardRefs = cards.map((card) => card.native_ref);
+      const stage = state.stage;
+      const exact = typeof state.selector_ref === "string" && state.selector_ref.length > 0
+        && (stage === "selecting" || stage === "preview")
+        && typeof state.prompt === "string" && state.prompt.length > 0
+        && Number.isSafeInteger(state.min_select) && state.min_select >= 0
+        && Number.isSafeInteger(state.max_select) && state.max_select >= state.min_select
+        && cards.every((card, index) => card.index === index
+          && typeof card.native_ref === "string" && card.native_ref.length > 0
+          && typeof card.is_selected === "boolean"
+          && typeof card.is_selectable === "boolean"
+          && typeof card.is_deselectable === "boolean")
+        && new Set(cardRefs).size === cards.length
+        && selectedRefs.every((ref) => typeof ref === "string" && cardRefs.includes(ref))
+        && new Set(selectedRefs).size === selectedRefs.length
+        && selectedRefs.length <= state.max_select
+        && cards.every((card) => card.is_selected === selectedRefs.includes(card.native_ref))
+        && typeof state.cancelable === "boolean"
+        && typeof state.require_manual_confirmation === "boolean"
+        && typeof state.can_cancel_selection === "boolean"
+        && typeof state.can_cancel_preview === "boolean"
+        && typeof state.can_confirm === "boolean"
+        && state.can_cancel_selection === (stage === "selecting" && state.cancelable)
+        && state.can_cancel_preview === (stage === "preview")
+        && (!state.can_confirm || stage === "preview")
+        && (stage !== "preview" || cards.every((card) =>
+          !card.is_selectable && !card.is_deselectable));
+      const referents = cards.map((card, index) => ctx.referent({
+        role: "card",
+        label: card.name ?? `Card ${index + 1}`,
+        occurrence: index,
+        enabled: card.is_selectable || card.is_deselectable,
+        selected: card.is_selected,
+        id: typeof card.native_ref === "string"
+          ? ctx.id("card", ctx.snapshotId, card.native_ref) : null,
+        properties: { index, ...cardProperties(card), is_selected: card.is_selected }
+      }));
+      if (exact) {
+        for (const [index, card] of cards.entries()) {
+          const subject = referents[index];
+          if (card.is_selectable) ctx.action({
+            verb: "select", subject, label: `Select ${subject.label}`,
+            raw: { cmd: "action", action: "select_upgrade_card", args: {
+              selector_ref: state.selector_ref, card_ref: card.native_ref
+            } }
+          });
+          if (card.is_deselectable) ctx.action({
+            verb: "deselect", subject, label: `Deselect ${subject.label}`,
+            raw: { cmd: "action", action: "deselect_upgrade_card", args: {
+              selector_ref: state.selector_ref, card_ref: card.native_ref
+            } }
+          });
+        }
+        if (state.can_cancel_selection) ctx.action({
+          verb: "cancel", label: "Cancel card upgrade selection",
+          raw: { cmd: "action", action: "cancel_upgrade_selection", args: {
+            selector_ref: state.selector_ref
+          } }
+        });
+        if (state.can_cancel_preview) ctx.action({
+          verb: "cancel", label: "Return to card selection",
+          raw: { cmd: "action", action: "cancel_upgrade_preview", args: {
+            selector_ref: state.selector_ref
+          } }
+        });
+        if (state.can_confirm) ctx.action({
+          verb: "confirm", label: "Confirm card upgrade",
+          raw: { cmd: "action", action: "confirm_upgrade_selection", args: {
+            selector_ref: state.selector_ref, selected_refs: selectedRefs.join(",")
+          } }
+        });
+      }
+      return {
+        kind: "deck_upgrade_selection", stage,
+        prompt: state.prompt ?? null,
+        surface: {
+          kind: "deck_upgrade_selection", stage,
+          cards: referents.map((item) => item.properties),
+          min_select: state.min_select, max_select: state.max_select,
+          selected_count: selectedRefs.length,
+          selected_card_entity_ids: referents.filter((_, index) => cards[index].is_selected)
+            .map((item) => item.referent_id),
+          cancelable: state.cancelable,
+          require_manual_confirmation: state.require_manual_confirmation,
+          can_cancel_selection: state.can_cancel_selection,
+          can_cancel_preview: state.can_cancel_preview,
+          can_confirm: state.can_confirm
+        },
+        context: { ...commonContext, kind: "selection" },
+        ...supported,
+        complete: exact,
+        missing: exact ? [] : ["exact_current_deck_upgrade_selection_binding"]
+      };
+    }
     case "card_select": {
       const cardReferents = (state.cards ?? []).map((card, index) => ctx.referent({
         role: "card",

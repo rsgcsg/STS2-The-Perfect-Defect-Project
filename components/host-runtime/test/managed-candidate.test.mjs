@@ -74,7 +74,11 @@ test("fresh candidate preparation admits added source files into the audited dif
     path.join(ROOT, "experiments", "managed-exact", manifest.source_patch),
     "utf8"
   );
-  assert.deepEqual(addedPatchPaths(patch), ["src/Sts2Headless/PerformanceLab.cs"]);
+  assert.deepEqual(addedPatchPaths(patch), [
+    "src/Sts2Headless/DeckUpgradeCallScope.cs",
+    "src/Sts2Headless/DeckUpgradeSelection.cs",
+    "src/Sts2Headless/PerformanceLab.cs"
+  ]);
   assert.equal(source.includes('["add", "--intent-to-add"'), true);
   assert.equal(source.includes("stpd-managed-candidate.patch"), true);
   assert.equal(source.includes("normalizeText(readFileSync(patchFile"), true);
