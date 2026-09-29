@@ -61,11 +61,11 @@ const textMenuScratchModel = (artifactId = id("a"), recipe = "stage1a.b.s.v2") =
   parents:[],
   payloads:[],
 });
-const memoryModel = (artifactId = id("a")) => ({
+const memoryModel = (artifactId = id("a"), resetEachStep = false) => ({
   artifact_id:artifactId, kind:"model",
   parameters:{schema:"stpd/experimental-m2-model-v1", partition:"train",
     qualification:"engineering_only", episodes:1,
-    config:{slots:1, reset_each_step:false}},
+    config:{slots:1, gated:false, reset_each_step:resetEachStep}},
   parents:[], payloads:[],
 });
 const modelExportStatus = (operation, extra = {}) => ({
@@ -1300,17 +1300,57 @@ test("experimental M2 is explicit and completed status has no invented evaluatio
   assert.ok(action(completed, "start-local-training-new"));
 });
 
+test("Reset-K1 is an explicit train-only recipe and starts once with its exact identity", async () => {
+  const dataset = id("a"), reset = "stage1a.dsimple.reset.k1.experimental.v1";
+  const env = localTrainingEnv({artifact:dataset, trainingHandler:async url => {
+    if (url === "/api/local-training/start") return {schema:"stpd/local-training-operation-v2",
+      availability:"ready", operation:{status:"pending", recipe:reset}};
+    throw new Error(`unexpected route ${url}`);
+  }});
+  const page = await env.render();
+  assert.match(text(page), /Reset-K1（每步重置，独立训练对照/);
+  assert.equal(post(env.calls).length, 0);
+  const recipe = field(page, "local-training-recipe");
+  recipe.value = reset;
+  const button = action(page, "start-local-training");
+  await Promise.all([button.onclick(), button.onclick()]);
+  assert.equal(post(env.calls).length, 1);
+  assert.deepEqual(body(post(env.calls)[0]), {dataset_id:dataset, recipe:reset});
+  assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"], "training-csrf");
+
+  const operationId = "1".repeat(32);
+  const done = localTrainingEnv({artifact:dataset, trainingStatus:{
+    schema:"stpd/local-training-operation-v2", availability:"ready", csrf_token:"training-csrf",
+    operation:{status:"completed", operation_id:operationId, dataset_id:dataset,
+      recipe:reset, result_type:"train_only", evaluation_status:"not_run",
+      run_id:id("e"), result_id:id("b"), model_id:id("c")},
+  }, trainingHandler:async url => {
+    if (url === "/api/local-training/start") return {schema:"stpd/local-training-operation-v2",
+      availability:"ready", operation:{status:"pending", recipe:reset}};
+    throw new Error(`unexpected route ${url}`);
+  }});
+  const completed = await done.render();
+  assert.match(text(completed), /Reset-K1 训练任务已完成/);
+  assert.doesNotMatch(text(completed), /M2-K1 训练任务已完成/);
+  assert.equal(field(completed, "local-training-new-recipe").value, reset);
+  assert.equal(post(done.calls).length, 0);
+  await action(completed, "start-local-training-new").onclick();
+  assert.equal(post(done.calls).length, 1);
+  assert.deepEqual(body(post(done.calls)[0]), {
+    dataset_id:dataset, after_completed_operation_id:operationId, recipe:reset});
+});
+
 const memoryEvaluationEnv = ({operation = {status:"idle"}, availability = "ready",
   sources = [{artifact_id:id("b"), kind:"dataset",
     parameters:{schema:"stpd/human-text-input-source-v1", display_name:"开发观察"}}],
-  total = sources.length, statusSchema = "stpd/local-memory-evaluation-operation-v1"} = {}) => {
+  total = sources.length, statusSchema = "stpd/local-memory-evaluation-operation-v1",
+  resetEachStep = false} = {}) => {
   const model = id("a");
   return setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
     handler:async url => {
       if (url === "/api/local-workspace/managed") return {
         schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready"};
-      if (url === `/api/local-workspace/artifacts/${model}`) return {
-        artifact_id:model, kind:"model", parameters:{schema:"stpd/experimental-m2-model-v1"}};
+      if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model, resetEachStep);
       if (url === "/api/local-memory-evaluations/status") return {
         schema:statusSchema, availability, operation, csrf_token:"memory-csrf",
         filesystem_path:"/private/hidden"};
@@ -1326,7 +1366,7 @@ test("M2 model detail selects an existing Human source and starts dev evaluation
   const env = memoryEvaluationEnv();
   const page = await env.render();
   assert.match(text(page), /独立来源开发集评估/);
-  assert.match(text(page), /不是 Gold、独立游戏局或科学质量证明/);
+  assert.match(text(page), /不是 Gold、独立游戏局、记忆收益或科学质量证明/);
   assert.doesNotMatch(text(page), /\/private\/hidden/);
   assert.equal(post(env.calls).length, 0);
   const source = field(page, "local-memory-dev-source");
@@ -1345,6 +1385,7 @@ test("M2 evaluation pending, unknown, and unrecognized statuses never offer anot
   for (const scenario of [
     {operation:{status:"pending", model_id:id("a")}},
     {operation:{status:"interrupted_unknown", model_id:id("a")}},
+    {operation:{status:"interrupted_unknown", model_id:id("a")}, resetEachStep:true},
     {operation:{status:"idle"}, availability:"recovery_required"},
     {operation:{status:"future"}},
     {operation:{status:"idle"}, statusSchema:"future/local-memory-evaluation-v9"},
@@ -1649,6 +1690,66 @@ test("M2 export describes its own scope alongside a completed dev report and gua
   assert.doesNotMatch(text(env.livePage), /没有独立评估|仍没有独立评估/);
   assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), true);
   assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
+});
+
+test("Reset-K1 model identity drives overview, export, and neutral dev evaluation without an automatic write", async () => {
+  const model = id("a");
+  const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model, true);
+      if (url === "/api/local-memory-evaluations/status") return {
+        schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready",
+        operation:{status:"idle"}, csrf_token:"memory-csrf"};
+      if (url.startsWith("/api/local-workspace?")) return {
+        schema:"stpd/local-workspace-inventory-v1", items:[], total:0};
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed", model_id:model, model_type:"memory", payload_bytes:123},
+      {schema:"stpd/local-model-export-operation-v2"});
+      if (url.startsWith("/api/local-model-registrations/status?")) return {
+        schema:"stpd/local-model-registration-v1", model_id:model,
+        status:"not_registered", loaded:false, runtime_profile:"text-menu-m2-v1"};
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.match(text(page), /Reset-K1（每步重置，独立训练对照）/);
+  assert.match(text(page), /Reset-K1 训练模型已导出并校验/);
+  assert.match(text(page), /Reset-K1 独立来源开发集评估/);
+  assert.match(text(page), /不是 Gold、独立游戏局、记忆收益或科学质量证明/);
+  assert.doesNotMatch(text(page), /D-Simple M2-K1|M2-K1 独立来源|M2 训练模型/);
+  assert.equal(action(page, "start-local-model-export").disabled, false);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("unknown memory model shape does not expose export, registration, or evaluation controls", async () => {
+  const model = id("a");
+  for (const config of [
+    {slots:8, gated:false, reset_each_step:true},
+    {slots:1, gated:true, reset_each_step:true},
+    {slots:1, gated:false},
+    {slots:1, gated:false, reset_each_step:"true"},
+  ]) {
+    const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready"};
+        if (url === `/api/local-workspace/artifacts/${model}`) {
+          const artifact = memoryModel(model);
+          artifact.parameters.config = config;
+          return artifact;
+        }
+        throw new Error(`unexpected route ${url}`);
+      }});
+    const page = await env.render();
+    assert.match(text(page), /模型结构不受支持/);
+    assert.doesNotMatch(text(page), /Reset-K1（每步重置|实验性 D-Simple M2-K1/);
+    assert.equal(env.calls.some(call => call.url === "/api/local-model-exports/status"
+      || call.url === "/api/local-memory-evaluations/status"), false);
+    assert.equal(walk(page).some(element => ["start-local-model-export",
+      "start-local-memory-evaluation", "register-local-model"].includes(element.dataset?.action)), false);
+    assert.equal(post(env.calls).length, 0);
+  }
 });
 
 test("idle M2 evaluation leaves overview and verified export neutral about report existence", async () => {

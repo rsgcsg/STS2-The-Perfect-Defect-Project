@@ -284,7 +284,7 @@ window.SpireProject = (() => {
       text_menu_capabilities_incompatible: "当前游戏环境不符合此模型的文本菜单要求；尚未登记。",
       registration_metadata_invalid: "本机模型登记资料无法安全确认；请检查恢复状态。",
       verified_export_required: "此模型当前没有可用的已校验导出；请先完成导出校验。",
-      verified_export_receipt_required: "这份较早的 M2 导出缺少校验回执；请点击“重新核验导出”，完成后再明确登记。",
+      verified_export_receipt_required: "这份较早的记忆模型导出缺少校验回执；请点击“重新核验导出”，完成后再明确登记。",
       registration_timeout: "本次登记校验已超时；请先刷新状态核对结果，再按需明确重试。不会自动加载模型。",
       workspace_changed: "导出来自其他资料空间；请切回原资料空间再登记。",
       source_binding_changed: "先前登记绑定的运行源码已变化；旧选择保留。可明确重新登记并生成新选择，不会改写旧登记。",
@@ -2822,15 +2822,33 @@ window.SpireProject = (() => {
     return overview;
   }
 
+  function memoryModelVariant(value) {
+    const parameters = value?.parameters;
+    const config = parameters?.config;
+    if (value?.kind !== "model" || !hex(value.artifact_id)
+        || parameters?.schema !== "stpd/experimental-m2-model-v1"
+        || parameters.partition !== "train" || parameters.qualification !== "engineering_only"
+        || !Number.isSafeInteger(parameters.episodes) || parameters.episodes < 1
+        || !config || typeof config !== "object" || Array.isArray(config)
+        || config.slots !== 1 || config.gated !== false
+        || typeof config.reset_each_step !== "boolean") return null;
+    return config.reset_each_step ? "reset" : "m2";
+  }
+
   function localModelOverview(value) {
     const parameters = value.parameters && typeof value.parameters === "object"
       && !Array.isArray(value.parameters) ? value.parameters : {};
     if (parameters.schema === "stpd/experimental-m2-model-v1") {
+      const variant = memoryModelVariant(value);
       const overview = panel("模型概览", "以下是本机模型清单中的训练记录；此处不读取权重或评估模型质量。");
       overview.append(fields([
-        ["训练配方", "实验性 D-Simple M2-K1"],
-        ["结果类型", "训练产物；开发集评估请在下方单独查看或启动"],
-        ["运行状态", "需先具备单独固定的 M2 运行包与当前环境能力，才能登记或加载"],
+        ["训练配方", variant === "m2" ? "实验性 D-Simple M2-K1"
+          : variant === "reset" ? "Reset-K1（每步重置，独立训练对照）" : "未知（模型结构不受支持）"],
+        ["结果类型", variant ? "训练产物；开发集评估请在下方单独查看或启动"
+          : "训练产物；模型结构未识别，暂不开放后续操作"],
+        ["运行状态", variant
+          ? "需先具备固定的记忆模型运行包与当前环境能力，才能登记或加载"
+          : "模型结构不受支持；不能从此页导出、登记或评估"],
       ]));
       return overview;
     }
@@ -2894,13 +2912,8 @@ window.SpireProject = (() => {
       && !Array.isArray(parameters.serializer) ? parameters.serializer : {};
     const backbone = parameters.backbone && typeof parameters.backbone === "object"
       && !Array.isArray(parameters.backbone) ? parameters.backbone : {};
-    if (value?.kind === "model" && hex(value.artifact_id)
-        && parameters.schema === "stpd/experimental-m2-model-v1") {
-      return parameters.partition === "train"
-        && parameters.qualification === "engineering_only"
-        && Number.isSafeInteger(parameters.episodes) && parameters.episodes > 0
-        && config.slots === 1 && config.reset_each_step === false;
-    }
+    if (parameters.schema === "stpd/experimental-m2-model-v1")
+      return memoryModelVariant(value) !== null;
     const serializerKeys = ["input_profile", "profile", "source_schema", "status", "version"];
     return value?.kind === "model" && hex(value.artifact_id)
       && parameters.schema === "stpd/stage1a-model-v1"
@@ -2920,7 +2933,7 @@ window.SpireProject = (() => {
   function localModelRegistrationReason(code) {
     const known = {
       verified_export_required: "此模型当前没有可用的已校验导出；请先完成导出校验。",
-      verified_export_receipt_required: "这份较早的 M2 导出缺少校验回执；请点击“重新核验导出”，完成后再明确登记。",
+      verified_export_receipt_required: "这份较早的记忆模型导出缺少校验回执；请点击“重新核验导出”，完成后再明确登记。",
       registration_timeout: "本次登记校验已超时；请先刷新状态核对结果，再按需明确重试。不会自动加载模型。",
       workspace_changed: "导出来自其他资料空间；请切回原资料空间再登记。",
       registration_metadata_invalid: "本机模型登记资料无法安全确认；请检查恢复状态。",
@@ -2929,8 +2942,8 @@ window.SpireProject = (() => {
       text_runtime_local_install_required: "本机文本菜单运行组件尚未准备；请检查运行环境状态。",
       text_menu_capabilities_unavailable: "暂时无法核对当前游戏的文本菜单能力。请打开游戏后刷新，再明确重试。",
       text_menu_capabilities_incompatible: "当前游戏环境不符合此模型的文本菜单要求；尚未登记。",
-      observation_context_unavailable: "当前环境没有可验证的原子观察上下文；M2 尚未登记。",
-      m2_runtime_contract_unavailable: "固定的 M2 运行组件不支持所需决策协议；M2 尚未登记。",
+      observation_context_unavailable: "当前环境没有可验证的原子观察上下文；记忆模型尚未登记。",
+      m2_runtime_contract_unavailable: "固定的记忆模型运行组件不支持所需决策协议；记忆模型尚未登记。",
     };
     return known[code] || "当前无法完成登记。请查看本机模型页的环境状态后，再按需明确重试。";
   }
@@ -3013,9 +3026,11 @@ window.SpireProject = (() => {
   }
 
   async function localModelExportCard(ctx, model) {
-    const memory = model.parameters?.schema === "stpd/experimental-m2-model-v1";
+    const variant = memoryModelVariant(model);
+    const memory = variant !== null;
+    const memoryName = variant === "reset" ? "Reset-K1" : "M2-K1";
     const card = panel("导出并校验", memory
-      ? "导出只保存并检查实验性 M2 训练模型；导出校验不包含评估结论。登记前需单独固定 M2 运行包并核对环境；导出不会自动登记或加载。"
+      ? `导出只保存并检查实验性 ${memoryName} 训练模型；导出校验不包含评估结论。登记前需单独固定记忆模型运行包并核对环境；导出不会自动登记或加载。`
       : "导出只保存并检查本机模型文件；不会登记为游戏模型或加载，也不检查游戏兼容性。服务端会重新验证模型身份。");
     const path = "/api/local-model-exports/status";
     let status;
@@ -3102,7 +3117,7 @@ window.SpireProject = (() => {
     } else if (operation.status === "completed" && sameModel) {
       label = "重新核验导出";
       card.append(el("p", memory
-        ? "M2 训练模型已导出并校验；评估须在独立区域核对。登记还需核对 M2 运行包与环境，加载另行操作。"
+        ? `${memoryName} 训练模型已导出并校验；评估须在独立区域核对。登记还需核对记忆模型运行包与环境，加载另行操作。`
         : "导出校验本身不会加载模型；当前运行状态请到模型页查看。游戏兼容性仍须单独检查。", "small muted"));
       if (Number.isSafeInteger(operation.payload_bytes) && operation.payload_bytes >= 0)
         card.append(fields([["导出大小", bytes(operation.payload_bytes)]]));
@@ -3242,16 +3257,16 @@ window.SpireProject = (() => {
     clean_checkout_required: "当前源码状态未满足本机工程训练条件。",
     insufficient_independent_components: "独立对局数量不足，尚不能启动这项训练。",
     human_observation_missing: "缺少符合要求的公开真人观察，不能准备这项训练。",
-    human_training_source_required: "M2 实验配方需要已发布并登记训练用途的 Human 观察来源。",
-    human_observed_source_required: "M2 实验配方只接收完整核对的 Human 观察来源。",
+    human_training_source_required: "记忆实验配方需要已发布并登记训练用途的 Human 观察来源。",
+    human_observed_source_required: "记忆实验配方只接收完整核对的 Human 观察来源。",
     observed_sequence_limit_or_gap: "观察序列超出本机预算或存在缺口；不会裁剪后训练。",
-    memory_episode_limit: "M2 实验来源超过本机最多 8 个重置段的预算。",
-    episode_observation_limit: "M2 单个重置段超过 768 页预算；不会裁剪。",
-    episode_input_token_limit: "M2 单个重置段超过 4,194,304 输入 token 预算；不会裁剪。",
-    m2_limit_exceeded_no_truncation: "M2 页面超过 16,384 token 预算；不会截断。",
+    memory_episode_limit: "记忆实验来源超过本机最多 8 个重置段的预算。",
+    episode_observation_limit: "记忆实验单个重置段超过 768 页预算；不会裁剪。",
+    episode_input_token_limit: "记忆实验单个重置段超过 4,194,304 输入 token 预算；不会裁剪。",
+    m2_limit_exceeded_no_truncation: "记忆实验页面超过 16,384 token 预算；不会截断。",
     episode_settling_limit: "已核对的过渡页超过每段 64 页预算；不会丢弃后训练。",
-    projected_episode_count_mismatch: "M2 投影未保留完整重置段；请核对任务诊断。",
-    memory_preparation_process_failed: "M2 输入准备未完成；结果待核对，不会自动重试。",
+    projected_episode_count_mismatch: "记忆实验投影未保留完整重置段；请核对任务诊断。",
+    memory_preparation_process_failed: "记忆实验输入准备未完成；结果待核对，不会自动重试。",
     unsupported_training_recipe: "训练配方不受支持。",
     new_experiment_precondition_failed: "请从已完成任务明确新建实验，并核对当前配方。",
     previous_training_outcome_unknown: "上次训练结果未确认；为防止重复任务，本机拒绝再次启动。",
@@ -3282,8 +3297,9 @@ window.SpireProject = (() => {
   }
 
   async function localMemoryEvaluationCard(ctx, model) {
-    const card = panel("M2 独立来源开发集评估",
-      "仅对本机已登记的实验性 M2 模型与另一份 Human 观察来源做开发用途工程评估。须明确点击才会启动；不是 Gold、独立游戏局或科学质量证明。");
+    const variant = memoryModelVariant(model);
+    const card = panel(`${variant === "reset" ? "Reset-K1" : "M2-K1"} 独立来源开发集评估`,
+      `仅对本机已登记的实验性 ${variant === "reset" ? "Reset-K1" : "M2-K1"} 训练模型与另一份 Human 观察来源做开发用途工程评估。须明确点击才会启动；不是 Gold、独立游戏局、记忆收益或科学质量证明。`);
     let status;
     try {
       status = await request(ctx, "/api/local-memory-evaluations/status");
@@ -3378,7 +3394,7 @@ window.SpireProject = (() => {
   async function localTrainingCard(ctx, dataset) {
     const card = panel(
       "本机短训练",
-      "从此入口新启动的任务默认使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。可明确选择实验性 D-Simple M2-K1，仅训练、不做独立评估或开发集指标。本机服务会核对训练用途与来源资格；结果不代表模型策略质量。",
+      "从此入口新启动的任务默认使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。可明确选择实验性 M2-K1 或 Reset-K1（每步重置，独立训练对照）；二者仅训练、不做独立评估或开发集指标。本机服务会核对训练用途与来源资格；结果不代表模型策略质量或记忆收益。",
     );
     let data;
     try {
@@ -3410,8 +3426,10 @@ window.SpireProject = (() => {
     const currentForDataset = operation.dataset_id === dataset.artifact_id;
     const taskId = hex(operation.operation_id, 32) ? operation.operation_id : null;
     const memoryRecipe = "stage1a.dsimple.m2.k1.experimental.v1";
+    const resetRecipe = "stage1a.dsimple.reset.k1.experimental.v1";
     const defaultRecipe = "stage1a.dsimple.s.v1";
     const recipeLabel = operation.recipe === memoryRecipe ? "实验性 D-Simple M2-K1"
+      : operation.recipe === resetRecipe ? "Reset-K1（每步重置，独立训练对照）"
       : operation.recipe === defaultRecipe ? "D-Simple-S v1" : "以模型记录为准";
     if (operation.status !== "idle") card.append(el("p", `当前任务配方：${recipeLabel}。${operation.result_type === "train_only" ? "此训练任务不执行独立评估。" : ""}`, "small muted"));
     if (operation.status === "pending") {
@@ -3440,7 +3458,7 @@ window.SpireProject = (() => {
       }
     } else if (currentForDataset && operation.status === "completed") {
       card.append(el("p", operation.result_type === "train_only"
-        ? "M2 训练任务已完成；此任务不包含开发集评估指标，也没有加载到游戏。开发集评估可从模型详情单独查看或启动。"
+        ? `${operation.recipe === resetRecipe ? "Reset-K1" : operation.recipe === memoryRecipe ? "M2-K1" : "实验性"} 训练任务已完成；此任务不包含开发集评估指标，也没有加载到游戏。开发集评估可从模型详情单独查看或启动。`
         : "本机训练已完成；这不表示模型已加载到游戏或具备已验证的策略质量。", "small muted"));
     } else if (!(["idle", "completed", "failed"].includes(operation.status))) {
       card.append(el("p", "本机训练状态暂不支持启动；请查看诊断信息。", "small muted"));
@@ -3489,6 +3507,7 @@ window.SpireProject = (() => {
       const recipe = select(form, "训练配方", "local-training-recipe", [
         [defaultRecipe, "D-Simple-S v1（默认，短训练）"],
         [memoryRecipe, "D-Simple M2-K1（实验，仅训练）"],
+        [resetRecipe, "Reset-K1（每步重置，独立训练对照，仅训练）"],
       ], defaultRecipe);
       card.append(form);
       const startOptions = {primary:true};
@@ -3499,7 +3518,7 @@ window.SpireProject = (() => {
           startOptions.disabled = true;
           await request(ctx, "/api/local-training/start", {
             dataset_id:dataset.artifact_id,
-            ...(recipe.value === memoryRecipe ? {recipe:memoryRecipe} : {}),
+            ...([memoryRecipe, resetRecipe].includes(recipe.value) ? {recipe:recipe.value} : {}),
           }, csrfToken);
           await reload(ctx);
         }, startOptions));
@@ -3511,7 +3530,8 @@ window.SpireProject = (() => {
       const recipe = select(form, "新实验配方", "local-training-new-recipe", [
         [defaultRecipe, "D-Simple-S v1（默认，短训练）"],
         [memoryRecipe, "D-Simple M2-K1（实验，仅训练）"],
-      ], operation.result_type === "train_only" ? memoryRecipe : defaultRecipe);
+        [resetRecipe, "Reset-K1（每步重置，独立训练对照，仅训练）"],
+      ], [memoryRecipe, resetRecipe].includes(operation.recipe) ? operation.recipe : defaultRecipe);
       card.append(form);
       const newOptions = {type:"secondary"};
       card.append(command(ctx, "start-local-training-new", "新建一次训练", async () => {
@@ -3519,7 +3539,7 @@ window.SpireProject = (() => {
         newOptions.disabled = true;
         await request(ctx, "/api/local-training/start", {
           dataset_id:dataset.artifact_id, after_completed_operation_id:taskId,
-          ...(recipe.value === memoryRecipe ? {recipe:memoryRecipe} : {}),
+          ...([memoryRecipe, resetRecipe].includes(recipe.value) ? {recipe:recipe.value} : {}),
         }, csrfToken);
         await reload(ctx);
       }, newOptions));
@@ -3985,7 +4005,7 @@ window.SpireProject = (() => {
           "stpd/experimental-m2-model-v1"].includes(value.parameters?.schema))
         box.append(localModelOverview(value));
       if (value.kind === "model" && value.parameters?.schema === "stpd/experimental-m2-model-v1"
-          && hex(value.artifact_id))
+          && memoryModelVariant(value) !== null)
         box.append(await localMemoryEvaluationCard(ctx, value));
       if (supportsLocalModelExport(value)) {
         const exportCard = await localModelExportCard(ctx, value);
