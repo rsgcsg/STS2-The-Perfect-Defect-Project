@@ -1,4 +1,6 @@
 import sys
+from pathlib import Path
+import tempfile
 import unittest
 
 from sts2_headless.client import (
@@ -28,6 +30,23 @@ for line in sys.stdin:
         print(json.dumps({**base,"type":"read_result","read":{"kind":"detail"}}), flush=True)
     elif request["command"] == "step":
         print(json.dumps({**base,"type":"step_result","receipt":{"delivery":"delivered","successor":snapshot}}), flush=True)
+    elif request["command"] == "text_observe":
+        context = {"schema":"sts2.player-environment/text-menu-observation-context-1",
+                   "snapshot":{"schema":"sts2.player-environment/text-menu-snapshot-1",
+                               "input_profile":"text-menu-v1", "snapshot_id":"text-s1",
+                               "menu_actions":{"actions":[{"action_id":"text-a1"}]}},
+                   "game_continuity_id":"managed_episode_test"}
+        print(json.dumps({**base,"type":"text_observe_result","context":context}), flush=True)
+    elif request["command"] == "text_submit":
+        assert request["action_id"] == "text-a1"
+        assert request["expected_snapshot_id"] == "text-s1"
+        assert request["expected_game_continuity_id"] == "managed_episode_test"
+        assert request["mutation_request_id"] == "text-mutation-1"
+        print(json.dumps({**base,"type":"text_submit_result","result":{
+            "schema":"sts2.player-environment/text-menu-action-result-1",
+            "input_profile":"text-menu-v1", "status":"applied",
+            "native_delivery":"delivered", "retry":"never",
+            "request_id":"text-mutation-1"}}), flush=True)
     elif request["command"] == "episode_identity":
         print(json.dumps({**base,"type":"episode_identity_result","identity":{"episode_provenance":{"verdict":"provenance_pass","actual_seed":"SEED"}}}), flush=True)
     elif request["command"] == "close":
@@ -53,6 +72,41 @@ for line in sys.stdin:
     break
 '''
 
+UNCERTAIN_DRIVER = r'''
+import json, sys
+mode, record = sys.argv[1:3]
+print(json.dumps({"type":"ready","protocol":"test"}), flush=True)
+for line in sys.stdin:
+    request = json.loads(line)
+    with open(record, "a", encoding="utf-8") as handle:
+        handle.write(request["command"] + "\n")
+    base = {"request_id":request["request_id"]}
+    if request["command"] == "reset":
+        print(json.dumps({**base,"type":"reset_result","snapshot":{"snapshot_id":"s1"}}), flush=True)
+    elif request["command"] == "text_submit":
+        if mode == "bad_json":
+            print("{not-json", flush=True)
+        elif mode == "eof":
+            sys.exit(0)
+        elif mode == "error":
+            print(json.dumps({**base,"type":"error","message":"driver_request_failed"}), flush=True)
+        else:
+            result = {"schema":"bad-after-action" if mode == "bad_schema" else
+                      "sts2.player-environment/text-menu-action-result-1",
+                      "input_profile":"text-menu-v1",
+                      "status":"not_applied" if mode == "not_applied" else "applied",
+                      "native_delivery":None if mode in ("bad_delivery", "not_applied") else "delivered",
+                      "retry":"reobserve" if mode == "not_applied" else "never",
+                      "request_id":request["mutation_request_id"]}
+            print(json.dumps({**base,"type":"text_submit_result",
+                              "result":result if mode != "bad_type" else []}), flush=True)
+    elif request["command"] == "step":
+        print(json.dumps({**base,"type":"step_result","receipt":{"delivery":"delivered"}}), flush=True)
+    elif request["command"] == "close":
+        print(json.dumps({**base,"type":"close_result","exit":{"code":0}}), flush=True)
+        break
+'''
+
 
 class ClientTest(unittest.TestCase):
     def test_episode_seed_uses_the_game_canonical_form(self):
@@ -69,6 +123,53 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(receipt["delivery"], "delivered")
             self.assertEqual(environment.observe()["snapshot_id"], "s1")
             self.assertEqual(environment.episode_identity()["episode_provenance"]["actual_seed"], "SEED")
+
+    def test_public_text_menu_context_and_exact_submission(self):
+        with ManagedPlayerEnvironment([sys.executable, "-u", "-c", FAKE_DRIVER]) as environment:
+            environment.reset("SEED")
+            context = environment.observe_text_menu()
+            self.assertEqual(context["snapshot"]["input_profile"], "text-menu-v1")
+            action = context["snapshot"]["menu_actions"]["actions"][0]["action_id"]
+            result = environment.submit_text_menu(
+                action, context["snapshot"]["snapshot_id"],
+                context["game_continuity_id"], request_id="text-mutation-1",
+            )
+            self.assertEqual(result["status"], "applied")
+            with self.assertRaises(ValueError):
+                environment.submit_text_menu(action, "", context["game_continuity_id"])
+
+    def test_post_offer_invalid_text_result_quarantines_before_another_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for mode in ("bad_schema", "bad_type", "bad_delivery", "bad_json", "eof", "error"):
+                with self.subTest(mode=mode):
+                    record = Path(temporary) / f"{mode}.txt"
+                    with ManagedPlayerEnvironment(
+                        [sys.executable, "-u", "-c", UNCERTAIN_DRIVER, mode, str(record)]
+                    ) as environment:
+                        environment.reset("SEED")
+                        with self.assertRaises(DriverError):
+                            environment.submit_text_menu(
+                                "text-a1", "text-s1", "managed_episode_test", request_id="mutation-1"
+                            )
+                        self.assertTrue(environment._closed)
+                        with self.assertRaisesRegex(DriverError, "closed"):
+                            environment.step("a1", "s1")
+                    self.assertEqual(record.read_text().splitlines(), ["reset", "text_submit"])
+
+    def test_correlated_not_applied_result_remains_an_explicit_rejection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            record = Path(temporary) / "requests.txt"
+            with ManagedPlayerEnvironment(
+                [sys.executable, "-u", "-c", UNCERTAIN_DRIVER, "not_applied", str(record)]
+            ) as environment:
+                environment.reset("SEED")
+                result = environment.submit_text_menu(
+                    "text-a1", "text-s1", "managed_episode_test", request_id="mutation-1"
+                )
+                self.assertEqual(result["status"], "not_applied")
+                self.assertFalse(environment._closed)
+                self.assertEqual(environment.step("a1", "s1")["delivery"], "delivered")
+            self.assertEqual(record.read_text().splitlines(), ["reset", "text_submit", "step", "close"])
 
     def test_rejects_incomplete_action_projection(self):
         with self.assertRaises(DriverError):
