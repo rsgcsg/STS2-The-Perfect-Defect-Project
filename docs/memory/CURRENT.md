@@ -17,10 +17,6 @@ for exact PR/CI and candidate-runtime receipts.
   same 537-label source subsequently produced the train-only M2 experiment
   below through its observed-sequence projection. It has no independent dev
   split. Two recorded run IDs do not prove two independent games.
-- The older [PR86 D-Simple-S workflow](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/86#issuecomment-5875711849)
-  trained, exported, registered, Human-loaded and Stopped using 31 labels
-  (26 train/5 dev). Dev Top-1 was 0/5; policy calls/submissions were zero.
-  Manual profile recovery left one-click installation unproved.
 - Merged [PR96](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/96)
   added train-only Workbench M2-K1. [PR99](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/99)
   now adds verified export/registration and the fixed M2 Runtime profile.
@@ -60,9 +56,6 @@ for exact PR/CI and candidate-runtime receipts.
   installation, released candidate assets or cross-machine runtime support.
   The model page now summarizes returned history and links to the existing full
   report view; local Safari verification remains separate from hosted CI.
-- Merged [PR88](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/88)
-  repaired potion staging; its installation did not prove a new live potion
-  action. Old failed evidence remains.
 
 ## Research and environment candidates
 
@@ -73,8 +66,8 @@ reuse. A private 32-submission M2 continuation ended at its declared budget,
 not at a game terminal. PR106's text-menu-v2 Connector candidate `a2f0bbcdb`
 passed its own full run `36570764380` (Linux, Windows and portable success).
 Normal merge `2b428b3a` preserved candidate tree
-`182addae2bb4d070f2fddcb71859c45f39ca0c78`. Its separate integration run is
-`36577386158`; resolve that run before claiming integration checks complete.
+`182addae2bb4d070f2fddcb71859c45f39ca0c78`. Integration run `36577386158`
+passed using verified same-tree reuse with fresh guards; not a second full run.
 
 The [Managed v2 / environment Workbench candidate receipt](../evidence/STAGE1A_MANAGED_TEXT_V2_WORKBENCH_2026-09-29.md)
 records an exact temporary rc.20 package, text-only card/target intentions,
@@ -93,21 +86,12 @@ and a portable M2 port-2 adapter. Game identity stays outside unchanged
 feedback memory input is invented. Synthetic tests and one episode prove neither
 strategy nor memory generalization.
 
-Managed text surfaces now cover map, rest, deck upgrade and bounded combat
-through PR89/93/94 and [PR98](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/98).
-Merged [PR100](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/100)
-adds exact native reward and event bindings. Its current-head full run
-[36550296069](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36550296069)
-passed on `83d997b1`; the normal merge retained the same candidate tree.
-A private 105-action scripted smoke traversed card rewards, gold, map,
-combat and one event choice. It is not trained-model, Human, Windows native
-or full-flow evidence. Treasure, shop/selectors and typed text terminal
-handling were separate candidates at that point and are not covered by PR100;
-later source integration is recorded under PR104/105 above, without upgrading
-the older PR100 runtime receipt.
-Selected PR90–98 CI passed; PR97/98 develop integration reused verified
-same-tree OS execution with fresh guards, as detailed in the dated ledger.
-Source/test success is not gameplay qualification.
+Managed map, rest, deck upgrade, combat, reward and event sources were merged
+through PR89/93/94/98/100. PR100's 105-action script covered card rewards,
+gold, map, combat and one event choice; it remains bounded scripted evidence.
+Later treasure/shop/terminal integration is recorded under PR104/105 above.
+The dated ledger retains exact older CI and runtime identities; none proves
+a trained model, full flow or Windows/Linux native execution.
 
 ## Remaining Platform non-claims
 
