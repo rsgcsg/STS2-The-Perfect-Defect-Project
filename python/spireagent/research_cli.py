@@ -85,6 +85,13 @@ def main() -> int:
     run_memory.add_argument("--stop-after", type=int, help="pause after this many whole episodes")
     verify_memory = commands.add_parser("verify-memory", help="verify an exact completed M2 run")
     verify_memory.add_argument("--run", required=True)
+    evaluate_memory = commands.add_parser(
+        "evaluate-memory", help="internal, owner-admitted M2 dev evaluation worker")
+    evaluate_memory.add_argument("--model", required=True)
+    evaluate_memory.add_argument("--source", required=True)
+    evaluate_memory.add_argument("--operation", required=True)
+    evaluate_memory.add_argument("--max-settling-events", type=int, default=0)
+    evaluate_memory.add_argument("--semantic-overlap", choices=("true", "false"), required=True)
     prepare_memory = commands.add_parser(
         "prepare-workbench-memory", help="prepare a caller-admitted train-only Human M2 run")
     prepare_memory.add_argument("--source", required=True)
@@ -316,6 +323,24 @@ def main() -> int:
             result = {"run_id": run_id, "result_id": completed.artifact_id,
                       "model_id": completed.parent("model"),
                       "checkpoint_id": completed.parent("checkpoint")}
+        elif args.command == "evaluate-memory":
+            import torch
+
+            from stpd.workers.memory_evaluation import _model_lineage
+            from stpd.workers.memory_evaluation import evaluate_memory as evaluate_m2
+
+            model_id = digest(args.model, "memory_evaluation.model")
+            source_id = digest(args.source, "memory_evaluation.source")
+            operation_id = digest(args.operation, "memory_evaluation.operation", length=32)
+            _, _, memory_config, _, _ = _model_lineage(store, model_id)
+            torch.set_num_threads(memory_config.cpu_threads)
+            evaluation = evaluate_m2(
+                store, model_id, source_id, runtime,
+                max_settling_events=args.max_settling_events,
+                operation_id=operation_id, semantic_overlap=args.semantic_overlap == "true",
+            )
+            result = {"evaluation_id": evaluation.artifact_id,
+                      "evaluation_input_id": evaluation.parent("evaluation_input")}
         elif args.command in {"export-memory", "verify-memory-export"}:
             import torch
 

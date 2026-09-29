@@ -1294,10 +1294,117 @@ test("experimental M2 is explicit and completed status has no invented evaluatio
       result_id:result, model_id:model},
   }});
   const completed = await done.render();
-  assert.match(text(completed), /没有独立评估或开发集指标/);
+  assert.match(text(completed), /此任务不包含开发集评估指标/);
   assert.equal(text(completed).includes("查看开发集结果"), false);
   assert.equal(post(done.calls).length, 0);
   assert.ok(action(completed, "start-local-training-new"));
+});
+
+const memoryEvaluationEnv = ({operation = {status:"idle"}, availability = "ready",
+  sources = [{artifact_id:id("b"), kind:"dataset",
+    parameters:{schema:"stpd/human-text-input-source-v1", display_name:"开发观察"}}],
+  total = sources.length, statusSchema = "stpd/local-memory-evaluation-operation-v1"} = {}) => {
+  const model = id("a");
+  return setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${model}`) return {
+        artifact_id:model, kind:"model", parameters:{schema:"stpd/experimental-m2-model-v1"}};
+      if (url === "/api/local-memory-evaluations/status") return {
+        schema:statusSchema, availability, operation, csrf_token:"memory-csrf",
+        filesystem_path:"/private/hidden"};
+      if (url.startsWith("/api/local-workspace?")) return {
+        schema:"stpd/local-workspace-inventory-v1", items:sources, total};
+      if (url === "/api/local-memory-evaluations/start") return {
+        schema:statusSchema, availability:"ready", operation:{status:"pending"}};
+      throw new Error(`unexpected route ${url}`);
+    }});
+};
+
+test("M2 model detail selects an existing Human source and starts dev evaluation only on click", async () => {
+  const env = memoryEvaluationEnv();
+  const page = await env.render();
+  assert.match(text(page), /独立来源开发集评估/);
+  assert.match(text(page), /不是 Gold、独立游戏局或科学质量证明/);
+  assert.doesNotMatch(text(page), /\/private\/hidden/);
+  assert.equal(post(env.calls).length, 0);
+  const source = field(page, "local-memory-dev-source");
+  assert.equal(source.value, "");
+  await action(page, "start-local-memory-evaluation").onclick();
+  assert.equal(post(env.calls).length, 0, "empty selection cannot start");
+  source.value = id("b");
+  await action(page, "start-local-memory-evaluation").onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.equal(post(env.calls)[0].url, "/api/local-memory-evaluations/start");
+  assert.deepEqual(body(post(env.calls)[0]), {model_id:id("a"), source_id:id("b")});
+  assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"], "memory-csrf");
+});
+
+test("M2 evaluation pending, unknown, and unrecognized statuses never offer another start", async () => {
+  for (const scenario of [
+    {operation:{status:"pending", model_id:id("a")}},
+    {operation:{status:"interrupted_unknown", model_id:id("a")}},
+    {operation:{status:"idle"}, availability:"recovery_required"},
+    {operation:{status:"future"}},
+    {operation:{status:"idle"}, statusSchema:"future/local-memory-evaluation-v9"},
+  ]) {
+    const env = memoryEvaluationEnv(scenario);
+    const page = await env.render();
+    assert.equal(walk(page).some(element => element.dataset?.action === "start-local-memory-evaluation"), false);
+    assert.equal(post(env.calls).length, 0);
+    assert.equal(env.calls.some(call => call.url.startsWith("/api/local-workspace?")), false);
+  }
+});
+
+test("M2 failed evaluation shows bounded error and source inventory does not expose private names", async () => {
+  const env = memoryEvaluationEnv({operation:{status:"failed", model_id:id("a"),
+    error_code:"train_dev_source_overlap"}, sources:[{artifact_id:id("b"), kind:"dataset",
+      parameters:{schema:"stpd/human-text-input-source-v1", display_name:"/private/Human/raw.json"}}]});
+  const page = await env.render();
+  assert.match(text(page), /开发集评估未完成/);
+  assert.match(text(page), /train_dev_source_overlap/);
+  assert.doesNotMatch(text(page), /\/private\/Human\/raw.json/);
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("M2 evaluation completed links only the recorded dev report and reports semantic overlap as diagnostic", async () => {
+  const result = id("c");
+  const env = memoryEvaluationEnv({operation:{status:"completed", model_id:id("a"),
+    source_id:id("b"), evaluation_id:result, semantic_overlap:true}});
+  const page = await env.render();
+  assert.match(text(page), /语义重叠/);
+  assert.ok(walk(page).some(element => element.tagName === "A"
+    && element.href === `?view=local-workspace&id=${result}`));
+  assert.equal(post(env.calls).length, 0);
+});
+
+test("M2 offline report reads the owner summary with no independence claim", async () => {
+  const result = id("c");
+  const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${result}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${result}`) return {
+        artifact_id:result, kind:"offline_evaluation",
+        parameters:{schema:"stpd/experimental-m2-offline-evaluation-v1", partition:"dev"}};
+      if (url === `/api/local-workspace/evaluations/${result}`) return {
+        schema:"stpd/local-offline-evaluation-summary-v1", evaluation_id:result,
+        evaluation_schema:"stpd/experimental-m2-offline-evaluation-v1", partition:"dev",
+        validation_scope:"recorded_report_and_parent_identities",
+        interpretation:"producer_recorded_summary_not_full_lineage_or_quality_verification",
+        model_id:id("a"), dev_source_id:id("b"), semantic_overlap:true,
+        strict_deduplicated_benchmark:false, native_run_independence:false,
+        model_selection_exposure:"unknown", decision_count:2, reported_run_groups:1,
+        multi_candidate_count:2, overall:{count:2,top1:0.5,mrr:0.5,nll:1,confidence:0.5,margin:0.1}};
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.match(text(page), /已记录语义重叠诊断/);
+  assert.match(text(page), /严格去重基准\n未建立/);
+  assert.match(text(page), /独立性\n未知/);
+  assert.equal(env.calls.filter(call => call.url === `/api/local-workspace/evaluations/${result}`).length, 1);
+  assert.equal(post(env.calls).length, 0);
 });
 
 test("pending new training preserves completed result links without another start", async () => {
@@ -1490,8 +1597,8 @@ test("local model export status is read-only until one explicit export click", a
     "replacement render preserves backend pending eligibility");
 });
 
-test("M2 export stays train-only and offers explicit guarded registration", async () => {
-  const model = id("a"), run = id("b");
+test("M2 export describes its own scope alongside a completed dev report and guarded registration", async () => {
+  const model = id("a"), run = id("b"), evaluation = id("c");
   let state = modelExportStatus({status:"idle"});
   const env = setup({
     identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
@@ -1501,6 +1608,12 @@ test("M2 export stays train-only and offers explicit guarded registration", asyn
         schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
       };
       if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model);
+      if (url === "/api/local-memory-evaluations/status") return {
+        schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready",
+        csrf_token:"memory-csrf", operation:{status:"completed", model_id:model,
+          source_id:id("d"), evaluation_id:evaluation, semantic_overlap:false}};
+      if (url.startsWith("/api/local-workspace?")) return {
+        schema:"stpd/local-workspace-inventory-v1", items:[], total:0};
       if (url === "/api/local-model-exports/status") return state;
       if (url.startsWith("/api/local-model-registrations/status?")) return {
         schema:"stpd/local-model-registration-v1", model_id:model,
@@ -1521,16 +1634,48 @@ test("M2 export stays train-only and offers explicit guarded registration", asyn
   const page = await env.render();
   assert.match(text(page), /模型概览/);
   assert.match(text(page), /实验性 D-Simple M2-K1/);
-  assert.match(text(page), /仅训练完成；没有独立评估/);
-  assert.match(text(page), /没有独立评估/);
+  assert.match(text(page), /训练产物；开发集评估请在下方单独查看或启动/);
+  assert.match(text(page), /导出校验不包含评估结论/);
+  assert.match(text(page), /开发用途离线工程评估已完成/);
+  assert.doesNotMatch(text(page), /没有独立评估|仍没有独立评估/);
+  assert.ok(walk(page).some(element => element.tagName === "A"
+    && element.href === `?view=local-workspace&id=${evaluation}`));
   assert.match(text(page), /才能登记或加载/);
   assert.equal(post(env.calls).length, 0);
   assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
   await action(page, "start-local-model-export").onclick();
   assert.equal(post(env.calls).length, 1);
-  assert.match(text(env.livePage), /没有独立评估/);
+  assert.match(text(env.livePage), /评估须在独立区域核对/);
+  assert.doesNotMatch(text(env.livePage), /没有独立评估|仍没有独立评估/);
   assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), true);
   assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
+});
+
+test("idle M2 evaluation leaves overview and verified export neutral about report existence", async () => {
+  const model = id("a");
+  const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model);
+      if (url === "/api/local-memory-evaluations/status") return {
+        schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready",
+        operation:{status:"idle"}, csrf_token:"memory-csrf"};
+      if (url.startsWith("/api/local-workspace?")) return {
+        schema:"stpd/local-workspace-inventory-v1", items:[], total:0};
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed", model_id:model, model_type:"memory", payload_bytes:123},
+      {schema:"stpd/local-model-export-operation-v2"});
+      if (url.startsWith("/api/local-model-registrations/status?")) return {
+        schema:"stpd/local-model-registration-v1", model_id:model,
+        status:"not_registered", loaded:false, runtime_profile:"text-menu-m2-v1"};
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.match(text(page), /开发集评估请在下方单独查看或启动/);
+  assert.match(text(page), /评估须在独立区域核对/);
+  assert.doesNotMatch(text(page), /查看开发集报告|已完成.*评估|评估结果另见关联报告|没有独立评估/);
+  assert.equal(post(env.calls).length, 0);
 });
 
 test("older M2 receipt and registration timeout explain explicit recovery without replay", async () => {
