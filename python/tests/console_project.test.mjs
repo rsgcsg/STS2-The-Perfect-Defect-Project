@@ -61,14 +61,12 @@ const textMenuScratchModel = (artifactId = id("a"), recipe = "stage1a.b.s.v2") =
   parents:[],
   payloads:[],
 });
-const memoryModel = (artifactId = id("a"), resetEachStep = false) => ({
+const memoryModel = (artifactId = id("a"), resetEachStep = false, slots = 1) => ({
   artifact_id:artifactId, kind:"model",
-  workbench_memory_recipe:resetEachStep
-    ? "stage1a.dsimple.reset.k1.experimental.v1"
-    : "stage1a.dsimple.m2.k1.experimental.v1",
+  workbench_memory_recipe:`stage1a.dsimple.${resetEachStep ? "reset" : "m2"}.k${slots}.experimental.v1`,
   parameters:{schema:"stpd/experimental-m2-model-v1", partition:"train",
     qualification:"engineering_only", episodes:1,
-    config:{vocab_size:128, episode_count:1, slots:1, gated:false,
+    config:{vocab_size:128, episode_count:1, slots, gated:false,
       reset_each_step:resetEachStep, seed:1701, width:48, layers:1, heads:2,
       feedforward:96, dropout:0, max_tokens:16384, learning_rate:0.001,
       weight_decay:0, gradient_clip:1, cpu_threads:2,
@@ -144,6 +142,8 @@ function setup({
   curationStatus = {schema: "stpd/local-curation-preparation-v1", status: "not_applicable"},
   query = "",
   renderOnReload = false,
+  sceneData = {schema:"stpd/local-managed-fixed-seed-start-v1",items:[]},
+  comparisonData = {schema:"stpd/local-managed-start-comparison-v1",items:[]},
 } = {}) {
   const calls = [],
     notice = new Element("div"),
@@ -197,7 +197,11 @@ function setup({
       const body = url === "/api/local-recordings/import/status"
         ? importStatus
         : url === "/api/local-workspace/curation"
-          ? curationStatus : await handler(url, options);
+          ? curationStatus
+          : view === "local-environment" && url === "/api/local-environment/scenes"
+            ? sceneData
+            : view === "local-environment" && url === "/api/local-environment/comparisons"
+              ? comparisonData : await handler(url, options);
       return {
         ok: !(body?.httpStatus >= 400),
         status: body?.httpStatus || 200,
@@ -1279,9 +1283,9 @@ test("completed training offers one explicit new experiment with exact prior ide
     assert.ok(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${artifact}`));
 });
 
-test("experimental M2 is explicit and completed status has no invented evaluation", async () => {
+for (const slots of [1, 8]) test(`experimental M2-K${slots} is explicit and completed status has no invented evaluation`, async () => {
   const dataset = id("a"), result = id("b"), model = id("c");
-  const recipe = "stage1a.dsimple.m2.k1.experimental.v1";
+  const recipe = `stage1a.dsimple.m2.k${slots}.experimental.v1`;
   const ready = localTrainingEnv({artifact:dataset, trainingStatus:{
     schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf",
     operation:{status:"idle"},
@@ -1291,6 +1295,9 @@ test("experimental M2 is explicit and completed status has no invented evaluatio
   const selection = find(page, element => element.tagName === "SELECT"
     && element.name === "local-training-recipe");
   assert.ok(selection);
+  assert.equal(selection.value, "stage1a.dsimple.s.v1");
+  assert.ok(selection.children.some(option => option.value === recipe));
+  assert.equal(selection.children.some(option => option.value.endsWith(".v2")), false);
   selection.value = recipe;
   await action(page, "start-local-training").onclick();
   assert.deepEqual(body(post(ready.calls)[0]), {dataset_id:dataset, recipe});
@@ -1309,15 +1316,15 @@ test("experimental M2 is explicit and completed status has no invented evaluatio
   assert.ok(action(completed, "start-local-training-new"));
 });
 
-test("Reset-K1 is an explicit train-only recipe and starts once with its exact identity", async () => {
-  const dataset = id("a"), reset = "stage1a.dsimple.reset.k1.experimental.v1";
+for (const slots of [1, 8]) test(`Reset-K${slots} is an explicit train-only recipe and starts once with its exact identity`, async () => {
+  const dataset = id("a"), reset = `stage1a.dsimple.reset.k${slots}.experimental.v1`;
   const env = localTrainingEnv({artifact:dataset, trainingHandler:async url => {
     if (url === "/api/local-training/start") return {schema:"stpd/local-training-operation-v2",
       availability:"ready", operation:{status:"pending", recipe:reset}};
     throw new Error(`unexpected route ${url}`);
   }});
   const page = await env.render();
-  assert.match(text(page), /Reset-K1（每步重置，独立训练对照/);
+  assert.match(text(page), new RegExp(`Reset-K${slots}（每步重置，独立训练对照`));
   assert.equal(post(env.calls).length, 0);
   const recipe = field(page, "local-training-recipe");
   recipe.value = reset;
@@ -1339,8 +1346,8 @@ test("Reset-K1 is an explicit train-only recipe and starts once with its exact i
     throw new Error(`unexpected route ${url}`);
   }});
   const completed = await done.render();
-  assert.match(text(completed), /Reset-K1 训练任务已完成/);
-  assert.doesNotMatch(text(completed), /M2-K1 训练任务已完成/);
+  assert.match(text(completed), new RegExp(`Reset-K${slots} 训练任务已完成`));
+  assert.doesNotMatch(text(completed), /M2-K[18] 训练任务已完成/);
   assert.equal(field(completed, "local-training-new-recipe").value, reset);
   assert.equal(post(done.calls).length, 0);
   await action(completed, "start-local-training-new").onclick();
@@ -1701,13 +1708,14 @@ test("M2 export describes its own scope alongside a completed dev report and gua
   assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
 });
 
-test("Reset-K1 model identity drives overview, export, and neutral dev evaluation without an automatic write", async () => {
+for (const [slots, reset] of [[1, true], [8, false], [8, true]]) test(`${reset ? "Reset" : "M2"}-K${slots} model identity drives overview, export, and neutral dev evaluation without an automatic write`, async () => {
   const model = id("a");
+  const name = `${reset ? "Reset" : "M2"}-K${slots}`;
   const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
     handler:async url => {
       if (url === "/api/local-workspace/managed") return {
         schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready"};
-      if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model, true);
+      if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model, reset, slots);
       if (url === "/api/local-memory-evaluations/status") return {
         schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready",
         operation:{status:"idle"}, csrf_token:"memory-csrf"};
@@ -1722,13 +1730,15 @@ test("Reset-K1 model identity drives overview, export, and neutral dev evaluatio
       throw new Error(`unexpected route ${url}`);
     }});
   const page = await env.render();
-  assert.match(text(page), /Reset-K1（每步重置，独立训练对照）/);
+  assert.match(text(page), new RegExp(reset ? `${name}（每步重置，独立训练对照）`
+    : `实验性 D-Simple ${name}`));
   assert.match(text(page), /此处不表示实时状态/);
   assert.doesNotMatch(text(page), /需先具备固定的记忆模型运行包/);
-  assert.match(text(page), /Reset-K1 训练模型已导出并校验/);
-  assert.match(text(page), /Reset-K1 独立来源开发集评估/);
+  assert.match(text(page), new RegExp(`${name} 训练模型已导出并校验`));
+  assert.match(text(page), new RegExp(`${name} 独立来源开发集评估`));
   assert.match(text(page), /不是 Gold、独立游戏局、记忆收益或科学质量证明/);
-  assert.doesNotMatch(text(page), /D-Simple M2-K1|M2-K1 独立来源|M2 训练模型/);
+  if (slots === 8) assert.doesNotMatch(text(page), /M2-K1|Reset-K1/);
+  if (reset) assert.doesNotMatch(text(page), /D-Simple M2-K[18]|M2-K[18] 独立来源/);
   assert.equal(action(page, "start-local-model-export").disabled, false);
   assert.equal(post(env.calls).length, 0);
 });
@@ -3375,6 +3385,8 @@ test("Managed training source offers explicit v2 M2 and Reset without GET work",
   assert.deepEqual(recipe.children.map(option => option.value), [
     "stage1a.dsimple.m2.k1.experimental.v2",
     "stage1a.dsimple.reset.k1.experimental.v2",
+    "stage1a.dsimple.m2.k8.experimental.v2",
+    "stage1a.dsimple.reset.k8.experimental.v2",
   ]);
   await action(page, "start-local-training").onclick();
   assert.deepEqual(body(post(env.calls)[0]), {dataset_id:source,
@@ -3404,10 +3416,10 @@ test("Managed test source never offers training", async () => {
   assert.equal(walk(page).some(e => e.dataset?.action === "start-local-training"), false);
 });
 
-test("v2 memory model card keeps its profile and never starts evaluation or registration on GET", async () => {
+for (const [slots, reset] of [[1, false], [8, false], [8, true]]) test(`v2 ${reset ? "Reset" : "M2"}-K${slots} model card keeps its profile and never starts evaluation or registration on GET`, async () => {
   const modelId = id("a");
-  const model = memoryModel(modelId);
-  model.workbench_memory_recipe = "stage1a.dsimple.m2.k1.experimental.v2";
+  const model = memoryModel(modelId, reset, slots);
+  model.workbench_memory_recipe = `stage1a.dsimple.${reset ? "reset" : "m2"}.k${slots}.experimental.v2`;
   const env = setup({view:"local-workspace",query:`&id=${modelId}`,
     identity:{status:"local_only"},handler:async url => {
       if (url === "/api/local-workspace/managed") return {status:"ready"};
@@ -3425,6 +3437,9 @@ test("v2 memory model card keeps its profile and never starts evaluation or regi
   });
   const page = await env.render();
   assert.match(text(page), /text-menu-v2 · Managed 工程操作，actor 未验证/);
+  assert.match(text(page), new RegExp(`${reset ? "Reset" : "M2"}-K${slots} 训练模型已导出并校验`));
+  if (slots === 8) assert.doesNotMatch(text(page), /M2-K1|Reset-K1/);
+  assert.match(text(page), /此输入版本暂不支持独立 Human 开发集评估/);
   assert.ok(action(page, "register-local-model"));
   assert.equal(env.calls.some(call => call.url === "/api/local-memory-evaluations/status"), false);
   assert.equal(post(env.calls).length, 0);
@@ -3445,7 +3460,8 @@ test("environment page explains missing setup without accepting browser paths", 
   assert.equal(action(page, "environment-start-managed-defect-a0-map-prefix-20260929").disabled, true);
   assert.equal(post(env.calls).length, 0);
   assert.deepEqual(env.calls.map(call => call.url),
-    ["/api/local-environment", "/api/local-environment/reports"]);
+    ["/api/local-environment", "/api/local-environment/scenes",
+      "/api/local-environment/reports", "/api/local-environment/comparisons"]);
   assert.doesNotMatch(text(page), /browser-csrf/);
 });
 
@@ -3475,6 +3491,132 @@ test("cold local environment starts from browser status CSRF without cloud ident
   assert.deepEqual(body(writes[0]), {scenario_id:scenarioId});
   assert.equal(writes[0].options.headers["X-CSRF-Token"], "browser-csrf");
   assert.equal(env.reloads, 1);
+});
+
+test("saved fixed-seed scene and comparison require explicit browser commands", async () => {
+  const scenarioId = "managed-defect-a0-map-prefix-20260929";
+  const sceneId = id("c"), firstReport = id("a"), secondReport = id("b");
+  const sceneData = {schema:"stpd/local-managed-fixed-seed-start-v1",items:[
+    {artifact_id:sceneId,name:"A0 start",seed:"M2H0ST20260929A",input_profile:"text-menu-v2"},
+  ]};
+  const env = setup({view:"local-environment",identity:{status:"local_only"},sceneData,
+    handler:async (url,options) => {
+      if (url === "/api/local-environment") return {
+        schema:"stpd/local-managed-environment-v1",availability:"configured",
+        input_profile:"text-menu-v2",csrf_token:"scene-csrf",
+        scenarios:[{id:scenarioId,label:"A0",seed:"M2H0ST20260929A",character:"Defect",scope:"固定种子"}],
+        session:{status:"idle"},
+      };
+      if (url === "/api/local-environment/reports") return {items:[
+        {artifact_id:firstReport,status:"stopped"},{artifact_id:secondReport,status:"stopped"},
+      ]};
+      if (url === "/api/local-environment/scenes/save") return {artifact_id:sceneId,name:body({options}).name};
+      if (url === "/api/local-environment/start") return {status:"starting"};
+      if (url === "/api/local-environment/compare") return {
+        artifact_id:id("d"),status:"verified_fixed_seed_starts",
+        scene_artifact_id:sceneId,report_artifact_ids:[firstReport,secondReport],
+      };
+      throw new Error(`unexpected ${url}`);
+    },
+  });
+  const page = await env.render();
+  assert.equal(post(env.calls).length,0);
+  assert.match(text(page),/不是游戏存档/);
+  field(page,"environment-scene-name").value = "A0 named";
+  await action(page,"environment-scene-save").onclick();
+  await action(page,`environment-scene-start-${sceneId}`).onclick();
+  await action(page,"environment-compare-save").onclick();
+  const writes = post(env.calls);
+  assert.deepEqual(writes.map(call => call.url),[
+    "/api/local-environment/scenes/save", "/api/local-environment/start",
+    "/api/local-environment/compare",
+  ]);
+  assert.deepEqual(body(writes[0]),{name:"A0 named"});
+  assert.deepEqual(body(writes[1]),{scenario_id:scenarioId,scene_artifact_id:sceneId});
+  assert.deepEqual(body(writes[2]),{scene_artifact_id:sceneId,
+    report_artifact_ids:[firstReport,secondReport]});
+  assert.ok(writes.every(call => call.options.headers["X-CSRF-Token"] === "scene-csrf"));
+});
+
+test("environment refresh preserves reading and form state without replaying commands", async () => {
+  const sceneId=id("c"), comparisonId=id("d"), first=id("a"), second=id("b");
+  const sceneData={items:[{artifact_id:sceneId,name:"Saved start",seed:"seed",input_profile:"text-menu-v2"}]};
+  const comparisonData={items:[{artifact_id:comparisonId}]};
+  let status="stopped";
+  const env=setup({view:"local-environment",identity:{status:"local_only"},sceneData,comparisonData,
+    handler:async url => {
+      if(url==="/api/local-environment") return {schema:"stpd/local-managed-environment-v1",
+        availability:"configured",csrf_token:"csrf",scenarios:[],session:{status}};
+      if(url==="/api/local-environment/reports") return {items:[{artifact_id:first,status:"stopped"},{artifact_id:second,status:"stopped"}]};
+      if(url===`/api/local-environment/comparisons/${comparisonId}`) return {
+        artifact_id:comparisonId,status:"verified_fixed_seed_starts",report_artifact_ids:[first,second]};
+      throw new Error(`unexpected ${url}`);
+    }});
+  const page=await env.render();
+  const name=field(page,"environment-scene-name"); name.value="My draft"; name.oninput?.();
+  const choice=field(page,"environment-compare-first"); choice.value=second; choice.onchange?.();
+  await action(page,`environment-comparison-${comparisonId}`).onclick();
+  assert.match(text(page),/verified_fixed_seed_starts/);
+  // The shell retains the actual DOM only when this refresh hook returns true.
+  assert.equal(await env.ui.refresh("local-environment"),true);
+  assert.equal(post(env.calls).length,0);
+  status="cleanup_unknown";
+  assert.equal(await env.ui.refresh("local-environment"),false);
+  const changed=await env.render();
+  assert.match(text(changed),/清理尚未确认/);
+  assert.equal(field(changed,"environment-scene-name").value,"My draft");
+  assert.equal(field(changed,"environment-compare-first").value,second);
+  assert.match(text(changed),/verified_fixed_seed_starts/);
+  assert.equal(action(changed,`environment-scene-start-${sceneId}`).disabled,true);
+  assert.equal(post(env.calls).length,0);
+  env.account(owner("member","other-person"));
+  const other=await env.render();
+  assert.doesNotMatch(text(other),/verified_fixed_seed_starts/);
+  assert.notEqual(field(other,"environment-scene-name").value,"My draft");
+});
+
+test("environment refresh failure cannot retain an error screen after recovery", async () => {
+  let fail=false;
+  const env=setup({view:"local-environment",identity:{status:"local_only"},handler:async url=>{
+    if(fail) return {httpStatus:503,error:"temporarily_unavailable"};
+    return url==="/api/local-environment" ? {schema:"stpd/local-managed-environment-v1",
+      availability:"configured",scenarios:[],session:{status:"stopped"}} : {items:[]};
+  }});
+  await env.render();
+  fail=true;
+  await assert.rejects(env.ui.refresh("local-environment"),/temporarily_unavailable/);
+  fail=false;
+  assert.equal(await env.ui.refresh("local-environment"),false);
+  await env.render();
+  assert.equal(await env.ui.refresh("local-environment"),true);
+  assert.equal(post(env.calls).length,0);
+});
+
+test("late environment refresh and comparison cannot retain the previous context", async () => {
+  const comparisonId=id("d");
+  let pendingRefresh, pendingDetail, hold=false;
+  const initial={schema:"stpd/local-managed-environment-v1",availability:"configured",scenarios:[],session:{status:"stopped"}};
+  const env=setup({view:"local-environment",identity:{status:"local_only"},comparisonData:{items:[{artifact_id:comparisonId}]},
+    handler:async url => {
+      if(url==="/api/local-environment") return hold ? new Promise(resolve=>{pendingRefresh=resolve;}) : initial;
+      if(url==="/api/local-environment/reports") return {items:[]};
+      if(url===`/api/local-environment/comparisons/${comparisonId}`) return new Promise(resolve=>{pendingDetail=resolve;});
+      throw new Error(`unexpected ${url}`);
+    }});
+  const page=await env.render();
+  const opening=action(page,`environment-comparison-${comparisonId}`).onclick();
+  hold=true;
+  const polling=env.ui.refresh("local-environment");
+  env.scope("other-device");
+  assert.equal(typeof pendingRefresh,"function");
+  pendingRefresh(initial);
+  pendingDetail({artifact_id:comparisonId,status:"OLD_DETAIL"});
+  assert.equal(await polling,false);
+  await opening;
+  hold=false;
+  const next=await env.render();
+  assert.doesNotMatch(text(next),/OLD_DETAIL/);
+  assert.equal(post(env.calls).length,0);
 });
 
 test("environment renders the complete current menu and submits one exact binding", async () => {

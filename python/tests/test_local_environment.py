@@ -209,6 +209,104 @@ def wait_status(service: LocalEnvironmentService, expected: str) -> dict[str, An
     raise AssertionError(f"expected {expected}, observed {service.status()}")
 
 
+def test_named_fixed_seed_scene_restarts_fresh_and_compares_closed_reports(tmp_path: Path) -> None:
+    config, _host, _candidate, pin, audit, checked = fixture(tmp_path)
+    clients = []
+
+    class IndependentClient(PublicClientFixture):
+        def __init__(self, number: int) -> None:
+            super().__init__(audit)
+            self.number = number
+
+        def episode_identity(self) -> dict[str, Any]:
+            value = super().episode_identity()
+            value["episode_provenance"]["runtime_instance_id"] = f"instance-{self.number}"
+            return value
+
+    def make_client(_command: list[str], _host: Path, _pin: dict[str, Any]) -> IndependentClient:
+        client = IndependentClient(len(clients) + 1)
+        clients.append(client)
+        return client
+
+    service = LocalEnvironmentService(config, audit=checked, client_factory=make_client)
+    scene = service.save_scene("A0 repeat")
+    assert scene["seed"] == SCENARIO["seed"]
+    assert scene["host_package_pin"] == pin
+    assert "candidate_directory" not in json.dumps(scene)
+    assert service.scenes()["items"][0]["artifact_id"] == scene["artifact_id"]
+    reports = []
+    for _ in range(2):
+        started = service.start(SCENARIO["id"], scene_artifact_id=scene["artifact_id"])
+        session_id = started["session"]["session_id"]
+        active = wait_status(service, "active")["session"]
+        assert active["initial_context"]["snapshot"]["menu_actions"]["status"] == "complete"
+        service.stop(session_id)
+        finished = wait_status(service, "stopped")["session"]
+        reports.append(finished["report_artifact_id"])
+    assert clients[0] is not clients[1] and all(client.closed for client in clients)
+    comparison = service.compare(scene["artifact_id"], reports)
+    assert comparison["status"] == "verified_fixed_seed_starts"
+    assert [run["runtime_instance_id"] for run in comparison["runs"]] == [
+        "instance-1", "instance-2"
+    ]
+    assert [run["initial_menu_count"] for run in comparison["runs"]] == [1, 1]
+    store = service._report_store(create=False)
+    assert store is not None
+    manifest = store.get_manifest(comparison["artifact_id"])
+    assert manifest.parent("scene") == scene["artifact_id"]
+    assert manifest.parent("report-0") == reports[0]
+    assert service.comparisons()["items"][0]["artifact_id"] == comparison["artifact_id"]
+    assert service.comparison(comparison["artifact_id"])["runs"] == comparison["runs"]
+
+
+def test_saved_scene_requires_current_profile_and_old_reports_cannot_prove_repeatability(
+    tmp_path: Path,
+) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    clients = []
+    service = LocalEnvironmentService(
+        config, audit=checked,
+        client_factory=lambda *_: clients.append(PublicClientFixture(audit)) or clients[-1],
+    )
+    scene = service.save_scene("Original")
+    assert not clients
+    with pytest.raises(BoundaryError, match="scene_name_invalid"):
+        service.save_scene(" ")
+    profile_path = config.state_dir / PROFILE_FILE
+    profile = json.loads(profile_path.read_text())
+    profile["input_profile"] = "text-menu-v2"
+    profile_path.write_text(json.dumps(profile))
+    with pytest.raises(BoundaryError, match="scene_profile_mismatch"):
+        service.start(SCENARIO["id"], scene_artifact_id=scene["artifact_id"])
+    assert not clients
+    profile["input_profile"] = "text-menu-v1"
+    profile_path.write_text(json.dumps(profile))
+    report_ids = []
+    for _ in range(2):
+        session = service.start(SCENARIO["id"])["session"]
+        wait_status(service, "active")
+        service.stop(session["session_id"])
+        report_ids.append(wait_status(service, "stopped")["session"]["report_artifact_id"])
+    with pytest.raises(BoundaryError, match="repeatability_proof_unavailable"):
+        service.compare(scene["artifact_id"], report_ids)
+
+
+def test_comparison_rejects_two_closed_reports_with_same_runtime_instance(tmp_path: Path) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    service = LocalEnvironmentService(
+        config, audit=checked, client_factory=lambda *_: PublicClientFixture(audit),
+    )
+    scene_id = service.save_scene("Repeated identity")["artifact_id"]
+    report_ids = []
+    for _ in range(2):
+        session = service.start(SCENARIO["id"], scene_artifact_id=scene_id)["session"]
+        wait_status(service, "active")
+        service.stop(session["session_id"])
+        report_ids.append(wait_status(service, "stopped")["session"]["report_artifact_id"])
+    with pytest.raises(BoundaryError, match="same_runtime_instance"):
+        service.compare(scene_id, report_ids)
+
+
 def test_exact_profile_start_one_explicit_action_stop_and_immutable_report(tmp_path: Path) -> None:
     config, host, candidate, _pin, audit, checked = fixture(tmp_path)
     client = PublicClientFixture(audit)

@@ -29,11 +29,9 @@ from spireagent.workbench.local_model_dependencies import (
 from spireagent.workbench.local_model_export import LocalModelExport, _ordinary
 from spireagent.workbench.local_models import LocalModelService, _loopback
 from spireagent.workbench.memory_recipe import (
-    M2_K1_RECIPE,
-    RESET_K1_RECIPE,
-    V2_M2_K1_RECIPE,
+    MEMORY_RECIPES,
     V2_MEMORY_RECIPES,
-    V2_RESET_K1_RECIPE,
+    memory_settings_for_recipe,
 )
 from spireagent.workbench.runtime_install import (
     CONNECTOR_PACKAGE,
@@ -47,10 +45,17 @@ PROFILE = "text-menu-v1"
 M2_PROFILE = "text-menu-m2-v1"
 V2_M2_PROFILE = "text-menu-m2-v2"
 RECIPE_LABELS = {"stage1a.b.s.v2": "B", "stage1a.dsimple.s.v1": "D-Simple"}
-MEMORY_RECIPE_LABELS = {M2_K1_RECIPE: "M2-K1 训练版",
-                        RESET_K1_RECIPE: "Reset-K1 独立训练对照版",
-                        V2_M2_K1_RECIPE: "M2-K1 v2 工程训练版",
-                        V2_RESET_K1_RECIPE: "Reset-K1 v2 工程对照版"}
+
+
+def _memory_recipe_label(recipe: str) -> str:
+    settings = memory_settings_for_recipe(recipe)
+    name = f"{'Reset' if settings.reset_each_step else 'M2'}-K{settings.slots}"
+    if settings.input_profile == "text-menu-v2":
+        return name + (" v2 工程对照版" if settings.reset_each_step else " v2 工程训练版")
+    return name + (" 独立训练对照版" if settings.reset_each_step else " 训练版")
+
+
+MEMORY_RECIPE_LABELS = {recipe: _memory_recipe_label(recipe) for recipe in MEMORY_RECIPES}
 
 
 def _export_memory_profile(export: Path) -> str:
