@@ -35,6 +35,16 @@ npm run experiment:managed -- repeatability --candidate .local/candidates/<candi
 npm run experiment:managed -- repeatability --candidate .local/candidates/<candidate> --scenario-id managed-engineering-map-combat-six-v1
 ```
 
+The installed package's `audit` stages the reviewed assembly-fingerprint source
+in a private temporary build directory; it does not write .NET `bin`/`obj`
+under the installed package. The STPD Host consumer activation imports its
+Python client with bytecode writes suppressed only for that import, so repeated
+exact-package validation sees the same bytes.
+Other Managed commands that write `.local/` reports and `source-audit` output
+still require an explicitly suitable external working/output root when used
+from an immutable installation. This is an audit/consumer-startup boundary,
+not a claim that every Host CLI command is read-only.
+
 `repeatability` accepts an existing `sts2.headless/scenario-1` JSON descriptor
 with `start_interaction_kind` and starts two sequential, independent Managed
 processes against the same exact candidate. Its report records each runtime

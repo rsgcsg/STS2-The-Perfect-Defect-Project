@@ -13,6 +13,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import { startJsonLineProcess } from "./json-line-process.mjs";
+import { stageAssemblyFingerprintProject } from "./assembly-fingerprint-project.mjs";
 import { ProcessResourceSampler } from "./process-resource-sampler.mjs";
 import { readProjectIdentity } from "./project-identity.mjs";
 import { readSystemIdentity } from "./system-identity.mjs";
@@ -207,16 +208,20 @@ export async function resolveDotnet() {
 
 async function fingerprintManagedAssembly(root, assembly) {
   const dotnet = await resolveDotnet();
-  const project = path.join(root, "tools", "dotnet", "AssemblyFingerprint");
-  const { stdout } = await run(dotnet.command, [
-    "run", "--project", project, "--", "--assembly", assembly
-  ]);
-  const fingerprint = JSON.parse(stdout);
-  const moduleMvid = fingerprint?.assembly?.module_mvid;
-  if (typeof moduleMvid !== "string" || moduleMvid.length === 0) {
-    throw new Error("Managed candidate assembly fingerprint did not report an MVID.");
+  const staged = stageAssemblyFingerprintProject(root);
+  try {
+    const { stdout } = await run(dotnet.command, [
+      "run", "--project", staged.project, "--", "--assembly", path.resolve(assembly)
+    ], { cwd: staged.directory });
+    const fingerprint = JSON.parse(stdout);
+    const moduleMvid = fingerprint?.assembly?.module_mvid;
+    if (typeof moduleMvid !== "string" || moduleMvid.length === 0) {
+      throw new Error("Managed candidate assembly fingerprint did not report an MVID.");
+    }
+    return { moduleMvid };
+  } finally {
+    staged.cleanup();
   }
-  return { moduleMvid };
 }
 
 export async function auditManagedCandidateSource({ root, candidateDirectory, manifest }) {
