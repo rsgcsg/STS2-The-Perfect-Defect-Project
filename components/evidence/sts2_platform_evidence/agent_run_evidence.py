@@ -576,7 +576,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _mode(payload, "mode", _EVENTS_FILE)
             if "autonomy_budget" in payload:
                 _verify_autonomy_budget(payload["autonomy_budget"])
-            next_autonomy_mode = payload["mode"] in {"one_step", "auto"}
+            next_autonomy_mode = payload["mode"] in {"one_step", "auto", "shadow"}
             if next_autonomy_mode and not autonomy_mode:
                 if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA and (
                     "autonomy_budget" not in payload or payload["autonomy_budget"]["state"] != "active"
@@ -592,6 +592,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             budget = _verify_autonomy_budget(payload["budget"])
             if budget["state"] != "exhausted" or budget["exhausted_reason"] != payload["reason"]:
                 raise AgentRunEvidenceError("budget_association", "exhaustion event and budget differ", _EVENTS_FILE)
+            # Runtime's deadline/limit handoff sets Human without mode_changed.
+            autonomy_mode = False
         elif kind == "controller_release_failed":
             _exact_keys(payload, {"reason"}, "controller_release_failed payload")
             _text(payload, "reason", _EVENTS_FILE)
@@ -670,6 +672,9 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 raise AgentRunEvidenceError("text_dispatch_binding", "text dispatch counters differ from cumulative selected action domains", _EVENTS_FILE)
             native_submissions_used = expected_native
             menu_navigations_used = expected_menu
+            # The constructor may start Auto/One-Step without mode_changed;
+            # an actual dispatch proves an active budget, never a fresh reset.
+            autonomy_mode = True
             text_dispatches[decision_id] = payload
         elif kind in {"menu_navigation", "text_native_delivery", "text_native_unknown", "text_menu_not_applied", "text_menu_result_rejected"}:
             decision_id = _verify_text_outcome(kind, payload, manifest, environment, decisions, text_inputs, text_dispatches, input_schema)

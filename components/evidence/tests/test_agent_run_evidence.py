@@ -984,6 +984,51 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         reseal(missing_budget)
         self.assertEqual(verifier.verify(directory).findings[0].code, "budget_association")
 
+    def test_v2_budget_counters_follow_initial_auto_exhaustion_and_shadow(self) -> None:
+        active = {"state": "active", "max_submissions": 4, "submissions_used": 0,
+                  "max_policy_calls": 4, "policy_calls_used": 0, "deadline_ms": 10000,
+                  "elapsed_ms": 0, "remaining_ms": 10000, "exhausted_reason": None,
+                  "ended_reason": None}
+        exhausted = {**active, "state": "exhausted", "elapsed_ms": 10000,
+                     "remaining_ms": 0, "exhausted_reason": "deadline"}
+
+        def event(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+            return {"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                    "recorded_at": "2026-08-25T00:00:03.000Z", "kind": kind,
+                    "payload": payload}
+
+        # Runtime may start in Auto without a mode_changed event. Shadow belongs
+        # to the same autonomy budget; only an actual handoff permits a reset.
+        cases = (
+            ("initial-auto-forged-reset", [], True, False),
+            ("exhaustion-restart", [event("autonomy_budget_exhausted", {
+                "reason": "deadline", "budget": exhausted, "controller": "released"})], True, True),
+            ("shadow-keeps-counts", [event("mode_changed", {
+                "mode": "shadow", "autonomy_budget": active})], False, True),
+            ("shadow-forged-reset", [event("mode_changed", {
+                "mode": "shadow", "autonomy_budget": active})], True, False),
+        )
+        for name, handoff, reset, expected in cases:
+            with self.subTest(name=name):
+                directory, events = self._v2_cumulative_dispatches(name)
+                if name == "exhaustion-restart":
+                    events.insert(1, event("mode_changed", {"mode": "auto", "autonomy_budget": active}))
+                first_release = next(index for index, item in enumerate(events)
+                                     if item["kind"] == "controller_released")
+                events[first_release + 1:first_release + 1] = [
+                    *handoff, event("mode_changed", {"mode": "auto", "autonomy_budget": active})]
+                if reset:
+                    dispatches = [item for item in events if item["kind"] == "text_menu_dispatch_attempt"]
+                    dispatches[1]["payload"].update(native_submissions_used=0, menu_navigations_used=1)
+                    dispatches[2]["payload"].update(native_submissions_used=1, menu_navigations_used=1)
+                for sequence, item in enumerate(events, 1):
+                    item["sequence"] = sequence
+                self._rewrite_events(directory, events)
+                result = AgentRunEvidenceVerifier().verify(directory)
+                self.assertEqual(result.passed, expected, result.findings)
+                if not expected:
+                    self.assertEqual(result.findings[0].code, "text_dispatch_binding")
+
     def test_v2_manifest_port_and_renderer_profile_are_closed(self) -> None:
         directory = self._text_v2_evidence("v2-manifest")
         verifier = AgentRunEvidenceVerifier()
