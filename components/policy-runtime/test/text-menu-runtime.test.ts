@@ -322,6 +322,7 @@ describe("text menu Runtime opt-in", () => {
     expect(events.indexOf("text_decision_input")).toBeLessThan(events.indexOf("decision"));
     expect(events.indexOf("decision")).toBeLessThan(events.indexOf("text_menu_dispatch_attempt"));
     expect(inputs[0]).toMatchObject({ snapshot: root });
+    expect(Object.keys(inputs[0] as object).sort()).toEqual(["decision_id", "snapshot"]);
     expect(events).not.toContain("receipt");
     expect((await runtime.tick()).type).toBe("text_native_delivered");
     expect(runtime.status().last_receipt?.delivery).toBe("delivered");

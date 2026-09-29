@@ -72,6 +72,10 @@ digest, submitted action and Connector request to either `menu_applied` or
 `native_input_delivered`. It carries no reward, inferred effect or native
 Commit claim. The response completion adds required nullable
 `previous_interaction_request_id`, which must echo the offered value.
+After that completion is validated, the Agent Run's `text_decision_input`
+records the actual opaque `continuity_token` and nullable echoed request ID
+in `observation_context` beside the scored snapshot. Earlier ports retain
+their two-field input event.
 
 Runtime offers a recorded interaction at most once, on a newer observation in
 the same continuity segment. A failed Evidence append, unknown or unapplied

@@ -415,6 +415,7 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
     }
     let adapterDecision: AdapterDecision;
+    let observationContext: { continuity_token: string; previous_interaction_request_id: string | null } | null = null;
     const policyRecoveryEpoch = this.recoveryEpoch;
     const policyController = new AbortController();
     this.activePolicy = { controller: policyController };
@@ -441,6 +442,10 @@ export class PolicyRuntime {
           this.policyTimeoutMs, "policy decision timed out", policyController.signal);
         if (!offered) throw new Error("stateful policy returned before offer");
         this.validateCompletion(result.completion, statefulInput);
+        if (this.interactionPort) observationContext = {
+          continuity_token: result.completion.continuity_token,
+          previous_interaction_request_id: result.completion.previous_interaction_request_id ?? null
+        };
         adapterDecision = result.output;
       } else {
         adapterDecision = await withTimeout(
@@ -485,7 +490,8 @@ export class PolicyRuntime {
     const resolvedActionId = resolved ? decisionActionId(resolved) : null;
     this.lastDecision = { decision_id: decision.decision_id, candidate_digest: decision.candidate_digest, candidate_count: decision.candidate_count, scores: [...decision.scores], selected_index: decision.selected_index, bound_action_id: resolvedActionId, bound_action_label: resolved?.label ?? null };
     if (textMenu && !(await this.appendEvidence("text_decision_input", {
-      decision_id: decision.decision_id, snapshot: bundle.observation
+      decision_id: decision.decision_id, snapshot: bundle.observation,
+      ...(this.interactionPort ? { observation_context: observationContext } : {})
     }))) {
       await this.failClosed("agent_evidence_write_failed_before_submit");
       return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };

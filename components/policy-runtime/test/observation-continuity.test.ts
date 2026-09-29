@@ -378,12 +378,16 @@ describe("confirmed interaction port v3", () => {
 
   it("offers a correlated, recorded menu result once on a newer observation", async () => {
     const f = fixture(), seen: StatefulPolicyDecisionInput[] = [];
+    const recordedInputs: Array<Record<string, unknown>> = [];
+    const writer = { append: vi.fn(async (kind: string, payload: Record<string, unknown>) => {
+      if (kind === "text_decision_input") recordedInputs.push(payload);
+    }) } as unknown as AgentRunEvidence;
     f.submit.mockImplementation(async (input) => ({ protocol_version: "1.0.0", schema: "sts2.player-environment/text-menu-action-result-1", input_profile: "text-menu-v1",
       request_id: input.requestId, status: "applied", effect_domain: "text_menu", native_delivery: null,
       action, reason_code: null, detail: null, retry: "never",
       successor: page(Number((input as unknown as { expectedSnapshotId: string }).expectedSnapshotId.split("-")[1]) + 1),
       attribution: null } as TextMenuActionResult));
-    const runtime = new PolicyRuntime({ manifest: v3Manifest(), connector: f.connector, mode: "auto", evidence: evidence(),
+    const runtime = new PolicyRuntime({ manifest: v3Manifest(), connector: f.connector, mode: "auto", evidence: writer,
       runtimeIdentity: { version: "test", code_sha256: "a".repeat(64) }, statefulPolicy: async input => {
         seen.push(input); return v3Output(input);
       } });
@@ -397,6 +401,11 @@ describe("confirmed interaction port v3", () => {
       effect_domain: "text_menu", result_kind: "menu_applied", candidate_digest: candidateOrderDigest([action.action_id]) });
     expect(seen[2]!.previous_interaction!.request_id).toMatch(/^request-/);
     expect(seen[2]!.previous_interaction!.decision_id).toMatch(/^decision-/);
+    expect(recordedInputs[0]).toMatchObject({ snapshot: { snapshot_id: "text-1" },
+      observation_context: { continuity_token: seen[0]!.continuity_token, previous_interaction_request_id: null } });
+    expect(recordedInputs[2]).toMatchObject({ snapshot: { snapshot_id: "text-2" },
+      observation_context: { continuity_token: seen[2]!.continuity_token,
+        previous_interaction_request_id: seen[2]!.previous_interaction!.request_id } });
     expect((await runtime.tick()).type).toBe("navigated");
     expect(seen[3]!.previous_interaction).toBeNull();
   });
