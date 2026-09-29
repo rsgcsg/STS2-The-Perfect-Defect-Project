@@ -64,6 +64,13 @@ async function exercise(mode) {
     ]).finally(() => clearTimeout(timeout));
     if (mode === "reject") {
       assert.equal(exit.code, 1, "failed cleanup must be a nonzero driver exit");
+      const eofEntered = `${marker}.eof-kept-alive`;
+      const until = Date.now() + 3_000;
+      while (!existsSync(eofEntered) && Date.now() < until) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      assert.equal(existsSync(eofEntered), true,
+        "the negative control must observe parent EOF while retaining a live handle");
       assert.equal(isAlive(nativePid), true, "the negative control leaves its synthetic child alive");
     } else {
       assert.ok(exit.code === 0 || exit.signal === "SIGTERM");
