@@ -4212,6 +4212,31 @@ window.SpireProject = (() => {
           const detail = panel("已归档报告", `${report.status} · ${report.events?.length || 0} 次明确动作`);
           detail.append(technical(report, "查看报告索引与身份"));
           for (const event of report.events || []) detail.append(eventCard(event, `${item.artifact_id}-${event.request_id}`));
+          if (report.status === "stopped" && report.input_profile === "text-menu-v2" &&
+              report.error_code === null && report.host_package_pin) {
+            const save = panel("保存到本机资料", "选择用途后保存这份工程操作记录。不会启动训练或上传，也不会把它标为真人示范。");
+            const purpose = select(save, "资料用途", `environment-purpose-${item.artifact_id}`,
+              [["", "请选择用途"], ["training", "工程训练"], ["test", "工程测试"]], "");
+            const options = {get disabled() {
+              return !csrf || !["training", "test"].includes(purpose.value);
+            }};
+            const button = command(ctx, `environment-import-${item.artifact_id}`, "保存到本机资料", async () => {
+              const chosenPurpose = purpose.value;
+              if (!["training", "test"].includes(chosenPurpose)) return;
+              const saved = await request(ctx, "/api/local-environment/reports/import",
+                {report_artifact_id:item.artifact_id, purpose:chosenPurpose}, csrf);
+              if (saved.schema !== "stpd/local-managed-source-import-v1" || saved.status !== "admitted" ||
+                  saved.report_artifact_id !== item.artifact_id || !hex(saved.artifact_id) ||
+                  saved.curation_purpose !== chosenPurpose || saved.scope !== "engineering_control" ||
+                  saved.sample_type !== "managed_control_input_stream" || saved.actor !== "unverified")
+                throw new Error("request_unavailable");
+              save.append(link("打开已保存的资料", route("local-workspace", saved.artifact_id)));
+              note(ctx, "已保存工程资料和用途；尚未开始训练。");
+            }, options);
+            purpose.onchange = () => {button.disabled = options.disabled;};
+            save.append(button);
+            detail.append(save);
+          }
           archive.append(detail);
         }));
       }
@@ -4240,6 +4265,24 @@ window.SpireProject = (() => {
       box.append(panel(heading, `本机对象 · ${value.artifact_id.slice(0, 16)}`));
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1")
         box.append(localDatasetOverview(value));
+      if (value.kind === "dataset" && value.parameters?.schema === "stpd/managed-text-menu-observed-source-v1") {
+        const managed = panel("工程操作资料", "来源是已封存的 Managed 运行报告，操作者身份未验证。它不是已验证真人示范，也不证明模型水平。");
+        try {
+          const binding = await request(ctx, `/api/local-managed-sources/binding/${value.artifact_id}`);
+          if (binding.schema !== "stpd/local-managed-source-binding-v1" || binding.status !== "admitted" ||
+              binding.artifact_id !== value.artifact_id || binding.scope !== "engineering_control" ||
+              binding.sample_type !== "managed_control_input_stream" || binding.actor !== "unverified" ||
+              !["training", "test"].includes(binding.curation_purpose) ||
+              !Number.isSafeInteger(binding.event_count) || binding.event_count < 1)
+            throw new Error("request_unavailable");
+          managed.append(fields([["用途", binding.curation_purpose === "training" ? "工程训练" : "工程测试"],
+            ["已记录操作", count(binding.event_count)]]));
+          managed.append(el("p", "这里仅登记资料用途；未自动启动训练。", "small muted"));
+        } catch {
+          managed.append(el("p", "本机用途暂未核对成功；资料仍保留。", "small muted"));
+        }
+        box.append(managed);
+      }
       if (value.kind === "model" && ["stpd/stage1a-model-v1",
           "stpd/experimental-m2-model-v1"].includes(value.parameters?.schema))
         box.append(localModelOverview(value));
