@@ -128,10 +128,16 @@ The resulting report contains exactly one event:
 At 13:44 UTC the session reported stopped, the temporary Workbench reported
 not_running, and a process check found no matching private driver/native child.
 
-The page remains an engineering entry: generic map-node labels and repeated
-action-button captions make inspection harder than the native page. Complete
-public context is retained, but the readable summary needs a separate
-presentation improvement. This is not evidence of a polished all-scenario UI.
+That browser pass exposed generic map-node labels and repeated action-button
+captions. Independently reviewed follow-up `8ebdeba3541dc6ba606b74a8ce579ea29d3b0c34`
+uses public coordinates, type, state and connections for every map node;
+combat shows public energy, block, card descriptions and enemy facts.
+Buttons name their exact offered action and distinguish text selection from
+native submission. Its project-console file passed 174 tests, with no POST
+on rendering and exact one-click bindings in the new fixtures. This improves
+the engineering entry, not a polished all-scenario UI: player statuses/orbs,
+persistent potions/relics and other page details still remain accessible in the
+full public snapshot rather than all having specialized summary layouts.
 
 ### Source checks
 
