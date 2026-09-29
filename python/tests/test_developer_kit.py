@@ -56,6 +56,8 @@ def inputs(tmp_path, monkeypatch):
     native_manifest = root / "apps/game-mod/mod_manifest.json"
     native_manifest.parent.mkdir(parents=True)
     native_manifest.write_bytes(b"synthetic public mod_manifest")
+    # Match the repository's Git checkout policy for exact source bytes.
+    (root / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
     (root / ".gitignore").write_text("**/bin/\npython/.local/\n")
     for command in (
         ["init", "-q"],
@@ -127,6 +129,19 @@ def inputs(tmp_path, monkeypatch):
         "tool_release_id": release_id,
         "output": tmp_path / "first.zip",
     }
+
+
+def test_source_fixture_lock_bytes_survive_git_checkout(inputs, tmp_path):
+    source = inputs["root"]
+    committed = subprocess.check_output(["git", "show", "HEAD:python/uv.lock"], cwd=source)
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "--quiet", "--no-checkout", str(source), str(clone)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "config", "core.autocrlf", "true"], cwd=clone,
+                   check=True, capture_output=True)
+    subprocess.run(["git", "checkout", "--detach", "HEAD"], cwd=clone,
+                   check=True, capture_output=True)
+    assert (clone / "python/uv.lock").read_bytes() == committed
 
 
 def test_deterministic_public_inventory_and_real_owner_verification(inputs, tmp_path):

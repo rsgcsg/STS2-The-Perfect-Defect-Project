@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import socket
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import Request
@@ -339,11 +340,15 @@ def test_windows_npm_batch_with_spaces_receives_fixed_arguments(
     directory = tmp_path / "node install"
     directory.mkdir()
     npm = directory / "npm.cmd"
-    received = directory / "received.txt"
+    received = directory / "received.json"
+    (directory / "recorder.py").write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "Path(__file__).with_name('received.json').write_text(json.dumps(sys.argv[1:]))\n",
+        encoding="ascii",
+    )
     npm.write_text(
-        "@echo off\n> \"%~dp0received.txt\" (\n"
-        + "".join(f"echo(%~{index}\n" for index in range(1, 6))
-        + ")\n",
+        f'@echo off\n"{sys.executable}" "%~dp0recorder.py" %*\n',
         encoding="ascii",
     )
     monkeypatch.setattr(runtime_install.shutil, "which", lambda _: str(npm))
@@ -352,7 +357,7 @@ def test_windows_npm_batch_with_spaces_receives_fixed_arguments(
     receipt = runtime_install.install_runtime(tmp_path / "state", pin, connector,
                                                archive=archive)
     assert receipt["status"] == "runtime_installed"
-    assert received.read_text().splitlines() == [
+    assert json.loads(received.read_text()) == [
         "install", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund",
     ]
 
@@ -360,7 +365,7 @@ def test_windows_npm_batch_with_spaces_receives_fixed_arguments(
     destination.mkdir()
     run_program(["npm", "pack", "--ignore-scripts", "--pack-destination",
                  str(destination)], tmp_path)
-    assert received.read_text().splitlines()[:4] == [
+    assert json.loads(received.read_text()) == [
         "pack", "--ignore-scripts", "--pack-destination", str(destination),
     ]
 
