@@ -518,7 +518,7 @@ class LocalModelRegistration:
                                           "provider": "stpd", "architecture": recipe},
                                "requirements": requirements, "support": support,
                                "binding_root": self.models.private_root}
-                    if memory:
+                    if memory and input_profile_for_recipe(recipe) != PROFILE:
                         binding["input_profile"] = input_profile_for_recipe(recipe)
                     binder(self.models.root, export, config_path, manifest_path,
                            **binding)
