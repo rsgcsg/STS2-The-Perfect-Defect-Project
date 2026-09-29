@@ -11,7 +11,11 @@ from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.storage.registry import SQLiteRegistry, sync_registry
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig
 from spireagent.workbench.local_workspace import LocalWorkspace, open_registered_workspace
-from spireagent.workbench.memory_recipe import M2_K1_RECIPE, RESET_K1_RECIPE
+from spireagent.workbench.memory_recipe import (
+    M2_K1_RECIPE,
+    RESET_K1_RECIPE,
+    recipe_for_memory_config,
+)
 from stpd.workers.memory_ranking import MemoryConfig
 
 
@@ -137,9 +141,10 @@ def test_memory_artifact_view_does_not_guess_unsupported_recipe(
                                  max_chunk_steps=2,
                                  max_chunk_input_tokens=24_576,
                                  max_actions_per_step=256))
+    assert recipe_for_memory_config(config) == M2_K1_RECIPE
     if change == "width":
         config["width"] = 96
-    else:
+    elif change == "missing_config_key":
         del config["reset_each_step"]
     parameters = {"schema": "stpd/experimental-m2-model-v1", "config": config,
                   "episodes": 2, "partition": "train",
