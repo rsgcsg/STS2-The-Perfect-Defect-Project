@@ -920,7 +920,8 @@ function currentSurface(state, ctx) {
         stage: "choosing",
         prompt: null,
         surface: { kind: "card_reward_selection", stage: "choosing", cards, alternatives,
-          can_skip: rawAlternatives?.some((option) => option.id?.toLowerCase() === "skip") === true },
+          can_skip: Array.isArray(rawAlternatives)
+            && rawAlternatives.some((option) => option?.id?.toLowerCase() === "skip") },
         context: { ...commonContext, kind: "reward" },
         complete: exact,
         visibleInformation: exact ? "contract_complete_for_current_native_card_reward" : "native_card_reward_options_incomplete",
