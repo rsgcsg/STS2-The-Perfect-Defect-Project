@@ -132,7 +132,8 @@ class AgentRunEvidenceVerifier:
         policy_manifest = _load_json_object(directory / _POLICY_MANIFEST_FILE)
         representation = policy_manifest.get("representation")
         input_schema = representation.get("input_schema") if isinstance(representation, dict) else None
-        events = _verify_events(directory / _EVENTS_FILE, manifest, input_schema)
+        events = _verify_events(directory / _EVENTS_FILE, manifest, input_schema,
+                                adapter_protocol=policy_manifest["adapter"]["protocol"])
         if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA:
             _verify_v2_run_association(policy_manifest, events)
         if any(event["kind"] == "decision" for event in events) and not adapter_attested:
@@ -492,7 +493,8 @@ _PLAYER_VERBS = {
 }
 
 
-def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | None) -> list[Mapping[str, Any]]:
+def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | None, *,
+                   adapter_protocol: str) -> list[Mapping[str, Any]]:
     raw = path.read_bytes()
     if not raw:
         return []
@@ -510,6 +512,12 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
     text_outcomes: dict[str, str] = {}
     text_successors: set[str] = set()
     pending_text_input: str | None = None
+    context_port = adapter_protocol == "sts2.policy-runtime/decision-only-ndjson-3"
+    text_contexts: dict[str, str] = {}
+    context_token: str | None = None
+    retired_contexts: set[str] = set()
+    consumed_interactions: set[str] = set()
+    confirmed_requests: dict[str, str] = {}
     v2_unknown_seen = False
     native_submissions_used = 0
     menu_navigations_used = 0
@@ -549,7 +557,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         if kind == "text_decision_input":
             if environment is None:
                 raise AgentRunEvidenceError("environment_identity_order", "text input requires environment admission", _EVENTS_FILE)
-            _exact_keys(payload, {"decision_id", "snapshot"}, "text_decision_input payload")
+            _exact_keys(payload, {"decision_id", "snapshot", "observation_context"}
+                        if context_port else {"decision_id", "snapshot"}, "text_decision_input payload")
             decision_id = _text(payload, "decision_id", _EVENTS_FILE)
             if decision_id in text_inputs or decision_id in decisions:
                 raise AgentRunEvidenceError("duplicate_decision", "duplicate text decision input", _EVENTS_FILE)
@@ -557,6 +566,31 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _verify_text_snapshot(snapshot, environment, "text decision snapshot", input_schema)
             if snapshot["status"] != "interactive" or snapshot["completeness"]["status"] != "complete" or snapshot["menu_actions"]["status"] != "complete" or not snapshot["menu_actions"]["actions"]:
                 raise AgentRunEvidenceError("text_input_incomplete", "text decision requires a complete executable menu", _EVENTS_FILE)
+            if context_port:
+                context = _object(payload["observation_context"], "policy observation context")
+                _exact_keys(context, {"continuity_token", "previous_interaction_request_id"}, "policy observation context")
+                token = _text(context, "continuity_token", _EVENTS_FILE)
+                previous = context["previous_interaction_request_id"]
+                if previous is not None:
+                    _text(context, "previous_interaction_request_id", _EVENTS_FILE)
+                if token != context_token:
+                    if token in retired_contexts or previous is not None:
+                        raise AgentRunEvidenceError("observation_context_binding", "new or retired continuity cannot carry prior history", _EVENTS_FILE)
+                    if context_token is not None:
+                        retired_contexts.add(context_token)
+                    context_token = token
+                if previous is not None:
+                    source_id = confirmed_requests.get(previous)
+                    if source_id is None or previous in consumed_interactions:
+                        raise AgentRunEvidenceError("observation_context_binding", "history lacks an unused prior confirmed result", _EVENTS_FILE)
+                    source = text_inputs[source_id]
+                    if (text_contexts[source_id] != token
+                            or source["session"] != snapshot["session"]
+                            or source["snapshot_id"] == snapshot["snapshot_id"]
+                            or source["sequence"] >= snapshot["sequence"]):
+                        raise AgentRunEvidenceError("observation_context_binding", "history does not belong to a newer observation in this continuity", _EVENTS_FILE)
+                    consumed_interactions.add(previous)
+                text_contexts[decision_id] = token
             text_inputs[decision_id] = snapshot
             pending_text_input = decision_id
         elif kind == "text_observation_not_admitted":
@@ -701,6 +735,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             if decision_id in text_outcomes:
                 raise AgentRunEvidenceError("duplicate_text_result", "multiple text outcomes for one decision", _EVENTS_FILE)
             text_outcomes[decision_id] = kind
+            if context_port and kind in {"menu_navigation", "text_native_delivery"}:
+                confirmed_requests[payload["result"]["request_id"]] = decision_id
             if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA and kind == "text_native_unknown":
                 v2_unknown_seen = True
         elif kind == "text_observed_successor":

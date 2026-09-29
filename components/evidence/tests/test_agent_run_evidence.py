@@ -703,6 +703,10 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         if native:
             events.append(event("text_observed_successor", {"decision_id": "decision-1", "successor": successor}))
         events.append(event("controller_released", {}))
+        if adapter_protocol == "sts2.policy-runtime/decision-only-ndjson-3":
+            events[1]["payload"]["observation_context"] = {
+                "continuity_token": "continuity-1", "previous_interaction_request_id": None,
+            }
         for index, item in enumerate(events, 1): item["sequence"] = index
         self._rewrite_events(directory, events)
         return directory
@@ -756,6 +760,76 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         events[5]["payload"].update(action_id=action["action_id"], result=result)
         self._rewrite_events(directory, events)
         return directory
+
+    def _v3_context_pair(self, name: str) -> tuple[Path, list[dict[str, Any]]]:
+        directory = self._text_evidence(name, adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        page = json.loads(json.dumps(events[5]["payload"]["result"]["successor"]))
+        entry = {**events[1], "payload": {
+            "decision_id": "decision-2", "snapshot": page,
+            "observation_context": {"continuity_token": "continuity-1",
+                                    "previous_interaction_request_id": events[5]["payload"]["result"]["request_id"]}}}
+        decision = json.loads(json.dumps(events[2]))
+        decision["payload"]["decision"].update(
+            decision_id="decision-2", snapshot_id=page["snapshot_id"],
+            candidate_digest=sha256(json.dumps([a["action_id"] for a in page["menu_actions"]["actions"]], separators=(",", ":")).encode()))
+        decision["payload"]["resolved_bound_action_id"] = page["menu_actions"]["actions"][0]["action_id"]
+        events.extend([entry, decision])
+        return directory, events
+
+    def test_v3_context_binds_actual_confirmed_history_without_changing_page(self) -> None:
+        directory, events = self._v3_context_pair("context-valid")
+        self._rewrite_events(directory, [{**e, "sequence": n} for n, e in enumerate(events, 1)])
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertTrue(result.passed, result.findings)
+
+    def test_v3_context_rejects_missing_foreign_reused_or_unconfirmed_history(self) -> None:
+        for case in ("missing", "extra", "foreign", "new_token_history", "same_page",
+                     "older_page", "duplicate_echo", "retired_token", "cancelled"):
+            with self.subTest(case=case):
+                directory, events = self._v3_context_pair("context-" + case)
+                context = events[-2]["payload"]["observation_context"]
+                code = "observation_context_binding"
+                if case == "missing":
+                    del events[1]["payload"]["observation_context"]
+                    code = "schema_keys"
+                elif case == "extra":
+                    context["game_id"] = "not-public-model-input"
+                    code = "schema_keys"
+                elif case == "foreign":
+                    context["previous_interaction_request_id"] = "foreign-request"
+                elif case == "new_token_history":
+                    context["continuity_token"] = "another-continuity"
+                elif case == "same_page":
+                    events[-2]["payload"]["snapshot"] = events[1]["payload"]["snapshot"]
+                elif case == "older_page":
+                    events[-2]["payload"]["snapshot"]["sequence"] = 1
+                elif case in {"duplicate_echo", "retired_token"}:
+                    pair = json.loads(json.dumps(events[-2:]))
+                    pair[0]["payload"]["decision_id"] = "decision-3"
+                    pair[0]["payload"]["snapshot"].update(snapshot_id="text-3", sequence=3)
+                    pair[1]["payload"]["decision"].update(decision_id="decision-3", snapshot_id="text-3")
+                    if case == "retired_token":
+                        context.update(continuity_token="another-continuity", previous_interaction_request_id=None)
+                        pair[0]["payload"]["observation_context"]["previous_interaction_request_id"] = None
+                    events.extend(pair)
+                elif case == "cancelled":
+                    events[5] = {**events[5], "kind": "text_menu_dispatch_cancelled",
+                                 "payload": {"decision_id": "decision-1", "reason": "recovery_before_submit"}}
+                self._rewrite_events(directory, [{**e, "sequence": n} for n, e in enumerate(events, 1)])
+                result = AgentRunEvidenceVerifier().verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, code)
+
+    def test_old_port_rejects_new_context_metadata(self) -> None:
+        directory = self._text_evidence("old-port-context")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[1]["payload"]["observation_context"] = {
+            "continuity_token": "continuity-1", "previous_interaction_request_id": None,
+        }
+        self._rewrite_events(directory, events)
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertEqual(result.findings[0].code, "schema_keys")
 
     def test_cancelled_dispatch_seals_without_fabricating_connector_result(self) -> None:
         for protocol in (2, 3):

@@ -9,7 +9,14 @@ port requires a declared text-menu representation, just as v2 does. This verifie
 checks the existing immutable input/result events; it does not infer model memory
 writes, native effects or causal successors from a protocol version. Expected and actual
 adapter identities, manifest digests, and all existing typed event checks remain
-strict. It also verifies the additive
+strict. Port 3 `text_decision_input` also requires exact `observation_context`
+metadata: the validated completion's `continuity_token` and nullable
+`previous_interaction_request_id`. A non-null request ID must reference one
+unused prior confirmed menu/native result in the same continuity and a different,
+strictly newer snapshot. New continuity starts empty; retired tokens cannot
+return. These are recorded Runtime facts, outside model-visible page text;
+absence of history is not permission to infer the last action. Old ports retain
+their original exact input payload. It also verifies the additive
 `text_observation_not_admitted` Agent-run event against a prior admitted
 environment and the strict text-menu snapshot contract. Its reason and snapshot
 are observation evidence only, with no decision, delivery or successor binding.

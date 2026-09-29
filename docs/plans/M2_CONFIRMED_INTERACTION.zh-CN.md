@@ -81,3 +81,19 @@ Connector 的请求沿用 delivered/not_delivered/unknown 和原有安全规则�
 STPD 保留所选决策标签及记录来源，但取消不是实际交互，不能注入下一步记忆。
 该事件要求 Evidence rc.23；新 adapter port 3 要求兼容 Runtime，已有生产安装
 和旧模型不会因为候选源码存在而自动升级。
+
+
+## 在线与离线的同一边界
+
+port 3 的 `text_decision_input.observation_context` 必须保存已验证 completion
+实际回显的 `continuity_token` 与可空 `previous_interaction_request_id`。
+这两项属于运行记录元数据，不是模型页面文字。Evidence 按 protocol 选择严格
+形状：旧 port 1/2 不增加字段；port 3 缺字段拒绝。历史引用只允许此前已确认、
+同 continuity、更新且不同页面、未消费的结果；新 token 首步为空，退休 token
+不能重新出现。STPD 按实际 token 分段，按引用选择历史，不靠最后一条日志猜测。
+
+新 Agent-history 离线投影不支持重复同一 snapshot 的 episode，会明确拒绝；
+在线相同页面的无历史重复请求仍幂等返回缓存、不重复更新记忆。现有训练 step
+不表达这种缓存读取，不能默默丢标签或多写一次记忆假装等价。Human 独立见证帧
+仍按 capture/完成水位语义，不套用连续 Connector snapshot 序号规则。
+普通 dev evaluation 对新 profile 的资格需单独核验；旧 K8 指标不转移。
