@@ -14,6 +14,7 @@ import pytest
 from spireagent.json_boundary import BoundaryError
 from spireagent.package_identity import PackageIdentityError, directory_sha256
 from spireagent.workbench import runtime_install
+from tools.install_developer_kit import run as run_program
 
 
 def package(root, name, *, runtime=False):
@@ -187,7 +188,9 @@ def test_offline_install_promotes_bundled_candidate_without_sibling_connector(
     actual_run = runtime_install.subprocess.run
 
     def npm_or_node(command, **kwargs):
-        if command[0] == "npm":
+        if ("install" in command or
+                (len(command) >= 5 and command[1:4] == ["/d", "/s", "/c"]
+                 and " install " in command[4])):
             runtime_install.shutil.copytree(node_modules, kwargs["cwd"] / "node_modules")
             return SimpleNamespace(returncode=0)
         return actual_run(command, **kwargs)
@@ -206,11 +209,9 @@ def test_real_npm_pack_install_validates_bundled_closure(tmp_path, bundled_relea
                                                         isolated_port):
     """Exercise npm tarball extraction and the same closure check used by kit packaging."""
     node_modules, root, pin = bundled_release
-    result = subprocess.run(
-        ["npm", "pack", "--ignore-scripts", "--pack-destination", str(tmp_path)],
-        cwd=root, capture_output=True, text=True, check=True,
-    )
-    archive = tmp_path / result.stdout.strip().splitlines()[-1]
+    output = run_program(["npm", "pack", "--ignore-scripts", "--pack-destination",
+                          str(tmp_path)], root)
+    archive = tmp_path / output.strip().splitlines()[-1]
     pin["release_asset_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
     target = tmp_path / "models/text-menu-v1"
     receipt = runtime_install.install_runtime(target, pin, {}, archive=archive)
@@ -293,7 +294,7 @@ def test_install_uses_fixed_command_private_env_and_verifies_promoted_content(
     assert result["loaded"] is False and result["activated"] is False
     command, kwargs = calls[0]
     assert command == [
-        "npm",
+        "/trusted/npm",
         "install",
         "--ignore-scripts",
         "--omit=dev",
@@ -308,6 +309,33 @@ def test_install_uses_fixed_command_private_env_and_verifies_promoted_content(
     ).write_text("{}")
     with pytest.raises(PackageIdentityError):
         runtime_install.validate_runtime_install(directory / "runtime/node_modules", pin, connector)
+
+
+def test_install_uses_resolved_windows_cmd_launcher(tmp_path, monkeypatch, release):
+    pin, connector, archive, source = release
+    npm = "C:/Program Files/nodejs/npm.cmd"
+    cmd = "C:/Windows/System32/cmd.exe"
+    monkeypatch.setattr(runtime_install.shutil, "which", lambda _: npm)
+    monkeypatch.setenv("COMSPEC", cmd)
+    monkeypatch.setattr(runtime_install, "os", SimpleNamespace(name="nt", environ=os.environ))
+    calls = []
+
+    def install(command, **kwargs):
+        calls.append((command, kwargs))
+        runtime_install.shutil.copytree(source, kwargs["cwd"] / "node_modules")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(runtime_install.subprocess, "run", install)
+    receipt = runtime_install.install_runtime(tmp_path / "state", pin, connector,
+                                               archive=archive)
+    assert receipt["status"] == "runtime_installed"
+    command, kwargs = calls[0]
+    assert command == [
+        cmd, "/d", "/s", "/c",
+        subprocess.list2cmdline([npm, "install", "--ignore-scripts", "--omit=dev",
+                                 "--no-audit", "--no-fund"]),
+    ]
+    assert kwargs["timeout"] == 300
 
 
 def test_failed_npm_preserves_previous_runtime(tmp_path, monkeypatch, release):

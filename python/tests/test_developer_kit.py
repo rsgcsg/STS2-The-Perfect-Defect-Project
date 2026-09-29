@@ -105,7 +105,7 @@ def inputs(tmp_path, monkeypatch):
                 "bytes": path.stat().st_size,
                 "sha256": sha256(path.read_bytes()),
             }
-            for path in sorted(tool.rglob("*"))
+            for path in sorted(tool.rglob("*"), key=lambda p: p.relative_to(tool).as_posix())
             if path.is_file()
         ],
     }
@@ -266,12 +266,12 @@ def test_optional_runtime_package_prepare_and_status_preserve_staged_bytes(
 
 
 def test_packager_uses_real_npm_closure_validation(inputs, tmp_path, bundled_release):
+    from tools.install_developer_kit import run
+
     _, runtime_root, pin = bundled_release
-    result = subprocess.run(
-        ["npm", "pack", "--ignore-scripts", "--pack-destination", str(tmp_path)],
-        cwd=runtime_root, capture_output=True, text=True, check=True,
-    )
-    archive = tmp_path / result.stdout.strip().splitlines()[-1]
+    output = run(["npm", "pack", "--ignore-scripts", "--pack-destination", str(tmp_path)],
+                 runtime_root)
+    archive = tmp_path / output.strip().splitlines()[-1]
     pin["release_asset_sha256"] = sha256(archive.read_bytes())
     profile = tmp_path / "profile.json"
     profile.write_text(json.dumps({"schema": "stpd/local-text-runtime-v1",
