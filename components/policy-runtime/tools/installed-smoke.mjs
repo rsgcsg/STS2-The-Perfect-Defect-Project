@@ -352,6 +352,40 @@ try {
   const v3Events = (await readFile("v3-evidence/installed-v3/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
   assert.ok(v3Events.some(event => event.kind === "menu_navigation"));
   assert.ok(v3Events.some(event => event.kind === "text_native_delivery"));
+
+  menuV2Current = menuV2Root;
+  const cancelledEvidence = await AgentRunEvidence.create({ root: "v3-evidence", runId: "installed-v3-cancel",
+    policyManifest: v3Manifest, runtimeVersion: POLICY_RUNTIME_VERSION,
+    runtimeCodeSha256: "d".repeat(64), mode: "auto" });
+  await cancelledEvidence.attestAdapter(v3Manifest.adapter);
+  let dispatchStored;
+  const dispatchWritten = new Promise(resolve => { dispatchStored = resolve; });
+  let continueDispatch;
+  const dispatchCanReturn = new Promise(resolve => { continueDispatch = resolve; });
+  const pausedEvidence = { append: async (...args) => {
+    await cancelledEvidence.append(...args);
+    if (args[0] === "text_menu_dispatch_attempt") { dispatchStored(); await dispatchCanReturn; }
+  }, finalize: (...args) => cancelledEvidence.finalize(...args) };
+  const cancelledRuntime = new PolicyRuntime({ manifest: v3Manifest, connector: textConnector,
+    mode: "auto", runId: cancelledEvidence.runId, evidence: pausedEvidence,
+    runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: "d".repeat(64) },
+    statefulPolicy: input => ({ output: { candidate_digest: input.candidate_digest,
+      scores: input.bundle.observation.menu_actions.actions.map((_action, index) => -index), selected_index: 0 },
+      completion: { continuity_token: input.continuity_token,
+        snapshot_id: input.bundle.observation.snapshot_id, sequence: input.bundle.observation.sequence,
+        previous_interaction_request_id: input.previous_interaction?.request_id ?? null } }) });
+  const cancelledTick = cancelledRuntime.tick();
+  await dispatchWritten;
+  const humanRecovery = cancelledRuntime.setMode("human");
+  continueDispatch();
+  assert.equal((await cancelledTick).reason, "mode_changed_before_submit");
+  await humanRecovery;
+  assert.equal(cancelledRuntime.status().tainted, false);
+  assert.equal(cancelledRuntime.status().controller, "released");
+  await cancelledRuntime.stop();
+  const cancelledEvents = (await readFile("v3-evidence/installed-v3-cancel/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
+  assert.equal(cancelledEvents.filter(event => event.kind === "text_menu_dispatch_cancelled").length, 1);
+  assert.equal(cancelledEvents.filter(event => event.kind === "menu_navigation" || event.kind === "text_native_delivery").length, 0);
 } finally { await new Promise(resolve => textHost.close(resolve)); }
 
 // Launch the actual installed CLI in Human mode. It never contacts a game.
@@ -390,4 +424,4 @@ try {
     child.kill("SIGTERM"); await childExit;
   }
 }
-console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, text_menu_http_sdk: true, text_menu_navigation_and_native_submissions: textPosts, installed_v2_atomic_context_reads: v2ContextReads, installed_v2_token_rotation_and_completion_validation: true, installed_text_menu_v2_context_reads: menuV2ContextReads, installed_text_menu_v2_system_selection_and_native_submissions: menuV2Posts, installed_v3_confirmed_interaction_and_evidence: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));
+console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, text_menu_http_sdk: true, text_menu_navigation_and_native_submissions: textPosts, installed_v2_atomic_context_reads: v2ContextReads, installed_v2_token_rotation_and_completion_validation: true, installed_text_menu_v2_context_reads: menuV2ContextReads, installed_text_menu_v2_system_selection_and_native_submissions: menuV2Posts, installed_v3_confirmed_interaction_and_evidence: true, installed_v3_cancelled_dispatch_sealed: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));

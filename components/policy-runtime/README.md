@@ -81,6 +81,13 @@ mode changes, One-Step completion, budget handoff, Stop, taint and game identity
 changes synchronously clear the pending interaction. The v1 and v2 port
 contracts keep their original wire shapes and lifecycle rules.
 
+`text_menu_dispatch_attempt` and its counters record an intended dispatch,
+not Connector delivery. If Human, Stop or the budget deadline cancels while
+that event is being written, Runtime records `text_menu_dispatch_cancelled`
+with `recovery_before_submit` and never calls Connector submit. An already
+submitted native input still waits for its Connector result. A failed
+cancellation-event write taints the Agent Run because its evidence is incomplete.
+
 ## Standalone consumer package
 
 Version `0.1.0-rc.14` provides a candidate package for external consumers. Build

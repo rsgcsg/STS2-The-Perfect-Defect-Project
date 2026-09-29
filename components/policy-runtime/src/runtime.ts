@@ -585,12 +585,25 @@ export class PolicyRuntime {
   private async submitTextMenuDecision(decision: PolicyDecision, action: TextAction, previous: TextSnapshot, requestId: string, submissionEpoch: number): Promise<TickResult> {
     if (action.effect_domain === "text_menu") this.lastReceipt = null;
     if (!(await this.appendEvidence("text_menu_dispatch_attempt", { decision_id: decision.decision_id, action_id: action.action_id, effect_domain: action.effect_domain, native_submissions_used: this.nativeSubmissionsUsed + (action.effect_domain === "native_input" ? 1 : 0), menu_navigations_used: this.menuNavigationsUsed + (action.effect_domain === "text_menu" ? 1 : 0) }))) {
-      await this.failClosed("agent_evidence_write_failed_before_submit");
+      await this.taint("agent_evidence_write_failed_before_submit");
       return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
     }
-    this.submittedRequestIds.add(requestId);
+    // These are dispatch attempt counts, including an attempt cancelled before
+    // Connector submission. Evidence has already recorded the same increment.
     if (action.effect_domain === "text_menu") this.menuNavigationsUsed += 1;
     else this.nativeSubmissionsUsed += 1;
+    // Human/Stop/budget can enter while the durable append is pending. There
+    // is no await between this fence and submit: a cancelled intent must not
+    // issue a new Connector mutation. No Connector result exists to record.
+    if (submissionEpoch !== this.recoveryEpoch || this.mutationCancellationRequested()) {
+      if (!(await this.appendEvidence("text_menu_dispatch_cancelled", {
+        decision_id: decision.decision_id, reason: "recovery_before_submit"
+      }))) await this.taint("agent_evidence_dispatch_cancel_write_failed");
+      if (await this.finishAutonomyBudgetHandoffIfRequested())
+        return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
+      return { type: "not_admitted", reason: "mode_changed_before_submit", status: this.status() };
+    }
+    this.submittedRequestIds.add(requestId);
     let result: TextActionResult;
     try {
       result = await this.options.connector.submit({ requestId, expectedSnapshotId: previous.snapshot_id,
