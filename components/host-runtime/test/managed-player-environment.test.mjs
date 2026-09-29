@@ -469,6 +469,7 @@ test("materializes every combat card-target pair and keeps raw operands Host-loc
       type: "decision",
       decision: "combat_play",
       context: { act: 1, floor: 2, room_type: "Combat" },
+      is_play_phase: true,
       round: 1,
       energy: 3,
       max_energy: 3,
@@ -498,6 +499,58 @@ test("materializes every combat card-target pair and keeps raw operands Host-loc
   assert.equal([...projection.bindings.values()].some((binding) => binding.raw_request.args?.card_ref === "card-strike"), true);
 });
 
+test("does not publish combat mutations outside the native player play window", () => {
+  const projection = projectManagedCandidateDecision({
+    ...projectionIdentity,
+    state: {
+      type: "decision",
+      decision: "combat_play",
+      context: { act: 1, floor: 2, room_type: "Combat" },
+      round: 1,
+      energy: 3,
+      max_energy: 3,
+      encounter_type: "normal",
+      turn_owner: "enemy",
+      is_play_phase: false,
+      exhaust_pile_count: 0,
+      orb_slots: 0,
+      orbs: [],
+      companions: [],
+      player_statuses: [],
+      hand: [{
+        index: 0,
+        native_ref: "card-strike",
+        valid_target_refs: ["enemy-a"],
+        id: "CARD.STRIKE_IRONCLAD",
+        name: "Strike",
+        can_play: true,
+        target_type: "AnyEnemy",
+        type: "Attack",
+        rarity: "Basic",
+        cost: 1
+      }],
+      enemies: [{
+        index: 0,
+        native_ref: "enemy-a",
+        id: "MONSTER.CULTIST",
+        combat_id: 1,
+        name: "A",
+        hp: 10,
+        max_hp: 10,
+        block: 0,
+        statuses: [],
+        intents: []
+      }],
+      player: { ...player(), native_ref: "player-a" }
+    }
+  });
+  assert.equal(projection.snapshot.status, "visible_unsupported");
+  assert.equal(projection.snapshot.interaction.content.surface.can_end_turn, false);
+  assert.deepEqual(projection.snapshot.interaction.content.surface.playable_cards, []);
+  assert.deepEqual(projection.snapshot.bound_actions.actions, []);
+  assert.equal(projection.bindings.size, 0);
+});
+
 test("keeps visible unplayable cards as hand facts without creating action authority", () => {
   const projection = projectManagedCandidateDecision({
     ...projectionIdentity,
@@ -505,6 +558,7 @@ test("keeps visible unplayable cards as hand facts without creating action autho
       type: "decision",
       decision: "combat_play",
       context: { act: 1, floor: 2, room_type: "Combat" },
+      is_play_phase: true,
       round: 1,
       energy: 0,
       max_energy: 3,
@@ -545,6 +599,7 @@ test("projects native potion bindings without exposing Host-local identity", () 
       type: "decision",
       decision: "combat_play",
       context: {},
+      is_play_phase: true,
       hand: [],
       enemies: [{ index: 0, native_ref: "enemy-a", name: "A", hp: 10, max_hp: 10 }],
       player: {

@@ -89,6 +89,15 @@ This is a Headless input presentation for that command, not a native UI or
 Human-evidence claim. Method/signature or callback-order drift requires a new
 exact-build review and native differential probe.
 
+The raw Managed combat action path and its Player Environment projection admit
+play/end-turn mutations only while the exact current run, living player turn,
+CombatManager play phase, enabled-action state, not-ready-to-end state, and
+ActionQueueSynchronizer `PlayPhase` agree. A closed native window projects no
+combat mutations and is reported as settling; this gate does not add Managed
+combat text-menu support. A dependency-free contract test checks each
+player-turn/action-queue blocker. This is source-level coverage, not a live
+combat rejection receipt.
+
 `engine-lab` measures the exact in-process game-owned semantic loop without a
 Player Environment or consumer. `pe-profile` separates training overhead from
 strict qualification overhead. `pe-sharded-capacity` is retained as an

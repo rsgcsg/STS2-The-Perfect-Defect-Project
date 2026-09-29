@@ -1099,6 +1099,7 @@ function currentSurface(state, ctx) {
         card.can_play === true && card.target_type === "AnyAlly");
       const unsupportedPotionTarget = rawPotions.some((potion) =>
         potion.can_use === true && potion.binding_supported !== true);
+      const playWindowOpen = state.is_play_phase === true;
       const semanticFactsComplete = typeof state.encounter_type === "string"
         && typeof state.turn_owner === "string"
         && typeof state.is_play_phase === "boolean"
@@ -1301,18 +1302,22 @@ function currentSurface(state, ctx) {
         && !unsupportedCardTarget
         && !unsupportedPotionTarget;
       const actionComplete = identityComplete
+        && playWindowOpen
         && !unsupportedCardTarget
         && !unsupportedPotionTarget;
       return {
         kind: "combat_turn",
-        stage: "ready",
+        stage: playWindowOpen ? "ready" : "settling",
         prompt: null,
         surface: {
           kind: "combat_turn",
-          can_end_turn: true,
-          playable_cards: handEntries.filter((entry) => entry.raw.can_play === true)
-            .map((entry) => entry.option),
-          usable_potions: rawPotions.filter((potion) => potion.can_use === true)
+          can_end_turn: playWindowOpen,
+          playable_cards: playWindowOpen
+            ? handEntries.filter((entry) => entry.raw.can_play === true)
+              .map((entry) => entry.option)
+            : [],
+          usable_potions: playWindowOpen
+            ? rawPotions.filter((potion) => potion.can_use === true)
             .map((potion) => ({
               entity_id: ctx.id("potion", ctx.snapshotId, potion.native_ref),
               name: potion.name ?? null,
@@ -1320,6 +1325,7 @@ function currentSurface(state, ctx) {
                 .map((nativeRef) => enemyReferentByNative.get(nativeRef)?.referent_id)
                 .filter(Boolean)
             }))
+            : []
         },
         context: {
           kind: "combat",
@@ -1335,6 +1341,7 @@ function currentSurface(state, ctx) {
         missing: [
           ...(identityComplete ? [] : ["native_combat_operand_identity"]),
           ...(semanticFactsComplete ? [] : ["complete_visible_combat_context"]),
+          ...(playWindowOpen ? [] : ["native_combat_play_window_closed"]),
           ...(unsupportedCardTarget ? ["native_any_ally_card_targeting"] : []),
           ...(unsupportedPotionTarget ? ["native_potion_target_binding"] : [])
         ],
