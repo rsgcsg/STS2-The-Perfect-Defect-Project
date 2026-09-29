@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import importlib
+import json
 import sys
 import threading
 from pathlib import Path
@@ -63,7 +63,10 @@ def activate_host_runtime_client(
                 for name, module in tuple(sys.modules.items()):
                     if name == "sts2_headless" or name.startswith("sts2_headless."):
                         module_file = getattr(module, "__file__", None)
-                        if module_file is not None and package_root in Path(module_file).resolve().parents:
+                        if (
+                            module_file is not None
+                            and package_root in Path(module_file).resolve().parents
+                        ):
                             sys.modules.pop(name, None)
             raise
         finally:
