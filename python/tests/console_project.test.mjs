@@ -1294,7 +1294,7 @@ test("experimental M2 is explicit and completed status has no invented evaluatio
       result_id:result, model_id:model},
   }});
   const completed = await done.render();
-  assert.match(text(completed), /没有独立评估或开发集指标/);
+  assert.match(text(completed), /此任务不包含开发集评估指标/);
   assert.equal(text(completed).includes("查看开发集结果"), false);
   assert.equal(post(done.calls).length, 0);
   assert.ok(action(completed, "start-local-training-new"));
@@ -1597,8 +1597,8 @@ test("local model export status is read-only until one explicit export click", a
     "replacement render preserves backend pending eligibility");
 });
 
-test("M2 export stays train-only and offers explicit guarded registration", async () => {
-  const model = id("a"), run = id("b");
+test("M2 export describes its own scope alongside a completed dev report and guarded registration", async () => {
+  const model = id("a"), run = id("b"), evaluation = id("c");
   let state = modelExportStatus({status:"idle"});
   const env = setup({
     identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
@@ -1608,6 +1608,12 @@ test("M2 export stays train-only and offers explicit guarded registration", asyn
         schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
       };
       if (url === `/api/local-workspace/artifacts/${model}`) return memoryModel(model);
+      if (url === "/api/local-memory-evaluations/status") return {
+        schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready",
+        csrf_token:"memory-csrf", operation:{status:"completed", model_id:model,
+          source_id:id("d"), evaluation_id:evaluation, semantic_overlap:false}};
+      if (url.startsWith("/api/local-workspace?")) return {
+        schema:"stpd/local-workspace-inventory-v1", items:[], total:0};
       if (url === "/api/local-model-exports/status") return state;
       if (url.startsWith("/api/local-model-registrations/status?")) return {
         schema:"stpd/local-model-registration-v1", model_id:model,
@@ -1628,14 +1634,19 @@ test("M2 export stays train-only and offers explicit guarded registration", asyn
   const page = await env.render();
   assert.match(text(page), /模型概览/);
   assert.match(text(page), /实验性 D-Simple M2-K1/);
-  assert.match(text(page), /仅训练完成；没有独立评估/);
-  assert.match(text(page), /没有独立评估/);
+  assert.match(text(page), /训练产物；后续评估结果另见关联报告/);
+  assert.match(text(page), /导出校验不包含评估结论/);
+  assert.match(text(page), /开发用途离线工程评估已完成/);
+  assert.doesNotMatch(text(page), /没有独立评估|仍没有独立评估/);
+  assert.ok(walk(page).some(element => element.tagName === "A"
+    && element.href === `?view=local-workspace&id=${evaluation}`));
   assert.match(text(page), /才能登记或加载/);
   assert.equal(post(env.calls).length, 0);
   assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
   await action(page, "start-local-model-export").onclick();
   assert.equal(post(env.calls).length, 1);
-  assert.match(text(env.livePage), /没有独立评估/);
+  assert.match(text(env.livePage), /评估结果另见关联报告/);
+  assert.doesNotMatch(text(env.livePage), /没有独立评估|仍没有独立评估/);
   assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), true);
   assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
 });
