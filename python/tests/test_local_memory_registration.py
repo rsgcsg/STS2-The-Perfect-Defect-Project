@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+import torch
 from test_local_memory_model_export import _fixture, _settle
 from test_local_model_registration import _caps
 
@@ -55,7 +56,13 @@ def test_m2_registration_requires_own_install_context_and_preserves_token_roster
     atomic_json(root / ".local/token-policies-v1.json", {
         "schema": "stpd/local-token-policies-v1", "policies": [old],
     })
-    result = service.register(model_id)
+    previous_threads = torch.get_num_threads()
+    try:
+        torch.set_num_threads(3)  # Web request need not inherit the run's two threads.
+        result = service.register(model_id)
+        assert torch.get_num_threads() == 3
+    finally:
+        torch.set_num_threads(previous_threads)
     assert result["status"] == "registered"
     assert result["runtime_profile"] == "text-menu-m2-v1"
     entry = models.selection(result["selection_id"])
