@@ -186,6 +186,7 @@ class Application:
         from spireagent.workbench.inplace_curation import InplaceCurationPreparation
         from spireagent.workbench.local_dataset import LocalDatasetService
         from spireagent.workbench.local_environment import LocalEnvironmentService
+        from spireagent.workbench.local_managed_source import LocalManagedSourceService
         from spireagent.workbench.local_memory_evaluation import LocalMemoryEvaluationService
         from spireagent.workbench.local_model_export import LocalModelExport
         from spireagent.workbench.local_model_registration import LocalModelRegistration
@@ -215,6 +216,7 @@ class Application:
         )
         self.models = LocalModelService(config, hub=self.hub)
         self.local_environment = LocalEnvironmentService(config)
+        self.local_managed_sources = LocalManagedSourceService(config, self.local_environment)
         self.local_recordings = LocalRecordingCatalog(config)
         # Keep command-time owner observations separate from concurrent browser GET scans.
         self.local_recording_import = LocalRecordingImporter(config, LocalRecordingCatalog(config))
@@ -864,6 +866,20 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
+            elif parsed.path.startswith("/api/local-managed-sources/binding/"):
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                matched = re.fullmatch(r"/api/local-managed-sources/binding/([a-f0-9]{64})",
+                                       parsed.path)
+                if matched is None or parsed.query:
+                    self.respond(400, b'{"error":"invalid_local_managed_source_request"}')
+                    return
+                try:
+                    value = app.local_managed_sources.binding(matched[1])
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
             elif parsed.path == "/api/local-training/status":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -1114,6 +1130,13 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         "session_id"
                     }:
                         value = app.local_environment.stop(body["session_id"])
+                    elif self.path == "/api/local-environment/reports/import" and set(body) == {
+                        "report_artifact_id", "purpose"
+                    }:
+                        app.check_environment_instance()
+                        value = app.local_managed_sources.import_report(
+                            body["report_artifact_id"], body["purpose"],
+                        )
                     else:
                         raise ValueError
                     self.respond(200, json.dumps(value, ensure_ascii=False).encode())
