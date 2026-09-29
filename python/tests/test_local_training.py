@@ -93,6 +93,48 @@ def test_private_child_drains_large_stderr_and_keeps_stdout_machine_record(tmp_p
     assert log.stat().st_size == 128 * 1024
 
 
+def test_private_child_drains_after_log_write_failure(tmp_path: Path, monkeypatch) -> None:
+    script = ("import sys; sys.stderr.write('x' * 262144); "
+              "sys.stderr.flush(); sys.stdout.write('{\"run_id\":\"ok\"}\\n')")
+    real_fdopen = os.fdopen
+
+    class BrokenLog:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.stream.close()
+
+        def write(self, _chunk):
+            raise OSError("synthetic_log_failure")
+
+        def flush(self):
+            self.stream.flush()
+
+        def fileno(self):
+            return self.stream.fileno()
+
+    monkeypatch.setattr(training_module.os, "fdopen",
+                        lambda fd, mode: BrokenLog(real_fdopen(fd, mode)))
+    result = []
+
+    def invoke():
+        try:
+            training_module._private_child(
+                [sys.executable, "-c", script], tmp_path / "broken.log", dict(os.environ))
+        except OSError as error:
+            result.append(str(error))
+
+    thread = threading.Thread(target=invoke, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "child pipes must drain after the log write fails"
+    assert result == ["synthetic_log_failure"]
+
+
 def test_exact_synthetic_public_bc_dsimple_subprocess(tmp_path: Path, monkeypatch) -> None:
     config, dataset_id, source, store = _ready(tmp_path, monkeypatch)
     owner = configured_owner(config)
@@ -288,8 +330,9 @@ def test_m2_preparation_limit_error_is_durable_unknown_without_retry(
     before = set(store.manifest_ids())
     calls = []
 
-    def reject(command, _log_path, _environment):
+    def reject(command, _log_path, _environment, *, on_started):
         calls.append(command)
+        on_started()
         return 2, b'{"error_code":"m2_limit_exceeded_no_truncation"}\n'
 
     monkeypatch.setattr(training_module, "_private_child", reject)
@@ -304,6 +347,26 @@ def test_m2_preparation_limit_error_is_durable_unknown_without_retry(
     with pytest.raises(BoundaryError, match="previous_training_outcome_unknown"):
         service.start(dataset_id, recipe=MEMORY_RECIPE)
     assert len(calls) == 1
+
+
+def test_m2_pre_spawn_failure_is_retryable_failed_without_run(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    config, dataset_id, _, store = _human_ready(tmp_path, monkeypatch)
+    before = set(store.manifest_ids())
+
+    def cannot_spawn(_command, _log_path, _environment, *, on_started):
+        del on_started
+        raise OSError("synthetic_no_child")
+
+    monkeypatch.setattr(training_module, "_private_child", cannot_spawn)
+    service = LocalTrainingService(config)
+    service.start(dataset_id, recipe=MEMORY_RECIPE)
+    failed = _settle(service)
+    assert failed["status"] == "failed", failed
+    assert failed["error_code"] == "training_storage_or_process_error"
+    assert "run_id" not in failed
+    assert set(store.manifest_ids()) == before
 
 
 def test_insufficient_independent_components_never_reserves_use(
@@ -544,8 +607,9 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
 
     launches = []
 
-    def fail_child(command, log_path, _environment):
+    def fail_child(command, log_path, _environment, *, on_started):
         launches.append(command)
+        on_started()
         log_path.write_bytes(b"synthetic private failure\n")
         return 7, b""
 
