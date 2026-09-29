@@ -16,6 +16,7 @@ from tokenizers import Tokenizer
 from spireagent.json_boundary import BoundaryError
 from stpd.fullrun.memory_sequence_bridge import (
     MemoryEpisodeProjectionConfig,
+    MemoryEpisodeProjectionConfigV2,
     project_memory_episodes,
     v2_episode_projection_config,
 )
@@ -32,7 +33,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "text_menu_v2"
 
 
 def _fixture(name: str) -> dict:
-    return json.loads((FIXTURES / f"{name}.json").read_text())
+    return json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
 
 
 def _snapshot_sequence() -> tuple[dict, ...]:
@@ -68,10 +69,15 @@ def _snapshot_sequence() -> tuple[dict, ...]:
 
 
 def _view(pages: tuple[dict, ...]) -> ObservedInputView:
+    chosen_actions = (
+        "v2-select-card-C", "v2-cancel-card-C", "v2-select-card-C",
+        "v2-select-target-E", "opaque-confirm",
+    )
+    assert len(pages) == len(chosen_actions)
     items = tuple(ObservedInput(
         stream_id="managed:fixture", source_kind="managed_control_input_stream",
         event_id=f"event-{index}", source_sequence=index, snapshot=page,
-        observation_mask=True, selected_action_id=page["menu_actions"]["actions"][0]["action_id"],
+        observation_mask=True, selected_action_id=chosen_actions[index - 1],
         choice_mask=True, delivery_status="not_applicable", delivery_mask=False,
         successor_snapshot=None, successor_relation="none", successor_observation_mask=False,
         causal_successor_mask=False, reset_before=index == 1,
@@ -99,7 +105,7 @@ def test_explicit_v2_tokenizer_and_episode_use_identical_ordered_complete_pages(
     steps = result.episodes[0].steps
     assert len(steps) == len(pages)
     assert tuple(step.label_key for step in steps) == (
-        "v2-select-card-C", "v2-select-target-E", "v2-select-card-C",
+        "v2-select-card-C", "v2-cancel-card-C", "v2-select-card-C",
         "v2-select-target-E", "opaque-confirm")
     for page, step in zip(pages, steps, strict=True):
         public = project_memory_profile_snapshot(page, "text-menu-v2")
@@ -148,6 +154,12 @@ def test_v2_rejects_unknown_mixed_profile_and_mutated_renderer():
         replace(config, input_profile="text-menu-v1")
     with pytest.raises(ValueError, match="invalid memory episode projection config"):
         replace(config, max_settling_events=1)
+    class ForgedConfig(MemoryEpisodeProjectionConfigV2):
+        def __post_init__(self) -> None:
+            pass
+
+    forged = ForgedConfig("wrong-schema", 0, "text-menu-v1", "wrong-renderer",
+                          config.renderer_text_menu_version, config.renderer_wrapper)
     wrong = json.loads(json.dumps(pages[2]))
     wrong["input_profile"] = "text-menu-v1"
     mixed = _view((*pages[:2], wrong, *pages[3:]))
@@ -159,6 +171,16 @@ def test_v2_rejects_unknown_mixed_profile_and_mutated_renderer():
     tokenizer = Tokenizer.from_str(tokens.decode())
     model = ExperimentalDSimpleM2(ScratchTokenCore(ScratchShape(
         tokenizer.get_vocab_size(), 8, 1, 2, 16, 0.0, 16384)))
+    with pytest.raises(BoundaryError, match="projection_config_mismatch"):
+        project_memory_episodes(
+            view, tokenizer, model, max_observations=8, max_input_tokens=100000,
+            projection_config=forged)
+    tampered = v2_episode_projection_config()
+    object.__setattr__(tampered, "renderer_id", "wrong-renderer")
+    with pytest.raises(ValueError, match="invalid memory episode projection config"):
+        project_memory_episodes(
+            view, tokenizer, model, max_observations=8, max_input_tokens=100000,
+            projection_config=tampered)
     result = project_memory_episodes(
         mixed, tokenizer, model, max_observations=8, max_input_tokens=100000,
         projection_config=config)

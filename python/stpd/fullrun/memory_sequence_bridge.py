@@ -409,9 +409,9 @@ def project_memory_episodes(
     _validate_bridge_input(view, tokenizer, model)
     if projection_config is None:
         input_profile = INPUT_PROFILE
-    elif isinstance(projection_config, MemoryEpisodeProjectionConfigV2):
-        # A frozen instance can still be constructed through object.__new__.
-        projection_config.__post_init__()
+    elif type(projection_config) is MemoryEpisodeProjectionConfigV2:
+        # Revalidate even a frozen instance; never dispatch through an override.
+        MemoryEpisodeProjectionConfigV2.__post_init__(projection_config)
         if (view.stream_scope != "managed_engineering_control_inputs"
                 or any(not isinstance(item, ObservedInput)
                        or item.source_kind != "managed_control_input_stream"
@@ -419,8 +419,8 @@ def project_memory_episodes(
                 or max_settling_events != 0):
             raise BoundaryError("memory_bridge", "v2_source_or_settling_mismatch")
         input_profile = V2_INPUT_PROFILE
-    elif isinstance(projection_config, MemoryEpisodeProjectionConfig):
-        projection_config.__post_init__()
+    elif type(projection_config) is MemoryEpisodeProjectionConfig:
+        MemoryEpisodeProjectionConfig.__post_init__(projection_config)
         if max_settling_events != projection_config.max_settling_events:
             raise BoundaryError("memory_bridge", "projection_config_mismatch")
         input_profile = INPUT_PROFILE
