@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import type { TextMenuAction, TextMenuActionResult, TextMenuSnapshot, TextMenuCapabilities } from "@rsgcsg/sts2-connector-client";
 import { PlayerEnvironmentRestClient } from "@rsgcsg/sts2-connector-client";
 import { ConnectorPolicyClient } from "../src/connector.js";
@@ -51,6 +51,59 @@ function fixture() {
 }
 
 describe("model-neutral observation continuity v2", () => {
+  it.each([1, 2] as const)("fails the entire v%s port on a real writable pipe error", async version => {
+    let finishWrite!: (error?: Error | null) => void;
+    const stdin = new Writable({ write(_chunk, _encoding, callback) { finishWrite = callback; } });
+    const stdout = new PassThrough(), stderr = new PassThrough();
+    const child = Object.assign(new EventEmitter(), { stdin, stdout, stderr, exitCode: null,
+      kill: vi.fn(() => true) });
+    const port = new NdjsonPolicyPort(child as unknown as ConstructorParameters<typeof NdjsonPolicyPort>[0]);
+    const policyManifest = manifest();
+    policyManifest.adapter.protocol = version === 1 ? "sts2.policy-runtime/decision-only-ndjson-1" : "sts2.policy-runtime/decision-only-ndjson-2";
+    stdout.write(JSON.stringify({ schema: `sts2.policy-runtime/policy-port-${version}`, message_type: "ready", adapter: policyManifest.adapter }) + "\n");
+    await port.ready();
+    const input: StatefulPolicyDecisionInput = { run_id: "run", manifest: policyManifest,
+      bundle: { observation: page(1), reads: [] }, candidate_count: 1,
+      candidate_digest: candidateOrderDigest([action.action_id]), continuity_token: "token" };
+    const offered = vi.fn();
+    const decide = () => version === 1 ? port.decide(input) : port.decideV2(input, new AbortController().signal, offered);
+    try {
+      const first = decide(), second = decide();
+      const rejected = Promise.all([expect(first).rejects.toThrow("EPIPE"), expect(second).rejects.toThrow("EPIPE")]);
+      finishWrite(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+      await rejected;
+      // Writable emits its own error after invoking the write callbacks.
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(child.kill).toHaveBeenCalled();
+      const offers = offered.mock.calls.length;
+      await expect(decide()).rejects.toThrow("closed");
+      expect(offered).toHaveBeenCalledTimes(offers);
+    } finally { port.close(); stdin.destroy(); stdout.destroy(); stderr.destroy(); }
+  });
+
+  it("handles a buffered pipe error after parent close without reviving the cancelled request", async () => {
+    let finishWrite!: (error?: Error | null) => void;
+    const stdin = new Writable({ write(_chunk, _encoding, callback) { finishWrite = callback; } });
+    const stdout = new PassThrough(), stderr = new PassThrough();
+    const child = Object.assign(new EventEmitter(), { stdin, stdout, stderr, exitCode: null,
+      kill: vi.fn(() => true) });
+    const port = new NdjsonPolicyPort(child as unknown as ConstructorParameters<typeof NdjsonPolicyPort>[0]);
+    stdout.write(JSON.stringify({ schema: POLICY_PORT_V2_SCHEMA, message_type: "ready", adapter: manifest().adapter }) + "\n");
+    await port.ready();
+    const input: StatefulPolicyDecisionInput = { run_id: "run", manifest: manifest(),
+      bundle: { observation: page(1), reads: [] }, candidate_count: 1,
+      candidate_digest: candidateOrderDigest([action.action_id]), continuity_token: "token" };
+    try {
+      const pending = port.decideV2(input, new AbortController().signal, () => {});
+      const rejected = expect(pending).rejects.toThrow("closed by parent");
+      port.close();
+      finishWrite(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+      await rejected;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      await expect(port.decideV2(input, new AbortController().signal, () => { throw new Error("must not offer"); })).rejects.toThrow("closed");
+    } finally { port.close(); stdin.destroy(); stdout.destroy(); stderr.destroy(); }
+  });
+
   it("requires a text-menu manifest with no Reads and leaves the v1 protocol valid", () => {
     expect(validatePolicyManifest(manifest())).toEqual(manifest());
     expect(() => validatePolicyManifest({ ...manifest(), requirements: { ...manifest().requirements, reads: ["run_deck"] } })).toThrow();

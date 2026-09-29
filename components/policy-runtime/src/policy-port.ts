@@ -30,6 +30,10 @@ export class NdjsonPolicyPort {
     child.stderr.on("data", (chunk: string) => {
       this.stderrTail = `${this.stderrTail}${chunk}`.slice(-8_192);
     });
+    // Write callbacks reject individual requests, but Writable also emits an
+    // error event. Keep this listener after close: buffered writes can fail
+    // after cancellation has killed the child.
+    child.stdin.on("error", (error) => this.failAll(error));
     child.on("error", (error) => this.failAll(error instanceof Error ? error : new Error(String(error))));
     child.on("close", (code, signal) => {
       const diagnostic = this.stderrTail.trim();
