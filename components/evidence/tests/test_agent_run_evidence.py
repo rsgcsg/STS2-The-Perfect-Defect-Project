@@ -39,13 +39,17 @@ class AgentRunEvidenceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def _evidence(self, name: str = "run-1") -> Path:
+    def _evidence(
+        self,
+        name: str = "run-1",
+        adapter_protocol: str = "sts2.policy-runtime/decision-only-ndjson-1",
+    ) -> Path:
         directory = self.root / name
         directory.mkdir()
         adapter = {
             "id": "fixture-adapter",
             "version": "1.0.0",
-            "protocol": "sts2.policy-runtime/decision-only-ndjson-1",
+            "protocol": adapter_protocol,
             "code_sha256": "d" * 64,
         }
         policy_manifest = {
@@ -325,6 +329,46 @@ class AgentRunEvidenceTests(unittest.TestCase):
         self.assertTrue(result.passed, result.findings)
         self.assertEqual(result.require_value().event_count, 2)
         self.assertEqual(detect_agent_run_type(directory), "policy-runtime-agent-run")
+
+    def test_adapter_protocol_v1_and_exact_v2_are_supported(self) -> None:
+        for protocol in (
+            "sts2.policy-runtime/decision-only-ndjson-1",
+            "sts2.policy-runtime/decision-only-ndjson-2",
+        ):
+            with self.subTest(protocol=protocol):
+                result = AgentRunEvidenceVerifier().verify(
+                    self._evidence(f"run-{protocol[-1]}", adapter_protocol=protocol)
+                )
+                self.assertTrue(result.passed, result.findings)
+
+    def test_adapter_protocol_unknown_and_attestation_drift_fail_closed(self) -> None:
+        directory = self._evidence(
+            "run-unknown-adapter",
+            adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3",
+        )
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "invalid_value")
+
+        directory = self._evidence("run-expected-adapter-drift")
+        attestation_path = directory / "adapter-attestation.json"
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+        attestation["expected"]["protocol"] = "sts2.policy-runtime/decision-only-ndjson-2"
+        attestation_path.write_bytes(canonical(attestation))
+        self._rewrite_events(directory, [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()])
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "adapter_association")
+
+        directory = self._evidence("run-actual-adapter-drift")
+        attestation_path = directory / "adapter-attestation.json"
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+        attestation["actual"]["protocol"] = "sts2.policy-runtime/decision-only-ndjson-2"
+        attestation_path.write_bytes(canonical(attestation))
+        self._rewrite_events(directory, [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()])
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "adapter_association")
 
     def test_policy_manifest_and_adapter_attestation_are_verified(self) -> None:
         directory = self._evidence("run-policy-manifest-drift")

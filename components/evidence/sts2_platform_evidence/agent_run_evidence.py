@@ -346,7 +346,15 @@ def _verify_adapter_identity(value: Mapping[str, Any], path: str) -> None:
     _exact_keys(value, {"id", "version", "protocol", "code_sha256"}, "adapter identity")
     _text(value, "id", path)
     _text(value, "version", path)
-    _literal(value, "protocol", "sts2.policy-runtime/decision-only-ndjson-1", path)
+    _enum(
+        value,
+        "protocol",
+        {
+            "sts2.policy-runtime/decision-only-ndjson-1",
+            "sts2.policy-runtime/decision-only-ndjson-2",
+        },
+        path,
+    )
     digest = _text(value, "code_sha256", path)
     if not _SHA256.fullmatch(digest):
         raise AgentRunEvidenceError("invalid_digest", "adapter code_sha256 is invalid", path)
