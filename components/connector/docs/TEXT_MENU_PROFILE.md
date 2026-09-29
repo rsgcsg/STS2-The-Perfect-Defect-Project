@@ -35,8 +35,10 @@ The two JSON examples in `sdk/typescript/test/fixtures/text-menu-root.json` and 
 ## SDK-only v2 contract candidate
 
 The SDK also exports strict `text-menu-v2` decoders and synthetic card-selection
-fixtures. This is an opt-in decoding contract only: the current REST client and
-Host still request and advertise `text-menu-v1`. The v1 bytes and fixed
+fixtures. In this Connector source candidate the Reference Host accepts an
+explicit `input_profile=text-menu-v2` on capabilities, Snapshot, action,
+result, and atomic observation-context routes. Requests without that selector
+retain the v1 behavior and receipts. The v1 bytes and fixed
 operand-free navigation grammar remain unchanged. A v2 `system_selection`
 has `effect_domain=text_menu`; `select_card` and `select_target` bind a visible
 subject on a ready combat page, while `cancel_selection` has no subject or
@@ -53,8 +55,17 @@ successor, or Human origin.
 The SDK checks public referents, cursor/selection shape, complete current
 catalogs, and result-to-menu association when the previous Snapshot is
 supplied. Only a Host can prove its private complete leaf catalog and
-execute-time binding. These fixtures do not establish a v2 Host implementation,
-transport route, cross-Host equivalence, or runtime qualification.
+execute-time binding. The Reference Host builds card/target pairs from its
+existing native combat catalog, checks them against every current public
+playable-card target set, and keeps selected card and target in a private text
+cursor. Selection delivers no native input and does not claim a held card in
+the game UI. The final `play` leaf uses existing native execute-time
+revalidation; delivered input remains distinct from game Commit. An incomplete
+pair catalog makes the ready combat text menu unavailable. Synthetic Host
+tests verify this source behavior, but do not establish an installed game
+runtime, cross-Host equivalence, Human evidence, or training-data admission.
+Existing v1 recordings and M2 exports cannot be relabeled as v2 by changing a
+schema string: they lack the v2 selection and complete pair witness.
 
 ## Semantic interaction versus native input device
 
