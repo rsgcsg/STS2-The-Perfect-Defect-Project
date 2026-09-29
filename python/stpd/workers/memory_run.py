@@ -14,7 +14,7 @@ from dataclasses import asdict, fields
 from typing import TYPE_CHECKING
 
 from spireagent.artifact_contracts import Manifest, Parent, Payload, Producer
-from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, json_bytes
+from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, digest, json_bytes
 from spireagent.storage.store import ArtifactStore
 
 from ..fullrun.memory_token_inputs import MAX_TOKENIZER_BYTES
@@ -97,6 +97,7 @@ def prepare_memory_run(
     producer: Producer, tokenizer_bytes: bytes, *,
     source_mapping: tuple[MemoryEventMapping, ...] | None = None,
     projection_config: MemoryEpisodeProjectionConfig | None = None,
+    operation_id: str | None = None,
 ) -> Manifest:
     """Freeze caller-admitted M2 tensors and exact tokenizer into a train-only run.
 
@@ -108,6 +109,8 @@ def prepare_memory_run(
         raise BoundaryError("memory_run", "tokenizer_size_or_type")
     if hashlib.sha256(tokenizer_bytes).hexdigest() != source.tokenizer_sha256:
         raise BoundaryError("memory_run", "tokenizer_digest_mismatch")
+    if operation_id is not None:
+        digest(operation_id, "memory_run.operation_id", length=32)
     # A parent is lineage only. Its kind or identifier never grants admission.
     store.get_manifest(source.source_id)
     engine = MemoryRankingEngine(source, config)
@@ -168,7 +171,8 @@ def prepare_memory_run(
         parameters=FrozenObject.of({"schema": RUN_SCHEMA, "config": asdict(config),
                                     "input_digest": engine.input_digest,
                                     "runtime": engine.runtime,
-                                    "partition": "train"}),
+                                    "partition": "train",
+                                    **({"operation_id": operation_id} if operation_id else {})}),
     )
     store.publish(run)
     return run
@@ -177,6 +181,8 @@ def prepare_memory_run(
 def prepare_observed_memory_run(
     store: ArtifactStore, source_id: str, config: MemoryConfig, producer: Producer,
     tokenizer_bytes: bytes, *, max_settling_events: int = 0,
+    operation_id: str | None = None,
+    reject_diagnostics: bool = False,
 ) -> Manifest:
     """Project a typed observed source and freeze train-only M2 input plus its map.
 
@@ -213,6 +219,8 @@ def prepare_observed_memory_run(
         max_input_tokens=config.max_episode_input_tokens,
         max_settling_events=projection_config.max_settling_events,
     )
+    if reject_diagnostics and projection.diagnostics:
+        raise BoundaryError("memory_run", projection.diagnostics[0].reason)
     if len(projection.episodes) != config.episode_count:
         raise BoundaryError("memory_run", "projected_episode_count_mismatch")
     source = MemoryTrainingInput(
@@ -221,6 +229,7 @@ def prepare_observed_memory_run(
     return prepare_memory_run(
         store, source, config, producer, tokenizer_bytes,
         source_mapping=projection.event_mapping, projection_config=projection_config,
+        operation_id=operation_id,
     )
 
 
@@ -309,6 +318,8 @@ def _load_run(store: ArtifactStore, run_id: str, runtime: Producer,
               ) -> tuple[Manifest, Manifest, MemoryConfig, MemoryRankingEngine]:
     run = store.get_manifest(run_id)
     info = run.parameters.value()
+    if "operation_id" in info:
+        digest(info["operation_id"], "memory_run.operation_id", length=32)
     if (run.kind != "run" or run.producer != runtime or info.get("schema") != RUN_SCHEMA
             or info.get("partition") != "train"
             or sorted(p.role for p in run.parents) != ["experiment", "training_input"]):

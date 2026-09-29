@@ -82,6 +82,12 @@ def main() -> int:
     run_memory.add_argument("--run", required=True)
     run_memory.add_argument("--resume", help="exact prior episode checkpoint ID")
     run_memory.add_argument("--stop-after", type=int, help="pause after this many whole episodes")
+    verify_memory = commands.add_parser("verify-memory", help="verify an exact completed M2 run")
+    verify_memory.add_argument("--run", required=True)
+    prepare_memory = commands.add_parser(
+        "prepare-workbench-memory", help="prepare a caller-admitted train-only Human M2 run")
+    prepare_memory.add_argument("--source", required=True)
+    prepare_memory.add_argument("--operation", required=True)
     export = commands.add_parser("export")
     export.add_argument("--model", required=True)
     export.add_argument("--destination", type=Path, required=True)
@@ -264,6 +270,41 @@ def main() -> int:
                 resume=(digest(args.resume, "memory_run.resume") if args.resume else None),
                 stop_after=args.stop_after,
             ))
+        elif args.command == "prepare-workbench-memory":
+            from spireagent.workbench.memory_training import prepare_workbench_memory
+
+            source_id = digest(args.source, "memory_run.source")
+            operation_id = digest(args.operation, "memory_run.operation", length=32)
+            try:
+                run_id, input_id = prepare_workbench_memory(
+                    store, source_id, runtime, operation_id)
+            except BoundaryError as error:
+                print(json_bytes({"error_code": error.code}).decode())
+                return 2
+            result = {"run_id": run_id, "input_id": input_id}
+        elif args.command == "verify-memory":
+            import torch
+
+            from stpd.workers.memory_ranking import MemoryConfig
+            from stpd.workers.memory_run import RUN_SCHEMA, _load_run, _verify_completed
+
+            run_id = digest(args.run, "memory_run.id")
+            run = store.get_manifest(run_id)
+            info = run.parameters.value()
+            if (run.kind != "run" or run.producer != runtime
+                    or info.get("schema") != RUN_SCHEMA
+                    or not isinstance(info.get("config"), dict)):
+                raise BoundaryError("memory_run", "run_identity_mismatch")
+            verify_config = MemoryConfig(**info["config"])
+            torch.set_num_threads(verify_config.cpu_threads)
+            loaded = _load_run(store, run_id, runtime)
+            completed = ObjectStoreRunReporter(store, store.blobs).completed(run_id)
+            if completed is None:
+                raise BoundaryError("memory_run", "completion_marker_missing")
+            _verify_completed(store, completed, *loaded)
+            result = {"run_id": run_id, "result_id": completed.artifact_id,
+                      "model_id": completed.parent("model"),
+                      "checkpoint_id": completed.parent("checkpoint")}
         elif args.command == "train":
             config = TrainingConfig(
                 seed=1701, max_steps=args.steps, epochs=5,
