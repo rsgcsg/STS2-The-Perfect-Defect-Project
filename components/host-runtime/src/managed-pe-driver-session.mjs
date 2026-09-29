@@ -87,7 +87,9 @@ export class ManagedPeDriverSession {
       case "step":
         this.#requireEpisode();
         if (this.#started.session.tainted === true) {
-          throw new Error("managed_session_tainted_after_unknown");
+          throw new Error(this.#started.session.taintReason === "successor_projection_failed"
+            ? "managed_session_tainted_after_successor_projection_failure"
+            : "managed_session_tainted_after_unknown");
         }
         this.#claimMutationRoute(request.mutation_request_id, "raw");
         return { type: "step_result", request_id: requestId,

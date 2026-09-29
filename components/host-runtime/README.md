@@ -176,8 +176,12 @@ the adapter. A successful reset rotates the Host-owned Managed episode ID,
 including for a repeated seed. A failed reset disables both public action
 routes until a successful reset, since native reset may already have replaced
 the simulator. Close ends the session. Unknown native delivery cannot be
-retried or bypassed by raw `step`; the process must be replaced. These are
-Managed JSONL consumer semantics, not a Reference HTTP lease or native
+retried or bypassed by raw `step`; the process must be replaced.
+If native delivery is known but successor projection fails, the result retains
+`delivered` with no successor and an explicit projection failure; further
+mutations are closed until process replacement. A malformed post-offer JSONL
+reply likewise quarantines the Python consumer process. These are Managed
+JSONL consumer semantics, not a Reference HTTP lease or native
 RunState attestation. The locked Connector SDK package has no text context
 decoder export yet; this driver emits its existing context shape while the
 real adapter and raw snapshot SDK retain their respective checks.

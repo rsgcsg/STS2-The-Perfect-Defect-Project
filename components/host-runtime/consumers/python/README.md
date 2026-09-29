@@ -19,6 +19,10 @@ request_id=None)`. Observation returns one
 Submit an advertised `snapshot.menu_actions.actions[].action_id` with that exact
 snapshot and continuity ID. Reuse a mutation request ID only for an exact retry;
 an `unknown` delivery must never be retried or switched to raw `step`.
+A malformed or missing driver reply after a submission closes the consumer
+process before any later mutation. A known delivered action whose successor
+projection fails reports `delivered` with no successor and requires process
+replacement.
 
 The continuity ID is a Host-owned Managed episode epoch, rotated only after a
 successful reset. A failed reset makes both raw and text routes unavailable

@@ -202,12 +202,16 @@ export class ManagedTextMenuSessionAdapter {
   async #dispatch({ requestId, fingerprint, binding, entry, timeoutMs }) {
     const current = this.#session.observe();
     if (this.#session.tainted === true) {
-      const successor = this.#remember(current);
+      const projectionFailed = this.#session.taintReason === "successor_projection_failed";
+      const successor = projectionFailed ? null : this.#remember(current);
       return this.#save(requestId, fingerprint, this.#result(requestId, {
         status: "not_applied", effect_domain: null, native_delivery: null,
-        action: null, reason_code: "runtime_tainted_after_unknown",
-        detail: "Unknown native delivery closed mutation authority for this Managed session.",
-        retry: "reobserve", successor
+        action: null, reason_code: projectionFailed
+          ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
+        detail: projectionFailed
+          ? "A delivered action had no trustworthy successor projection; mutation authority is closed."
+          : "Unknown native delivery closed mutation authority for this Managed session.",
+        retry: projectionFailed ? "never" : "reobserve", successor
       }));
     }
     if (current.snapshot_id !== binding.nativeSnapshotId

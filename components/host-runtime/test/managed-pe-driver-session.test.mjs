@@ -25,6 +25,7 @@ function fixture() {
   let floor = 0;
   let failReset = false;
   let unknownAction = false;
+  let projectionFailure = false;
   let pendingAction = null;
   let onActionEntered = null;
   const process = {
@@ -42,6 +43,8 @@ function fixture() {
         if (pendingAction) await pendingAction;
         if (unknownAction) throw new Error("transport lost after native action");
         floor += 1;
+        if (projectionFailure) return { ...decision(floor),
+          player: { ...decision(floor).player, gold: "bad" } };
         return decision(floor);
       }
       throw new Error(`unexpected ${request.cmd}`);
@@ -57,6 +60,7 @@ function fixture() {
   return { driver, calls,
     failNextReset() { failReset = true; },
     makeActionUnknown() { unknownAction = true; },
+    makeProjectionFail() { projectionFailure = true; },
     holdAction(promise, entered) { pendingAction = promise; onActionEntered = entered; }
   };
 }
@@ -168,4 +172,25 @@ test("unknown text mutation is never retried or bypassed by raw step, including 
   await assert.rejects(driver.handle({ command: "text_observe" }), /managed_episode_unavailable_reset_required/);
   await driver.handle({ command: "close" });
   await assert.rejects(driver.handle({ command: "reset", seed: "SEED" }), /driver_closed/);
+});
+
+test("delivered text action with rejected successor projection keeps Receipt and blocks both routes", async () => {
+  const { driver, calls, makeProjectionFail } = fixture();
+  await driver.handle({ command: "reset", seed: "SEED" });
+  const page = await context(driver);
+  makeProjectionFail();
+  const first = await driver.handle(submit(page, "projection-1"));
+  assert.equal(first.result.status, "applied");
+  assert.equal(first.result.native_delivery, "delivered");
+  assert.equal(first.result.reason_code, "managed_successor_projection_failed");
+  assert.equal(first.result.successor, null);
+  assert.deepEqual(await driver.handle(submit(page, "projection-1")), first);
+  await assert.rejects(driver.handle({ command: "step", mutation_request_id: "raw-after-projection",
+    expected_snapshot_id: page.snapshot.menu.native_snapshot_id,
+    bound_action_id: "untrusted" }), /managed_session_tainted_after_successor_projection_failure/);
+  const later = await driver.handle(submit(page, "text-after-projection"));
+  assert.equal(later.result.reason_code, "runtime_tainted_after_successor_projection_failure");
+  assert.equal(later.result.retry, "never");
+  assert.equal(later.result.successor, null);
+  assert.equal(calls.filter((call) => call.cmd === "action").length, 1);
 });

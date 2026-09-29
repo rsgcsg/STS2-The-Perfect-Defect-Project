@@ -1952,6 +1952,7 @@ export class ManagedPlayerEnvironmentSession {
   #projection = null;
   #ledger = new Map();
   #tainted = false;
+  #taintReason = null;
   #identityMode;
   #validateSdk;
   #performance = new Map();
@@ -1979,6 +1980,10 @@ export class ManagedPlayerEnvironmentSession {
 
   get tainted() {
     return this.#tainted;
+  }
+
+  get taintReason() {
+    return this.#taintReason;
   }
 
   performance() {
@@ -2078,13 +2083,17 @@ export class ManagedPlayerEnvironmentSession {
       });
     }
     if (this.#tainted) {
+      const projectionFailed = this.#taintReason === "successor_projection_failed";
       const value = this.#makeReceipt({
         requestId,
         delivery: "not_delivered",
         action: unknownAction(boundActionId),
-        reasonCode: "runtime_tainted_after_unknown",
+        reasonCode: projectionFailed
+          ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
         detail: "Mutation authority is closed until the process is replaced.",
-        retry: { allowed: false, reason: "unknown_delivery_requires_process_replacement" },
+        retry: { allowed: false, reason: projectionFailed
+          ? "successor_projection_failure_requires_process_replacement"
+          : "unknown_delivery_requires_process_replacement" },
         successor: null
       });
       this.#ledger.set(requestId, { requestKey, receipt: value });
@@ -2124,6 +2133,7 @@ export class ManagedPlayerEnvironmentSession {
       this.#record("action_transport_native_and_raw_extraction", performance.now() - transportStarted);
     } catch (error) {
       this.#tainted = true;
+      this.#taintReason = "unknown";
       const value = this.#makeReceipt({
         requestId,
         delivery: "unknown",
@@ -2138,6 +2148,7 @@ export class ManagedPlayerEnvironmentSession {
     }
     if (!plainObject(successor) || successor.type !== "decision") {
       this.#tainted = true;
+      this.#taintReason = "unknown";
       const value = this.#makeReceipt({
         requestId,
         delivery: "unknown",
@@ -2152,7 +2163,26 @@ export class ManagedPlayerEnvironmentSession {
       this.#ledger.set(requestId, { requestKey, receipt: value });
       return value;
     }
-    const next = await this.#setState(successor, timeoutMs);
+    let next;
+    try {
+      next = await this.#setState(successor, timeoutMs);
+    } catch (error) {
+      // A decision returned from the native action confirms delivery, but a
+      // failed successor projection leaves no trustworthy current binding.
+      this.#tainted = true;
+      this.#taintReason = "successor_projection_failed";
+      const value = this.#makeReceipt({
+        requestId,
+        delivery: "delivered",
+        action: binding.action,
+        reasonCode: "managed_successor_projection_failed",
+        detail: error instanceof Error ? error.message : String(error),
+        retry: { allowed: false, reason: "delivered_action_requires_process_replacement" },
+        successor: null
+      });
+      this.#ledger.set(requestId, { requestKey, receipt: value });
+      return value;
+    }
     const value = this.#makeReceipt({
       requestId,
       delivery: "delivered",

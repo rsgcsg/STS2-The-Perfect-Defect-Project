@@ -114,14 +114,25 @@ class ManagedPlayerEnvironment:
                 raise DriverError("Driver is closed.")
             request_id = uuid4().hex
             request = {"command": command, "request_id": request_id, **payload}
+            encoded = json.dumps(request, separators=(",", ":")) + "\n"
             assert self._process.stdin is not None
-            self._process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
-            self._process.stdin.flush()
-            response = self._read_message()
+            try:
+                # Once offered to the child, an unparsable/missing response can
+                # no longer establish whether a mutation reached native code.
+                self._process.stdin.write(encoded)
+                self._process.stdin.flush()
+                response = self._read_message()
+            except Exception as error:
+                self.close(force=True)
+                if isinstance(error, DriverError):
+                    raise
+                raise DriverError("Driver exchange failed after request offer; delivery is uncertain.") from error
             if response.get("request_id") != request_id:
                 self.close(force=True)
                 raise DriverError("Driver response request identity mismatch.")
             if response.get("type") == "error":
+                if command in {"reset", "step", "text_submit"}:
+                    self.close(force=True)
                 raise DriverError(str(response.get("message", "driver request failed")))
             return response
 
@@ -156,15 +167,26 @@ class ManagedPlayerEnvironment:
             raise ValueError("Text-menu submission requires action, Snapshot and continuity IDs.")
         if request_id is not None and (not isinstance(request_id, str) or not request_id):
             raise ValueError("Text-menu request ID must be a non-empty string.")
+        mutation_id = request_id or uuid4().hex
         response = self._exchange(
             "text_submit", action_id=action_id,
             expected_snapshot_id=expected_snapshot_id,
             expected_game_continuity_id=expected_game_continuity_id,
-            mutation_request_id=request_id or uuid4().hex,
+            mutation_request_id=mutation_id,
         )
         result = response.get("result")
+        status = result.get("status") if isinstance(result, dict) else None
+        native_delivery = result.get("native_delivery") if isinstance(result, dict) else None
         if (response.get("type") != "text_submit_result" or not isinstance(result, dict)
-                or result.get("schema") != "sts2.player-environment/text-menu-action-result-1"):
+                or result.get("schema") != "sts2.player-environment/text-menu-action-result-1"
+                or result.get("request_id") != mutation_id
+                or result.get("input_profile") != "text-menu-v1"
+                or status not in {"applied", "not_applied", "unknown"}
+                or (status == "applied" and native_delivery != "delivered")
+                or (status == "unknown" and native_delivery != "unknown")
+                or (status == "not_applied" and native_delivery not in {None, "not_delivered"})
+                or result.get("retry") not in {"never", "reobserve"}):
+            self.close(force=True)
             raise DriverError("Driver text-menu action result is invalid.")
         return result
 

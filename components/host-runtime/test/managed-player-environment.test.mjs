@@ -950,3 +950,50 @@ test("taints the process after unknown delivery and never retries", async () => 
   assert.equal(refused.reason_code, "runtime_tainted_after_unknown");
   assert.equal(actionCalls, 1);
 });
+
+test("native delivery with rejected successor projection preserves delivered Receipt and closes mutation", async () => {
+  let actionCalls = 0;
+  const invalidSuccessor = {
+    type: "decision", decision: "map_select",
+    context: { act: 1, act_index: 0, act_definition_id: "OVERGROWTH",
+      act_name: "Overgrowth", floor: 2, total_floor: 2, ascension: 0,
+      bosses: [{ id: "VANTOM_BOSS", name: "Vantom", order: 0 }], modifiers: [] },
+    choices: [{ col: 3, row: 0, type: "Monster", native_ref: "map-point-a",
+      children: [{ col: 2, row: 1, type: "Monster" }] }],
+    visible_map: { type: "map", rows: [[{ col: 2, row: 1, type: "Monster",
+      children: [{ col: 3, row: 16 }], visited: false, current: false }]],
+      boss: { col: 3, row: 16, type: "Boss" }, current_coord: null },
+    player: { ...player(), native_ref: "player-a", character_id: "IRONCLAD",
+      max_potion_slots: 3, gold: "bad" }
+  };
+  const process = {
+    async request(request) {
+      if (request.cmd === "start_run") return eventState();
+      if (request.cmd === "action") {
+        actionCalls += 1;
+        return invalidSuccessor;
+      }
+      if (request.cmd === "get_map") return invalidSuccessor.visible_map;
+      throw new Error(`unexpected ${request.cmd}`);
+    }
+  };
+  const session = new ManagedPlayerEnvironmentSession({
+    process, runtimeInstanceId: "managed-runtime-test",
+    environmentFingerprint: "managed-environment-test"
+  });
+  const snapshot = await session.mount({ seed: "TEST" });
+  const action = snapshot.bound_actions.actions[0];
+  const exact = { requestId: "projection-failed", expectedSnapshotId: snapshot.snapshot_id,
+    boundActionId: action.bound_action_id };
+  const first = await session.submit(exact);
+  assert.equal(first.delivery, "delivered");
+  assert.equal(first.reason_code, "managed_successor_projection_failed");
+  assert.equal(first.successor, null);
+  assert.equal(first.retry.allowed, false);
+  assert.equal(session.tainted, true);
+  assert.deepEqual(await session.submit(exact), first);
+  const later = await session.submit({ ...exact, requestId: "later" });
+  assert.equal(later.delivery, "not_delivered");
+  assert.equal(later.reason_code, "runtime_tainted_after_successor_projection_failure");
+  assert.equal(actionCalls, 1);
+});
