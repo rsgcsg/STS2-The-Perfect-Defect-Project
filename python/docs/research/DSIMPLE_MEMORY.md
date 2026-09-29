@@ -236,6 +236,29 @@ The worker writes an immutable checkpoint only after a whole episode, uses the
 existing `RunReporter` for events and completion, and exports train-only model
 weights without active memory or optimizer history. It produces no dev report.
 
+`prepare_observed_memory_run` is the research-layer preparation API for a typed
+verified observed-input source. The caller must first establish purpose, claim,
+and training-use exposure with the owning application ledger; this API verifies
+source typing and projection but cannot grant or verify that permission. It
+parses the exact supplied tokenizer bytes, rejects padding/truncation and vocab
+mismatch, projects complete bounded observed episodes, and rejects a configured
+episode count that differs from the projection. It only prepares artifacts; the
+separate `run-memory` command remains the execution entry.
+
+Observed-source preparation writes a v2 `training_input` with the same source
+parent and the existing episodes and tokenizer payloads, plus a source-event map
+and the versioned projection choice for per-episode settling allowance.
+The map accounts for every verified source event, its stream/sequence/reset
+reason, and its disposition as a model step, a verified settling skip, or an
+explicit exclusion. Run loading re-verifies the source,
+reprojects it with the persisted tokenizer/configuration, and checks the map and
+episodes against that result. The exact immutable training-input artifact is
+already in the run and checkpoint parent chain; the M2 engine input digest and
+v1 checkpoints are unchanged. Existing experimental-v1 inputs without a map
+remain readable and are never rewritten. Both forms are train-only and create
+no dev report. The map records observation projection only; it does not claim
+Human execution, delivery, Commit, or causal successor evidence.
+
 After a run has been prepared with that Python API at the **same exact source
 identity**, the existing research CLI can execute it:
 

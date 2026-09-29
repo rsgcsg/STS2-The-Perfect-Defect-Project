@@ -58,6 +58,36 @@ class MemoryEpisodeBridgeResult:
     episodes: tuple[MemorySequenceEpisode, ...]
     sources: tuple[MemoryEpisodeSource, ...]
     diagnostics: tuple[MemoryBridgeDiagnostic, ...]
+    event_mapping: tuple[MemoryEventMapping, ...]
+
+
+@dataclass(frozen=True)
+class MemoryEventMapping:
+    """Auditable disposition of one verified observed event in an M2 projection."""
+
+    source_id: str
+    stream_id: str
+    event_id: str
+    source_sequence: int
+    disposition: str
+    episode_id: str | None
+    position: int | None
+    reason: str | None
+    reset_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class MemoryEpisodeProjectionConfig:
+    """Versioned projection choices not already bound by MemoryConfig."""
+
+    schema: str
+    max_settling_events: int
+
+    def __post_init__(self) -> None:
+        if (self.schema != "stpd/memory-episode-projection-config-v1"
+                or type(self.max_settling_events) is not int
+                or self.max_settling_events < 0):
+            raise ValueError("invalid memory episode projection config")
 
 
 @dataclass(frozen=True)
@@ -339,6 +369,19 @@ def project_memory_episodes(
     episodes: list[MemorySequenceEpisode] = []
     sources: list[MemoryEpisodeSource] = []
     segments, diagnostics = _segments(view)
+    event_mapping = {
+        item.event_id: MemoryEventMapping(
+            view.source_id, item.stream_id, item.event_id, item.source_sequence,
+            "excluded", None, None, "not_projected", item.reset_reason,
+        ) for item in view.inputs
+    }
+    for diagnostic in diagnostics:
+        item = event_mapping.get(diagnostic.first_event_id)
+        if item is not None:
+            event_mapping[item.event_id] = MemoryEventMapping(
+                item.source_id, item.stream_id, item.event_id, item.source_sequence,
+                "excluded", None, None, diagnostic.reason, item.reset_reason,
+            )
     for segment in segments:
         first = segment[0]
         try:
@@ -353,13 +396,37 @@ def project_memory_episodes(
             if not any(step.label_key is not None for step in steps):
                 diagnostics.append(MemoryBridgeDiagnostic(first.stream_id, first.event_id,
                                                           "no_learn_span_label"))
+                for item in segment:
+                    event_mapping[item.event_id] = MemoryEventMapping(
+                        view.source_id, item.stream_id, item.event_id, item.source_sequence,
+                        "excluded", None, None, "no_learn_span_label", item.reset_reason,
+                    )
                 continue
             episodes.append(MemorySequenceEpisode(episode_id, steps))
             sources.append(_episode_source(view, segment, projected, episode_id))
+            positions = {item.event_id: position for position, item in enumerate(projected)}
+            for item in segment:
+                if item.event_id in positions:
+                    event_mapping[item.event_id] = MemoryEventMapping(
+                        view.source_id, item.stream_id, item.event_id, item.source_sequence,
+                        "step", episode_id, positions[item.event_id], None, item.reset_reason,
+                    )
+                else:
+                    event_mapping[item.event_id] = MemoryEventMapping(
+                        view.source_id, item.stream_id, item.event_id, item.source_sequence,
+                        "settling", episode_id, None, "verified_settling", item.reset_reason,
+                    )
         except (BoundaryError, ValueError, TypeError, AttributeError) as error:
+            reason = (error.code if isinstance(error, BoundaryError)
+                      else "episode_contract_rejected")
             diagnostics.append(MemoryBridgeDiagnostic(
-                first.stream_id, first.event_id,
-                error.code if isinstance(error, BoundaryError) else "episode_contract_rejected",
+                first.stream_id, first.event_id, reason,
             ))
+            for item in segment:
+                event_mapping[item.event_id] = MemoryEventMapping(
+                    view.source_id, item.stream_id, item.event_id, item.source_sequence,
+                    "excluded", None, None, reason, item.reset_reason,
+                )
     return MemoryEpisodeBridgeResult(tuple(episodes), tuple(sources),
-                                     _ordered_diagnostics(view, diagnostics))
+                                     _ordered_diagnostics(view, diagnostics),
+                                     tuple(event_mapping[item.event_id] for item in view.inputs))
