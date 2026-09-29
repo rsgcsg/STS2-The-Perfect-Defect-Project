@@ -45,7 +45,9 @@ from spireagent.workbench.kit_runtime import (
 from spireagent.workbench.native_tasks import NativeTasks
 from spireagent.workbench.runtime_install import (
     ARCHIVE_LIMIT,
+    CONNECTOR_PACKAGE,
     install_runtime,
+    v2_sdk_available,
     validate_runtime_install,
 )
 
@@ -466,6 +468,23 @@ class LocalModelService:
                 or pin.get("dependency_layout") != "bundled_source_candidate"
                 or pin.get("package") != RUNTIME_PACKAGE):
             raise BoundaryError("local_model", "text_runtime_profile_invalid")
+        if profile_id == "text-menu-m2-v2":
+            expected = {"package", "version", "source_revision",
+                        "component_tree_revision", "release_asset_sha256",
+                        "package_content_sha256", "dependency_layout",
+                        "bundled_connector_pin"}
+            if (set(pin) != expected
+                    or not isinstance(pin.get("version"), str)
+                    or not re.fullmatch(r"[0-9A-Za-z.+-]{1,80}", pin["version"])
+                    or not isinstance(pin.get("bundled_connector_pin"), dict)):
+                raise BoundaryError("local_model", "text_runtime_profile_invalid")
+            try:
+                digest(pin["source_revision"], "local_model.v2_source", length=40)
+                digest(pin["component_tree_revision"], "local_model.v2_tree", length=40)
+                digest(pin["release_asset_sha256"], "local_model.v2_archive")
+                digest(pin["package_content_sha256"], "local_model.v2_package")
+            except BoundaryError as error:
+                raise BoundaryError("local_model", "text_runtime_profile_invalid") from error
         directory = self.directory / slot
         if directory.is_symlink():
             raise BoundaryError("local_model", "runtime_install_path_unsafe")
@@ -616,6 +635,11 @@ class LocalModelService:
                         directory / "runtime/node_modules", pin, self._connector_pin())
                 except (OSError, ValueError, StopIteration, PackageIdentityError):
                     installed = None
+                if installed is not None and profile_id == "text-menu-m2-v2":
+                    sdk = (directory / "runtime/node_modules" / RUNTIME_PACKAGE /
+                           "node_modules" / CONNECTOR_PACKAGE / "dist/index.js")
+                    if not v2_sdk_available(sdk):
+                        raise BoundaryError("local_model", "v2_runtime_contract_unavailable")
                 if installed is not None:
                     with self.lock:
                         self._require_stopped_runtime()

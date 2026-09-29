@@ -4067,7 +4067,7 @@ test("runtime prepares one trusted selection with optional diagnosis and no impl
   assert.match(text(env.notice), /尚需完成实际加载/);
 });
 
-test("model environment preparation offers only the two fixed profiles", async () => {
+test("model environment preparation offers fixed v1 profiles and explicit v2 check", async () => {
   let status = {status:"idle", loaded:false, operation:null};
   const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) => {
     if (url === "/api/local-models/status") return status;
@@ -4081,12 +4081,33 @@ test("model environment preparation offers only the two fixed profiles", async (
   const page = await env.render();
   assert.equal(action(page, "prepare-runtime-text-menu-v1").disabled, false);
   assert.equal(action(page, "prepare-runtime-text-menu-m2-v1").disabled, false);
+  assert.equal(action(page, "prepare-runtime-text-menu-m2-v2").disabled, false);
   assert.equal(post(env.calls).length, 0);
   await action(page, "prepare-runtime-text-menu-m2-v1").onclick();
   assert.equal(post(env.calls)[0].url, "/api/local-models/prepare-text-runtime");
   assert.deepEqual(body(post(env.calls)[0]), {runtime_profile:"text-menu-m2-v1"});
   assert.equal(action(env.livePage, "prepare-runtime-text-menu-v1").disabled, true);
   assert.equal(post(env.calls).length, 1);
+});
+
+test("v2 model environment check sends one explicit POST and redraw never prepares", async () => {
+  let status = {status:"idle", loaded:false, operation:null};
+  const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) => {
+    if (url === "/api/local-models/status") return status;
+    if (url === "/api/local-models/prepare-text-runtime" && options.method === "POST") {
+      status = {status:"idle", loaded:false,
+        operation:{id:"prepare-v2", action:"prepare-text-runtime", status:"pending"}};
+      return status;
+    }
+    return modelHandler(url, options);
+  }});
+  const page = await env.render();
+  assert.match(text(page), /v2 记忆运行包目前需要维护者预置精确候选/);
+  assert.equal(post(env.calls).length, 0);
+  await action(page, "prepare-runtime-text-menu-m2-v2").onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.deepEqual(body(post(env.calls)[0]), {runtime_profile:"text-menu-m2-v2"});
+  assert.equal(action(env.livePage, "prepare-runtime-text-menu-m2-v2").disabled, true);
 });
 
 test("run profile is bound to the exact selection before load and never starts Auto", async () => {

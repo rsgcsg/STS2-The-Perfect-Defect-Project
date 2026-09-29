@@ -34,6 +34,26 @@ RELEASE_PREFIXES = tuple(
 BUNDLED_LAYOUT = "bundled_source_candidate"
 PACKAGE_IDENTITY_SCHEMA = "sts2.policy-runtime/package-identity-1"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def v2_sdk_available(sdk: Path) -> bool:
+    """Read only the installed Connector SDK's explicit v2 methods."""
+    node = shutil.which("node")
+    if node is None or not sdk.is_file() or sdk.is_symlink():
+        return False
+    script = ("const {PlayerEnvironmentRestClient}=await import(process.argv[1]);"
+              "if(typeof PlayerEnvironmentRestClient.prototype.textMenuV2Capabilities"
+              "!=='function'||typeof PlayerEnvironmentRestClient.prototype."
+              "observeTextMenuV2Context!=='function')process.exit(1);")
+    environment = {key: value for key, value in os.environ.items() if key in
+                   {"PATH", "SYSTEMROOT", "SystemRoot", "TMPDIR", "TEMP", "TMP"}}
+    try:
+        return subprocess.run(
+            [node, "--input-type=module", "-e", script, sdk.as_uri()],
+            capture_output=True, check=False, timeout=5, env=environment,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 _BUNDLE_HASH_SCRIPT = """
 const fs = require('node:fs');
 const path = require('node:path');

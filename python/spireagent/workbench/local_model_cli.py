@@ -25,7 +25,8 @@ def model_command(
 ) -> dict[str, Any]:
     if runtime_profile is not None and (action != "install-runtime" or runtime_archive is None):
         raise BoundaryError("local_model", "runtime_profile_requires_offline_install")
-    if runtime_profile not in {None, "text-menu-v1", "text-menu-m2-v1"}:
+    if runtime_profile not in {None, "text-menu-v1", "text-menu-m2-v1",
+                               "text-menu-m2-v2"}:
         raise BoundaryError("local_model", "unsupported_runtime_profile")
     if runtime_archive is not None:
         if action != "install-runtime":
@@ -39,10 +40,11 @@ def model_command(
             service = LocalModelService(config)
             if service.state["status"] == "recovery_required":
                 raise BoundaryError("local_model", "previous_operation_requires_recovery")
-            if runtime_profile in {"text-menu-v1", "text-menu-m2-v1"}:
-                # An explicit offline install may stage the current kit's
-                # inventoried pin into application state. Normal selection and
-                # readiness never search a checkout for a missing profile.
+            if runtime_profile in {"text-menu-v1", "text-menu-m2-v1",
+                                   "text-menu-m2-v2"}:
+                # Legacy profiles may stage the current kit's inventoried pin.
+                # v2 requires an already provisioned application-owned pin;
+                # no source-tree or v1 kit fallback can create it.
                 from spireagent.policy_files import _object_file
                 from spireagent.workbench.kit_runtime import text_runtime_pin
                 from spireagent.workbench.local_models import TEXT_PROFILES
@@ -51,7 +53,8 @@ def model_command(
                 destination = service.private_root / Path(legacy_name).name
                 if destination.is_symlink():
                     raise BoundaryError("local_model", "private_model_state_unsafe")
-                if not destination.exists() and not destination.is_symlink():
+                if (runtime_profile != "text-menu-m2-v2"
+                        and not destination.exists() and not destination.is_symlink()):
                     staged = service.root / legacy_name
                     if staged.exists() or staged.is_symlink():
                         if (staged.is_symlink() or runtime_archive.is_symlink()
@@ -73,12 +76,24 @@ def model_command(
                                   else service.text_runtime_profile(runtime_profile))
             else:
                 directory, pin = service.runtime_profile(selection)
-            return install_runtime(
+            installed = install_runtime(
                 directory,
                 pin,
                 service._connector_pin(),
                 archive=runtime_archive,
             )
+            if runtime_profile == "text-menu-m2-v2":
+                from spireagent.workbench.runtime_install import (
+                    CONNECTOR_PACKAGE,
+                    RUNTIME_PACKAGE,
+                    v2_sdk_available,
+                )
+
+                sdk = (directory / "runtime/node_modules" / RUNTIME_PACKAGE /
+                       "node_modules" / CONNECTOR_PACKAGE / "dist/index.js")
+                if not v2_sdk_available(sdk):
+                    raise BoundaryError("local_model", "v2_runtime_contract_unavailable")
+            return installed
     current = running(config)
     if current is None:
         raise BoundaryError("local_model", "open_workbench_first")

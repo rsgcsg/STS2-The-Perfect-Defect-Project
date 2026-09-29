@@ -2479,17 +2479,18 @@ window.SpireProject = (() => {
         }));
     const runtimeSetup = panel(
       "准备本机模型环境",
-      "若当前工作台来自已验证发行包，可准备固定文本 Runtime；已有精确安装会直接复用。此操作不会登记或加载模型。",
+      "若当前工作台来自已验证发行包，可准备固定文本 Runtime；已有精确安装会直接复用。v2 记忆运行包目前需要维护者预置精确候选，未提供资产时会明确报错。此操作不会登记或加载模型。",
     );
     const lastSetup = state?.last_text_runtime_preparation;
     if (lastSetup?.status === "ready")
-      runtimeSetup.append(el("p", `上次${lastSetup.runtime_profile === "text-menu-m2-v1" ? "记忆模型" : "文本菜单"}运行组件准备已通过核验；实际加载仍会重新检查。`, "small muted"));
+      runtimeSetup.append(el("p", `上次${["text-menu-m2-v1", "text-menu-m2-v2"].includes(lastSetup.runtime_profile) ? "记忆模型" : "文本菜单"}运行组件准备已通过核验；实际加载仍会重新检查。`, "small muted"));
     const canPrepareRuntime = state && !state.loaded &&
       state.operation?.status !== "pending" &&
       !["command_unknown", "recovery_required"].includes(state.status);
     for (const [profile, label] of [
       ["text-menu-v1", "准备文本菜单运行环境"],
       ["text-menu-m2-v1", "准备记忆模型运行环境"],
+      ["text-menu-m2-v2", "检查 v2 记忆运行环境"],
     ])
       runtimeSetup.append(command(ctx, `prepare-runtime-${profile}`, label, async () => {
         await request(ctx, "/api/local-models/prepare-text-runtime", {runtime_profile: profile});

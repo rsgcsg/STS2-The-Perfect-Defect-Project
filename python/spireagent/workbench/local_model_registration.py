@@ -34,6 +34,7 @@ from spireagent.workbench.memory_recipe import (
 from spireagent.workbench.runtime_install import (
     CONNECTOR_PACKAGE,
     RUNTIME_PACKAGE,
+    v2_sdk_available,
     validate_runtime_install,
 )
 from stpd.memory_policy_installation import (
@@ -74,24 +75,7 @@ def _export_memory_profile(export: Path) -> str:
     return V2_M2_PROFILE if profile == "text-menu-v2" else M2_PROFILE
 
 
-def _v2_sdk_available(sdk: Path) -> bool:
-    """Inspect the exact installed SDK without opening a game or mutating state."""
-    node = shutil.which("node")
-    if node is None or not sdk.is_file() or sdk.is_symlink():
-        return False
-    script = ("const {PlayerEnvironmentRestClient}=await import(process.argv[1]);"
-              "if(typeof PlayerEnvironmentRestClient.prototype.textMenuV2Capabilities"
-              "!=='function'||typeof PlayerEnvironmentRestClient.prototype."
-              "observeTextMenuV2Context!=='function')process.exit(1);")
-    environment = {key: value for key, value in os.environ.items() if key in
-                   {"PATH", "SYSTEMROOT", "SystemRoot", "TMPDIR", "TEMP", "TMP"}}
-    try:
-        return subprocess.run(
-            [node, "--input-type=module", "-e", script, sdk.as_uri()],
-            capture_output=True, check=False, timeout=5, env=environment,
-        ).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
+_v2_sdk_available = v2_sdk_available
 REGISTRY = "token-policies-v1.json"
 LOCK = "token-policies-v1.lock"
 REGISTRATIONS = "model-registrations"
