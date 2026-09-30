@@ -218,6 +218,28 @@ valid correlated unknown result is returned unchanged; a later explicit
 `close()` exposes any separate cleanup error. A pending or unknown mutation is never reported as
 `not_delivered` merely because shutdown suppressed a late reply.
 
+For an opt-in exclusive controller of one Managed episode, the JSONL driver
+accepts `claim_control` after `reset`. Its `claim_control_result` returns a
+random `control_token` and `control_epoch` bound to the current
+`runtime_instance_id` and `game_continuity_id`. While held, every `step`,
+`text_submit` (v1 or v2), and `reset` must carry both values; another claim and
+uncredentialed or stale mutations fail before native dispatch. Reads remain
+available. `release_control` requires the same two values and returns
+`release_control_result` with `status: "released"` only after earlier queued
+native work has returned its actual delivered or unknown result. A duplicate
+release fails. A controller-authorized reset revokes the old episode's
+credentials before native mount, even if mount fails. Requests admitted under
+an older control state cannot become valid after a claim, release, or reset.
+Without a controller, explicit operator mutations retain the existing path.
+Native unknown delivery and successor-projection taint remain closed after
+release; a tainted session cannot claim a new controller. `close`, EOF, and
+signals revoke local admission for cleanup but never report a confirmed
+controller release. These commands are an internal Managed session permission
+boundary, not a Connector HTTP lease, Connector Modset/MVID identity, or model
+gameplay actions. The token appears only in the claim response and caller's
+explicit credential fields; observations, episode identity, action results,
+and release responses do not echo it.
+
 Event options retain the game's visible order and locked options remain visible
 but non-executable. An executable event choice carries the current native room,
 event, and option identities as private operands; the native handler rechecks

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { canonicalizeEpisodeSeed } from "./episode-provenance.mjs";
 import { ManagedTextMenuSessionAdapter, MANAGED_TEXT_MENU_PROFILE } from "./managed-text-menu-map.mjs";
 import { ManagedTextMenuV2SessionAdapter, MANAGED_TEXT_MENU_V2_PROFILE,
@@ -21,6 +21,8 @@ export class ManagedPeDriverSession {
   // being reintroduced under a new game continuity after a successful reset.
   #textRequestContinuity = new Map();
   #mutationRoutes = new Map();
+  #control = null;
+  #controlGeneration = 0;
   #tail = Promise.resolve();
   #normalShutdown = null;
   #forcedShutdown = null;
@@ -45,6 +47,10 @@ export class ManagedPeDriverSession {
       this.#available = false;
       this.#gameContinuityId = null;
       this.#textV2.resetSelection();
+      // Shutdown interrupts the queue. It revokes local admission without
+      // claiming that an in-flight native mutation or release was confirmed.
+      this.#control = null;
+      this.#controlGeneration += 1;
     }
     if (force) {
       this.#forcedShutdown ??= this.#started.session.close({ force: true, timeoutMs: 1_000 });
@@ -71,17 +77,42 @@ export class ManagedPeDriverSession {
     this.#mutationRoutes.set(requestId, route);
   }
 
+  #requireControlIntent(intent) {
+    if (intent.generation !== this.#controlGeneration) {
+      throw new Error("managed_control_intent_stale");
+    }
+    if (this.#control == null) {
+      if (intent.token != null || intent.epoch != null) {
+        throw new Error("managed_control_credential_stale");
+      }
+      return;
+    }
+    if (intent.token !== this.#control.token || intent.epoch !== this.#control.epoch
+      || this.#control.runtimeInstanceId !== this.#started.runtime.adapterRuntimeInstanceId
+      || this.#control.gameContinuityId !== this.#gameContinuityId) {
+      throw new Error("managed_control_not_authorized");
+    }
+  }
+
   handle(request) {
-    const next = this.#tail.then(() => this.#handle(request));
+    // Capture admission before queuing. A request offered under an earlier
+    // owner/free state must not become valid after release or a new claim.
+    const intent = {
+      generation: this.#controlGeneration,
+      token: request?.control_token ?? null,
+      epoch: request?.control_epoch ?? null
+    };
+    const next = this.#tail.then(() => this.#handle(request, intent));
     this.#tail = next.catch(() => undefined);
     return next;
   }
 
-  async #handle(request) {
+  async #handle(request, intent) {
     if (this.#closed) throw new Error("driver_closed");
     const requestId = request?.request_id ?? null;
     switch (request?.command) {
       case "reset": {
+        this.#requireControlIntent(intent);
         const seed = canonicalizeEpisodeSeed(request.seed);
         // reset_run first destroys the old simulator. A failed/unknown reset
         // cannot leave either public action route bound to that old episode.
@@ -91,6 +122,10 @@ export class ManagedPeDriverSession {
         this.#gameContinuityId = null;
         this.#requestedSeed = null;
         this.#textV2.resetSelection();
+        // A reset may replace the native simulator even when it fails. Neither
+        // outcome can carry the old episode's controller into the new one.
+        this.#control = null;
+        this.#controlGeneration += 1;
         const snapshot = await this.#started.session.mount({
           seed, reset, timeoutMs: this.#timeoutMs
         });
@@ -111,6 +146,7 @@ export class ManagedPeDriverSession {
             readId: request.read_id, expectedSnapshotId: request.expected_snapshot_id
           }) };
       case "step":
+        this.#requireControlIntent(intent);
         this.#requireEpisode();
         if (this.#started.session.tainted === true) {
           throw new Error(this.#started.session.taintReason === "successor_projection_failed"
@@ -142,6 +178,7 @@ export class ManagedPeDriverSession {
         return { type: "text_observe_result", request_id: requestId, context };
       }
       case "text_submit": {
+        this.#requireControlIntent(intent);
         this.#requireEpisode();
         const profile = request.input_profile ?? MANAGED_TEXT_MENU_PROFILE;
         if (profile !== MANAGED_TEXT_MENU_PROFILE && profile !== MANAGED_TEXT_MENU_V2_PROFILE) {
@@ -168,6 +205,48 @@ export class ManagedPeDriverSession {
             input_profile: profile,
             timeout_ms: this.#timeoutMs
           }) };
+      }
+      case "claim_control": {
+        this.#requireEpisode();
+        if (this.#started.session.tainted === true) {
+          throw new Error(this.#started.session.taintReason === "successor_projection_failed"
+            ? "managed_session_tainted_after_successor_projection_failure"
+            : "managed_session_tainted_after_unknown");
+        }
+        if (this.#control != null) throw new Error("managed_control_held");
+        if (intent.generation !== this.#controlGeneration) {
+          throw new Error("managed_control_intent_stale");
+        }
+        const runtimeInstanceId = this.#started.runtime.adapterRuntimeInstanceId;
+        if (typeof runtimeInstanceId !== "string" || runtimeInstanceId.length === 0) {
+          throw new Error("managed_control_runtime_identity_unavailable");
+        }
+        const control = {
+          token: randomBytes(32).toString("hex"),
+          epoch: randomUUID(),
+          runtimeInstanceId,
+          gameContinuityId: this.#gameContinuityId
+        };
+        this.#control = control;
+        this.#controlGeneration += 1;
+        return { type: "claim_control_result", request_id: requestId,
+          control_token: control.token, control_epoch: control.epoch,
+          runtime_instance_id: control.runtimeInstanceId,
+          game_continuity_id: control.gameContinuityId };
+      }
+      case "release_control": {
+        if (intent.generation !== this.#controlGeneration) {
+          throw new Error("managed_control_intent_stale");
+        }
+        if (this.#control == null) throw new Error("managed_control_not_held");
+        this.#requireControlIntent(intent);
+        const control = this.#control;
+        this.#control = null;
+        this.#controlGeneration += 1;
+        return { type: "release_control_result", request_id: requestId,
+          status: "released", control_epoch: control.epoch,
+          runtime_instance_id: control.runtimeInstanceId,
+          game_continuity_id: control.gameContinuityId };
       }
       case "episode_identity": {
         this.#requireEpisode();
