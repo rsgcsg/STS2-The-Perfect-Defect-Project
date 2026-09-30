@@ -27,11 +27,23 @@ def model_command(
     expected_new_profile_sha256: str | None = None,
     archived_profile_sha256: str | None = None,
 ) -> dict[str, Any]:
-    generation_action = action in {"upgrade-runtime-generation", "rollback-runtime-generation"}
+    generation_action = action in {"initialize-runtime-generation",
+                                   "upgrade-runtime-generation", "rollback-runtime-generation"}
     if generation_action:
-        if runtime_profile is None or expected_active_sha256 is None:
+        if runtime_profile is None:
             raise BoundaryError("local_model", "runtime_generation_arguments_required")
-        from spireagent.workbench.runtime_generation import rollback, upgrade
+        from spireagent.workbench.runtime_generation import initialize, rollback, upgrade
+
+        if action == "initialize-runtime-generation":
+            if (expected_active_sha256 is not None or runtime_archive is None
+                    or new_runtime_profile is None or expected_new_profile_sha256 is None
+                    or archived_profile_sha256 is not None):
+                raise BoundaryError("local_model", "runtime_generation_arguments_required")
+            return initialize(config, runtime_profile, new_profile_file=new_runtime_profile,
+                              expected_new_profile_sha256=expected_new_profile_sha256,
+                              archive=runtime_archive)
+        if expected_active_sha256 is None:
+            raise BoundaryError("local_model", "runtime_generation_arguments_required")
 
         if action == "upgrade-runtime-generation":
             if (runtime_archive is None or new_runtime_profile is None

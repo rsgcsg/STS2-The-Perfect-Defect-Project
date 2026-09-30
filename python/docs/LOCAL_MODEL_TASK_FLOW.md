@@ -10,6 +10,24 @@ executable and does not qualify Human data or model game performance.
 
 An operator can explicitly change one private text Runtime profile while the
 Workbench is closed and port 15527 is free. `developer model --action
+initialize-runtime-generation` is the first-install path when the selected
+profile's active private file is absent. It requires `--runtime-profile`, an
+operator-selected strict `--new-runtime-profile` file, its exact raw SHA256 in
+`--expected-new-profile-sha256`, and the matching `--runtime-archive`. It has
+no `--expected-active-sha256` or rollback-to-absent operation. The owner checks
+the stopped Workbench, lock, recovery state and Runtime port, verifies the
+archive, bundled SDK and complete installed generation, then creates the active
+name exclusively. A racing active file is never replaced. An unactivated
+generation may be explicitly retried only if its installed contents still pass
+full verification; unknown or damaged content is not repaired or deleted.
+If the selected slot contains a legacy install without an active profile,
+initialization rejects it as an unknown recovery state; other slots, existing
+model registrations and v1 profile bytes remain unchanged. The profile and
+archive are operator-selected inputs, not automatic
+kit provenance. Filesystem sync uncertainty reports `BLOCKED` with active-file
+readback and a nonzero CLI exit; it does not invent rollback or activation.
+
+`developer model --action
 upgrade-runtime-generation` requires `--runtime-profile`, the SHA256 of the
 current active profile bytes (`--expected-active-sha256`), an approved strict
 profile file (`--new-runtime-profile`) and its raw SHA256
