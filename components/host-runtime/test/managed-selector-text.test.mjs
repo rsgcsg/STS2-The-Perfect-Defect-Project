@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ManagedPlayerEnvironmentSession, projectManagedCandidateDecision } from "../src/managed-player-environment.mjs";
-import { MANAGED_TEXT_MENU_PROFILE, ManagedTextMenuSessionAdapter } from "../src/managed-text-menu-map.mjs";
+import { MANAGED_TEXT_MENU_PROFILE, ManagedTextMenuSessionAdapter,
+  managedTextMenuV1Contract } from "../src/managed-text-menu-map.mjs";
+import { managedTextMenuV2Contract, ManagedTextMenuV2SessionAdapter
+} from "../src/managed-text-menu-v2.mjs";
 
 const identity = { runtimeInstanceId: "selector-test", environmentFingerprint: "exact-managed", sequence: 1 };
 const player = { name: "Ironclad", character_id: "IRONCLAD", hp: 80, max_hp: 80,
@@ -35,6 +38,24 @@ function menu(state) {
   return new ManagedTextMenuSessionAdapter({ observe: () => snapshot,
     async submit() { throw new Error("observation must not dispatch"); } }).observe();
 }
+
+test("published contract covers merchant and deck selector fixture pages", () => {
+  for (const state of [shop(), selector(), selector("preview", "card-a")]) {
+    const source = projectManagedCandidateDecision({ state, ...identity }).snapshot;
+    for (const [contract, Adapter] of [
+      [managedTextMenuV1Contract(), ManagedTextMenuSessionAdapter],
+      [managedTextMenuV2Contract(), ManagedTextMenuV2SessionAdapter]
+    ]) {
+      const page = new Adapter({ observe: () => source,
+        async submit() { throw new Error("contract test is observation only"); } }).observe();
+      assert.equal(page.schema, contract.snapshot_schema);
+      assert.equal(page.menu_actions.status, "complete");
+      assert.ok(contract.interaction_kinds.includes(page.interaction.kind));
+      for (const action of page.menu_actions.actions)
+        assert.ok(contract.action_verbs.includes(action.verb), action.verb);
+    }
+  }
+});
 
 test("exact deck selector is one sequential card choice, preview return, and confirmation", async () => {
   let current = shop();
