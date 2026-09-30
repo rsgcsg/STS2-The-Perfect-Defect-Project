@@ -11,18 +11,27 @@ import hashlib
 import io
 import json
 import os
+import re
+import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
-from sts2_platform_evidence.collection_tool import CollectionTool
+# `python -I tools/install_developer_kit.py ...` deliberately ignores the
+# working directory and PYTHONPATH. Anchor this owner to its own source tree.
+_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_SOURCE_ROOT / "components/evidence"))
+sys.path.insert(0, str(_SOURCE_ROOT / "python"))
 
-from spireagent.json_boundary import BoundaryError, decode_json, digest
-from spireagent.workbench.kit_runtime import (
+from sts2_platform_evidence.collection_tool import CollectionTool  # noqa: E402
+
+from spireagent.json_boundary import BoundaryError, decode_json, digest  # noqa: E402
+from spireagent.workbench.kit_runtime import (  # noqa: E402
     KIT_RUNTIME_PAIRS,
     M2_ARCHIVE_DESTINATION,
     M2_RUNTIME_ARCHIVE,
@@ -41,6 +50,7 @@ __all__ = ("M2_RUNTIME_ARCHIVE", "M2_RUNTIME_DESTINATION", "M2_RUNTIME_PROFILE",
 
 REPOSITORY = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git"
 LIMIT = 256 * 1024 * 1024
+LAUNCHER_SCHEMA = "spireagent/workbench-launcher-v1"
 TOOL_BIN = "components/annotator/src/STS2HumanAnnotator.Tool/bin/Release/net9.0/"
 STAGING = {
     "mod/STS2_PLATFORM.dll": "apps/game-mod/bin/Release/net9.0/STS2_PLATFORM.dll",
@@ -126,6 +136,9 @@ def verified_archive(archive: Path, expected: str) -> tuple[dict[str, Any], dict
     manifest = decode_json(files.get("combination.json", b"{}"))
     if not isinstance(manifest, dict) or manifest.get("schema") != "spireagent/developer-kit-v1":
         reject("unsupported_kit_schema")
+    if ("workbench_launcher_schema" in manifest
+            and manifest["workbench_launcher_schema"] != LAUNCHER_SCHEMA):
+        reject("unsupported_workbench_launcher")
     inventory = manifest.get("files")
     if not isinstance(inventory, dict) or set(inventory) != set(files) - {"combination.json"}:
         reject("inventory_mismatch")
@@ -261,6 +274,8 @@ def status(directory: Path) -> dict[str, Any]:
         "source_revision": manifest["stpd_source_revision"],
         "tool_release_id": manifest["collection_tool_release_id"],
         "mod_sha256": manifest["mod_sha256"],
+        "uv_lock_sha256": manifest["uv_lock_sha256"],
+        "workbench_launcher_schema": manifest.get("workbench_launcher_schema"),
         "directory": str(directory),
         "installed": "not_checked",
         "loaded": "not_checked",
@@ -273,6 +288,179 @@ def status(directory: Path) -> dict[str, Any]:
         **{pair[4] + "_identity": manifest.get(pair[4])
            for pair in KIT_RUNTIME_PAIRS.values()},
     }
+
+
+def _launcher_directory(
+    *, platform: str | None = None, home: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> Path:
+    selected = platform or sys.platform
+    user_home = home or Path.home()
+    environment = os.environ if env is None else env
+    if selected == "darwin":
+        base = user_home / "Library" / "Application Support"
+    elif selected == "win32":
+        base = Path(environment.get("LOCALAPPDATA") or user_home / "AppData" / "Local")
+    else:
+        base = Path(environment.get("XDG_DATA_HOME") or user_home / ".local" / "share")
+    return base / "spireagent" / "workbench"
+
+
+def _launcher_files(root: Path) -> tuple[Path, Path]:
+    return root / "launcher.json", root / ("open.cmd" if os.name == "nt" else "open")
+
+
+def _check_no_symlink(path: Path, code: str) -> None:
+    for candidate in (path, *path.parents):
+        if candidate.exists() and candidate.is_symlink():
+            reject(code)
+
+
+def _launcher_script(directory: Path) -> str:
+    source = directory / "source"
+    python_root = source / "python"
+    python = python_root / (".venv/Scripts/python.exe" if os.name == "nt"
+                            else ".venv/bin/python")
+    tool = python_root / "tools/install_developer_kit.py"
+    if not python.is_file() or not tool.is_file():
+        reject("launcher_python_unavailable")
+    if os.name == "nt":
+        return ("@echo off\r\n"
+                f"cd /d {subprocess.list2cmdline([str(python_root)])}\r\n"
+                f"{subprocess.list2cmdline([str(python), '-I', str(tool), 'launch'])}\r\n"
+                "exit /b %ERRORLEVEL%\r\n")
+    return ("#!/bin/sh\n"
+            "set -eu\n"
+            "unset PYTHONHOME PYTHONPATH PYTHONUSERBASE VIRTUAL_ENV UV_PROJECT_ENVIRONMENT "
+            "UV_WORKING_DIR UV_PROJECT UV_PYTHON UV_CONFIG_FILE UV_ENV_FILE\n"
+            f"cd {shlex.quote(str(python_root))}\n"
+            f"exec {shlex.quote(str(python))} -I {shlex.quote(str(tool))} launch\n")
+
+
+def _write_executable(path: Path, contents: str) -> None:
+    if path.is_symlink():
+        reject("launcher_path_unsafe")
+    descriptor, name = tempfile.mkstemp(prefix=".open-", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(contents)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if os.name != "nt":
+            temporary.chmod(0o700)
+        os.replace(temporary, path)
+        if os.name != "nt":
+            parent = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _launcher_binding(
+    directory: Path, config_path: Path, prepared: dict[str, Any]
+) -> dict[str, Any]:
+    from spireagent.workbench.developer import ProjectConfig, tool_identity
+
+    if (not config_path.is_absolute() or config_path.is_symlink() or not config_path.is_file()
+            or config_path.resolve() != config_path
+            or config_path.is_relative_to(directory.resolve())):
+        reject("launcher_config_path_invalid")
+    ProjectConfig.load(config_path)
+    identity = tool_identity()
+    if (identity.get("working_tree_clean") is not True
+            or identity.get("source_revision") != prepared.get("source_revision")
+            or identity.get("uv_lock_sha256") != prepared.get("uv_lock_sha256")
+            or not re.fullmatch(r"[a-f0-9]{64}", identity.get("workbench_sha256", ""))):
+        reject("launcher_source_identity_mismatch")
+    return {
+        "schema": LAUNCHER_SCHEMA,
+        "release_directory": str(directory.resolve()),
+        "kit_sha256": directory.name,
+        "source_revision": identity["source_revision"],
+        "workbench_sha256": identity["workbench_sha256"],
+        "uv_lock_sha256": identity["uv_lock_sha256"],
+        "config_path": str(config_path),
+    }
+
+
+def _install_open_launcher(
+    directory: Path, config_path: Path, prepared: dict[str, Any], *, platform: str | None = None
+) -> None:
+    if (platform or sys.platform) != "darwin":
+        reject("launcher_platform_unsupported")
+    if prepared.get("workbench_launcher_schema") != LAUNCHER_SCHEMA:
+        reject("workbench_launcher_not_in_kit")
+    root = _launcher_directory()
+    binding_path, executable_path = _launcher_files(root)
+    _check_no_symlink(root, "launcher_path_unsafe")
+    root.mkdir(parents=True, exist_ok=True)
+    _check_no_symlink(root, "launcher_path_unsafe")
+    script = _launcher_script(directory.resolve())
+    binding = _launcher_binding(directory, config_path.resolve(), prepared)
+    if binding_path.exists():
+        if binding_path.is_symlink() or not binding_path.is_file():
+            reject("launcher_path_unsafe")
+        try:
+            current = json.loads(binding_path.read_bytes())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            reject("launcher_binding_invalid")
+        if current.get("config_path") != binding["config_path"]:
+            reject("launcher_config_binding_mismatch")
+    from spireagent.workbench.developer import atomic_json
+
+    atomic_json(binding_path, binding)
+    _write_executable(executable_path, script)
+
+
+def launch_workbench() -> dict[str, Any]:
+    """Validate this exact prepared release and open only its installed profile."""
+    if sys.platform != "darwin":
+        reject("launcher_platform_unsupported")
+    from spireagent.workbench.developer import ProjectConfig, tool_identity
+    from spireagent.workbench.developer_server import open_project
+
+    directory = Path(__file__).resolve().parents[3]
+    root = _launcher_directory()
+    binding_path, _ = _launcher_files(root)
+    if binding_path.is_symlink() or not binding_path.is_file():
+        reject("launcher_not_installed")
+    try:
+        binding = json.loads(binding_path.read_bytes())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        reject("launcher_binding_invalid")
+    keys = {"schema", "release_directory", "kit_sha256", "source_revision",
+            "workbench_sha256", "uv_lock_sha256", "config_path"}
+    if (not isinstance(binding, dict) or set(binding) != keys
+            or binding.get("schema") != LAUNCHER_SCHEMA):
+        reject("launcher_binding_invalid")
+    if (binding["release_directory"] != str(directory)
+            or binding["kit_sha256"] != directory.name
+            or not re.fullmatch(r"[a-f0-9]{64}", str(binding["kit_sha256"]))):
+        reject("launcher_release_mismatch")
+    prepared = status(directory)
+    if prepared.get("workbench_launcher_schema") != LAUNCHER_SCHEMA:
+        reject("workbench_launcher_not_in_kit")
+    identity = tool_identity()
+    if (identity.get("working_tree_clean") is not True
+            or identity.get("source_revision") != prepared["source_revision"]
+            or identity.get("uv_lock_sha256") != prepared["uv_lock_sha256"]
+            or any(binding.get(key) != identity.get(key) for key in
+                   ("source_revision", "workbench_sha256", "uv_lock_sha256"))):
+        reject("launcher_source_identity_mismatch")
+    expected = identity
+    config_path = Path(binding["config_path"])
+    if (not config_path.is_absolute() or config_path.is_symlink() or not config_path.is_file()
+            or config_path.resolve() != config_path
+            or config_path.is_relative_to(directory)):
+        reject("launcher_config_path_invalid")
+    ProjectConfig.load(config_path)
+    opened = open_project(config_path, browser=False, expected_identity=expected)
+    return {"status": "running", "instance_id": opened["instance_id"],
+            "gameplay_started": False}
 
 
 def deploy(directory: Path, game: Path) -> dict[str, Any]:
@@ -363,9 +551,10 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
         prepared = status(directory)
         source = directory / "source"
         extras = _environment_extras(prepared)
-        if (any(prepared.get(pair[4]) == "bundled_installation_not_checked"
-                for pair in KIT_RUNTIME_PAIRS.values()) and not config_path.exists()):
-            # New members do not yet have a selection or even a project profile.
+        if (not config_path.exists() and
+                (any(prepared.get(pair[4]) == "bundled_installation_not_checked"
+                     for pair in KIT_RUNTIME_PAIRS.values())
+                 or prepared.get("workbench_launcher_schema") == LAUNCHER_SCHEMA)):
             # Let the selected release own the profile and its default private state.
             report = json.loads(run([
                 "uv", "run", "--project", "python", "--locked", *extras,
@@ -425,13 +614,40 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
             result = status(directory)
             result["m2_v2_runtime"] = "installed_verified_by_runtime_owner"
         result["environment"] = "initialized"
+        if (result.get("workbench_launcher_schema") == LAUNCHER_SCHEMA
+                and sys.platform == "darwin"):
+            python = source / "python/.venv/bin/python"
+            if os.name == "nt":
+                python = source / "python/.venv/Scripts/python.exe"
+            tool = source / "python/tools/install_developer_kit.py"
+            environment = dict(os.environ)
+            for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE", "VIRTUAL_ENV",
+                         "UV_PROJECT_ENVIRONMENT", "UV_WORKING_DIR", "UV_PROJECT",
+                         "UV_PYTHON", "UV_CONFIG_FILE", "UV_ENV_FILE"):
+                environment.pop(name, None)
+            try:
+                bound = subprocess.run(
+                    [str(python), "-I", str(tool), "install-launcher", "--config",
+                     str(config_path.resolve())],
+                    cwd=source / "python", env=environment, capture_output=True,
+                    text=True, timeout=30, check=True,
+                )
+                owner_result = json.loads(bound.stdout)
+            except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+                reject("release_launcher_install_failed")
+            if owner_result.get("status") != "launcher_installed":
+                reject("release_launcher_install_failed")
+            result["workbench_launcher"] = "installed"
+        elif result.get("workbench_launcher_schema") == LAUNCHER_SCHEMA:
+            result["workbench_launcher"] = "unsupported_platform"
         return result
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "command", choices=("plan", "prepare", "status", "initialize", "deploy", "register")
+        "command", choices=("plan", "prepare", "status", "initialize", "deploy", "register",
+                            "launch", "install-launcher")
     )
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--sha256")
@@ -441,7 +657,24 @@ def main() -> int:
     parser.add_argument("--config", type=Path)
     args = parser.parse_args()
     try:
-        if args.command in {"plan", "prepare"}:
+        if args.command == "launch":
+            if any(value is not None for value in (
+                args.archive, args.sha256, args.releases, args.directory,
+                args.game_directory, args.config,
+            )):
+                reject("launch_arguments_not_allowed")
+            result = launch_workbench()
+        elif args.command == "install-launcher":
+            if (any(value is not None for value in (
+                    args.archive, args.sha256, args.releases, args.directory,
+                    args.game_directory,
+                )) or args.config is None):
+                reject("launcher_arguments_invalid")
+            directory = Path(__file__).resolve().parents[3]
+            prepared = status(directory)
+            _install_open_launcher(directory, args.config, prepared)
+            result = {"status": "launcher_installed"}
+        elif args.command in {"plan", "prepare"}:
             if args.archive is None or args.sha256 is None or args.releases is None:
                 reject("archive_hash_release_root_required")
             if args.command == "prepare":

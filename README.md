@@ -24,11 +24,12 @@ not replace each host's native execution, permissions or lifecycle authority.
 This is the direction for integration, not a claim that a general multi-host
 scheduler or cloud game Host has already been deployed.
 
-Local recording, data management, training, model use and analysis are intended
-to work without a team login. Current implementation is narrower: the no-login
-home, local model controls, local artifact inventory and closed-recording catalog
-exist; the complete local import/dataset/training/analysis journey is still being
-connected. See the [current in-run implementation](docs/plans/TEXT_STS2_IN_RUN.md)
+Local recording import, data preparation, explicit training, model controls and
+development-only M2 evaluation are available without a team login, with source
+and recipe support bounded by the implemented contracts. After one-time
+developer-kit initialization, the installed macOS Mod can open the selected
+local Workbench through its fixed user-level launcher. This is not a claim that
+the full Stage 1a journey is complete. See the [current in-run implementation](docs/plans/TEXT_STS2_IN_RUN.md)
 and [console behavior](python/docs/PROJECT_CONSOLE.md) for exact boundaries.
 
 Logging in does not upload old private data, start training or take over a game.

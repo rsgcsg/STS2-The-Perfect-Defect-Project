@@ -175,6 +175,7 @@ def test_deterministic_public_inventory_and_real_owner_verification(inputs, tmp_
         }
         assert set(archive.namelist()) == expected
         manifest = json.loads(archive.read("combination.json"))
+        assert manifest["workbench_launcher_schema"] == "spireagent/workbench-launcher-v1"
         assert set(manifest["files"]) == expected - {"combination.json"}
         for name, expected_hash in manifest["files"].items():
             assert sha256(archive.read(name)) == expected_hash
@@ -403,6 +404,16 @@ def test_v2_kit_pair_is_inventoried_staged_and_selected_without_caller_path(
             return capsys.readouterr().out
         return ""
     monkeypatch.setattr(install, "run", initialize_run)
+    actual_process_run = install.subprocess.run
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda args, **kwargs: (
+            subprocess.CompletedProcess(args, 0, '{"status":"launcher_installed"}', "")
+            if "install-launcher" in args
+            else actual_process_run(args, **kwargs)
+        ),
+    )
     initialized = install.initialize(target, config_path)
     assert owner_steps == ["setup", "model"]
     assert len(environment_steps) == 3

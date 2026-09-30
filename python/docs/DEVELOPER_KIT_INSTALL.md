@@ -31,6 +31,19 @@ Qwen/Transformers or download model weights. Opening the local Workbench later
 retains these installed optional dependencies. The local home, model setup and
 recorded-report reading do not require team login; team account pairing is
 optional until a member uses collection sharing or uploads.
+
+For kits whose `combination.json` declares
+`workbench_launcher_schema: spireagent/workbench-launcher-v1`, successful
+initialization installs a fixed per-user macOS entry at
+`~/Library/Application Support/spireagent/workbench/open`. The game Mod can
+invoke it only after an explicit Open action reports the Workbench stopped. The
+entry accepts no arguments, verifies its exact kit and bound config through the
+release's installer owner, then reuses or opens that Workbench without syncing
+dependencies. Ready opens the existing URL; stale or identity-mismatched state
+requires operator recovery. Older kits without the capability retain their
+existing initialization behavior and do not receive this entry. This entry is
+currently macOS-only; Windows is not qualified.
+
 A kit may additionally contain an independently approved `text-runtime/profile.json`
 and `text-runtime/runtime.tgz`. Its inventory and external ZIP SHA256 bind both;
 the packager verifies the archive through the ordinary bundled Runtime installer in
