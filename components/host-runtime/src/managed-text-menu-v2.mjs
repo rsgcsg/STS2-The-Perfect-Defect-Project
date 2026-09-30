@@ -1,12 +1,29 @@
 import { createHash } from "node:crypto";
 import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL } from "@rsgcsg/sts2-connector-client";
-import { projectManagedTextMenuV1 } from "./managed-text-menu-map.mjs";
+import { currentManagedNativeVerbs, managedTextMenuV1Contract,
+  projectManagedTextMenuV1 } from "./managed-text-menu-map.mjs";
 
 export const MANAGED_TEXT_MENU_V2_PROFILE = "text-menu-v2";
 export const MANAGED_TEXT_MENU_V2_CONTEXT_SCHEMA = "sts2.player-environment/text-menu-observation-context-2";
-const SNAPSHOT_SCHEMA = "sts2.player-environment/text-menu-snapshot-2";
-const RESULT_SCHEMA = "sts2.player-environment/text-menu-action-result-2";
+export const MANAGED_TEXT_MENU_V2_SNAPSHOT_SCHEMA = "sts2.player-environment/text-menu-snapshot-2";
+export const MANAGED_TEXT_MENU_V2_RESULT_SCHEMA = "sts2.player-environment/text-menu-action-result-2";
+const SNAPSHOT_SCHEMA = MANAGED_TEXT_MENU_V2_SNAPSHOT_SCHEMA;
+const RESULT_SCHEMA = MANAGED_TEXT_MENU_V2_RESULT_SCHEMA;
 const TARGET_ROLES = new Set(["enemy", "target", "ally", "creature", "player", "companion"]);
+
+export function managedTextMenuV2Contract() {
+  const v1 = managedTextMenuV1Contract();
+  return {
+    protocol_version: SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL,
+    input_profile: MANAGED_TEXT_MENU_V2_PROFILE,
+    snapshot_schema: MANAGED_TEXT_MENU_V2_SNAPSHOT_SCHEMA,
+    receipt_schema: MANAGED_TEXT_MENU_V2_RESULT_SCHEMA,
+    interaction_kinds: v1.interaction_kinds,
+    observed_terminal_kinds: v1.observed_terminal_kinds,
+    action_verbs: [...currentManagedNativeVerbs(),
+      "select_card", "select_target", "cancel_selection", "back"]
+  };
+}
 
 function identity(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 32);

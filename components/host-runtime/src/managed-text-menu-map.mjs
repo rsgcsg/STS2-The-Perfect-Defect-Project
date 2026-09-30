@@ -14,12 +14,35 @@ function textSnapshotId(snapshotId) {
   return `managed_tm_${createHash("sha256").update(snapshotId).digest("hex").slice(0, 32)}`;
 }
 
-const REVIEWED_TEXT_MENU_SURFACES = new Set([
+const REVIEWED_TEXT_MENU_KINDS = Object.freeze([
   "map_navigation", "event_option", "rest_site", "deck_upgrade_selection",
   "deck_card_selection", "shop_inventory", "combat_turn",
   "treasure_chest", "treasure_relic_selection", "treasure_completion",
   "reward_claim", "card_reward_selection", "reward_completion"
 ]);
+const REVIEWED_TEXT_MENU_SURFACES = new Set(REVIEWED_TEXT_MENU_KINDS);
+// Describes verbs emitted by current native projections. The exact current
+// page catalog remains the action authority, including future bound verbs.
+const CURRENT_NATIVE_VERBS = Object.freeze([
+  "activate", "cancel", "close", "confirm", "deselect", "end_turn",
+  "play", "preview", "select", "skip", "use"
+]);
+
+export function managedTextMenuV1Contract() {
+  return {
+    protocol_version: SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL,
+    input_profile: MANAGED_TEXT_MENU_PROFILE,
+    snapshot_schema: MANAGED_TEXT_MENU_SNAPSHOT_SCHEMA,
+    receipt_schema: MANAGED_TEXT_MENU_RESULT_SCHEMA,
+    interaction_kinds: [...REVIEWED_TEXT_MENU_KINDS, "game_over"],
+    observed_terminal_kinds: ["game_over"],
+    action_verbs: [...CURRENT_NATIVE_VERBS]
+  };
+}
+
+export function currentManagedNativeVerbs() {
+  return [...CURRENT_NATIVE_VERBS];
+}
 
 function completeCurrentLeaf(snapshot) {
   const interactionId = snapshot?.interaction?.interaction_id;

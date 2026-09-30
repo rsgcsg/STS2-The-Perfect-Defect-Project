@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ManagedPlayerEnvironmentSession, projectManagedCandidateDecision } from "../src/managed-player-environment.mjs";
-import { ManagedTextMenuV2SessionAdapter, MANAGED_TEXT_MENU_V2_PROFILE } from "../src/managed-text-menu-v2.mjs";
+import { ManagedTextMenuV2SessionAdapter, MANAGED_TEXT_MENU_V2_PROFILE,
+  managedTextMenuV2Contract } from "../src/managed-text-menu-v2.mjs";
 
 const identity = { runtimeInstanceId: "v2-test-runtime",
   environmentFingerprint: "v2-test-environment", sequence: 1 };
@@ -40,6 +41,15 @@ function request(page, action, id) {
     action_id: action.action_id, input_profile: MANAGED_TEXT_MENU_V2_PROFILE };
 }
 
+function assertContractPage(page) {
+  const contract = managedTextMenuV2Contract();
+  assert.equal(page.schema, contract.snapshot_schema);
+  assert.equal(page.input_profile, contract.input_profile);
+  assert.ok(contract.interaction_kinds.includes(page.interaction.kind));
+  for (const action of page.menu_actions.actions)
+    assert.ok(contract.action_verbs.includes(action.verb), action.verb);
+}
+
 function action(page, verb, index = 0) {
   const found = page.menu_actions.actions.filter((item) => item.verb === verb);
   assert.ok(found[index], `Missing ${verb} at index ${index}`);
@@ -58,6 +68,7 @@ test("targeted text card choice keeps public order, exact pair and one native su
   const adapter = new ManagedTextMenuV2SessionAdapter(session);
   const source = session.observe();
   const root = adapter.observe();
+  assertContractPage(root);
   assert.equal(root.input_profile, "text-menu-v2");
   assert.equal(root.menu.native_snapshot_id, source.snapshot_id);
   assert.deepEqual(root.menu.selection, []);
@@ -72,6 +83,7 @@ test("targeted text card choice keeps public order, exact pair and one native su
   assert.equal(selected.native_delivery, null);
   assert.equal(rawRequests.length, 0);
   const targets = selected.successor;
+  assertContractPage(targets);
   assert.equal(targets.menu.cursor, "card_targets");
   assert.equal(targets.menu.native_snapshot_id, root.menu.native_snapshot_id);
   assert.deepEqual(targets.menu_actions.actions.map((item) => item.verb),
@@ -82,6 +94,7 @@ test("targeted text card choice keeps public order, exact pair and one native su
 
   const chosen = await adapter.submit(request(targets, action(targets, "select_target", 1), "target"));
   const confirm = chosen.successor;
+  assertContractPage(confirm);
   assert.equal(confirm.menu.cursor, "card_confirmation");
   assert.deepEqual(confirm.menu.selection, [
     { role: "card", referent_id: action(root, "select_card").subject_referent_id },
@@ -182,6 +195,7 @@ test("terminal v2 page stays observed with no manufactured action", () => {
   }).snapshot;
   const page = new ManagedTextMenuV2SessionAdapter({ observe: () => source,
     async submit() { throw new Error("terminal must not submit"); } }).observe();
+  assertContractPage(page);
   assert.equal(page.schema, "sts2.player-environment/text-menu-snapshot-2");
   assert.equal(page.status, "observed");
   assert.equal(page.interaction.kind, "game_over");
