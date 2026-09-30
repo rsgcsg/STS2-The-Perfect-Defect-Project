@@ -349,9 +349,12 @@ class LocalEnvironmentService:
         except Exception as error:
             raise BoundaryError("local_environment", "host_seed_contract_unavailable") from error
         try:
-            return canonicalize(seed)
+            canonical_seed = canonicalize(seed)
         except (TypeError, ValueError) as error:
             raise BoundaryError("local_environment", "scene_seed_invalid") from error
+        if not isinstance(canonical_seed, str):
+            raise BoundaryError("local_environment", "host_seed_contract_invalid")
+        return canonical_seed
 
     def _report_store(self, *, create: bool) -> ManifestArtifactStore | None:
         root = self.config.state_dir / REPORT_ROOT
