@@ -20,9 +20,13 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError, digest
 from spireagent.source import source_identity
-from spireagent.storage.replaceable_file import read_replaceable_bytes
+from spireagent.storage.replaceable_file import (
+    has_unresolved_replacement,
+    read_replaceable_bytes,
+    write_replaceable_json,
+)
 from spireagent.storage.store import ManifestArtifactStore
-from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
+from spireagent.workbench.developer import ROOT, ProjectConfig
 from spireagent.workbench.developer_server import instance_lock
 from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.local_dataset import LocalDatasetService
@@ -100,6 +104,8 @@ class LocalTrainingService:
     @staticmethod
     def _read(path: Path, identity: tuple[str, ...]) -> dict[str, Any]:
         if not path.exists() and not path.is_symlink():
+            if has_unresolved_replacement(path):
+                raise BoundaryError("local_training", "operation_recovery_required")
             return {"status": "idle"}
         if path.is_symlink() or not path.is_file():
             raise BoundaryError("local_training", "operation_recovery_required")
@@ -225,7 +231,7 @@ class LocalTrainingService:
         current = json.loads(read_replaceable_bytes(path))
         if current.get("operation_id") != identity or current.get("status") != "pending":
             raise BoundaryError("local_training", "operation_superseded")
-        atomic_json(path, {**current, **updates})
+        write_replaceable_json(path, {**current, **updates})
 
     def start(self, dataset_id: object, *,
               after_completed_operation_id: object | None = None,
@@ -301,7 +307,7 @@ class LocalTrainingService:
                     operation["previous_completed"] = {
                         key: previous[key] for key in PREVIOUS_COMPLETED_IDS
                     }
-            atomic_json(path, operation)
+            write_replaceable_json(path, operation)
             thread = threading.Thread(target=self._run, args=(held, path, identity, owner, store),
                                       name="local-small-b-training", daemon=True)
             with self._lock:
