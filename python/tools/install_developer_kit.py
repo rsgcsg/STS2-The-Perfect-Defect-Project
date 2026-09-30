@@ -574,8 +574,9 @@ def preflight(directory: Path, game: Path) -> dict[str, Any]:
         reject("game_identity_ambiguous")
     if canonical_game_root != discovered_game_root:
         reject("game_identity_ambiguous")
-    if doctor.get("game_running") is not False:
-        reject("game_must_be_closed")
+    game_running = doctor.get("game_running")
+    if not isinstance(game_running, bool):
+        reject("game_state_unavailable")
     target_platform = provenance.get("platform")
     target_architecture = provenance.get("architecture")
     if (not target_platform or not target_architecture
@@ -609,17 +610,23 @@ def preflight(directory: Path, game: Path) -> dict[str, Any]:
         "status": "preflight_complete",
         "admission": "unqualified",
         "qualification_blockers": ["exact_system_runtime_identity_not_pinned"],
+        "game_running": game_running,
         "package": {"archive_sha256": directory.name,
                     "source_revision": prepared["source_revision"],
                     **package_identity},
         "target": {"platform": target_platform, "architecture": target_architecture,
                    "identity_source": "verified_build_provenance_and_read_only_doctor"},
-        "game": {"identity": "matched", "version": native.get("release", {}).get("version"),
+        "game": {"identity": "matched", "identity_scope": "on_disk_files",
+                 "loaded_bytes_identity": "not_observed",
+                 "version": native.get("release", {}).get("version"),
                  "commit": native.get("release", {}).get("commit"),
                  "files_verified": 4},
         "dependencies": dependencies,
         "effects": {"installed": False, "started": False, "loaded": False},
-        "non_claims": ["no_lock_against_concurrent_local_filesystem_replacement",
+        "non_claims": ["game_running_is_a_point_in_time_doctor_observation",
+                       "running_process_loaded_bytes_are_not_observed",
+                       "no_lock_against_concurrent_game_state_change",
+                       "no_lock_against_concurrent_local_filesystem_replacement",
                        "deployment_must_recheck_native_game_identity"],
     }
 

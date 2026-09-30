@@ -305,7 +305,10 @@ def test_preflight_is_redacted_read_only_and_marks_unpinned_dependencies_unquali
              for path in (source, kit, game) for path in path.rglob("*") if path.is_file()}
     rendered = json.dumps(report)
     assert report["admission"] == "unqualified"
+    assert report["game_running"] is False
     assert report["game"]["identity"] == "matched"
+    assert report["game"]["identity_scope"] == "on_disk_files"
+    assert report["game"]["loaded_bytes_identity"] == "not_observed"
     assert report["target"] == {
         "platform": "darwin", "architecture": "arm64",
         "identity_source": "verified_build_provenance_and_read_only_doctor",
@@ -313,9 +316,37 @@ def test_preflight_is_redacted_read_only_and_marks_unpinned_dependencies_unquali
     assert all(dep["release_pin"] == "unknown" for dep in report["dependencies"])
     assert report["effects"] == {"installed": False, "started": False, "loaded": False}
     assert "no_lock_against_concurrent_local_filesystem_replacement" in report["non_claims"]
+    assert "game_running_is_a_point_in_time_doctor_observation" in report["non_claims"]
+    assert "running_process_loaded_bytes_are_not_observed" in report["non_claims"]
     assert before == after
     assert str(tmp_path) not in rendered
     assert all(raw.decode(errors="ignore") not in rendered for raw in game_bytes.values())
+
+
+def test_preflight_hashes_on_disk_files_while_game_runs_without_loaded_identity_claim(
+        tmp_path, monkeypatch):
+    directory, game, source, kit, doctor, _ = preflight_fixture(tmp_path, monkeypatch)
+    doctor["game_running"] = True
+    before = {str(path.relative_to(tmp_path)): path.read_bytes()
+              for root in (source, kit, game) for path in root.rglob("*") if path.is_file()}
+
+    report = install.preflight(directory, game)
+
+    after = {str(path.relative_to(tmp_path)): path.read_bytes()
+             for root in (source, kit, game) for path in root.rglob("*") if path.is_file()}
+    assert report["status"] == "preflight_complete"
+    assert report["game_running"] is True
+    assert report["game"]["identity"] == "matched"
+    assert report["game"]["identity_scope"] == "on_disk_files"
+    assert report["game"]["loaded_bytes_identity"] == "not_observed"
+    assert report["effects"] == {"installed": False, "started": False, "loaded": False}
+    assert "no_lock_against_concurrent_game_state_change" in report["non_claims"]
+    assert "running_process_loaded_bytes_are_not_observed" in report["non_claims"]
+    assert before == after
+
+    doctor["game_running"] = None
+    with pytest.raises(BoundaryError, match="game_state_unavailable"):
+        install.preflight(directory, game)
 
 
 def test_preflight_canonicalizes_game_alias_and_symlinked_ancestor(tmp_path, monkeypatch):

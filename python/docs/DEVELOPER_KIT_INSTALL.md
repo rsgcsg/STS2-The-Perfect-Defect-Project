@@ -40,8 +40,11 @@ anchored by the BOM. Preflight reports these as unverified claims.
 Preflight resolves the explicit game directory and the doctor's selected directory to the
 same canonical root. This permits normal symlinked ancestors and a selected-directory alias,
 while rejecting symlinks and escapes below the canonical game root for the four identity
-files it reads. It is a read-only snapshot, not a filesystem lock: a concurrent local
-replacement can race the check. Native deploy must recheck the game identity before writing.
+files it reads. It records the doctor's point-in-time `game_running` observation and may
+hash these on-disk files while the game is running; it does not inspect process memory or
+claim that the running process loaded those same bytes. This read-only snapshot has no lock
+against a concurrent process state change or local file replacement. Deploy still requires
+the game to be closed and independently rechecks native game identity before writing.
 The verified kit inventory selects the locked environment: collection-only kits
 install the `cloud` extra; a kit containing any fixed text Runtime pair also
 installs `local-models` (Torch, Tokenizers and Safetensors). It does not install
