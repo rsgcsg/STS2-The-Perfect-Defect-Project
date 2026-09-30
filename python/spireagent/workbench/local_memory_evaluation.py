@@ -114,7 +114,9 @@ class LocalMemoryEvaluationService:
         return {"schema": SCHEMA, "availability": "ready", "operation": self._public(operation)}
 
     @staticmethod
-    def _training_source(store: Any, model_id: str) -> tuple[str, str]:
+    def _training_source(store: Any, model_id: str) -> tuple[str, str, int | None]:
+        from stpd.fullrun.memory_projection_config import MemoryEpisodeProjectionConfigV3
+        from stpd.workers.memory_evaluation import _evaluation_projection_config
         from stpd.workers.memory_run import INPUT_SCHEMA_V2, MODEL_SCHEMA, RUN_SCHEMA
 
         model = store.get_manifest(model_id)
@@ -143,13 +145,18 @@ class LocalMemoryEvaluationService:
                 or completed.parent("checkpoint") != checkpoint.artifact_id
                 or completed.parent("training_input") != training.artifact_id):
             raise BoundaryError("local_memory_evaluation", "model_training_lineage_mismatch")
-        return operation_id, training.parent("source")
+        projection = _evaluation_projection_config(training)
+        return (operation_id, training.parent("source"),
+                projection.max_settling_events if
+                type(projection) is MemoryEpisodeProjectionConfigV3 else None)
 
     def start(self, model_id: object, source_id: object, *,
-              max_settling_events: object = 0) -> dict[str, Any]:
+              max_settling_events: object = None) -> dict[str, Any]:
         model_id = digest(model_id, "local_memory_evaluation.model")
         source_id = digest(source_id, "local_memory_evaluation.source")
-        if (type(max_settling_events) is not int or not 0 <= max_settling_events <= 64):
+        if (max_settling_events is not None and
+                (type(max_settling_events) is not int
+                 or not 0 <= max_settling_events <= 64)):
             raise BoundaryError("local_memory_evaluation", "invalid_settling_limit")
         owner, store, registry_path = self._selected()
         path, lock_path = self._path(owner), self._lock_path(owner)
@@ -169,10 +176,23 @@ class LocalMemoryEvaluationService:
                     "local_memory_evaluation", "previous_evaluation_outcome_unknown")
             if (previous["status"] == "completed" and previous["model_id"] == model_id
                     and previous["source_id"] == source_id
-                    and previous["max_settling_events"] == max_settling_events):
+                    and (previous["max_settling_events"] == max_settling_events
+                         or (max_settling_events is None
+                             and previous["max_settling_events"] == 0))):
                 return self.status()
             require_local_models("local_memory_evaluation")
-            training_operation_id, train_source_id = self._training_source(store, model_id)
+            training_operation_id, train_source_id, required_settling = \
+                self._training_source(store, model_id)
+            if max_settling_events is None:
+                max_settling_events = required_settling if required_settling is not None else 0
+            if (required_settling is not None
+                    and max_settling_events != required_settling):
+                raise BoundaryError("local_memory_evaluation",
+                                    "dev_projection_config_mismatch")
+            if (previous["status"] == "completed" and previous["model_id"] == model_id
+                    and previous["source_id"] == source_id
+                    and previous["max_settling_events"] == max_settling_events):
+                return self.status()
             identity = uuid.uuid4().hex
             operation = {
                 "schema": SCHEMA, "status": "pending", "purpose": "dev",
