@@ -3457,9 +3457,21 @@ window.SpireProject = (() => {
     if (!sources.length) card.append(el("p", `本页没有可选择的${sourceName}。`, "small muted"));
     else {
       const form = el("div", null, "project-form");
+      const sourceLabel = item => {
+        const suffix = item.artifact_id.slice(0, 16);
+        if (sourceSchema !== "stpd/managed-text-menu-observed-source-v1")
+          return `${sourceName} · ${suffix}`;
+        const parameters = item.parameters;
+        const expectedSeed = parameters.import_expectation?.seed;
+        const seed = typeof expectedSeed === "string" && expectedSeed.trim()
+          ? expectedSeed : "未知";
+        const eventCount = Number.isSafeInteger(parameters.event_count) && parameters.event_count >= 0
+          ? `${parameters.event_count} 条操作记录` : "记录数未知";
+        return `${sourceName} · 种子 ${seed} · ${eventCount} · ${suffix}`;
+      };
       const source = select(form, "开发来源", "local-memory-dev-source",
         [["", "请选择另一份来源"], ...sources.map(item =>
-          [item.artifact_id, `${sourceName} · ${item.artifact_id.slice(0, 16)}`])], "");
+          [item.artifact_id, sourceLabel(item)])], "");
       card.append(form);
       const options = {primary:true};
       card.append(command(ctx, "start-local-memory-evaluation", "明确开始开发集评估", async () => {
