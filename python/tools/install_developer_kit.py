@@ -408,6 +408,8 @@ def _install_open_launcher(
             current = json.loads(binding_path.read_bytes())
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             reject("launcher_binding_invalid")
+        if not isinstance(current, dict):
+            reject("launcher_binding_invalid")
         if current.get("config_path") != binding["config_path"]:
             reject("launcher_config_binding_mismatch")
     from spireagent.workbench.developer import atomic_json

@@ -68,6 +68,12 @@ def test_launcher_binding_is_idempotent_for_same_profile_and_rejects_another(
     assert binding_file.read_bytes() == first
     assert config.read_bytes() == original_config
 
+    binding_file.write_text("[]", encoding="utf-8")
+    with pytest.raises(BoundaryError, match="launcher_binding_invalid"):
+        install._install_open_launcher(release, config, prepared, platform="darwin")
+    assert binding_file.read_bytes() == b"[]"
+    binding_file.write_bytes(first)
+
     other = tmp_path / "other/project.json"
     other.parent.mkdir()
     other.write_text("{}")
