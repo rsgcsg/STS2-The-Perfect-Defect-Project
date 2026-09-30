@@ -70,7 +70,8 @@ class LocalIdentity:
         )
 
     def request(
-        self, route: str, *, body: dict[str, Any] | None = None, token: str | None = None
+        self, route: str, *, body: dict[str, Any] | None = None, token: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         if not self.config.hub_url:
             raise BoundaryError("identity", "hub_not_configured")
@@ -87,10 +88,13 @@ class LocalIdentity:
         try:
             # Member data requests can verify multiple remote immutable manifests.
             # Stay below the browser's 15s read / 25s mutation deadlines; login
-            # polling retains its short timeout. Never retry a submitted mutation.
+            # polling retains its short timeout. A background transfer may provide
+            # its own budget. Never retry a submitted mutation.
             member = route.startswith("/v1/identity/member/")
-            timeout = (20 if body is not None else 10) if member else 4
-            with self.opener.open(request, timeout=timeout) as response:
+            request_timeout = (20 if body is not None else 10) if member else 4
+            with self.opener.open(
+                request, timeout=request_timeout if timeout is None else timeout
+            ) as response:
                 raw = response.read(1048577)
             if len(raw) > 1048576:
                 raise ValueError

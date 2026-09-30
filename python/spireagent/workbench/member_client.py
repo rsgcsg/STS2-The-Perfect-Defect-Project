@@ -15,6 +15,8 @@ from spireagent.json_boundary import BoundaryError, digest, json_bytes
 from spireagent.workbench.developer import atomic_json
 from spireagent.workbench.identity import LocalIdentity
 
+DOWNLOAD_TIMEOUT = 30
+
 
 class MemberClient:
     def __init__(self, account: LocalIdentity) -> None:
@@ -126,7 +128,12 @@ class MemberClient:
         temporary: Path | None = None
         temporary_owned = False
         try:
-            value = self.account.request("/v1/identity/member/exports/" + export_id, token=token)
+            # This runs in the transfer worker, not an interactive catalog read.
+            # Inventory authorization may inspect a multi-source immutable lineage.
+            value = self.account.request(
+                "/v1/identity/member/exports/" + export_id, token=token,
+                timeout=DOWNLOAD_TIMEOUT,
+            )
             files = value.get("files")
             content = {
                 key: item for key, item in value.items() if key not in {"export_id", "created_at"}
@@ -177,7 +184,7 @@ class MemberClient:
                 )
                 observed, count = hashlib.sha256(), 0
                 with (
-                    self.account.opener.open(request, timeout=30) as response,
+                    self.account.opener.open(request, timeout=DOWNLOAD_TIMEOUT) as response,
                     temporary.open("xb") as handle,
                 ):
                     temporary_owned = True
