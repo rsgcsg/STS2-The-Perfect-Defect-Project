@@ -15,8 +15,8 @@ const binding: ManagedEnvironmentBinding = {
     artifact_mvid: "mvid", original_sts2_sha256: sha("2"), runtime_sts2_sha256: sha("3") }
 };
 const hostIdentity = { package_name: binding.host_package_identity.package, version: "1",
-  source_revision: binding.host_package_identity.source_revision,
-  component_tree_revision: binding.host_package_identity.component_tree_revision, source_digest_sha256: sha("4") };
+  distribution_kind: "installed_package", source_revision: null,
+  component_tree_revision: null, source_digest_sha256: sha("4") };
 const target = { serviceInstanceId: "service-1", runtimeInstanceId: "runtime-1", gameContinuityId: "game-1" };
 const episode = { game_continuity_id: target.gameContinuityId, control_held: false, tainted: false, closed: false };
 const ready = () => ({ schema: "sts2.host-runtime/managed-service-ready-1", service_instance_id: target.serviceInstanceId,

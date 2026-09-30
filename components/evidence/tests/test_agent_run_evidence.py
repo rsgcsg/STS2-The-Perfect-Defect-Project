@@ -807,7 +807,8 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
             "host_package_identity": binding["host_package_identity"],
             "host_identity": {
                 "package_name": "@rsgcsg/sts2-host-runtime", "version": "1.1.0-rc.22",
-                "source_revision": "1" * 40, "component_tree_revision": "2" * 40,
+                "distribution_kind": "installed_package", "source_revision": None,
+                "component_tree_revision": None,
                 "source_digest_sha256": "8" * 64,
             },
             "candidate_build": binding["candidate_build"],
@@ -888,6 +889,22 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         manifest_path.write_bytes(canonical(manifest))
         self._rewrite_events(directory, events)
         self.assertEqual(AgentRunEvidenceVerifier().verify(directory).findings[0].code, "managed_control")
+
+    def test_managed_release_after_stop_cannot_retroactively_confirm_control(self) -> None:
+        directory = self._managed_v2_evidence("managed-post-stop-release")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        release = events.pop()
+        events.append({"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                       "recorded_at": "2026-08-25T00:00:04.000Z", "kind": "stopped", "payload": {}})
+        events.append(release)
+        for index, event in enumerate(events, 1):
+            event["sequence"] = index
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest.update(status="tainted", tainted=True)
+        manifest_path.write_bytes(canonical(manifest))
+        self._rewrite_events(directory, events)
+        self.assertEqual(AgentRunEvidenceVerifier().verify(directory).findings[0].code, "managed_terminal_order")
 
     def _v3_context_pair(self, name: str) -> tuple[Path, list[dict[str, Any]]]:
         directory = self._text_evidence(name, adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3")

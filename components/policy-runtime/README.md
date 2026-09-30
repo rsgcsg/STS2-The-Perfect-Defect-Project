@@ -50,6 +50,10 @@ checks the binding against the attached Host service's declared identity and
 the explicit selected service/runtime/game-continuity target, then records the
 binding and actual admission in the Agent run. Neither Runtime nor Evidence
 independently re-attests Host archive bytes from the service's JSON identity.
+An installed Host truthfully reports `source_revision` and
+`component_tree_revision` as null; the binding retains the application-verified
+release provenance. The Host's source digest uses a different file inventory
+from the application package-content digest and is recorded separately.
 The binding's `profile_sha256` is an opaque pointer to the private profile,
 not proof that Evidence saw those profile bytes.
 

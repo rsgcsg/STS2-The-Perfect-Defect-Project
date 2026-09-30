@@ -96,7 +96,8 @@ export interface ManagedEnvironmentStatus {
   text_protocol_version: string;
   input_profile: "text-menu-v2";
   host_package_identity: ManagedEnvironmentBinding["host_package_identity"];
-  host_identity: { package_name: string; version: string; source_revision: string; component_tree_revision: string; source_digest_sha256: string };
+  host_identity: { package_name: string; version: string; distribution_kind: "installed_package" | "git_checkout";
+    source_revision: string | null; component_tree_revision: string | null; source_digest_sha256: string };
   candidate_build: ManagedEnvironmentBinding["candidate_build"];
   game_version: string;
   game_commit: string;

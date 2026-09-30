@@ -333,6 +333,7 @@ export class PolicyRuntime {
   }
 
   private async tickOnce(): Promise<TickResult> {
+    const preparationEpoch = this.recoveryEpoch;
     const representation = this.options.manifest.representation.input_schema;
     const inputProfile: TextInputProfile | undefined = representation === "sts2.player-environment/text-menu-snapshot-1"
       ? "text-menu-v1" : representation === "sts2.player-environment/text-menu-snapshot-2" ? "text-menu-v2" : undefined;
@@ -340,6 +341,8 @@ export class PolicyRuntime {
     if (this.stopped) return { type: "not_admitted", reason: "runtime_stopped", status: this.status() };
     if (this.tainted) return { type: "not_admitted", reason: "runtime_tainted", status: this.status() };
     if (this.mode === "human") return { type: "human", status: this.status() };
+    if (this.mutationCancellationRequested())
+      return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
     if (!this.autonomyBudgetAvailable()) {
       await this.handoffAutonomyBudget();
       return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };
@@ -348,9 +351,13 @@ export class PolicyRuntime {
     try {
       capabilities = await this.options.connector.capabilities({ inputProfile });
     } catch (error) {
+      if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
+        return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
       await this.failClosed(`capabilities_failed:${message(error)}`);
       return { type: "not_admitted", reason: "capabilities_failed", status: this.status() };
     }
+    if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
+      return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
     this.environment = environmentStatus(capabilities);
     const compatibilityReason = manifestCompatibilityReason(this.options.manifest, capabilities, this.options.managedBindingSha256);
     if (compatibilityReason) {
@@ -370,6 +377,8 @@ export class PolicyRuntime {
       }
       this.lastEvidenceEnvironmentFingerprint = admittedEnvironmentKey;
     }
+    if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
+      return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
     this.refreshing = true;
     let bundle: AnyDecisionBundle | null;
     let gameContinuityId: string | null = null;
@@ -387,10 +396,14 @@ export class PolicyRuntime {
       }
     } catch (error) {
       this.refreshing = false;
+      if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
+        return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
       await this.failClosed(`observation_failed:${message(error)}`);
       return { type: "not_admitted", reason: "observation_failed", status: this.status() };
     }
     this.refreshing = false;
+    if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
+      return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
     if (!bundle) return { type: "not_admitted", reason: "stale_refresh_exhausted", status: this.status() };
     if (this.stateful && (typeof gameContinuityId !== "string" || gameContinuityId.length === 0)) {
       this.continuity = null;
@@ -424,6 +437,8 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "snapshot_already_scored", status: this.status() };
     }
     const input: PolicyDecisionInput = { run_id: this.runId, manifest: this.options.manifest, bundle, candidate_digest: admission.candidateDigest, candidate_count: admission.candidateCount };
+    if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
+      return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
     if (!this.consumePolicyCall()) {
       await this.handoffAutonomyBudget();
       return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() };

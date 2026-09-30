@@ -582,6 +582,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
     # No initial mode event is required. None is initial unknown, not Human.
     autonomy_mode: bool | None = None
     observed_mode: str | None = None
+    managed_stopped = False
     for sequence, content in enumerate(lines[:-1], start=1):
         if content.endswith(b"\r"):
             content = content[:-1]
@@ -600,6 +601,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             raise AgentRunEvidenceError("invalid_event_payload", f"event payload is not an object at line {sequence}", _EVENTS_FILE)
         if kind not in _EVENT_KINDS:
             raise AgentRunEvidenceError("unsupported_event_kind", f"unsupported event kind: {kind}", _EVENTS_FILE)
+        if managed_stopped:
+            raise AgentRunEvidenceError("managed_terminal_order", "Managed events cannot follow Stop", _EVENTS_FILE)
         if input_schema in _TEXT_SNAPSHOT_SCHEMAS and kind in {"receipt", "receipt_rejected", "successor"}:
             raise AgentRunEvidenceError("text_profile_association", "text-menu run cannot use generic receipt or successor evidence", _EVENTS_FILE)
         if v2_unknown_seen and kind in {"text_decision_input", "text_menu_dispatch_attempt", "text_menu_dispatch_cancelled", "menu_navigation",
@@ -833,6 +836,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 _verify_autonomy_budget(payload["autonomy_budget"])
             autonomy_mode = False
         elif kind == "stopped":
+            if "environment_binding" in manifest:
+                managed_stopped = True
             if set(payload) not in (set(), {"autonomy_budget", "controller"}):
                 raise AgentRunEvidenceError("schema_keys", "stopped payload has invalid fields", _EVENTS_FILE)
             if "autonomy_budget" in payload:
@@ -954,12 +959,17 @@ def _verify_managed_environment(environment: Mapping[str, Any]) -> Mapping[str, 
                              "profile_sha256": "0" * 64, "input_profile": "text-menu-v2",
                              "host_package_identity": pin, "candidate_build": build})
     host = _object(environment["host_identity"], "Managed Host ready identity")
-    _exact_keys(host, {"package_name", "version", "source_revision", "component_tree_revision",
+    _exact_keys(host, {"package_name", "version", "distribution_kind", "source_revision", "component_tree_revision",
                        "source_digest_sha256"}, "Managed Host ready identity")
-    if (host["package_name"] != pin["package"] or host["version"] != pin["version"]
-            or host["source_revision"] != pin["source_revision"]
-            or host["component_tree_revision"] != pin["component_tree_revision"]):
+    if host["package_name"] != pin["package"] or host["version"] != pin["version"]:
         raise AgentRunEvidenceError("environment_association", "Host ready identity differs from package pin", _EVENTS_FILE)
+    _enum(host, "distribution_kind", {"installed_package", "git_checkout"}, _EVENTS_FILE)
+    if host["distribution_kind"] == "installed_package":
+        if host["source_revision"] is not None or host["component_tree_revision"] is not None:
+            raise AgentRunEvidenceError("environment_association", "installed Host invents Git provenance", _EVENTS_FILE)
+    elif (host["source_revision"] != pin["source_revision"]
+          or host["component_tree_revision"] != pin["component_tree_revision"]):
+        raise AgentRunEvidenceError("environment_association", "checkout Host differs from package pin", _EVENTS_FILE)
     if not _SHA256.fullmatch(_text(host, "source_digest_sha256", _EVENTS_FILE)):
         raise AgentRunEvidenceError("invalid_digest", "Host source digest is invalid", _EVENTS_FILE)
     if environment["game_assembly_sha256"] != build["runtime_sts2_sha256"]:

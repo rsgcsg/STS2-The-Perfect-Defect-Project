@@ -109,37 +109,90 @@ function fixture() {
     evidence: { append: async (kind: string, payload: Record<string, unknown>) => { events.push({ kind, payload }); } } as never };
 }
 
-describe("explicit text-menu-v2 Runtime consumer", () => {
-  it("keeps a successful but malformed Managed claim unknown without a second claim or release", async () => {
-    const m = manifest();
-    m.adapter.protocol = "sts2.policy-runtime/decision-only-ndjson-3";
-    m.requirements = { environment: { kind: "managed_text_v2", text_protocol_version: "1.0.0",
-      input_profile: "text-menu-v2" }, reads: [], whole_decision_admission: true,
-      candidate_order_digest: "sha256-json-menu-action-id-order", score_count_matches_candidate_count: true,
-      selected_index: true, successor_required: true };
-    const f = fixture();
-    const environment = { kind: "managed_text_v2" as const, binding_sha256: "9".repeat(64),
+function managedManifest(): PolicyManifest {
+  const value = manifest();
+  value.adapter.protocol = "sts2.policy-runtime/decision-only-ndjson-3";
+  value.requirements = { environment: { kind: "managed_text_v2", text_protocol_version: "1.0.0",
+    input_profile: "text-menu-v2" }, reads: [], whole_decision_admission: true,
+    candidate_order_digest: "sha256-json-menu-action-id-order", score_count_matches_candidate_count: true,
+    selected_index: true, successor_required: true };
+  return value;
+}
+
+function managedCapabilities() {
+  return { kind: "managed_text_v2" as const, protocol_version: "1.0.0", input_profile: "text-menu-v2" as const,
+    snapshot_schema: "sts2.player-environment/text-menu-snapshot-2" as const,
+    receipt_schema: "sts2.player-environment/text-menu-action-result-2" as const,
+    interaction_kinds: ["combat_turn"], observed_terminal_kinds: ["game_over"],
+    action_verbs: ["select_card", "select_target", "cancel_selection", "play"],
+    execution_available: true, control_held: false, control_owned: false, tainted: false,
+    environment: { kind: "managed_text_v2" as const, binding_sha256: "9".repeat(64),
       service_instance_id: "service-1", runtime_instance_id: "runtime-1",
       environment_fingerprint: "environment-1", game_continuity_id: "game-1",
       text_protocol_version: "1.0.0", input_profile: "text-menu-v2" as const,
       host_package_identity: { package: "@rsgcsg/sts2-host-runtime" as const, version: "1", source_revision: "b".repeat(40),
         component_tree_revision: "c".repeat(40), release_asset_sha256: "d".repeat(64), package_content_sha256: "e".repeat(64) },
-      host_identity: { package_name: "@rsgcsg/sts2-host-runtime", version: "1", source_revision: "b".repeat(40),
-        component_tree_revision: "c".repeat(40), source_digest_sha256: "f".repeat(64) },
+      host_identity: { package_name: "@rsgcsg/sts2-host-runtime", version: "1",
+        distribution_kind: "installed_package" as const, source_revision: null,
+        component_tree_revision: null, source_digest_sha256: "f".repeat(64) },
       candidate_build: { upstream_revision: "upstream", source_patch_sha256: "1".repeat(64),
         artifact_sha256: "2".repeat(64), artifact_mvid: "mvid", original_sts2_sha256: "3".repeat(64),
         runtime_sts2_sha256: "4".repeat(64) },
       game_version: "fixture-game", game_commit: "fixture-commit", game_assembly_sha256: "4".repeat(64),
-      episode_provenance: { verdict: "provenance_pass" as const, requested_seed: "seed", actual_seed: "seed", runtime_instance_id: "runtime-1" } };
+      episode_provenance: { verdict: "provenance_pass" as const, requested_seed: "seed", actual_seed: "seed", runtime_instance_id: "runtime-1" } }
+  };
+}
+
+async function cancelledManagedPreparation(phase: "capabilities" | "observation", command: "human" | "stop") {
+  const f = fixture();
+  let enter!: () => void;
+  let resume!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  const gate = new Promise<void>((resolve) => { resume = resolve; });
+  f.connector.capabilities = vi.fn(async () => {
+    if (phase === "capabilities") { enter(); await gate; }
+    return managedCapabilities();
+  });
+  f.connector.observeTextMenuContext = vi.fn(async () => {
+    if (phase === "observation") { enter(); await gate; }
+    return { schema: "sts2.player-environment/text-menu-observation-context-2" as const,
+      snapshot: root(), game_continuity_id: "game-1" };
+  });
+  const inference = vi.fn(async () => { throw new Error("cancelled preparation invoked policy"); });
+  const runtime = new PolicyRuntime({ manifest: managedManifest(), connector: f.connector,
+    managedBindingSha256: "9".repeat(64), mode: "auto", evidence: {
+      append: async (kind: string, payload: Record<string, unknown>) => { f.events.push({ kind, payload }); },
+      finalize: async () => {}
+    } as never, runtimeIdentity: { version: "test", code_sha256: "8".repeat(64) },
+    statefulPolicy: inference });
+  const tick = runtime.tick();
+  await entered;
+  const recovery = command === "human" ? runtime.setMode("human") : runtime.stop();
+  expect(inference).not.toHaveBeenCalled();
+  resume();
+  expect(await tick).toMatchObject({ type: "not_admitted", reason: "runtime_recovery_epoch_mismatch" });
+  await recovery;
+  expect(inference).not.toHaveBeenCalled();
+  expect(runtime.status()).toMatchObject({ mode: "human", lifecycle: command === "stop" ? "stopped" : "running",
+    controller: "released", tainted: false });
+}
+
+describe("explicit text-menu-v2 Runtime consumer", () => {
+  it.each(["capabilities", "observation"] as const)("does not start Managed inference after Human cancels pending %s", async phase => {
+    await cancelledManagedPreparation(phase, "human");
+  });
+
+  it.each(["capabilities", "observation"] as const)("does not start Managed inference after Stop cancels pending %s", async phase => {
+    await cancelledManagedPreparation(phase, "stop");
+  });
+
+  it("keeps a successful but malformed Managed claim unknown without a second claim or release", async () => {
+    const m = managedManifest();
+    const f = fixture();
     const claim = vi.fn(async () => ({ status: "held" as const, service_instance_id: "service-1",
       runtime_instance_id: "runtime-1", game_continuity_id: "wrong-game", control_epoch: "epoch-1" }));
     const release = vi.fn(async () => undefined);
-    f.connector.capabilities = vi.fn(async () => ({ kind: "managed_text_v2" as const, protocol_version: "1.0.0",
-      input_profile: "text-menu-v2" as const, snapshot_schema: "sts2.player-environment/text-menu-snapshot-2" as const,
-      receipt_schema: "sts2.player-environment/text-menu-action-result-2" as const,
-      interaction_kinds: ["combat_turn"], observed_terminal_kinds: ["game_over"],
-      action_verbs: ["select_card", "select_target", "cancel_selection", "play"],
-      execution_available: true, control_held: false, control_owned: false, tainted: false, environment }));
+    f.connector.capabilities = vi.fn(async () => managedCapabilities());
     f.connector.acquireController = claim;
     f.connector.releaseController = release;
     const runtime = new PolicyRuntime({ manifest: m, connector: f.connector, managedBindingSha256: "9".repeat(64),

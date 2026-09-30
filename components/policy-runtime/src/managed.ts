@@ -70,8 +70,12 @@ export async function loadManagedAttachment(bindingPath: string, attachmentPath:
   const identity = object(descriptor.host_identity, "Managed attached Host identity");
   if (identity.package_name !== binding.host_package_identity.package
       || identity.version !== binding.host_package_identity.version
-      || identity.source_revision !== binding.host_package_identity.source_revision
-      || identity.component_tree_revision !== binding.host_package_identity.component_tree_revision) {
+      || (identity.distribution_kind !== "installed_package" && identity.distribution_kind !== "git_checkout")
+      || (identity.distribution_kind === "installed_package"
+        ? identity.source_revision !== null || identity.component_tree_revision !== null
+        : identity.source_revision !== binding.host_package_identity.source_revision
+          || identity.component_tree_revision !== binding.host_package_identity.component_tree_revision)
+      || !/^[a-f0-9]{64}$/u.test(String(identity.source_digest_sha256))) {
     throw new Error("Managed attachment Host identity differs from installed pin");
   }
   return { binding, bindingSha256: sha256(canonicalJson(binding)),
@@ -178,7 +182,7 @@ export class ManagedServicePolicyClient implements PolicyConnector {
     const auditKeys = Object.keys(this.binding.candidate_build);
     const build = subset(readyBuild, auditKeys) as ManagedEnvironmentBinding["candidate_build"];
     const host = object(ready.host_identity, "Managed Host ready identity");
-    const hostIdentity = subset(host, ["package_name", "version", "source_revision", "component_tree_revision", "source_digest_sha256"]) as ManagedEnvironmentStatus["host_identity"];
+    const hostIdentity = subset(host, ["package_name", "version", "distribution_kind", "source_revision", "component_tree_revision", "source_digest_sha256"]) as ManagedEnvironmentStatus["host_identity"];
     const game = object(ready.exact_game, "Managed exact game");
     const provenance = object(identity.episode_provenance, "Managed episode provenance");
     const runtimeId = string(ready.adapter_runtime_instance_id, "Managed runtime instance");
