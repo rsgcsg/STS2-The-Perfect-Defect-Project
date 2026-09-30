@@ -20,6 +20,7 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError, digest
 from spireagent.source import source_identity
+from spireagent.storage.replaceable_file import read_replaceable_bytes
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
@@ -103,7 +104,7 @@ class LocalTrainingService:
         if path.is_symlink() or not path.is_file():
             raise BoundaryError("local_training", "operation_recovery_required")
         try:
-            value = json.loads(path.read_bytes())
+            value = json.loads(read_replaceable_bytes(path))
             schema = value.get("schema") if isinstance(value, dict) else None
             if (not isinstance(value, dict) or schema not in {SCHEMA, SCHEMA_V2}
                     or value.get("status") not in
@@ -221,7 +222,7 @@ class LocalTrainingService:
 
     @staticmethod
     def _advance(path: Path, identity: str, **updates: Any) -> None:
-        current = json.loads(path.read_bytes())
+        current = json.loads(read_replaceable_bytes(path))
         if current.get("operation_id") != identity or current.get("status") != "pending":
             raise BoundaryError("local_training", "operation_superseded")
         atomic_json(path, {**current, **updates})
