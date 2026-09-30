@@ -228,6 +228,7 @@ def package(
         raise BoundaryError("developer_kit", "tool_changed_during_packaging")
     manifest = {
         "schema": "spireagent/developer-kit-v1",
+        "workbench_launcher_schema": "spireagent/workbench-launcher-v1",
         "stpd_source_revision": producer.source_revision,
         "uv_lock_sha256": producer.uv_lock_sha256,
         "platform_source_revision": project["platform_source_revision"],
