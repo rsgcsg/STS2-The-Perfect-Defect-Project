@@ -175,13 +175,14 @@ class _ManagedServiceEnvironment:
         except Exception as error:
             if isinstance(error, BoundaryError) and error.code == "managed_control_held":
                 raise
-            if getattr(error, "code", None) in {
+            error_code = getattr(error, "code", None)
+            if error_code in {
                 "managed_text_state_owner_required", "managed_text_state_owner_invalid"
             }:
                 # The Host explicitly rejected this claim before accepting it;
                 # this is a known no-effect response, not an uncertain lease.
                 raise BoundaryError(
-                    "local_environment", cast(str, error.code)
+                    "local_environment", cast(str, error_code)
                 ) from error
             # The offer may have been accepted without its response. There is no
             # credential with which to release safely, so quarantine the handle.
