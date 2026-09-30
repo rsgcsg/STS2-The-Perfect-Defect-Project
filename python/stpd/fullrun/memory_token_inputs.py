@@ -15,6 +15,9 @@ from .memory_projection_config import (
 from .memory_projection_config import (
     V2_RENDERER_IDENTITY as V2_RENDERER_IDENTITY,
 )
+from .memory_projection_config import (
+    renderer_identity_for_profile as renderer_identity_for_profile,
+)
 from .text_menu_inputs import (
     INPUT_PROFILE,
     V2_INPUT_PROFILE,
@@ -25,19 +28,6 @@ from .text_menu_inputs import (
 from .token_inputs import TokenRow, input_texts
 
 MAX_TOKENIZER_BYTES = 16 * 1024 * 1024
-
-
-def renderer_identity_for_profile(input_profile: str) -> dict[str, str]:
-    """Closed, explicit renderer lookup for future candidate manifests."""
-    if input_profile == HISTORY_INPUT_PROFILE:
-        return {**RENDERER_IDENTITY, "id": "stpd/m2-confirmed-interaction-v1"}
-    if input_profile == V2_HISTORY_INPUT_PROFILE:
-        return {**V2_RENDERER_IDENTITY, "id": "stpd/m2-confirmed-interaction-v2"}
-    if input_profile == INPUT_PROFILE:
-        return RENDERER_IDENTITY.copy()
-    if input_profile in {V2_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE}:
-        return V2_RENDERER_IDENTITY.copy()
-    raise BoundaryError("memory_tokens", "unknown_text_menu_profile")
 
 
 def project_memory_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:

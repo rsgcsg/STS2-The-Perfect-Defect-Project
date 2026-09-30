@@ -20,9 +20,11 @@ from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.local_evaluation import summary
 from spireagent.workbench.memory_recipe import MEMORY_RECIPES, memory_settings_for_recipe
+from stpd.fullrun.confirmed_interaction import HISTORY_PROFILES
 from stpd.fullrun.evaluation import candidate_metrics, summarize_rows
 from stpd.fullrun.memory_projection_config import (
     MemoryEpisodeProjectionConfig,
+    history_episode_projection_config,
     v2_episode_projection_config,
 )
 from stpd.workers.memory_ranking import MemoryConfig
@@ -34,7 +36,7 @@ def _memory_metadata(store: ManifestArtifactStore) -> dict[str, str]:
     models = {}
     for recipe in sorted(MEMORY_RECIPES):
         settings = memory_settings_for_recipe(recipe)
-        v2 = settings.input_profile == "text-menu-v2"
+        v2 = settings.input_profile.startswith("text-menu-v2")
         config = asdict(MemoryConfig(
             vocab_size=32, episode_count=2, slots=settings.slots,
             reset_each_step=settings.reset_each_step, width=48, layers=1, heads=2,
@@ -45,8 +47,13 @@ def _memory_metadata(store: ManifestArtifactStore) -> dict[str, str]:
             "schema": "stpd/managed-text-menu-observed-source-v1" if v2
             else "stpd/human-text-input-source-v1"}))
         store.publish(source)
-        projection = v2_episode_projection_config() if v2 else MemoryEpisodeProjectionConfig(
-            "stpd/memory-episode-projection-config-v1", 64)
+        if settings.input_profile in HISTORY_PROFILES:
+            projection = history_episode_projection_config(settings.input_profile)
+        elif v2:
+            projection = v2_episode_projection_config()
+        else:
+            projection = MemoryEpisodeProjectionConfig(
+                "stpd/memory-episode-projection-config-v1", 64)
         training_input = Manifest("training_input", PRODUCER,
             parents=(Parent("source", source.artifact_id),), parameters=FrozenObject.of({
                 "schema": "stpd/experimental-m2-training-input-v2",
@@ -100,6 +107,8 @@ def test_cold_collection_and_existing_report_without_ml_imports(tmp_path: Path) 
     store = cast(ManifestArtifactStore, token_store)
     assert isinstance(store.blobs, LocalBlobStore)
     memory_models = _memory_metadata(store)
+    assert len(memory_models) == len(MEMORY_RECIPES)
+    assert set(memory_models.values()) == MEMORY_RECIPES
     memory_reports = {_memory_report(store, model_id).artifact_id: recipe
                       for model_id, recipe in memory_models.items()}
     root = Path(__file__).resolve().parents[1]
@@ -225,8 +234,16 @@ def test_memory_summary_reads_only_report_and_never_guesses_recipe(tmp_path, mon
     assert "model_view_id" not in value and "view_schema" not in value
 
 
-@pytest.mark.parametrize("profile", ["text-menu-v1", "text-menu-m2-v1", "text-menu-m2-v2"])
-def test_completed_export_status_preserves_profile_without_importing_ml(tmp_path, profile):
+@pytest.mark.parametrize(("profile", "input_profile"), [
+    ("text-menu-v1", None),
+    ("text-menu-m2-v1", "text-menu-v1"),
+    ("text-menu-m2-v2", "text-menu-v2"),
+    ("text-menu-m2-v1", "text-menu-v1-confirmed-interaction"),
+    ("text-menu-m2-v2", "text-menu-v2-confirmed-interaction"),
+])
+def test_completed_export_status_preserves_profile_without_importing_ml(
+    tmp_path, profile, input_profile,
+):
     # Only the completed export's metadata is needed for this read. Weight and
     # binding verification must remain unavailable until the backend is present.
     script = r'''
@@ -246,18 +263,24 @@ builtins.__import__ = no_ml
 from spireagent.workbench import local_model_dependencies as dependencies
 from spireagent.workbench.local_model_registration import LocalModelRegistration
 from stpd.fullrun.memory_projection_config import (
-    MemoryEpisodeProjectionConfig, v2_episode_projection_config,
+    MemoryEpisodeProjectionConfig, history_episode_projection_config,
+    v2_episode_projection_config,
 )
 dependencies.find_spec = lambda _: None
-state, profile = Path(sys.argv[1]), sys.argv[2]
+state, profile, input_profile = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 model_id = "a" * 64
 operation = {"status": "completed", "model_id": model_id}
-if profile != "text-menu-v1":
+if input_profile != "None":
     operation["model_type"] = "memory"
     export = state / "model-exports" / model_id
     export.mkdir(parents=True)
-    projection = (v2_episode_projection_config() if profile.endswith("v2") else
-                  MemoryEpisodeProjectionConfig("stpd/memory-episode-projection-config-v1", 0))
+    if input_profile.endswith("confirmed-interaction"):
+        projection = history_episode_projection_config(input_profile)
+    elif input_profile == "text-menu-v2":
+        projection = v2_episode_projection_config()
+    else:
+        projection = MemoryEpisodeProjectionConfig(
+            "stpd/memory-episode-projection-config-v1", 0)
     (export / "model.json").write_text(json.dumps({"projection_config": asdict(projection)}))
 before = {str(path): path.read_bytes() for path in state.rglob("*") if path.is_file()}
 service = LocalModelRegistration(SimpleNamespace(state_dir=state),
@@ -275,6 +298,7 @@ assert not {"torch", "tokenizers", "safetensors", "transformers"} & sys.modules.
     env = {**os.environ, "PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1"}
     child = subprocess.run(
         [os.environ.get("STPD_TEST_COLD_INTERPRETER", sys.executable), "-B", "-c", script,
-         str(tmp_path), profile], env=env, cwd=root, text=True, capture_output=True, timeout=20,
+         str(tmp_path), profile, str(input_profile)],
+        env=env, cwd=root, text=True, capture_output=True, timeout=20,
     )
     assert child.returncode == 0, child.stderr
