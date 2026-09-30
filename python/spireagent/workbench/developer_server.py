@@ -1148,11 +1148,13 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         value = app.local_environment.start(
                             body["scenario_id"], scene_artifact_id=body["scene_artifact_id"]
                         )
-                    elif self.path == "/api/local-environment/scenes/save" and set(body) == {
-                        "name"
-                    }:
+                    elif self.path == "/api/local-environment/scenes/save" and set(body) in (
+                        {"name"}, {"name", "seed"}
+                    ):
                         app.check_environment_instance()
-                        value = app.local_environment.save_scene(body["name"])
+                        value = app.local_environment.save_scene(
+                            body["name"], **({"seed": body["seed"]} if "seed" in body else {})
+                        )
                     elif self.path == "/api/local-environment/compare" and set(body) == {
                         "scene_artifact_id", "report_artifact_ids"
                     }:
