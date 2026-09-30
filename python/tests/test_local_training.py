@@ -18,6 +18,7 @@ import test_local_recording_preview as recording_fixture
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.source import source_identity
+from spireagent.storage import replaceable_file
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.registry import SQLiteRegistry
 from spireagent.storage.store import ManifestArtifactStore
@@ -1009,7 +1010,7 @@ def test_status_reader_does_not_block_training_journal_replacement(
     owner = configured_owner(config)
     path = owner.path.parent / OPERATION_FILE
     operation_id = "a" * 32
-    training_module.atomic_json(path, {
+    training_module.write_replaceable_json(path, {
         "schema": "stpd/local-training-operation-v1", "status": "pending",
         "stage": "reserving", "operation_id": operation_id,
         "dataset_id": dataset_id, "_owner": list(owner.identity),
@@ -1090,12 +1091,59 @@ def test_windows_replaceable_reader_allows_atomic_journal_replacement(tmp_path: 
     with path.open("rb") as ordinary:
         assert ordinary.read() == b"old"
         with pytest.raises(OSError) as denied:
-            training_module.atomic_json(path, {"status": "new"})
-        assert getattr(denied.value, "winerror", None) in {5, 32}
+            training_module.write_replaceable_json(path, {"status": "new"})
+        assert getattr(denied.value, "winerror", None) is not None
     assert path.read_bytes() == b"old"
     with open_replaceable_read(path) as shared:
         assert shared.read() == b"old"
-        training_module.atomic_json(path, {"status": "new"})
+        training_module.write_replaceable_json(path, {"status": "new"})
         assert shared.seek(0) == 0
         assert shared.read() == b"old"
     assert json.loads(path.read_bytes()) == {"status": "new"}
+
+
+@pytest.mark.parametrize("winerror", [1175, 1176, 1177])
+def test_failed_windows_journal_replacement_preserves_recovery_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winerror: int,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    owner = configured_owner(config)
+    path = owner.path.parent / OPERATION_FILE
+    operation_id = "a" * 32
+    training_module.write_replaceable_json(path, {
+        "schema": "stpd/local-training-operation-v1", "status": "pending",
+        "stage": "reserving", "operation_id": operation_id,
+        "dataset_id": dataset_id, "_owner": list(owner.identity),
+    })
+    old = path.read_bytes()
+
+    def fail_replacement(temporary: Path, target: Path, backup: Path) -> None:
+        if winerror == 1177:
+            os.replace(target, backup)  # Microsoft's 1177 missing-canonical layout.
+        error = PermissionError(13, "synthetic ReplaceFileW failure")
+        error.winerror = winerror
+        raise error
+
+    with pytest.raises(PermissionError):
+        replaceable_file._write_json(
+            path, {"schema": "stpd/local-training-operation-v1", "status": "pending",
+                   "stage": "public_view", "operation_id": operation_id,
+                   "dataset_id": dataset_id, "_owner": list(owner.identity)},
+            fail_replacement)
+
+    candidates = list(path.parent.glob("." + path.name + ".pending-*"))
+    assert len(candidates) == 1
+    assert json.loads(candidates[0].read_bytes())["stage"] == "public_view"
+    backups = list(path.parent.glob("." + path.name + ".previous-*"))
+    if winerror == 1177:
+        assert not path.exists()
+        assert len(backups) == 1 and backups[0].read_bytes() == old
+        observed = LocalTrainingService(config).status()
+        assert observed["availability"] == "recovery_required"
+        assert observed["reason"] == "operation_recovery_required"
+        with pytest.raises(BoundaryError) as rejected:
+            LocalTrainingService(config).start(dataset_id)
+        assert rejected.value.code == "operation_recovery_required"
+    else:
+        assert path.read_bytes() == old
+        assert not backups
