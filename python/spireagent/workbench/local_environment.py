@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, digest, json_bytes
@@ -103,7 +103,9 @@ class _ManagedServiceEnvironment:
         runtime = self.ready.get("adapter_runtime_instance_id")
         continuity = episode.get("game_continuity_id") if isinstance(episode, Mapping) else None
         service = self.ready.get("service_instance_id")
-        if not all(isinstance(item, str) and item for item in (service, runtime, continuity)):
+        if (not isinstance(service, str) or not service
+                or not isinstance(runtime, str) or not runtime
+                or not isinstance(continuity, str) or not continuity):
             raise BoundaryError("local_environment", "managed_service_episode_unavailable")
         return {"service_instance_id": service, "runtime_instance_id": runtime,
                 "game_continuity_id": continuity}
@@ -233,7 +235,9 @@ class _ManagedServiceEnvironment:
             if result.get("type") != "text_submit_result":
                 raise BoundaryError("local_environment", "managed_submit_unconfirmed")
             submitted = result.get("result", result)
-            self.last_submit_result = submitted if isinstance(submitted, dict) else None
+            if not isinstance(submitted, dict):
+                raise BoundaryError("local_environment", "managed_submit_unconfirmed")
+            self.last_submit_result = submitted
             return submitted
         finally:
             self._release()
@@ -585,7 +589,7 @@ class LocalEnvironmentService:
             "host_package_pin"
         ] != pin:
             raise BoundaryError("local_environment", "managed_profile_changed")
-        return profile["input_profile"]
+        return cast(str, profile["input_profile"])
 
     def _managed_service_handles(self, profile: dict[str, Any]) -> tuple[Any, Any, dict[str, Any]]:
         from spireagent.host_runtime_client import activate_host_runtime_client

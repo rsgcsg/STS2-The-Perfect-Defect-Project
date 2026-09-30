@@ -1794,6 +1794,27 @@ def test_workbench_detach_never_calls_manager_close() -> None:
     assert transport.calls == []
 
 
+def test_host_service_malformed_submit_result_releases_without_claiming_delivery() -> None:
+    class MalformedSubmit(ManagedServiceFixture):
+        def request(self, command: dict[str, Any]) -> dict[str, Any]:
+            response = super().request(command)
+            if command["command"] == "text_submit":
+                response["result"]["result"] = None
+            return response
+
+    transport = MalformedSubmit()
+    environment = _ManagedServiceEnvironment(
+        transport, object(), transport.ready(), "text-menu-v1"
+    )
+    with pytest.raises(BoundaryError, match="managed_submit_unconfirmed"):
+        environment.submit_text_menu("action-0", "page-0", "episode-fixture", "bad-result")
+    assert environment.last_submit_result is None
+    assert environment.control is None
+    assert [call["command"] for call in transport.calls] == [
+        "claim_control", "text_submit", "release_control"
+    ]
+
+
 def test_host_service_submit_unknown_does_not_reuse_prior_receipt() -> None:
     class FailsSecondSubmit(ManagedServiceFixture):
         submits = 0
