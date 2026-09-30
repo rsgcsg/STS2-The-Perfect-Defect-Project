@@ -144,6 +144,9 @@ const menuV2Selected = { ...selectedFixture,
 let menuV2Posts = 0;
 let menuV2ContextReads = 0;
 let menuV2SnapshotReads = 0;
+let menuV2InjectStale = false;
+let menuV2FreshNavigation = false;
+const menuV2Requests = [];
 let v2GameId = "native-game-a";
 let v2ContextReads = 0;
 let legacySnapshotReads = 0;
@@ -203,8 +206,30 @@ const textHost = createHttpServer(async (request, response) => {
     if (body.input_profile === "text-menu-v2") {
       const action = menuV2Current.menu_actions.actions.find(item => item.action_id === body.bound_action_id);
       assert.ok(action); assert.equal(body.expected_snapshot_id, menuV2Current.snapshot_id);
+      menuV2Requests.push(body);
       menuV2Posts++;
-      if (action.kind === "system_selection") {
+      if (menuV2InjectStale) {
+        menuV2InjectStale = false;
+        menuV2FreshNavigation = true;
+        menuV2Current = { ...menuV2Root, snapshot_id: "v2-stale-fresh",
+          sequence: menuV2Current.sequence + 1,
+          menu: { ...menuV2Root.menu, native_snapshot_id: "native-stale-fresh" },
+          menu_actions: { ...menuV2Root.menu_actions, actions: menuV2Root.menu_actions.actions.map(item =>
+            ({ ...item, action_id: "v2-fresh-select-card" })) } };
+        output = { protocol_version: "1.0.0", schema: "sts2.player-environment/text-menu-action-result-2",
+          input_profile: "text-menu-v2", request_id: body.request_id, status: "not_applied",
+          effect_domain: null, native_delivery: null, action: null,
+          reason_code: "stale_snapshot", detail: null, retry: "reobserve",
+          successor: menuV2Current, attribution: null };
+      } else if (menuV2FreshNavigation) {
+        menuV2FreshNavigation = false;
+        const previous = menuV2Current;
+        menuV2Current = { ...menuV2Selected.successor, snapshot_id: "v2-stale-selected",
+          sequence: previous.sequence + 1, menu: { ...menuV2Selected.successor.menu,
+            native_snapshot_id: previous.menu.native_snapshot_id } };
+        output = { ...menuV2Selected, request_id: body.request_id, action,
+          successor: menuV2Current };
+      } else if (action.kind === "system_selection") {
         menuV2Current = menuV2Selected.successor;
         output = { ...menuV2Selected, request_id: body.request_id };
       } else {
@@ -319,6 +344,44 @@ try {
   assert.equal(controlHeld, false);
   await menuV2Runtime.stop();
 
+  // The installed package must discard a stale selection and score a newly
+  // observed menu before issuing a distinct request under the same Auto budget.
+  menuV2Current = menuV2Root;
+  menuV2InjectStale = true;
+  await mkdir("v2-stale-evidence");
+  const v2StaleEvidence = await AgentRunEvidence.create({ root: "v2-stale-evidence",
+    runId: "installed-v2-stale", policyManifest: menuV2Manifest,
+    runtimeVersion: POLICY_RUNTIME_VERSION, runtimeCodeSha256: "d".repeat(64), mode: "auto" });
+  await v2StaleEvidence.attestAdapter(menuV2Manifest.adapter);
+  const staleInputs = [];
+  const staleStart = menuV2Requests.length;
+  const contextStart = menuV2ContextReads;
+  const staleRuntime = new PolicyRuntime({ manifest: menuV2Manifest, connector: textConnector,
+    mode: "auto", runId: v2StaleEvidence.runId, evidence: v2StaleEvidence,
+    runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: "d".repeat(64) },
+    statefulPolicy: input => {
+      staleInputs.push(input);
+      return { output: { candidate_digest: input.candidate_digest,
+        scores: input.bundle.observation.menu_actions.actions.map((_action, index) => -index),
+        selected_index: 0 }, completion: { continuity_token: input.continuity_token,
+          snapshot_id: input.bundle.observation.snapshot_id, sequence: input.bundle.observation.sequence } };
+    } });
+  assert.equal((await staleRuntime.tick()).type, "text_not_applied");
+  assert.equal(staleRuntime.status().mode, "auto");
+  assert.equal(controlHeld, false, "stale retry must release the controller");
+  assert.equal((await staleRuntime.tick()).type, "navigated");
+  assert.equal(staleInputs.length, 2);
+  assert.equal(staleInputs[1].bundle.observation.snapshot_id, "v2-stale-fresh");
+  assert.equal(menuV2ContextReads, contextStart + 2);
+  assert.equal(menuV2Requests.length, staleStart + 2);
+  assert.notEqual(menuV2Requests[staleStart].request_id, menuV2Requests[staleStart + 1].request_id);
+  assert.equal(menuV2Requests[staleStart + 1].expected_snapshot_id, "v2-stale-fresh");
+  await staleRuntime.stop();
+  const staleEvents = (await readFile("v2-stale-evidence/installed-v2-stale/events.jsonl", "utf8"))
+    .trim().split("\n").map(JSON.parse);
+  assert.equal(staleEvents.filter(event => event.kind === "text_menu_not_applied").length, 1);
+  assert.equal(staleEvents.filter(event => event.kind === "menu_navigation").length, 1);
+
   // The installed v3 public API carries only confirmed, recorded Connector
   // delivery metadata into the next atomic context observation.
   menuV2Current = menuV2Root;
@@ -431,4 +494,4 @@ try {
     child.kill("SIGTERM"); await childExit;
   }
 }
-console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, text_menu_http_sdk: true, text_menu_navigation_and_native_submissions: textPosts, installed_v2_atomic_context_reads: v2ContextReads, installed_v2_token_rotation_and_completion_validation: true, installed_text_menu_v2_context_reads: menuV2ContextReads, installed_text_menu_v2_system_selection_and_native_submissions: menuV2Posts, installed_v3_confirmed_interaction_and_evidence: true, installed_v3_cancelled_dispatch_sealed: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));
+console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, text_menu_http_sdk: true, text_menu_navigation_and_native_submissions: textPosts, installed_v2_atomic_context_reads: v2ContextReads, installed_v2_token_rotation_and_completion_validation: true, installed_text_menu_v2_context_reads: menuV2ContextReads, installed_text_menu_v2_stale_reobserve_and_fresh_request: true, installed_text_menu_v2_system_selection_and_native_submissions: menuV2Posts, installed_v3_confirmed_interaction_and_evidence: true, installed_v3_cancelled_dispatch_sealed: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));

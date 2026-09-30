@@ -20,6 +20,19 @@ stateful `decision-only-ndjson-2` port and exact completion watermark.
 `native_input` leaf can report native delivery. The v2 Agent Run requires a
 matching Evidence verifier before its record can be qualified.
 
+In Auto, an exact v2 `not_applied` result with `reason_code=stale_snapshot`,
+`retry=reobserve` and `native_delivery=null` may continue only with an Agent
+Evidence writer, after that result is durably written and the controller is
+released. Without a writer it hands back to Human. The next tick obtains a
+fresh observation and complete menu (an atomic context for the required
+stateful v2 port), asks the policy again, and uses new decision and request
+IDs. It never reuses the old bound action, request or scores; a fresh policy
+decision may choose the same semantic action.
+Three consecutive stale submissions hand back to Human; an applied text menu
+navigation or native delivery resets that count. Other unapplied results,
+unknown delivery, evidence or release failure, and cancellation do not continue
+Auto. Text-menu-v1 retains its prior handoff on `not_applied`.
+
 Before observation, each Manifest must exactly pin the Connector environment:
 host kind, Connector version/source revision/artifact SHA-256/module version ID,
 Modset status/fingerprint, and the complete ordered list of loaded Mod IDs. Any
@@ -94,7 +107,7 @@ cancellation-event write taints the Agent Run because its evidence is incomplete
 
 ## Standalone consumer package
 
-Version `0.1.0-rc.14` provides a candidate package for external consumers. Build
+Version `0.1.0-rc.15` provides a candidate package for external consumers. Build
 from a committed component checkout with the checked-in lockfile:
 
 ```bash
@@ -103,7 +116,7 @@ npm --prefix components/policy-runtime run check
 npm --prefix components/policy-runtime run package -- --output /absolute/package-output
 ```
 
-The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.14.tgz`,
+The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.15.tgz`,
 `policy-runtime-package.json` and `checksums.sha256`. It requires committed
 component source and does not publish anything. The package contains compiled
 JavaScript/declarations, CLI entries, license, a component identity record and

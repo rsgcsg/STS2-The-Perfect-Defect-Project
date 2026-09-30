@@ -205,16 +205,150 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
     expect(f.events.some(event => event.kind === "text_native_unknown")).toBe(true);
   });
 
-  it("hands stale native intent back to Human without resubmitting it", async () => {
+  it("reobserves a stale v2 intent and makes a fresh decision with new IDs", async () => {
+    const f = fixture();
+    const confirmation = targetSelected(cardSelected().successor!).successor!;
+    f.setCurrent(confirmation);
+    const fresh = decodeTextMenuV2Snapshot({ ...root(), snapshot_id: "text-fresh-root",
+      sequence: confirmation.sequence + 1, menu: { ...root().menu, native_snapshot_id: "native-fresh" } }).data;
+    f.submit.mockImplementationOnce(async input => {
+      f.setCurrent(fresh);
+      return decodeTextMenuV2ActionResult({ protocol_version: "1.0.0",
+        schema: "sts2.player-environment/text-menu-action-result-2", input_profile: "text-menu-v2",
+        request_id: input.requestId, status: "not_applied", effect_domain: null, native_delivery: null,
+        action: null, reason_code: "stale_snapshot", detail: null,
+        retry: "reobserve", successor: fresh, attribution: null }, confirmation).data;
+    });
+    f.submit.mockImplementationOnce(async input => {
+      const selected = cardSelected();
+      const next = decodeTextMenuV2Snapshot({ ...selected.successor!, snapshot_id: "text-fresh-card",
+        sequence: fresh.sequence + 1, menu: { ...selected.successor!.menu,
+          native_snapshot_id: fresh.menu.native_snapshot_id } }).data;
+      f.setCurrent(next);
+      return decodeTextMenuV2ActionResult({ ...selected, request_id: input.requestId,
+        successor: next }, fresh).data;
+    });
+    const offered: string[] = [];
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector: f.connector, mode: "auto", evidence: f.evidence,
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) },
+      statefulPolicy: async (input, _signal, onOffer) => {
+        onOffer(); offered.push(input.bundle.observation.snapshot_id);
+        return { output: { candidate_digest: input.candidate_digest,
+          scores: input.bundle.observation.schema === "sts2.player-environment/snapshot-1" ? []
+            : input.bundle.observation.menu_actions.actions.map((_action, i) => -i), selected_index: 0 },
+          completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
+            sequence: input.bundle.observation.sequence } };
+      } });
+    expect((await runtime.tick()).type).toBe("text_not_applied");
+    expect(runtime.status()).toMatchObject({ mode: "auto", tainted: false });
+    expect(f.connector.releaseController).toHaveBeenCalledTimes(1);
+    expect((await runtime.tick()).type).toBe("navigated");
+    expect(offered).toEqual([confirmation.snapshot_id, fresh.snapshot_id]);
+    expect(f.submit).toHaveBeenCalledTimes(2);
+    expect(f.submit.mock.calls[0]![0].requestId).not.toBe(f.submit.mock.calls[1]![0].requestId);
+    expect(f.submit.mock.calls[1]![0].expectedSnapshotId).toBe(fresh.snapshot_id);
+    expect(f.events.filter(event => event.kind === "text_menu_not_applied")).toHaveLength(1);
+    expect(f.events.filter(event => event.kind === "menu_navigation")).toHaveLength(1);
+  });
+
+  it("hands off after three consecutive v2 stale submissions", async () => {
+    const f = fixture();
+    let ordinal = 0;
+    f.submit.mockImplementation(async input => {
+      ordinal += 1;
+      const next = decodeTextMenuV2Snapshot({ ...root(), snapshot_id: `text-stale-${ordinal}`,
+        sequence: root().sequence + ordinal, menu: { ...root().menu,
+          native_snapshot_id: `native-stale-${ordinal}` },
+        menu_actions: { ...root().menu_actions, actions: root().menu_actions.actions.map(action =>
+          ({ ...action, action_id: `v2-select-card-${ordinal}` })) } }).data;
+      f.setCurrent(next);
+      return decodeTextMenuV2ActionResult({ protocol_version: "1.0.0",
+        schema: "sts2.player-environment/text-menu-action-result-2", input_profile: "text-menu-v2",
+        request_id: input.requestId, status: "not_applied", effect_domain: null,
+        native_delivery: null, action: null, reason_code: "stale_snapshot", detail: null,
+        retry: "reobserve", successor: next, attribution: null }).data;
+    });
+    const policy = vi.fn(async (input: Parameters<NonNullable<ConstructorParameters<typeof PolicyRuntime>[0]["statefulPolicy"]>>[0],
+      _signal: AbortSignal, onOffer: () => void) => {
+      onOffer(); return { output: { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 },
+        completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
+          sequence: input.bundle.observation.sequence } };
+    });
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector: f.connector, mode: "auto", evidence: f.evidence,
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) }, statefulPolicy: policy });
+    expect((await runtime.tick()).type).toBe("text_not_applied");
+    expect(runtime.status().mode).toBe("auto");
+    expect((await runtime.tick()).type).toBe("text_not_applied");
+    expect(runtime.status().mode).toBe("auto");
+    expect((await runtime.tick()).type).toBe("text_not_applied");
+    expect(runtime.status()).toMatchObject({ mode: "human", tainted: false });
+    expect(f.submit).toHaveBeenCalledTimes(3);
+    expect(policy).toHaveBeenCalledTimes(3);
+    expect(f.connector.releaseController).toHaveBeenCalledTimes(3);
+    expect((await runtime.tick()).type).toBe("human");
+    expect(f.submit).toHaveBeenCalledTimes(3);
+  });
+
+  it("resets the consecutive stale count after an applied text selection", async () => {
+    const f = fixture();
+    let submitted = 0;
+    f.submit.mockImplementation(async input => {
+      submitted += 1;
+      const previous = f.current();
+      if (submitted === 2) {
+        const selected = cardSelected();
+        const next = decodeTextMenuV2Snapshot({ ...selected.successor!, snapshot_id: "text-reset-selected",
+          sequence: previous.sequence + 1, menu: { ...selected.successor!.menu,
+            native_snapshot_id: previous.menu.native_snapshot_id } }).data;
+        f.setCurrent(next);
+        return decodeTextMenuV2ActionResult({ ...selected, request_id: input.requestId,
+          successor: next }, previous).data;
+      }
+      const next = decodeTextMenuV2Snapshot({ ...root(), snapshot_id: `text-reset-${submitted}`,
+        sequence: previous.sequence + 1, menu: { ...root().menu,
+          native_snapshot_id: `native-reset-${submitted}` } }).data;
+      f.setCurrent(next);
+      return decodeTextMenuV2ActionResult({ protocol_version: "1.0.0",
+        schema: "sts2.player-environment/text-menu-action-result-2", input_profile: "text-menu-v2",
+        request_id: input.requestId, status: "not_applied", effect_domain: null,
+        native_delivery: null, action: null, reason_code: "stale_snapshot", detail: null,
+        retry: "reobserve", successor: next, attribution: null }, previous).data;
+    });
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector: f.connector, mode: "auto", evidence: f.evidence,
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) },
+      statefulPolicy: async (input, _signal, onOffer) => {
+        onOffer(); const count = input.bundle.observation.schema === "sts2.player-environment/snapshot-1" ? 0
+          : input.bundle.observation.menu_actions.actions.length;
+        return { output: { candidate_digest: input.candidate_digest,
+          scores: Array.from({ length: count }, (_item, i) => -i), selected_index: 0 },
+          completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
+            sequence: input.bundle.observation.sequence } };
+      } });
+    expect((await runtime.tick()).type).toBe("text_not_applied");
+    expect((await runtime.tick()).type).toBe("navigated");
+    expect((await runtime.tick()).type).toBe("text_not_applied");
+    expect((await runtime.tick()).type).toBe("text_not_applied");
+    expect(runtime.status()).toMatchObject({ mode: "auto", tainted: false });
+    expect(f.submit).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([
+    ["nonstale", "menu_action_not_current", "reobserve", null],
+    ["no-reobserve", "stale_snapshot", "never", null],
+    ["native-not-delivered", "stale_snapshot", "reobserve", "not_delivered"],
+    ["no-evidence-writer", "stale_snapshot", "reobserve", null]
+  ] as const)("hands %s back to Human", async (name, reason, retry, nativeDelivery) => {
     const f = fixture();
     const confirmation = targetSelected(cardSelected().successor!).successor!;
     f.setCurrent(confirmation);
     f.submit.mockImplementationOnce(async input => decodeTextMenuV2ActionResult({ protocol_version: "1.0.0",
       schema: "sts2.player-environment/text-menu-action-result-2", input_profile: "text-menu-v2",
-      request_id: input.requestId, status: "not_applied", effect_domain: "native_input", native_delivery: "not_delivered",
-      action: confirmation.menu_actions.actions[0], reason_code: "stale_snapshot", detail: null,
-      retry: "reobserve", successor: null, attribution: null }, confirmation).data);
+      request_id: input.requestId, status: "not_applied", effect_domain: "native_input",
+      native_delivery: nativeDelivery, action: confirmation.menu_actions.actions[0],
+      reason_code: reason, detail: null, retry, successor: null, attribution: null }, confirmation).data);
     const runtime = new PolicyRuntime({ manifest: manifest(), connector: f.connector, mode: "auto",
+      ...(name === "no-evidence-writer" ? {} : { evidence: f.evidence,
+        runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) } }),
       statefulPolicy: async (input, _signal, onOffer) => {
         onOffer(); return { output: { candidate_digest: input.candidate_digest, scores: [1, 0], selected_index: 0 },
           completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
@@ -222,8 +356,113 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
       } });
     expect((await runtime.tick()).type).toBe("text_not_applied");
     expect(runtime.status()).toMatchObject({ mode: "human", tainted: false });
+    expect(f.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["evidence", "release"] as const)("does not continue after %s failure", async failure => {
+    const f = fixture();
+    f.submit.mockImplementationOnce(async input => decodeTextMenuV2ActionResult({ protocol_version: "1.0.0",
+      schema: "sts2.player-environment/text-menu-action-result-2", input_profile: "text-menu-v2",
+      request_id: input.requestId, status: "not_applied", effect_domain: null, native_delivery: null,
+      action: null, reason_code: "stale_snapshot", detail: null, retry: "reobserve",
+      successor: root(), attribution: null }).data);
+    if (failure === "release") vi.mocked(f.connector.releaseController).mockRejectedValueOnce(new Error("release failed"));
+    const evidence = failure === "evidence" ? {
+      append: async (kind: string) => { if (kind === "text_menu_not_applied") throw new Error("write failed"); }
+    } as never : f.evidence;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector: f.connector, mode: "auto", evidence,
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) },
+      statefulPolicy: async (input, _signal, onOffer) => {
+        onOffer(); return { output: { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 },
+          completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
+            sequence: input.bundle.observation.sequence } };
+      } });
+    if (failure === "release") await expect(runtime.tick()).rejects.toThrow(/release failed/u);
+    else expect((await runtime.tick()).type).toBe("text_not_applied");
+    expect(runtime.status()).toMatchObject({ mode: "human", tainted: true });
+    expect((await runtime.tick()).type).toBe("not_admitted");
+    expect(f.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not continue when Human cancels during the stale evidence append", async () => {
+    const f = fixture();
+    f.submit.mockImplementationOnce(async input => decodeTextMenuV2ActionResult({ protocol_version: "1.0.0",
+      schema: "sts2.player-environment/text-menu-action-result-2", input_profile: "text-menu-v2",
+      request_id: input.requestId, status: "not_applied", effect_domain: null, native_delivery: null,
+      action: null, reason_code: "stale_snapshot", detail: null, retry: "reobserve",
+      successor: root(), attribution: null }).data);
+    let appendStarted!: () => void;
+    let finishAppend!: () => void;
+    const started = new Promise<void>(resolve => { appendStarted = resolve; });
+    const appendGate = new Promise<void>(resolve => { finishAppend = resolve; });
+    const evidence = { append: async (kind: string) => {
+      if (kind === "text_menu_not_applied") { appendStarted(); await appendGate; }
+    } } as never;
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector: f.connector, mode: "auto", evidence,
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) },
+      statefulPolicy: async (input, _signal, onOffer) => {
+        onOffer(); return { output: { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 },
+          completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
+            sequence: input.bundle.observation.sequence } };
+      } });
+    const pending = runtime.tick();
+    await started;
+    const human = runtime.setMode("human");
+    finishAppend();
+    expect((await pending).type).toBe("text_not_applied");
+    await human;
+    expect(runtime.status()).toMatchObject({ mode: "human", tainted: false });
     expect((await runtime.tick()).type).toBe("human");
     expect(f.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers a confirmed interaction once across a stale v2 decision", async () => {
+    const f = fixture();
+    const third = decodeTextMenuV2Snapshot({ ...root(), snapshot_id: "text-third",
+      sequence: root().sequence + 3, menu: { ...root().menu, native_snapshot_id: "native-third" } }).data;
+    let submitted = 0;
+    f.submit.mockImplementation(async input => {
+      submitted += 1;
+      if (submitted === 1) {
+        const selected = cardSelected(); f.setCurrent(selected.successor!);
+        return decodeTextMenuV2ActionResult({ ...selected, request_id: input.requestId }, root()).data;
+      }
+      if (submitted === 2) {
+        f.setCurrent(third);
+        return decodeTextMenuV2ActionResult({ protocol_version: "1.0.0",
+          schema: "sts2.player-environment/text-menu-action-result-2", input_profile: "text-menu-v2",
+          request_id: input.requestId, status: "not_applied", effect_domain: null,
+          native_delivery: null, action: null, reason_code: "stale_snapshot", detail: null,
+          retry: "reobserve", successor: third, attribution: null }, cardSelected().successor!).data;
+      }
+      const selected = cardSelected();
+      const next = decodeTextMenuV2Snapshot({ ...selected.successor!, snapshot_id: "text-third-selected",
+        sequence: third.sequence + 1, menu: { ...selected.successor!.menu,
+          native_snapshot_id: third.menu.native_snapshot_id } }).data;
+      f.setCurrent(next);
+      return decodeTextMenuV2ActionResult({ ...selected, request_id: input.requestId, successor: next }, third).data;
+    });
+    const m = manifest(); m.adapter.protocol = "sts2.policy-runtime/decision-only-ndjson-3";
+    const feedback: Array<string | null> = [];
+    const runtime = new PolicyRuntime({ manifest: m, connector: f.connector, mode: "auto", evidence: f.evidence,
+      runtimeIdentity: { version: "test", code_sha256: "f".repeat(64) },
+      statefulPolicy: async (input, _signal, onOffer) => {
+        onOffer(); const prior = input.previous_interaction?.request_id ?? null;
+        feedback.push(prior);
+        const count = input.bundle.observation.schema === "sts2.player-environment/snapshot-1" ? 0
+          : input.bundle.observation.menu_actions.actions.length;
+        return { output: { candidate_digest: input.candidate_digest,
+          scores: Array.from({ length: count }, (_item, i) => -i), selected_index: 0 },
+          completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
+            sequence: input.bundle.observation.sequence, previous_interaction_request_id: prior } };
+      } });
+    expect((await runtime.tick()).type).toBe("navigated");
+    const firstRequest = f.submit.mock.calls[0]![0].requestId;
+    expect((await runtime.tick()).type).toBe("text_not_applied");
+    expect((await runtime.tick()).type).toBe("navigated");
+    expect(feedback).toEqual([null, firstRequest, null]);
+    expect(f.events.filter(event => event.kind === "menu_navigation")).toHaveLength(2);
+    expect(f.events.filter(event => event.kind === "text_menu_not_applied")).toHaveLength(1);
   });
 
   it("port-2 accepts a strict v2 bundle with exact count and digest", async () => {
