@@ -279,7 +279,33 @@ runtime, environment and current episode identity to every client. Its
 schemas, reviewed interaction kinds and emitted action verbs. `game_over` is an
 observed terminal kind with zero actions. These lists support registration;
 only each complete current menu catalog and its native binding authorize an
-action. Every POST
+action. The text-menu-v2 entry also advertises
+`sts2.host-runtime/text-menu-v2-owner-1`. A shared-service v2 controller claim
+must include `text_state_owner` as either `workbench:<32 lowercase hex>` or
+`policy-runtime:<run-UUID>` (55 ASCII bytes maximum). Workbench takes the value
+from its server-created segment ID; Policy Runtime takes it from its immutable
+Agent Run ID. They are control-plane metadata and never part of model input or
+an action. The Host validates their shape, binds them to the authenticated
+client/manager role and current runtime/game continuity, and echoes the value
+in `claim_control_result` so updated clients can verify support. The field only
+names the cursor owner: the existing bearer, control token and epoch still
+authorize control. Processes holding the same client bearer remain one
+authorized principal and can choose the same owner value; this mechanism
+prevents accidental state carryover among trusted Workbench segments and
+Runtime runs, not malicious use by another holder of that bearer.
+
+After a successful claim, a changed owner resets only the v2 text cursor and
+invalidates its snapshots. Reclaiming with the same owner preserves a
+multi-step choice across short leases. Release and read-only status do not
+clear or claim the owner. An ownerless shared claim clears prior v2 state and
+cannot observe or submit v2; it may still use the legacy v1 menu. Reset, close,
+raw mutation, a v1 submit or unknown native delivery clear the association.
+Legacy flat-v1 calls remain supported without an owner field. The
+single-consumer JSONL/stdio path keeps one implicit owner for the driver
+lifetime. This owner change does not rotate game continuity or affect game
+rules.
+
+Every POST
 requires that service ID in `X-STS2-Managed-Service-ID`. `POST /v1/command`
 forwards the existing Managed observe, read, identity, claim, text and release
 commands to the same driver. A claim requires expected runtime and continuity;

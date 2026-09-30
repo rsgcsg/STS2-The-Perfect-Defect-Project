@@ -1444,7 +1444,11 @@ class ManagedServiceFixture:
         return {"service_instance_id": self.service_instance_id,
                 "adapter_runtime_instance_id": "runtime-fixture",
                 "episode": {"game_continuity_id": "episode-fixture",
-                            "control_held": self.held, "tainted": False, "closed": False}}
+                            "control_held": self.held, "tainted": False, "closed": False},
+                "text_menu_contracts": [
+                    {"input_profile": "text-menu-v2",
+                     "text_state_owner_contract": "sts2.host-runtime/text-menu-v2-owner-1"}
+                ]}
 
     def request(self, command: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(command)
@@ -1458,6 +1462,8 @@ class ManagedServiceFixture:
             result = {"type": "claim_control_result", "control_token": "private-token",
                       "control_epoch": "epoch-fixture", "runtime_instance_id": "runtime-fixture",
                       "game_continuity_id": "episode-fixture"}
+            if "text_state_owner" in command:
+                result["text_state_owner"] = command["text_state_owner"]
         elif operation == "text_observe":
             result = {"type": "text_observe_result",
                       "context": {"schema": (
@@ -1509,6 +1515,50 @@ def test_host_service_manual_observe_and_submit_use_acknowledged_control_without
     ]
     assert transport.calls[1]["expected_snapshot_id"] == "page-0"
     assert transport.calls[1]["mutation_request_id"] == "request-fixture"
+
+
+def test_workbench_v2_binds_claims_to_server_owned_segment_id_and_keeps_short_lease_continuity(
+) -> None:
+    transport = ManagedServiceFixture()
+    session_id = "d" * 32
+    environment = _ManagedServiceEnvironment(
+        transport, object(), transport.ready(), "text-menu-v2", session_id=session_id
+    )
+    environment._claim()
+    assert transport.calls[0]["text_state_owner"] == f"workbench:{session_id}"
+    environment._release()
+    environment._claim()
+    assert transport.calls[2]["text_state_owner"] == f"workbench:{session_id}"
+    environment._release()
+
+
+def test_workbench_v2_fails_closed_if_host_or_segment_owner_identity_is_missing() -> None:
+    transport = ManagedServiceFixture()
+    with pytest.raises(BoundaryError, match="managed_text_state_owner_unsupported"):
+        _ManagedServiceEnvironment(transport, object(),
+            {**transport.ready(), "text_menu_contracts": []}, "text-menu-v2",
+            session_id="d" * 32)
+    with pytest.raises(BoundaryError, match="managed_text_state_owner_invalid"):
+        _ManagedServiceEnvironment(transport, object(), transport.ready(),
+            "text-menu-v2", session_id="not-a-session")
+
+
+def test_known_host_owner_rejection_does_not_taint_workbench_claim_as_unknown() -> None:
+    class RejectingTransport(ManagedServiceFixture):
+        def request(self, command: dict[str, Any]) -> dict[str, Any]:
+            if command.get("command") == "claim_control":
+                error = RuntimeError("managed_text_state_owner_invalid")
+                error.code = "managed_text_state_owner_invalid"
+                raise error
+            return super().request(command)
+
+    transport = RejectingTransport()
+    environment = _ManagedServiceEnvironment(
+        transport, object(), transport.ready(), "text-menu-v2", session_id="e" * 32
+    )
+    with pytest.raises(BoundaryError, match="managed_text_state_owner_invalid"):
+        environment._claim()
+    assert environment.control is None
 
 
 def test_lost_release_reply_can_be_explicitly_recovered_without_resolving_game_outcome(

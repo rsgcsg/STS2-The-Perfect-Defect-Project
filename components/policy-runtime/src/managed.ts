@@ -8,6 +8,7 @@ import { validateManagedEnvironmentBinding, type AnyDecisionBundle, type Managed
 const ATTACHMENT_SCHEMA = "sts2.host-runtime/managed-service-attachment-1";
 const READY_SCHEMA = "sts2.host-runtime/managed-service-ready-1";
 const RESULT_SCHEMA = "sts2.host-runtime/managed-service-result-1";
+const TEXT_STATE_OWNER_CONTRACT = "sts2.host-runtime/text-menu-v2-owner-1";
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 
 type Json = Record<string, unknown>;
@@ -99,22 +100,31 @@ export class ManagedServicePolicyClient implements PolicyConnector {
   private cachedContext: Awaited<ReturnType<ManagedServicePolicyClient["observeTextMenuContext"]>> | null = null;
   private admission: ManagedEnvironmentStatus | null = null;
   private blockedMutations = false;
+  private readonly textStateOwner: string;
 
   private constructor(private readonly attachment: Attachment,
                       readonly binding: ManagedEnvironmentBinding,
                       readonly bindingSha256: string,
-                      private readonly target: ManagedTarget) {}
+                      private readonly target: ManagedTarget,
+                      runId: string) {
+    if (!/^run-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(runId)) {
+      throw new Error("Managed Runtime run ID is invalid");
+    }
+    this.textStateOwner = `policy-runtime:${runId}`;
+  }
 
   get initialEnvironment(): ManagedEnvironmentStatus {
     if (!this.admission) throw new Error("Managed environment was not admitted");
     return this.admission;
   }
 
-  static async attach(bindingPath: string, attachmentPath: string, target: ManagedTarget): Promise<ManagedServicePolicyClient> {
+  static async attach(bindingPath: string, attachmentPath: string, target: ManagedTarget,
+                      runId: string): Promise<ManagedServicePolicyClient> {
     for (const value of [target.serviceInstanceId, target.runtimeInstanceId, target.gameContinuityId]) string(value, "Managed expected target");
     const verified = await loadManagedAttachment(bindingPath, attachmentPath);
     if (verified.attachment.service_instance_id !== target.serviceInstanceId) throw new Error("Managed service differs from explicit target");
-    const client = new ManagedServicePolicyClient(verified.attachment, verified.binding, verified.bindingSha256, target);
+    const client = new ManagedServicePolicyClient(verified.attachment, verified.binding,
+      verified.bindingSha256, target, runId);
     await client.capabilities({ fresh: true, inputProfile: "text-menu-v2" });
     return client;
   }
@@ -173,8 +183,9 @@ export class ManagedServicePolicyClient implements PolicyConnector {
       && (item as Json).input_profile === "text-menu-v2").length !== 1
         || v2.protocol_version !== ready.text_protocol_version
         || v2.snapshot_schema !== "sts2.player-environment/text-menu-snapshot-2"
-        || v2.receipt_schema !== "sts2.player-environment/text-menu-action-result-2") {
-      throw new Error("Managed text-menu-v2 contract drift");
+        || v2.receipt_schema !== "sts2.player-environment/text-menu-action-result-2"
+        || v2.text_state_owner_contract !== TEXT_STATE_OWNER_CONTRACT) {
+      throw new Error("Managed text-menu-v2 owner contract is unavailable or drifted");
     }
     const interactionKinds = vocabulary(v2.interaction_kinds, "Managed interaction kinds");
     const terminalKinds = vocabulary(v2.observed_terminal_kinds, "Managed observed terminal kinds");
@@ -268,10 +279,14 @@ export class ManagedServicePolicyClient implements PolicyConnector {
     if (!admitted) throw new Error("Managed environment was not admitted");
     try {
       const { result, controlBinding } = await this.command("claim_control", {
+        text_state_owner: this.textStateOwner,
         expected_runtime_instance_id: admitted.runtime_instance_id,
         expected_game_continuity_id: admitted.game_continuity_id
       });
       if (result.type !== "claim_control_result") throw new Error("Managed claim result drift");
+      if (result.text_state_owner !== this.textStateOwner) {
+        throw new Error("Managed text state owner binding differs from the control lease");
+      }
       const confirmation = this.confirmation(controlBinding, "held");
       if (result.control_epoch !== confirmation.control_epoch
           || result.runtime_instance_id !== confirmation.runtime_instance_id

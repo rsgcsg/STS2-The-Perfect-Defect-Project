@@ -17,6 +17,7 @@ const PUBLIC_ERRORS = new Set([
   "managed_control_held", "managed_control_intent_stale",
   "managed_control_not_held", "managed_control_not_authorized",
   "managed_control_credential_stale", "managed_control_runtime_identity_unavailable",
+  "managed_text_state_owner_required", "managed_text_state_owner_invalid",
   "managed_session_tainted_after_unknown",
   "managed_session_tainted_after_successor_projection_failure",
   "stale_game_continuity", "stale_managed_runtime_instance",
@@ -293,7 +294,7 @@ export async function startManagedHostService(started, {
         // The driver checks this inside its existing queue, not against a GET.
         const offered = command === "text_observe"
           ? { ...body, require_control: true } : body;
-        const value = await driver.handle(offered);
+        const value = await driver.handle(offered, { principal: role, sharedService: true });
         if (command === "claim_control") {
           heldClaim = {
             token: value.control_token, epoch: value.control_epoch,
@@ -327,7 +328,8 @@ export async function startManagedHostService(started, {
           throw new Error("managed_service_episode_precondition_required");
         }
         // In-queue reset checks the expected episode and unheld control.
-        const value = await driver.handle({ ...body, command: "reset" });
+        const value = await driver.handle({ ...body, command: "reset" },
+          { principal: role, sharedService: true });
         json(response, 200, result(value));
         return;
       }
@@ -350,13 +352,14 @@ export async function startManagedHostService(started, {
         // prior native result; a new claim/release changes its generation.
         const value = await driver.handle({ command: "release_control",
           request_id: body.request_id, control_token: claim.token,
-          control_epoch: claim.epoch });
+          control_epoch: claim.epoch }, { principal: role, sharedService: true });
         if (heldClaim === claim) heldClaim = null;
         json(response, 200, result(value, binding(value.control_epoch, value.game_continuity_id)));
         return;
       }
       if (!exactKeys(body, ["request_id"])) throw new Error("managed_service_close_body_invalid");
-      const value = await driver.handle({ command: "close", request_id: body.request_id });
+      const value = await driver.handle({ command: "close", request_id: body.request_id },
+        { principal: role, sharedService: true });
       nativeClosed = true;
       closing = true;
       const closeAfterReply = () => { void closeListener(); };

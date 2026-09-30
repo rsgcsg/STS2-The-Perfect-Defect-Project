@@ -39,6 +39,7 @@ KNOWN_POST_REJECTIONS = frozenset({
     "managed_control_intent_stale", "managed_control_not_held",
     "managed_control_not_authorized", "managed_control_credential_stale",
     "managed_control_runtime_identity_unavailable",
+    "managed_text_state_owner_required", "managed_text_state_owner_invalid",
     "managed_session_tainted_after_unknown",
     "managed_session_tainted_after_successor_projection_failure",
     "stale_game_continuity", "stale_managed_runtime_instance",

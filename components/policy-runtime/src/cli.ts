@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -45,13 +45,16 @@ async function main(): Promise<void> {
   if (artifactSha256 !== manifest.artifact.sha256) throw new Error("policy artifact SHA-256 differs from Policy Manifest");
   const policyManifestSha256 = createHash("sha256").update(canonicalJson(manifest)).digest("hex");
   const runtimeCodeSha256 = await codeDigest(dirname(fileURLToPath(import.meta.url)));
+  const runId = `run-${randomUUID()}`;
   const managedClient = options.managed
-    ? await ManagedServicePolicyClient.attach(options.managed.bindingPath, options.managed.attachmentPath, options.managed.target)
+    ? await ManagedServicePolicyClient.attach(options.managed.bindingPath,
+      options.managed.attachmentPath, options.managed.target, runId)
     : undefined;
 
   await mkdir(resolve(options.evidenceRoot), { recursive: true });
   const evidence = await AgentRunEvidence.create({
     root: resolve(options.evidenceRoot),
+    runId,
     policyManifest: manifest,
     runtimeVersion: POLICY_RUNTIME_VERSION,
     runtimeCodeSha256,

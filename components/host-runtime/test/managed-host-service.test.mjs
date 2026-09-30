@@ -137,9 +137,11 @@ test("two attached clients see one Managed runtime, owner menu and explicit Host
         expected_game_continuity_id: "stale" })).status, 409);
     const claimResponse = await command(service, service.clientToken,
       { command: "claim_control", expected_runtime_instance_id: "runtime-one",
-        expected_game_continuity_id: continuity });
+        expected_game_continuity_id: continuity,
+        text_state_owner: `workbench:${"a".repeat(32)}` });
     assert.equal(claimResponse.status, 200);
     const claim = claimResponse.body.result;
+    assert.equal(claim.text_state_owner, `workbench:${"a".repeat(32)}`);
     assert.equal(claimResponse.body.control_binding.control_epoch, claim.control_epoch);
     assert.equal((await command(service, service.clientToken,
       { command: "claim_control", expected_runtime_instance_id: "runtime-one",
@@ -183,6 +185,41 @@ test("two attached clients see one Managed runtime, owner menu and explicit Host
       { request_id: "host-close" });
     assert.equal(closed.body.result.type, "close_result");
     assert.equal(native.stopCount, 1);
+  } finally {
+    await service.close();
+  }
+});
+
+test("shared v2 rejects a missing owner while the legacy flat v1 path still works", async () => {
+  const service = await startManagedHostService(fixture().started, { hostIdentity });
+  try {
+    await reset(service);
+    const continuity = (await call(service, service.clientToken, "/v1/ready"))
+      .body.episode.game_continuity_id;
+    const legacyClaim = (await command(service, service.clientToken, {
+      command: "claim_control", expected_runtime_instance_id: "runtime-one",
+      expected_game_continuity_id: continuity
+    })).body.result;
+    const legacyPage = await command(service, service.clientToken, {
+      command: "text_observe", input_profile: "text-menu-v1",
+      control_token: legacyClaim.control_token, control_epoch: legacyClaim.control_epoch
+    });
+    assert.equal(legacyPage.status, 200);
+    await command(service, service.clientToken, { command: "release_control",
+      control_token: legacyClaim.control_token, control_epoch: legacyClaim.control_epoch });
+
+    const unscopedClaim = (await command(service, service.clientToken, {
+      command: "claim_control", expected_runtime_instance_id: "runtime-one",
+      expected_game_continuity_id: continuity
+    })).body.result;
+    const unscopedV2 = await command(service, service.clientToken, {
+      command: "text_observe", input_profile: "text-menu-v2",
+      control_token: unscopedClaim.control_token, control_epoch: unscopedClaim.control_epoch
+    });
+    assert.equal(unscopedV2.status, 409);
+    assert.equal(unscopedV2.body.error, "managed_text_state_owner_required");
+    await command(service, service.clientToken, { command: "release_control",
+      control_token: unscopedClaim.control_token, control_epoch: unscopedClaim.control_epoch });
   } finally {
     await service.close();
   }

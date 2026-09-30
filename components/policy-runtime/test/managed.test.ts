@@ -18,8 +18,10 @@ const hostIdentity = { package_name: binding.host_package_identity.package, vers
   distribution_kind: "installed_package", source_revision: null,
   component_tree_revision: null, source_digest_sha256: sha("4") };
 const target = { serviceInstanceId: "service-1", runtimeInstanceId: "runtime-1", gameContinuityId: "game-1" };
+const runId = "run-00000000-0000-4000-8000-000000000001";
+const textStateOwner = `policy-runtime:${runId}`;
 const episode = { game_continuity_id: target.gameContinuityId, control_held: false, tainted: false, closed: false };
-const ready = () => ({ schema: "sts2.host-runtime/managed-service-ready-1", service_instance_id: target.serviceInstanceId,
+const ready = (ownerContract: string | null = "sts2.host-runtime/text-menu-v2-owner-1") => ({ schema: "sts2.host-runtime/managed-service-ready-1", service_instance_id: target.serviceInstanceId,
   host_identity: hostIdentity, candidate_build: binding.candidate_build,
   exact_game: { version: "game-version", commit: "game-commit", sts2_dll_sha256: sha("3") },
   runtime_identity: { type: "managed", process_id: 1 }, adapter_runtime_instance_id: target.runtimeInstanceId,
@@ -30,6 +32,7 @@ const ready = () => ({ schema: "sts2.host-runtime/managed-service-ready-1", serv
       observed_terminal_kinds: ["game_over"], action_verbs: ["end_turn"] },
     { protocol_version: "1.0.0", input_profile: "text-menu-v2", snapshot_schema: "sts2.player-environment/text-menu-snapshot-2",
       receipt_schema: "sts2.player-environment/text-menu-action-result-2", interaction_kinds: ["combat_turn"],
+      ...(ownerContract ? { text_state_owner_contract: ownerContract } : {}),
       observed_terminal_kinds: ["game_over"], action_verbs: ["select_card", "end_turn"] }
   ], episode });
 
@@ -42,7 +45,8 @@ describe("Managed Host attachment over loopback HTTP", () => {
     episode.control_held = false;
   });
 
-  async function fixture(malformedClaim = false) {
+  async function fixture(malformedClaim = false,
+                         ownerContract: string | null = "sts2.host-runtime/text-menu-v2-owner-1") {
     let claims = 0;
     let releases = 0;
     let requests = 0;
@@ -54,7 +58,7 @@ describe("Managed Host attachment over loopback HTTP", () => {
         : null;
       if (body) expect(request.headers["x-sts2-managed-service-id"]).toBe(target.serviceInstanceId);
       let result: unknown;
-      if (request.url === "/v1/ready") result = ready();
+      if (request.url === "/v1/ready") result = ready(ownerContract);
       else if (body?.command === "episode_identity") result = { schema: "sts2.host-runtime/managed-service-result-1",
         service_instance_id: target.serviceInstanceId,
         result: { type: "episode_identity_result", request_id: body.request_id, identity: {
@@ -65,11 +69,13 @@ describe("Managed Host attachment over loopback HTTP", () => {
       else if (body?.command === "claim_control") {
         expect(body.expected_runtime_instance_id).toBe(target.runtimeInstanceId);
         expect(body.expected_game_continuity_id).toBe(target.gameContinuityId);
+        expect(body.text_state_owner).toBe(textStateOwner);
         claims += 1; episode.control_held = true;
         result = { schema: "sts2.host-runtime/managed-service-result-1", service_instance_id: target.serviceInstanceId,
           result: { type: "claim_control_result", request_id: body.request_id, control_token: "private-control",
             control_epoch: "epoch-1", runtime_instance_id: target.runtimeInstanceId,
-            game_continuity_id: target.gameContinuityId },
+            game_continuity_id: target.gameContinuityId,
+            text_state_owner: malformedClaim ? "policy-runtime:run-wrong" : body.text_state_owner },
           control_binding: { control_epoch: "epoch-1", runtime_instance_id: target.runtimeInstanceId,
             game_continuity_id: malformedClaim ? "different-game" : target.gameContinuityId } };
       } else if (body?.command === "release_control") {
@@ -100,7 +106,7 @@ describe("Managed Host attachment over loopback HTTP", () => {
 
   it("attaches to the explicit episode, confirms one claim and release, and leaves Host running", async () => {
     const files = await fixture();
-    const client = await ManagedServicePolicyClient.attach(files.bindingPath, files.attachmentPath, target);
+    const client = await ManagedServicePolicyClient.attach(files.bindingPath, files.attachmentPath, target, runId);
     expect(client.initialEnvironment).toMatchObject({ service_instance_id: target.serviceInstanceId,
       runtime_instance_id: target.runtimeInstanceId, game_continuity_id: target.gameContinuityId });
     expect(await client.acquireController()).toMatchObject({ status: "held", control_epoch: "epoch-1" });
@@ -111,7 +117,7 @@ describe("Managed Host attachment over loopback HTTP", () => {
 
   it("does not infer release or retry when Host claimed but the confirmation is corrupt", async () => {
     const files = await fixture(true);
-    const client = await ManagedServicePolicyClient.attach(files.bindingPath, files.attachmentPath, target);
+    const client = await ManagedServicePolicyClient.attach(files.bindingPath, files.attachmentPath, target, runId);
     await expect(client.acquireController()).rejects.toThrow(/binding/);
     await expect(client.acquireController()).rejects.toThrow(/quarantined/);
     await expect(client.releaseController()).rejects.toThrow(/not held/);
@@ -122,7 +128,21 @@ describe("Managed Host attachment over loopback HTTP", () => {
   it("rejects a stale selected game before claiming", async () => {
     const files = await fixture();
     await expect(ManagedServicePolicyClient.attach(files.bindingPath, files.attachmentPath,
-      { ...target, gameContinuityId: "previous-game" })).rejects.toThrow(/explicit target/);
+      { ...target, gameContinuityId: "previous-game" }, runId)).rejects.toThrow(/explicit target/);
+    expect(files.counts().claims).toBe(0);
+  });
+
+  it("rejects an older Host that does not advertise logical text ownership before claiming", async () => {
+    const files = await fixture(false, null);
+    await expect(ManagedServicePolicyClient.attach(files.bindingPath, files.attachmentPath,
+      target, runId)).rejects.toThrow(/owner contract/);
+    expect(files.counts().claims).toBe(0);
+  });
+
+  it("rejects a malformed Runtime run ID before sending a claim", async () => {
+    const files = await fixture();
+    await expect(ManagedServicePolicyClient.attach(files.bindingPath, files.attachmentPath,
+      target, `run-${"-".repeat(36)}`)).rejects.toThrow(/run ID is invalid/);
     expect(files.counts().claims).toBe(0);
   });
 });

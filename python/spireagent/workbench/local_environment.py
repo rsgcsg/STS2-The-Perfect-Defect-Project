@@ -37,6 +37,7 @@ PROFILE_FILE = "managed-host-profile-v1.json"
 JOURNAL_FILE = "managed-environment-session-v1.json"
 REPORT_ROOT = "managed-environment-reports"
 HOST_PACKAGE = "@rsgcsg/sts2-host-runtime"
+TEXT_STATE_OWNER_CONTRACT = "sts2.host-runtime/text-menu-v2-owner-1"
 TEXT_PROFILES = {
     "text-menu-v1": (
         "sts2.player-environment/text-menu-observation-context-1",
@@ -85,11 +86,28 @@ class _ManagedServiceEnvironment:
 
     def __init__(self, client: Any, manager: Any, ready: dict[str, Any],
                  input_profile: str,
-                 before_claim: Callable[[str, dict[str, str]], None] | None = None) -> None:
+                 before_claim: Callable[[str, dict[str, str]], None] | None = None,
+                 *, session_id: str | None = None) -> None:
         self._client = client
         self._manager = manager
         self.ready = ready
         self.input_profile = input_profile
+        self.text_state_owner: str | None = None
+        if input_profile == "text-menu-v2":
+            contracts = ready.get("text_menu_contracts")
+            v2 = [item for item in contracts if isinstance(item, Mapping)
+                  and item.get("input_profile") == "text-menu-v2"] \
+                if isinstance(contracts, list) else []
+            if len(v2) != 1 or v2[0].get("text_state_owner_contract") != (
+                TEXT_STATE_OWNER_CONTRACT
+            ):
+                raise BoundaryError(
+                    "local_environment", "managed_text_state_owner_unsupported"
+                )
+            if (not isinstance(session_id, str)
+                    or re.fullmatch(r"[a-f0-9]{32}", session_id) is None):
+                raise BoundaryError("local_environment", "managed_text_state_owner_invalid")
+            self.text_state_owner = f"workbench:{session_id}"
         self.control: dict[str, str] | None = None
         self.last_submit_result: dict[str, Any] | None = None
         self.before_claim = before_claim
@@ -151,10 +169,20 @@ class _ManagedServiceEnvironment:
         try:
             result = self.request("claim_control", expected_runtime_instance_id=binding[
                 "runtime_instance_id"], expected_game_continuity_id=binding[
-                    "game_continuity_id"], request_id=request_id)
+                    "game_continuity_id"], request_id=request_id,
+                **({"text_state_owner": self.text_state_owner}
+                   if self.text_state_owner is not None else {}))
         except Exception as error:
             if isinstance(error, BoundaryError) and error.code == "managed_control_held":
                 raise
+            if getattr(error, "code", None) in {
+                "managed_text_state_owner_required", "managed_text_state_owner_invalid"
+            }:
+                # The Host explicitly rejected this claim before accepting it;
+                # this is a known no-effect response, not an uncertain lease.
+                raise BoundaryError(
+                    "local_environment", cast(str, error.code)
+                ) from error
             # The offer may have been accepted without its response. There is no
             # credential with which to release safely, so quarantine the handle.
             self.control = {"uncertain": "claim", "request_id": request_id}
@@ -164,7 +192,9 @@ class _ManagedServiceEnvironment:
         if (result.get("type") != "claim_control_result" or not isinstance(token, str)
                 or not token or not isinstance(epoch, str) or not epoch
                 or result.get("runtime_instance_id") != binding["runtime_instance_id"]
-                or result.get("game_continuity_id") != binding["game_continuity_id"]):
+                or result.get("game_continuity_id") != binding["game_continuity_id"]
+                or (self.text_state_owner is not None
+                    and result.get("text_state_owner") != self.text_state_owner)):
             self.control = {"uncertain": "claim", "request_id": request_id}
             raise BoundaryError("local_environment", "managed_control_claim_unconfirmed")
         self.control = {"token": token, "epoch": epoch, "request_id": request_id}
@@ -581,7 +611,8 @@ class LocalEnvironmentService:
         callback = (lambda request_id, binding: self._persist_claim_offer(
             session_id, request_id, binding
         )) if isinstance(session_id, str) else None
-        return _ManagedServiceEnvironment(client, manager, ready, input_profile, callback)
+        return _ManagedServiceEnvironment(client, manager, ready, input_profile, callback,
+                                          session_id=session_id)
 
     def _profile_for_service(self, host_root: Path, pin: dict[str, Any]) -> str:
         profile = _read_profile(self.config)
@@ -1417,6 +1448,7 @@ class LocalEnvironmentService:
                 lambda request_id, binding: self._persist_claim_offer(
                     session_id, request_id, binding
                 ),
+                session_id=session_id,
             )
             episode = ready.get("episode")
             binding = client.binding()
