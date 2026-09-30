@@ -4099,6 +4099,8 @@ window.SpireProject = (() => {
     const data = await request(ctx, "/api/local-environment");
     if (data.schema !== "stpd/local-managed-environment-v1" ||
         !Array.isArray(data.scenarios) || !data.session) throw new Error("request_unavailable");
+    const scenario = data.scenarios.find(item => item && typeof item.id === "string" &&
+      typeof item.seed === "string") || null;
     box.append(panel("环境与场景", "固定种子会重新开一局；这不是房间存档或决策点恢复。此入口只提供人工文字单步，不启动模型。"));
     const session = data.session;
     const ready = data.availability === "configured";
@@ -4109,6 +4111,7 @@ window.SpireProject = (() => {
     const csrf = typeof data.csrf_token === "string" && data.csrf_token ? data.csrf_token : "";
     const savedScenes = await request(ctx, "/api/local-environment/scenes");
     const sceneLibrary = panel("已保存的固定种子起点", "每次启动都会新建独立 Managed 实例；保存的是当前固定种子、输入格式与构建身份，不是游戏存档。");
+    if (!scenario) sceneLibrary.append(el("p", "当前没有可用场景定义；起点创建和启动暂不可用。已保存报告与当前实例操作仍可查看。", "small muted"));
     const draftKey = `environment:${ctx.scope}`;
     const sceneName = input(sceneLibrary, "起点名称", "environment-scene-name",
       drafts.get(`${draftKey}:name`) ?? "故障机器人 A0 固定种子");
@@ -4116,19 +4119,30 @@ window.SpireProject = (() => {
     sceneName.oninput = () => {
       if (live(ctx)) drafts.set(`${draftKey}:name`, sceneName.value);
     };
+    const sceneSeed = input(sceneLibrary, "开局种子", "environment-scene-seed",
+      drafts.get(`${draftKey}:seed`) ?? scenario?.seed ?? "");
+    sceneSeed.maxLength = 64;
+    sceneSeed.autocomplete = "off";
+    sceneSeed.spellcheck = false;
+    sceneSeed.disabled = !scenario;
+    sceneSeed.oninput = () => {
+      if (live(ctx)) drafts.set(`${draftKey}:seed`, sceneSeed.value);
+    };
     sceneLibrary.append(command(ctx, "environment-scene-save", "保存当前开局配置", async () => {
-      await request(ctx, "/api/local-environment/scenes/save", {name:sceneName.value.trim()}, csrf);
+      await request(ctx, "/api/local-environment/scenes/save", {
+        name:sceneName.value.trim(), seed:sceneSeed.value,
+      }, csrf);
       await reload(ctx);
-    }, {disabled:!ready || !csrf}));
+    }, {disabled:!ready || !csrf || !scenario}));
     for (const item of savedScenes.items || []) {
       if (!hex(item.artifact_id)) continue;
       const row = panel(item.name, `${item.input_profile} · 种子 ${item.seed} · ${item.artifact_id.slice(0, 12)}`);
       row.append(command(ctx, `environment-scene-start-${item.artifact_id}`, "从此起点新开一局", async () => {
         await request(ctx, "/api/local-environment/start", {
-          scenario_id:data.scenarios[0].id, scene_artifact_id:item.artifact_id,
+          scenario_id:scenario?.id, scene_artifact_id:item.artifact_id,
         }, csrf);
         await reload(ctx);
-      }, {disabled:!ready || !csrf || !["idle", "stopped", "stopped_outcome_unknown", "failed"].includes(data.session.status)}));
+      }, {disabled:!ready || !csrf || !scenario || !["idle", "stopped", "stopped_outcome_unknown", "failed"].includes(data.session.status)}));
       sceneLibrary.append(row);
     }
     box.append(sceneLibrary);

@@ -78,14 +78,26 @@ def fixture(tmp_path: Path):
     return config, host, candidate, pin, audit, checked
 
 
-def snapshot(number: int) -> dict[str, Any]:
+def normalize_seed_fixture(_host: Path, _pin: dict[str, Any], seed: object) -> str:
+    if not isinstance(seed, str):
+        raise ValueError("seed must be a string")
+    canonical = seed.strip().upper().replace("O", "0").replace("I", "1")
+    if not canonical or len(canonical) > 64 or not canonical.isascii() or not canonical.isalnum():
+        raise BoundaryError("local_environment", "scene_seed_invalid")
+    return canonical
+
+
+def snapshot(number: int, *, character: str = "DEFECT", ascension: int = 0) -> dict[str, Any]:
     return {
         "schema": "sts2.player-environment/text-menu-snapshot-1",
         "input_profile": "text-menu-v1",
         "snapshot_id": f"page-{number}",
         "status": "interactive",
         "interaction": {"kind": "map_navigation", "content": {"surface": {"kind": "map"}}},
-        "persistent": {"content": {"run": {"floor": number}}},
+        "persistent": {"content": {
+            "run": {"floor": number, "ascension": ascension},
+            "player": {"character_definition_id": character},
+        }},
         "menu_actions": {
             "status": "complete",
             "materialized_count": 1,
@@ -105,7 +117,9 @@ def snapshot(number: int) -> dict[str, Any]:
 
 class PublicClientFixture:
     def __init__(
-        self, audit: dict[str, str], *, blocked: bool = False, unknown: bool = False
+        self, audit: dict[str, str], *, blocked: bool = False, unknown: bool = False,
+        seed: str = SCENARIO["seed"], actual_seed: str | None = None,
+        character: str = "DEFECT", ascension: int = 0,
     ) -> None:
         self.ready = {
             "protocol": "sts2.headless/managed-player-environment-driver-1",
@@ -121,10 +135,16 @@ class PublicClientFixture:
         self.force_closed = False
         self.submits = 0
         self.observations = 0
+        self.reset_seeds: list[str] = []
+        self.seed = seed
+        self.actual_seed = actual_seed
+        self.character = character
+        self.ascension = ascension
 
     def reset(self, seed: str) -> dict[str, Any]:
-        assert seed == SCENARIO["seed"]
-        return snapshot(0)
+        self.seed = seed
+        self.reset_seeds.append(seed)
+        return snapshot(0, character=self.character, ascension=self.ascension)
 
     def episode_identity(self) -> dict[str, Any]:
         return {
@@ -132,14 +152,14 @@ class PublicClientFixture:
             "environment_fingerprint": "e" * 64,
             "episode_provenance": {
                 "verdict": "provenance_pass",
-                "requested_seed": SCENARIO["seed"],
-                "actual_seed": SCENARIO["seed"],
+                "requested_seed": self.seed,
+                "actual_seed": self.actual_seed or self.seed,
                 "runtime_instance_id": "instance-1",
             },
         }
 
     def observe_text_menu(self) -> dict[str, Any]:
-        page = snapshot(self.observations)
+        page = snapshot(self.observations, character=self.character, ascension=self.ascension)
         self.observations += 1
         return {
             "schema": "sts2.player-environment/text-menu-observation-context-1",
@@ -253,9 +273,12 @@ def test_named_fixed_seed_scene_restarts_fresh_and_compares_closed_reports(tmp_p
         clients.append(client)
         return client
 
-    service = LocalEnvironmentService(config, audit=checked, client_factory=make_client)
-    scene = service.save_scene("A0 repeat")
-    assert scene["seed"] == SCENARIO["seed"]
+    service = LocalEnvironmentService(config, audit=checked, client_factory=make_client,
+                                      seed_normalizer=normalize_seed_fixture)
+    scene = service.save_scene("A0 repeat", "abcoi123")
+    assert scene["seed"] == "ABC01123"
+    with pytest.raises(BoundaryError, match="scene_seed_invalid"):
+        service.save_scene("Invalid seed", "BAD SEED!")
     assert scene["host_package_pin"] == pin
     assert "candidate_directory" not in json.dumps(scene)
     assert service.scenes()["items"][0]["artifact_id"] == scene["artifact_id"]
@@ -290,7 +313,7 @@ def test_saved_scene_requires_current_profile_and_old_reports_cannot_prove_repea
     config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
     clients = []
     service = LocalEnvironmentService(
-        config, audit=checked,
+        config, audit=checked, seed_normalizer=normalize_seed_fixture,
         client_factory=lambda *_: clients.append(PublicClientFixture(audit)) or clients[-1],
     )
     scene = service.save_scene("Original")
@@ -316,10 +339,74 @@ def test_saved_scene_requires_current_profile_and_old_reports_cannot_prove_repea
         service.compare(scene["artifact_id"], report_ids)
 
 
+def test_distinct_scene_seeds_reach_host_and_immutable_reports(tmp_path: Path) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    clients: list[PublicClientFixture] = []
+
+    def make_client(*_args: Any) -> PublicClientFixture:
+        client = PublicClientFixture(audit)
+        clients.append(client)
+        return client
+
+    service = LocalEnvironmentService(
+        config, audit=checked, client_factory=make_client,
+        seed_normalizer=normalize_seed_fixture,
+    )
+    first = service.save_scene("First", "SEED0001")
+    second = service.save_scene("Second", "SEED0002")
+    assert first["artifact_id"] != second["artifact_id"]
+    reports = []
+    for scene in (first, second):
+        session = service.start(SCENARIO["id"], scene_artifact_id=scene["artifact_id"])["session"]
+        active = wait_status(service, "active")["session"]
+        assert active["seed"] == scene["seed"]
+        service.stop(session["session_id"])
+        reports.append(wait_status(service, "stopped")["session"]["report_artifact_id"])
+    assert [client.reset_seeds for client in clients] == [["SEED0001"], ["SEED0002"]]
+    values = [service.report(report_id) for report_id in reports]
+    assert [value["seed"] for value in values] == ["SEED0001", "SEED0002"]
+    assert [value["episode_identity"]["episode_provenance"]["actual_seed"]
+            for value in values] == ["SEED0001", "SEED0002"]
+    assert all(value["initial_context"]["snapshot"]["persistent"]["content"]["run"][
+        "ascension"] == 0 for value in values)
+    assert all(value["initial_context"]["snapshot"]["persistent"]["content"]["player"][
+        "character_definition_id"] == "DEFECT" for value in values)
+    from spireagent.workbench.local_managed_source import _expectation
+
+    assert [_expectation(value).seed for value in values] == ["SEED0001", "SEED0002"]
+
+
+@pytest.mark.parametrize(
+    ("actual_seed", "character", "ascension", "expected_error"),
+    [("WRONGSEED", "DEFECT", 0, "episode_identity_invalid"),
+     (None, "IRONCLAD", 0, "initial_character_or_ascension_invalid"),
+     (None, "DEFECT", 1, "initial_character_or_ascension_invalid"),
+     (None, "DEFECT", False, "initial_character_or_ascension_invalid")],
+)
+def test_scene_start_fails_closed_on_host_seed_or_public_character_mismatch(
+    tmp_path: Path, actual_seed: str | None, character: str, ascension: int,
+    expected_error: str,
+) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    client = PublicClientFixture(audit, actual_seed=actual_seed,
+                                 character=character, ascension=ascension)
+    service = LocalEnvironmentService(
+        config, audit=checked, client_factory=lambda *_args: client,
+        seed_normalizer=normalize_seed_fixture,
+    )
+    scene = service.save_scene("Bounded seed", "SEEDMISMATCH01")
+    service.start(SCENARIO["id"], scene_artifact_id=scene["artifact_id"])
+    failed = wait_status(service, "failed")["session"]
+    assert failed["error_code"] == expected_error
+    assert failed["seed"] == scene["seed"]
+    assert client.closed
+
+
 def test_comparison_rejects_two_closed_reports_with_same_runtime_instance(tmp_path: Path) -> None:
     config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
     service = LocalEnvironmentService(
         config, audit=checked, client_factory=lambda *_: PublicClientFixture(audit),
+        seed_normalizer=normalize_seed_fixture,
     )
     scene_id = service.save_scene("Repeated identity")["artifact_id"]
     report_ids = []
@@ -330,6 +417,30 @@ def test_comparison_rejects_two_closed_reports_with_same_runtime_instance(tmp_pa
         report_ids.append(wait_status(service, "stopped")["session"]["report_artifact_id"])
     with pytest.raises(BoundaryError, match="same_runtime_instance"):
         service.compare(scene_id, report_ids)
+
+
+def test_comparison_rejects_report_seed_mismatch_before_verified_claim(tmp_path: Path) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    service = LocalEnvironmentService(
+        config, audit=checked, client_factory=lambda *_: PublicClientFixture(audit),
+        seed_normalizer=normalize_seed_fixture,
+    )
+    scene = service.save_scene("Exact seed", "SEED0001")
+    report_ids = []
+    for _ in range(2):
+        session = service.start(SCENARIO["id"], scene_artifact_id=scene["artifact_id"])[
+            "session"
+        ]
+        wait_status(service, "active")
+        service.stop(session["session_id"])
+        report_ids.append(wait_status(service, "stopped")["session"]["report_artifact_id"])
+    get_report = service.report
+    service.report = lambda identity: {
+        **get_report(identity),
+        **({"seed": "OTHERSEED"} if identity == report_ids[0] else {}),
+    }
+    with pytest.raises(BoundaryError, match="repeatability_proof_unavailable"):
+        service.compare(scene["artifact_id"], report_ids)
 
 
 def test_exact_profile_start_one_explicit_action_stop_and_immutable_report(tmp_path: Path) -> None:
