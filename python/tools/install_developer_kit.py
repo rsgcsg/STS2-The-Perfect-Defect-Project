@@ -333,11 +333,13 @@ def validate_package_tuple(combination: dict[str, Any], bom: dict[str, Any],
         reject("package_identity_incompatible")
     indexed: dict[str, dict[str, Any]] = {}
     for package in packages:
-        if not isinstance(package, dict) or package.get("package") not in {
+        if not isinstance(package, dict):
+            continue
+        name = package.get("package")
+        if not isinstance(name, str) or name not in {
             "@rsgcsg/sts2-host-runtime", "@rsgcsg/sts2-connector-client"
         }:
             continue
-        name = package["package"]
         if name in indexed:
             reject("package_identity_ambiguous")
         indexed[name] = package
@@ -348,9 +350,14 @@ def validate_package_tuple(combination: dict[str, Any], bom: dict[str, Any],
     public_host = public.get("host_runtime") if isinstance(public, dict) else None
     public_sdk = public.get("typescript_sdk") if isinstance(public, dict) else None
     components = bom.get("components")
-    if (not all(isinstance(item, dict) for item in (host, sdk, public_host, public_sdk))
-            or not isinstance(components, dict)):
+    if not all(isinstance(item, dict) for item in (host, sdk, public_host, public_sdk,
+                                                    components)):
         reject("package_identity_missing")
+    assert isinstance(host, dict)
+    assert isinstance(sdk, dict)
+    assert isinstance(public_host, dict)
+    assert isinstance(public_sdk, dict)
+    assert isinstance(components, dict)
     digest(host.get("source_revision"), "kit_install.host_source", length=40)
     digest(host.get("release_asset_sha256"), "kit_install.host_asset")
     digest(host.get("package_content_sha256"), "kit_install.host_content")
@@ -365,6 +372,8 @@ def validate_package_tuple(combination: dict[str, Any], bom: dict[str, Any],
             or public_host.get("release") != f"host-runtime/v{public_host.get('version')}"):
         reject("published_package_identity_mismatch")
     current_host = components.get("host_runtime", {})
+    if not isinstance(current_host, dict):
+        reject("package_identity_incompatible")
     expected_relation = ("same_component_version" if
                          public_host.get("version") == current_host.get("version") else
                          "published_package_precedes_current_source")
@@ -384,13 +393,26 @@ def validate_package_tuple(combination: dict[str, Any], bom: dict[str, Any],
     if not all(isinstance(item, dict) for item in (player_environment, release,
                                                    exact_runtime, v2)):
         reject("package_identity_incompatible")
+    assert isinstance(player_environment, dict)
+    assert isinstance(release, dict)
+    assert isinstance(exact_runtime, dict)
+    assert isinstance(v2, dict)
     connector_protocol = player_environment.get("protocol")
     connector_version = release.get("version")
+    exact_connector = exact_runtime.get("connector")
+    v2_connector = v2.get("connector")
+    current_connector = components.get("connector")
+    if not all(isinstance(item, dict) for item in
+               (exact_connector, v2_connector, current_connector)):
+        reject("package_identity_incompatible")
+    assert isinstance(exact_connector, dict)
+    assert isinstance(v2_connector, dict)
+    assert isinstance(current_connector, dict)
     if (not connector_protocol
             or connector_protocol != components.get("player_environment_protocol")
-            or connector_protocol != exact_runtime.get("connector", {}).get("protocol")
-            or connector_protocol != v2.get("connector", {}).get("protocol")
-            or connector_version != components.get("connector", {}).get("version")):
+            or connector_protocol != exact_connector.get("protocol")
+            or connector_protocol != v2_connector.get("protocol")
+            or connector_version != current_connector.get("version")):
         reject("protocol_incompatible")
     return {
         "host": {
