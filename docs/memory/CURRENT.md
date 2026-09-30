@@ -25,8 +25,8 @@ Host-owned native child. Runtime Stop releases control; ending a Workbench
 segment archives only its own operations; explicit Host close ends the environment.
 Claim attribution and epoch checks prevent recovery from releasing a newer owner.
 Host rc.23, Runtime rc.16 and Evidence rc.24 are temporary source/package candidates,
-not upgrades to the production installation. The SDK/model one-action probe passed; final App validation,
-independent review and current hosted CI remain required.
+not production upgrades. SDK and App one-action probes passed with same-instance
+Workbench resume and explicit Host close. Current hosted CI remains required.
 [Exact packet checks and bounded probe](../evidence/STAGE1A_SHARED_MANAGED_SESSION_2026-10-01.md).
 [Environment/scenario ownership and remaining scope](../plans/ENVIRONMENT_AND_SCENARIOS.zh-CN.md).
 

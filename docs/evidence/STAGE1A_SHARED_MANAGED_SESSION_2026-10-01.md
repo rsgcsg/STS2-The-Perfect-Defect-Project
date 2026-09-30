@@ -106,5 +106,74 @@ one delivered model action and controller handoff, not a quality score, a full
 trajectory, native-desktop parity or a model completing a game. Private page
 payloads, model weights, credentials and full logs are not published.
 
-Final Workbench-path validation and the topic's hosted checks must be reported
-on their own actual candidate. They are not implied by the preceding probe.
+## Final application-path probe
+
+At `2026-09-30T16:21:01Z` (2026-10-01 Australia/Brisbane), the private
+application probe completed with exit 0 on clean App source
+`5ba319c5cca95ce0fdbc7935cb20bee0fa6c538a`, Python 3.11.15 and installed
+Evidence 0.1.0rc24. Script SHA-256 at launch was
+`4de82b7d8d612a3a8133aaef8ed51959086e86f3f29f12c17acb0c33a6ebb5c0`.
+The invocation used the private environment's Python, the isolated App root,
+`--expected-app-head` bound to that commit, separate private/original project
+arguments and a private receipt directory. It used the final Host, Runtime and
+Evidence packages listed above; neither production installation nor original
+model data was replaced.
+
+The actual application classes, not only SDK clients, performed this sequence:
+
+1. `LocalEnvironmentService` started the Host and observed a complete menu.
+2. Ending the first Workbench segment archived that segment and left Host alive.
+3. `LocalModelRegistration` verified the existing export read-only and registered
+   it in the private project. `LocalModelService` loaded it and executed One-Step.
+4. One policy call produced one applied native action, zero errors and
+   Human/released/untainted state. Stop sealed 11 events; typed verification
+   passed with no findings.
+5. Workbench resumed the same service/runtime/game continuity, observed it and
+   archived a second segment. Explicit environment close returned `closed`.
+
+Exact identities:
+
+- Policy run: `run-42723ff8-e622-4d49-81dd-ad7b41f940f1`.
+- Host service: `managed_service_3073d5b438b34f509b04138948aa70bc`.
+- Runtime instance: `4144cecedd104e57abf2f3e1a542c6df`.
+- Continuity: `managed_episode_bf79a179a58145539acb1bf2cb68121b`.
+- Workbench segments: `23d5a865524240e795a065c75f807c38` and
+  `98604cadd0ae41b38f22aa4e8d129be8`.
+- Segment report artifacts:
+  `25309ecec2dac040fa811073e218f3f358501b464bda7599d1058eee5161e76c` and
+  `00ca4ddd7088e547ae184a702f30226883ecb6f1dfceb5e5c6992de266423e34`.
+- Runtime startup code SHA-256:
+  `30dc32dfc9b733a085adfce39dc66c93aaef38b12e72531cae4ed00a146a13ce`.
+- Policy manifest SHA-256:
+  `8d45eb72271d5533dc91584b325af2a61817aed41c6dd25af237187392fe59d4`.
+
+Original model metadata, tokenizer, weights and export-operation hashes matched
+before/after. Existing weights are the same `d9ad730a…` artifact above; no model
+training occurred. Both Workbench reports are client-operation segments, not
+native Human recordings or independent seeded games. This is one bounded
+application-path execution, not browser UX, arbitrary scene support, full-game
+completion or policy-quality qualification.
+
+## Application checks and final gate
+
+On `5b4e89c1e7f5bc9414c813206c5d0b3f0bb2c95e`:
+
+- Private Python `-m pytest -q -ra` over `test_local_environment.py`,
+  `test_local_environment_http.py`, `test_local_models.py`,
+  `test_local_model_registration.py`, `test_managed_model_target.py` and
+  `test_confirmed_interaction_memory.py`: 244 passed, exit 0.
+- `node --test python/tests/console_project.test.mjs`: 218 passed, exit 0.
+- Scoped Ruff: passed, exit 0.
+
+Correct-project mypy then found five concrete boundary/type errors. The final
+App commit `5ba319c5` explicitly narrows identity fields, rejects a malformed
+nested submit result as unknown while still releasing control, and narrows the
+validated profile path. Its 60 environment/HTTP regressions, scoped Ruff and
+six-source-file mypy passed (exit 0). The broader 244-test result belongs to the
+preceding App commit; it is not relabeled as a final-head full suite. A prior
+wrong-directory mypy run also failed to load project overrides; both failures
+remain in local logs.
+
+Final identity/BOM and repository checks use the topic's actual committed
+candidate. Hosted full CI remains a separate required gate, recorded on the PR;
+no previous PR's green status qualifies this combination.
