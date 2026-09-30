@@ -123,5 +123,6 @@ The one-choice map row also makes aggregate accuracy unsuitable as a quality cla
   and the complete user journey remain separate Stage1a work. Existing Human input
   labels do not require fabricated Commit/successor pairs; transition prediction
   needs its own stronger evidence.
-- Existing native games, old models, raw recordings, failures and rollback packages
-  remain intact. Nothing here publishes a package or accepts Stage1a as complete.
+- This flow did not modify the existing native game, old models, raw recordings,
+  failures or retained rollback packages. It publishes no package and does not
+  accept Stage1a as complete.
