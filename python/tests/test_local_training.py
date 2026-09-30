@@ -666,6 +666,55 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
         LocalTrainingService(config).start(dataset_id)
 
 
+@pytest.mark.parametrize("log_write_fails", [False, True])
+def test_parent_exception_diagnostic_preserves_unknown_after_child_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, log_write_fails: bool,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    producer = source_identity(ROOT)
+    secret = "private-training-dataset-path"
+
+    def fail_child(_command, _log_path, _environment, *, on_started):
+        on_started()
+        error = OSError(13, secret)
+        error.winerror = 32
+        raise error
+
+    monkeypatch.setattr(training_module, "_private_child", fail_child)
+    monkeypatch.setattr(training_module, "source_identity", lambda _root: producer)
+    if log_write_fails:
+        def fail_log(*_args):
+            raise OSError(13, "private-log-path")
+        monkeypatch.setattr(training_module, "_write_parent_failure", fail_log)
+    service = LocalTrainingService(config)
+    service.start(dataset_id)
+    result = _settle(service)
+    assert result["status"] == "interrupted_unknown", result
+    assert result["error_code"] == "training_storage_or_process_error"
+    assert "run_id" in result and "result_id" not in result
+    diagnostic = service._failure_diagnostic
+    assert diagnostic is not None
+    assert diagnostic["stage"] == "training"
+    assert diagnostic["exception_type"] == "builtins.OSError"
+    assert diagnostic["errno"] == 13 and diagnostic["winerror"] == 32
+    assert diagnostic["owner_call"]["file"] == "local_training.py"
+    assert diagnostic["owner_call"]["function"] == "_run"
+    assert diagnostic["origin"]["file"] == "test_local_training.py"
+    assert diagnostic["origin"]["function"] == "fail_child"
+    assert secret not in json.dumps(diagnostic)
+    assert secret not in json.dumps(service.status())
+    owner = configured_owner(config)
+    log = owner.path.parent / ("local-training-" + result["operation_id"] +
+                               "-parent-error.log")
+    if log_write_fails:
+        assert not log.exists()
+    else:
+        assert secret in log.read_text()
+        assert log.stat().st_size <= training_module.PARENT_FAILURE_LOG_BYTES
+        if os.name != "nt":
+            assert log.stat().st_mode & 0o777 == 0o600
+
+
 def test_invalid_producer_operation_or_owner_never_starts_child(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -921,7 +970,11 @@ def test_http_explicit_start_tracks_exact_completed_run_without_get_replay(
             if new_current["status"] != "pending":
                 break
             time.sleep(0.05)
-        assert new_current["status"] == "completed", new_current
+        assert new_current["status"] == "completed", {
+            "status": new_current["status"], "stage": new_current["stage"],
+            "error_code": new_current.get("error_code"),
+            "safe_failure": app.local_training._failure_diagnostic,
+        }
         assert new_current["operation_id"] == new_started["operation_id"]
         with pytest.raises(HTTPError) as stale:
             urlopen(Request(url + "/api/local-training/start", data=new_body,

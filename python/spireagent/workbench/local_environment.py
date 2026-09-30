@@ -280,6 +280,7 @@ class LocalEnvironmentService:
         self.client_factory = client_factory or self._public_client
         self.lock = threading.RLock()
         self.client: Any | None = None
+        self._unclosed_start_client: Any | None = None
         self.worker: threading.Thread | None = None
         self.stopping = False
         self.cleanup_confirmed = False
@@ -662,6 +663,7 @@ class LocalEnvironmentService:
                            "scene_artifact_id": scene_artifact_id}
             self.stopping = False
             self.cleanup_confirmed = False
+            self._unclosed_start_client = None
             self.stop_outcome_unknown = False
             if not self._try_save():
                 self.record = (previous if previous["status"] != "idle"
@@ -750,6 +752,10 @@ class LocalEnvironmentService:
                 except Exception:
                     close_failed = True
             with self.lock:
+                if close_failed and client is not None and self.client is not client:
+                    # A changed binding cannot erase the original child after
+                    # its close failed. Stop must confirm both handles.
+                    self._unclosed_start_client = client
                 if self.record.get("session_id") != session_id or handed_off:
                     if (handed_off and self.stopping and self.cleanup_confirmed
                             and self.record.get("status") == "stopping"):
@@ -932,7 +938,7 @@ class LocalEnvironmentService:
         worker_done = worker is None or not worker.is_alive() or (
             worker is threading.current_thread()
         )
-        if not self.cleanup_confirmed:
+        if not self.cleanup_confirmed or self._unclosed_start_client is not None:
             self.record.update(status="cleanup_unknown", error_code="host_cleanup_unknown")
             self._try_save()
             return
@@ -974,6 +980,7 @@ class LocalEnvironmentService:
             if not self._try_save():
                 self.record["error_code"] = "session_persistence_failed"
             client = self.client
+            unclosed_start_client = self._unclosed_start_client
             worker = self.worker
         close_failed = False
         if client is not None:
@@ -981,11 +988,20 @@ class LocalEnvironmentService:
                 client.close(force=uncertain)
             except Exception:
                 close_failed = True
+        if unclosed_start_client is not None and unclosed_start_client is not client:
+            try:
+                unclosed_start_client.close(force=True)
+            except Exception:
+                close_failed = True
+            else:
+                with self.lock:
+                    if self._unclosed_start_client is unclosed_start_client:
+                        self._unclosed_start_client = None
         if worker is not None and worker is not threading.current_thread():
             worker.join(timeout=2)
         with self.lock:
             if self.record.get("session_id") == session_id:
-                if client is not None and not close_failed:
+                if client is not None and not close_failed and self._unclosed_start_client is None:
                     self.cleanup_confirmed = True
                 self._finish_stop()
             return self.status()

@@ -719,6 +719,44 @@ def test_startup_handoff_rejects_a_changed_client_binding(tmp_path: Path) -> Non
         service.close()
 
 
+def test_changed_client_binding_keeps_failed_original_close_unresolved(
+    tmp_path: Path,
+) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    original = PublicClientFixture(audit)
+    original.fail_close = True
+    replacement = PublicClientFixture(audit)
+    service = LocalEnvironmentService(
+        config, audit=checked, client_factory=lambda _command, _host, _pin: original,
+    )
+    handed_off, resume_startup = pause_startup_after_active_save(service)
+    try:
+        service.start(SCENARIO["id"])
+        assert handed_off.wait(timeout=4)
+        startup_worker = service.worker
+        assert startup_worker is not None
+        session_id = wait_status(service, "active")["session"]["session_id"]
+        with service.lock:
+            service.client = replacement
+        resume_startup.set()
+        startup_worker.join(timeout=4)
+        assert not startup_worker.is_alive()
+        assert service.status()["session"]["status"] == "cleanup_unknown"
+        blocked = service.stop(session_id)["session"]
+        assert blocked["status"] == "cleanup_unknown"
+        assert replacement.closed and not original.closed
+        assert service.reports()["items"] == []
+        with pytest.raises(BoundaryError, match="session_in_progress_or_unknown"):
+            service.start(SCENARIO["id"])
+        original.fail_close = False
+        final = service.stop(session_id)["session"]
+        assert original.closed and final["status"] == "stopped_outcome_unknown"
+        assert len(service.reports()["items"]) == 1
+    finally:
+        resume_startup.set()
+        service.close()
+
+
 def test_known_delivery_with_mismatched_observation_retains_receipt(tmp_path: Path) -> None:
     config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
 
