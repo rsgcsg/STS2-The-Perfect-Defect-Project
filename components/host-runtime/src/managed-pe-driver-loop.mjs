@@ -31,14 +31,23 @@ export function serveManagedPeDriver(driver, {
 
   input.on("line", (line) => {
     if (closing) return;
+    let request;
+    let outcome;
+    try {
+      request = JSON.parse(line);
+      // Admit at line ingress. The session captures the current controller
+      // generation here, before a queued release can change it.
+      outcome = driver.handle(request).then(
+        (value) => ({ value }), (error) => ({ error })
+      );
+    } catch (error) {
+      outcome = Promise.resolve({ error });
+    }
     queue = queue.then(async () => {
       if (closing) return;
-      let request;
-      try {
-        request = JSON.parse(line);
-        const response = await driver.handle(request);
-        write(response);
-      } catch (error) {
+      const { value, error } = await outcome;
+      if (error == null) write(value);
+      else {
         write({ type: "error", request_id: request?.request_id ?? null,
           code: "driver_request_failed",
           message: error instanceof Error ? error.message : String(error) });
