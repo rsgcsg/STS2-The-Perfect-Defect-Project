@@ -173,6 +173,7 @@ internal sealed class PlatformLivePanel : IDisposable
     private readonly PlatformPolicyCommands _policyCommands = new();
     private readonly HttpClient _workbenchHttpClient = PlatformWorkbenchOpenClient.CreateHttpClient();
     private Task<PlatformWorkbenchOpenResult>? _workbenchOpenCheck;
+    private readonly CancellationTokenSource _workbenchOpenLifetime = new();
     private long _policyUiIntent;
     private string? _pendingPollError;
     private long _lastRecordingEventSequence;
@@ -224,12 +225,14 @@ internal sealed class PlatformLivePanel : IDisposable
             return;
         _disposed = true;
         _policyCommands.InvalidatePending();
+        _workbenchOpenLifetime.Cancel();
         Interlocked.Increment(ref _policyUiIntent);
         if (_tree != null && _processFrameHandler != null && GodotObject.IsInstanceValid(_tree))
             _tree.ProcessFrame -= _processFrameHandler;
         Root.Resized -= ApplyWorkspaceBounds;
         _statusClient.Dispose();
         _workbenchHttpClient.Dispose();
+        _workbenchOpenLifetime.Dispose();
     }
 
     private static Shortcut WorkspaceShortcut(Key key) => new()
@@ -1404,7 +1407,8 @@ internal sealed class PlatformLivePanel : IDisposable
         if (_disposed || _workbenchOpenCheck is { IsCompleted: false })
             return;
         _workbenchButton.Disabled = true;
-        _workbenchOpenCheck = PlatformWorkbenchOpenClient.CheckAsync(_workbenchHttpClient);
+        _workbenchOpenCheck = Task.Run(() => PlatformWorkbenchOpenClient.OpenAsync(
+            _workbenchHttpClient, _workbenchOpenLifetime.Token));
         PushToast("workbench.open", "正在确认本机工作台连接…");
     }
 
@@ -1432,6 +1436,10 @@ internal sealed class PlatformLivePanel : IDisposable
             {
                 PlatformWorkbenchOpenState.NotRegistered => "本机工作台尚未连接。请在电脑上打开工作台后重试。",
                 PlatformWorkbenchOpenState.Stale => "本机工作台连接已失效。正常退出后会自动清除；若工作台异常退出，请重启游戏后再连接。",
+                PlatformWorkbenchOpenState.UnsupportedPlatform => "当前系统不支持从游戏启动本机工作台。",
+                PlatformWorkbenchOpenState.LauncherMissing => "未找到已安装的本机工作台启动入口，请先完成工作台安装。",
+                PlatformWorkbenchOpenState.LaunchFailed => "本机工作台启动失败，请检查安装并从电脑上打开工作台。",
+                PlatformWorkbenchOpenState.LaunchTimedOut => "本机工作台启动超时，请稍后检查工作台状态。",
                 _ => "本机工作台暂不可用。请在电脑上打开工作台后重试。"
             };
             PushToast("workbench.open", message);

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Text.Json;
@@ -18,7 +19,11 @@ public enum PlatformWorkbenchOpenState
     Ready,
     NotRegistered,
     Unavailable,
-    Stale
+    Stale,
+    UnsupportedPlatform,
+    LauncherMissing,
+    LaunchFailed,
+    LaunchTimedOut
 }
 
 public sealed record PlatformWorkbenchOpenResult(
@@ -28,9 +33,89 @@ public sealed record PlatformWorkbenchOpenResult(
     public bool CanOpen => State == PlatformWorkbenchOpenState.Ready && Url is not null;
 }
 
+internal interface IWorkbenchOpenProcess : IDisposable
+{
+    Task<int> WaitForExitAsync(CancellationToken cancellationToken);
+}
+
+internal interface IWorkbenchOpenLauncher
+{
+    IWorkbenchOpenProcess? Start(out PlatformWorkbenchOpenState failure);
+}
+
+internal sealed class FixedWorkbenchOpenLauncher : IWorkbenchOpenLauncher
+{
+    private readonly Func<bool> _macOS;
+    private readonly Func<string?> _home;
+    private readonly Func<string, bool> _exists;
+    private readonly Func<ProcessStartInfo, Process?> _start;
+
+    internal FixedWorkbenchOpenLauncher() : this(
+        OperatingSystem.IsMacOS,
+        () => Environment.GetEnvironmentVariable("HOME"),
+        File.Exists,
+        Process.Start) { }
+
+    internal FixedWorkbenchOpenLauncher(Func<bool> macOS, Func<string?> home,
+        Func<string, bool> exists, Func<ProcessStartInfo, Process?> start)
+    {
+        _macOS = macOS;
+        _home = home;
+        _exists = exists;
+        _start = start;
+    }
+
+    private sealed class StartedProcess(Process process) : IWorkbenchOpenProcess
+    {
+        public async Task<int> WaitForExitAsync(CancellationToken cancellationToken)
+        {
+            await process.WaitForExitAsync(cancellationToken);
+            return process.ExitCode;
+        }
+
+        public void Dispose() => process.Dispose();
+    }
+
+    internal static string? InstalledPath(string? home, bool macOS) =>
+        macOS && !string.IsNullOrWhiteSpace(home) && Path.IsPathFullyQualified(home)
+            ? Path.Combine(home, "Library", "Application Support", "spireagent", "workbench", "open")
+            : null;
+
+    public IWorkbenchOpenProcess? Start(out PlatformWorkbenchOpenState failure)
+    {
+        failure = PlatformWorkbenchOpenState.LaunchFailed;
+        if (!_macOS())
+        {
+            failure = PlatformWorkbenchOpenState.UnsupportedPlatform;
+            return null;
+        }
+        string? path = InstalledPath(_home(), true);
+        if (path is null || !_exists(path))
+        {
+            failure = PlatformWorkbenchOpenState.LauncherMissing;
+            return null;
+        }
+        try
+        {
+            Process? process = _start(new ProcessStartInfo(path)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+            return process is null ? null : new StartedProcess(process);
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+            or InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+}
+
 /// <summary>
 /// Validates the narrow registration contract and checks freshness before a user click opens it.
-/// This client never opens a browser; the Godot UI calls OS.ShellOpen after this read-only check.
+/// CheckAsync is read-only. OpenAsync may run only the fixed installed launcher after NotRegistered;
+/// the Godot UI opens a browser only for a subsequent Ready result.
 /// </summary>
 public static class PlatformWorkbenchOpenClient
 {
@@ -105,6 +190,89 @@ public static class PlatformWorkbenchOpenClient
         HttpClient client,
         CancellationToken cancellationToken = default) =>
         await CheckWithTimeProviderAsync(client, TimeProvider.System, cancellationToken);
+
+    public static Task<PlatformWorkbenchOpenResult> OpenAsync(
+        HttpClient client,
+        CancellationToken cancellationToken = default) =>
+        OpenWithLauncherAsync(client, new FixedWorkbenchOpenLauncher(), TimeProvider.System,
+            TimeSpan.FromSeconds(30), TimeSpan.FromMilliseconds(200), cancellationToken);
+
+    internal static async Task<PlatformWorkbenchOpenResult> OpenWithLauncherAsync(
+        HttpClient client,
+        IWorkbenchOpenLauncher launcher,
+        TimeProvider timeProvider,
+        TimeSpan launchDeadline,
+        TimeSpan pollInterval,
+        CancellationToken cancellationToken = default)
+    {
+        PlatformWorkbenchOpenResult initial = await CheckWithTimeProviderAsync(
+            client, timeProvider, cancellationToken);
+        if (initial.State != PlatformWorkbenchOpenState.NotRegistered || cancellationToken.IsCancellationRequested)
+            return initial;
+
+        using var deadline = new CancellationTokenSource(launchDeadline, timeProvider);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, deadline.Token);
+        using IWorkbenchOpenProcess? process = launcher.Start(out PlatformWorkbenchOpenState failure);
+        if (process is null)
+            return new PlatformWorkbenchOpenResult(failure);
+
+        Task<int> exited = process.WaitForExitAsync(linked.Token);
+        try
+        {
+            bool exitObserved = false;
+            while (!linked.IsCancellationRequested)
+            {
+                if (!exitObserved && exited.IsCompleted)
+                {
+                    try
+                    {
+                        if (await exited != 0)
+                            return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.LaunchFailed);
+                        exitObserved = true;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                    catch (Exception exception) when (exception is InvalidOperationException
+                        or System.ComponentModel.Win32Exception)
+                    {
+                        return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.LaunchFailed);
+                    }
+                }
+                PlatformWorkbenchOpenResult current = await CheckWithTimeProviderAsync(
+                    client, timeProvider, linked.Token);
+                if (linked.IsCancellationRequested)
+                    break;
+                if (current.State != PlatformWorkbenchOpenState.NotRegistered)
+                {
+                    if (exited.IsCompletedSuccessfully && exited.Result != 0)
+                        return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.LaunchFailed);
+                    return current;
+                }
+                Task delay = Task.Delay(pollInterval, timeProvider, linked.Token);
+                if (exitObserved)
+                    await Task.WhenAny(delay).ConfigureAwait(false);
+                else
+                    await Task.WhenAny(exited, delay).ConfigureAwait(false);
+            }
+            return new PlatformWorkbenchOpenResult(cancellationToken.IsCancellationRequested
+                ? PlatformWorkbenchOpenState.Unavailable : PlatformWorkbenchOpenState.LaunchTimedOut);
+        }
+        finally
+        {
+            linked.Cancel();
+            try
+            {
+                // Cancel only our wait; the installed broker and Workbench are never killed.
+                await exited.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is OperationCanceledException
+                or TimeoutException or InvalidOperationException
+                or System.ComponentModel.Win32Exception) { }
+        }
+    }
 
     internal static async Task<PlatformWorkbenchOpenResult> CheckWithTimeProviderAsync(
         HttpClient client,
