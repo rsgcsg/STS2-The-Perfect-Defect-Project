@@ -7,7 +7,7 @@
 > native logical-page/action/memory target and the two contrasting selection
 > examples. Acceptance covers that upper-level direction and its stated
 > conditions, not a complete-game interface or runtime qualification.
-> The explicit [text-menu-v2 profile](plans/TEXT_STS2_IN_RUN.md) and bounded
+> The explicit [text-menu-v2 profile](../components/connector/docs/TEXT_MENU_PROFILE.md) and bounded
 > Host/STPD paths are implemented. Connector/Native Foundation own page and
 > operation mappings; Annotator/Evidence own faithful records and compatibility;
 > STPD owns input/history projections and learned memory; Policy Runtime owns

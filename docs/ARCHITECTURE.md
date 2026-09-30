@@ -15,7 +15,7 @@ models, training or research authority.
 [ADR-0015](adr/0015-native-logical-interaction.md) accepts WEB-01's upper-level
 direction and conditional examples. It does not itself define a wire contract
 or qualify an installed artifact, a complete game, or historical Human proof.
-The explicit [text-menu-v2 profile](plans/TEXT_STS2_IN_RUN.md) now implements a
+The explicit [text-menu-v2 profile](../components/connector/docs/TEXT_MENU_PROFILE.md) now implements a
 bounded interaction path; its source, Host, recording and model qualification
 remain separate. This does not imply that every ADR example is implemented.
 
