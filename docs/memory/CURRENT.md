@@ -2,36 +2,33 @@
 
 Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
 Resolve live GitHub refs before work; current authorities override this file.
-Check PRs and writers. This is a bounded routing summary; dated receipts
-retain exact historical source, CI and runtime details.
-Source, CI, installed/loaded, native/Human and scientific evidence are separate.
+Check PRs/writers. Dated receipts retain historical identities; source, CI,
+installed, native/Human and scientific evidence remain separate.
 No complete Stage1a or policy-quality qualification is claimed.
 
 ## Current candidate and immediate work
 
-Accepted develop anchor: `f6e7811e70decf34abe4dac88140fef703ed43f1`,
-normal merge of PR119, tree `c59c49a0164f9bced6f07df8eaa06532458d7853`.
-Exact topic head `dd5a44d929091b7de96c349774d38fb8012cc56b` passed
-[full run 36655382514/1](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36655382514)
-(plan/Linux/Windows/portable). Integration
-[36659363360/1](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36659363360)
-succeeded with `verified_execution_same_tree` reuse of that run plus fresh
-guards/portable; it was not another dual-OS full execution. Earlier PR117/118
-and K8 summary receipts retain their tested identities and limited claims.
+Accepted develop anchor: `03de7b75974d8022ab7c257a0db6f94ca80f2046`,
+normal merge of PR120 after PR121, tree `04405c5594ed460c724cdd00ed95d7f05e91e0f6`.
+PR120 head `cedb3600253c34de445d30325a0757ccdb6465b7` passed
+[full 36663633862/1](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36663633862)
+(plan/Linux/Windows/portable). PR121 fixed row-2 source grouping; its Python
+36661359765/1 and same-tree integration 36663581742/1 passed. Earlier
+PR119 full/reuse and failed Windows receipts retain their tested identities.
+Resolve PR122's final candidate checks separately; old UI-only green is not
+proof of its combined Workbench changes.
 
-PR116's row-2 capture/completed-append order is accepted source. PR117 adds
-only qualified **map-boundary** save/load and continuation probes, not arbitrary
-combat/selector checkpoints, general MCTS or cross-Host equivalence. Earlier
-PR114/115 acceptance and execution-reuse receipts keep their original identities.
+PR116 adds row-2 capture/completed-append order. PR117 qualifies only
+**map-boundary** save/load, not combat/selector checkpoints or general MCTS.
 
-The local Workbench now runs the clean accepted `de23ce167fddc5bfe149cd29f2773299b261845d`
-tree, retaining the selected research workspace and original records/models.
-A local exact-game build of that tree was deployed and cold-load identity checked.
-The Platform button opened the no-login local home, and the original library was
-visible. A [new row-2 mouse canary](../evidence/STAGE1A_ROW2_MOUSE_CANARY_2026-09-30.md)
-has 10 verified input witnesses and 2 canonical transitions; its final successor
-remains explicitly unknown. This is bounded native/Human evidence, not a Full
-Run or memory-model result. No distribution asset or new model was published.
+The local Workbench runs clean accepted `b54b4e9c5039260dcb31ca8b872a2e04c05c98ef`
+with Evidence rc.23, preserving its research workspace and original records.
+The installed Mod remains `de23ce167fddc5bfe149cd29f2773299b261845d`, cold-load
+verified; this separate producer identity was not upgraded with the Workbench.
+The Platform button opened the no-login home. The
+[row-2 mouse canary](../evidence/STAGE1A_ROW2_MOUSE_CANARY_2026-09-30.md)
+has 10 verified inputs and 2 canonical transitions, with its final successor
+unknown. Neither the canary nor the Workbench upgrade proves a Full Run.
 
 The [terminal canary](../evidence/STAGE1A_NATIVE_TERMINAL_CANARY_2026-09-30.md)
 on that installed version now proves a real game-over owner-ready successor
@@ -48,20 +45,25 @@ prior-menu inputs with exact continuity/once-only references reach memory;
 cancelled dispatches do not become history. Its Human-history dev evaluator
 is included. Source/test and temporary package results are in the
 [packet receipt](../evidence/STAGE1A_CONFIRMED_INTERACTION_2026-09-30.md).
-This source is not yet the running local installation and has no new real-data
-training/evaluation or native memory qualification. The old failed Windows run
-36647445252 remains: the startup handoff race was repaired; the separate old
-training exception's exact cause is still unknown, despite the new full pass.
+Real Workbench training, separate-source dev evaluation and verified export
+completed for confirmed-interaction K1 and independently trained Reset-K1:
+137 training steps and 10 dev choices from two recorder fragments, not proven
+independent games. Both matched 0/10; no memory-benefit or quality claim.
+[Exact artifact/metric receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/121#issuecomment-5903477486)
+retains both results. Registration stopped at `m2_runtime_contract_unavailable`:
+the active private M2 Runtime is still rc.12 and neither new model is loaded.
+The combined PR122 candidate covers recipe UI, backend-free metadata, and verified
+Runtime-generation switch/rollback. Its temporary rc.14 package smoke is not
+a production upgrade. The old training exception's exact cause remains unknown.
 
 ## Accepted research and product basis
 
 D-Simple-S is the default application family. Merged PR90/91/95/96/97/99
 provide observed-sequence M2-K1 training, durable checkpoints, read-only online
 scoring, atomic Connector context, port-2 and verified export/registration.
-Runtime remains model-neutral. The accepted application models update M2 from
-observations only. The merged opt-in path adds confirmed prior interaction;
-it does not invent game effects or feedback, or alter the old model identities. Game identity remains
-outside unchanged v1 page text. See the
+Runtime stays model-neutral. Earlier observation-only models retain their format;
+the opt-in path adds confirmed prior interaction without inventing effects.
+Game identity stays outside unchanged v1 page text. See the
 [M2 integration ledger](../evidence/STAGE1A_M2_INTEGRATION_2026-09-29.md)
 for exact accepted heads and bounded native evidence.
 
@@ -92,16 +94,14 @@ for exact accepted heads and bounded native evidence.
 
 Managed map/rest/deck upgrade/combat/reward/event were added through
 PR89/93/94/98/100; treasure/shop/terminal and recovery followed in PR104/105.
-The 105-action scripted receipt and later 32-submission M2 continuation are
-bounded engineering evidence, not model full-game success. Native connectivity
-and policy competence must be assessed separately.
+The 105-action script and 32-submission M2 continuation are bounded engineering
+evidence, not full-game policy success. Connectivity and competence differ.
 
 [PR106](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/106)
 added Connector text-menu-v2 card/target intentions after its own full gate.
 [PR107 Managed/Workbench receipt](../evidence/STAGE1A_MANAGED_TEXT_V2_WORKBENCH_2026-09-29.md)
 records temporary rc.20 packaging, real HTTP → Managed execution → immutable
-report, and truthful cleanup. Neither changes an installed environment merely
-by being merged. V1 Human inputs/tokenizers/models remain v1.
+report, and truthful cleanup. V1 inputs/tokenizers/models remain v1; merges do not update installations.
 
 [PR108 v2 M2 receipt](../evidence/STAGE1A_M2_V2_ENGINEERING_2026-09-30.md)
 records a six-step Managed training/export probe and six model submissions,
@@ -119,10 +119,8 @@ complete easy-to-use product/distribution journey remain. Environment authority
 and management stay separate from model strategy. Model weakness is not fixed
 by fabricating environment support or training evidence.
 
-No Gold, independent-run corpus, native M2 continuity or new-game reset,
-full-game model
-success or policy quality is established. Preserve failed/pending/unknown
-records, installed identities and rollback. Older
+No Gold, independent-game corpus, native M2 continuity/reset, full-game model
+success or policy quality is established. Retain failures and rollback. Older
 [Workbench](../evidence/STAGE1A_DSIMPLE_WORKBENCH_2026-09-29.md) and
 [two-fragment](../evidence/TWO_LOCAL_HUMAN_RECORDINGS_2026-09-28.md)
 receipts keep their original scope. Main, Workshop stacks, private data,

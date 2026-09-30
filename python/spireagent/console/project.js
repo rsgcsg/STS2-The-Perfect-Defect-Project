@@ -2867,6 +2867,14 @@ window.SpireProject = (() => {
     "stage1a.dsimple.reset.k1.experimental.v2": {name:"Reset-K1", reset:true, profile:"text-menu-v2"},
     "stage1a.dsimple.m2.k8.experimental.v2": {name:"M2-K8", reset:false, profile:"text-menu-v2"},
     "stage1a.dsimple.reset.k8.experimental.v2": {name:"Reset-K8", reset:true, profile:"text-menu-v2"},
+    "stage1a.dsimple.m2.k1.confirmed-interaction.v1": {name:"M2-K1", reset:false, profile:"text-menu-v1-confirmed-interaction", pageProfile:"text-menu-v1", history:true},
+    "stage1a.dsimple.reset.k1.confirmed-interaction.v1": {name:"Reset-K1", reset:true, profile:"text-menu-v1-confirmed-interaction", pageProfile:"text-menu-v1", history:true},
+    "stage1a.dsimple.m2.k8.confirmed-interaction.v1": {name:"M2-K8", reset:false, profile:"text-menu-v1-confirmed-interaction", pageProfile:"text-menu-v1", history:true},
+    "stage1a.dsimple.reset.k8.confirmed-interaction.v1": {name:"Reset-K8", reset:true, profile:"text-menu-v1-confirmed-interaction", pageProfile:"text-menu-v1", history:true},
+    "stage1a.dsimple.m2.k1.confirmed-interaction.v2": {name:"M2-K1", reset:false, profile:"text-menu-v2-confirmed-interaction", pageProfile:"text-menu-v2", history:true},
+    "stage1a.dsimple.reset.k1.confirmed-interaction.v2": {name:"Reset-K1", reset:true, profile:"text-menu-v2-confirmed-interaction", pageProfile:"text-menu-v2", history:true},
+    "stage1a.dsimple.m2.k8.confirmed-interaction.v2": {name:"M2-K8", reset:false, profile:"text-menu-v2-confirmed-interaction", pageProfile:"text-menu-v2", history:true},
+    "stage1a.dsimple.reset.k8.confirmed-interaction.v2": {name:"Reset-K8", reset:true, profile:"text-menu-v2-confirmed-interaction", pageProfile:"text-menu-v2", history:true},
   });
 
   function memoryRecipeView(recipe) {
@@ -2875,10 +2883,16 @@ window.SpireProject = (() => {
   }
 
   function memoryRecipeLabel(view) {
-    if (view.profile === "text-menu-v2")
-      return `text-menu-v2 ${view.name} ${view.reset ? "工程对照" : "工程训练"}`;
-    return view.reset ? `${view.name}（每步重置，独立训练对照）`
+    const memory = view.history ? "操作记忆（含已确认的上一操作）" : "观察记忆";
+    if (memoryRecipePageProfile(view) === "text-menu-v2")
+      return `text-menu-v2 ${view.name} ${view.reset ? "工程对照" : "工程训练"} · ${memory}`;
+    const name = view.reset ? `${view.name}（每步重置，独立训练对照）`
       : `实验性 D-Simple ${view.name}`;
+    return `${name} · ${memory}`;
+  }
+
+  function memoryRecipePageProfile(view) {
+    return view?.pageProfile || view?.profile;
   }
 
   function memoryModelVariant(value) {
@@ -2896,9 +2910,9 @@ window.SpireProject = (() => {
       const overview = panel("模型概览", "以下是本机模型清单中的训练记录；此处不读取权重或评估模型质量。");
       overview.append(fields([
         ["训练配方", variant ? memoryRecipeLabel(variant) : "未知（模型结构不受支持）"],
-        ["输入版本", variant?.profile === "text-menu-v2"
-          ? "text-menu-v2 · Managed 工程操作，actor 未验证" : "text-menu-v1"],
-        ["结果类型", variant?.profile === "text-menu-v2"
+        ["输入版本", memoryRecipePageProfile(variant) === "text-menu-v2"
+          ? `${variant.profile} · Managed 工程操作，actor 未验证` : variant?.profile || "未知"],
+        ["结果类型", memoryRecipePageProfile(variant) === "text-menu-v2"
           ? "训练产物；此输入版本暂不支持独立 Human 开发集评估"
           : variant ? "训练产物；开发集评估请在下方单独查看或启动"
           : "训练产物；模型结构未识别，暂不开放后续操作"],
@@ -3253,7 +3267,8 @@ window.SpireProject = (() => {
       const inputId = memoryReport ? value.evaluation_input_id : value.model_view_id;
       const inputSchema = memoryReport ? value.evaluation_input_schema : value.view_schema;
       const sessionScopedGroups = value.grouping === "session_scoped_run_group"
-        && value.native_run_independence === "unknown_across_sessions";
+        && (value.native_run_independence === "unknown_across_sessions"
+          || (memoryReport && value.native_run_independence === false));
       const facts = [
         ["评估格式", value.evaluation_schema || schema || "未知"],
         ["模型", hex(value.model_id) ? value.model_id.slice(0, 16) : "未知"],
@@ -3365,6 +3380,8 @@ window.SpireProject = (() => {
     const variant = memoryModelVariant(model);
     const card = panel(`${variant.name} 独立来源开发集评估`,
       `仅对本机已登记的实验性 ${variant.name} 训练模型与另一份 Human 观察来源做开发用途工程评估。须明确点击才会启动；不是 Gold、独立游戏局、记忆收益或科学质量证明。`);
+    if (variant.history) card.append(el("p",
+      "操作记忆（含已确认的上一操作）需要支持已确认操作历史的 Human 录制格式；可用历史与用途资格由本机服务核对，旧格式不会自动转换。", "small muted"));
     let status;
     try {
       status = await request(ctx, "/api/local-memory-evaluations/status");
@@ -3463,6 +3480,7 @@ window.SpireProject = (() => {
         ? "此来源只可明确选择 text-menu-v2 M2 或 Reset 的 K1/K8 工程训练。操作者未验证；仅训练，不生成独立开发集指标，也不代表模型质量或记忆收益。"
         : "从此入口新启动的任务默认使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。可明确选择实验性 M2 或 Reset 的 K1/K8 配方（Reset 每步重置，独立训练对照）；记忆配方仅训练、不做独立评估或开发集指标。本机服务会核对训练用途与来源资格；结果不代表模型策略质量或记忆收益。",
     );
+    card.append(el("p", "观察记忆使用页面观察；操作记忆（含已确认的上一操作）需要支持已确认操作历史的录制格式。可用历史与训练用途资格由本机服务核对，旧格式不会自动转换。", "small muted"));
     let data;
     try {
       data = await request(ctx, "/api/local-training/status");
@@ -3499,7 +3517,7 @@ window.SpireProject = (() => {
     const recipeLabel = memoryView ? memoryRecipeLabel(memoryView)
       : operation.recipe === defaultRecipe ? "D-Simple-S v1" : "以模型记录为准";
     const choices = Object.entries(memoryRecipeViews)
-      .filter(([, view]) => view.profile === (managed ? "text-menu-v2" : "text-menu-v1"))
+      .filter(([, view]) => memoryRecipePageProfile(view) === (managed ? "text-menu-v2" : "text-menu-v1"))
       .map(([id, view]) => [id, `${memoryRecipeLabel(view)} · 仅训练`]);
     if (!managed) choices.unshift([defaultRecipe, "D-Simple-S v1（默认，短训练）"]);
     if (operation.status !== "idle") card.append(el("p", `当前任务配方：${recipeLabel}。${operation.result_type === "train_only" ? "此训练任务不执行独立评估。" : ""}`, "small muted"));
@@ -3582,7 +3600,8 @@ window.SpireProject = (() => {
       card.append(command(ctx, "start-local-training",
         currentForDataset && operation.status === "failed" ? "重新尝试一次短训练" : "开始本机短训练",
         async () => {
-          if (!live(ctx) || startOptions.disabled || !hex(dataset.artifact_id)) return;
+          if (!live(ctx) || startOptions.disabled || !hex(dataset.artifact_id)
+              || !choices.some(([id]) => id === recipe.value)) return;
           startOptions.disabled = true;
           await request(ctx, "/api/local-training/start", {
             dataset_id:dataset.artifact_id,
@@ -3601,7 +3620,8 @@ window.SpireProject = (() => {
       card.append(form);
       const newOptions = {type:"secondary"};
       card.append(command(ctx, "start-local-training-new", "新建一次训练", async () => {
-        if (!live(ctx) || newOptions.disabled || !hex(dataset.artifact_id)) return;
+        if (!live(ctx) || newOptions.disabled || !hex(dataset.artifact_id)
+            || !choices.some(([id]) => id === recipe.value)) return;
         newOptions.disabled = true;
         await request(ctx, "/api/local-training/start", {
           dataset_id:dataset.artifact_id, after_completed_operation_id:taskId,

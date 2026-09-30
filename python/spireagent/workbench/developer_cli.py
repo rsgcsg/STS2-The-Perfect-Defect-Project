@@ -105,6 +105,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--runtime-profile", choices=tuple(TEXT_PROFILES),
                         help="approved local Runtime profile for offline installation")
+    parser.add_argument("--expected-active-sha256")
+    parser.add_argument("--new-runtime-profile", type=Path)
+    parser.add_argument("--expected-new-profile-sha256")
+    parser.add_argument("--archived-profile-sha256")
     parser.add_argument(
         "--action",
         default="catalog",
@@ -114,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
             "readiness",
             "download",
             "install-runtime",
+            "upgrade-runtime-generation",
+            "rollback-runtime-generation",
             "start",
             "human",
             "shadow",
@@ -151,6 +157,10 @@ def main(argv: list[str] | None = None) -> int:
         result: Any
         if args.runtime_profile is not None and args.command != "model":
             raise BoundaryError("local_model", "runtime_profile_requires_model_command")
+        if (args.command != "model" and any(value is not None for value in (
+                args.expected_active_sha256, args.new_runtime_profile,
+                args.expected_new_profile_sha256, args.archived_profile_sha256))):
+            raise BoundaryError("local_model", "runtime_generation_arguments_require_model_command")
         if args.command == "setup":
             result = setup(
                 args.config.resolve(),
@@ -182,6 +192,10 @@ def main(argv: list[str] | None = None) -> int:
                     artifact=args.artifact,
                     runtime_archive=args.runtime_archive,
                     runtime_profile=args.runtime_profile,
+                    expected_active_sha256=args.expected_active_sha256,
+                    new_runtime_profile=args.new_runtime_profile,
+                    expected_new_profile_sha256=args.expected_new_profile_sha256,
+                    archived_profile_sha256=args.archived_profile_sha256,
                 )
             elif args.command == "environment-profile":
                 from spireagent.workbench.local_environment import configure_managed_host

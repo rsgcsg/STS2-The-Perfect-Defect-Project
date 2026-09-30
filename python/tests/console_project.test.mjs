@@ -1378,6 +1378,76 @@ const memoryEvaluationEnv = ({operation = {status:"idle"}, availability = "ready
     }});
 };
 
+for (const version of [1, 2]) for (const slots of [1, 8]) for (const reset of [false, true])
+test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} training requires an explicit recipe selection`, async () => {
+  const dataset = id("a");
+  const recipe = `stage1a.dsimple.${reset ? "reset" : "m2"}.k${slots}.confirmed-interaction.v${version}`;
+  const env = localTrainingEnv({artifact:dataset,
+    parameters:version === 2 ? {schema:"stpd/managed-text-menu-observed-source-v1"} : null,
+    trainingHandler:async url => {
+      if (version === 2 && url === `/api/local-managed-sources/binding/${dataset}`) return {
+        schema:"stpd/local-managed-source-binding-v1", status:"admitted", artifact_id:dataset,
+        curation_purpose:"training", event_count:6, scope:"engineering_control",
+        sample_type:"managed_control_input_stream", actor:"unverified"};
+      if (url === "/api/local-training/start") return {schema:"stpd/local-training-operation-v2",
+        availability:"ready", operation:{status:"pending", recipe}};
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  const selection = field(page, "local-training-recipe");
+  assert.equal(selection.value, version === 1 ? "stage1a.dsimple.s.v1" : "stage1a.dsimple.m2.k1.experimental.v2");
+  assert.ok(selection.children.some(option => option.value === recipe));
+  assert.equal(selection.children.some(option => option.value.endsWith(`.v${version === 1 ? 2 : 1}`)),
+    false, "memory recipes stay in their page profile");
+  assert.equal(selection.children.filter(option => option.value.includes(".confirmed-interaction.")).length, 4);
+  assert.match(text(page), /观察记忆/);
+  assert.match(text(page), /操作记忆（含已确认的上一操作）/);
+  assert.match(text(page), /支持已确认操作历史的录制格式/);
+  assert.match(text(page), /旧格式不会自动转换/);
+  assert.doesNotMatch(text(page), /完整操作记录|完整轨迹/);
+  assert.match(text(page), /本机服务.*核对/);
+  assert.equal(post(env.calls).length, 0);
+  selection.value = recipe;
+  const button = action(page, "start-local-training");
+  await Promise.all([button.onclick(), button.onclick()]);
+  assert.equal(post(env.calls).length, 1);
+  assert.deepEqual(body(post(env.calls)[0]), {dataset_id:dataset, recipe});
+  assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"], "training-csrf");
+});
+
+test("completed confirmed-interaction training preserves its explicit recipe for a new experiment", async () => {
+  const dataset = id("a"), operationId = "1".repeat(32);
+  const recipe = "stage1a.dsimple.reset.k8.confirmed-interaction.v1";
+  const env = localTrainingEnv({artifact:dataset, trainingStatus:{
+    schema:"stpd/local-training-operation-v2", availability:"ready", csrf_token:"training-csrf",
+    operation:{status:"completed", operation_id:operationId, dataset_id:dataset, recipe,
+      result_type:"train_only", evaluation_status:"not_run", run_id:id("e"), result_id:id("b"), model_id:id("c")}}});
+  const page = await env.render();
+  assert.equal(field(page, "local-training-new-recipe").value, recipe);
+  assert.match(text(page), /操作记忆（含已确认的上一操作）/);
+  assert.equal(post(env.calls).length, 0);
+  await action(page, "start-local-training-new").onclick();
+  assert.deepEqual(body(post(env.calls)[0]), {dataset_id:dataset, after_completed_operation_id:operationId, recipe});
+});
+
+test("unknown or cross-profile training selection cannot silently fall back to the default", async () => {
+  for (const completed of [false, true]) for (const recipe of [
+    "stage1a.dsimple.m2.k4.confirmed-interaction.v1",
+    "stage1a.dsimple.m2.k1.confirmed-interaction.v2",
+  ]) {
+    const dataset = id("a");
+    const env = localTrainingEnv({artifact:dataset, trainingStatus:{
+      schema:"stpd/local-training-operation-v2", availability:"ready", csrf_token:"training-csrf",
+      operation:completed ? {status:"completed", operation_id:"1".repeat(32), dataset_id:dataset,
+        recipe:"stage1a.dsimple.m2.k1.experimental.v1", result_type:"train_only",
+        run_id:id("e"), result_id:id("b"), model_id:id("c")} : {status:"idle"}}});
+    const page = await env.render();
+    field(page, completed ? "local-training-new-recipe" : "local-training-recipe").value = recipe;
+    await action(page, completed ? "start-local-training-new" : "start-local-training").onclick();
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
 test("M2 model detail selects an existing Human source and starts dev evaluation only on click", async () => {
   const env = memoryEvaluationEnv();
   const page = await env.render();
@@ -1751,6 +1821,7 @@ test("owner-rejected or absent Workbench recipe does not expose export, registra
     artifact => { artifact.workbench_memory_recipe = null; },
     artifact => { delete artifact.workbench_memory_recipe; },
     artifact => { artifact.workbench_memory_recipe = "future/memory-recipe-v9"; },
+    artifact => { artifact.workbench_memory_recipe = "stage1a.dsimple.m2.k4.confirmed-interaction.v1"; },
   ]) {
     const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
       handler:async url => {
@@ -1772,6 +1843,67 @@ test("owner-rejected or absent Workbench recipe does not expose export, registra
       "start-local-memory-evaluation", "register-local-model"].includes(element.dataset?.action)), false);
     assert.equal(post(env.calls).length, 0);
   }
+});
+
+for (const version of [1, 2]) for (const slots of [1, 8]) for (const reset of [false, true])
+test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} exposes exact model operations without automatic work`, async () => {
+  const modelId = id("a"), source = id("b");
+  // The artifact owner identifies the recipe after checking lineage; model config alone does not.
+  const model = memoryModel(modelId, reset, slots);
+  model.workbench_memory_recipe = `stage1a.dsimple.${reset ? "reset" : "m2"}.k${slots}.confirmed-interaction.v${version}`;
+  const runtimeProfile = `text-menu-m2-v${version}`;
+  const exported = modelExportStatus({status:"completed", model_id:modelId,
+    model_type:"memory", payload_bytes:123}, {schema:"stpd/local-model-export-operation-v2"});
+  const env = setup({identity:{status:"local_only"}, view:"local-workspace", query:`&id=${modelId}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${modelId}`) return model;
+      if (url === "/api/local-model-exports/status" || url === "/api/local-model-exports/start") return exported;
+      if (url.startsWith("/api/local-model-registrations/status?")) return modelRegistrationStatus(
+        modelId, "not_registered", {runtime_profile:runtimeProfile});
+      if (url === "/api/local-model-registrations/register") return modelRegistrationStatus(
+        modelId, "registered", {runtime_profile:runtimeProfile, selection_id:"confirmed-model"});
+      if (version === 1 && url === "/api/local-memory-evaluations/status") return {
+        schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready",
+        csrf_token:"memory-csrf", operation:{status:"idle"}};
+      if (version === 1 && url.startsWith("/api/local-workspace?")) return {
+        schema:"stpd/local-workspace-inventory-v1", total:1,
+        items:[{artifact_id:source, kind:"dataset", parameters:{schema:"stpd/human-text-input-source-v1"}}]};
+      if (version === 1 && url === "/api/local-memory-evaluations/start") return {
+        schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready", operation:{status:"pending"}};
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.match(text(page), /操作记忆（含已确认的上一操作）/);
+  assert.match(text(page), new RegExp(`text-menu-v${version}-confirmed-interaction`));
+  assert.doesNotMatch(text(page), /未知（模型结构不受支持）/);
+  assert.match(text(page), new RegExp(`${reset ? "Reset" : "M2"}-K${slots} 训练模型已导出并校验`));
+  assert.match(text(page), /登记与加载时分别核验/);
+  assert.equal(post(env.calls).length, 0);
+  assert.ok(action(page, "start-local-model-export"));
+  assert.ok(action(page, "register-local-model"));
+  if (version === 1) {
+    assert.match(text(page), /支持已确认操作历史的 Human 录制格式/);
+    assert.doesNotMatch(text(page), /完整操作记录|完整轨迹/);
+    field(page, "local-memory-dev-source").value = source;
+    await action(page, "start-local-memory-evaluation").onclick();
+    const evaluation = post(env.calls)[0];
+    assert.deepEqual(body(evaluation), {model_id:modelId, source_id:source});
+    assert.equal(evaluation.options.headers["X-CSRF-Token"], "memory-csrf");
+  } else {
+    assert.match(text(page), /Managed 工程操作，actor 未验证/);
+    assert.match(text(page), /此输入版本暂不支持独立 Human 开发集评估/);
+    assert.equal(env.calls.some(call => call.url.includes("local-memory-evaluations")), false);
+    assert.equal(walk(page).some(element => element.dataset?.action === "start-local-memory-evaluation"), false);
+  }
+  await action(page, "start-local-model-export").onclick();
+  await action(page, "register-local-model").onclick();
+  const writes = post(env.calls);
+  assert.deepEqual(writes.slice(-2).map(call => [call.url, body(call), call.options.headers["X-CSRF-Token"]]), [
+    ["/api/local-model-exports/start", {model_id:modelId}, "export-csrf"],
+    ["/api/local-model-registrations/register", {model_id:modelId}, "registration-csrf"],
+  ]);
+  assert.equal(writes.length, version === 1 ? 3 : 2);
 });
 
 test("idle M2 evaluation leaves overview and verified export neutral about report existence", async () => {
@@ -2699,6 +2831,8 @@ test("M2 report displays its exact evaluation input and identified memory recipe
     assert.doesNotMatch(text(page), /模型视图|视图格式/);
     assert.match(text(page), /0\.4839/);
     assert.match(text(page), /未重新核验原始数据、模型权重或完整训练来源/);
+    assert.match(text(page), /录制分组数（不代表独立游戏局）/);
+    assert.match(text(page), /独立性[\s\S]*未知（按录制分组计数，不证明来自不同游戏局）/);
     assert.match(text(page), /严格去重基准[\s\S]*未建立/);
     assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${id("b")}`).textContent,
       `查看评估输入 · ${id("b").slice(0, 16)}`);
@@ -3433,6 +3567,10 @@ test("Managed training source offers explicit v2 M2 and Reset without GET work",
     "stage1a.dsimple.reset.k1.experimental.v2",
     "stage1a.dsimple.m2.k8.experimental.v2",
     "stage1a.dsimple.reset.k8.experimental.v2",
+    "stage1a.dsimple.m2.k1.confirmed-interaction.v2",
+    "stage1a.dsimple.reset.k1.confirmed-interaction.v2",
+    "stage1a.dsimple.m2.k8.confirmed-interaction.v2",
+    "stage1a.dsimple.reset.k8.confirmed-interaction.v2",
   ]);
   await action(page, "start-local-training").onclick();
   assert.deepEqual(body(post(env.calls)[0]), {dataset_id:source,
