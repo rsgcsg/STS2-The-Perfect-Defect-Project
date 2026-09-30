@@ -287,7 +287,10 @@ while held, text observation and submission require its private token and epoch.
 Manager `POST /v1/admin/reset` requires the expected current runtime and
 continuity, including explicit `null` before first reset. These checks execute
 inside the driver queue so a delayed HTTP body cannot acquire a later episode.
-`GET /v1/admin/status` exposes the held epoch but no token. To recover a
+`GET /v1/admin/status` exposes the current held epoch, runtime, continuity and
+the successful claim request ID to the manager, but no token. The request ID
+appears only while the retained claim matches the driver's current control;
+client ready never exposes it. To recover a
 disconnected controller, the manager calls `POST /v1/admin/recover-control`
 with that exact epoch, runtime and continuity; the service uses its retained
 private claim credential and waits for prior native work and an actual release
