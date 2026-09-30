@@ -2699,6 +2699,8 @@ test("M2 report displays its exact evaluation input and identified memory recipe
     assert.doesNotMatch(text(page), /模型视图|视图格式/);
     assert.match(text(page), /0\.4839/);
     assert.match(text(page), /未重新核验原始数据、模型权重或完整训练来源/);
+    assert.match(text(page), /录制分组数（不代表独立游戏局）/);
+    assert.match(text(page), /独立性[\s\S]*未知（按录制分组计数，不证明来自不同游戏局）/);
     assert.match(text(page), /严格去重基准[\s\S]*未建立/);
     assert.equal(find(page, element => element.tagName === "A" && element.href === `?view=local-workspace&id=${id("b")}`).textContent,
       `查看评估输入 · ${id("b").slice(0, 16)}`);

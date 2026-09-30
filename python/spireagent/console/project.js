@@ -3253,7 +3253,8 @@ window.SpireProject = (() => {
       const inputId = memoryReport ? value.evaluation_input_id : value.model_view_id;
       const inputSchema = memoryReport ? value.evaluation_input_schema : value.view_schema;
       const sessionScopedGroups = value.grouping === "session_scoped_run_group"
-        && value.native_run_independence === "unknown_across_sessions";
+        && (value.native_run_independence === "unknown_across_sessions"
+          || (memoryReport && value.native_run_independence === false));
       const facts = [
         ["评估格式", value.evaluation_schema || schema || "未知"],
         ["模型", hex(value.model_id) ? value.model_id.slice(0, 16) : "未知"],
