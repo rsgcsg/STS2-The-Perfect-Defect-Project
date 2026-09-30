@@ -9,16 +9,15 @@ No complete Stage1a or policy-quality qualification is claimed.
 
 ## Current candidate and immediate work
 
-Accepted develop anchor: `a887e4f1c75eb48066d00c49b279abee51abd30c`,
-normal merge of PR117 after PR116. The accepted tree is
-`5ff4b641ac5c6f072203c9b782c8877c2adae86d`. PR117 exact head
-`de23ce167fddc5bfe149cd29f2773299b261845d` passed full run
-[36641484349](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36641484349).
-PR118's K8 evaluation-summary fix was included through normal ancestry;
-its result is report metadata, not a new research outcome. Integration run
-[36644990717/1](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36644990717)
-succeeded using verified same-tree execution reuse plus fresh guards/portable;
-it is not another dual-OS full execution.
+Accepted develop anchor: `f6e7811e70decf34abe4dac88140fef703ed43f1`,
+normal merge of PR119, tree `c59c49a0164f9bced6f07df8eaa06532458d7853`.
+Exact topic head `dd5a44d929091b7de96c349774d38fb8012cc56b` passed
+[full run 36655382514/1](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36655382514)
+(plan/Linux/Windows/portable). Integration
+[36659363360/1](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36659363360)
+succeeded with `verified_execution_same_tree` reuse of that run plus fresh
+guards/portable; it was not another dual-OS full execution. Earlier PR117/118
+and K8 summary receipts retain their tested identities and limited claims.
 
 PR116's row-2 capture/completed-append order is accepted source. PR117 adds
 only qualified **map-boundary** save/load and continuation probes, not arbitrary
@@ -34,22 +33,25 @@ has 10 verified input witnesses and 2 canonical transitions; its final successor
 remains explicitly unknown. This is bounded native/Human evidence, not a Full
 Run or memory-model result. No distribution asset or new model was published.
 
-The isolated [confirmed-interaction memory candidate](../plans/M2_CONFIRMED_INTERACTION.zh-CN.md)
-adds opt-in port 3, Evidence rc.23 and Runtime rc.14. It feeds only a durably
-confirmed input from the prior menu to STPD's internal memory, with exact
-continuity/once-only references; cancelled dispatches cannot become history.
-It is not the running local Workbench/Runtime and does not relabel old models.
-Component source/test and temporary installed-package checks are recorded in the
+The [terminal canary](../evidence/STAGE1A_NATIVE_TERMINAL_CANARY_2026-09-30.md)
+on that installed version now proves a real game-over owner-ready successor
+persisted before Close. Producer audit and typed bundle verification passed:
+168 canonical transitions, 57 compatible decision projections, 143 input
+witnesses. Eight unmapped inputs and 11 diagnostic invalidations remain.
+It began mid-run, so this is not fresh-start Full Run qualification. Automatic
+Close attribution also relies on exact source/operator steps, not a persisted
+caller-reason field. The older unknown terminal receipt is not rewritten.
+
+The merged [confirmed-interaction memory implementation](../plans/M2_CONFIRMED_INTERACTION.zh-CN.md)
+adds opt-in port 3, Evidence rc.23 and Runtime rc.14. Only durably confirmed
+prior-menu inputs with exact continuity/once-only references reach memory;
+cancelled dispatches do not become history. Its Human-history dev evaluator
+is included. Source/test and temporary package results are in the
 [packet receipt](../evidence/STAGE1A_CONFIRMED_INTERACTION_2026-09-30.md).
-PR119 run 36647445252/1 at `ea06ab2c` failed: Linux succeeded, Windows
-reported two application-test failures and portable failed. The startup
-handoff race is locally repaired with 64 affected-file tests passing. Private
-diagnostics were added for future failures; the old training failure's cause
-remains unknown.
-The accepted-version native capture does not qualify this candidate.
-The independently reviewed Human-history dev evaluator (`33f1d1d6`) is now
-included locally. Its 114 focused tests passed; no new real-data evaluation
-or model-quality result is claimed. A combined candidate gate is still required.
+This source is not yet the running local installation and has no new real-data
+training/evaluation or native memory qualification. The old failed Windows run
+36647445252 remains: the startup handoff race was repaired; the separate old
+training exception's exact cause is still unknown, despite the new full pass.
 
 ## Accepted research and product basis
 
@@ -57,7 +59,7 @@ D-Simple-S is the default application family. Merged PR90/91/95/96/97/99
 provide observed-sequence M2-K1 training, durable checkpoints, read-only online
 scoring, atomic Connector context, port-2 and verified export/registration.
 Runtime remains model-neutral. The accepted application models update M2 from
-observations only. The separate opt-in candidate adds confirmed prior interaction;
+observations only. The merged opt-in path adds confirmed prior interaction;
 it does not invent game effects or feedback, or alter the old model identities. Game identity remains
 outside unchanged v1 page text. See the
 [M2 integration ledger](../evidence/STAGE1A_M2_INTEGRATION_2026-09-29.md)
