@@ -77,8 +77,8 @@ internal sealed class FixedWorkbenchOpenLauncher : IWorkbenchOpenLauncher
     }
 
     internal static string? InstalledPath(string? home, bool macOS) =>
-        macOS && !string.IsNullOrWhiteSpace(home) && Path.IsPathFullyQualified(home)
-            ? Path.Combine(home, "Library", "Application Support", "spireagent", "workbench", "open")
+        macOS && !string.IsNullOrWhiteSpace(home) && home.StartsWith('/') && !home.Contains('\0')
+            ? home.TrimEnd('/') + "/Library/Application Support/spireagent/workbench/open"
             : null;
 
     public IWorkbenchOpenProcess? Start(out PlatformWorkbenchOpenState failure)
