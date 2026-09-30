@@ -23,10 +23,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
 # `python -I tools/install_developer_kit.py ...` deliberately ignores the
-# working directory and PYTHONPATH. Anchor this owner to its own source tree.
-_SOURCE_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_SOURCE_ROOT / "components/evidence"))
-sys.path.insert(0, str(_SOURCE_ROOT / "python"))
+# working directory and PYTHONPATH. Anchor only this application's source;
+# Evidence must resolve from the interpreter's locked installed distribution.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sts2_platform_evidence.collection_tool import CollectionTool  # noqa: E402
 
