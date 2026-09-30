@@ -10,9 +10,9 @@
     },
     "connector": {
       "version": "1.3.0-rc.8",
-      "source_revision": "330fc960c1a42f70988e976465c4baaa0674c4c7",
-      "component_tree_revision": "e58e3644fb1342eac52e3de18a1a7ac0e2192daf",
-      "component_source_digest_sha256": "2fc112624902cadc3d125146a270685ffebbb0494cc5328819b39547ac825ad0"
+      "source_revision": "89ffa45cb6401827e5f64d6f1927a3843ae6ebf7",
+      "component_tree_revision": "98643b4de67073dca4d95da2f9d753f5198a33f0",
+      "component_source_digest_sha256": "6aa96c8bbc6d69f2bf5fd39c52816747fc1c608da559fe690c309742a3729f62"
     },
     "host_runtime": {
       "version": "1.1.0-rc.21",
