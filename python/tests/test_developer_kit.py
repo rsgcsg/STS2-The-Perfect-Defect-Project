@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from private_host_fixture import private_host_fixture
 from sts2_platform_evidence.collection_tool import CollectionTool, digest
 
 from spireagent import source as control
@@ -223,6 +224,60 @@ def test_optional_runtime_requires_external_pins_and_fixed_inventory(inputs, tmp
     assert files[install.TEXT_RUNTIME_PROFILE] == profile.read_bytes()
     assert files[install.TEXT_RUNTIME_ARCHIVE] == archive.read_bytes()
     assert "operator.env" not in files
+
+
+def test_optional_private_host_group_is_verified_and_inventoried_without_changing_public_pins(
+        inputs, tmp_path, monkeypatch):
+    from tools import install_developer_kit as install
+
+    profile_raw, archive_raw, bom_raw = private_host_fixture(tmp_path / "private-host")
+    profile = tmp_path / "private-host-profile.json"
+    archive = tmp_path / "private-host-runtime.tgz"
+    bom = tmp_path / "selected-platform-bom.json"
+    profile.write_bytes(profile_raw)
+    archive.write_bytes(archive_raw)
+    bom.write_bytes(bom_raw)
+    supplied = {
+        "private_host_profile": PinnedFile(profile, sha256(profile_raw)),
+        "private_host_archive": PinnedFile(archive, sha256(archive_raw)),
+    }
+    with pytest.raises(BoundaryError, match="private_host_profile_and_archive_required"):
+        package(**{**inputs, "private_host_profile": supplied["private_host_profile"]})
+
+    receipt = package(**{**inputs, **supplied,
+                         "platform_bom": PinnedFile(bom, sha256(bom_raw))})
+    manifest, files = install.verified_archive(
+        inputs["output"], sha256(inputs["output"].read_bytes()))
+    assert receipt["sha256"] == sha256(inputs["output"].read_bytes())
+    assert manifest["private_host_runtime"] == {
+        "profile_sha256": sha256(profile_raw), "archive_sha256": sha256(archive_raw),
+    }
+    assert files[install.PRIVATE_HOST_PROFILE] == profile_raw
+    assert files[install.PRIVATE_HOST_ARCHIVE] == archive_raw
+    assert json.loads(files["developer-combination.json"])["node_packages"] == json.loads(
+        (inputs["root"] / "configs/developer/combination-v1.json").read_bytes())[
+            "node_packages"]
+
+    monkeypatch.setattr(install, "REPOSITORY", str(inputs["root"]))
+    release_root = tmp_path / "private-releases"
+    prepared = install.prepare(inputs["output"], receipt["sha256"], release_root)
+    release = release_root / receipt["sha256"]
+    assert prepared["private_host_runtime"] == "bundled_installation_not_checked"
+    assert prepared["private_host_runtime_selection"] == "not_observed"
+    assert (release / "source" / install.PRIVATE_HOST_PROFILE_DESTINATION).read_bytes() == (
+        profile_raw)
+    assert (release / "source" / install.PRIVATE_HOST_ARCHIVE_DESTINATION).read_bytes() == (
+        archive_raw)
+    assert json.loads((release / "source" / install.PRIVATE_HOST_PIN_DESTINATION).read_bytes())[
+        "source_revision"] == "a" * 40
+
+    wrong_bom = json.loads(bom_raw)
+    wrong_bom["components"]["host_runtime"]["component_source_digest_sha256"] = "9" * 64
+    bom.write_text(json.dumps(wrong_bom))
+    with pytest.raises(BoundaryError, match="private_host_bom_identity_mismatch"):
+        package(**{**inputs, **supplied,
+                   "platform_bom": PinnedFile(bom, sha256(bom.read_bytes())),
+                   "output": tmp_path / "wrong-bom.zip"})
 
 
 @pytest.mark.parametrize("profile", [None, "text-menu-v1", "text-menu-m2-v1",

@@ -25,7 +25,11 @@ from spireagent.source import source_identity
 from spireagent.workbench.developer import combination
 from spireagent.workbench.kit_runtime import (
     KIT_RUNTIME_PAIRS,
+    PRIVATE_HOST_ARCHIVE,
+    PRIVATE_HOST_MANIFEST_KEY,
+    PRIVATE_HOST_PROFILE,
     text_runtime_pin,
+    verify_private_host_offline_install,
 )
 from spireagent.workbench.runtime_install import install_runtime
 
@@ -69,6 +73,12 @@ Then use account/device setup to log in and approve the matching computer name
 and pairing code. Stop the Workbench, register the complete tool
 with its independently approved release ID, and reopen. Closing a browser tab
 alone does not release the registration lock.
+
+If the kit includes a `private_kit_candidate` Host profile/archive pair, initialize
+verifies and stages that exact bundled package under the release's ignored `.local/`
+directory. It does not select a Managed candidate or claim that a Host is loaded.
+Use the existing `environment-profile` command only with a separately reviewed exact
+candidate; see `docs/DEVELOPER_KIT_INSTALL.md` for its fixed Host paths.
 
 ```bash
 uv run --locked python -m spireagent.workbench project stop --config /ABS/project.json
@@ -141,6 +151,8 @@ def package(
     m2_runtime_archive: PinnedFile | None = None,
     m2_v2_runtime_profile: PinnedFile | None = None,
     m2_v2_runtime_archive: PinnedFile | None = None,
+    private_host_profile: PinnedFile | None = None,
+    private_host_archive: PinnedFile | None = None,
 ) -> dict[str, Any]:
     """Verify with the owning tool contract, then publish one immutable deterministic ZIP."""
     if output.exists() or output.is_symlink():
@@ -157,6 +169,8 @@ def package(
         if (supplied_profile is None) != (supplied_archive is None):
             raise BoundaryError("developer_kit", KIT_RUNTIME_PAIRS[profile_id][4] +
                                 "_profile_and_archive_required")
+    if (private_host_profile is None) != (private_host_archive is None):
+        raise BoundaryError("developer_kit", "private_host_profile_and_archive_required")
     files = {
         "README.md": README.encode(),
         "mod/STS2_PLATFORM.dll": mod_dll.read(),
@@ -164,6 +178,15 @@ def package(
         "platform-bom.json": platform_bom.read(),
         "developer-combination.json": project_raw,
     }
+    if private_host_profile is not None and private_host_archive is not None:
+        host_profile_raw = private_host_profile.read()
+        host_archive_raw = private_host_archive.read()
+        # Exercise npm's real offline consumer path with an empty isolated cache.
+        # The private candidate tarball is a kit artifact; this does not alter Host source.
+        verify_private_host_offline_install(host_profile_raw, host_archive_raw,
+                                            files["platform-bom.json"])
+        files[PRIVATE_HOST_PROFILE] = host_profile_raw
+        files[PRIVATE_HOST_ARCHIVE] = host_archive_raw
     for profile_id, (supplied_profile, supplied_archive) in supplied.items():
         if supplied_profile is None or supplied_archive is None:
             continue
@@ -248,6 +271,11 @@ def package(
                 "profile_sha256": supplied_profile.sha256,
                 "archive_sha256": supplied_archive.sha256,
             }
+    if private_host_profile is not None and private_host_archive is not None:
+        manifest[PRIVATE_HOST_MANIFEST_KEY] = {
+            "profile_sha256": private_host_profile.sha256,
+            "archive_sha256": private_host_archive.sha256,
+        }
     files["combination.json"] = json_bytes(manifest)
     # ZIP_STORED avoids zlib-version variance. The small developer kit favors reproducibility.
     with tempfile.TemporaryDirectory(prefix=".developer-kit-", dir=output.parent) as directory:
@@ -296,6 +324,10 @@ def main() -> int:
     parser.add_argument("--m2-v2-runtime-profile-sha256")
     parser.add_argument("--m2-v2-runtime-archive", type=Path)
     parser.add_argument("--m2-v2-runtime-archive-sha256")
+    parser.add_argument("--private-host-profile", type=Path)
+    parser.add_argument("--private-host-profile-sha256")
+    parser.add_argument("--private-host-archive", type=Path)
+    parser.add_argument("--private-host-archive-sha256")
     parser.add_argument(
         "--output",
         required=True,
@@ -316,6 +348,10 @@ def main() -> int:
                 or (args.m2_v2_runtime_archive is None)
                 != (args.m2_v2_runtime_archive_sha256 is None)):
             raise BoundaryError("developer_kit", "m2_v2_runtime_path_and_hash_required")
+        if ((args.private_host_profile is None) != (args.private_host_profile_sha256 is None)
+                or (args.private_host_archive is None)
+                != (args.private_host_archive_sha256 is None)):
+            raise BoundaryError("developer_kit", "private_host_path_and_hash_required")
         receipt = package(
             mod_dll=PinnedFile(args.mod_dll, args.mod_dll_sha256),
             mod_manifest=PinnedFile(args.mod_manifest, args.mod_manifest_sha256),
@@ -341,6 +377,12 @@ def main() -> int:
             m2_v2_runtime_archive=(PinnedFile(args.m2_v2_runtime_archive,
                                                args.m2_v2_runtime_archive_sha256)
                                     if args.m2_v2_runtime_archive is not None else None),
+            private_host_profile=(PinnedFile(args.private_host_profile,
+                                             args.private_host_profile_sha256)
+                                  if args.private_host_profile is not None else None),
+            private_host_archive=(PinnedFile(args.private_host_archive,
+                                             args.private_host_archive_sha256)
+                                  if args.private_host_archive is not None else None),
         )
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         code = error.code if isinstance(error, BoundaryError) else type(error).__name__
