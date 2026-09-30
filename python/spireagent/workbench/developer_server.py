@@ -282,8 +282,11 @@ class Application:
         self.console = LocalConsole(
             config, self.hub, self.delivery_environment, self.delivery_process, self.identity
         )
-        self.models = LocalModelService(config, hub=self.hub)
         self.local_environment = LocalEnvironmentService(config)
+        self.models = LocalModelService(
+            config, hub=self.hub,
+            managed_target=self.local_environment.managed_runtime_target,
+        )
         self.local_managed_sources = LocalManagedSourceService(config, self.local_environment)
         self.local_recordings = LocalRecordingCatalog(config)
         # Keep command-time owner observations separate from concurrent browser GET scans.
@@ -1249,6 +1252,41 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         "session_id"
                     }:
                         value = app.local_environment.stop(body["session_id"])
+                    elif self.path == "/api/local-environment/resume" and set(body) == {
+                        "session_id", "service_instance_id", "runtime_instance_id",
+                        "game_continuity_id"
+                    } and all(isinstance(body[key], str) and body[key] for key in body):
+                        app.check_environment_instance()
+                        value = app.local_environment.resume(
+                            expected_session_id=body["session_id"],
+                            expected_service_instance_id=body["service_instance_id"],
+                            expected_runtime_instance_id=body["runtime_instance_id"],
+                            expected_game_continuity_id=body["game_continuity_id"],
+                        )
+                    elif self.path == "/api/local-environment/close" and set(body) in ({
+                        "service_instance_id", "runtime_instance_id", "game_continuity_id"
+                    }, {"session_id", "service_instance_id", "runtime_instance_id",
+                        "game_continuity_id"}) and all(
+                            isinstance(body[key], str) and body[key] for key in body
+                        ):
+                        app.check_environment_instance()
+                        value = app.local_environment.close_environment(
+                            expected_session_id=body.get("session_id"),
+                            expected_service_instance_id=body["service_instance_id"],
+                            expected_runtime_instance_id=body["runtime_instance_id"],
+                            expected_game_continuity_id=body["game_continuity_id"],
+                        )
+                    elif self.path == "/api/local-environment/recover-control" and set(body) == {
+                        "session_id", "service_instance_id", "runtime_instance_id",
+                        "game_continuity_id"
+                    } and all(isinstance(body[key], str) and body[key] for key in body):
+                        app.check_environment_instance()
+                        value = app.local_environment.recover_control(
+                            expected_session_id=body["session_id"],
+                            expected_service_instance_id=body["service_instance_id"],
+                            expected_runtime_instance_id=body["runtime_instance_id"],
+                            expected_game_continuity_id=body["game_continuity_id"],
+                        )
                     elif self.path == "/api/local-environment/reports/import" and set(body) == {
                         "report_artifact_id", "purpose"
                     }:
