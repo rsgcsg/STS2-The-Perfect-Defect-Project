@@ -868,6 +868,27 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         self._rewrite_events(directory, events)
         self.assertEqual(verifier.verify(directory).findings[0].code, "environment_association")
 
+    def test_managed_stop_cannot_claim_release_without_a_matching_event_even_when_tainted(self) -> None:
+        directory = self._managed_v2_evidence("managed-false-release")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events = [event for event in events if event["kind"] != "controller_released"]
+        events.append({"schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                       "recorded_at": "2026-08-25T00:00:04.000Z", "kind": "stopped",
+                       "payload": {"autonomy_budget": {
+                           "state": "inactive", "max_submissions": 16, "submissions_used": 1,
+                           "max_policy_calls": 32, "policy_calls_used": 1, "deadline_ms": 60000,
+                           "elapsed_ms": 0, "remaining_ms": 60000,
+                           "exhausted_reason": None, "ended_reason": "stopped",
+                       }, "controller": "released"}})
+        for index, event in enumerate(events, 1):
+            event["sequence"] = index
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest.update(status="tainted", tainted=True)
+        manifest_path.write_bytes(canonical(manifest))
+        self._rewrite_events(directory, events)
+        self.assertEqual(AgentRunEvidenceVerifier().verify(directory).findings[0].code, "managed_control")
+
     def _v3_context_pair(self, name: str) -> tuple[Path, list[dict[str, Any]]]:
         directory = self._text_evidence(name, adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3")
         events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]

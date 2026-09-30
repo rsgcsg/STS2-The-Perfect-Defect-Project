@@ -692,6 +692,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _enum(payload, "reason", {"submission_attempt_limit", "policy_call_limit", "deadline"}, _EVENTS_FILE)
             _enum(payload, "controller", {"held", "released", "unknown"} if "environment_binding" in manifest
                   else {"held", "released"}, _EVENTS_FILE)
+            if managed_control is not None and payload["controller"] == "released":
+                raise AgentRunEvidenceError("managed_control", "budget event claims release without Managed release confirmation", _EVENTS_FILE)
             budget = _verify_autonomy_budget(payload["budget"])
             if budget["state"] != "exhausted" or budget["exhausted_reason"] != payload["reason"]:
                 raise AgentRunEvidenceError("budget_association", "exhaustion event and budget differ", _EVENTS_FILE)
@@ -837,6 +839,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 _verify_autonomy_budget(payload["autonomy_budget"])
                 _enum(payload, "controller", {"held", "released", "unknown"} if "environment_binding" in manifest
                       else {"held", "released"}, _EVENTS_FILE)
+                if managed_control is not None and payload["controller"] == "released":
+                    raise AgentRunEvidenceError("managed_control", "Stop claims release without Managed release confirmation", _EVENTS_FILE)
             autonomy_mode = False
         elif kind == "fail_closed":
             pending_text_input = None
