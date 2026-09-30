@@ -43,6 +43,16 @@ def text_runtime_pin(profile_raw: bytes, archive_raw: bytes, *,
     """Check the externally approved profile against inventoried archive bytes."""
     if len(archive_raw) > ARCHIVE_LIMIT:
         raise BoundaryError("developer_kit", "text_runtime_archive_too_large")
+    pin = strict_text_runtime_profile(profile_raw, memory=memory,
+                                      required_profile=required_profile)
+    if pin["release_asset_sha256"] != hashlib.sha256(archive_raw).hexdigest():
+        raise BoundaryError("developer_kit", "text_runtime_archive_checksum_mismatch")
+    return pin
+
+
+def strict_text_runtime_profile(profile_raw: bytes, *, memory: bool = False,
+                                required_profile: str | None = None) -> dict[str, Any]:
+    """Validate all kit profile fields when archived package bytes are unavailable."""
     profile = decode_json(profile_raw)
     if not isinstance(profile, dict) or set(profile) != {"schema", "runtime_package"}:
         raise BoundaryError("developer_kit", "text_runtime_profile_invalid")
@@ -67,6 +77,4 @@ def text_runtime_pin(profile_raw: bytes, archive_raw: bytes, *,
             or not isinstance(pin.get("bundled_connector_pin"), dict)):
         raise BoundaryError("developer_kit", "text_runtime_profile_invalid")
     digest(pin.get("release_asset_sha256"), "developer_kit.text_runtime_archive")
-    if pin["release_asset_sha256"] != hashlib.sha256(archive_raw).hexdigest():
-        raise BoundaryError("developer_kit", "text_runtime_archive_checksum_mismatch")
     return pin
