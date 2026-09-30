@@ -30,14 +30,19 @@ class NoRedirect(HTTPRedirectHandler):
 
 class HubClient:
     def __init__(
-        self, url: str, *, timeout: float = 10, token: Callable[[], str] | None = None
+        self, url: str, *, timeout: float = 10, download_timeout: float = 30,
+        token: Callable[[], str] | None = None,
     ) -> None:
         self.url = endpoint(url)
         self.timeout = timeout
+        self.download_timeout = download_timeout
         self.token = token or (lambda: os.environ.get("STPD_HUB_TOKEN", ""))
         self.opener = build_opener(NoRedirect())
 
-    def _request(self, route: str, *, limit: int | None = None, offset: int | None = None) -> Any:
+    def _request(
+        self, route: str, *, limit: int | None = None, offset: int | None = None,
+        timeout: float | None = None,
+    ) -> Any:
         token = self.token()
         if not token:
             raise BoundaryError("hub", "credential_not_configured")
@@ -55,16 +60,17 @@ class HubClient:
         suffix = "?" + urlencode(query) if query else ""
         request = Request(self.url + route + suffix, headers={"Authorization": "Bearer " + token})
         try:
-            return self.opener.open(request, timeout=self.timeout)
+            return self.opener.open(request, timeout=self.timeout if timeout is None else timeout)
         except HTTPError as error:
             raise BoundaryError("hub", "http_" + str(error.code)) from None
         except (URLError, OSError, ValueError):
             raise BoundaryError("hub", "unavailable") from None
 
     def get(
-        self, route: str, *, limit: int | None = None, offset: int | None = None
+        self, route: str, *, limit: int | None = None, offset: int | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
-        with self._request(route, limit=limit, offset=offset) as response:
+        with self._request(route, limit=limit, offset=offset, timeout=timeout) as response:
             raw = response.read(JSON_LIMIT + 1)
         if len(raw) > JSON_LIMIT:
             raise BoundaryError("hub", "response_too_large")
@@ -94,7 +100,10 @@ class HubClient:
         lineage. No Dataset, evidence or other parent bytes are fetched implicitly.
         """
         identity = digest(artifact_id, "download.artifact")
-        manifest = Manifest.from_bytes(json_bytes(self.get("/v1/artifacts/" + identity)), identity)
+        manifest = Manifest.from_bytes(
+            json_bytes(self.get("/v1/artifacts/" + identity, timeout=self.download_timeout)),
+            identity,
+        )
         if manifest.kind not in RESULT_KINDS:
             raise BoundaryError("download", "not_a_result_artifact")
         selected = manifest.payloads if roles is None else tuple(manifest.payload(r) for r in roles)
@@ -129,7 +138,9 @@ class HubClient:
                     route = (
                         "/v1/artifacts/" + identity + "/payloads/" + quote(payload.role, safe="")
                     )
-                    with os.fdopen(descriptor, "wb") as out, self._request(route) as response:
+                    with os.fdopen(descriptor, "wb") as out, self._request(
+                        route, timeout=self.download_timeout
+                    ) as response:
                         while chunk := response.read(1024 * 1024):
                             size += len(chunk)
                             if size > payload.size:
