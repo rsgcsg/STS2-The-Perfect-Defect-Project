@@ -324,21 +324,31 @@ def test_human_history_dev_rejects_explicit_settling_mismatch(tmp_path, monkeypa
                         max_settling_events=0)
 
 
-@pytest.mark.parametrize("projection", [
-    v2_episode_projection_config(),
-    history_episode_projection_config(V2_HISTORY_INPUT_PROFILE),
-])
-def test_dev_evaluator_rejects_managed_or_agent_train_profile(
-    tmp_path, monkeypatch, projection,
-):
+def test_dev_evaluator_keeps_plain_v2_profile_unsupported(tmp_path, monkeypatch):
     store, model_id, _, _, _, _, _ = prepared(tmp_path, monkeypatch)
     model = store.get_manifest(model_id)
     training = store.get_manifest(model.parent("training_input"))
-    parameters = {**training.parameters.value(), "projection_config": asdict(projection)}
+    parameters = {**training.parameters.value(),
+                  "projection_config": asdict(v2_episode_projection_config())}
     altered = Manifest(training.kind, training.producer, training.parents,
                        training.payloads, FrozenObject.of(parameters))
     with pytest.raises(BoundaryError, match="human_train_projection_required"):
         _evaluation_projection_config(altered)
+
+
+def test_dev_evaluator_accepts_only_explicit_v2_confirmed_history_projection(
+    tmp_path, monkeypatch,
+):
+    store, model_id, _, _, _, _, _ = prepared(tmp_path, monkeypatch)
+    model = store.get_manifest(model_id)
+    training = store.get_manifest(model.parent("training_input"))
+    projection = history_episode_projection_config(V2_HISTORY_INPUT_PROFILE)
+    altered = Manifest(training.kind, training.producer, training.parents,
+                       training.payloads, FrozenObject.of({
+                           **training.parameters.value(),
+                           "projection_config": asdict(projection),
+                       }))
+    assert _evaluation_projection_config(altered) == projection
 
 
 @pytest.mark.parametrize(("scope", "kind", "stream"), [

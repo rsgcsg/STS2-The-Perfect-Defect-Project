@@ -2913,7 +2913,9 @@ window.SpireProject = (() => {
         ["输入版本", memoryRecipePageProfile(variant) === "text-menu-v2"
           ? `${variant.profile} · Managed 工程操作，actor 未验证` : variant?.profile || "未知"],
         ["结果类型", memoryRecipePageProfile(variant) === "text-menu-v2"
-          ? "训练产物；此输入版本暂不支持独立 Human 开发集评估"
+          ? variant?.profile === "text-menu-v2-confirmed-interaction"
+            ? "训练产物；可另选 Managed 工程来源做开发集评估，不代表独立游戏质量"
+            : "训练产物；此输入版本暂不支持独立 Human 开发集评估"
           : variant ? "训练产物；开发集评估请在下方单独查看或启动"
           : "训练产物；模型结构未识别，暂不开放后续操作"],
         ["加载条件说明", variant
@@ -3378,10 +3380,16 @@ window.SpireProject = (() => {
 
   async function localMemoryEvaluationCard(ctx, model) {
     const variant = memoryModelVariant(model);
+    const managed = variant.profile === "text-menu-v2-confirmed-interaction";
+    const sourceSchema = managed ? "stpd/managed-text-menu-observed-source-v1"
+      : "stpd/human-text-input-source-v1";
+    const sourceName = managed ? "Managed 工程操作来源" : "Human 观察来源";
     const card = panel(`${variant.name} 独立来源开发集评估`,
-      `仅对本机已登记的实验性 ${variant.name} 训练模型与另一份 Human 观察来源做开发用途工程评估。须明确点击才会启动；不是 Gold、独立游戏局、记忆收益或科学质量证明。`);
+      `仅对本机已登记的实验性 ${variant.name} 训练模型与另一份${sourceName}做开发用途工程评估。须明确点击才会启动；不是 Gold、独立游戏局、记忆收益或科学质量证明。`);
     if (variant.history) card.append(el("p",
-      "操作记忆（含已确认的上一操作）需要支持已确认操作历史的 Human 录制格式；可用历史与用途资格由本机服务核对，旧格式不会自动转换。", "small muted"));
+      managed
+        ? "操作记忆（含已确认的上一操作）需要已核对的 Managed v2 操作结果；同 seed 与精确候选会归为同一工程划分，资格由本机服务核对。"
+        : "操作记忆（含已确认的上一操作）需要支持已确认操作历史的 Human 录制格式；可用历史与用途资格由本机服务核对，旧格式不会自动转换。", "small muted"));
     let status;
     try {
       status = await request(ctx, "/api/local-memory-evaluations/status");
@@ -3429,13 +3437,13 @@ window.SpireProject = (() => {
     }
     const offsetKey = `m2-dev-sources:${model.artifact_id}`;
     const offset = offsets.get(offsetKey) || 0;
-    const params = new URLSearchParams({kind:"dataset", q:"stpd/human-text-input-source-v1",
+    const params = new URLSearchParams({kind:"dataset", q:sourceSchema,
       limit:"100", offset:String(offset)});
     let inventory;
     try {
       inventory = await request(ctx, `/api/local-workspace?${params}`);
     } catch {
-      card.append(el("p", "Human 观察来源目录暂不可读；没有启动评估。", "small muted"));
+      card.append(el("p", `${sourceName}目录暂不可读；没有启动评估。`, "small muted"));
       return card;
     }
     if (!live(ctx)) return card;
@@ -3445,13 +3453,13 @@ window.SpireProject = (() => {
       return card;
     }
     const sources = inventory.items.filter(item => item?.kind === "dataset"
-      && item.parameters?.schema === "stpd/human-text-input-source-v1" && hex(item.artifact_id));
-    if (!sources.length) card.append(el("p", "本页没有可选择的 Human 观察来源。", "small muted"));
+      && item.parameters?.schema === sourceSchema && hex(item.artifact_id));
+    if (!sources.length) card.append(el("p", `本页没有可选择的${sourceName}。`, "small muted"));
     else {
       const form = el("div", null, "project-form");
       const source = select(form, "开发来源", "local-memory-dev-source",
         [["", "请选择另一份来源"], ...sources.map(item =>
-          [item.artifact_id, `Human 观察来源 · ${item.artifact_id.slice(0, 16)}`])], "");
+          [item.artifact_id, `${sourceName} · ${item.artifact_id.slice(0, 16)}`])], "");
       card.append(form);
       const options = {primary:true};
       card.append(command(ctx, "start-local-memory-evaluation", "明确开始开发集评估", async () => {
@@ -4447,7 +4455,8 @@ window.SpireProject = (() => {
         box.append(localModelOverview(value));
       if (value.kind === "model" && value.parameters?.schema === "stpd/experimental-m2-model-v1"
           && memoryModelVariant(value) !== null
-          && value.workbench_memory_recipe?.endsWith(".v1"))
+          && (memoryRecipePageProfile(memoryModelVariant(value)) === "text-menu-v1"
+              || memoryModelVariant(value).profile === "text-menu-v2-confirmed-interaction"))
         box.append(await localMemoryEvaluationCard(ctx, value));
       if (supportsLocalModelExport(value)) {
         const exportCard = await localModelExportCard(ctx, value);

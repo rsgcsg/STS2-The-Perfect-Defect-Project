@@ -57,7 +57,7 @@ def _sequence():
 
 
 def _archive(tmp_path: Path, *, mutate=None, session="session-a",
-             scenario="fixed-a0", terminal_status=None, host_terminal=False):
+             scenario="fixed-a0", seed="seed-a", terminal_status=None, host_terminal=False):
     archive = store(tmp_path / "report")
     pages, choices = _sequence()
     if host_terminal:
@@ -116,7 +116,7 @@ def _archive(tmp_path: Path, *, mutate=None, session="session-a",
                        "native_delivery": result["native_delivery"],
                        "event_artifact_id": manifest.artifact_id})
     report = {"schema": SESSION_SCHEMA, "status": "stopped", "session_id": session,
-              "scenario_id": scenario, "seed": "seed-a", "input_profile": "text-menu-v2",
+              "scenario_id": scenario, "seed": seed, "input_profile": "text-menu-v2",
               "host_package_pin": pin,
               "episode_identity": {
                   "candidate_build": {"upstream_revision": "e" * 40,
@@ -125,7 +125,7 @@ def _archive(tmp_path: Path, *, mutate=None, session="session-a",
                       "runtime_sts2_sha256": "3" * 64},
                   "environment_fingerprint": "4" * 64,
                   "episode_provenance": {"verdict": "provenance_pass",
-                      "requested_seed": "seed-a", "actual_seed": "seed-a",
+                      "requested_seed": seed, "actual_seed": seed,
                       "runtime_instance_id": "runtime-a"}},
               "events": events,
               "context": {"schema": "sts2.player-environment/text-menu-observation-context-2",
@@ -138,7 +138,7 @@ def _archive(tmp_path: Path, *, mutate=None, session="session-a",
     }))
     archive.publish(manifest)
     expectation = ManagedImportExpectation(
-        session, scenario, "seed-a", FrozenObject.of(pin),
+        session, scenario, seed, FrozenObject.of(pin),
         FrozenObject.of(report["episode_identity"]["candidate_build"]),
         "4" * 64, "runtime-a",
     )

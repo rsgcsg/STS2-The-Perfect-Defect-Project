@@ -293,16 +293,40 @@ class LocalCurationOwner:
                            dev_source_id: str, model_operation_id: str,
                            evaluation_operation_id: str) -> bool:
         """Reserve one model-specific dev use in the existing local curation ledger."""
+        from stpd.fullrun.managed_text_menu_import import (
+            SOURCE_SCHEMA as MANAGED_SOURCE_SCHEMA,
+        )
+        from stpd.fullrun.managed_text_menu_import import load_managed_text_menu_source
         from stpd.fullrun.text_menu_human_import import load_human_text_source
 
         digest(model_operation_id, "local_curation.model_operation", length=32)
         digest(evaluation_operation_id, "local_curation.evaluation_operation", length=32)
-        train_manifest, _ = load_human_text_source(store, train_source_id)
-        dev_manifest, _ = load_human_text_source(store, dev_source_id)
+        train_schema = store.get_manifest(train_source_id).parameters.value().get("schema")
+        dev_schema = store.get_manifest(dev_source_id).parameters.value().get("schema")
+        if train_schema != dev_schema:
+            raise BoundaryError("local_curation", "train_dev_source_profile_mismatch")
+        managed = train_schema == MANAGED_SOURCE_SCHEMA
+        if managed:
+            train_source = load_managed_text_menu_source(store, train_source_id)
+            dev_source = load_managed_text_menu_source(store, dev_source_id)
+            train_manifest, dev_manifest = train_source.manifest, dev_source.manifest
+        else:
+            train_manifest, _ = load_human_text_source(store, train_source_id)
+            dev_manifest, _ = load_human_text_source(store, dev_source_id)
         if train_manifest.artifact_id == dev_manifest.artifact_id:
             raise BoundaryError("local_curation", "train_dev_source_overlap")
 
-        def evidence_runs(manifest: Manifest) -> tuple[set[str], tuple[str, ...]]:
+        def evidence_runs(manifest: Manifest, split_run: str | None
+                          ) -> tuple[set[str], tuple[str, ...]]:
+            if split_run is not None:
+                # Managed training exposes the typed source itself, whose parent
+                # is the reverified immutable report. Its split is not session ID.
+                indexed = self.ledger.source_runs(manifest.artifact_id)
+                if indexed != {split_run} or not self.ledger.exact_source_ready(
+                    manifest.artifact_id
+                ):
+                    raise BoundaryError("local_curation", "source_index_incomplete")
+                return {split_run}, (manifest.artifact_id,)
             parents = tuple(parent.artifact_id for parent in manifest.parents)
             if not parents:
                 raise BoundaryError("local_curation", "source_evidence_required")
@@ -315,11 +339,21 @@ class LocalCurationOwner:
                 runs.update(native)
             return runs, parents
 
-        train_runs, train_evidence = evidence_runs(train_manifest)
-        dev_runs, dev_evidence = evidence_runs(dev_manifest)
+        train_runs, train_evidence = evidence_runs(
+            train_manifest, train_source.split_run_id if managed else None)
+        dev_runs, dev_evidence = evidence_runs(
+            dev_manifest, dev_source.split_run_id if managed else None)
         if not train_runs or not dev_runs:
             raise BoundaryError("local_curation", "source_run_identity_missing")
-        if set(train_evidence) & set(dev_evidence) or train_runs & dev_runs:
+        managed_origins_overlap = False
+        if managed:
+            train_origins = {train_source.report_id} | {
+                item.event_artifact_id for item in train_source.inputs}
+            dev_origins = {dev_source.report_id} | {
+                item.event_artifact_id for item in dev_source.inputs}
+            managed_origins_overlap = bool(train_origins & dev_origins)
+        if (set(train_evidence) & set(dev_evidence) or train_runs & dev_runs
+                or managed_origins_overlap):
             raise BoundaryError("local_curation", "train_dev_exact_origin_overlap")
         with self.transaction() as db:
             def claim(source_id: str) -> tuple[str, set[str]] | None:
