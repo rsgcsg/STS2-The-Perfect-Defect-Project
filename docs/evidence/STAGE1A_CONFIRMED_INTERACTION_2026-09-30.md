@@ -222,7 +222,9 @@ exit 0, no skips. They were `test_local_environment.py`, `test_local_training.py
 The tree was clean at test start; only CURRENT documentation was shortened
 during execution. The first repository check correctly rejected CURRENT at
 8300 bytes against its 8 KiB limit; the summary was condensed while the dated
-receipts retained their details. No governance limit was changed.
+receipts retained their details. A follow-up check also caught two required
+safety phrases removed during that edit; both were restored. No governance
+limit or required token was changed.
 
 ## Remaining boundaries
 

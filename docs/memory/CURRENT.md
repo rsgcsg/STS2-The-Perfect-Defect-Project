@@ -1,7 +1,8 @@
 # Current project context, 2026-09-30
 
-Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Resolve live refs,
-PRs and writers before work. This is a bounded routing summary; dated receipts
+Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
+Resolve live GitHub refs before work; current authorities override this file.
+Check PRs and writers. This is a bounded routing summary; dated receipts
 retain exact historical source, CI and runtime details.
 Source, CI, installed/loaded, native/Human and scientific evidence are separate.
 No complete Stage1a or policy-quality qualification is claimed.
