@@ -96,4 +96,7 @@ port 3 的 `text_decision_input.observation_context` 必须保存已验证 compl
 在线相同页面的无历史重复请求仍幂等返回缓存、不重复更新记忆。现有训练 step
 不表达这种缓存读取，不能默默丢标签或多写一次记忆假装等价。Human 独立见证帧
 仍按 capture/完成水位语义，不套用连续 Connector snapshot 序号规则。
-普通 dev evaluation 尚不支持新 history profile；本包没有把它标为可用。下一项在 STPD evaluation owner 内沿用同一投影与 train/dev 隔离补齐，旧 K8 指标不转移。
+Human-history 的普通 dev evaluation 已由独立 STPD evaluation owner 补齐，
+并在本包正常合并。目前只有合成源码测试，尚无新真实数据评分或组合 hosted gate
+成功结论。Managed/Agent history 不在此 Human evaluator 范围，旧 K8 指标不转移。
+精确执行状态见[候选回执](../evidence/STAGE1A_CONFIRMED_INTERACTION_2026-09-30.md)。
