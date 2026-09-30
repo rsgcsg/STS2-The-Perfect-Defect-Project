@@ -177,6 +177,42 @@ the old evaluator. These are synthetic source/test results, not new real-data
 dev scores. The consumer was normal-merged into this packet; its combined
 hosted gate remains required.
 
+## First hosted failure and owning correction
+
+[Full run 36647445252/1](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36647445252)
+at `ea06ab2c0dc3deedfccc524173dc713c13a40484` completed with failure.
+Linux succeeded; Windows had 2 failed, 1962 passed and 40 skipped tests;
+portable failed. Tested merge `2b376dca4c723735bcf967d7b9e5f102b41091d6`
+had the candidate tree `f8399006d3b525cca0e137e34ad4d6a046ad305d`.
+This failed result is retained, not replaced with the local short checks.
+
+The first failure exposed a real Workbench Managed-session startup race:
+after durable activation, a submit could advance the session to `unknown`
+before startup cleanup checked the mutable `status == active`. Cleanup then
+closed an already handed-off client and prematurely published a failed report.
+A barrier after the active save reproduced `unknown -> failed` on the parent.
+The correction binds the completed handoff to the exact session/client rather
+than the later status. Explicit Stop still owns finalization. Failed original
+client cleanup remains owned and unresolved, including Stop during construction;
+a replacement client's successful close cannot prove the original child exited.
+
+The second failure was the existing HTTP training test's second explicit run:
+`interrupted_unknown` / `training_storage_or_process_error`. The hosted log and
+JUnit did not retain the underlying parent exception, so its cause is **still
+unknown**. A bounded private parent traceback and sanitized exception type,
+errno/winerror, stage and source callpoint now make a future failure diagnosable.
+Only sanitized fields enter the test failure output; raw messages, private
+paths and child logs do not. Public status, recovery, training and retry behavior
+are unchanged. No timeout or assertion was weakened, and no old run was rerun.
+
+The isolated correction/diagnostic candidate
+`53586647b2db6e7c1c4f0e96e75d8b67ea109d6c` passed both affected Python files:
+64 tests, with scoped Ruff and mypy passing. Its initial baseline failure and
+two new diagnostic-test assertion failures (Python specializes `OSError(13)`
+to `PermissionError`) are retained. Fixing that expected exception type does
+not explain or resolve the second Windows failure. The new combined hosted
+candidate must run its own selected full gate.
+
 ## Remaining boundaries
 
 - New Agent history requires recorded context. Old Agent archives without it,

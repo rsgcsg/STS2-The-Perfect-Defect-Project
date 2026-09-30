@@ -42,8 +42,10 @@ It is not the running local Workbench/Runtime and does not relabel old models.
 Component source/test and temporary installed-package checks are recorded in the
 [packet receipt](../evidence/STAGE1A_CONFIRMED_INTERACTION_2026-09-30.md).
 PR119 run 36647445252/1 at `ea06ab2c` failed: Linux succeeded, Windows
-reported two application-test failures and portable failed. One startup
-handoff race is being repaired; the training failure remains under diagnosis.
+reported two application-test failures and portable failed. The startup
+handoff race is locally repaired with 64 affected-file tests passing. Private
+diagnostics were added for future failures; the old training failure's cause
+remains unknown.
 The accepted-version native capture does not qualify this candidate.
 The independently reviewed Human-history dev evaluator (`33f1d1d6`) is now
 included locally. Its 114 focused tests passed; no new real-data evaluation
