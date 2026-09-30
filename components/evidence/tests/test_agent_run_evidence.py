@@ -761,6 +761,113 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         self._rewrite_events(directory, events)
         return directory
 
+    def _managed_v2_evidence(self, name: str) -> Path:
+        directory = self._text_v2_evidence(
+            name, adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3"
+        )
+        policy_path = directory / "policy-manifest.json"
+        policy = json.loads(policy_path.read_text())
+        policy["requirements"].pop("connector_protocol_version")
+        policy["requirements"]["environment"] = {
+            "kind": "managed_text_v2", "text_protocol_version": "1.0.0",
+            "input_profile": "text-menu-v2",
+        }
+        policy_path.write_bytes(canonical(policy))
+        binding = {
+            "schema": "sts2.policy-runtime/managed-environment-binding-1",
+            "profile_sha256": "a" * 64, "input_profile": "text-menu-v2",
+            "host_package_identity": {
+                "package": "@rsgcsg/sts2-host-runtime", "version": "1.1.0-rc.22",
+                "source_revision": "1" * 40, "component_tree_revision": "2" * 40,
+                "release_asset_sha256": "3" * 64, "package_content_sha256": "4" * 64,
+            },
+            "candidate_build": {
+                "upstream_revision": "candidate-revision", "source_patch_sha256": "5" * 64,
+                "artifact_sha256": "6" * 64, "artifact_mvid": "candidate-mvid",
+                "original_sts2_sha256": "7" * 64, "runtime_sts2_sha256": "7" * 64,
+            },
+        }
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["policy_manifest_sha256"] = sha256(canonical(policy).rstrip(b"\n"))
+        manifest["environment_binding"] = binding
+        manifest_path.write_bytes(canonical(manifest))
+        attestation_path = directory / "adapter-attestation.json"
+        attestation = json.loads(attestation_path.read_text())
+        attestation["policy_manifest_sha256"] = manifest["policy_manifest_sha256"]
+        attestation_path.write_bytes(canonical(attestation))
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        environment = {
+            "kind": "managed_text_v2",
+            "binding_sha256": sha256(canonical(binding).rstrip(b"\n")),
+            "service_instance_id": "service-fixture", "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture",
+            "game_continuity_id": "managed-episode-fixture",
+            "text_protocol_version": "1.0.0", "input_profile": "text-menu-v2",
+            "host_package_identity": binding["host_package_identity"],
+            "host_identity": {
+                "package_name": "@rsgcsg/sts2-host-runtime", "version": "1.1.0-rc.22",
+                "source_revision": "1" * 40, "component_tree_revision": "2" * 40,
+                "source_digest_sha256": "8" * 64,
+            },
+            "candidate_build": binding["candidate_build"],
+            "game_version": "v0.111.0", "game_commit": "41cef1ea",
+            "game_assembly_sha256": "7" * 64,
+            "episode_provenance": {
+                "verdict": "provenance_pass", "requested_seed": "seed-fixture",
+                "actual_seed": "seed-fixture", "runtime_instance_id": "runtime-fixture",
+            },
+        }
+        events[0]["payload"]["environment"] = environment
+        control = {
+            "service_instance_id": "service-fixture", "runtime_instance_id": "runtime-fixture",
+            "game_continuity_id": "managed-episode-fixture", "control_epoch": "epoch-fixture",
+        }
+        for event in events:
+            if event["kind"] == "controller_acquired":
+                event["payload"] = {"status": "held", **control}
+            elif event["kind"] == "controller_released":
+                event["payload"] = {"status": "released", **control}
+        self._rewrite_events(directory, events)
+        return directory
+
+    def test_managed_v2_binding_and_control_are_verified_without_changing_connector_records(self) -> None:
+        directory = self._managed_v2_evidence("managed-v2-valid")
+        verifier = AgentRunEvidenceVerifier()
+        self.assertTrue(verifier.verify(directory).passed)
+        self.assertTrue(verifier.verify(self._text_v2_evidence("connector-v2-still-valid")).passed)
+
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        changed = json.loads(json.dumps(events))
+        changed[0]["payload"]["environment"]["binding_sha256"] = "9" * 64
+        self._rewrite_events(directory, changed)
+        self.assertEqual(verifier.verify(directory).findings[0].code, "environment_association")
+
+        changed = json.loads(json.dumps(events))
+        changed[0]["payload"]["environment"]["candidate_build"]["artifact_sha256"] = "9" * 64
+        self._rewrite_events(directory, changed)
+        self.assertEqual(verifier.verify(directory).findings[0].code, "environment_association")
+
+        changed = json.loads(json.dumps(events))
+        claim = next(event for event in changed if event["kind"] == "controller_acquired")
+        claim["payload"]["control_epoch"] = "wrong-epoch"
+        self._rewrite_events(directory, changed)
+        self.assertEqual(verifier.verify(directory).findings[0].code, "managed_control")
+
+        changed = json.loads(json.dumps(events))
+        changed = [event for event in changed if event["kind"] != "controller_acquired"]
+        for index, event in enumerate(changed, 1):
+            event["sequence"] = index
+        self._rewrite_events(directory, changed)
+        self.assertEqual(verifier.verify(directory).findings[0].code, "managed_control")
+
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["environment_binding"]["profile_sha256"] = "9" * 64
+        manifest_path.write_bytes(canonical(manifest))
+        self._rewrite_events(directory, events)
+        self.assertEqual(verifier.verify(directory).findings[0].code, "environment_association")
+
     def _v3_context_pair(self, name: str) -> tuple[Path, list[dict[str, Any]]]:
         directory = self._text_evidence(name, adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3")
         events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]

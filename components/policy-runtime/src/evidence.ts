@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { join, relative, sep } from "node:path";
-import type { AgentRunManifest, EvidenceFileEntry, ImmutableEvidenceManifest, PolicyManifest, RuntimeMode } from "./contracts.js";
+import { validateManagedEnvironmentBinding, type AgentRunManifest, type EvidenceFileEntry, type ImmutableEvidenceManifest, type ManagedEnvironmentBinding, type PolicyManifest, type RuntimeMode } from "./contracts.js";
 import { AGENT_RUN_SCHEMA, EVIDENCE_MANIFEST_SCHEMA } from "./contracts.js";
 
 export interface EvidenceOptions {
@@ -12,6 +12,7 @@ export interface EvidenceOptions {
   runtimeVersion: string;
   runtimeCodeSha256: string;
   mode: RuntimeMode;
+  managedEnvironmentBinding?: ManagedEnvironmentBinding;
   now?: () => string;
 }
 
@@ -48,6 +49,12 @@ export class AgentRunEvidence {
   }
 
   static async create(options: EvidenceOptions): Promise<AgentRunEvidence> {
+    const managed = "kind" in options.policyManifest.requirements.environment;
+    if (managed !== (options.managedEnvironmentBinding !== undefined)) {
+      throw new Error("Managed Agent Run requires one separately verified environment binding");
+    }
+    const binding = options.managedEnvironmentBinding === undefined ? undefined
+      : validateManagedEnvironmentBinding(options.managedEnvironmentBinding);
     for (const [name, digest] of [
       ["policyArtifactSha256", options.policyManifest.artifact.sha256],
       ["runtimeCodeSha256", options.runtimeCodeSha256]
@@ -75,7 +82,8 @@ export class AgentRunEvidence {
       status: "running",
       mode: options.mode,
       tainted: false,
-      append_only: true
+      append_only: true,
+      ...(binding === undefined ? {} : { environment_binding: binding })
     };
     const evidence = new AgentRunEvidence(directory, manifest, options.policyManifest, policyManifestSha256);
     await writeFile(evidence.manifestPath, `${canonicalJson(manifest)}\n`, { flag: "wx" });

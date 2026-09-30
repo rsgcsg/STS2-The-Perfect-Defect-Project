@@ -110,6 +110,58 @@ function fixture() {
 }
 
 describe("explicit text-menu-v2 Runtime consumer", () => {
+  it("keeps a successful but malformed Managed claim unknown without a second claim or release", async () => {
+    const m = manifest();
+    m.adapter.protocol = "sts2.policy-runtime/decision-only-ndjson-3";
+    m.requirements = { environment: { kind: "managed_text_v2", text_protocol_version: "1.0.0",
+      input_profile: "text-menu-v2" }, reads: [], whole_decision_admission: true,
+      candidate_order_digest: "sha256-json-menu-action-id-order", score_count_matches_candidate_count: true,
+      selected_index: true, successor_required: true };
+    const f = fixture();
+    const environment = { kind: "managed_text_v2" as const, binding_sha256: "9".repeat(64),
+      service_instance_id: "service-1", runtime_instance_id: "runtime-1",
+      environment_fingerprint: "environment-1", game_continuity_id: "game-1",
+      text_protocol_version: "1.0.0", input_profile: "text-menu-v2" as const,
+      host_package_identity: { package: "@rsgcsg/sts2-host-runtime" as const, version: "1", source_revision: "b".repeat(40),
+        component_tree_revision: "c".repeat(40), release_asset_sha256: "d".repeat(64), package_content_sha256: "e".repeat(64) },
+      host_identity: { package_name: "@rsgcsg/sts2-host-runtime", version: "1", source_revision: "b".repeat(40),
+        component_tree_revision: "c".repeat(40), source_digest_sha256: "f".repeat(64) },
+      candidate_build: { upstream_revision: "upstream", source_patch_sha256: "1".repeat(64),
+        artifact_sha256: "2".repeat(64), artifact_mvid: "mvid", original_sts2_sha256: "3".repeat(64),
+        runtime_sts2_sha256: "4".repeat(64) },
+      game_version: "fixture-game", game_commit: "fixture-commit", game_assembly_sha256: "4".repeat(64),
+      episode_provenance: { verdict: "provenance_pass" as const, requested_seed: "seed", actual_seed: "seed", runtime_instance_id: "runtime-1" } };
+    const claim = vi.fn(async () => ({ status: "held" as const, service_instance_id: "service-1",
+      runtime_instance_id: "runtime-1", game_continuity_id: "wrong-game", control_epoch: "epoch-1" }));
+    const release = vi.fn(async () => undefined);
+    f.connector.capabilities = vi.fn(async () => ({ kind: "managed_text_v2" as const, protocol_version: "1.0.0",
+      input_profile: "text-menu-v2" as const, snapshot_schema: "sts2.player-environment/text-menu-snapshot-2" as const,
+      receipt_schema: "sts2.player-environment/text-menu-action-result-2" as const,
+      interaction_kinds: ["combat_turn"], observed_terminal_kinds: ["game_over"],
+      action_verbs: ["select_card", "select_target", "cancel_selection", "play"],
+      execution_available: true, control_held: false, control_owned: false, tainted: false, environment }));
+    f.connector.acquireController = claim;
+    f.connector.releaseController = release;
+    const runtime = new PolicyRuntime({ manifest: m, connector: f.connector, managedBindingSha256: "9".repeat(64),
+      mode: "auto", evidence: { append: async (kind: string, payload: Record<string, unknown>) => {
+        f.events.push({ kind, payload }); }, finalize: async () => {} } as never,
+      runtimeIdentity: { version: "test", code_sha256: "8".repeat(64) },
+      statefulPolicy: async (input, _signal, onOffer) => {
+        onOffer(); return { output: { candidate_digest: input.candidate_digest,
+          scores: input.bundle.observation.schema === "sts2.player-environment/snapshot-1" ? []
+            : input.bundle.observation.menu_actions.actions.map((_action, index) => -index), selected_index: 0 },
+          completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
+            sequence: input.bundle.observation.sequence,
+            previous_interaction_request_id: input.previous_interaction?.request_id ?? null } };
+      } });
+    expect((await runtime.tick()).type).toBe("not_admitted");
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "unknown", tainted: true });
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(release).not.toHaveBeenCalled();
+    await runtime.stop();
+    expect(runtime.status()).toMatchObject({ lifecycle: "stopped", controller: "unknown", tainted: true });
+    expect(release).not.toHaveBeenCalled();
+  });
   it("keeps old manifests and port-2 v1 valid but rejects v2 on port-1", () => {
     expect(validatePolicyManifest(manifest()).representation.input_schema).toBe("sts2.player-environment/text-menu-snapshot-2");
     const legacy = manifest(); legacy.representation.input_schema = "sts2.player-environment/text-menu-snapshot-1";

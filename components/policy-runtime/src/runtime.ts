@@ -3,7 +3,7 @@ import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvi
 import { admitWholeDecision } from "./admission.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { candidateOrderDigest } from "./digest.js";
-import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type ConfirmedInteraction, type DecisionAction, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
+import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type ConfirmedInteraction, type DecisionAction, type ManagedCapabilities, type ManagedControlConfirmation, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
 import { StaleWholeBundleError } from "./connector.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 
@@ -31,6 +31,8 @@ export interface RuntimeOptions {
   autoBudget?: Partial<AutonomyBudgetConfig>;
   now?: () => string;
   runtimeIdentity?: { version: string; code_sha256: string | null };
+  /** Digest of the validated, separately sealed Managed environment binding. */
+  managedBindingSha256?: string;
 }
 
 export interface Admission { admitted: boolean; reason: string; candidateDigest: string; candidateCount: number }
@@ -121,6 +123,11 @@ export class PolicyRuntime {
 
   constructor(private readonly options: RuntimeOptions) {
     validatePolicyManifest(options.manifest);
+    const managed = isManagedManifest(options.manifest);
+    if (managed !== (options.managedBindingSha256 !== undefined)
+        || (managed && !/^[a-f0-9]{64}$/u.test(options.managedBindingSha256 ?? ""))) {
+      throw new Error("Managed Runtime requires one exact environment binding digest");
+    }
     if (this.stateful && !options.statefulPolicy) throw new Error("stateful adapter requires a stateful policy");
     if (!this.stateful && !options.policy) throw new Error("v1 adapter requires a policy");
     if (this.interactionPort && !options.evidence) throw new Error("v3 confirmed interaction requires an Evidence writer");
@@ -198,7 +205,12 @@ export class PolicyRuntime {
 
   status(): RuntimeStatus {
     const budget = this.autonomyBudgetStatus();
-    return { schema: "sts2.policy-runtime/status-1", runtime: this.options.runtimeIdentity ?? { version: POLICY_RUNTIME_VERSION, code_sha256: null }, policy: { manifest_id: this.options.manifest.manifest_id, policy_id: this.options.manifest.policy.id, policy_version: this.options.manifest.policy.version, provider: this.options.manifest.policy.provider, architecture: this.options.manifest.policy.architecture, artifact_sha256: this.options.manifest.artifact.sha256 }, run_id: this.runId, lifecycle: this.stopped ? "stopped" : "running", mode: this.mode, controller: this.held ? "held" : "released", autonomy_budget: budget, tainted: this.tainted, taint_reason: this.taintReason, refreshing: this.refreshing, last_snapshot_id: this.lastSnapshotId, last_snapshot: this.lastSnapshot, last_decision: this.lastDecision, last_receipt: this.lastReceipt, reads: [...this.lastReads], invalidations: [...this.invalidations], errors: [...this.errors] , environment: this.environment };
+    return { schema: "sts2.policy-runtime/status-1", runtime: this.options.runtimeIdentity ?? { version: POLICY_RUNTIME_VERSION, code_sha256: null }, policy: { manifest_id: this.options.manifest.manifest_id, policy_id: this.options.manifest.policy.id, policy_version: this.options.manifest.policy.version, provider: this.options.manifest.policy.provider, architecture: this.options.manifest.policy.architecture, artifact_sha256: this.options.manifest.artifact.sha256 }, run_id: this.runId, lifecycle: this.stopped ? "stopped" : "running", mode: this.mode, controller: this.controllerStatus(), autonomy_budget: budget, tainted: this.tainted, taint_reason: this.taintReason, refreshing: this.refreshing, last_snapshot_id: this.lastSnapshotId, last_snapshot: this.lastSnapshot, last_decision: this.lastDecision, last_receipt: this.lastReceipt, reads: [...this.lastReads], invalidations: [...this.invalidations], errors: [...this.errors] , environment: this.environment };
+  }
+
+  private controllerStatus(): RuntimeStatus["controller"] {
+    return isManagedManifest(this.options.manifest) && this.controllerReleaseUnconfirmed
+      ? "unknown" : this.held ? "held" : "released";
   }
 
   async readEnvironment(): Promise<RuntimeEnvironmentBinding> {
@@ -228,7 +240,8 @@ export class PolicyRuntime {
     let identity: string;
     try {
       const capabilities = await this.options.connector.capabilities({ fresh: true });
-      identity = capabilities.host.runtime_instance_id;
+      identity = isManagedCapabilities(capabilities)
+        ? capabilities.environment.runtime_instance_id : capabilities.host.runtime_instance_id;
       if (typeof identity !== "string" || identity.trim() === "") throw new Error("missing identity");
     } catch { throw new RuntimeControlPreconditionError("runtime_environment_unavailable", 503); }
     if (this.environment !== null && this.environment.runtime_instance_id !== identity)
@@ -339,12 +352,13 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "capabilities_failed", status: this.status() };
     }
     this.environment = environmentStatus(capabilities);
-    const compatibilityReason = manifestCompatibilityReason(this.options.manifest, capabilities);
+    const compatibilityReason = manifestCompatibilityReason(this.options.manifest, capabilities, this.options.managedBindingSha256);
     if (compatibilityReason) {
       await this.failClosed(compatibilityReason);
       return { type: "not_admitted", reason: compatibilityReason, status: this.status() };
     }
-    if (this.lastEvidenceEnvironmentFingerprint !== this.environment.environment_fingerprint) {
+    const admittedEnvironmentKey = canonicalJson(this.environment);
+    if (this.lastEvidenceEnvironmentFingerprint !== admittedEnvironmentKey) {
       const recorded = await this.appendEvidence("environment_admitted", {
         runtime: this.status().runtime,
         policy_artifact_sha256: this.options.manifest.artifact.sha256,
@@ -354,7 +368,7 @@ export class PolicyRuntime {
         await this.failClosed("agent_evidence_environment_write_failed");
         return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
       }
-      this.lastEvidenceEnvironmentFingerprint = this.environment.environment_fingerprint;
+      this.lastEvidenceEnvironmentFingerprint = admittedEnvironmentKey;
     }
     this.refreshing = true;
     let bundle: AnyDecisionBundle | null;
@@ -514,7 +528,8 @@ export class PolicyRuntime {
     try {
       await this.acquireController();
     } catch (error) {
-      await this.failClosed(`controller_acquire_failed:${message(error)}`);
+      if (isManagedManifest(this.options.manifest)) await this.taint(`controller_acquire_unknown:${message(error)}`);
+      else await this.failClosed(`controller_acquire_failed:${message(error)}`);
       return { type: "not_admitted", reason: "controller_acquire_failed", status: this.status() };
     }
     if (this.mutationCancellationRequested()) {
@@ -726,7 +741,7 @@ export class PolicyRuntime {
       if (this.stopped) return this.status();
       if (this.autonomyBudgetState.state === "active") this.endAutonomyBudget("stopped");
       await this.releaseController();
-      if (!(await this.appendEvidence("stopped", { autonomy_budget: this.autonomyBudgetStatus(), controller: this.held ? "held" : "released" }))) {
+      if (!(await this.appendEvidence("stopped", { autonomy_budget: this.autonomyBudgetStatus(), controller: this.controllerStatus() }))) {
         await this.taintWithoutEvidence("agent_evidence_write_failed_on_stop");
       }
       this.mode = "human";
@@ -739,12 +754,28 @@ export class PolicyRuntime {
     });
   }
 
-  private async acquireController(): Promise<void> { if (this.controllerReleaseUnconfirmed) throw new Error("controller_release_unconfirmed"); if (this.held) return; await this.options.connector.acquireController(); this.held = true; if (!(await this.appendEvidence("controller_acquired", {}))) throw new Error("Agent evidence failed after controller acquisition"); }
+  private async acquireController(): Promise<void> {
+    if (this.controllerReleaseUnconfirmed) throw new Error("controller_release_unconfirmed");
+    if (this.held) return;
+    try {
+      const confirmation = await this.options.connector.acquireController();
+      const payload = this.controlEvidence(confirmation, "held");
+      this.held = true;
+      if (!(await this.appendEvidence("controller_acquired", payload))) throw new Error("Agent evidence failed after controller acquisition");
+    } catch (error) {
+      // A Managed claim may have reached Host before a malformed or lost reply.
+      // No later Runtime action may infer that the service is released.
+      if (isManagedManifest(this.options.manifest)) this.controllerReleaseUnconfirmed = true;
+      throw error;
+    }
+  }
   private async releaseController(): Promise<void> {
     if (!this.held) return;
     if (this.controllerReleaseUnconfirmed) throw new Error("controller_release_unconfirmed");
+    let releasePayload: Record<string, unknown>;
     try {
-      await this.options.connector.releaseController();
+      const confirmation = await this.options.connector.releaseController();
+      releasePayload = this.controlEvidence(confirmation, "released");
     } catch (error) {
       const reason = `controller_release_failed:${message(error)}`;
       this.controllerReleaseUnconfirmed = true;
@@ -759,7 +790,7 @@ export class PolicyRuntime {
       throw error;
     }
     this.held = false;
-    if (!(await this.appendEvidence("controller_released", {}))) {
+    if (!(await this.appendEvidence("controller_released", releasePayload))) {
       const reason = "agent_evidence_controller_release_write_failed";
       if (this.tainted) {
         this.errors = [...this.errors, reason].slice(-20);
@@ -770,6 +801,26 @@ export class PolicyRuntime {
       await this.appendEvidence("runtime_tainted", { reason, retry: false });
       throw new Error(reason);
     }
+  }
+  private controlEvidence(confirmation: void | ManagedControlConfirmation,
+                          expected: "held" | "released"): Record<string, unknown> {
+    if (!isManagedManifest(this.options.manifest)) {
+      if (confirmation !== undefined) throw new Error("Connector control returned a Managed confirmation");
+      return {};
+    }
+    const environment = this.environment;
+    if (!confirmation || !environment || !("kind" in environment) || environment.kind !== "managed_text_v2"
+        || confirmation.status !== expected
+        || confirmation.service_instance_id !== environment.service_instance_id
+        || confirmation.runtime_instance_id !== environment.runtime_instance_id
+        || confirmation.game_continuity_id !== environment.game_continuity_id
+        || typeof confirmation.control_epoch !== "string" || !confirmation.control_epoch) {
+      throw new Error("Managed control confirmation differs from admitted environment");
+    }
+    return { status: expected, service_instance_id: confirmation.service_instance_id,
+      runtime_instance_id: confirmation.runtime_instance_id,
+      game_continuity_id: confirmation.game_continuity_id,
+      control_epoch: confirmation.control_epoch };
   }
   private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { this.resetInteractionContinuity(); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("handoff_to_human", { reason }); }
   private async completeOneStep(): Promise<void> { this.resetInteractionContinuity(); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("one_step_completed", { autonomy_budget: this.autonomyBudgetStatus() }); }
@@ -917,7 +968,7 @@ export class PolicyRuntime {
     if (this.autonomyBudgetState.state === "active") this.markBudgetExhausted(reason);
     this.requestAutonomyBudgetHandoff();
     try { await this.releaseController(); } catch { /* releaseController records and taints its exact failure */ }
-    const recorded = await this.appendEvidence("autonomy_budget_exhausted", { reason, budget: this.autonomyBudgetStatus(), controller: this.held ? "held" : "released" });
+    const recorded = await this.appendEvidence("autonomy_budget_exhausted", { reason, budget: this.autonomyBudgetStatus(), controller: this.controllerStatus() });
     if (!recorded && !this.tainted) {
       const failure = "autonomy_budget_exhaustion_evidence_write_failed";
       await this.taintWithoutEvidence(failure, false);
@@ -1000,8 +1051,39 @@ function makeDecision(manifest: PolicyManifest, runId: string, bundle: AnyDecisi
 }
 
 function isStale(error: unknown): boolean { return error instanceof StaleWholeBundleError || (error instanceof Error && (error as Error & { code?: string }).code === "stale_state"); }
-function manifestCompatibilityReason(manifest: PolicyManifest, capabilities: Awaited<ReturnType<PolicyConnector["capabilities"]>>): string | null {
-  if (capabilities.protocol_version !== manifest.requirements.connector_protocol_version) return "connector_protocol_unsupported";
+function isManagedManifest(manifest: PolicyManifest): boolean {
+  return "kind" in manifest.requirements.environment
+    && manifest.requirements.environment.kind === "managed_text_v2";
+}
+function isManagedCapabilities(capabilities: Awaited<ReturnType<PolicyConnector["capabilities"]>>): capabilities is ManagedCapabilities {
+  return "kind" in capabilities && capabilities.kind === "managed_text_v2";
+}
+function manifestCompatibilityReason(manifest: PolicyManifest, capabilities: Awaited<ReturnType<PolicyConnector["capabilities"]>>,
+                                     managedBindingSha256?: string): string | null {
+  if (isManagedManifest(manifest)) {
+    if (!isManagedCapabilities(capabilities)) return "managed_environment_required";
+    const requirements = manifest.requirements as Extract<PolicyManifest["requirements"], { environment: { kind: "managed_text_v2" } }>;
+    const admitted = capabilities.environment;
+    if (capabilities.protocol_version !== requirements.environment.text_protocol_version
+        || admitted.text_protocol_version !== requirements.environment.text_protocol_version
+        || capabilities.input_profile !== "text-menu-v2"
+        || capabilities.snapshot_schema !== manifest.representation.input_schema
+        || capabilities.receipt_schema !== "sts2.player-environment/text-menu-action-result-2") return "managed_text_profile_unsupported";
+    if (admitted.binding_sha256 !== managedBindingSha256) return "managed_binding_drift";
+    if ((capabilities.control_held && !capabilities.control_owned)
+        || capabilities.tainted || !capabilities.execution_available) return "managed_execution_unavailable";
+    if (!manifest.support.game_versions.includes(admitted.game_version)
+        || !manifest.support.game_commits.includes(admitted.game_commit)) return "game_identity_unsupported";
+    if (manifest.support.interaction_kinds.some((kind) => !capabilities.interaction_kinds.includes(kind)
+        && !capabilities.observed_terminal_kinds.includes(kind))
+        || manifest.support.action_verbs.some((verb) => !capabilities.action_verbs.includes(verb))) {
+      return "managed_text_vocabulary_unsupported";
+    }
+    return null;
+  }
+  if (isManagedCapabilities(capabilities)) return "connector_environment_required";
+  const requirements = manifest.requirements as Extract<PolicyManifest["requirements"], { connector_protocol_version: string }>;
+  if (capabilities.protocol_version !== requirements.connector_protocol_version) return "connector_protocol_unsupported";
   if (manifest.representation.input_schema !== "sts2.player-environment/snapshot-1") {
     const v2 = manifest.representation.input_schema === "sts2.player-environment/text-menu-snapshot-2";
     if (!("input_profile" in capabilities) || capabilities.input_profile !== (v2 ? "text-menu-v2" : "text-menu-v1")
@@ -1009,7 +1091,7 @@ function manifestCompatibilityReason(manifest: PolicyManifest, capabilities: Awa
         || capabilities.receipt_schema !== (v2 ? "sts2.player-environment/text-menu-action-result-2" : "sts2.player-environment/text-menu-action-result-1")) return "connector_text_menu_profile_unsupported";
   } else if (capabilities.snapshot_schema !== "sts2.player-environment/snapshot-1"
       || capabilities.receipt_schema !== "sts2.player-environment/receipt-1") return "connector_legacy_profile_unsupported";
-  const environment = manifest.requirements.environment;
+  const environment = requirements.environment;
   if (capabilities.host.host_kind !== environment.host_kind) return "environment_host_kind_drift";
   if (capabilities.host.version !== environment.connector_version) return "environment_connector_version_drift";
   if (capabilities.host.implementation.source_revision !== environment.connector_source_revision) return "environment_connector_source_revision_drift";
@@ -1024,6 +1106,7 @@ function manifestCompatibilityReason(manifest: PolicyManifest, capabilities: Awa
   return null;
 }
 function environmentStatus(capabilities: Awaited<ReturnType<PolicyConnector["capabilities"]>>): NonNullable<RuntimeStatus["environment"]> {
+  if (isManagedCapabilities(capabilities)) return capabilities.environment;
   return {
     runtime_instance_id: capabilities.host.runtime_instance_id,
     environment_fingerprint: capabilities.environment_fingerprint,

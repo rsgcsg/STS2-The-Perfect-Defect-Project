@@ -135,7 +135,7 @@ class AgentRunEvidenceVerifier:
         events = _verify_events(directory / _EVENTS_FILE, manifest, input_schema,
                                 adapter_protocol=policy_manifest["adapter"]["protocol"])
         if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA:
-            _verify_v2_run_association(policy_manifest, events)
+            _verify_v2_run_association(policy_manifest, manifest, events)
         if any(event["kind"] == "decision" for event in events) and not adapter_attested:
             raise AgentRunEvidenceError(
                 "adapter_not_attested",
@@ -215,9 +215,7 @@ def verify_agent_run_evidence(
 
 
 def _verify_manifest(value: Mapping[str, Any], expected: Mapping[str, object] | None) -> None:
-    _exact_keys(
-        value,
-        {
+    keys = {
             "schema",
             "run_id",
             "manifest_id",
@@ -233,9 +231,10 @@ def _verify_manifest(value: Mapping[str, Any], expected: Mapping[str, object] | 
             "mode",
             "tainted",
             "append_only",
-        },
-        "agent-run manifest",
-    )
+        }
+    if "environment_binding" in value:
+        keys.add("environment_binding")
+    _exact_keys(value, keys, "agent-run manifest")
     _literal(value, "schema", AGENT_RUN_SCHEMA)
     for key in ("run_id", "manifest_id", "policy_id", "policy_version", "runtime_version"):
         _text(value, key)
@@ -303,6 +302,13 @@ def _verify_policy_provenance(directory: Path, manifest: Mapping[str, Any]) -> b
         )
     if isinstance(policy_manifest.get("representation"), dict) and policy_manifest["representation"].get("input_schema") == _TEXT_V2_SNAPSHOT_SCHEMA:
         _verify_v2_policy_manifest(policy_manifest)
+        managed = _managed_policy(policy_manifest)
+        if managed != ("environment_binding" in manifest):
+            raise AgentRunEvidenceError("environment_binding", "Managed runs require their binding and Connector runs forbid it", _MANIFEST_FILE)
+        if managed:
+            _verify_managed_binding(_object(manifest["environment_binding"], "Managed environment binding"))
+    elif "environment_binding" in manifest:
+        raise AgentRunEvidenceError("environment_binding", "non-Managed runs forbid an environment binding", _MANIFEST_FILE)
 
     canonical_digest = _sha256_bytes(_canonical_json(policy_manifest).encode("utf-8"))
     if canonical_digest != manifest["policy_manifest_sha256"]:
@@ -380,20 +386,29 @@ def _verify_v2_policy_manifest(value: Mapping[str, Any]) -> None:
     _text(representation, "version", path)
     _literal(representation, "input_schema", _TEXT_V2_SNAPSHOT_SCHEMA, path)
     requirements = _object(value["requirements"], "v2 requirements")
-    _exact_keys(requirements, {"connector_protocol_version", "environment", "reads", "whole_decision_admission", "candidate_order_digest", "score_count_matches_candidate_count", "selected_index", "successor_required"}, "v2 requirements")
-    _text(requirements, "connector_protocol_version", path)
+    managed = _managed_policy(value)
+    _exact_keys(requirements, {"environment", "reads", "whole_decision_admission", "candidate_order_digest", "score_count_matches_candidate_count", "selected_index", "successor_required"} | (set() if managed else {"connector_protocol_version"}), "v2 requirements")
+    if not managed:
+        _text(requirements, "connector_protocol_version", path)
     _literal(requirements, "reads", [], path)
     _literal(requirements, "candidate_order_digest", "sha256-json-menu-action-id-order", path)
     for key in ("whole_decision_admission", "score_count_matches_candidate_count", "selected_index", "successor_required"):
         _literal(requirements, key, True, path)
     environment = _object(requirements["environment"], "v2 required environment")
-    _exact_keys(environment, {"host_kind", "connector_version", "connector_source_revision", "connector_artifact_sha256", "connector_module_version_id", "modset_status", "modset_fingerprint", "loaded_mod_ids"}, "v2 required environment")
-    _enum(environment, "host_kind", {"live_ui", "headless", "replay", "test"}, path)
-    for key in ("connector_version", "connector_source_revision", "connector_module_version_id", "modset_status", "modset_fingerprint"):
-        _text(environment, key, path)
-    if not _SHA256.fullmatch(_text(environment, "connector_artifact_sha256", path)):
-        raise AgentRunEvidenceError("invalid_digest", "v2 required Connector artifact is invalid", path)
-    _string_array(environment, "loaded_mod_ids", path)
+    if managed:
+        _exact_keys(environment, {"kind", "text_protocol_version", "input_profile"}, "Managed required environment")
+        _literal(environment, "kind", "managed_text_v2", path)
+        _text(environment, "text_protocol_version", path)
+        _literal(environment, "input_profile", "text-menu-v2", path)
+        _literal(value["adapter"], "protocol", "sts2.policy-runtime/decision-only-ndjson-3", path)
+    else:
+        _exact_keys(environment, {"host_kind", "connector_version", "connector_source_revision", "connector_artifact_sha256", "connector_module_version_id", "modset_status", "modset_fingerprint", "loaded_mod_ids"}, "v2 required environment")
+        _enum(environment, "host_kind", {"live_ui", "headless", "replay", "test"}, path)
+        for key in ("connector_version", "connector_source_revision", "connector_module_version_id", "modset_status", "modset_fingerprint"):
+            _text(environment, key, path)
+        if not _SHA256.fullmatch(_text(environment, "connector_artifact_sha256", path)):
+            raise AgentRunEvidenceError("invalid_digest", "v2 required Connector artifact is invalid", path)
+        _string_array(environment, "loaded_mod_ids", path)
     support = _object(value["support"], "v2 support")
     _exact_keys(support, {"game_versions", "game_commits", "interaction_kinds", "action_verbs"}, "v2 support")
     for key in support:
@@ -409,14 +424,56 @@ def _verify_v2_policy_manifest(value: Mapping[str, Any]) -> None:
         _literal(claims, key, False, path)
 
 
-def _verify_v2_run_association(policy_manifest: Mapping[str, Any], events: list[Mapping[str, Any]]) -> None:
+def _managed_policy(value: Mapping[str, Any]) -> bool:
+    requirements = value.get("requirements")
+    environment = requirements.get("environment") if isinstance(requirements, dict) else None
+    return isinstance(environment, dict) and environment.get("kind") == "managed_text_v2"
+
+
+def _verify_managed_binding(binding: Mapping[str, Any]) -> None:
+    path = _MANIFEST_FILE
+    _exact_keys(binding, {"schema", "profile_sha256", "input_profile", "host_package_identity", "candidate_build"}, "Managed environment binding")
+    _literal(binding, "schema", "sts2.policy-runtime/managed-environment-binding-1", path)
+    _literal(binding, "input_profile", "text-menu-v2", path)
+    if not _SHA256.fullmatch(_text(binding, "profile_sha256", path)):
+        raise AgentRunEvidenceError("invalid_digest", "Managed profile digest is invalid", path)
+    pin = _object(binding["host_package_identity"], "Managed Host package identity")
+    _exact_keys(pin, {"package", "version", "source_revision", "component_tree_revision", "release_asset_sha256", "package_content_sha256"}, "Managed Host package identity")
+    _literal(pin, "package", "@rsgcsg/sts2-host-runtime", path)
+    _text(pin, "version", path)
+    for key in ("source_revision", "component_tree_revision"):
+        if not re.fullmatch(r"[0-9a-f]{40}", _text(pin, key, path)):
+            raise AgentRunEvidenceError("invalid_digest", f"Managed Host {key} is invalid", path)
+    for key in ("release_asset_sha256", "package_content_sha256"):
+        if not _SHA256.fullmatch(_text(pin, key, path)):
+            raise AgentRunEvidenceError("invalid_digest", f"Managed Host {key} is invalid", path)
+    build = _object(binding["candidate_build"], "Managed candidate build")
+    _exact_keys(build, {"upstream_revision", "source_patch_sha256", "artifact_sha256", "artifact_mvid", "original_sts2_sha256", "runtime_sts2_sha256"}, "Managed candidate build")
+    _text(build, "upstream_revision", path)
+    _text(build, "artifact_mvid", path)
+    for key in ("source_patch_sha256", "artifact_sha256", "original_sts2_sha256", "runtime_sts2_sha256"):
+        if not _SHA256.fullmatch(_text(build, key, path)):
+            raise AgentRunEvidenceError("invalid_digest", f"Managed build {key} is invalid", path)
+
+
+def _verify_v2_run_association(policy_manifest: Mapping[str, Any], manifest: Mapping[str, Any], events: list[Mapping[str, Any]]) -> None:
     requirements = policy_manifest["requirements"]
     required_environment = requirements["environment"]
     support = policy_manifest["support"]
+    managed = _managed_policy(policy_manifest)
+    binding = manifest.get("environment_binding")
+    binding_digest = _sha256_bytes(_canonical_json(binding).encode("utf-8")) if managed else None
     for event in events:
         if event["kind"] == "environment_admitted":
             environment = event["payload"]["environment"]
-            if environment["connector_protocol_version"] != requirements["connector_protocol_version"] or any(
+            if managed:
+                if (environment["binding_sha256"] != binding_digest
+                        or environment["text_protocol_version"] != required_environment["text_protocol_version"]
+                        or environment["input_profile"] != required_environment["input_profile"]
+                        or environment["candidate_build"] != binding["candidate_build"]
+                        or environment["host_package_identity"] != binding["host_package_identity"]):
+                    raise AgentRunEvidenceError("environment_association", "Managed admission differs from sealed binding", _EVENTS_FILE)
+            elif environment["connector_protocol_version"] != requirements["connector_protocol_version"] or any(
                 environment[key] != required_environment[key] for key in required_environment
             ):
                 raise AgentRunEvidenceError("environment_association", "v2 admitted environment differs from Policy Manifest requirements", _EVENTS_FILE)
@@ -503,6 +560,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         raise AgentRunEvidenceError("unterminated_event", "events.jsonl must end each event with a newline", _EVENTS_FILE)
     events: list[Mapping[str, Any]] = []
     environment: Mapping[str, Any] | None = None
+    managed_control: Mapping[str, Any] | None = None
     decisions: dict[str, Mapping[str, Any]] = {}
     receipts: dict[str, Mapping[str, Any]] = {}
     rejected_receipts: set[str] = set()
@@ -608,6 +666,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             elif reason not in {"snapshot_incomplete", "complete_catalog_required", "duplicate_action_id", "unsupported_interaction_kind", "unsupported_action_verb"}:
                 raise AgentRunEvidenceError("text_observation_admission", "interactive observation has an invalid rejection reason", _EVENTS_FILE)
         elif kind == "environment_admitted":
+            if managed_control is not None:
+                raise AgentRunEvidenceError("managed_control", "environment changed while Managed control was held", _EVENTS_FILE)
             environment = _verify_environment_admission(payload, manifest)
         elif kind == "stale_whole_bundle_discarded":
             _verify_stale_event(payload)
@@ -630,7 +690,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         elif kind == "autonomy_budget_exhausted":
             _exact_keys(payload, {"reason", "budget", "controller"}, "autonomy_budget_exhausted payload")
             _enum(payload, "reason", {"submission_attempt_limit", "policy_call_limit", "deadline"}, _EVENTS_FILE)
-            _enum(payload, "controller", {"held", "released"}, _EVENTS_FILE)
+            _enum(payload, "controller", {"held", "released", "unknown"} if "environment_binding" in manifest
+                  else {"held", "released"}, _EVENTS_FILE)
             budget = _verify_autonomy_budget(payload["budget"])
             if budget["state"] != "exhausted" or budget["exhausted_reason"] != payload["reason"]:
                 raise AgentRunEvidenceError("budget_association", "exhaustion event and budget differ", _EVENTS_FILE)
@@ -663,9 +724,22 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 "environment": environment,
             }
         elif kind == "controller_acquired":
-            _exact_keys(payload, set(), "controller_acquired payload")
+            if "environment_binding" in manifest:
+                _verify_managed_control(payload, environment, "held")
+                if managed_control is not None:
+                    raise AgentRunEvidenceError("managed_control", "duplicate Managed controller claim", _EVENTS_FILE)
+                managed_control = payload
+            else:
+                _exact_keys(payload, set(), "controller_acquired payload")
         elif kind == "controller_released":
-            _exact_keys(payload, set(), "controller_released payload")
+            if "environment_binding" in manifest:
+                _verify_managed_control(payload, environment, "released")
+                if managed_control is None or any(payload[key] != managed_control[key] for key in (
+                        "service_instance_id", "runtime_instance_id", "game_continuity_id", "control_epoch")):
+                    raise AgentRunEvidenceError("managed_control", "Managed release differs from active claim", _EVENTS_FILE)
+                managed_control = None
+            else:
+                _exact_keys(payload, set(), "controller_released payload")
         elif kind == "receipt_rejected":
             if environment is None:
                 raise AgentRunEvidenceError(
@@ -707,6 +781,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 raise AgentRunEvidenceError("duplicate_successor", f"duplicate successor for decision: {decision_id}", _EVENTS_FILE)
             successors[decision_id] = successor
         elif kind == "text_menu_dispatch_attempt":
+            if "environment_binding" in manifest and managed_control is None:
+                raise AgentRunEvidenceError("managed_control", "Managed dispatch lacks a confirmed controller claim", _EVENTS_FILE)
             if autonomy_mode is False or observed_mode == "shadow":
                 raise AgentRunEvidenceError("text_dispatch_binding", "text dispatch requires an active executing mode after handoff", _EVENTS_FILE)
             decision_id = _verify_text_dispatch(payload, decisions, text_inputs, text_dispatches)
@@ -759,7 +835,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 raise AgentRunEvidenceError("schema_keys", "stopped payload has invalid fields", _EVENTS_FILE)
             if "autonomy_budget" in payload:
                 _verify_autonomy_budget(payload["autonomy_budget"])
-                _enum(payload, "controller", {"held", "released"}, _EVENTS_FILE)
+                _enum(payload, "controller", {"held", "released", "unknown"} if "environment_binding" in manifest
+                      else {"held", "released"}, _EVENTS_FILE)
             autonomy_mode = False
         elif kind == "fail_closed":
             pending_text_input = None
@@ -776,6 +853,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         raise AgentRunEvidenceError("text_decision_order", "unmatched text input in finalized run", _EVENTS_FILE)
     if any(decision_id not in text_outcomes for decision_id in text_dispatches) and manifest["status"] != "tainted":
         raise AgentRunEvidenceError("text_result_missing", "dispatched text action has no result in untainted run", _EVENTS_FILE)
+    if managed_control is not None and manifest["status"] != "tainted":
+        raise AgentRunEvidenceError("managed_control", "unreleased Managed control requires a tainted run", _EVENTS_FILE)
     if manifest["status"] == "completed" and any(kind == "text_native_delivery" and decision_id not in text_successors for decision_id, kind in text_outcomes.items()):
         raise AgentRunEvidenceError("successor_missing", "completed native text delivery lacks observed successor", _EVENTS_FILE)
     if any(kind in {"text_native_unknown", "text_menu_result_rejected"} for kind in text_outcomes.values()) and manifest["status"] != "tainted":
@@ -805,6 +884,8 @@ def _verify_environment_admission(
     artifact_digest = _text(payload, "policy_artifact_sha256", _EVENTS_FILE)
     if artifact_digest != manifest["policy_artifact_sha256"] or not _SHA256.fullmatch(artifact_digest):
         raise AgentRunEvidenceError("artifact_identity_drift", "event policy artifact differs from manifest", _EVENTS_FILE)
+    if "environment_binding" in manifest:
+        return _verify_managed_environment(environment)
     _exact_keys(
         environment,
         {
@@ -845,6 +926,67 @@ def _verify_environment_admission(
     if len(set(loaded_mod_ids)) != len(loaded_mod_ids):
         raise AgentRunEvidenceError("environment_identity_invalid", "loaded_mod_ids must be unique", _EVENTS_FILE)
     return environment
+
+
+def _verify_managed_environment(environment: Mapping[str, Any]) -> Mapping[str, Any]:
+    _exact_keys(environment, {"kind", "binding_sha256", "service_instance_id", "runtime_instance_id",
+                              "environment_fingerprint", "game_continuity_id", "text_protocol_version",
+                              "input_profile", "host_package_identity", "host_identity", "candidate_build",
+                              "game_version", "game_commit", "game_assembly_sha256", "episode_provenance"},
+                "Managed environment identity")
+    _literal(environment, "kind", "managed_text_v2", _EVENTS_FILE)
+    _literal(environment, "input_profile", "text-menu-v2", _EVENTS_FILE)
+    if not _SHA256.fullmatch(_text(environment, "binding_sha256", _EVENTS_FILE)):
+        raise AgentRunEvidenceError("invalid_digest", "Managed binding digest is invalid", _EVENTS_FILE)
+    for key in ("service_instance_id", "runtime_instance_id", "environment_fingerprint",
+                "game_continuity_id", "text_protocol_version", "game_version", "game_commit"):
+        _text(environment, key, _EVENTS_FILE)
+    if not _SHA256.fullmatch(_text(environment, "game_assembly_sha256", _EVENTS_FILE)):
+        raise AgentRunEvidenceError("invalid_digest", "Managed game assembly digest is invalid", _EVENTS_FILE)
+    pin = _object(environment["host_package_identity"], "Managed admitted Host package identity")
+    build = _object(environment["candidate_build"], "Managed admitted candidate build")
+    # These two public values must use the same strict schema as the sealed binding.
+    _verify_managed_binding({"schema": "sts2.policy-runtime/managed-environment-binding-1",
+                             "profile_sha256": "0" * 64, "input_profile": "text-menu-v2",
+                             "host_package_identity": pin, "candidate_build": build})
+    host = _object(environment["host_identity"], "Managed Host ready identity")
+    _exact_keys(host, {"package_name", "version", "source_revision", "component_tree_revision",
+                       "source_digest_sha256"}, "Managed Host ready identity")
+    if (host["package_name"] != pin["package"] or host["version"] != pin["version"]
+            or host["source_revision"] != pin["source_revision"]
+            or host["component_tree_revision"] != pin["component_tree_revision"]):
+        raise AgentRunEvidenceError("environment_association", "Host ready identity differs from package pin", _EVENTS_FILE)
+    if not _SHA256.fullmatch(_text(host, "source_digest_sha256", _EVENTS_FILE)):
+        raise AgentRunEvidenceError("invalid_digest", "Host source digest is invalid", _EVENTS_FILE)
+    if environment["game_assembly_sha256"] != build["runtime_sts2_sha256"]:
+        raise AgentRunEvidenceError("environment_association", "game assembly differs from candidate build", _EVENTS_FILE)
+    episode = _object(environment["episode_provenance"], "Managed episode provenance")
+    _exact_keys(episode, {"verdict", "requested_seed", "actual_seed", "runtime_instance_id"}, "Managed episode provenance")
+    _literal(episode, "verdict", "provenance_pass", _EVENTS_FILE)
+    for key in ("requested_seed", "actual_seed", "runtime_instance_id"):
+        _text(episode, key, _EVENTS_FILE)
+    if (episode["requested_seed"] != episode["actual_seed"]
+            or episode["runtime_instance_id"] != environment["runtime_instance_id"]):
+        raise AgentRunEvidenceError("environment_association", "episode provenance differs from admitted runtime", _EVENTS_FILE)
+    return environment
+
+
+def _text_protocol(environment: Mapping[str, Any]) -> str:
+    return str(environment["text_protocol_version"] if environment.get("kind") == "managed_text_v2"
+               else environment["connector_protocol_version"])
+
+
+def _verify_managed_control(payload: Mapping[str, Any], environment: Mapping[str, Any] | None,
+                            status: str) -> None:
+    if environment is None or environment.get("kind") != "managed_text_v2":
+        raise AgentRunEvidenceError("managed_control", "Managed control requires a prior admission", _EVENTS_FILE)
+    _exact_keys(payload, {"status", "service_instance_id", "runtime_instance_id",
+                          "game_continuity_id", "control_epoch"}, "Managed control confirmation")
+    _literal(payload, "status", status, _EVENTS_FILE)
+    for key in ("service_instance_id", "runtime_instance_id", "game_continuity_id"):
+        if _text(payload, key, _EVENTS_FILE) != environment[key]:
+            raise AgentRunEvidenceError("managed_control", f"Managed {key} differs from admission", _EVENTS_FILE)
+    _text(payload, "control_epoch", _EVENTS_FILE)
 
 
 def _verify_stale_event(payload: Mapping[str, Any]) -> None:
@@ -1502,7 +1644,7 @@ def _verify_text_snapshot(value: Mapping[str, Any], environment: Mapping[str, An
     v2 = input_schema == _TEXT_V2_SNAPSHOT_SCHEMA
     _literal(value, "schema", _TEXT_V2_SNAPSHOT_SCHEMA if v2 else _TEXT_SNAPSHOT_SCHEMA, _EVENTS_FILE)
     _literal(value, "input_profile", "text-menu-v2" if v2 else "text-menu-v1", _EVENTS_FILE)
-    if value["protocol_version"] != environment["connector_protocol_version"]:
+    if value["protocol_version"] != _text_protocol(environment):
         raise AgentRunEvidenceError("runtime_association", f"{label} protocol differs", _EVENTS_FILE)
     if not _TEXT_TRANSPORT_ID.fullmatch(_text(value, "snapshot_id", _EVENTS_FILE)):
         raise AgentRunEvidenceError("snapshot_schema", f"{label} snapshot ID is not a transport identifier", _EVENTS_FILE)
@@ -1758,7 +1900,7 @@ def _verify_text_dispatch(payload: Mapping[str, Any], decisions: Mapping[str, Ma
 
 def _verify_text_result(result: Mapping[str, Any], environment: Mapping[str, Any], input_schema: str | None) -> None:
     _exact_keys(result, {"protocol_version", "schema", "input_profile", "request_id", "status", "effect_domain", "native_delivery", "action", "reason_code", "detail", "retry", "successor", "attribution"}, "text result")
-    if result["protocol_version"] != environment["connector_protocol_version"]:
+    if result["protocol_version"] != _text_protocol(environment):
         raise AgentRunEvidenceError("runtime_association", "text result protocol differs", _EVENTS_FILE)
     v2 = input_schema == _TEXT_V2_SNAPSHOT_SCHEMA
     _literal(result, "schema", _TEXT_V2_RESULT_SCHEMA if v2 else _TEXT_RESULT_SCHEMA, _EVENTS_FILE)
