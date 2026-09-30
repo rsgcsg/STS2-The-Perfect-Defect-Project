@@ -232,7 +232,15 @@ internal sealed class PlatformLivePanel : IDisposable
         Root.Resized -= ApplyWorkspaceBounds;
         _statusClient.Dispose();
         _workbenchHttpClient.Dispose();
-        _workbenchOpenLifetime.Dispose();
+        Task<PlatformWorkbenchOpenResult>? pendingOpen = _workbenchOpenCheck;
+        if (pendingOpen is null)
+            _workbenchOpenLifetime.Dispose();
+        else
+            _ = pendingOpen.ContinueWith(task =>
+            {
+                _ = task.Exception; // Observe a worker that raced with this panel's unload.
+                _workbenchOpenLifetime.Dispose();
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     private static Shortcut WorkspaceShortcut(Key key) => new()
@@ -1407,8 +1415,9 @@ internal sealed class PlatformLivePanel : IDisposable
         if (_disposed || _workbenchOpenCheck is { IsCompleted: false })
             return;
         _workbenchButton.Disabled = true;
+        CancellationToken token = _workbenchOpenLifetime.Token;
         _workbenchOpenCheck = Task.Run(() => PlatformWorkbenchOpenClient.OpenAsync(
-            _workbenchHttpClient, _workbenchOpenLifetime.Token));
+            _workbenchHttpClient, token));
         PushToast("workbench.open", "正在确认本机工作台连接…");
     }
 

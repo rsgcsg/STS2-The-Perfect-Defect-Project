@@ -35,7 +35,8 @@ test("Workbench browser opens after a user click and exact-instance health check
   assert.match(workbenchOpen, /new Uri\(new Uri\(url, UriKind\.Absolute\), "health"\)/u);
   assert.match(workbenchOpen, /observedInstanceId == instanceId/u);
   assert.match(workbenchOpen, /AllowAutoRedirect = false, UseProxy = false/u);
-  assert.match(mod, /Task\.Run\(\(\) => PlatformWorkbenchOpenClient\.OpenAsync\(\s*_workbenchHttpClient, _workbenchOpenLifetime\.Token\)/u);
+  assert.match(mod, /CancellationToken token = _workbenchOpenLifetime\.Token;[\s\S]*?Task\.Run\(\(\) => PlatformWorkbenchOpenClient\.OpenAsync\(\s*_workbenchHttpClient, token\)/u);
+  assert.match(mod, /_workbenchOpenLifetime\.Cancel\(\);[\s\S]*?pendingOpen\.ContinueWith\(task =>[\s\S]*?_workbenchOpenLifetime\.Dispose\(\)/u);
   assert.match(workbenchOpen, /initial\.State != PlatformWorkbenchOpenState\.NotRegistered/u);
   assert.match(workbenchOpen, /new ProcessStartInfo\(path\)/u);
   assert.match(workbenchOpen, /UseShellExecute = false/u);
