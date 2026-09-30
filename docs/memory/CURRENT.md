@@ -1,49 +1,64 @@
 # Current project context, 2026-09-30
 
-Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Accepted develop
-anchor is recorded below; earlier dated receipts keep their original identity.
+Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
 Resolve live GitHub refs before work; current authorities override this file.
-Check open PRs and writers. This is a bounded routing summary; dated receipts retain exact historical source, CI and runtime details.
+Check PRs and writers. This is a bounded routing summary; dated receipts
+retain exact historical source, CI and runtime details.
 Source, CI, installed/loaded, native/Human and scientific evidence are separate.
 No complete Stage1a or policy-quality qualification is claimed.
 
 ## Current candidate and immediate work
 
-Accepted develop anchor: `37c96d0b21cf353dfc29b4a869ab2dd031adf2ba`
-after PR114/115. PR114's full run `36612570760` and PR115's Python run
-`36616778204` succeeded at their exact heads. Integration runs `36616566651`
-and `36620542458` used verified execution reuse with fresh guards/portable;
-they are not new full dual-OS executions.
+Accepted develop anchor: `a887e4f1c75eb48066d00c49b279abee51abd30c`,
+normal merge of PR117 after PR116. The accepted tree is
+`5ff4b641ac5c6f072203c9b782c8877c2adae86d`. PR117 exact head
+`de23ce167fddc5bfe149cd29f2773299b261845d` passed full run
+[36641484349](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36641484349).
+PR118's K8 evaluation-summary fix was included through normal ancestry;
+its result is report metadata, not a new research outcome. Integration run
+[36644990717/1](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36644990717)
+succeeded using verified same-tree execution reuse plus fresh guards/portable;
+it is not another dual-OS full execution.
 
-PR109's accepted text-menu-v2 chain and optional inventoried member-kit pair
-are now integrated. PR114 also integrates explicit fixed-seed scenes, terminal
-recording closure, K8/Reset-K8 recipes and cold metadata reads. PR115 preserves
-the selected external research workspace across explicit setup replacement.
-The local Workbench was deliberately moved to clean `37c96d0b`; its selected
-library and operation history were retained. This does not update the installed
-Mod, change existing package pins, publish a kit or qualify fresh-member setup.
+PR116's row-2 capture/completed-append order is accepted source. PR117 adds
+only qualified **map-boundary** save/load and continuation probes, not arbitrary
+combat/selector checkpoints, general MCTS or cross-Host equivalence. Earlier
+PR114/115 acceptance and execution-reuse receipts keep their original identities.
 
-[PR116](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/116)
-at `1091752036a632b78c80a9477b73dd60101bcde6` is a separate Draft:
-Human observation capture order and completed-append watermark, row-2 typed
-validation and research sequence projection. It preserves row-1 bytes and
-physical evidence references. Its own full run `36620611771` is pending at
-this report's observation; inspect the live run before acceptance. New
-Connector/Annotator/Evidence source is not installed or Human-qualified.
-This ordering foundation does not yet supply executed-action memory.
+The local Workbench now runs the clean accepted `de23ce167fddc5bfe149cd29f2773299b261845d`
+tree, retaining the selected research workspace and original records/models.
+A local exact-game build of that tree was deployed and cold-load identity checked.
+The Platform button opened the no-login local home, and the original library was
+visible. A [new row-2 mouse canary](../evidence/STAGE1A_ROW2_MOUSE_CANARY_2026-09-30.md)
+has 10 verified input witnesses and 2 canonical transitions; its final successor
+remains explicitly unknown. This is bounded native/Human evidence, not a Full
+Run or memory-model result. No distribution asset or new model was published.
 
-A separate isolated Host packet is qualifying **map-boundary** save/load and
-one continuation through the shared public projection. Early private probes
-agree for a fixed seed and two isolated restores; no general combat/selector
-checkpoint, arbitrary branching or cross-Host equivalence is established.
+The isolated [confirmed-interaction memory candidate](../plans/M2_CONFIRMED_INTERACTION.zh-CN.md)
+adds opt-in port 3, Evidence rc.23 and Runtime rc.14. It feeds only a durably
+confirmed input from the prior menu to STPD's internal memory, with exact
+continuity/once-only references; cancelled dispatches cannot become history.
+It is not the running local Workbench/Runtime and does not relabel old models.
+Component source/test and temporary installed-package checks are recorded in the
+[packet receipt](../evidence/STAGE1A_CONFIRMED_INTERACTION_2026-09-30.md).
+PR119 run 36647445252/1 at `ea06ab2c` failed: Linux succeeded, Windows
+reported two application-test failures and portable failed. The startup
+handoff race is locally repaired with 64 affected-file tests passing. Private
+diagnostics were added for future failures; the old training failure's cause
+remains unknown.
+The accepted-version native capture does not qualify this candidate.
+The independently reviewed Human-history dev evaluator (`33f1d1d6`) is now
+included locally. Its 114 focused tests passed; no new real-data evaluation
+or model-quality result is claimed. A combined candidate gate is still required.
 
 ## Accepted research and product basis
 
 D-Simple-S is the default application family. Merged PR90/91/95/96/97/99
 provide observed-sequence M2-K1 training, durable checkpoints, read-only online
 scoring, atomic Connector context, port-2 and verified export/registration.
-Runtime remains model-neutral. M2 currently updates from observations only:
-no executed-action or feedback memory input is invented. Game identity remains
+Runtime remains model-neutral. The accepted application models update M2 from
+observations only. The separate opt-in candidate adds confirmed prior interaction;
+it does not invent game effects or feedback, or alter the old model identities. Game identity remains
 outside unchanged v1 page text. See the
 [M2 integration ledger](../evidence/STAGE1A_M2_INTEGRATION_2026-09-29.md)
 for exact accepted heads and bounded native evidence.
@@ -87,13 +102,10 @@ report, and truthful cleanup. Neither changes an installed environment merely
 by being merged. V1 Human inputs/tokenizers/models remain v1.
 
 [PR108 v2 M2 receipt](../evidence/STAGE1A_M2_V2_ENGINEERING_2026-09-30.md)
-trained one six-step Managed engineering sequence, exported it, checked
-complete-menu scoring parity and ran six model-selected submissions with two
-native deliveries followed by the declared budget stop. Actor is unverified;
-there are no causal-successor labels or independent dev/quality conclusions.
-PR108 exact head `4bff20ba` passed full run `36588481214`; normal merge
-`5d5a471b` retained its tree. Integration run `36592794499` used verified
-same-tree reuse with fresh guards, not a second OS execution.
+records a six-step Managed training/export probe and six model submissions,
+two native deliveries, then budget stop. Actor is unverified; no causal-successor
+labels or independent quality result follow. Exact source/full CI and subsequent
+same-tree reuse identities remain in that receipt.
 
 ## Remaining Platform non-claims
 

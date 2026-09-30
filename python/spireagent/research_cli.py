@@ -90,7 +90,7 @@ def main() -> int:
     evaluate_memory.add_argument("--model", required=True)
     evaluate_memory.add_argument("--source", required=True)
     evaluate_memory.add_argument("--operation", required=True)
-    evaluate_memory.add_argument("--max-settling-events", type=int, default=0)
+    evaluate_memory.add_argument("--max-settling-events", type=int)
     evaluate_memory.add_argument("--semantic-overlap", choices=("true", "false"), required=True)
     prepare_memory = commands.add_parser(
         "prepare-workbench-memory", help="prepare a caller-admitted train-only Human M2 run")

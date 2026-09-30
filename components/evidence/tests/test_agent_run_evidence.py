@@ -347,7 +347,7 @@ class AgentRunEvidenceTests(unittest.TestCase):
     def test_adapter_protocol_unknown_and_attestation_drift_fail_closed(self) -> None:
         directory = self._evidence(
             "run-unknown-adapter",
-            adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3",
+            adapter_protocol="sts2.policy-runtime/decision-only-ndjson-999",
         )
         result = AgentRunEvidenceVerifier().verify(directory)
         self.assertFalse(result.passed)
@@ -545,6 +545,50 @@ if __name__ == "__main__":
     unittest.main()
 
 class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
+    def test_exact_v3_adapter_keeps_text_menu_and_native_delivery_validation(self) -> None:
+        for native in (False, True):
+            with self.subTest(native=native):
+                directory = self._text_evidence(
+                    f"run-v3-native-{native}", native=native,
+                    adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3",
+                )
+                result = AgentRunEvidenceVerifier().verify(directory)
+                self.assertTrue(result.passed, result.findings)
+                # An opt-in protocol is not permission to change what happened.
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+                events[5]["payload"]["result"]["native_delivery"] = None if native else "delivered"
+                self._rewrite_events(directory, events)
+                rejected = AgentRunEvidenceVerifier().verify(directory)
+                self.assertFalse(rejected.passed)
+                self.assertEqual(rejected.findings[0].code, "text_result_binding")
+
+    def test_v3_adapter_rejects_legacy_snapshot_and_attestation_drift(self) -> None:
+        directory = self._evidence(
+            "run-v3-legacy", adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3",
+        )
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "adapter_representation")
+
+        directory = self._text_evidence(
+            "run-v3-attestation", adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3",
+        )
+        attestation_path = directory / "adapter-attestation.json"
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+        attestation["actual"]["protocol"] = "sts2.policy-runtime/decision-only-ndjson-2"
+        attestation_path.write_bytes(canonical(attestation))
+        self._rewrite_events(directory, [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()])
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "adapter_association")
+
+    def test_v3_adapter_accepts_exact_v2_connector_selection_fixture(self) -> None:
+        directory = self._text_v2_evidence(
+            "v3-v2-selection", adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3",
+        )
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertTrue(result.passed, result.findings)
+
     def test_exact_v2_adapter_with_text_menu_manifest_is_supported(self) -> None:
         result = AgentRunEvidenceVerifier().verify(
             self._text_evidence(
@@ -659,12 +703,18 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         if native:
             events.append(event("text_observed_successor", {"decision_id": "decision-1", "successor": successor}))
         events.append(event("controller_released", {}))
+        if adapter_protocol == "sts2.policy-runtime/decision-only-ndjson-3":
+            events[1]["payload"]["observation_context"] = {
+                "continuity_token": "continuity-1", "previous_interaction_request_id": None,
+            }
         for index, item in enumerate(events, 1): item["sequence"] = index
         self._rewrite_events(directory, events)
         return directory
 
-    def _text_v2_evidence(self, name: str) -> Path:
-        directory = self._text_evidence(name, adapter_protocol="sts2.policy-runtime/decision-only-ndjson-2")
+    def _text_v2_evidence(
+        self, name: str, *, adapter_protocol: str = "sts2.policy-runtime/decision-only-ndjson-2",
+    ) -> Path:
+        directory = self._text_evidence(name, adapter_protocol=adapter_protocol)
         policy_path = directory / "policy-manifest.json"
         policy = json.loads(policy_path.read_text())
         policy["representation"] = {"id": "text", "version": "2", "input_schema": "sts2.player-environment/text-menu-snapshot-2"}
@@ -710,6 +760,130 @@ class TextMenuAgentRunEvidenceTests(AgentRunEvidenceTests):
         events[5]["payload"].update(action_id=action["action_id"], result=result)
         self._rewrite_events(directory, events)
         return directory
+
+    def _v3_context_pair(self, name: str) -> tuple[Path, list[dict[str, Any]]]:
+        directory = self._text_evidence(name, adapter_protocol="sts2.policy-runtime/decision-only-ndjson-3")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        page = json.loads(json.dumps(events[5]["payload"]["result"]["successor"]))
+        entry = {**events[1], "payload": {
+            "decision_id": "decision-2", "snapshot": page,
+            "observation_context": {"continuity_token": "continuity-1",
+                                    "previous_interaction_request_id": events[5]["payload"]["result"]["request_id"]}}}
+        decision = json.loads(json.dumps(events[2]))
+        decision["payload"]["decision"].update(
+            decision_id="decision-2", snapshot_id=page["snapshot_id"],
+            candidate_digest=sha256(json.dumps([a["action_id"] for a in page["menu_actions"]["actions"]], separators=(",", ":")).encode()))
+        decision["payload"]["resolved_bound_action_id"] = page["menu_actions"]["actions"][0]["action_id"]
+        events.extend([entry, decision])
+        return directory, events
+
+    def test_v3_context_binds_actual_confirmed_history_without_changing_page(self) -> None:
+        directory, events = self._v3_context_pair("context-valid")
+        self._rewrite_events(directory, [{**e, "sequence": n} for n, e in enumerate(events, 1)])
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertTrue(result.passed, result.findings)
+
+    def test_v3_context_rejects_missing_foreign_reused_or_unconfirmed_history(self) -> None:
+        for case in ("missing", "extra", "foreign", "new_token_history", "same_page",
+                     "older_page", "duplicate_echo", "retired_token", "cancelled"):
+            with self.subTest(case=case):
+                directory, events = self._v3_context_pair("context-" + case)
+                context = events[-2]["payload"]["observation_context"]
+                code = "observation_context_binding"
+                if case == "missing":
+                    del events[1]["payload"]["observation_context"]
+                    code = "schema_keys"
+                elif case == "extra":
+                    context["game_id"] = "not-public-model-input"
+                    code = "schema_keys"
+                elif case == "foreign":
+                    context["previous_interaction_request_id"] = "foreign-request"
+                elif case == "new_token_history":
+                    context["continuity_token"] = "another-continuity"
+                elif case == "same_page":
+                    events[-2]["payload"]["snapshot"] = events[1]["payload"]["snapshot"]
+                elif case == "older_page":
+                    events[-2]["payload"]["snapshot"]["sequence"] = 1
+                elif case in {"duplicate_echo", "retired_token"}:
+                    pair = json.loads(json.dumps(events[-2:]))
+                    pair[0]["payload"]["decision_id"] = "decision-3"
+                    pair[0]["payload"]["snapshot"].update(snapshot_id="text-3", sequence=3)
+                    pair[1]["payload"]["decision"].update(decision_id="decision-3", snapshot_id="text-3")
+                    if case == "retired_token":
+                        context.update(continuity_token="another-continuity", previous_interaction_request_id=None)
+                        pair[0]["payload"]["observation_context"]["previous_interaction_request_id"] = None
+                    events.extend(pair)
+                elif case == "cancelled":
+                    events[5] = {**events[5], "kind": "text_menu_dispatch_cancelled",
+                                 "payload": {"decision_id": "decision-1", "reason": "recovery_before_submit"}}
+                self._rewrite_events(directory, [{**e, "sequence": n} for n, e in enumerate(events, 1)])
+                result = AgentRunEvidenceVerifier().verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, code)
+
+    def test_old_port_rejects_new_context_metadata(self) -> None:
+        directory = self._text_evidence("old-port-context")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[1]["payload"]["observation_context"] = {
+            "continuity_token": "continuity-1", "previous_interaction_request_id": None,
+        }
+        self._rewrite_events(directory, events)
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertEqual(result.findings[0].code, "schema_keys")
+
+    def test_cancelled_dispatch_seals_without_fabricating_connector_result(self) -> None:
+        for protocol in (2, 3):
+            for native in (False, True):
+                with self.subTest(protocol=protocol, native=native):
+                    directory = self._text_evidence(
+                        f"cancelled-{protocol}-{native}", native=native,
+                        adapter_protocol=f"sts2.policy-runtime/decision-only-ndjson-{protocol}",
+                    )
+                    events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+                    cancellation = {**events[5], "kind": "text_menu_dispatch_cancelled",
+                                    "payload": {"decision_id": "decision-1", "reason": "recovery_before_submit"}}
+                    events = [*events[:5], cancellation, events[-1]]
+                    self._rewrite_events(directory, [{**event, "sequence": index} for index, event in enumerate(events, 1)])
+                    result = AgentRunEvidenceVerifier().verify(directory)
+                    self.assertTrue(result.passed, result.findings)
+
+    def test_cancelled_dispatch_rejects_missing_attempt_bad_reason_and_duplicate_outcome(self) -> None:
+        for case in ("no_attempt", "wrong_decision", "bad_reason", "extra_result", "duplicate",
+                     "late_result", "after_result", "successor"):
+            with self.subTest(case=case):
+                directory = self._text_evidence("cancelled-" + case, native=True)
+                original = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+                cancellation = {**original[5], "kind": "text_menu_dispatch_cancelled",
+                                "payload": {"decision_id": "decision-1", "reason": "recovery_before_submit"}}
+                events = [*original[:5], cancellation, original[-1]]
+                code = "text_dispatch_binding"
+                if case == "no_attempt":
+                    del events[4]
+                elif case == "wrong_decision":
+                    cancellation["payload"]["decision_id"] = "not-this-decision"
+                elif case == "bad_reason":
+                    cancellation["payload"]["reason"] = "connector_rejected"
+                    code = "invalid_value"
+                elif case == "extra_result":
+                    cancellation["payload"]["result"] = original[5]["payload"]["result"]
+                    code = "schema_keys"
+                elif case == "duplicate":
+                    events.insert(6, cancellation)
+                    code = "duplicate_text_result"
+                elif case == "late_result":
+                    events.insert(6, original[5])
+                    code = "duplicate_text_result"
+                elif case == "after_result":
+                    events.insert(5, original[5])
+                    code = "duplicate_text_result"
+                elif case == "successor":
+                    events.insert(6, original[6])
+                    code = "successor_association"
+                # Rehash the actual bundle: failures must be semantic, not stale digests.
+                self._rewrite_events(directory, [{**event, "sequence": index} for index, event in enumerate(events, 1)])
+                result = AgentRunEvidenceVerifier().verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, code)
 
     def test_v2_connector_selection_fixture_is_verified(self) -> None:
         directory = self._text_v2_evidence("v2-selection")

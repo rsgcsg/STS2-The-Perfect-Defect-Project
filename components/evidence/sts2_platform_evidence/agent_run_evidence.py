@@ -132,7 +132,8 @@ class AgentRunEvidenceVerifier:
         policy_manifest = _load_json_object(directory / _POLICY_MANIFEST_FILE)
         representation = policy_manifest.get("representation")
         input_schema = representation.get("input_schema") if isinstance(representation, dict) else None
-        events = _verify_events(directory / _EVENTS_FILE, manifest, input_schema)
+        events = _verify_events(directory / _EVENTS_FILE, manifest, input_schema,
+                                adapter_protocol=policy_manifest["adapter"]["protocol"])
         if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA:
             _verify_v2_run_association(policy_manifest, events)
         if any(event["kind"] == "decision" for event in events) and not adapter_attested:
@@ -285,17 +286,20 @@ def _verify_policy_provenance(directory: Path, manifest: Mapping[str, Any]) -> b
     artifact = _object(policy_manifest.get("artifact"), "policy manifest artifact")
     adapter = _object(policy_manifest.get("adapter"), "policy manifest adapter")
     _verify_adapter_identity(adapter, _POLICY_MANIFEST_FILE)
-    if adapter["protocol"] == "sts2.policy-runtime/decision-only-ndjson-2":
+    if adapter["protocol"] in {
+        "sts2.policy-runtime/decision-only-ndjson-2",
+        "sts2.policy-runtime/decision-only-ndjson-3",
+    }:
         representation = _object(policy_manifest.get("representation"), "policy manifest representation")
         if representation.get("input_schema") not in _TEXT_SNAPSHOT_SCHEMAS:
             raise AgentRunEvidenceError(
                 "adapter_representation",
-                "decision-only-ndjson-2 requires a declared text-menu snapshot representation",
+                "stateful adapter requires a declared text-menu snapshot representation",
                 _POLICY_MANIFEST_FILE,
             )
     elif isinstance(policy_manifest.get("representation"), dict) and policy_manifest["representation"].get("input_schema") == _TEXT_V2_SNAPSHOT_SCHEMA:
         raise AgentRunEvidenceError(
-            "adapter_representation", "text-menu-snapshot-2 requires decision-only-ndjson-2", _POLICY_MANIFEST_FILE,
+            "adapter_representation", "text-menu-snapshot-2 requires a stateful adapter", _POLICY_MANIFEST_FILE,
         )
     if isinstance(policy_manifest.get("representation"), dict) and policy_manifest["representation"].get("input_schema") == _TEXT_V2_SNAPSHOT_SCHEMA:
         _verify_v2_policy_manifest(policy_manifest)
@@ -436,6 +440,7 @@ def _verify_adapter_identity(value: Mapping[str, Any], path: str) -> None:
         {
             "sts2.policy-runtime/decision-only-ndjson-1",
             "sts2.policy-runtime/decision-only-ndjson-2",
+            "sts2.policy-runtime/decision-only-ndjson-3",
         },
         path,
     )
@@ -462,6 +467,7 @@ _EVENT_KINDS = {
     "text_decision_input",
     "text_observation_not_admitted",
     "text_menu_dispatch_attempt",
+    "text_menu_dispatch_cancelled",
     "menu_navigation",
     "text_native_delivery",
     "text_native_unknown",
@@ -487,7 +493,8 @@ _PLAYER_VERBS = {
 }
 
 
-def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | None) -> list[Mapping[str, Any]]:
+def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | None, *,
+                   adapter_protocol: str) -> list[Mapping[str, Any]]:
     raw = path.read_bytes()
     if not raw:
         return []
@@ -505,6 +512,12 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
     text_outcomes: dict[str, str] = {}
     text_successors: set[str] = set()
     pending_text_input: str | None = None
+    context_port = adapter_protocol == "sts2.policy-runtime/decision-only-ndjson-3"
+    text_contexts: dict[str, str] = {}
+    context_token: str | None = None
+    retired_contexts: set[str] = set()
+    consumed_interactions: set[str] = set()
+    confirmed_requests: dict[str, str] = {}
     v2_unknown_seen = False
     native_submissions_used = 0
     menu_navigations_used = 0
@@ -531,7 +544,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             raise AgentRunEvidenceError("unsupported_event_kind", f"unsupported event kind: {kind}", _EVENTS_FILE)
         if input_schema in _TEXT_SNAPSHOT_SCHEMAS and kind in {"receipt", "receipt_rejected", "successor"}:
             raise AgentRunEvidenceError("text_profile_association", "text-menu run cannot use generic receipt or successor evidence", _EVENTS_FILE)
-        if v2_unknown_seen and kind in {"text_decision_input", "text_menu_dispatch_attempt", "menu_navigation",
+        if v2_unknown_seen and kind in {"text_decision_input", "text_menu_dispatch_attempt", "text_menu_dispatch_cancelled", "menu_navigation",
                                         "text_native_delivery", "text_native_unknown", "text_menu_not_applied",
                                         "text_menu_result_rejected", "text_observed_successor"}:
             raise AgentRunEvidenceError("unknown_retry", "v2 unknown native delivery cannot continue text decisions or delivery", _EVENTS_FILE)
@@ -544,7 +557,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         if kind == "text_decision_input":
             if environment is None:
                 raise AgentRunEvidenceError("environment_identity_order", "text input requires environment admission", _EVENTS_FILE)
-            _exact_keys(payload, {"decision_id", "snapshot"}, "text_decision_input payload")
+            _exact_keys(payload, {"decision_id", "snapshot", "observation_context"}
+                        if context_port else {"decision_id", "snapshot"}, "text_decision_input payload")
             decision_id = _text(payload, "decision_id", _EVENTS_FILE)
             if decision_id in text_inputs or decision_id in decisions:
                 raise AgentRunEvidenceError("duplicate_decision", "duplicate text decision input", _EVENTS_FILE)
@@ -552,6 +566,31 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _verify_text_snapshot(snapshot, environment, "text decision snapshot", input_schema)
             if snapshot["status"] != "interactive" or snapshot["completeness"]["status"] != "complete" or snapshot["menu_actions"]["status"] != "complete" or not snapshot["menu_actions"]["actions"]:
                 raise AgentRunEvidenceError("text_input_incomplete", "text decision requires a complete executable menu", _EVENTS_FILE)
+            if context_port:
+                context = _object(payload["observation_context"], "policy observation context")
+                _exact_keys(context, {"continuity_token", "previous_interaction_request_id"}, "policy observation context")
+                token = _text(context, "continuity_token", _EVENTS_FILE)
+                previous = context["previous_interaction_request_id"]
+                if previous is not None:
+                    _text(context, "previous_interaction_request_id", _EVENTS_FILE)
+                if token != context_token:
+                    if token in retired_contexts or previous is not None:
+                        raise AgentRunEvidenceError("observation_context_binding", "new or retired continuity cannot carry prior history", _EVENTS_FILE)
+                    if context_token is not None:
+                        retired_contexts.add(context_token)
+                    context_token = token
+                if previous is not None:
+                    source_id = confirmed_requests.get(previous)
+                    if source_id is None or previous in consumed_interactions:
+                        raise AgentRunEvidenceError("observation_context_binding", "history lacks an unused prior confirmed result", _EVENTS_FILE)
+                    source = text_inputs[source_id]
+                    if (text_contexts[source_id] != token
+                            or source["session"] != snapshot["session"]
+                            or source["snapshot_id"] == snapshot["snapshot_id"]
+                            or source["sequence"] >= snapshot["sequence"]):
+                        raise AgentRunEvidenceError("observation_context_binding", "history does not belong to a newer observation in this continuity", _EVENTS_FILE)
+                    consumed_interactions.add(previous)
+                text_contexts[decision_id] = token
             text_inputs[decision_id] = snapshot
             pending_text_input = decision_id
         elif kind == "text_observation_not_admitted":
@@ -681,11 +720,23 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             # an actual dispatch proves an active budget, never a fresh reset.
             autonomy_mode = True
             text_dispatches[decision_id] = payload
+        elif kind == "text_menu_dispatch_cancelled":
+            # This is a Runtime pre-submit disposition, never a Connector receipt.
+            _exact_keys(payload, {"decision_id", "reason"}, "text dispatch cancellation")
+            decision_id = _text(payload, "decision_id", _EVENTS_FILE)
+            _enum(payload, "reason", {"recovery_before_submit"}, _EVENTS_FILE)
+            if decision_id not in text_dispatches:
+                raise AgentRunEvidenceError("text_dispatch_binding", "cancellation lacks a prior dispatch attempt", _EVENTS_FILE)
+            if decision_id in text_outcomes:
+                raise AgentRunEvidenceError("duplicate_text_result", "multiple text outcomes for one decision", _EVENTS_FILE)
+            text_outcomes[decision_id] = kind
         elif kind in {"menu_navigation", "text_native_delivery", "text_native_unknown", "text_menu_not_applied", "text_menu_result_rejected"}:
             decision_id = _verify_text_outcome(kind, payload, manifest, environment, decisions, text_inputs, text_dispatches, input_schema)
             if decision_id in text_outcomes:
                 raise AgentRunEvidenceError("duplicate_text_result", "multiple text outcomes for one decision", _EVENTS_FILE)
             text_outcomes[decision_id] = kind
+            if context_port and kind in {"menu_navigation", "text_native_delivery"}:
+                confirmed_requests[payload["result"]["request_id"]] = decision_id
             if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA and kind == "text_native_unknown":
                 v2_unknown_seen = True
         elif kind == "text_observed_successor":

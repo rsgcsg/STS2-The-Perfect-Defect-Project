@@ -6,6 +6,7 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
 from spireagent.json_boundary import BoundaryError
 
+from .confirmed_interaction import HISTORY_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE
 from .memory_sequence_bridge import _projectable_episode_items, _segments
 from .memory_token_inputs import project_memory_profile_snapshot
 from .observed_input_sequence import ObservedInput, ObservedInputView
@@ -22,9 +23,9 @@ def fit_observed_memory_tokenizer(view: ObservedInputView, *,
     The caller must already have passed its owning training-use ledger gate.
     No successor, delivery, hidden state, or future page enters this corpus.
     """
-    if input_profile == INPUT_PROFILE:
+    if input_profile in {INPUT_PROFILE, HISTORY_INPUT_PROFILE}:
         scope = "partial_human_input_stream"
-    elif input_profile == V2_INPUT_PROFILE:
+    elif input_profile in {V2_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE}:
         scope = "managed_engineering_control_inputs"
         if max_settling_events != 0:
             raise BoundaryError("memory_tokens", "v2_settling_unsupported")
@@ -34,7 +35,7 @@ def fit_observed_memory_tokenizer(view: ObservedInputView, *,
         raise BoundaryError("memory_tokens", "human_observed_source_required" if
                             input_profile == INPUT_PROFILE else
                             "observed_source_profile_mismatch")
-    if input_profile == V2_INPUT_PROFILE and any(
+    if input_profile in {V2_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE} and any(
         not isinstance(item, ObservedInput)
         or item.source_kind != "managed_control_input_stream" for item in view.inputs
     ):

@@ -150,6 +150,8 @@ describe("explicit text-menu-v2 Runtime consumer", () => {
     expect(f.submit).toHaveBeenCalledTimes(3);
     expect(f.events.filter(event => event.kind === "menu_navigation")).toHaveLength(2);
     expect(f.events.filter(event => event.kind === "text_native_delivery")).toHaveLength(1);
+    expect(f.events.filter(event => event.kind === "text_decision_input")
+      .every(event => Object.keys(event.payload).sort().join(",") === "decision_id,snapshot")).toBe(true);
     expect(f.events.filter(event => event.kind === "text_observed_successor")).toHaveLength(1);
     expect(f.events.filter(event => event.kind === "text_menu_dispatch_attempt").map(event => [
       event.payload.native_submissions_used, event.payload.menu_navigations_used

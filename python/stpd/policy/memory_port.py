@@ -11,12 +11,14 @@ from typing import Any, TextIO
 from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, object_fields
 
+from ..fullrun.confirmed_interaction import HISTORY_PROFILES
 from ..fullrun.memory_token_inputs import project_memory_profile_snapshot
 from ..memory_policy_installation import input_profile_for_config, validate
 from .memory_export import validate_memory_package
 from .memory_scorer import MAX_SNAPSHOT_BYTES, OnlineM2Scorer
 
 PORT_SCHEMA = "sts2.policy-runtime/policy-port-2"
+HISTORY_PORT_SCHEMA = "sts2.policy-runtime/policy-port-3"
 MAX_PORT_LINE_BYTES = 20 * 1024 * 1024
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -27,6 +29,8 @@ class MemoryPolicyAdapter:
         self.config, self.manifest = validate(
             ROOT, config_path, manifest_path, binding_root=binding_root)
         self.input_profile = input_profile_for_config(self.config)
+        self.port_schema = (HISTORY_PORT_SCHEMA if self.input_profile in HISTORY_PROFILES
+                            else PORT_SCHEMA)
         package, weights, tokenizer, settings = validate_memory_package(
             Path(self.config["export_path"]), input_profile=self.input_profile,
             expected_manifest_sha256=self.config["export_manifest_sha256"])
@@ -39,10 +43,13 @@ class MemoryPolicyAdapter:
     def decide(self, value: object) -> tuple[dict[str, Any], dict[str, Any]]:
         if self.closed:
             raise BoundaryError("m2_policy", "adapter_closed")
-        request = object_fields(value, {
+        fields = {
             "run_id", "manifest", "bundle", "candidate_digest", "candidate_count",
             "continuity_token",
-        }, "m2_policy.request")
+        }
+        if self.input_profile in HISTORY_PROFILES:
+            fields.add("previous_interaction")
+        request = object_fields(value, fields, "m2_policy.request")
         if (not isinstance(request["run_id"], str) or not request["run_id"]
                 or not isinstance(request["continuity_token"], str)
                 or not request["continuity_token"]
@@ -75,6 +82,8 @@ class MemoryPolicyAdapter:
             snapshot_bytes=snapshot_bytes,
             expected_candidate_digest=request["candidate_digest"],
             expected_candidate_count=request["candidate_count"],
+            previous_interaction=(request["previous_interaction"]
+                                  if self.input_profile in HISTORY_PROFILES else None),
         )
         if (result.action_ids != public.action_ids
                 or result.candidate_digest != public.candidate_digest
@@ -85,7 +94,11 @@ class MemoryPolicyAdapter:
         return ({"candidate_digest": public.candidate_digest, "scores": values,
                  "selected_index": max(range(len(values)), key=values.__getitem__)},
                 {"continuity_token": request["continuity_token"],
-                 "snapshot_id": snapshot["snapshot_id"], "sequence": snapshot["sequence"]})
+                 "snapshot_id": snapshot["snapshot_id"], "sequence": snapshot["sequence"],
+                 **({"previous_interaction_request_id": (
+                     request["previous_interaction"]["request_id"]
+                     if request["previous_interaction"] is not None else None)}
+                    if self.input_profile in HISTORY_PROFILES else {})})
 
     def close(self) -> None:
         self.closed = True
@@ -96,7 +109,7 @@ def serve(adapter: MemoryPolicyAdapter, source: TextIO, destination: TextIO) -> 
         destination.write(canonical_json(value) + "\n")
         destination.flush()
 
-    emit({"schema": PORT_SCHEMA, "message_type": "ready",
+    emit({"schema": adapter.port_schema, "message_type": "ready",
           "adapter": adapter.manifest["adapter"]})
     try:
         while True:
@@ -115,13 +128,13 @@ def serve(adapter: MemoryPolicyAdapter, source: TextIO, destination: TextIO) -> 
                     request_id = request["request_id"]
                 else:
                     raise BoundaryError("m2_policy", "request_id_required")
-                if request["schema"] != PORT_SCHEMA or request["message_type"] != "decide":
+                if request["schema"] != adapter.port_schema or request["message_type"] != "decide":
                     raise BoundaryError("m2_policy", "unsupported_request")
                 output, completion = adapter.decide(request["input"])
-                emit({"schema": PORT_SCHEMA, "message_type": "decision",
+                emit({"schema": adapter.port_schema, "message_type": "decision",
                       "request_id": request_id, "output": output, "completion": completion})
             except (ValueError, TypeError, KeyError, AttributeError) as error:
-                emit({"schema": PORT_SCHEMA, "message_type": "error",
+                emit({"schema": adapter.port_schema, "message_type": "error",
                       "request_id": request_id,
                       "error": {"code": "policy_error", "message": str(error)}})
                 if len(line) > MAX_PORT_LINE_BYTES and not line.endswith("\n"):

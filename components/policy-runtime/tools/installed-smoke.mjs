@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { ConnectorPolicyClient, PolicyRuntime, POLICY_RUNTIME_VERSION, startPolicyRuntimeHttpServer } from "@rsgcsg/sts2-policy-runtime";
+import { AgentRunEvidence, ConnectorPolicyClient, PolicyRuntime, POLICY_RUNTIME_VERSION, startPolicyRuntimeHttpServer } from "@rsgcsg/sts2-policy-runtime";
 
 const manifest = {
   schema: "sts2.policy-runtime/policy-manifest-1", manifest_id: "installed-cpu-smoke",
@@ -318,6 +318,81 @@ try {
   assert.equal(menuV2SnapshotReads, 1);
   assert.equal(controlHeld, false);
   await menuV2Runtime.stop();
+
+  // The installed v3 public API carries only confirmed, recorded Connector
+  // delivery metadata into the next atomic context observation.
+  menuV2Current = menuV2Root;
+  const v3Manifest = structuredClone(menuV2Manifest);
+  v3Manifest.adapter.protocol = "sts2.policy-runtime/decision-only-ndjson-3";
+  await mkdir("v3-evidence");
+  const v3Evidence = await AgentRunEvidence.create({ root: "v3-evidence", runId: "installed-v3",
+    policyManifest: v3Manifest, runtimeVersion: POLICY_RUNTIME_VERSION,
+    runtimeCodeSha256: "d".repeat(64), mode: "auto" });
+  await v3Evidence.attestAdapter(v3Manifest.adapter);
+  const v3Inputs = [];
+  const v3Runtime = new PolicyRuntime({ manifest: v3Manifest, connector: textConnector,
+    mode: "auto", runId: v3Evidence.runId, evidence: v3Evidence,
+    runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: "d".repeat(64) },
+    successorPoll: { maxAttempts: 2, baseBackoffMs: 0 }, statefulPolicy: input => {
+      v3Inputs.push(input);
+      return { output: { candidate_digest: input.candidate_digest,
+        scores: input.bundle.observation.menu_actions.actions.map((_action, index) => -index), selected_index: 0 },
+        completion: { continuity_token: input.continuity_token,
+          snapshot_id: input.bundle.observation.snapshot_id, sequence: input.bundle.observation.sequence,
+          previous_interaction_request_id: input.previous_interaction?.request_id ?? null } };
+    } });
+  assert.equal((await v3Runtime.tick()).type, "navigated");
+  assert.equal(v3Inputs[0].previous_interaction, null);
+  assert.equal((await v3Runtime.tick()).type, "text_native_delivered");
+  assert.equal(v3Inputs[1].previous_interaction.result_kind, "menu_applied");
+  assert.equal(v3Inputs[1].previous_interaction.effect_domain, "text_menu");
+  assert.equal(v3Inputs[1].previous_interaction.action_id, menuV2Root.menu_actions.actions[0].action_id);
+  assert.ok(v3Inputs[1].previous_interaction.request_id.startsWith("request-"));
+  await v3Runtime.stop();
+  const v3Events = (await readFile("v3-evidence/installed-v3/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
+  assert.ok(v3Events.some(event => event.kind === "menu_navigation"));
+  assert.ok(v3Events.some(event => event.kind === "text_native_delivery"));
+  const v3RecordedInputs = v3Events.filter(event => event.kind === "text_decision_input").map(event => event.payload);
+  assert.deepEqual(v3RecordedInputs[0].observation_context, {
+    continuity_token: v3Inputs[0].continuity_token, previous_interaction_request_id: null });
+  assert.deepEqual(v3RecordedInputs[1].observation_context, {
+    continuity_token: v3Inputs[1].continuity_token,
+    previous_interaction_request_id: v3Inputs[1].previous_interaction.request_id });
+
+  menuV2Current = menuV2Root;
+  const cancelledEvidence = await AgentRunEvidence.create({ root: "v3-evidence", runId: "installed-v3-cancel",
+    policyManifest: v3Manifest, runtimeVersion: POLICY_RUNTIME_VERSION,
+    runtimeCodeSha256: "d".repeat(64), mode: "auto" });
+  await cancelledEvidence.attestAdapter(v3Manifest.adapter);
+  let dispatchStored;
+  const dispatchWritten = new Promise(resolve => { dispatchStored = resolve; });
+  let continueDispatch;
+  const dispatchCanReturn = new Promise(resolve => { continueDispatch = resolve; });
+  const pausedEvidence = { append: async (...args) => {
+    await cancelledEvidence.append(...args);
+    if (args[0] === "text_menu_dispatch_attempt") { dispatchStored(); await dispatchCanReturn; }
+  }, finalize: (...args) => cancelledEvidence.finalize(...args) };
+  const cancelledRuntime = new PolicyRuntime({ manifest: v3Manifest, connector: textConnector,
+    mode: "auto", runId: cancelledEvidence.runId, evidence: pausedEvidence,
+    runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: "d".repeat(64) },
+    statefulPolicy: input => ({ output: { candidate_digest: input.candidate_digest,
+      scores: input.bundle.observation.menu_actions.actions.map((_action, index) => -index), selected_index: 0 },
+      completion: { continuity_token: input.continuity_token,
+        snapshot_id: input.bundle.observation.snapshot_id, sequence: input.bundle.observation.sequence,
+        previous_interaction_request_id: input.previous_interaction?.request_id ?? null } }) });
+  const cancelledTick = cancelledRuntime.tick();
+  await dispatchWritten;
+  const humanRecovery = cancelledRuntime.setMode("human");
+  continueDispatch();
+  assert.equal((await cancelledTick).reason, "mode_changed_before_submit");
+  await humanRecovery;
+  assert.equal(cancelledRuntime.status().tainted, false);
+  assert.equal(cancelledRuntime.status().controller, "released");
+  await cancelledRuntime.stop();
+  const cancelledEvents = (await readFile("v3-evidence/installed-v3-cancel/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
+  assert.equal(cancelledEvents.filter(event => event.kind === "text_menu_dispatch_cancelled").length, 1);
+  assert.equal(cancelledEvents.filter(event => event.kind === "menu_navigation" || event.kind === "text_native_delivery").length, 0);
+  assert.equal(cancelledEvents.filter(event => event.kind === "text_decision_input")[0].payload.observation_context.previous_interaction_request_id, null);
 } finally { await new Promise(resolve => textHost.close(resolve)); }
 
 // Launch the actual installed CLI in Human mode. It never contacts a game.
@@ -356,4 +431,4 @@ try {
     child.kill("SIGTERM"); await childExit;
   }
 }
-console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, text_menu_http_sdk: true, text_menu_navigation_and_native_submissions: textPosts, installed_v2_atomic_context_reads: v2ContextReads, installed_v2_token_rotation_and_completion_validation: true, installed_text_menu_v2_context_reads: menuV2ContextReads, installed_text_menu_v2_system_selection_and_native_submissions: menuV2Posts, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));
+console.log(JSON.stringify({ imported_package: installedEntry.includes("node_modules"), version: POLICY_RUNTIME_VERSION, environment_recovery_fence: true, slow_recovery_during_unresolved_policy: true, installed_idle_deadline_handoff: true, text_menu_http_sdk: true, text_menu_navigation_and_native_submissions: textPosts, installed_v2_atomic_context_reads: v2ContextReads, installed_v2_token_rotation_and_completion_validation: true, installed_text_menu_v2_context_reads: menuV2ContextReads, installed_text_menu_v2_system_selection_and_native_submissions: menuV2Posts, installed_v3_confirmed_interaction_and_evidence: true, installed_v3_cancelled_dispatch_sealed: true, shadow_submissions: 0, synthetic_deliveries: submits, installed_cli_started_sealed_and_exited: true, game_contact: false }));

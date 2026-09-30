@@ -3,10 +3,20 @@
 This component verifies typed immutable artifacts and moves their bytes without
 owning gameplay, Human action, or research semantics.
 
-Evidence `0.1.0-rc.21` verifies Policy Runtime adapter protocol v1 and the exact
-v2 protocol in the Policy Manifest and adapter attestation. Expected and actual
+Evidence `0.1.0-rc.23` verifies Policy Runtime adapter protocols v1, v2 and v3
+in the Policy Manifest and adapter attestation. The opt-in v3 interaction-memory
+port requires a declared text-menu representation, just as v2 does. This verifier
+checks the existing immutable input/result events; it does not infer model memory
+writes, native effects or causal successors from a protocol version. Expected and actual
 adapter identities, manifest digests, and all existing typed event checks remain
-strict. It also verifies the additive
+strict. Port 3 `text_decision_input` also requires exact `observation_context`
+metadata: the validated completion's `continuity_token` and nullable
+`previous_interaction_request_id`. A non-null request ID must reference one
+unused prior confirmed menu/native result in the same continuity and a different,
+strictly newer snapshot. New continuity starts empty; retired tokens cannot
+return. These are recorded Runtime facts, outside model-visible page text;
+absence of history is not permission to infer the last action. Old ports retain
+their original exact input payload. It also verifies the additive
 `text_observation_not_admitted` Agent-run event against a prior admitted
 environment and the strict text-menu snapshot contract. Its reason and snapshot
 are observation evidence only, with no decision, delivery or successor binding.
@@ -21,9 +31,19 @@ events; text-menu runs cannot mix in generic Receipt/Successor events, and each
 dispatch records exact cumulative menu/native attempt counts. Unknown delivery
 has no retry or successor. This is ordinary Agent-run
 integrity verification, not Human origin or research admission.
-Older finalized runs remain readable. A verifier pinned to an earlier strict
-Evidence version rejects runs containing this new event, so consumers must pin
-the rc.18 candidate before claiming verification of such runs.
+`text_menu_dispatch_cancelled` records the Runtime's `recovery_before_submit`
+disposition for one previously recorded dispatch attempt. It consumes that
+attempt without inventing a Connector result, native delivery or successor.
+Cancellation has exact fields `decision_id` and `reason`; missing attempts,
+duplicate dispositions, later results and successors are rejected. Attempt
+counters include this preparation and do not prove actual submission. This
+verifier checks the producer's ordered evidence, not whether the game executed
+an action independently. The event requires Evidence rc.23 or later; older
+strict verifiers must not be used to qualify such a run.
+Older finalized runs remain readable. The original text-menu-v2 contract was
+introduced in rc.18; the cancellation event and protocol-v3 attestation require
+rc.23. Earlier strict verifiers reject those newer records rather than silently
+ignoring them. Consumer pins must match the event and adapter contracts in use.
 
 ```text
 producer bundle

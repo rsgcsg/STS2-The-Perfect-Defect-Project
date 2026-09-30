@@ -22,6 +22,16 @@ from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.local_evaluation import summary
+from stpd.fullrun.confirmed_interaction import (
+    HISTORY_INPUT_PROFILE,
+    V2_HISTORY_INPUT_PROFILE,
+    confirmed_action_text,
+)
+from stpd.fullrun.memory_projection_config import (
+    RENDERER_IDENTITY,
+    history_episode_projection_config,
+    v2_episode_projection_config,
+)
 from stpd.fullrun.memory_sequence_bridge import (
     MemoryEpisodeProjectionConfig,
     project_memory_episodes,
@@ -30,7 +40,7 @@ from stpd.fullrun.memory_training_prepare import fit_observed_memory_tokenizer
 from stpd.fullrun.observed_input_sequence import ObservedInputView
 from stpd.models.dsimple_memory import ExperimentalDSimpleM2
 from stpd.models.token_core import ScratchShape, ScratchTokenCore
-from stpd.workers.memory_evaluation import evaluate_memory
+from stpd.workers.memory_evaluation import _evaluation_projection_config, evaluate_memory
 from stpd.workers.memory_ranking import MemoryConfig, MemoryTrainingInput
 from stpd.workers.memory_run import execute_memory_run, prepare_memory_run
 
@@ -54,10 +64,28 @@ def _view(source_id: str, session: str, *events: str) -> ObservedInputView:
     return ObservedInputView(source_id, "partial_human_input_stream", False, items)
 
 
+def _history_view(source_id: str, session: str) -> ObservedInputView:
+    stream = f"human:{session}:timeline:run"
+    rows = (
+        replace(observed("a", 1, stream=stream, reset=True, action="opaque-play"),
+                event_id=f"{session}:a", capture_ordinal=1, physical_sequence=4,
+                completed_append_watermark=0, confirmed_at_sequence=4,
+                confirmed_effect_domain="native_input"),
+        replace(observed("b", 2, stream=stream, action="opaque-nav"),
+                event_id=f"{session}:b", capture_ordinal=2, physical_sequence=3,
+                completed_append_watermark=0, confirmed_at_sequence=3,
+                confirmed_effect_domain="text_menu"),
+        replace(observed("c", 3, stream=stream, action="opaque-play"),
+                event_id=f"{session}:c", capture_ordinal=3, physical_sequence=5,
+                completed_append_watermark=3),
+    )
+    return ObservedInputView(source_id, "partial_human_input_stream", False, rows)
+
+
 def prepared(tmp_path: Path, monkeypatch, *, reset_each_step: bool = False,
              train_events: tuple[str, ...] = ("train-cue", "train-choice"),
              dev_events: tuple[str, ...] = ("dev-cue", "dev-choice"),
-             operation_id: str | None = None):
+             operation_id: str | None = None, history: bool = False):
     store = ManifestArtifactStore(LocalBlobStore(tmp_path / "objects"))
     evidence_a = Manifest("evidence", PRODUCER)
     evidence_b = Manifest("evidence", replace(PRODUCER, source_revision="c" * 40))
@@ -67,14 +95,22 @@ def prepared(tmp_path: Path, monkeypatch, *, reset_each_step: bool = False,
     dev_source = Manifest("dataset", PRODUCER, (Parent("evidence", evidence_b.artifact_id),))
     store.publish(train_source)
     store.publish(dev_source)
-    train_view = _view(train_source.artifact_id, "train-session", *train_events)
-    dev_view = _view(dev_source.artifact_id, "dev-session", *dev_events)
+    train_view = (_history_view(train_source.artifact_id, "train-session") if history else
+                  _view(train_source.artifact_id, "train-session", *train_events))
+    dev_view = (_history_view(dev_source.artifact_id, "dev-session") if history else
+                _view(dev_source.artifact_id, "dev-session", *dev_events))
     views = {train_source.artifact_id: train_view, dev_source.artifact_id: dev_view}
     monkeypatch.setattr("stpd.workers.memory_evaluation.load_observed_input_view",
                         lambda _store, source_id: views[source_id])
     monkeypatch.setattr("stpd.fullrun.observed_input_sequence.load_observed_input_view",
                         lambda _store, source_id: views[source_id])
-    tokens, count = fit_observed_memory_tokenizer(train_view, max_settling_events=0)
+    settling = 64 if history else 0
+    projection_config = (history_episode_projection_config(HISTORY_INPUT_PROFILE) if history
+                         else MemoryEpisodeProjectionConfig(
+                             "stpd/memory-episode-projection-config-v1", 0))
+    tokens, count = fit_observed_memory_tokenizer(
+        train_view, max_settling_events=settling,
+        input_profile=HISTORY_INPUT_PROFILE if history else "text-menu-v1")
     fitted = Tokenizer.from_str(tokens.decode())
     config = MemoryConfig(vocab_size=fitted.get_vocab_size(), episode_count=count,
                           reset_each_step=reset_each_step,
@@ -84,15 +120,15 @@ def prepared(tmp_path: Path, monkeypatch, *, reset_each_step: bool = False,
         ScratchTokenCore(ScratchShape(config.vocab_size, 8, 1, 2, 16, 0.0, 256)),
         reset_each_step=reset_each_step,
     )
-    projection = project_memory_episodes(train_view, fitted, network,
-                                         max_observations=16, max_input_tokens=2048)
+    projection = project_memory_episodes(
+        train_view, fitted, network, max_observations=16, max_input_tokens=2048,
+        max_settling_events=settling, projection_config=projection_config)
     assert not projection.diagnostics
     run = prepare_memory_run(
         store, MemoryTrainingInput(train_source.artifact_id, hashlib.sha256(tokens).hexdigest(),
                                    projection.episodes), config, PRODUCER, tokens,
         source_mapping=projection.event_mapping,
-        projection_config=MemoryEpisodeProjectionConfig(
-            "stpd/memory-episode-projection-config-v1", 0),
+        projection_config=projection_config,
         operation_id=operation_id,
     )
     reporter = ObjectStoreRunReporter(store, store.blobs)
@@ -137,11 +173,111 @@ def test_dev_report_uses_separate_source_and_preserves_frozen_weights(tmp_path, 
     assert all(row["candidate_count"] == 2 and row["split"] == "dev"
                for row in payload["rows"])
     assert payload["summary"]["bootstrap"]["status"] == "unknown"
+    legacy_input = store.get_manifest(report.parent("evaluation_input"))
+    legacy_projection = decode_json(b"".join(store.read_payload(
+        legacy_input.payload("projection"))))["projection"]
+    assert legacy_projection == {"renderer": RENDERER_IDENTITY,
+                                 "max_settling_events": 0}
     public = summary(store, report.artifact_id)
     assert public["decision_count"] == 2
     assert public["native_run_independence"] is False
     assert public["strict_deduplicated_benchmark"] is False
     assert public["protocol"] == "independent-source-retrospective-v1"
+
+
+def test_human_history_dev_replays_exact_train_profile_without_future_label(
+    tmp_path, monkeypatch,
+):
+    store, model_id, _, dev, views, _, _ = prepared(tmp_path, monkeypatch, history=True)
+    before = store.get_manifest(model_id).payload("weights").sha256
+    previous = []
+    original = ExperimentalDSimpleM2.advance
+
+    def watched(self, page, memory, **kwargs):
+        previous.append(kwargs["previous_actual_action"])
+        assert kwargs["feedback"] is None
+        return original(self, page, memory, **kwargs)
+
+    with patch.object(ExperimentalDSimpleM2, "advance", watched), patch(
+        "torch.optim.AdamW", side_effect=AssertionError("optimizer created")
+    ):
+        report = evaluate_memory(
+            store, model_id, dev.artifact_id, PRODUCER, max_settling_events=64)
+    assert store.get_manifest(model_id).payload("weights").sha256 == before
+    assert len(previous) == 3 and previous[0] is None and previous[1] is None
+    assert previous[2] is not None  # B completed before C; A completed later.
+    prior = views[dev.artifact_id].inputs[1]
+    tokenizer_bytes = b"".join(store.read_payload(
+        store.get_manifest(model_id).payload("tokenizer")))
+    tokenizer = Tokenizer.from_str(tokenizer_bytes.decode())
+    expected = confirmed_action_text(
+        prior.snapshot, prior.selected_action_id,
+        effect_domain="text_menu", basis="last_known_human_input_witness",
+        profile=HISTORY_INPUT_PROFILE)
+    assert previous[2].tolist() == tokenizer.encode(expected).ids
+    evaluation_input = store.get_manifest(report.parent("evaluation_input"))
+    projection = decode_json(b"".join(store.read_payload(
+        evaluation_input.payload("projection"))))
+    assert projection["projection"]["renderer"]["id"] == \
+        "stpd/m2-confirmed-interaction-v1"
+    assert projection["projection"]["max_settling_events"] == 64
+    assert projection["projection"]["input_profile"] == HISTORY_INPUT_PROFILE
+
+
+def test_human_history_overlap_includes_prior_action_but_not_current_label(
+    tmp_path, monkeypatch,
+):
+    store, model_id, _, dev, views, _, _ = prepared(tmp_path, monkeypatch, history=True)
+    original = views[dev.artifact_id]
+    rows = list(original.inputs)
+    rows[1] = replace(rows[1], selected_action_id="opaque-play",
+                      confirmed_effect_domain="native_input")
+    views[dev.artifact_id] = replace(original, inputs=tuple(rows))
+    report = evaluate_memory(store, model_id, dev.artifact_id, PRODUCER)
+    assert report.parameters.value()["train_dev_rendered_overlap_count"] == 2
+    assert store.get_manifest(report.parent("evaluation_input")).parameters.value()[
+        "train_dev_rendered_overlap_count"] == 2
+
+
+def test_human_history_dev_rejects_explicit_settling_mismatch(tmp_path, monkeypatch):
+    store, model_id, _, dev, _, _, _ = prepared(tmp_path, monkeypatch, history=True)
+    with pytest.raises(BoundaryError, match="dev_projection_config_mismatch"):
+        evaluate_memory(store, model_id, dev.artifact_id, PRODUCER,
+                        max_settling_events=0)
+
+
+@pytest.mark.parametrize("projection", [
+    v2_episode_projection_config(),
+    history_episode_projection_config(V2_HISTORY_INPUT_PROFILE),
+])
+def test_dev_evaluator_rejects_managed_or_agent_train_profile(
+    tmp_path, monkeypatch, projection,
+):
+    store, model_id, _, _, _, _, _ = prepared(tmp_path, monkeypatch)
+    model = store.get_manifest(model_id)
+    training = store.get_manifest(model.parent("training_input"))
+    parameters = {**training.parameters.value(), "projection_config": asdict(projection)}
+    altered = Manifest(training.kind, training.producer, training.parents,
+                       training.payloads, FrozenObject.of(parameters))
+    with pytest.raises(BoundaryError, match="human_train_projection_required"):
+        _evaluation_projection_config(altered)
+
+
+@pytest.mark.parametrize(("scope", "kind", "stream"), [
+    ("verified_agent_observed_inputs", "agent_decision_inputs", "agent:content:run"),
+    ("managed_engineering_control_inputs", "managed_control_input_stream", "managed:run"),
+])
+def test_human_history_dev_rejects_other_source_kinds(
+    tmp_path, monkeypatch, scope, kind, stream,
+):
+    store, model_id, _, dev, views, _, _ = prepared(tmp_path, monkeypatch, history=True)
+    original = views[dev.artifact_id]
+    views[dev.artifact_id] = replace(
+        original, stream_scope=scope,
+        inputs=tuple(replace(item, source_kind=kind, stream_id=stream)
+                     for item in original.inputs))
+    with pytest.raises(BoundaryError, match="human_dev_source_required"):
+        evaluate_memory(store, model_id, dev.artifact_id, PRODUCER)
 
 
 def test_same_source_evidence_session_rejected_but_natural_page_repeat_counted(

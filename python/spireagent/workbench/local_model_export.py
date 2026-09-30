@@ -27,6 +27,7 @@ from spireagent.workbench.local_model_dependencies import require_local_models
 from spireagent.workbench.local_workspace import LocalWorkspace, open_registered_workspace
 from spireagent.workbench.memory_recipe import (
     V2_MEMORY_RECIPES,
+    input_profile_for_recipe,
     recipe_for_memory_config,
 )
 from spireagent.workbench.research_process import private_child
@@ -368,7 +369,7 @@ class LocalModelExport:
                         "projection_config"))
             except ValueError as error:
                 raise BoundaryError("local_model_export", "memory_lineage_mismatch") from error
-            profile = "text-menu-v2" if recipe in V2_MEMORY_RECIPES else "text-menu-v1"
+            profile = input_profile_for_recipe(recipe)
             package, weights, tokenizer, _ = validate_memory_package(
                 destination, input_profile=profile)
             store: Any = workspace.store

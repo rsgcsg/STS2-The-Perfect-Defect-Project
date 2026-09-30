@@ -18,15 +18,20 @@ from tokenizers import Tokenizer
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, digest, json_bytes
 from spireagent.storage.store import ArtifactStore
+from stpd.fullrun.confirmed_interaction import HISTORY_INPUT_PROFILE
 from stpd.fullrun.evaluation import candidate_metrics, summarize_rows
 from stpd.fullrun.memory_sequence_bridge import (
+    MemoryEpisodeBridgeResult,
     MemoryEpisodeProjectionConfig,
+    MemoryEpisodeProjectionConfigV3,
+    parse_episode_projection_config,
     project_memory_episodes,
 )
 from stpd.fullrun.memory_token_inputs import (
     MAX_TOKENIZER_BYTES,
     RENDERER_IDENTITY,
     project_memory_snapshot,
+    renderer_identity_for_profile,
 )
 from stpd.fullrun.memory_training_prepare import fit_observed_memory_tokenizer
 from stpd.fullrun.observed_input_sequence import ObservedInputView, load_observed_input_view
@@ -103,6 +108,32 @@ def _rendered_inputs(view: ObservedInputView) -> set[bytes]:
     return rendered
 
 
+def _rendered_history_inputs(projection: MemoryEpisodeBridgeResult) -> set[bytes]:
+    """Compare complete model inputs, including only already known prior actions."""
+    return {json_bytes([
+        step.page.tolist(), [action.tolist() for action in step.actions],
+        step.previous_actual_action.tolist() if step.previous_actual_action is not None else None,
+    ]) for episode in projection.episodes for step in episode.steps}
+
+
+def _evaluation_projection_config(
+    training: Manifest,
+) -> MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV3:
+    parameters = training.parameters.value()
+    if parameters.get("source_map_schema") != SOURCE_MAP_SCHEMA:
+        raise BoundaryError("memory_evaluation", "train_projection_identity_mismatch")
+    try:
+        projection = parse_episode_projection_config(parameters.get("projection_config"))
+    except (TypeError, ValueError) as error:
+        raise BoundaryError("memory_evaluation", "train_projection_identity_mismatch") from error
+    if type(projection) is MemoryEpisodeProjectionConfig:
+        return projection
+    if (type(projection) is MemoryEpisodeProjectionConfigV3
+            and projection.input_profile == HISTORY_INPUT_PROFILE):
+        return projection
+    raise BoundaryError("memory_evaluation", "human_train_projection_required")
+
+
 def _model_lineage(
     store: ArtifactStore, model_id: str,
 ) -> tuple[Manifest, Manifest, MemoryConfig, str, bytes]:
@@ -148,22 +179,18 @@ def _model_lineage(
 def _verify_train_projection(
     store: ArtifactStore, training: Manifest, source: ObservedInputView,
     tokenizer: Tokenizer, tokenizer_bytes: bytes, network: Any, config: MemoryConfig,
-) -> None:
+    projection_config: MemoryEpisodeProjectionConfig | MemoryEpisodeProjectionConfigV3,
+) -> MemoryEpisodeBridgeResult:
     """Bind the model's V2 train bytes to its verified observed source."""
     parameters = training.parameters.value()
-    projection_info = parameters.get("projection_config")
-    if (not isinstance(projection_info, dict)
-            or set(projection_info) != {"schema", "max_settling_events"}
-            or parameters.get("source_map_schema") != SOURCE_MAP_SCHEMA):
-        raise BoundaryError("memory_evaluation", "train_projection_identity_mismatch")
-    try:
-        projection_config = MemoryEpisodeProjectionConfig(**projection_info)
-    except (TypeError, ValueError) as error:
-        raise BoundaryError("memory_evaluation", "train_projection_identity_mismatch") from error
     if source.stream_scope != "partial_human_input_stream":
+        raise BoundaryError("memory_evaluation", "human_train_source_required")
+    history = type(projection_config) is MemoryEpisodeProjectionConfigV3
+    if history and any(item.source_kind != "human_input_stream" for item in source.inputs):
         raise BoundaryError("memory_evaluation", "human_train_source_required")
     fitted_bytes, fitted_episodes = fit_observed_memory_tokenizer(
         source, max_settling_events=projection_config.max_settling_events,
+        input_profile=HISTORY_INPUT_PROFILE if history else "text-menu-v1",
     )
     if fitted_bytes != tokenizer_bytes or fitted_episodes != config.episode_count:
         raise BoundaryError("memory_evaluation", "train_tokenizer_fit_mismatch")
@@ -172,6 +199,7 @@ def _verify_train_projection(
         max_observations=config.max_episode_observations,
         max_input_tokens=config.max_episode_input_tokens,
         max_settling_events=projection_config.max_settling_events,
+        projection_config=projection_config if history else None,
     )
     mapping = decode_json(_payload_bytes(store, training.payload("source_map"),
                                          MAX_SOURCE_MAP_BYTES))
@@ -183,11 +211,13 @@ def _verify_train_projection(
             or _payload_bytes(store, training.payload("episodes"), MAX_INPUT_BYTES)
             != _input_bytes(projected.episodes)):
         raise BoundaryError("memory_evaluation", "train_projection_identity_mismatch")
+    return projected
 
 
 def evaluate_memory(
     store: ArtifactStore, model_id: str, dev_source_id: str, producer: Producer, *,
-    max_settling_events: int = 0, seed: int = 0, operation_id: str | None = None,
+    max_settling_events: int | None = None, seed: int = 0,
+    operation_id: str | None = None,
     semantic_overlap: bool | None = None,
 ) -> Manifest:
     """Publish exact dev projection and metrics; source admission precedes this call."""
@@ -205,9 +235,13 @@ def evaluate_memory(
     dev_view = load_observed_input_view(store, dev_source_id)
     if not train_view.inputs or not dev_view.inputs:
         raise BoundaryError("memory_evaluation", "empty_observed_source")
+    projection_config = _evaluation_projection_config(training)
+    if (type(projection_config) is MemoryEpisodeProjectionConfigV3
+            and (dev_view.stream_scope != "partial_human_input_stream" or any(
+                item.source_kind != "human_input_stream" for item in dev_view.inputs))):
+        raise BoundaryError("memory_evaluation", "human_dev_source_required")
     if _stream_scope(train_view) & _stream_scope(dev_view):
         raise BoundaryError("memory_evaluation", "train_dev_session_or_stream_overlap")
-    rendered_overlap_count = len(_rendered_inputs(train_view) & _rendered_inputs(dev_view))
     try:
         tokenizer = Tokenizer.from_str(tokenizer_bytes.decode("utf-8"))
     except Exception as error:
@@ -217,18 +251,29 @@ def evaluate_memory(
         raise BoundaryError("memory_evaluation", "tokenizer_config_mismatch")
     weights = _payload_bytes(store, model_manifest.payload("weights"), MAX_CHECKPOINT_BYTES)
     network = load_memory_export(weights, config, hashlib.sha256(tokenizer_bytes).hexdigest())
-    _verify_train_projection(
-        store, training, train_view, tokenizer, tokenizer_bytes, network, config)
+    train_projection = _verify_train_projection(
+        store, training, train_view, tokenizer, tokenizer_bytes, network, config,
+        projection_config)
+    history = type(projection_config) is MemoryEpisodeProjectionConfigV3
+    if max_settling_events is None:
+        max_settling_events = projection_config.max_settling_events if history else 0
+    if (type(max_settling_events) is not int or max_settling_events < 0
+            or history and max_settling_events != projection_config.max_settling_events):
+        raise BoundaryError("memory_evaluation", "dev_projection_config_mismatch")
     projection = project_memory_episodes(
         dev_view, tokenizer, network,
         max_observations=config.max_episode_observations,
         max_input_tokens=config.max_episode_input_tokens,
         max_settling_events=max_settling_events,
+        projection_config=projection_config if history else None,
     )
     if projection.diagnostics:
         raise BoundaryError("memory_evaluation", projection.diagnostics[0].reason)
     if not projection.episodes:
         raise BoundaryError("memory_evaluation", "no_dev_episodes")
+    rendered_overlap_count = len(
+        (_rendered_history_inputs(train_projection) & _rendered_history_inputs(projection))
+        if history else (_rendered_inputs(train_view) & _rendered_inputs(dev_view)))
     rows: list[dict[str, Any]] = []
     with torch.inference_mode():
         for episode, source in zip(projection.episodes, projection.sources, strict=True):
@@ -260,13 +305,22 @@ def evaluate_memory(
         raise BoundaryError("memory_evaluation", "no_labeled_dev_decisions")
     summary = summarize_rows(rows, seed=seed, native_run_independence=False)
     event_mapping = [asdict(item) for item in projection.event_mapping]
+    projection_identity: dict[str, Any] = {
+        "renderer": RENDERER_IDENTITY, "max_settling_events": max_settling_events,
+    }
+    if history:
+        projection_identity = {
+            "renderer": renderer_identity_for_profile(HISTORY_INPUT_PROFILE),
+            "max_settling_events": max_settling_events,
+            "input_profile": HISTORY_INPUT_PROFILE,
+            "projection_config": asdict(projection_config),
+        }
     input_raw = json_bytes({
         "schema": INPUT_SCHEMA, "model_id": model_id, "source_id": dev_source_id,
         "operation_id": operation_id,
         "protocol": PROTOCOL, "semantic_overlap": semantic_overlap,
         "tokenizer_sha256": hashlib.sha256(tokenizer_bytes).hexdigest(),
-        "projection": {"renderer": RENDERER_IDENTITY,
-                       "max_settling_events": max_settling_events},
+        "projection": projection_identity,
         "train_dev_rendered_overlap_count": rendered_overlap_count,
         "events": event_mapping, "episodes": [
             {"episode_id": episode.episode_id, "stream_id": source.stream_id,

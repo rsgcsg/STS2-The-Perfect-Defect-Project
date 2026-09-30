@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import threading
+import traceback
 import uuid
 from contextlib import AbstractContextManager, suppress
 from pathlib import Path
@@ -39,6 +40,7 @@ DEFAULT_RECIPE = "stage1a.dsimple.s.v1"
 MEMORY_RECIPE = M2_K1_RECIPE  # Preserve the existing recipe constant for callers.
 OPERATION_FILE = "local-training-operation.json"
 LOCK_FILE = ".local-training.lock"
+PARENT_FAILURE_LOG_BYTES = 64 * 1024
 IDS = ("allocation_id", "view_id", "input_id", "run_id", "checkpoint_id",
        "result_id", "model_id", "evaluation_id")
 PREVIOUS_COMPLETED_IDS = ("operation_id", "dataset_id", "result_id", "model_id",
@@ -47,12 +49,45 @@ STAGES = frozenset({"reserving", "allocating", "public_view", "tokenizing",
                     "preparing_run", "training", "verifying_result", "completed"})
 
 
+def _safe_parent_failure(error: Exception, stage: str) -> dict[str, Any]:
+    frames = traceback.extract_tb(error.__traceback__)
+    owner = next((frame for frame in frames if
+                  Path(frame.filename).name == "local_training.py" and
+                  frame.name == "_run"), None)
+    origin = frames[-1] if frames else None
+
+    def point(frame: traceback.FrameSummary | None) -> dict[str, Any] | None:
+        if frame is None:
+            return None
+        return {"file": Path(frame.filename).name, "function": frame.name,
+                "line": frame.lineno}
+
+    errno = getattr(error, "errno", None)
+    winerror = getattr(error, "winerror", None)
+    return {"stage": stage, "exception_type": type(error).__module__ + "." +
+            type(error).__qualname__,
+            "errno": errno if type(errno) is int else None,
+            "winerror": winerror if type(winerror) is int else None,
+            "owner_call": point(owner), "origin": point(origin)}
+
+
+def _write_parent_failure(path: Path, identity: str, error: Exception) -> None:
+    destination = path.parent / ("local-training-" + identity + "-parent-error.log")
+    raw = "".join(traceback.format_exception(error)).encode("utf-8", "replace")
+    descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(raw[:PARENT_FAILURE_LOG_BYTES])
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 class LocalTrainingService:
     def __init__(self, config: ProjectConfig) -> None:
         self.config = config
         self._selection = LocalDatasetService(config)
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
+        self._failure_diagnostic: dict[str, Any] | None = None
 
     def _selected(self):
         return self._selection._selected()
@@ -269,6 +304,7 @@ class LocalTrainingService:
             thread = threading.Thread(target=self._run, args=(held, path, identity, owner, store),
                                       name="local-small-b-training", daemon=True)
             with self._lock:
+                self._failure_diagnostic = None
                 self._thread = thread
             thread.start()
             held = None  # type: ignore[assignment]
@@ -508,6 +544,15 @@ class LocalTrainingService:
                 subprocess.SubprocessError) as error:
             code = (error.code if isinstance(error, BoundaryError)
                     else "training_storage_or_process_error")
+            stage = "unavailable"
+            with suppress(OSError, ValueError, KeyError, TypeError, BoundaryError):
+                recorded = self._read(path, owner.identity)
+                if recorded.get("operation_id") == identity and recorded.get("stage") in STAGES:
+                    stage = recorded["stage"]
+            with suppress(Exception):
+                self._failure_diagnostic = _safe_parent_failure(error, stage)
+            with suppress(Exception):
+                _write_parent_failure(path, identity, error)
             # The last durable pending operation remains blocking if terminal
             # persistence fails, so its run identity is never discarded.
             with suppress(OSError, ValueError, BoundaryError):
