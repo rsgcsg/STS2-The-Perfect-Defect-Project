@@ -26,7 +26,7 @@ test("Live UI has a visible entry without keyboard or gameplay authority", () =>
   assert.doesNotMatch(mod, /override void _(Ready|Process|Input)/u);
 });
 
-test("Workbench browser opens only after a user click and a read-only exact-instance health check", () => {
+test("Workbench browser opens after a user click and exact-instance health check", () => {
   assert.match(mod, /BuildHeaderButton\("工作台", BeginOpenWorkbench/u);
   assert.match(mod, /if \(_disposed \|\| _workbenchOpenCheck is \{ IsCompleted: false \}\)\s+return/u);
   assert.match(mod, /CompleteWorkbenchOpenCheck\(\);/u);
@@ -35,7 +35,12 @@ test("Workbench browser opens only after a user click and a read-only exact-inst
   assert.match(workbenchOpen, /new Uri\(new Uri\(url, UriKind\.Absolute\), "health"\)/u);
   assert.match(workbenchOpen, /observedInstanceId == instanceId/u);
   assert.match(workbenchOpen, /AllowAutoRedirect = false, UseProxy = false/u);
-  assert.doesNotMatch(workbenchOpen, /OS\.ShellOpen\(|Process\.Start\(/u);
+  assert.match(mod, /CancellationToken token = _workbenchOpenLifetime\.Token;[\s\S]*?Task\.Run\(\(\) => PlatformWorkbenchOpenClient\.OpenAsync\(\s*_workbenchHttpClient, token\)/u);
+  assert.match(mod, /_workbenchOpenLifetime\.Cancel\(\);[\s\S]*?pendingOpen\.ContinueWith\(task =>[\s\S]*?_workbenchOpenLifetime\.Dispose\(\)/u);
+  assert.match(workbenchOpen, /initial\.State != PlatformWorkbenchOpenState\.NotRegistered/u);
+  assert.match(workbenchOpen, /new ProcessStartInfo\(path\)/u);
+  assert.match(workbenchOpen, /UseShellExecute = false/u);
+  assert.doesNotMatch(workbenchOpen, /OS\.ShellOpen\(/u);
 });
 
 test("Workbench registration bridge is exact-loopback, game-instance-bound metadata only", () => {

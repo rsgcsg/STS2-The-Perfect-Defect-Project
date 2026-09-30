@@ -3,17 +3,20 @@
 
 # Components
 
-> Proposed extension: [ADR-0015](adr/0015-native-logical-interaction.md) owns the
+> Accepted direction: [ADR-0015](adr/0015-native-logical-interaction.md) owns the
 > native logical-page/action/memory target and the two contrasting selection
-> examples. It is a revisable design proposal, not an implemented interface.
-> Connector/Native Foundation will define page and operation mappings;
-> Annotator/Evidence will define faithful interaction records and compatibility;
-> STPD will own current-input/history projections and learned memory;
-> Policy Runtime will own bounded execution and confirmed feedback.
+> examples. Acceptance covers that upper-level direction and its stated
+> conditions, not a complete-game interface or runtime qualification.
+> The explicit [text-menu-v2 profile](../components/connector/docs/TEXT_MENU_PROFILE.md) and bounded
+> Host/STPD paths are implemented. Connector/Native Foundation own page and
+> operation mappings; Annotator/Evidence own faithful records and compatibility;
+> STPD owns input/history projections and learned memory; Policy Runtime owns
+> bounded execution and confirmed feedback.
 > Shared capability scope must be coherent across catalogs, UI, execution and
 > capture eligibility, without adding a second legality or causal authority.
-> Exact schemas and native seams are follow-up owner work; current boundaries
-> and old evidence below are not silently changed by the proposal.
+> Broader page mappings and cross-Host, native, Human and model qualification
+> remain scoped follow-up work. Existing boundaries and historical evidence
+> below retain their original meaning.
 
 | Component | Path | Owns | Must not own |
 |---|---|---|---|

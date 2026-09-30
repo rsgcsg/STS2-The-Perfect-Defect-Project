@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import hmac
 import importlib
@@ -72,6 +73,40 @@ def instance_lock(path: Path) -> Iterator[None]:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+@contextlib.contextmanager
+def open_lock(path: Path, *, timeout: float = 20.0) -> Iterator[None]:
+    """Serialize open callers while leaving the serve process' instance lock free."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout
+    with path.open("a+b") as handle:
+        while True:
+            try:
+                if os.name == "nt":
+                    msvcrt = importlib.import_module("msvcrt")
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl = importlib.import_module("fcntl")
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+                    raise
+                if time.monotonic() >= deadline:
+                    raise BoundaryError("project", "open_in_progress") from None
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                msvcrt = importlib.import_module("msvcrt")
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl = importlib.import_module("fcntl")
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def configuration_id(config: ProjectConfig) -> str:
     return hashlib.sha256(json.dumps(config.to_dict(), sort_keys=True).encode()).hexdigest()
 
@@ -104,50 +139,83 @@ def running(config: ProjectConfig) -> dict[str, Any] | None:
         return None
 
 
-def open_project(path: Path, *, browser: bool = True) -> dict[str, Any]:
+def open_project(
+    path: Path,
+    *,
+    browser: bool = True,
+    expected_identity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     config = ProjectConfig.load(path)
-    current = running(config)
-    if current is None:
-        report = doctor(config)
-        if report["status"] != "PASS":
-            raise BoundaryError("project", "doctor_blocked")
-        config.state_dir.mkdir(parents=True, exist_ok=True)
-        environment = dict(os.environ)
-        environment.pop("STPD_HUB_ADMIN_TOKEN", None)
-        with (config.state_dir / "logs" / "workbench.log").open("ab") as log:
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "spireagent.workbench",
-                    "project",
-                    "serve",
-                    "--config",
-                    str(path),
-                ],
-                cwd=ROOT,
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=os.name != "nt",
-            )
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            current = running(config)
-            if current is not None:
-                break
-            if process.poll() is not None:
-                raise BoundaryError("project", "background_start_failed")
-            time.sleep(0.1)
+    with open_lock(config.state_dir / "open.lock"):
+        current = running(config)
+        if (current is not None and expected_identity is not None
+                and current.get("identity") != expected_identity):
+            raise BoundaryError("project", "running_identity_mismatch")
         if current is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=3)
-            raise BoundaryError("project", "background_start_timeout")
+            report = doctor(config)
+            if report["status"] != "PASS":
+                raise BoundaryError("project", "doctor_blocked")
+            config.state_dir.mkdir(parents=True, exist_ok=True)
+            environment = dict(os.environ)
+            environment.pop("STPD_HUB_ADMIN_TOKEN", None)
+            command = [sys.executable]
+            if expected_identity is not None:
+                # The installed fixed launcher opts into an isolated child so
+                # inherited Python/uv settings cannot redirect its imports.
+                for name in (
+                    "PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE", "VIRTUAL_ENV",
+                    "UV_PROJECT_ENVIRONMENT", "UV_WORKING_DIR", "UV_PROJECT",
+                    "UV_PYTHON", "UV_CONFIG_FILE", "UV_ENV_FILE",
+                ):
+                    environment.pop(name, None)
+                command.append("-I")
+            command.extend([
+                "-m",
+                "spireagent.workbench",
+                "project",
+                "serve",
+                "--config",
+                str(path),
+            ])
+            with (config.state_dir / "logs" / "workbench.log").open("ab") as log:
+                process = subprocess.Popen(
+                    command,
+                    cwd=ROOT,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=os.name != "nt",
+                )
+
+            def stop_unhealthy_child() -> None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                current = running(config)
+                if current is not None:
+                    break
+                if process.poll() is not None:
+                    # A competing pre-existing server can own instance.lock. Re-read
+                    # its exact configuration and identity before reporting success.
+                    current = running(config)
+                    if current is not None:
+                        break
+                    raise BoundaryError("project", "background_start_failed")
+                time.sleep(0.1)
+            if current is None:
+                stop_unhealthy_child()
+                raise BoundaryError("project", "background_start_timeout")
+            if expected_identity is not None and current.get("identity") != expected_identity:
+                if current.get("pid") == process.pid:
+                    stop_unhealthy_child()
+                raise BoundaryError("project", "running_identity_mismatch")
     url = f"http://127.0.0.1:{current['port']}/"
     if browser:
         webbrowser.open(url)
