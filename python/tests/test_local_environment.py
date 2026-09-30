@@ -1145,6 +1145,40 @@ def test_stop_during_client_start_never_releases_a_live_constructor(tmp_path: Pa
     assert finished["report_artifact_id"]
 
 
+def test_stop_during_constructor_retries_original_failed_close(tmp_path: Path) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    client = PublicClientFixture(audit)
+    client.fail_close = True
+
+    def constructing(_command: list[str], _host: Path, _pin: dict[str, Any]):
+        entered.set()
+        release.wait(timeout=5)
+        return client
+
+    service = LocalEnvironmentService(config, audit=checked, client_factory=constructing)
+    try:
+        session_id = service.start(SCENARIO["id"])["session"]["session_id"]
+        assert entered.wait(timeout=2)
+        assert service.stop(session_id)["session"]["status"] == "cleanup_unknown"
+        release.set()
+        worker = service.worker
+        assert worker is not None
+        worker.join(timeout=4)
+        assert not worker.is_alive()
+        assert service.status()["session"]["status"] == "cleanup_unknown"
+        assert service.reports()["items"] == []
+        client.fail_close = False
+        final = service.stop(session_id)["session"]
+        assert client.closed and client.force_closed
+        assert final["status"] == "stopped_outcome_unknown"
+        assert len(service.reports()["items"]) == 1
+    finally:
+        release.set()
+        service.close()
+
+
 def test_profile_collision_symlink_and_exact_package_drift_fail_closed(tmp_path: Path) -> None:
     config, host, candidate, pin, _audit, checked = fixture(tmp_path)
     different = tmp_path / "other-candidate"

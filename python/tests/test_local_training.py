@@ -914,6 +914,13 @@ def test_http_explicit_start_tracks_exact_completed_run_without_get_replay(
                              headers={"Cookie": cookie}), timeout=5) as response:
             return json.load(response)
 
+    def completion_failure(operation: dict) -> str:
+        return json.dumps({
+            "status": operation.get("status"), "stage": operation.get("stage"),
+            "error_code": operation.get("error_code"),
+            "safe_failure": app.local_training._failure_diagnostic,
+        }, sort_keys=True)
+
     try:
         owner = configured_owner(config)
         operation_path = owner.path.parent / OPERATION_FILE
@@ -940,7 +947,8 @@ def test_http_explicit_start_tracks_exact_completed_run_without_get_replay(
             if current["status"] != "pending":
                 break
             time.sleep(0.05)
-        assert current["status"] == "completed", json.dumps(current, sort_keys=True)
+        if current["status"] != "completed":
+            pytest.fail(completion_failure(current))
         assert current["operation_id"] == operation_id
         result = store.get_manifest(current["result_id"])
         assert result.parent("run") == current["run_id"]
@@ -970,11 +978,8 @@ def test_http_explicit_start_tracks_exact_completed_run_without_get_replay(
             if new_current["status"] != "pending":
                 break
             time.sleep(0.05)
-        assert new_current["status"] == "completed", {
-            "status": new_current["status"], "stage": new_current["stage"],
-            "error_code": new_current.get("error_code"),
-            "safe_failure": app.local_training._failure_diagnostic,
-        }
+        if new_current["status"] != "completed":
+            pytest.fail(completion_failure(new_current))
         assert new_current["operation_id"] == new_started["operation_id"]
         with pytest.raises(HTTPError) as stale:
             urlopen(Request(url + "/api/local-training/start", data=new_body,

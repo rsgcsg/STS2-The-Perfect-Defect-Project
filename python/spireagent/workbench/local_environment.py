@@ -1001,7 +1001,8 @@ class LocalEnvironmentService:
             worker.join(timeout=2)
         with self.lock:
             if self.record.get("session_id") == session_id:
-                if client is not None and not close_failed and self._unclosed_start_client is None:
+                if ((client is not None or unclosed_start_client is not None)
+                        and not close_failed and self._unclosed_start_client is None):
                     self.cleanup_confirmed = True
                 self._finish_stop()
             return self.status()
