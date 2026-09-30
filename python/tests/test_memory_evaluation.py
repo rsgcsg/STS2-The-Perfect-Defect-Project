@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 import torch
 from test_memory_sequence_bridge import observed
+from test_text_menu_human_import import _declared_bundle
 from tokenizers import Tokenizer
 
 from spireagent import research_cli
@@ -37,10 +38,18 @@ from stpd.fullrun.memory_sequence_bridge import (
     project_memory_episodes,
 )
 from stpd.fullrun.memory_training_prepare import fit_observed_memory_tokenizer
-from stpd.fullrun.observed_input_sequence import ObservedInputView
+from stpd.fullrun.observed_input_sequence import ObservedInputView, load_observed_input_view
+from stpd.fullrun.text_menu_human_import import (
+    publish_human_text_source,
+    publish_verified_human_text_bundle,
+)
 from stpd.models.dsimple_memory import ExperimentalDSimpleM2
 from stpd.models.token_core import ScratchShape, ScratchTokenCore
-from stpd.workers.memory_evaluation import _evaluation_projection_config, evaluate_memory
+from stpd.workers.memory_evaluation import (
+    _evaluation_projection_config,
+    _stream_scope,
+    evaluate_memory,
+)
 from stpd.workers.memory_ranking import MemoryConfig, MemoryTrainingInput
 from stpd.workers.memory_run import execute_memory_run, prepare_memory_run
 
@@ -80,6 +89,75 @@ def _history_view(source_id: str, session: str) -> ObservedInputView:
                 completed_append_watermark=3),
     )
     return ObservedInputView(source_id, "partial_human_input_stream", False, rows)
+
+
+def _verified_row2_source(store, path: Path, session: str):
+    bundle, _, _ = _declared_bundle(
+        path, "begin_card_play_exact_factory_return", "begin_card_play",
+        session_id=session, page_name=path.name, row_version=2)
+    evidence = publish_verified_human_text_bundle(store, bundle, PRODUCER)
+    source = publish_human_text_source(store, (evidence.artifact_id,), PRODUCER)
+    return source, load_observed_input_view(store, source.artifact_id)
+
+
+def test_row2_scope_uses_verified_session_across_hashed_streams(tmp_path):
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "objects"))
+    source, view = _verified_row2_source(store, tmp_path / "row2", "session-a")
+    assert view.inputs[0].stream_id.startswith("human2:")
+    assert ("session", "session-a") in _stream_scope(store, view)
+    row1 = _view("row1", "session-a", "other-timeline")
+    row1 = replace(row1, inputs=tuple(replace(
+        item, stream_id="human:session-a:distinct-timeline:run-2") for item in row1.inputs))
+    assert _stream_scope(store, view) & _stream_scope(store, row1)
+    other, other_view = _verified_row2_source(store, tmp_path / "other", "session-b")
+    assert source.artifact_id != other.artifact_id
+    assert not (_stream_scope(store, view) & _stream_scope(store, other_view))
+    forged = replace(source, parameters=FrozenObject.of({
+        **source.parameters.value(), "source_digest": "0" * 64}))
+    store.publish(forged)
+    with pytest.raises(BoundaryError, match="source_identity_mismatch"):
+        _stream_scope(store, replace(view, source_id=forged.artifact_id))
+
+
+def test_verified_row2_history_model_evaluates_only_independent_session(tmp_path):
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "objects"))
+    train, train_view = _verified_row2_source(store, tmp_path / "train", "session-a")
+    dev, _ = _verified_row2_source(store, tmp_path / "dev", "session-b")
+    shared, _ = _verified_row2_source(store, tmp_path / "other-timeline", "session-a")
+    legacy_bundle, _, _ = _declared_bundle(
+        tmp_path / "legacy", "begin_card_play_exact_factory_return", "begin_card_play",
+        session_id="session-a", page_name="legacy-page", row_version=1)
+    legacy_evidence = publish_verified_human_text_bundle(store, legacy_bundle, PRODUCER)
+    legacy_source = publish_human_text_source(
+        store, (legacy_evidence.artifact_id,), PRODUCER)
+    legacy_view = load_observed_input_view(store, legacy_source.artifact_id)
+    assert legacy_view.inputs[0].stream_id != train_view.inputs[0].stream_id
+    tokens, count = fit_observed_memory_tokenizer(
+        train_view, max_settling_events=64, input_profile=HISTORY_INPUT_PROFILE)
+    tokenizer = Tokenizer.from_str(tokens.decode())
+    config = MemoryConfig(vocab_size=tokenizer.get_vocab_size(), episode_count=count,
+                          max_episode_input_tokens=4096, max_total_input_tokens=4096,
+                          max_chunk_steps=2)
+    network = ExperimentalDSimpleM2(
+        ScratchTokenCore(ScratchShape(config.vocab_size, 8, 1, 2, 16, 0.0, 256)))
+    projection_config = history_episode_projection_config(HISTORY_INPUT_PROFILE)
+    projection = project_memory_episodes(
+        train_view, tokenizer, network, max_observations=16, max_input_tokens=4096,
+        max_settling_events=64, projection_config=projection_config)
+    assert not projection.diagnostics and len(projection.episodes) == 1
+    run = prepare_memory_run(
+        store, MemoryTrainingInput(train.artifact_id, hashlib.sha256(tokens).hexdigest(),
+                                   projection.episodes), config, PRODUCER, tokens,
+        source_mapping=projection.event_mapping, projection_config=projection_config)
+    result = execute_memory_run(
+        store, ObjectStoreRunReporter(store, store.blobs), run.artifact_id, PRODUCER)
+    model_id = store.get_manifest(result.result_id).parent("model")
+    with pytest.raises(BoundaryError, match="train_dev_session_or_stream_overlap"):
+        evaluate_memory(store, model_id, shared.artifact_id, PRODUCER)
+    with pytest.raises(BoundaryError, match="train_dev_session_or_stream_overlap"):
+        evaluate_memory(store, model_id, legacy_source.artifact_id, PRODUCER)
+    report = evaluate_memory(store, model_id, dev.artifact_id, PRODUCER)
+    assert report.parameters.value()["partition"] == "dev"
 
 
 def prepared(tmp_path: Path, monkeypatch, *, reset_each_step: bool = False,

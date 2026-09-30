@@ -75,18 +75,29 @@ def _ancestors(store: ArtifactStore, source_id: str) -> set[str]:
     return seen
 
 
-def _stream_scope(view: ObservedInputView) -> set[tuple[str, str]]:
+def _stream_scope(store: ArtifactStore, view: ObservedInputView) -> set[tuple[str, str]]:
     """Session and stream identity survive model episode reset boundaries."""
     scope: set[tuple[str, str]] = set()
+    row2_sessions: tuple[str, ...] | None = None
     for item in view.inputs:
         stream = item.stream_id
         scope.add(("stream", stream))
         if item.source_kind == "human_input_stream":
-            # human:<session>:<timeline>:<run>; a new timeline is still one session.
-            parts = stream.split(":")
-            if len(parts) != 4 or not all(parts):
-                raise BoundaryError("memory_evaluation", "invalid_human_stream_identity")
-            scope.add(("session", parts[1]))
+            if stream.startswith("human2:") and item.physical_sequence is not None:
+                # Row 2 stream IDs are opaque hashes of capture-continuity facts.
+                # Their session scope comes only from the reverified source.
+                if row2_sessions is None:
+                    from stpd.fullrun.text_menu_human_import import load_human_text_source
+
+                    manifest, _ = load_human_text_source(store, view.source_id)
+                    row2_sessions = tuple(manifest.parameters.value()["sessions"])
+                scope.update(("session", session) for session in row2_sessions)
+            else:
+                # The row 1 stream retained its explicit session field.
+                parts = stream.split(":")
+                if len(parts) != 4 or parts[0] != "human" or not all(parts):
+                    raise BoundaryError("memory_evaluation", "invalid_human_stream_identity")
+                scope.add(("session", parts[1]))
         elif item.source_kind == "agent_decision_inputs":
             # agent:<content>:<run>; content identifies the native archive.
             parts = stream.split(":")
@@ -240,7 +251,7 @@ def evaluate_memory(
             and (dev_view.stream_scope != "partial_human_input_stream" or any(
                 item.source_kind != "human_input_stream" for item in dev_view.inputs))):
         raise BoundaryError("memory_evaluation", "human_dev_source_required")
-    if _stream_scope(train_view) & _stream_scope(dev_view):
+    if _stream_scope(store, train_view) & _stream_scope(store, dev_view):
         raise BoundaryError("memory_evaluation", "train_dev_session_or_stream_overlap")
     try:
         tokenizer = Tokenizer.from_str(tokenizer_bytes.decode("utf-8"))
