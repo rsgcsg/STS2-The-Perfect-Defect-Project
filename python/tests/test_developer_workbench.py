@@ -728,6 +728,38 @@ def test_exact_result_download_preserves_manifest_without_parent_payloads(hub, t
         client.download(manifest.artifact_id, tmp_path)
 
 
+def test_hub_status_and_background_download_use_separate_timeouts(tmp_path):
+    payload = b"verified-model-weights"
+    manifest = Manifest(
+        "model",
+        PRODUCER,
+        parents=(Parent("run", "a" * 64),),
+        payloads=(Payload("weights", hashlib.sha256(payload).hexdigest(), len(payload)),),
+    )
+    requests = []
+
+    class Opener:
+        def open(self, request, *, timeout):
+            requests.append((request.full_url, timeout))
+            route = request.full_url.removeprefix("https://hub.example")
+            if route == f"/v1/artifacts/{manifest.artifact_id}":
+                body = manifest.to_bytes()
+            elif route == f"/v1/artifacts/{manifest.artifact_id}/payloads/weights":
+                body = payload
+            elif route in {"/v1/status", "/v1/uploads", "/v1/jobs", "/v1/incidents"}:
+                body = b'{"items":[]}'
+            else:
+                raise AssertionError(f"unexpected Hub route: {route}")
+            return BytesIO(body)
+
+    client = HubClient("https://hub.example", timeout=2, token=lambda: "test-token")
+    client.opener = Opener()
+    assert client.snapshot()["status"]["status"] == "available"
+    client.download(manifest.artifact_id, tmp_path)
+
+    assert [timeout for _, timeout in requests] == [2, 2, 2, 2, 30, 30]
+
+
 def test_corrupt_download_never_publishes_success_receipt(hub, tmp_path):
     client, manifest, _, state = hub
     state["corrupt"] = True
