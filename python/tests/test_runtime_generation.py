@@ -75,6 +75,237 @@ def _upgrade(args):
                          archive=archive)
 
 
+ACTUAL_VERIFY = owner._verify
+
+
+@pytest.fixture
+def initial_generation(generation):
+    config, legacy_active, old, prior_profile, archive, verified = generation
+    service = local_models.LocalModelService(config)
+    active = service.private_root / "text-menu-m2-runtime-v2.json"
+    pin = json.loads(prior_profile.read_text())["runtime_package"]
+    profile = prior_profile.with_name("profile-v2.json")
+    profile.write_text(json.dumps({"schema": "stpd/local-text-m2-runtime-v2",
+                                   "runtime_package": pin}))
+    return config, active, old, profile, archive, verified
+
+
+def _initialize(args):
+    config, active, _, profile, archive, _ = args
+    return owner.initialize(config, "text-menu-m2-v2", new_profile_file=profile,
+                            expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                            archive=archive)
+
+
+def test_initialize_first_generation_preserves_legacy_slot_and_rejects_second(initial_generation):
+    config, active, _, _, _, _ = initial_generation
+    legacy = active.parent / "text-menu-m2-v1/runtime/node_modules/ready"
+    result = _initialize(initial_generation)
+    assert result["status"] == "OK" and result["activated"] is True
+    assert result["previous_profile_sha256"] is None
+    assert result["origin"] == "operator_selected"
+    assert legacy.is_file()
+    current = active.read_bytes()
+    directory, _ = local_models.LocalModelService(config).text_runtime_profile(
+        "text-menu-m2-v2")
+    assert directory.name == result["generation"]
+    with pytest.raises(BoundaryError, match="runtime_active_profile_exists"):
+        owner.initialize(config, "text-menu-m2-v2", new_profile_file=initial_generation[3],
+                         expected_new_profile_sha256=hashlib.sha256(initial_generation[3].read_bytes()).hexdigest(),
+                         archive=initial_generation[4])
+    assert active.read_bytes() == current
+
+
+def test_initialize_reuses_only_complete_orphan_and_never_repairs_unknown(initial_generation):
+    config, active, _, profile, archive, _ = initial_generation
+    result = _initialize(initial_generation)
+    wrapper = json.loads(active.read_bytes())
+    directory = active.parent / "text-menu-m2-v2/generations" / wrapper["generation"]
+    active.unlink()
+    retried = owner.initialize(config, "text-menu-m2-v2", new_profile_file=profile,
+                               expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                               archive=archive)
+    assert retried["generation"] == result["generation"]
+    assert retried["activated"] is True
+    active.unlink()
+    (directory / "runtime/node_modules/ready").unlink()
+    with pytest.raises(BoundaryError, match="runtime_generation_install_invalid"):
+        owner.initialize(config, "text-menu-m2-v2", new_profile_file=profile,
+                         expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                         archive=archive)
+    assert not active.exists() and directory.is_dir()
+
+
+def test_initialize_rejects_foreign_slot_content_without_repair(initial_generation):
+    config, active, _, profile, archive, _ = initial_generation
+    slot = active.parent / "text-menu-m2-v2"
+    foreign = slot / "generations" / ("f" * 64)
+    foreign.mkdir(parents=True)
+    (foreign / "unknown").write_bytes(b"preserve")
+    with pytest.raises(BoundaryError, match="runtime_initial_slot_unsafe"):
+        owner.initialize(config, "text-menu-m2-v2", new_profile_file=profile,
+                         expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                         archive=archive)
+    assert (foreign / "unknown").read_bytes() == b"preserve"
+    assert not active.exists()
+
+
+def test_initialize_rejects_missing_active_over_legacy_slot(generation):
+    config, active, _, profile, archive, _ = generation
+    active.unlink()
+    legacy = active.parent / "text-menu-m2-v1/runtime/node_modules/ready"
+    with pytest.raises(BoundaryError, match="runtime_initial_slot_unsafe"):
+        owner.initialize(config, "text-menu-m2-v1", new_profile_file=profile,
+                         expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                         archive=archive)
+    assert legacy.is_file() and not active.exists()
+
+
+def test_initialize_requires_v2_sdk_validation(initial_generation, monkeypatch):
+    config, active, _, profile, archive, _ = initial_generation
+    monkeypatch.setattr(owner, "_verify", ACTUAL_VERIFY)
+    monkeypatch.setattr(owner, "validate_runtime_install", lambda *_args: {"version": "checked"})
+    monkeypatch.setattr(owner, "v2_sdk_available", lambda *_args: False)
+    with pytest.raises(BoundaryError, match="v2_runtime_contract_unavailable"):
+        owner.initialize(config, "text-menu-m2-v2", new_profile_file=profile,
+                         expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                         archive=archive)
+    assert not active.exists()
+
+
+def test_initialize_blocks_owner_lock_and_bad_archive_before_publication(
+    initial_generation, monkeypatch,
+):
+    config, active, _, profile, archive, _ = initial_generation
+    with (instance_lock(config.state_dir / "instance.lock"),
+          pytest.raises(BoundaryError, match="already_running")):
+        owner.initialize(config, "text-menu-m2-v2", new_profile_file=profile,
+                         expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                         archive=archive)
+    archive.write_bytes(b"changed archive")
+    with pytest.raises(BoundaryError, match="text_runtime_archive_checksum_mismatch"):
+        owner.initialize(config, "text-menu-m2-v2", new_profile_file=profile,
+                         expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                         archive=archive)
+    assert not active.exists()
+    monkeypatch.setattr(owner, "running", lambda _: {"port": 1234})
+    with pytest.raises(BoundaryError, match="close_workbench_before_runtime_generation_change"):
+        owner.initialize(config, "text-menu-m2-v2", new_profile_file=profile,
+                         expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                         archive=archive)
+
+
+def test_initialize_exclusive_race_and_sync_uncertainty(initial_generation, monkeypatch):
+    config, active, _, profile, archive, _ = initial_generation
+    actual_link = owner.os.link
+
+    def race(source, destination):
+        active.write_bytes(b"racing owner")
+        return actual_link(source, destination)
+
+    monkeypatch.setattr(owner.os, "link", race)
+    with pytest.raises(BoundaryError, match="runtime_active_profile_exists"):
+        owner.initialize(config, "text-menu-m2-v2", new_profile_file=profile,
+                         expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                         archive=archive)
+    assert active.read_bytes() == b"racing owner"
+    monkeypatch.setattr(owner.os, "link", actual_link)
+    active.unlink()
+    actual_sync = owner._sync_directory
+
+    def fail_after_link(path):
+        if path == active.parent:
+            raise OSError("private sync failure")
+        actual_sync(path)
+
+    monkeypatch.setattr(owner, "_sync_directory", fail_after_link)
+    result = owner.initialize(config, "text-menu-m2-v2", new_profile_file=profile,
+                              expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                              archive=archive)
+    assert result["status"] == "BLOCKED" and result["activated"] is True
+    assert result["switch_state"] == "new_after_io_error"
+    assert result["readback_profile_sha256"] == hashlib.sha256(active.read_bytes()).hexdigest()
+
+
+def test_initialize_unreadable_readback_is_unknown_and_cleanup_error_is_blocked(
+    initial_generation, monkeypatch,
+):
+    config, active, _, profile, archive, _ = initial_generation
+    actual_sync = owner._sync_directory
+
+    def unknown_after_link(path):
+        if path == active.parent:
+            active.unlink()
+            active.mkdir()
+            raise OSError("sync failed")
+        actual_sync(path)
+
+    monkeypatch.setattr(owner, "_sync_directory", unknown_after_link)
+    unknown = owner.initialize(config, "text-menu-m2-v2", new_profile_file=profile,
+                               expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                               archive=archive)
+    assert unknown["status"] == "BLOCKED" and unknown["activated"] == "unknown"
+    assert unknown["readback_profile_sha256"] is None
+    active.rmdir()
+    monkeypatch.setattr(owner, "_sync_directory", actual_sync)
+    actual_unlink = Path.unlink
+
+    def failed_cleanup(path, *args, **kwargs):
+        if path.name.startswith(".pending-"):
+            raise OSError("cleanup failed")
+        return actual_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failed_cleanup)
+    blocked = owner.initialize(config, "text-menu-m2-v2", new_profile_file=profile,
+                               expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                               archive=archive)
+    assert blocked["status"] == "BLOCKED" and blocked["activated"] is True
+    assert blocked["readback_profile_sha256"] == hashlib.sha256(active.read_bytes()).hexdigest()
+
+
+def test_initialize_cli_requires_absent_cas_and_reports_result(
+    initial_generation, monkeypatch, capsys,
+):
+    from spireagent.workbench import developer_cli
+
+    config, active, _, profile, archive, _ = initial_generation
+    monkeypatch.setattr(developer_cli.ProjectConfig, "load", lambda *_a, **_k: config)
+    args = ["model", "--action", "initialize-runtime-generation",
+            "--runtime-profile", "text-menu-m2-v2", "--runtime-archive", str(archive),
+            "--new-runtime-profile", str(profile),
+            "--expected-new-profile-sha256", hashlib.sha256(profile.read_bytes()).hexdigest()]
+    assert developer_cli.main(args + ["--expected-active-sha256", "0" * 64]) == 1
+    assert not active.exists()
+    capsys.readouterr()
+    assert developer_cli.main(args) == 0
+    assert json.loads(capsys.readouterr().out)["activated"] is True
+
+
+def test_initialize_cli_sync_error_is_nonzero_with_readback(
+    initial_generation, monkeypatch, capsys,
+):
+    from spireagent.workbench import developer_cli
+
+    config, active, _, profile, archive, _ = initial_generation
+    monkeypatch.setattr(developer_cli.ProjectConfig, "load", lambda *_a, **_k: config)
+    actual_sync = owner._sync_directory
+
+    def failed_sync(path):
+        if path == active.parent:
+            raise OSError("private sync failure")
+        actual_sync(path)
+
+    monkeypatch.setattr(owner, "_sync_directory", failed_sync)
+    args = ["model", "--action", "initialize-runtime-generation",
+            "--runtime-profile", "text-menu-m2-v2", "--runtime-archive", str(archive),
+            "--new-runtime-profile", str(profile),
+            "--expected-new-profile-sha256", hashlib.sha256(profile.read_bytes()).hexdigest()]
+    assert developer_cli.main(args) == 1
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["status"] == "BLOCKED" and printed["activated"] is True
+    assert printed["readback_profile_sha256"] == hashlib.sha256(active.read_bytes()).hexdigest()
+
+
 def test_upgrade_and_rollback_preserve_old_bytes_and_bound_shared_models(generation):
     config, active, old, _, _, _ = generation
     upgraded = _upgrade(generation)
