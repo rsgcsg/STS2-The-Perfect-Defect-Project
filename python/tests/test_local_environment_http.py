@@ -40,6 +40,9 @@ def test_local_environment_http_is_browser_scoped_exact_and_get_only_reads(
     stops: list[str] = []
     saved: list[tuple[str, str | None]] = []
     compared: list[tuple[str, list[str]]] = []
+    resumes: list[bool] = []
+    closes: list[bool] = []
+    recoveries: list[bool] = []
     monkeypatch.setattr(
         app.local_environment,
         "start",
@@ -50,6 +53,20 @@ def test_local_environment_http_is_browser_scoped_exact_and_get_only_reads(
         app.local_environment,
         "stop",
         lambda identity: stops.append(identity) or {"status": "stopped_outcome_unknown"},
+    )
+    monkeypatch.setattr(
+        app.local_environment, "resume",
+        lambda **_expected: resumes.append(True) or {"status": "resuming"},
+    )
+    monkeypatch.setattr(
+        app.local_environment, "close_environment",
+        lambda **_expected: closes.append(True) or {"status": "closed"},
+    )
+    monkeypatch.setattr(
+        app.local_environment, "recover_control",
+        lambda **_expected: recoveries.append(True) or {
+            "status": "released", "outcome": "still_unknown"
+        },
     )
     monkeypatch.setattr(
         app.local_environment,
@@ -143,6 +160,16 @@ def test_local_environment_http_is_browser_scoped_exact_and_get_only_reads(
         }) as response:
             assert json.load(response)["status"] == "starting"
         assert starts == [(SCENARIO["id"], None), (SCENARIO["id"], "d" * 64)]
+        binding = {"session_id": "a" * 32, "service_instance_id": "service-1",
+                   "runtime_instance_id": "runtime-1", "game_continuity_id": "episode-1"}
+        with post("/api/local-environment/resume", binding) as response:
+            assert json.load(response)["status"] == "resuming"
+        with post("/api/local-environment/close", {key: value for key, value in binding.items()
+                if key != "session_id"}) as response:
+            assert json.load(response)["status"] == "closed"
+        with post("/api/local-environment/recover-control", binding) as response:
+            assert json.load(response)["outcome"] == "still_unknown"
+        assert resumes == [True] and closes == [True] and recoveries == [True]
         with post("/api/local-environment/scenes/save", {"name": "Start A"}) as response:
             assert json.load(response)["name"] == "Start A"
         with post("/api/local-environment/scenes/save", {
