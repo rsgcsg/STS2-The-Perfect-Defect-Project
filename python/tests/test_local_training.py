@@ -695,7 +695,7 @@ def test_parent_exception_diagnostic_preserves_unknown_after_child_start(
     diagnostic = service._failure_diagnostic
     assert diagnostic is not None
     assert diagnostic["stage"] == "training"
-    assert diagnostic["exception_type"] == "builtins.OSError"
+    assert diagnostic["exception_type"] == "builtins.PermissionError"
     assert diagnostic["errno"] == 13 and diagnostic["winerror"] == 32
     assert diagnostic["owner_call"]["file"] == "local_training.py"
     assert diagnostic["owner_call"]["function"] == "_run"
