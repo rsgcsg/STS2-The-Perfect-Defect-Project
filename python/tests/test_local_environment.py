@@ -209,6 +209,31 @@ def wait_status(service: LocalEnvironmentService, expected: str) -> dict[str, An
     raise AssertionError(f"expected {expected}, observed {service.status()}")
 
 
+def pause_startup_after_active_save(
+    service: LocalEnvironmentService,
+) -> tuple[threading.Event, threading.Event]:
+    handed_off = threading.Event()
+    resume_startup = threading.Event()
+    underlying = service.lock
+
+    class PauseAfterActiveSave:
+        def __enter__(self):
+            underlying.acquire()
+            return self
+
+        def __exit__(self, _type, _value, _traceback):
+            pause = (threading.current_thread() is service.worker
+                     and service.record.get("status") == "active"
+                     and not handed_off.is_set())
+            underlying.release()
+            if pause:
+                handed_off.set()
+                assert resume_startup.wait(timeout=5)
+
+    service.lock = PauseAfterActiveSave()
+    return handed_off, resume_startup
+
+
 def test_named_fixed_seed_scene_restarts_fresh_and_compares_closed_reports(tmp_path: Path) -> None:
     config, _host, _candidate, pin, audit, checked = fixture(tmp_path)
     clients = []
@@ -600,6 +625,98 @@ def test_unknown_receipt_is_retained_in_final_report_only_after_stop(tmp_path: P
     event_id = service.report(final["report_artifact_id"])["events"][0]["event_artifact_id"]
     assert service.event(event_id)["result"]["native_delivery"] == "unknown"
     assert client.submits == 1
+
+
+def test_startup_handoff_cannot_reclassify_a_later_unknown_submission(
+    tmp_path: Path,
+) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    client = PublicClientFixture(audit, unknown=True)
+    service = LocalEnvironmentService(
+        config, audit=checked, client_factory=lambda _command, _host, _pin: client,
+    )
+    handed_off, resume_startup = pause_startup_after_active_save(service)
+    try:
+        service.start(SCENARIO["id"])
+        assert handed_off.wait(timeout=4)
+        startup_worker = service.worker
+        assert startup_worker is not None
+        session_id = wait_status(service, "active")["session"]["session_id"]
+        service.submit(session_id, "action-0", "page-0", "episode-1")
+        assert wait_status(service, "unknown")["session"]["events"][0][
+            "result_status"] == "unknown"
+        assert service.reports()["items"] == []
+        resume_startup.set()
+        startup_worker.join(timeout=4)
+        assert not startup_worker.is_alive()
+        assert service.status()["session"]["status"] == "unknown"
+        assert service.reports()["items"] == []
+        final = service.stop(session_id)["session"]
+        assert final["status"] == "stopped_outcome_unknown"
+        assert len(service.reports()["items"]) == 1
+    finally:
+        resume_startup.set()
+        service.close()
+
+
+def test_stop_after_active_save_waits_for_startup_handoff_without_double_close(
+    tmp_path: Path,
+) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    client = PublicClientFixture(audit)
+    service = LocalEnvironmentService(
+        config, audit=checked, client_factory=lambda _command, _host, _pin: client,
+    )
+    handed_off, resume_startup = pause_startup_after_active_save(service)
+    try:
+        service.start(SCENARIO["id"])
+        assert handed_off.wait(timeout=4)
+        startup_worker = service.worker
+        assert startup_worker is not None
+        session_id = wait_status(service, "active")["session"]["session_id"]
+        stopping = service.stop(session_id)["session"]
+        assert stopping["status"] == "stopping"
+        assert service.reports()["items"] == []
+        resume_startup.set()
+        startup_worker.join(timeout=4)
+        assert not startup_worker.is_alive()
+        final = service.status()["session"]
+        assert final["status"] == "stopped"
+        assert client.closed and not client.force_closed
+        assert len(service.reports()["items"]) == 1
+    finally:
+        resume_startup.set()
+        service.close()
+
+
+def test_startup_handoff_rejects_a_changed_client_binding(tmp_path: Path) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    original = PublicClientFixture(audit)
+    replacement = PublicClientFixture(audit)
+    service = LocalEnvironmentService(
+        config, audit=checked, client_factory=lambda _command, _host, _pin: original,
+    )
+    handed_off, resume_startup = pause_startup_after_active_save(service)
+    try:
+        service.start(SCENARIO["id"])
+        assert handed_off.wait(timeout=4)
+        startup_worker = service.worker
+        assert startup_worker is not None
+        session_id = wait_status(service, "active")["session"]["session_id"]
+        with service.lock:
+            service.client = replacement
+        resume_startup.set()
+        startup_worker.join(timeout=4)
+        assert not startup_worker.is_alive()
+        assert original.closed and not replacement.closed
+        assert service.status()["session"]["status"] == "cleanup_unknown"
+        assert service.reports()["items"] == []
+        final = service.stop(session_id)["session"]
+        assert final["status"] == "stopped_outcome_unknown"
+        assert replacement.closed
+    finally:
+        resume_startup.set()
+        service.close()
 
 
 def test_known_delivery_with_mismatched_observation_retains_receipt(tmp_path: Path) -> None:

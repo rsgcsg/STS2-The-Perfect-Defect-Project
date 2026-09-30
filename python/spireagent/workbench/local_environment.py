@@ -734,27 +734,40 @@ class LocalEnvironmentService:
             error_code = error.code if isinstance(error, BoundaryError) else "managed_start_failed"
             constructor_cleanup_confirmed = getattr(error, "cleanup_confirmed", None) is True
         finally:
+            # A saved active session transfers client ownership to submit/stop.
+            # Its status may already have advanced by the time this finally runs.
             with self.lock:
-                keep = (active_saved and self.client is client
-                        and self.record.get("status") == "active")
+                same_session = self.record.get("session_id") == session_id
+                handed_off = (active_saved and same_session and (
+                    self.client is client or (self.stopping and self.client is None)))
             # A public constructor can start a child before it raises. Without
             # a returned handle, this owner cannot prove that child was closed.
             close_failed = (factory_entered and client is None
                             and not constructor_cleanup_confirmed)
-            if client is not None and not keep:
+            if client is not None and not handed_off:
                 try:
                     client.close(force=True)
                 except Exception:
                     close_failed = True
             with self.lock:
-                if self.record.get("session_id") != session_id or keep:
-                    pass
+                if self.record.get("session_id") != session_id or handed_off:
+                    if (handed_off and self.stopping and self.cleanup_confirmed
+                            and self.record.get("status") == "stopping"):
+                        self._finish_stop()
                 elif self.stopping:
+                    if close_failed:
+                        self.cleanup_confirmed = False
                     if not close_failed:
                         self.cleanup_confirmed = True
                         if self.client is client:
                             self.client = None
                     self._finish_stop()
+                elif active_saved:
+                    # The exact client binding changed without an owning stop.
+                    # Keep the session unresolved instead of publishing failure.
+                    self.record.update(status="cleanup_unknown",
+                                       error_code="startup_client_ownership_changed")
+                    self._try_save()
                 else:
                     self.record.update(
                         status="cleanup_unknown" if close_failed else "failed",
