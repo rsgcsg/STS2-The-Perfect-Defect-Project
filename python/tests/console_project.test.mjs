@@ -1402,8 +1402,9 @@ test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} trai
   assert.equal(selection.children.filter(option => option.value.includes(".confirmed-interaction.")).length, 4);
   assert.match(text(page), /观察记忆/);
   assert.match(text(page), /操作记忆（含已确认的上一操作）/);
-  assert.match(text(page), /完整操作记录/);
-  assert.match(text(page), /旧录制不会自动转换/);
+  assert.match(text(page), /支持已确认操作历史的录制格式/);
+  assert.match(text(page), /旧格式不会自动转换/);
+  assert.doesNotMatch(text(page), /完整操作记录|完整轨迹/);
   assert.match(text(page), /本机服务.*核对/);
   assert.equal(post(env.calls).length, 0);
   selection.value = recipe;
@@ -1882,7 +1883,8 @@ test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} expo
   assert.ok(action(page, "start-local-model-export"));
   assert.ok(action(page, "register-local-model"));
   if (version === 1) {
-    assert.match(text(page), /完整操作记录/);
+    assert.match(text(page), /支持已确认操作历史的 Human 录制格式/);
+    assert.doesNotMatch(text(page), /完整操作记录|完整轨迹/);
     field(page, "local-memory-dev-source").value = source;
     await action(page, "start-local-memory-evaluation").onclick();
     const evaluation = post(env.calls)[0];

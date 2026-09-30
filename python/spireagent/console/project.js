@@ -3381,7 +3381,7 @@ window.SpireProject = (() => {
     const card = panel(`${variant.name} 独立来源开发集评估`,
       `仅对本机已登记的实验性 ${variant.name} 训练模型与另一份 Human 观察来源做开发用途工程评估。须明确点击才会启动；不是 Gold、独立游戏局、记忆收益或科学质量证明。`);
     if (variant.history) card.append(el("p",
-      "操作记忆（含已确认的上一操作）需要含完整操作记录的 Human 录制；本机服务会核对记录与用途资格，旧录制不会自动转换。", "small muted"));
+      "操作记忆（含已确认的上一操作）需要支持已确认操作历史的 Human 录制格式；可用历史与用途资格由本机服务核对，旧格式不会自动转换。", "small muted"));
     let status;
     try {
       status = await request(ctx, "/api/local-memory-evaluations/status");
@@ -3480,7 +3480,7 @@ window.SpireProject = (() => {
         ? "此来源只可明确选择 text-menu-v2 M2 或 Reset 的 K1/K8 工程训练。操作者未验证；仅训练，不生成独立开发集指标，也不代表模型质量或记忆收益。"
         : "从此入口新启动的任务默认使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。可明确选择实验性 M2 或 Reset 的 K1/K8 配方（Reset 每步重置，独立训练对照）；记忆配方仅训练、不做独立评估或开发集指标。本机服务会核对训练用途与来源资格；结果不代表模型策略质量或记忆收益。",
     );
-    card.append(el("p", "观察记忆使用页面观察；操作记忆（含已确认的上一操作）需要含完整操作记录的录制。旧录制不会自动转换；本机服务会核对记录与训练用途资格。", "small muted"));
+    card.append(el("p", "观察记忆使用页面观察；操作记忆（含已确认的上一操作）需要支持已确认操作历史的录制格式。可用历史与训练用途资格由本机服务核对，旧格式不会自动转换。", "small muted"));
     let data;
     try {
       data = await request(ctx, "/api/local-training/status");
