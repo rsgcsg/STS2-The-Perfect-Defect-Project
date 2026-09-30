@@ -267,7 +267,11 @@ out of model processes and browser responses. The Host-owned Python API
 `ManagedHostServiceClient.from_attachment`, and
 `ManagedHostServiceManager.from_attachment` for applications that launch and
 attach without a terminal. The launcher detaches the Host process; dropping a
-client or stopping Policy Runtime does not stop the game.
+client or stopping Policy Runtime does not stop the game. After an offered POST,
+lost, malformed, truncated, uncorrelated or generic failure replies raise
+`ManagedHostUncertainError`; clients must not retry the native intent as though
+it had been rejected. Only a validated explicit Host rejection is known not
+applied.
 
 Authenticated `GET /v1/ready` reports the same service, candidate, exact game,
 runtime, environment and current episode identity to every client. Its

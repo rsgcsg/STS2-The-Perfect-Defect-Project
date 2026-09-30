@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from http.client import HTTPException
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,30 @@ ATTACHMENT_SCHEMA = "sts2.host-runtime/managed-service-attachment-1"
 READY_SCHEMA = "sts2.host-runtime/managed-service-ready-1"
 RESULT_SCHEMA = "sts2.host-runtime/managed-service-result-1"
 ERROR_SCHEMA = "sts2.host-runtime/managed-service-error-1"
+# Only explicit rejections that the Host emits without offering this command
+# to native mutation authority can settle an offered POST as not applied.
+KNOWN_POST_REJECTIONS = frozenset({
+    "managed_service_closing", "managed_service_host_not_allowed",
+    "managed_service_origin_not_allowed", "managed_service_unauthorized",
+    "managed_service_manager_required", "managed_service_not_found",
+    "managed_service_instance_mismatch", "managed_service_json_required",
+    "managed_service_command_not_allowed", "managed_service_control_required",
+    "managed_service_episode_precondition_required",
+    "managed_service_recovery_precondition_required",
+    "managed_service_control_epoch_mismatch",
+    "managed_service_close_body_invalid", "managed_service_request_id_required",
+    "managed_service_body_too_large", "managed_service_body_required",
+    "managed_service_body_must_be_object", "driver_closed",
+    "managed_episode_unavailable_reset_required", "managed_control_held",
+    "managed_control_intent_stale", "managed_control_not_held",
+    "managed_control_not_authorized", "managed_control_credential_stale",
+    "managed_control_runtime_identity_unavailable",
+    "managed_session_tainted_after_unknown",
+    "managed_session_tainted_after_successor_projection_failure",
+    "stale_game_continuity", "stale_managed_runtime_instance",
+    "text_request_id_conflict_across_episodes",
+    "mutation_request_id_conflict_between_routes",
+})
 
 
 class ManagedHostServiceError(RuntimeError):
@@ -81,24 +106,31 @@ class ManagedHostServiceClient:
             headers["Content-Type"] = "application/json"
             data = json.dumps(body, separators=(",", ":")).encode("utf-8")
         request = Request(f"{self.endpoint}{route}", data=data, headers=headers, method=method)
+        uncertain = method == "POST"
+        error_type = ManagedHostUncertainError if uncertain else ManagedHostServiceError
         try:
             with self._opener.open(request, timeout=self._timeout) as response:
+                if response.status != 200:
+                    raise error_type("managed_host_unexpected_http_status", response.status)
                 value = json.load(response)
         except HTTPError as exc:
             try:
                 value = json.load(exc)
-            except (ValueError, OSError):
-                raise ManagedHostServiceError("managed_host_http_error", exc.code) from exc
+            except (ValueError, OSError, HTTPException):
+                raise error_type("managed_host_http_error", exc.code) from exc
             if not isinstance(value, dict) or value.get("schema") != ERROR_SCHEMA \
                     or value.get("service_instance_id") != self.service_instance_id:
-                raise ManagedHostServiceError("managed_host_error_identity_mismatch", exc.code) from exc
-            raise ManagedHostServiceError(str(value.get("error", "managed_host_http_error")), exc.code) from exc
-        except (URLError, TimeoutError, OSError) as exc:
-            error_type = ManagedHostUncertainError if method == "POST" else ManagedHostServiceError
-            raise error_type("managed_host_reply_unknown" if method == "POST"
+                raise error_type("managed_host_error_identity_mismatch", exc.code) from exc
+            code = value.get("error")
+            if not isinstance(code, str) or not (400 <= exc.code < 500) \
+                    or (uncertain and code not in KNOWN_POST_REJECTIONS):
+                raise error_type("managed_host_http_outcome_unknown", exc.code) from exc
+            raise ManagedHostServiceError(code, exc.code) from exc
+        except (URLError, TimeoutError, OSError, HTTPException, ValueError) as exc:
+            raise error_type("managed_host_reply_unknown" if uncertain
                              else "managed_host_unreachable") from exc
         if not isinstance(value, dict) or value.get("service_instance_id") != self.service_instance_id:
-            raise ManagedHostServiceError("managed_host_service_identity_mismatch")
+            raise error_type("managed_host_service_identity_mismatch")
         return value
 
     def ready(self) -> dict[str, Any]:
@@ -113,7 +145,7 @@ class ManagedHostServiceClient:
         value = self._call("POST", "/v1/command", body)
         if value.get("schema") != RESULT_SCHEMA or not isinstance(value.get("result"), dict) \
                 or value["result"].get("request_id") != body["request_id"]:
-            raise ManagedHostServiceError("managed_host_result_correlation_mismatch")
+            raise ManagedHostUncertainError("managed_host_result_correlation_mismatch")
         return value
 
 
@@ -133,7 +165,7 @@ class ManagedHostServiceManager(ManagedHostServiceClient):
         value = self._call("POST", route, body)
         if value.get("schema") != RESULT_SCHEMA or not isinstance(value.get("result"), dict) \
                 or value["result"].get("request_id") != body["request_id"]:
-            raise ManagedHostServiceError("managed_host_result_correlation_mismatch")
+            raise ManagedHostUncertainError("managed_host_result_correlation_mismatch")
         return value
 
     def reset(self, seed: str, *, expected_runtime_instance_id: str,
