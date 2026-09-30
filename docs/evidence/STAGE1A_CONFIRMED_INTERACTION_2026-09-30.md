@@ -165,8 +165,9 @@ package, release asset, model weight or private recording was published.
 - Ordinary dev evaluation for the new history profiles is not implemented in
   this packet. Existing K1/K8/Reset dev scores keep their old observation-only
   identities and cannot qualify the new input. The evaluator is the next owner.
-- A fresh mouse capture with the accepted row-2 Mod is still needed. Native
-  interaction and model competence are separate from these synthetic checks.
+- The [accepted row-2 mouse capture](STAGE1A_ROW2_MOUSE_CANARY_2026-09-30.md)
+  now has a passing producer audit and typed bundle verification. It retains
+  one unresolved final successor and does not qualify this candidate's model.
 - No independent-game benchmark, roughly-10k training run, memory benefit,
   Qwen/Z/O result, general checkpoint/MCTS or complete Stage1a acceptance follows.
 - Existing consumer bundles/pins are not replaced with a nonexistent public

@@ -29,8 +29,10 @@ The local Workbench now runs the clean accepted `de23ce167fddc5bfe149cd29f277329
 tree, retaining the selected research workspace and original records/models.
 A local exact-game build of that tree was deployed and cold-load identity checked.
 The Platform button opened the no-login local home, and the original library was
-visible. This is local installation/UI evidence; a new row-2 native Human
-capture remains pending. No distribution asset or new model was published.
+visible. A [new row-2 mouse canary](../evidence/STAGE1A_ROW2_MOUSE_CANARY_2026-09-30.md)
+has 10 verified input witnesses and 2 canonical transitions; its final successor
+remains explicitly unknown. This is bounded native/Human evidence, not a Full
+Run or memory-model result. No distribution asset or new model was published.
 
 The isolated [confirmed-interaction memory candidate](../plans/M2_CONFIRMED_INTERACTION.zh-CN.md)
 adds opt-in port 3, Evidence rc.23 and Runtime rc.14. It feeds only a durably
@@ -39,7 +41,10 @@ continuity/once-only references; cancelled dispatches cannot become history.
 It is not the running local Workbench/Runtime and does not relabel old models.
 Component source/test and temporary installed-package checks are recorded in the
 [packet receipt](../evidence/STAGE1A_CONFIRMED_INTERACTION_2026-09-30.md).
-Final candidate hosted CI and a new native capture are separate gates.
+PR119 run 36647445252/1 at `ea06ab2c` failed: Linux succeeded, Windows
+reported two application-test failures and portable failed. One startup
+handoff race is being repaired; the training failure remains under diagnosis.
+The accepted-version native capture does not qualify this candidate.
 
 ## Accepted research and product basis
 
