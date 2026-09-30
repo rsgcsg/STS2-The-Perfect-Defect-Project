@@ -292,22 +292,16 @@ def status(directory: Path) -> dict[str, Any]:
 
 def _launcher_directory(
     *, platform: str | None = None, home: Path | None = None,
-    env: dict[str, str] | None = None,
 ) -> Path:
     selected = platform or sys.platform
     user_home = home or Path.home()
-    environment = os.environ if env is None else env
-    if selected == "darwin":
-        base = user_home / "Library" / "Application Support"
-    elif selected == "win32":
-        base = Path(environment.get("LOCALAPPDATA") or user_home / "AppData" / "Local")
-    else:
-        base = Path(environment.get("XDG_DATA_HOME") or user_home / ".local" / "share")
-    return base / "spireagent" / "workbench"
+    if selected != "darwin":
+        reject("launcher_platform_unsupported")
+    return user_home / "Library" / "Application Support" / "spireagent" / "workbench"
 
 
 def _launcher_files(root: Path) -> tuple[Path, Path]:
-    return root / "launcher.json", root / ("open.cmd" if os.name == "nt" else "open")
+    return root / "launcher.json", root / "open"
 
 
 def _check_no_symlink(path: Path, code: str) -> None:
@@ -319,16 +313,10 @@ def _check_no_symlink(path: Path, code: str) -> None:
 def _launcher_script(directory: Path) -> str:
     source = directory / "source"
     python_root = source / "python"
-    python = python_root / (".venv/Scripts/python.exe" if os.name == "nt"
-                            else ".venv/bin/python")
+    python = python_root / ".venv/bin/python"
     tool = python_root / "tools/install_developer_kit.py"
     if not python.is_file() or not tool.is_file():
         reject("launcher_python_unavailable")
-    if os.name == "nt":
-        return ("@echo off\r\n"
-                f"cd /d {subprocess.list2cmdline([str(python_root)])}\r\n"
-                f"{subprocess.list2cmdline([str(python), '-I', str(tool), 'launch'])}\r\n"
-                "exit /b %ERRORLEVEL%\r\n")
     return ("#!/bin/sh\n"
             "set -eu\n"
             "unset PYTHONHOME PYTHONPATH PYTHONUSERBASE VIRTUAL_ENV UV_PROJECT_ENVIRONMENT "
@@ -394,7 +382,7 @@ def _install_open_launcher(
         reject("launcher_platform_unsupported")
     if prepared.get("workbench_launcher_schema") != LAUNCHER_SCHEMA:
         reject("workbench_launcher_not_in_kit")
-    root = _launcher_directory()
+    root = _launcher_directory(platform=platform)
     binding_path, executable_path = _launcher_files(root)
     _check_no_symlink(root, "launcher_path_unsafe")
     root.mkdir(parents=True, exist_ok=True)
