@@ -188,6 +188,79 @@ test("two attached clients see one Managed runtime, owner menu and explicit Host
   }
 });
 
+test("manager status attributes a lost claim ack only to current held control", async () => {
+  const service = await startManagedHostService(fixture().started, { hostIdentity });
+  try {
+    assert.equal((await reset(service)).status, 200);
+    const continuity = (await call(service, service.clientToken, "/v1/ready"))
+      .body.episode.game_continuity_id;
+    const requestId = "claim-with-lost-body";
+    const body = JSON.stringify({ command: "claim_control", request_id: requestId,
+      expected_runtime_instance_id: "runtime-one",
+      expected_game_continuity_id: continuity });
+    // Receive only the HTTP headers, then lose the credential-bearing body.
+    await new Promise((resolve, reject) => {
+      const offered = httpRequest(`${service.endpoint}/v1/command`, {
+        method: "POST", headers: { authorization: `Bearer ${service.clientToken}`,
+          "content-type": "application/json",
+          "x-sts2-managed-service-id": service.serviceInstanceId,
+          "content-length": Buffer.byteLength(body) }
+      }, (response) => {
+        assert.equal(response.statusCode, 200);
+        response.destroy();
+        resolve();
+      });
+      offered.on("error", reject);
+      offered.end(body);
+    });
+    const denied = await call(service, service.clientToken, "/v1/admin/status");
+    assert.equal(denied.status, 403);
+    const first = await call(service, service.managerToken, "/v1/admin/status");
+    assert.equal(first.body.status.control.claim_request_id, requestId);
+    assert.equal(first.body.status.control.runtime_instance_id, "runtime-one");
+    assert.equal(first.body.status.control.game_continuity_id, continuity);
+    assert.equal(JSON.stringify((await call(service, service.clientToken, "/v1/ready")).body)
+      .includes(requestId), false);
+    const released = await call(service, service.managerToken, "/v1/admin/recover-control", {
+      request_id: "recover-lost-claim",
+      expected_service_instance_id: service.serviceInstanceId,
+      expected_control_epoch: first.body.status.control.control_epoch,
+      expected_runtime_instance_id: "runtime-one",
+      expected_game_continuity_id: continuity
+    });
+    assert.equal(released.body.result.status, "released");
+    assert.equal((await call(service, service.managerToken, "/v1/admin/status"))
+      .body.status.control, null);
+
+    const newClaim = (await command(service, service.clientToken, {
+      command: "claim_control", request_id: "new-claim",
+      expected_runtime_instance_id: "runtime-one",
+      expected_game_continuity_id: continuity
+    })).body.result;
+    const current = await call(service, service.managerToken, "/v1/admin/status");
+    assert.equal(current.body.status.control.claim_request_id, "new-claim");
+    assert.equal(current.body.status.control.control_epoch, newClaim.control_epoch);
+    assert.equal(JSON.stringify(current.body).includes(newClaim.control_token), false);
+    assert.equal(JSON.stringify((await call(service, service.clientToken, "/v1/ready")).body)
+      .includes("new-claim"), false);
+
+    // A driver-level transition can precede the HTTP handler clearing its
+    // retained metadata. It must never attribute that metadata to a new owner.
+    await service.driver.handle({ command: "release_control", request_id: "direct-release",
+      control_token: newClaim.control_token, control_epoch: newClaim.control_epoch });
+    const stale = await service.driver.handle({ command: "claim_control",
+      request_id: "direct-new-owner", expected_runtime_instance_id: "runtime-one",
+      expected_game_continuity_id: continuity });
+    const status = await call(service, service.managerToken, "/v1/admin/status");
+    assert.equal(status.body.status.control.control_epoch, stale.control_epoch);
+    assert.equal(Object.hasOwn(status.body.status.control, "claim_request_id"), false);
+    assert.equal(JSON.stringify(status.body).includes(newClaim.control_token), false);
+    assert.equal(JSON.stringify(status.body).includes(stale.control_token), false);
+  } finally {
+    await service.close();
+  }
+});
+
 function delayedPost(service, token, route, body) {
   const serialized = JSON.stringify(body);
   let request;
