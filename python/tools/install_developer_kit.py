@@ -244,7 +244,10 @@ def status(directory: Path) -> dict[str, Any]:
     if any(p.is_symlink() for p in (directory, *directory.parents)):
         reject("release_path_unsafe")
     manifest, files = verified_archive(directory / "package.zip", directory.name)
-    if (directory / "kit/combination.json").read_bytes() != files["combination.json"]:
+    combination_file = _read_tree_file(
+        directory / "kit", "combination.json", "prepared_manifest"
+    )
+    if combination_file != files["combination.json"]:
         reject("prepared_manifest_changed")
     source = directory / "source"
     if run(["git", "rev-parse", "HEAD"], source).strip() != manifest["stpd_source_revision"]:
@@ -253,19 +256,25 @@ def status(directory: Path) -> dict[str, Any]:
         reject("prepared_source_dirty")
     for name, expected in manifest["files"].items():
         p = directory / "kit" / name
-        if any(a.is_symlink() for a in (p, *p.parents)) or sha(p.read_bytes()) != expected:
+        if any(a.is_symlink() for a in (p, *p.parents)):
+            reject("prepared_kit_changed")
+        try:
+            raw = p.read_bytes()
+        except FileNotFoundError:
+            reject("prepared_kit_file_missing")
+        if sha(raw) != expected:
             reject("prepared_kit_changed")
     for name, relative in STAGING.items():
-        if sha((source / relative).read_bytes()) != manifest["files"][name]:
+        raw = _read_tree_file(source, relative, "staged_native")
+        if sha(raw) != manifest["files"][name]:
             reject("staged_native_changed")
     for profile_id, pair in KIT_RUNTIME_PAIRS.items():
         if not text_runtime_files(manifest, files, required_profile=profile_id):
             continue
         pairs = ((pair[0], pair[2]), (pair[1], pair[3]))
         for name, relative in pairs:
-            staged = source / relative
-            if (any(p.is_symlink() for p in (staged, *staged.parents))
-                    or sha(staged.read_bytes()) != manifest["files"][name]):
+            staged = _read_tree_file(source, relative, "staged_text_runtime")
+            if sha(staged) != manifest["files"][name]:
                 reject("staged_text_runtime_changed")
     CollectionTool(directory / "kit/collection-tool", manifest["collection_tool_release_id"])
     return {
@@ -286,6 +295,310 @@ def status(directory: Path) -> dict[str, Any]:
         # caller-supplied profile or path.
         **{pair[4] + "_identity": manifest.get(pair[4])
            for pair in KIT_RUNTIME_PAIRS.values()},
+    }
+
+
+def _read_tree_file(root: Path, relative: str, code: str) -> bytes:
+    """Read one ordinary file below a trusted tree without following links."""
+    parts = PurePosixPath(relative)
+    if parts.is_absolute() or not parts.parts or ".." in parts.parts or "\\" in relative:
+        reject(code + "_unsafe")
+    current = root
+    if current.is_symlink() or not current.is_dir():
+        reject(code + "_unsafe")
+    for index, part in enumerate(parts.parts):
+        current = current / part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            reject(code + "_missing")
+        if stat.S_ISLNK(mode):
+            reject(code + "_unsafe")
+        if index < len(parts.parts) - 1 and not stat.S_ISDIR(mode):
+            reject(code + "_missing")
+    if not stat.S_ISREG(mode):
+        reject(code + "_missing")
+    return current.read_bytes()
+
+
+def validate_package_tuple(combination: dict[str, Any], bom: dict[str, Any],
+                           connector_release: dict[str, Any]) -> dict[str, Any]:
+    """Bind the selected package pins to published BOM assets and protocol authority."""
+    if (not isinstance(combination, dict) or not isinstance(bom, dict)
+            or not isinstance(connector_release, dict)
+            or combination.get("schema") != "stpd/developer-combination-v1"):
+        reject("package_identity_incompatible")
+    packages = combination.get("node_packages")
+    if not isinstance(packages, list):
+        reject("package_identity_incompatible")
+    indexed: dict[str, dict[str, Any]] = {}
+    for package in packages:
+        if not isinstance(package, dict) or package.get("package") not in {
+            "@rsgcsg/sts2-host-runtime", "@rsgcsg/sts2-connector-client"
+        }:
+            continue
+        name = package["package"]
+        if name in indexed:
+            reject("package_identity_ambiguous")
+        indexed[name] = package
+    host, sdk = indexed.get("@rsgcsg/sts2-host-runtime"), indexed.get(
+        "@rsgcsg/sts2-connector-client"
+    )
+    public = bom.get("public_packages")
+    public_host = public.get("host_runtime") if isinstance(public, dict) else None
+    public_sdk = public.get("typescript_sdk") if isinstance(public, dict) else None
+    components = bom.get("components")
+    if (not all(isinstance(item, dict) for item in (host, sdk, public_host, public_sdk))
+            or not isinstance(components, dict)):
+        reject("package_identity_missing")
+    digest(host.get("source_revision"), "kit_install.host_source", length=40)
+    digest(host.get("release_asset_sha256"), "kit_install.host_asset")
+    digest(host.get("package_content_sha256"), "kit_install.host_content")
+    digest(sdk.get("release_asset_sha256"), "kit_install.connector_client_asset")
+    if (host.get("version") != public_host.get("version")
+            or host.get("source_revision") != public_host.get("source_revision")
+            or host.get("release_asset_sha256") != public_host.get("sha256")
+            or host.get("package_content_sha256") != public_host.get(
+                "package_content_digest_sha256")
+            or public_host.get("asset") !=
+            f"rsgcsg-sts2-host-runtime-{public_host.get('version')}.tgz"
+            or public_host.get("release") != f"host-runtime/v{public_host.get('version')}"):
+        reject("published_package_identity_mismatch")
+    current_host = components.get("host_runtime", {})
+    expected_relation = ("same_component_version" if
+                         public_host.get("version") == current_host.get("version") else
+                         "published_package_precedes_current_source")
+    if public_host.get("source_relation") != expected_relation:
+        reject("published_package_relation_mismatch")
+    asset_match = re.fullmatch(
+        r"rsgcsg-sts2-connector-client-(.+)\.tgz", str(public_sdk.get("asset", ""))
+    )
+    if (not asset_match or sdk.get("version") != asset_match.group(1)
+            or sdk.get("release_asset_sha256") != public_sdk.get("sha256")):
+        reject("published_package_identity_mismatch")
+
+    player_environment = connector_release.get("player_environment")
+    release = connector_release.get("release")
+    exact_runtime = bom.get("exact_runtime_candidate")
+    v2 = bom.get("current_v2_candidate")
+    if not all(isinstance(item, dict) for item in (player_environment, release,
+                                                   exact_runtime, v2)):
+        reject("package_identity_incompatible")
+    connector_protocol = player_environment.get("protocol")
+    connector_version = release.get("version")
+    if (not connector_protocol
+            or connector_protocol != components.get("player_environment_protocol")
+            or connector_protocol != exact_runtime.get("connector", {}).get("protocol")
+            or connector_protocol != v2.get("connector", {}).get("protocol")
+            or connector_version != components.get("connector", {}).get("version")):
+        reject("protocol_incompatible")
+    return {
+        "host": {
+            "bom_anchored": {key: host[key] for key in (
+                "package", "version", "source_revision", "release_asset_sha256",
+                "package_content_sha256"
+            )},
+        },
+        "connector_client": {
+            "bom_anchored": {
+                "asset": public_sdk["asset"],
+                "release_asset_sha256": public_sdk["sha256"],
+                "version_from_asset_name": asset_match.group(1),
+            },
+            "combination_claims_unverified": {
+                "source_revision": sdk.get("source_revision")
+                if re.fullmatch(r"[0-9a-f]{40}", str(sdk.get("source_revision", "")))
+                else "unknown",
+                "package_content_sha256": sdk.get("package_content_sha256")
+                if re.fullmatch(r"[0-9a-f]{64}", str(sdk.get("package_content_sha256", "")))
+                else "unknown",
+                "provenance": "self_asserted_in_archive_bound_combination",
+            },
+        },
+        "player_environment_protocol": connector_protocol,
+    }
+
+
+def _game_file(root: Path, absolute: str, code: str, *, root_alias: Path | None = None) -> bytes:
+    candidate = Path(absolute)
+    if not candidate.is_absolute() or ".." in candidate.parts:
+        reject("game_identity_ambiguous")
+    # Map the doctor's lexical paths onto the canonical root. This accepts harmless
+    # symlinked ancestors (for example /tmp -> /private/tmp) while refusing links
+    # within the selected game tree.
+    root_alias = Path(os.path.abspath(root_alias or root))
+    candidate = Path(os.path.abspath(candidate))
+    try:
+        relative = candidate.relative_to(root_alias).as_posix()
+    except ValueError:
+        reject("game_identity_ambiguous")
+    return _read_tree_file(root, relative, code)
+
+
+def _runtime_dependency_report(source: Path) -> list[dict[str, Any]]:
+    package = decode_json(_read_tree_file(source, "components/host-runtime/package.json",
+                                          "runtime_dependency_metadata"))
+    pyproject = _read_tree_file(source, "python/pyproject.toml", "runtime_dependency_metadata")
+    requirements = re.search(rb"(?m)^requires-python\s*=\s*\"([^\"]+)\"", pyproject)
+    python_spec = requirements.group(1).decode() if requirements else None
+    node_spec = package.get("engines", {}).get("node") if isinstance(package, dict) else None
+    if node_spec != ">=20" or python_spec != ">=3.11,<3.12":
+        reject("runtime_dependency_metadata_incompatible")
+
+    node_text = run(["node", "--version"], source).strip()
+    node_match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?", node_text)
+    if not node_match:
+        reject("runtime_dependency_version_unreadable")
+    node_version = tuple(int(part) for part in node_match.groups())
+    if node_version < (20, 0, 0):
+        reject("runtime_dependency_incompatible_node")
+
+    python_version = (sys.version_info.major, sys.version_info.minor, sys.version_info.micro)
+    if not (3, 11, 0) <= python_version < (3, 12, 0):
+        reject("runtime_dependency_incompatible_python")
+
+    runtimeconfig = decode_json(_read_tree_file(
+        source, STAGING["collection-tool/sts2-human-annotator.runtimeconfig.json"],
+        "runtime_dependency_metadata"))
+    options = runtimeconfig.get("runtimeOptions") if isinstance(runtimeconfig, dict) else None
+    frameworks = options.get("frameworks") if isinstance(options, dict) else None
+    framework = options.get("framework") if isinstance(options, dict) else None
+    declared_frameworks = (
+        frameworks if isinstance(frameworks, list) else ([framework] if framework else [])
+    )
+    target = next(
+        (entry for entry in declared_frameworks
+         if isinstance(entry, dict) and entry.get("name") == "Microsoft.NETCore.App"),
+        None,
+    )
+    target_version = target.get("version") if target else None
+    version_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(target_version))
+    if not version_match:
+        reject("runtime_dependency_metadata_incompatible")
+    target_tuple = tuple(int(part) for part in version_match.groups())
+
+    dotnet = run(["dotnet", "--list-runtimes"], source)
+    installed = [tuple(int(part) for part in match.groups()) for match in re.finditer(
+        r"(?m)^Microsoft\.NETCore\.App (\d+)\.(\d+)\.(\d+)\b", dotnet
+    )]
+    compatible = [version for version in installed
+                  if version[:2] == target_tuple[:2] and version >= target_tuple]
+    if not compatible:
+        reject("runtime_dependency_missing_dotnet")
+    dotnet_version = max(compatible)
+    # The release pins compatibility ranges/framework floor, not executable identities.
+    return [
+        {"name": "node", "observed_version": node_text, "declared": node_spec,
+         "compatibility": "compatible", "release_pin": "unknown"},
+        {"name": "python", "observed_version": ".".join(map(str, python_version)),
+         "declared": python_spec, "compatibility": "compatible", "release_pin": "unknown"},
+        {"name": "Microsoft.NETCore.App", "observed_version": ".".join(map(str, dotnet_version)),
+         "declared": target_version, "compatibility": "compatible_framework_floor",
+         "release_pin": "unknown"},
+    ]
+
+
+def preflight(directory: Path, game: Path) -> dict[str, Any]:
+    """Read-only admission check; deliberately does not deploy, start or load anything."""
+    prepared = status(directory)
+    if not game.is_absolute():
+        reject("game_identity_ambiguous")
+    try:
+        canonical_game_root = game.resolve(strict=True)
+    except (OSError, RuntimeError):
+        reject("game_identity_ambiguous")
+    if not canonical_game_root.is_dir():
+        reject("game_identity_ambiguous")
+    source = directory / "source"
+    archive_manifest, archive_files = verified_archive(directory / "package.zip", directory.name)
+    try:
+        combination_raw = archive_files["developer-combination.json"]
+        bom_raw = archive_files["platform-bom.json"]
+        source_combination = _read_tree_file(source, "python/configs/developer/combination-v1.json",
+                                             "package_identity")
+        source_bom = _read_tree_file(source, "platform-bom.json", "package_identity")
+        if combination_raw != source_combination or bom_raw != source_bom:
+            reject("package_source_identity_mismatch")
+        combination = decode_json(combination_raw)
+        bom = decode_json(bom_raw)
+        connector_release = decode_json(_read_tree_file(
+            source, "components/connector/release-manifest.json", "package_identity"))
+        package_identity = validate_package_tuple(combination, bom, connector_release)
+        provenance = decode_json(archive_files["collection-tool/game-mod/build-provenance.json"])
+    except BoundaryError:
+        raise
+    except KeyError:
+        reject("package_identity_missing")
+    if not isinstance(provenance, dict):
+        reject("package_identity_incompatible")
+    package_identity["combination_archive_entry_sha256"] = archive_manifest["files"][
+        "developer-combination.json"
+    ]
+
+    doctor_env = dict(os.environ, STS2_GAME_DIR=str(game))
+    doctor = decode_json(run(["node", "apps/game-mod/lifecycle.mjs", "doctor"],
+                             source, environment=doctor_env))
+    if not isinstance(doctor, dict) or doctor.get("status") != "ok":
+        reject("game_identity_unavailable")
+    installation = doctor.get("installation")
+    if not isinstance(installation, dict) or not isinstance(installation.get("game_dir"), str):
+        reject("game_identity_ambiguous")
+    doctor_game_alias = Path(installation["game_dir"])
+    if (not doctor_game_alias.is_absolute() or ".." in doctor_game_alias.parts):
+        reject("game_identity_ambiguous")
+    try:
+        discovered_game_root = doctor_game_alias.resolve(strict=True)
+    except (OSError, RuntimeError):
+        reject("game_identity_ambiguous")
+    if canonical_game_root != discovered_game_root:
+        reject("game_identity_ambiguous")
+    if doctor.get("game_running") is not False:
+        reject("game_must_be_closed")
+    target_platform = provenance.get("platform")
+    target_architecture = provenance.get("architecture")
+    if (not target_platform or not target_architecture
+            or target_platform != doctor.get("platform")
+            or target_architecture != doctor.get("architecture")):
+        reject("target_platform_mismatch")
+    native = provenance.get("game")
+    if not isinstance(native, dict):
+        reject("game_identity_unavailable")
+    data_dir, release_info = installation.get("data_dir"), installation.get("release_info")
+    if not isinstance(data_dir, str) or not isinstance(release_info, str):
+        reject("game_identity_ambiguous")
+    file_hashes = (
+        ("sts2.dll", native.get("sts2", {}).get("sha256")),
+        ("GodotSharp.dll", native.get("godotsharp_sha256")),
+        ("0Harmony.dll", native.get("harmony_sha256")),
+    )
+    for name, expected in file_hashes:
+        digest(expected, "kit_install.native_game_identity")
+        raw = _game_file(canonical_game_root, str(Path(data_dir) / name), "native_game_file",
+                         root_alias=doctor_game_alias)
+        if sha(raw) != expected:
+            reject("native_game_or_dependency_mismatch")
+    release_raw = _game_file(canonical_game_root, release_info, "native_game_file",
+                             root_alias=doctor_game_alias)
+    if decode_json(release_raw) != native.get("release"):
+        reject("native_release_metadata_mismatch")
+
+    dependencies = _runtime_dependency_report(source)
+    return {
+        "status": "preflight_complete",
+        "admission": "unqualified",
+        "qualification_blockers": ["exact_system_runtime_identity_not_pinned"],
+        "package": {"archive_sha256": directory.name,
+                    "source_revision": prepared["source_revision"],
+                    **package_identity},
+        "target": {"platform": target_platform, "architecture": target_architecture,
+                   "identity_source": "verified_build_provenance_and_read_only_doctor"},
+        "game": {"identity": "matched", "version": native.get("release", {}).get("version"),
+                 "commit": native.get("release", {}).get("commit"),
+                 "files_verified": 4},
+        "dependencies": dependencies,
+        "effects": {"installed": False, "started": False, "loaded": False},
+        "non_claims": ["no_lock_against_concurrent_local_filesystem_replacement",
+                       "deployment_must_recheck_native_game_identity"],
     }
 
 
@@ -635,8 +948,10 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "command", choices=("plan", "prepare", "status", "initialize", "deploy", "register",
-                            "launch", "install-launcher")
+        "command", choices=(
+            "plan", "prepare", "status", "preflight", "initialize", "deploy", "register",
+            "launch", "install-launcher",
+        )
     )
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--sha256")
@@ -687,7 +1002,12 @@ def main() -> int:
         else:
             if args.directory is None:
                 reject("directory_required")
-            result = status(args.directory)
+            if args.command == "preflight":
+                if args.game_directory is None:
+                    reject("game_directory_required")
+                result = preflight(args.directory, args.game_directory)
+            else:
+                result = status(args.directory)
             if args.command == "deploy":
                 if args.game_directory is None:
                     reject("game_directory_required")

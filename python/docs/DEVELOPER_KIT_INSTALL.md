@@ -17,6 +17,7 @@ writable development directory.
 ```bash
 uv run --locked --extra cloud python tools/install_developer_kit.py plan --archive /ABS/kit.zip --sha256 APPROVED_ZIP_SHA256 --releases /ABS/releases
 uv run --locked --extra cloud python tools/install_developer_kit.py prepare --archive /ABS/kit.zip --sha256 APPROVED_ZIP_SHA256 --releases /ABS/releases
+uv run --locked --extra cloud python tools/install_developer_kit.py preflight --directory /ABS/releases/APPROVED_ZIP_SHA256 --game-directory /ABS/game
 uv run --locked --extra cloud python tools/install_developer_kit.py initialize --directory /ABS/releases/APPROVED_ZIP_SHA256 --config /ABS/project.json
 ```
 
@@ -24,6 +25,23 @@ uv run --locked --extra cloud python tools/install_developer_kit.py initialize -
 source, verifies lock/combination/manifest, stages the published native bytes and
 publishes the directory. Dependencies initialize **after** placement so virtualenv
 paths remain stable. Neither step changes the game, profile, queues or cloud.
+`preflight` is read-only: it binds the prepared package pins to their published BOM
+asset hashes, checks the target platform/architecture against the explicit local game
+and verifies declared Node, Python and .NET framework compatibility. It never installs,
+starts or loads anything. Exact system-runtime executable/version pins are not currently
+part of the kit contract, so a compatible observation still reports
+`admission: unqualified` until those identities are deliberately pinned.
+The Host archive identity is directly anchored by its BOM version/source/archive/content
+hash fields. The Connector Client BOM directly anchors the selected asset name and archive
+hash; its source revision and package-content digest remain self-asserted combination
+claims, tied to the combination bytes in the verified kit archive but not independently
+anchored by the BOM. Preflight reports these as unverified claims.
+
+Preflight resolves the explicit game directory and the doctor's selected directory to the
+same canonical root. This permits normal symlinked ancestors and a selected-directory alias,
+while rejecting symlinks and escapes below the canonical game root for the four identity
+files it reads. It is a read-only snapshot, not a filesystem lock: a concurrent local
+replacement can race the check. Native deploy must recheck the game identity before writing.
 The verified kit inventory selects the locked environment: collection-only kits
 install the `cloud` extra; a kit containing any fixed text Runtime pair also
 installs `local-models` (Torch, Tokenizers and Safetensors). It does not install
