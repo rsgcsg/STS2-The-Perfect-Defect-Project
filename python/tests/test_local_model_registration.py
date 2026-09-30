@@ -31,6 +31,7 @@ from spireagent.workbench.local_model_registration import (
     SCHEMA,
     VERBS,
     LocalModelRegistration,
+    _managed_requirements,
     _requirements,
 )
 from spireagent.workbench.local_models import LocalModelService
@@ -369,6 +370,170 @@ def test_missing_export_bad_capabilities_and_failed_registry_write_are_closed(
     assert config.state_dir.is_dir()
 
 
+def _managed_contract_target() -> dict:
+    return {
+        "exact_game": {"version": "1.0.0", "commit": "game-commit"},
+        "text_menu_contracts": [{
+            "input_profile": "text-menu-v2",
+            "snapshot_schema": "sts2.player-environment/text-menu-snapshot-2",
+            "receipt_schema": "sts2.player-environment/text-menu-action-result-2",
+            "protocol_version": "1.0.0",
+            "interaction_kinds": ["combat_turn", "card_reward"],
+            "action_verbs": ["play", "end_turn", "select_card"],
+        }],
+        # These private attachment details must never enter policy requirements.
+        "service_instance_id": "service-private",
+        "client_attachment": "/private/managed/client.json",
+        "bearer": "managed-secret-token",
+    }
+
+
+def test_managed_requirements_accepts_only_one_exact_v2_host_contract():
+    requirements, support = _managed_requirements(_managed_contract_target())
+    assert requirements["environment"] == {
+        "kind": "managed_text_v2", "text_protocol_version": "1.0.0",
+        "input_profile": "text-menu-v2",
+    }
+    assert support["game_versions"] == ["1.0.0"]
+    assert support["game_commits"] == ["game-commit"]
+    assert support["interaction_kinds"] == ["combat_turn", "card_reward"]
+    assert support["action_verbs"] == ["play", "end_turn", "select_card"]
+    rendered = json.dumps({"requirements": requirements, "support": support})
+    assert "managed-secret-token" not in rendered
+    assert "/private/managed/client.json" not in rendered
+    assert "service-private" not in rendered
+
+    invalid = _managed_contract_target()
+    invalid["text_menu_contracts"].append(dict(invalid["text_menu_contracts"][0]))
+    with pytest.raises(BoundaryError, match="managed_contract_unavailable"):
+        _managed_requirements(invalid)
+    invalid = _managed_contract_target()
+    invalid["text_menu_contracts"][0]["receipt_schema"] = (
+        "sts2.player-environment/text-menu-action-result-1")
+    with pytest.raises(BoundaryError, match="managed_contract_unavailable"):
+        _managed_requirements(invalid)
+
+
+def test_matching_keeps_native_and_managed_registrations_separate_for_same_export(
+        tmp_path: Path, monkeypatch) -> None:
+    from stpd import memory_policy_installation, token_policy_installation
+
+    model_id = "a" * 64
+    export = tmp_path / "export"
+    root = tmp_path / "root"
+    private = tmp_path / "private"
+    export.mkdir()
+    private.mkdir()
+    config_paths = []
+    manifest_paths = []
+    entries = []
+    for selection, kind in (("native-selection", "native"),
+                            ("managed-selection", "managed")):
+        config_path = private / f"{selection}.config.json"
+        manifest_path = private / f"{selection}.manifest.json"
+        config_path.write_text(json.dumps({"model_id": model_id,
+                                           "export_path": str(export.resolve())}))
+        manifest_path.write_text(json.dumps({
+            "requirements": {"environment": {"kind": (
+                "managed_text_v2" if kind == "managed" else "native")}},
+            "adapter": {"code_sha256": "trusted-code"},
+        }))
+        config_paths.append(config_path)
+        manifest_paths.append(manifest_path)
+        entries.append({"id": selection, "runtime_profile": "text-menu-m2-v2",
+                        "config": config_path.name, "manifest": manifest_path.name})
+
+    models = SimpleNamespace(root=root, private_root=private,
+                             registry=lambda: {},)
+    registration = LocalModelRegistration(SimpleNamespace(), SimpleNamespace(), models)
+    monkeypatch.setattr(registration, "_entries", lambda: entries)
+    monkeypatch.setattr(memory_policy_installation, "code_digest", lambda _root: "trusted-code")
+    monkeypatch.setattr(memory_policy_installation, "validate", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(token_policy_installation, "validate", lambda *_args, **_kwargs: None)
+
+    assert registration._matching(model_id, export, profile="text-menu-m2-v2",
+                                  environment_kind="native") == ("native-selection", False)
+    assert registration._matching(model_id, export, profile="text-menu-m2-v2",
+                                  environment_kind="managed") == ("managed-selection", False)
+
+
+def test_managed_registration_uses_host_contract_without_native_probes_or_private_publication(
+        tmp_path: Path, monkeypatch) -> None:
+    model_id = "b" * 64
+    export_path = tmp_path / "verified-export"
+    export_path.mkdir()
+    root = tmp_path / "checkout"
+    root.mkdir()
+    private = tmp_path / "private-models"
+    private.mkdir(mode=0o700)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    export = SimpleNamespace(
+        status=lambda: {"schema": "stpd/local-model-export-operation-v2",
+                        "operation": {"model_id": model_id, "model_type": "memory"}},
+        verified_memory_for_registration=lambda *_args, **_kwargs: export_path,
+        verified_memory_recipe_for_registration=lambda *_args, **_kwargs:
+            "stage1a.dsimple.m2.k1.confirmed-interaction.v2",
+    )
+    models = SimpleNamespace(
+        root=root, private_root=private,
+        text_runtime_profile=lambda _profile: (runtime, {"pin": "runtime-pin"}),
+        _connector_pin=lambda: {"pin": "connector-pin"},
+        _managed_runtime_target=_managed_contract_target,
+        registry=lambda: {},
+    )
+    registration = LocalModelRegistration(SimpleNamespace(), export, models)
+    monkeypatch.setattr(registration_module, "require_local_models", lambda *_args: None)
+    monkeypatch.setattr(registration_module, "validate_runtime_install", lambda *_args: {})
+    monkeypatch.setattr(registration, "_matching", lambda *_args, **_kwargs: (None, False))
+    monkeypatch.setattr(registration, "_m2_runtime_manifest_compatible",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(registration, "_capabilities",
+                        lambda *_args, **_kwargs: pytest.fail("Native capabilities were queried"))
+    monkeypatch.setattr(registration, "_context_available",
+                        lambda *_args, **_kwargs: pytest.fail("Native context was queried"))
+
+    captured: dict[str, object] = {}
+
+    def bind(_root, _export, config_path, manifest_path, **kwargs):
+        captured.update(kwargs)
+        config_path.write_text(json.dumps({"model_id": model_id,
+                                           "export_path": str(export_path.resolve())}))
+        manifest_path.write_text(json.dumps({"requirements": kwargs["requirements"],
+                                             "support": kwargs["support"]}))
+
+    monkeypatch.setattr(registration_module, "bind_managed_memory_export", bind)
+    result = registration.register(model_id, environment_kind="managed")
+    assert result["status"] == "registered"
+    assert result["environment_kind"] == "managed"
+    assert result["runtime_profile"] == "text-menu-m2-v2"
+    assert captured["requirements"]["environment"]["kind"] == "managed_text_v2"
+    registry = json.loads((private / REGISTRY).read_bytes())
+    manifest_path = private / registry["policies"][0]["manifest"]
+    published = manifest_path.read_text()
+    for secret in ("service-private", "managed-secret-token", "/private/managed/client.json"):
+        assert secret not in published
+
+
+def test_managed_registration_rejects_non_confirmed_interaction_model(
+        tmp_path: Path, monkeypatch) -> None:
+    model_id = "c" * 64
+    export_path = tmp_path / "verified-export"
+    export_path.mkdir()
+    export = SimpleNamespace(
+        status=lambda: {"schema": "stpd/local-model-export-operation-v2",
+                        "operation": {"model_id": model_id, "model_type": "memory"}},
+        verified_memory_for_registration=lambda *_args, **_kwargs: export_path,
+        verified_memory_recipe_for_registration=lambda *_args, **_kwargs:
+            "stage1a.dsimple.m2.k1.experimental.v2",
+    )
+    models = SimpleNamespace()
+    registration = LocalModelRegistration(SimpleNamespace(), export, models)
+    monkeypatch.setattr(registration_module, "require_local_models", lambda *_args: None)
+    with pytest.raises(BoundaryError, match="managed_requires_confirmed_interaction_model"):
+        registration.register(model_id, environment_kind="managed")
+
+
 def test_registration_lock_serializes_same_model_and_malformed_binding_is_unavailable(
     registration, monkeypatch,
 ):
@@ -517,3 +682,9 @@ def test_http_exact_body_browser_guard_and_live_instance(
         server.server_close()
         thread.join(timeout=3)
         app.close()
+
+
+@pytest.mark.parametrize("target", [None, [], {}, "other"])
+def test_registration_rejects_invalid_environment_target(target):
+    with pytest.raises(BoundaryError, match="unsupported_environment_target"):
+        registration_module._target_kind(target)
