@@ -1,4 +1,4 @@
-# Current project context, 2026-09-30
+# Current project context, 2026-10-01
 
 Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
 Resolve live GitHub refs before work; current authorities override this file.
@@ -8,24 +8,40 @@ No complete Stage1a or policy-quality qualification is claimed.
 
 ## Current candidate and immediate work
 
-Accepted develop anchor: `14738f7fc764b9ef077f805022dc52839fe0c02a`,
-normal merge of PR124, tree `747ea5932fc66a29a9dbda078a11d874b9cacf9a`.
-Its exact candidate passed full 36693791434/1; integration 36698120360/1
-passed with verified same-tree execution reuse and fresh repository guards.
-PR125 is included; its rc.15 package was installed, rollback-tested and exercised.
-[Exact source/install/native/Managed receipt](../evidence/STAGE1A_MANAGED_DEV_AND_RC15_2026-09-30.md).
+Accepted develop anchor: `b38ac7f56a87ac738447dda843072327d3ffcfee`,
+normal merge of PR129, tree `c065d5b9fb4bc373cc62f61bf8850a219a74d32c`.
+Its exact topic candidate passed full 36729067168/1; integration 36733708823/1
+passed the router's same-tree reuse scope with fresh repository guards and portable.
+PR130's installed-entry import correction is included; its candidate full was
+36723815049/1. These are source/test results, not new native or scientific gates.
 PR116 adds row-2 capture/completed-append order. PR117 qualifies only
 **map-boundary** save/load, not combat/selector checkpoints or general MCTS.
 
-The local Workbench now executes accepted clean source
-`1d3ab294747ab967e06e34d0a9b829837f786aff` with Evidence rc.23,
-preserving its research workspace, model/configuration bytes and original records.
-The installed Mod remains `de23ce167fddc5bfe149cd29f2773299b261845d`, cold-load
-verified; this separate producer identity was not upgraded with the Workbench.
-The Platform button opened the no-login home. The
+The local Workbench executes accepted source
+`ec58ded873862ee20b6317e53e7ed6e85f2ce8cb`, preserving its research workspace,
+model/configuration bytes and original records. The fixed entry's private kit
+was cold-started and its Evidence import came from the installed wheel, not a
+shadowing checkout directory. Runtime rc.15 remains installed.
+The current Mod is rc.20: DLL SHA-256
+`ce03c44077b7ae9660afc51b4b0e3d1cb28ea7538a2cbd38b92977e71cf46203`,
+MVID `d24b7884-200d-4165-95d1-83b129daa13d`. Cold-loaded identity was checked.
+The user confirmed Platform → Open Workbench opens the no-login local homepage.
+[Exact installed-entry and Human entry receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/130#issuecomment-5913373306).
+This entry check does not qualify gameplay, recording or model takeover.
+
+The shared Managed Host packet is a source candidate: one Host-owned service,
+separate Workbench/model clients, explicit control handoff and separate Host close.
+Host rc.23, Runtime rc.16 and Evidence rc.24 candidates do not replace the above
+production installation by virtue of a version change. Final package/live checks,
+independent review and the topic's hosted gate must be read from its current receipt.
+[Environment ownership and scope](../plans/ENVIRONMENT_AND_SCENARIOS.zh-CN.md).
+
+Historical installed and capture evidence remains unchanged. The
 [row-2 mouse canary](../evidence/STAGE1A_ROW2_MOUSE_CANARY_2026-09-30.md)
 has 10 verified inputs and 2 canonical transitions, with its final successor
-unknown. Neither the canary nor the Workbench upgrade proves a Full Run.
+unknown. Neither it nor the entry check proves a Full Run. The earlier
+[rc.15/Managed receipt](../evidence/STAGE1A_MANAGED_DEV_AND_RC15_2026-09-30.md)
+retains its exact original source and installed identities.
 
 The [terminal canary](../evidence/STAGE1A_NATIVE_TERMINAL_CANARY_2026-09-30.md)
 proves a game-over owner-ready successor persisted before Close. Its producer
