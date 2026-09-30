@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from spireagent.json_boundary import BoundaryError
+
 from .confirmed_interaction import HISTORY_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE
 from .text_menu_inputs import INPUT_PROFILE, V2_INPUT_PROFILE
 from .text_menu_inputs import V2_VERSION as TEXT_MENU_V2_VERSION
@@ -16,6 +18,19 @@ RENDERER_IDENTITY = {"id": "stpd/m2-canonical-current-page-v1",
 V2_RENDERER_IDENTITY = {"id": "stpd/m2-canonical-current-page-v2",
                         "text_menu_version": TEXT_MENU_V2_VERSION,
                         "wrapper": FORMAT}
+
+
+def renderer_identity_for_profile(input_profile: str) -> dict[str, str]:
+    """Closed renderer identity lookup shared by metadata and token encoding."""
+    if input_profile == HISTORY_INPUT_PROFILE:
+        return {**RENDERER_IDENTITY, "id": "stpd/m2-confirmed-interaction-v1"}
+    if input_profile == V2_HISTORY_INPUT_PROFILE:
+        return {**V2_RENDERER_IDENTITY, "id": "stpd/m2-confirmed-interaction-v2"}
+    if input_profile == INPUT_PROFILE:
+        return RENDERER_IDENTITY.copy()
+    if input_profile in {V2_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE}:
+        return V2_RENDERER_IDENTITY.copy()
+    raise BoundaryError("memory_tokens", "unknown_text_menu_profile")
 
 
 @dataclass(frozen=True)
@@ -69,8 +84,6 @@ class MemoryEpisodeProjectionConfigV3:
     renderer_wrapper: str
 
     def __post_init__(self) -> None:
-        from .memory_token_inputs import renderer_identity_for_profile
-
         if (self.schema != "stpd/memory-episode-projection-config-v3"
                 or self.input_profile not in {HISTORY_INPUT_PROFILE,
                                               V2_HISTORY_INPUT_PROFILE}
@@ -87,8 +100,6 @@ class MemoryEpisodeProjectionConfigV3:
 
 
 def history_episode_projection_config(profile: str) -> MemoryEpisodeProjectionConfigV3:
-    from .memory_token_inputs import renderer_identity_for_profile
-
     renderer = renderer_identity_for_profile(profile)
     return MemoryEpisodeProjectionConfigV3(
         "stpd/memory-episode-projection-config-v3",
