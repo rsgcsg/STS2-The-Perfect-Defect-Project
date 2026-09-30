@@ -22,7 +22,35 @@ def model_command(
     artifact: str | None = None,
     runtime_archive: Path | None = None,
     runtime_profile: str | None = None,
+    expected_active_sha256: str | None = None,
+    new_runtime_profile: Path | None = None,
+    expected_new_profile_sha256: str | None = None,
+    archived_profile_sha256: str | None = None,
 ) -> dict[str, Any]:
+    generation_action = action in {"upgrade-runtime-generation", "rollback-runtime-generation"}
+    if generation_action:
+        if runtime_profile is None or expected_active_sha256 is None:
+            raise BoundaryError("local_model", "runtime_generation_arguments_required")
+        from spireagent.workbench.runtime_generation import rollback, upgrade
+
+        if action == "upgrade-runtime-generation":
+            if (runtime_archive is None or new_runtime_profile is None
+                    or expected_new_profile_sha256 is None or archived_profile_sha256 is not None):
+                raise BoundaryError("local_model", "runtime_generation_arguments_required")
+            return upgrade(config, runtime_profile,
+                           expected_active_sha256=expected_active_sha256,
+                           new_profile_file=new_runtime_profile,
+                           expected_new_profile_sha256=expected_new_profile_sha256,
+                           archive=runtime_archive)
+        if (archived_profile_sha256 is None or runtime_archive is not None
+                or new_runtime_profile is not None or expected_new_profile_sha256 is not None):
+            raise BoundaryError("local_model", "runtime_generation_arguments_required")
+        return rollback(config, runtime_profile, expected_active_sha256=expected_active_sha256,
+                        archived_profile_sha256=archived_profile_sha256)
+    if any(value is not None for value in (expected_active_sha256, new_runtime_profile,
+                                            expected_new_profile_sha256,
+                                            archived_profile_sha256)):
+        raise BoundaryError("local_model", "runtime_generation_arguments_require_action")
     if runtime_profile is not None and (action != "install-runtime" or runtime_archive is None):
         raise BoundaryError("local_model", "runtime_profile_requires_offline_install")
     if runtime_profile not in {None, "text-menu-v1", "text-menu-m2-v1",
@@ -69,8 +97,8 @@ def model_command(
                     # initialize passes this fixed path. A previous private pin
                     # must not silently replace the included kit's identity.
                     _, _, kit_pin = service._selected_kit_text_runtime(runtime_profile)
-                    _, existing_pin = service.text_runtime_profile(runtime_profile)
-                    if existing_pin != kit_pin:
+                    existing_directory, existing_pin = service.text_runtime_profile(runtime_profile)
+                    if existing_directory.parent.name != "generations" and existing_pin != kit_pin:
                         raise BoundaryError("local_model", "private_profile_collision")
                 if (runtime_profile != "text-menu-m2-v2"
                         and not destination.exists() and not destination.is_symlink()):
@@ -95,6 +123,16 @@ def model_command(
                                   else service.text_runtime_profile(runtime_profile))
             else:
                 directory, pin = service.runtime_profile(selection)
+            if directory.parent.name == "generations":
+                from spireagent.workbench.runtime_generation import _verify
+
+                profile_id = runtime_profile
+                if profile_id is None and selection is not None:
+                    profile_id = service.selection(selection).get("runtime_profile")
+                if profile_id is None:
+                    raise BoundaryError("local_model", "runtime_generation_profile_required")
+                return {"status": "runtime_installed", "reused": True,
+                        **_verify(directory, pin, service._connector_pin(), profile_id)}
             installed = install_runtime(
                 directory,
                 pin,

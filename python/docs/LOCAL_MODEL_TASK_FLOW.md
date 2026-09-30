@@ -8,6 +8,31 @@ executable and does not qualify Human data or model game performance.
 
 ## Prepare and load
 
+An operator can explicitly change one private text Runtime profile while the
+Workbench is closed and port 15527 is free. `developer model --action
+upgrade-runtime-generation` requires `--runtime-profile`, the SHA256 of the
+current active profile bytes (`--expected-active-sha256`), an approved strict
+profile file (`--new-runtime-profile`) and its raw SHA256
+(`--expected-new-profile-sha256`), plus its pinned local archive
+(`--runtime-archive`). The owner verifies the archive and a separate installed
+generation before archiving the current active profile **as original bytes**
+and replacing the one active name. The receipt lists selections sharing that
+profile; existing model registrations and manifests are unchanged. The
+generation name is the SHA256 of canonical profile JSON under the fixed private
+slot, never an operator-supplied path.
+
+`developer model --action rollback-runtime-generation` requires the same
+`--runtime-profile` and current `--expected-active-sha256`, plus
+`--archived-profile-sha256`. It verifies the archived bytes and their installed
+target before switching. A damaged current generation can be rolled back from;
+neither operation repairs or deletes an existing generation. Legacy active
+profile bytes remain valid and unchanged until an explicit switch. Normal
+preparation and offline installation only verify/reuse an active generation.
+If replacing the active name is followed by a filesystem sync error, the
+command reports `BLOCKED`, nonzero exit, and exact active-profile readback
+(`true`, `false`, or `unknown` activation). Inspect that receipt before any
+further explicit operation; no automatic rollback occurs.
+
 `LocalModelService.prepare_and_load(selection_id)` accepts only a reviewed registry
 selection. It runs existing adapter, artifact, backend and package readiness
 checks; missing weights, unsupported hardware or adapter mismatch remain visible.

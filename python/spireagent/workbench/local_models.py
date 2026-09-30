@@ -65,6 +65,37 @@ TEXT_PROFILES = {"text-menu-v1": ("token-v1", ".local/text-menu-runtime-v1.json"
                  "text-menu-m2-v2": ("stpd-m2-decision-adapter",
                                      ".local/text-menu-m2-runtime-v2.json",
                                      "stpd/local-text-m2-runtime-v2", "text-menu-m2-v2")}
+
+
+def _validate_text_profile(profile: dict[str, Any], schema: str,
+                           profile_id: str) -> dict[str, Any]:
+    try:
+        object_fields(profile, {"schema", "runtime_package"}, "local_model.runtime_profile")
+    except BoundaryError as error:
+        raise BoundaryError("local_model", "text_runtime_profile_invalid") from error
+    pin = profile["runtime_package"]
+    if (profile["schema"] != schema or not isinstance(pin, dict)
+            or pin.get("dependency_layout") != "bundled_source_candidate"
+            or pin.get("package") != RUNTIME_PACKAGE):
+        raise BoundaryError("local_model", "text_runtime_profile_invalid")
+    if profile_id == "text-menu-m2-v2":
+        expected = {"package", "version", "source_revision",
+                    "component_tree_revision", "release_asset_sha256",
+                    "package_content_sha256", "dependency_layout",
+                    "bundled_connector_pin"}
+        if (set(pin) != expected
+                or not isinstance(pin.get("version"), str)
+                or not re.fullmatch(r"[0-9A-Za-z.+-]{1,80}", pin["version"])
+                or not isinstance(pin.get("bundled_connector_pin"), dict)):
+            raise BoundaryError("local_model", "text_runtime_profile_invalid")
+        try:
+            digest(pin["source_revision"], "local_model.v2_source", length=40)
+            digest(pin["component_tree_revision"], "local_model.v2_tree", length=40)
+            digest(pin["release_asset_sha256"], "local_model.v2_archive")
+            digest(pin["package_content_sha256"], "local_model.v2_package")
+        except BoundaryError as error:
+            raise BoundaryError("local_model", "text_runtime_profile_invalid") from error
+    return pin
 _BUDGET_STATES = frozenset({"inactive", "active", "exhausted"})
 _BUDGET_EXHAUSTION = frozenset({"submission_attempt_limit", "policy_call_limit", "deadline"})
 _BUDGET_END = frozenset({"human_recovery", "mode_changed", "stopped"})
@@ -447,38 +478,17 @@ class LocalModelService:
             raise BoundaryError("local_model", "runtime_profile_path_unsafe")
         if not profile_file.exists() and not profile_file.is_symlink():
             raise BoundaryError("local_model", "text_runtime_profile_required")
-        try:
-            profile = _object_file(_inside(self.private_root, profile_name))
-            object_fields(profile, {"schema", "runtime_package"},
-                          "local_model.runtime_profile")
-        except BoundaryError as error:
-            raise BoundaryError("local_model", "text_runtime_profile_invalid") from error
-        pin = profile["runtime_package"]
-        if (profile["schema"] != schema
-                or not isinstance(pin, dict)
-                or pin.get("dependency_layout") != "bundled_source_candidate"
-                or pin.get("package") != RUNTIME_PACKAGE):
-            raise BoundaryError("local_model", "text_runtime_profile_invalid")
-        if profile_id == "text-menu-m2-v2":
-            expected = {"package", "version", "source_revision",
-                        "component_tree_revision", "release_asset_sha256",
-                        "package_content_sha256", "dependency_layout",
-                        "bundled_connector_pin"}
-            if (set(pin) != expected
-                    or not isinstance(pin.get("version"), str)
-                    or not re.fullmatch(r"[0-9A-Za-z.+-]{1,80}", pin["version"])
-                    or not isinstance(pin.get("bundled_connector_pin"), dict)):
-                raise BoundaryError("local_model", "text_runtime_profile_invalid")
-            try:
-                digest(pin["source_revision"], "local_model.v2_source", length=40)
-                digest(pin["component_tree_revision"], "local_model.v2_tree", length=40)
-                digest(pin["release_asset_sha256"], "local_model.v2_archive")
-                digest(pin["package_content_sha256"], "local_model.v2_package")
-            except BoundaryError as error:
-                raise BoundaryError("local_model", "text_runtime_profile_invalid") from error
+        profile = _object_file(_inside(self.private_root, profile_name))
         directory = self.directory / slot
         if directory.is_symlink():
             raise BoundaryError("local_model", "runtime_install_path_unsafe")
+        from spireagent.workbench.runtime_generation import generation_profile
+
+        resolved = generation_profile(profile, schema, profile_id, directory)
+        if resolved is not None:
+            generation_dir, pin = resolved
+            return generation_dir, pin
+        pin = _validate_text_profile(profile, schema, profile_id)
         return directory, pin
 
     def _runtime_package(self, identity: str | None = None) -> dict[str, Any]:
@@ -622,6 +632,16 @@ class LocalModelService:
                     raise
                 directory, pin = None, None
             if directory is not None and pin is not None:
+                if directory.parent.name == "generations":
+                    from spireagent.workbench.runtime_generation import _verify
+
+                    _verify(directory, pin, self._connector_pin(), profile_id)
+                    with self.lock:
+                        self._require_stopped_runtime()
+                        self.state.update(status="idle", last_text_runtime_preparation={
+                            "runtime_profile": profile_id, "status": "ready", "reused": True,
+                        })
+                    return
                 try:
                     installed = validate_runtime_install(
                         directory / "runtime/node_modules", pin, self._connector_pin())
