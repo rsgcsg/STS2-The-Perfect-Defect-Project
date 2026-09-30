@@ -8,16 +8,18 @@ No complete Stage1a or policy-quality qualification is claimed.
 
 ## Current candidate and immediate work
 
-Accepted develop anchor: `da238b2be83a431e455f862ad46376a80db52948`,
-normal merge of PR123, tree `ff986db292062be23802fe329aa0d4bf7940c40e`.
-Head `1e2017111588c442f7bf41495f57bdf5edbf8601` passed full 36677551489/1;
-integration 36681397958/1 passed with verified same-tree execution reuse.
+Accepted develop anchor: `14738f7fc764b9ef077f805022dc52839fe0c02a`,
+normal merge of PR124, tree `747ea5932fc66a29a9dbda078a11d874b9cacf9a`.
+Its exact candidate passed full 36693791434/1; integration 36698120360/1
+passed with verified same-tree execution reuse and fresh repository guards.
+PR125 is included; its rc.15 package was installed, rollback-tested and exercised.
+[Exact source/install/native/Managed receipt](../evidence/STAGE1A_MANAGED_DEV_AND_RC15_2026-09-30.md).
 PR116 adds row-2 capture/completed-append order. PR117 qualifies only
 **map-boundary** save/load, not combat/selector checkpoints or general MCTS.
 
-The local Workbench remains `8441be3adbaab12340029025638bc4f43c1b926e`
-with Evidence rc.23, preserving
-its research workspace and original records.
+The local Workbench now executes accepted clean source
+`1d3ab294747ab967e06e34d0a9b829837f786aff` with Evidence rc.23,
+preserving its research workspace, model/configuration bytes and original records.
 The installed Mod remains `de23ce167fddc5bfe149cd29f2773299b261845d`, cold-load
 verified; this separate producer identity was not upgraded with the Workbench.
 The Platform button opened the no-login home. The
@@ -54,17 +56,18 @@ Typed verification passed; first confirmation-page reset cause remains unknown.
 Exact identities are in the [installed v2 receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/123#issuecomment-5906208577).
 This short canary proves neither quality nor a Full Run.
 
-[PR124](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/124)
-combines seed-selected Managed scenes and separate-source v2 dev evaluation.
-Candidate `e580b4b94b75f8e74ce6210e7f97fbcab9c48897` has local regressions and
-independent source review; full CI 36684376509 is pending at this update.
-No actual different-seed dev result is claimed.
+PR124's actual different-seed Managed journey completed: saved scene → isolated
+Host → six explicit operator-agent choices → stopped report → admitted source →
+existing confirmed-interaction K1 model dev evaluation. Top-1 agreement was 5/6,
+with no equal rendered training pages; this tiny engineering sample is not native
+Human data, an independent-game benchmark or a model-quality result. No retraining
+was needed. The linked receipt retains source/model/report/evaluation identities.
 
-Runtime rc.15 is a source candidate for explicitly unapplied v2 stale recovery.
-Only a durably recorded refreshable rejection permits fresh observation and a
-new decision; three consecutive stale responses hand off Human. Unknown delivery,
-missing/failed evidence and failed release remain fail-closed. It has not replaced
-installed rc.14 or gained native qualification.
+Runtime rc.15's bounded native canary completed 16 submissions, including three
+explicitly unapplied stale rejections followed by fresh decisions. Final Stop was
+Human/released/untainted; typed verification passed. Unknown delivery, missing or
+failed evidence, failed release and repeated stale still fail closed. The actual
+canary does not prove a full game, causal successor attribution or policy quality.
 
 ## Accepted research and product basis
 
