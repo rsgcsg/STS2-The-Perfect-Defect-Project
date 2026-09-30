@@ -10,12 +10,14 @@ native-human evidence recording, model-neutral policy execution lifecycle and
 strategy-free integration tools. It does not own policy inference, reward,
 models, training or research authority.
 
-## Proposed native logical interaction direction
+## Accepted native logical interaction direction
 
-[ADR-0015](adr/0015-native-logical-interaction.md) records WEB-01's revisable
-upper-level proposal. It changes the target observation/action abstraction, not
-any current wire schema, installed artifact, or historical Human proof below.
-Its status must be read before treating the proposal as an accepted contract.
+[ADR-0015](adr/0015-native-logical-interaction.md) accepts WEB-01's upper-level
+direction and conditional examples. It does not itself define a wire contract
+or qualify an installed artifact, a complete game, or historical Human proof.
+The explicit [text-menu-v2 profile](plans/TEXT_STS2_IN_RUN.md) now implements a
+bounded interaction path; its source, Host, recording and model qualification
+remain separate. This does not imply that every ADR example is implemented.
 
 The target policy input is the current entered native logical page/mode's
 authorized content and selection state, its complete applicable action menu,
