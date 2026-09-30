@@ -103,6 +103,33 @@ def test_isolated_installer_entry_imports_its_source_packages():
     assert "install-launcher" in result.stdout and "launch" in result.stdout
 
 
+def test_isolated_installer_entry_keeps_locked_evidence_import_origin():
+    """The fixed launcher executes this entry before Workbench runs its doctor."""
+    tool = Path(__file__).resolve().parents[1] / "tools/install_developer_kit.py"
+    script = "\n".join((
+        "import importlib.metadata, json, runpy, sys",
+        "runpy.run_path(sys.argv[1], run_name='installer_import')",
+        "import sts2_platform_evidence, sts2_platform_evidence.delivery_cli",
+        "from spireagent.workbench.developer import combination, evidence_identity",
+        "distribution = importlib.metadata.distribution('rsgcsg-sts2-platform-evidence')",
+        "pin = combination()['evidence_source_revision']",
+        "print(json.dumps({'identity': evidence_identity(pin),"
+        "                  'import_file': sts2_platform_evidence.__file__,"
+        "                  'entry_file': sts2_platform_evidence.delivery_cli.__file__,"
+        "                  'installed_root': str(distribution.locate_file(''))}))",
+    ))
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(tool)],
+        cwd=tool.parents[1], capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert observed["identity"]["status"] == "PASS"
+    assert observed["identity"]["delivery_entrypoint_verified"] is True
+    assert Path(observed["import_file"]).is_relative_to(Path(observed["installed_root"]))
+    assert Path(observed["entry_file"]).is_relative_to(Path(observed["installed_root"]))
+
+
 def test_open_lock_serializes_two_open_requests(tmp_path):
     lock = tmp_path / "state/open.lock"
     events: list[str] = []
