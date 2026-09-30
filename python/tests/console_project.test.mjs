@@ -1916,6 +1916,120 @@ test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} expo
   assert.equal(writes.length, 3);
 });
 
+test("Managed dev source options identify their recorded seed and event count, then submit the exact clicked source once", async () => {
+  const modelId = id("a"), trainingSource = id("b"), devSource = id("c");
+  const managedSource = (artifactId, seed, eventCount) => ({
+    artifact_id:artifactId, kind:"dataset", parameters:{
+      schema:"stpd/managed-text-menu-observed-source-v1",
+      scope:"engineering_control", source_kind:"managed_control_input_stream",
+      actor:"unverified", purpose:"observed_input",
+      report_id:id(seed.endsWith("A") ? "d" : "e"),
+      session_id:seed.endsWith("A") ? "training-session" : "dev-session",
+      scenario_id:"managed-defect-a0-map-prefix-20260929",
+      split_run_id:`managed:${seed}`, event_count:eventCount,
+      import_expectation:{
+        session_id:seed.endsWith("A") ? "training-session" : "dev-session",
+        scenario_id:"managed-defect-a0-map-prefix-20260929", seed,
+        host_package_pin:{schema:"stpd/platform-host-runtime-pin-v1",
+          package:"@rsgcsg/sts2-host-runtime", version:"1.1.0-rc.20",
+          source_revision:"a".repeat(40), component_tree_revision:"b".repeat(40),
+          release_asset_sha256:"c".repeat(64), package_content_sha256:"d".repeat(64)},
+        candidate_build:{upstream_revision:"e".repeat(40),
+          source_patch_sha256:"f".repeat(64), artifact_sha256:"1".repeat(64),
+          artifact_mvid:"fixture-mvid", original_sts2_sha256:"2".repeat(64),
+          runtime_sts2_sha256:"2".repeat(64)},
+        environment_fingerprint:"3".repeat(64),
+        runtime_instance_id:seed.endsWith("A") ? "training-runtime" : "dev-runtime",
+      },
+      claim:"applied_control_inputs_only_no_human_or_causal_successor",
+    },
+  });
+  const sources = [
+    managedSource(trainingSource, "M2H0ST20260930A", 6),
+    managedSource(devSource, "M2H0ST20260930B", 3),
+  ];
+  const model = memoryModel(modelId);
+  model.workbench_memory_recipe = "stage1a.dsimple.m2.k1.confirmed-interaction.v2";
+  let operation = {status:"idle"};
+  const env = setup({identity:{status:"local_only"}, view:"local-workspace", query:`&id=${modelId}`,
+    handler:async (url, options = {}) => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${modelId}`) return model;
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed", model_id:modelId, model_type:"memory", payload_bytes:123,
+      }, {schema:"stpd/local-model-export-operation-v2"});
+      if (url.startsWith("/api/local-model-registrations/status?"))
+        return modelRegistrationStatus(modelId, "not_registered", {runtime_profile:"text-menu-m2-v2"});
+      if (url === "/api/local-memory-evaluations/status") return {
+        schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready",
+        csrf_token:"memory-csrf", operation,
+      };
+      if (url.startsWith("/api/local-workspace?")) return {
+        schema:"stpd/local-workspace-inventory-v1", total:sources.length, items:sources,
+      };
+      if (url === "/api/local-memory-evaluations/start") {
+        operation = {status:"pending", model_id:modelId,
+          source_id:JSON.parse(options.body).source_id};
+        return {schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready",
+          operation};
+      }
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.equal(post(env.calls).length, 0);
+  const choices = field(page, "local-memory-dev-source").children;
+  assert.deepEqual(choices.map(option => option.value), ["", trainingSource, devSource]);
+  assert.match(choices[1].textContent, /M2H0ST20260930A/);
+  assert.match(choices[1].textContent, /6 条操作记录/);
+  assert.match(choices[2].textContent, /M2H0ST20260930B/);
+  assert.match(choices[2].textContent, /3 条操作记录/);
+  field(page, "local-memory-dev-source").value = devSource;
+  await action(page, "start-local-memory-evaluation").onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.equal(post(env.calls)[0].url, "/api/local-memory-evaluations/start");
+  assert.deepEqual(body(post(env.calls)[0]), {model_id:modelId, source_id:devSource});
+  assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"], "memory-csrf");
+  const refreshed = await env.render();
+  assert.equal(walk(refreshed).some(element =>
+    element.dataset?.action === "start-local-memory-evaluation"), false);
+  assert.equal(post(env.calls).length, 1, "refresh observes pending state and never reposts");
+});
+
+test("Managed dev source option reports missing legacy seed and event count as unknown", async () => {
+  const modelId = id("a"), sourceId = id("b");
+  const model = memoryModel(modelId);
+  model.workbench_memory_recipe = "stage1a.dsimple.m2.k1.confirmed-interaction.v2";
+  const env = setup({identity:{status:"local_only"}, view:"local-workspace", query:`&id=${modelId}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${modelId}`) return model;
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed", model_id:modelId, model_type:"memory", payload_bytes:123,
+      }, {schema:"stpd/local-model-export-operation-v2"});
+      if (url.startsWith("/api/local-model-registrations/status?"))
+        return modelRegistrationStatus(modelId, "not_registered", {runtime_profile:"text-menu-m2-v2"});
+      if (url === "/api/local-memory-evaluations/status") return {
+        schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready",
+        csrf_token:"memory-csrf", operation:{status:"idle"},
+      };
+      if (url.startsWith("/api/local-workspace?")) return {
+        schema:"stpd/local-workspace-inventory-v1", total:1,
+        items:[{artifact_id:sourceId, kind:"dataset", parameters:{
+          schema:"stpd/managed-text-menu-observed-source-v1",
+          scope:"engineering_control", source_kind:"managed_control_input_stream",
+          actor:"unverified", purpose:"observed_input",
+        }}],
+      };
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  const option = field(page, "local-memory-dev-source").children[1];
+  assert.match(option.textContent, /种子\s*未知/);
+  assert.match(option.textContent, /记录数未知/);
+  assert.doesNotMatch(option.textContent, /undefined|null|NaN|0 条操作记录/);
+  assert.equal(post(env.calls).length, 0);
+});
+
 test("idle M2 evaluation leaves overview and verified export neutral about report existence", async () => {
   const model = id("a");
   const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
