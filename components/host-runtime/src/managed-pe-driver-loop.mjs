@@ -52,7 +52,9 @@ export function serveManagedPeDriver(driver, {
           code: "driver_request_failed",
           message: error instanceof Error ? error.message : String(error) });
       }
-      if (driver.closed && !closing) {
+      // An eagerly admitted later close may already have set driver.closed.
+      // Only its own response writer may end input, after writing that result.
+      if (request?.command === "close" && driver.closed && !closing) {
         cleanClose = true;
         input.close();
       }

@@ -432,3 +432,45 @@ test("JSONL captures queued control intent when each line arrives", async () => 
     await driver.shutdown();
   }
 });
+
+test("JSONL emits the explicit close result after an earlier pipelined response", async () => {
+  for (const mode of ["observe", "step"]) {
+    const { driver, holdAction } = fixture();
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const messages = [];
+    readline.createInterface({ input: stdout }).on("line", (line) => messages.push(JSON.parse(line)));
+    serveManagedPeDriver(driver, { stdin, stdout, stderr: new PassThrough(),
+      signals: { on() {} } });
+    const awaitCount = async (count) => {
+      const deadline = Date.now() + 500;
+      while (messages.length < count && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      assert.equal(messages.length, count, `${mode}: ${JSON.stringify(messages.map((item) => item.type))}`);
+    };
+    try {
+      stdin.write(`${JSON.stringify({ command: "reset", seed: "SEED" })}\n`);
+      await awaitCount(1);
+      let releaseNative;
+      let entered;
+      let actionEntered;
+      if (mode === "step") {
+        actionEntered = new Promise((resolve) => { entered = resolve; });
+        holdAction(new Promise((resolve) => { releaseNative = resolve; }), entered);
+      }
+      const first = mode === "observe"
+        ? { command: "observe", request_id: "before-close" }
+        : rawStep(messages[0].snapshot, "before-close");
+      stdin.write(`${JSON.stringify(first)}\n${JSON.stringify({ command: "close", request_id: "close" })}\n`);
+      if (actionEntered) { await actionEntered; releaseNative(); }
+      await awaitCount(3);
+      assert.equal(messages[1].type, mode === "observe" ? "observe_result" : "step_result");
+      assert.equal(messages[2].type, "close_result");
+      assert.equal(messages[2].request_id, "close");
+    } finally {
+      stdin.end();
+      await driver.shutdown();
+    }
+  }
+});
