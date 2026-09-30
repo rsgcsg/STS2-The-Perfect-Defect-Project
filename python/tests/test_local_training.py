@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -17,6 +18,7 @@ import test_local_recording_preview as recording_fixture
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.source import source_identity
+from spireagent.storage import replaceable_file
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.registry import SQLiteRegistry
 from spireagent.storage.store import ManifestArtifactStore
@@ -32,12 +34,14 @@ from spireagent.workbench.developer_server import (
     Application,
     configuration_id,
     create_server,
+    instance_lock,
 )
 from spireagent.workbench.inplace_curation import InplaceCurationPreparation, configured_owner
 from spireagent.workbench.local_curation import LocalLedger
 from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_training import (
     DEFAULT_RECIPE,
+    LOCK_FILE,
     MEMORY_RECIPE,
     OPERATION_FILE,
     LocalTrainingService,
@@ -996,3 +1000,150 @@ def test_http_explicit_start_tracks_exact_completed_run_without_get_replay(
         server.shutdown()
         server.server_close()
         app.close()
+
+
+def test_status_reader_does_not_block_training_journal_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Force a status read to remain open during the real owner stage update."""
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    owner = configured_owner(config)
+    path = owner.path.parent / OPERATION_FILE
+    operation_id = "a" * 32
+    training_module.write_replaceable_json(path, {
+        "schema": "stpd/local-training-operation-v1", "status": "pending",
+        "stage": "reserving", "operation_id": operation_id,
+        "dataset_id": dataset_id, "_owner": list(owner.identity),
+    })
+    service = LocalTrainingService(config)
+    entered = threading.Event()
+    release = threading.Event()
+    reader = {"open": False, "share_delete": False}
+    observed: list[dict] = []
+    errors: list[BaseException] = []
+    status_thread_name = "held-training-status-reader"
+    original_path_open = Path.open
+    original_replace = os.replace
+
+    def hold_reader(*, share_delete: bool) -> None:
+        reader.update(open=True, share_delete=share_delete)
+        entered.set()
+        assert release.wait(10)
+
+    def path_open(self, *args, **kwargs):
+        stream = original_path_open(self, *args, **kwargs)
+        if self == path and threading.current_thread().name == status_thread_name:
+            hold_reader(share_delete=False)
+        return stream
+
+    def windows_replace(source, destination):
+        if Path(destination) == path and reader["open"] and not reader["share_delete"]:
+            error = PermissionError(13, "synthetic Windows sharing denial")
+            error.winerror = 5
+            raise error
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(Path, "open", path_open)
+    monkeypatch.setattr(os, "replace", windows_replace)
+    # New code uses a shared-delete reader on both OSes. The old source has no
+    # module, so this same test reaches the ordinary Path.open reader above.
+    replaceable = sys.modules.get("spireagent.storage.replaceable_file")
+    if replaceable is not None:
+        original_shared_open = replaceable.open_replaceable_read
+
+        @contextmanager
+        def shared_open(file):
+            with original_shared_open(file) as stream:
+                if file == path and threading.current_thread().name == status_thread_name:
+                    hold_reader(share_delete=True)
+                yield stream
+
+        monkeypatch.setattr(replaceable, "open_replaceable_read", shared_open)
+
+    def read_status() -> None:
+        try:
+            observed.append(service.status())
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=read_status, name=status_thread_name)
+    with instance_lock(path.parent / LOCK_FILE):
+        thread.start()
+        try:
+            assert entered.wait(5), "status must hold its journal reader open"
+            service._advance(path, operation_id, stage="public_view")
+        finally:
+            release.set()
+            thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert not errors, errors
+    assert observed[0]["operation"]["operation_id"] == operation_id
+    assert observed[0]["operation"]["status"] == "pending"
+    assert json.loads(path.read_bytes())["stage"] == "public_view"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows file sharing")
+def test_windows_replaceable_reader_allows_atomic_journal_replacement(tmp_path: Path) -> None:
+    from spireagent.storage.replaceable_file import open_replaceable_read
+
+    path = tmp_path / "operation.json"
+    path.write_bytes(b"old")
+    with path.open("rb") as ordinary:
+        assert ordinary.read() == b"old"
+        with pytest.raises(OSError) as denied:
+            training_module.write_replaceable_json(path, {"status": "new"})
+        assert getattr(denied.value, "winerror", None) is not None
+    assert path.read_bytes() == b"old"
+    with open_replaceable_read(path) as shared:
+        assert shared.read() == b"old"
+        training_module.write_replaceable_json(path, {"status": "new"})
+        assert shared.seek(0) == 0
+        assert shared.read() == b"old"
+    assert json.loads(path.read_bytes()) == {"status": "new"}
+
+
+@pytest.mark.parametrize("winerror", [1175, 1176, 1177])
+def test_failed_windows_journal_replacement_preserves_recovery_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winerror: int,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    owner = configured_owner(config)
+    path = owner.path.parent / OPERATION_FILE
+    operation_id = "a" * 32
+    training_module.write_replaceable_json(path, {
+        "schema": "stpd/local-training-operation-v1", "status": "pending",
+        "stage": "reserving", "operation_id": operation_id,
+        "dataset_id": dataset_id, "_owner": list(owner.identity),
+    })
+    old = path.read_bytes()
+
+    def fail_replacement(temporary: Path, target: Path, backup: Path) -> None:
+        if winerror == 1177:
+            os.replace(target, backup)  # Microsoft's 1177 missing-canonical layout.
+        error = PermissionError(13, "synthetic ReplaceFileW failure")
+        error.winerror = winerror
+        raise error
+
+    with pytest.raises(PermissionError):
+        replaceable_file._write_json(
+            path, {"schema": "stpd/local-training-operation-v1", "status": "pending",
+                   "stage": "public_view", "operation_id": operation_id,
+                   "dataset_id": dataset_id, "_owner": list(owner.identity)},
+            fail_replacement)
+
+    candidates = list(path.parent.glob("." + path.name + ".pending-*"))
+    assert len(candidates) == 1
+    assert json.loads(candidates[0].read_bytes())["stage"] == "public_view"
+    backups = list(path.parent.glob("." + path.name + ".previous-*"))
+    if winerror == 1177:
+        assert not path.exists()
+        assert len(backups) == 1 and backups[0].read_bytes() == old
+        observed = LocalTrainingService(config).status()
+        assert observed["availability"] == "recovery_required"
+        assert observed["reason"] == "operation_recovery_required"
+        with pytest.raises(BoundaryError) as rejected:
+            LocalTrainingService(config).start(dataset_id)
+        assert rejected.value.code == "operation_recovery_required"
+    else:
+        assert path.read_bytes() == old
+        assert not backups

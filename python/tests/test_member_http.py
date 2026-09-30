@@ -256,6 +256,45 @@ def inventory(content):
     }
 
 
+def test_background_export_inventory_uses_transfer_budget(tmp_path):
+    account = LocalIdentity(config(tmp_path))
+    atomic_json(account.path, {"hub_url": "https://hub.example",
+                              "session_token": "private-personal",
+                              "expires_at": time.time() + 60})
+    content = b"selected team data"
+    value = inventory(content)
+    identity = value["export_id"]
+    calls = []
+
+    class Opener:
+        def open(self, request, *, timeout):
+            route = request.full_url.removeprefix("https://hub.example")
+            calls.append((route, timeout))
+            if route == "/v1/identity/member/exports/" + identity:
+                return BytesIO(json_bytes(value))
+            if route == "/v1/identity/member/exports/" + identity + "/files/" + "b" * 64:
+                return BytesIO(content)
+            assert route in {"/v1/identity/status", "/v1/identity/member/campaigns",
+                             "/v1/identity/member/exports"}
+            return BytesIO(b"{}")
+
+    account.opener = Opener()
+    client = MemberClient(account)
+    account.request("/v1/identity/status")
+    client.request("campaigns")
+    client.request("exports", {})
+    try:
+        client.download(identity)
+        client.thread.join(timeout=3)
+        assert not client.thread.is_alive()
+        assert client.download_status()["status"] == "verified"
+        assert (tmp_path / "downloads" / identity / ("b" * 64)).read_bytes() == content
+        assert [timeout for _, timeout in calls] == [4, 10, 20, 30, 30]
+        assert len(calls) == 5  # No automatic request replay.
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize(
     "mutation", [None, "checksum", "oversize", "inventory", "logout", "eof_logout", "preexisting"]
 )
