@@ -677,6 +677,34 @@ def test_http_exact_body_browser_guard_and_live_instance(
         assert after["selection_id"] == registered["selection_id"]
         assert "export_path" not in json.dumps(after)
         assert "modset" not in json.dumps(after)
+        targets = []
+
+        def managed_status(identity, *, environment_kind="native"):
+            targets.append(("status", identity, environment_kind))
+            return {"schema": SCHEMA, "model_id": identity,
+                    "environment_kind": environment_kind, "status": "not_registered"}
+
+        def managed_register(identity, *, environment_kind="native"):
+            targets.append(("register", identity, environment_kind))
+            return {"schema": SCHEMA, "model_id": identity,
+                    "environment_kind": environment_kind, "status": "registered"}
+
+        monkeypatch.setattr(service, "status", managed_status)
+        monkeypatch.setattr(service, "register", managed_register)
+        with client.open(status_url + "&environment_kind=managed") as response:
+            managed = json.load(response)
+        assert managed["environment_kind"] == "managed"
+        assert targets == [("status", model_id, "managed")]
+        with post({"model_id": model_id, "environment_kind": "managed"},
+                  csrf=managed["csrf_token"]) as response:
+            assert json.load(response)["environment_kind"] == "managed"
+        assert targets[-1] == ("register", model_id, "managed")
+        with pytest.raises(HTTPError) as duplicate:
+            client.open(status_url + "&environment_kind=managed&environment_kind=native")
+        assert duplicate.value.code == 400
+        with pytest.raises(HTTPError) as empty:
+            client.open(status_url + "&environment_kind=")
+        assert empty.value.code == 400
     finally:
         server.shutdown()
         server.server_close()

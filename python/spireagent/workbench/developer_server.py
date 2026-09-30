@@ -663,7 +663,8 @@ class Application:
             raise BoundaryError("local_model_export", "running_configuration_mismatch")
         return self.local_model_export.start(model_id)
 
-    def register_local_model(self, model_id: object) -> dict[str, Any]:
+    def register_local_model(self, model_id: object, *,
+                             environment_kind: str = "native") -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_model_registration", "running_instance_unavailable")
         try:
@@ -677,7 +678,7 @@ class Application:
                 or runtime.get("instance_id") != self.instance_id
                 or runtime.get("configuration_id") != configuration_id(self.config)):
             raise BoundaryError("local_model_registration", "running_configuration_mismatch")
-        return self.local_model_registration.register(model_id)
+        return self.local_model_registration.register(model_id, environment_kind=environment_kind)
 
     def close(self) -> None:
         self.local_environment.close()
@@ -1008,10 +1009,14 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
                 try:
-                    query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=1)
-                    if set(query) != {"model_id"} or len(query["model_id"]) != 1:
+                    query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=2,
+                                     keep_blank_values=True)
+                    if (set(query) not in ({"model_id"}, {"model_id", "environment_kind"})
+                            or any(len(values) != 1 or not values[0] for values in query.values())):
                         raise ValueError
-                    value = {**app.local_model_registration.status(query["model_id"][0]),
+                    target = query.get("environment_kind", ["native"])[0]
+                    value = {**app.local_model_registration.status(
+                        query["model_id"][0], environment_kind=target),
                              "csrf_token": app.account.csrf}
                     self.respond(200, json.dumps(value).encode())
                 except (BoundaryError, ValueError) as error:
@@ -1421,9 +1426,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 try:
                     body = self.json_body(maximum=128)
-                    if set(body) != {"model_id"}:
+                    if set(body) not in ({"model_id"}, {"model_id", "environment_kind"}):
                         raise ValueError
-                    value = app.register_local_model(body["model_id"])
+                    value = app.register_local_model(
+                        body["model_id"], environment_kind=body.get("environment_kind", "native"))
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
