@@ -563,9 +563,7 @@ export class PolicyRuntime {
         const refreshable = receiptRecorded && !this.tainted
           && receipt.reason_code === "stale_snapshot" && receipt.retry.allowed
           && receipt.retry.reason === "fresh_snapshot_required";
-        if (!refreshable || ++this.consecutiveStaleSubmissions >= 3)
-          await this.releaseControllerAndReturnHuman("action_not_delivered");
-        else await this.releaseController();
+        await this.finishKnownNonDelivery(refreshable, "action_not_delivered");
       }
       return { type: "not_delivered", decision, receipt, status: this.status() };
     }
@@ -636,11 +634,23 @@ export class PolicyRuntime {
       return { type: "unknown", decision, receipt: result, error: "Connector returned unknown native delivery", status: this.status() };
     }
     if (result.status === "not_applied") {
-      if (!(await this.appendEvidence("text_menu_not_applied", { decision_id: decision.decision_id, result }))) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
+      const recorded = await this.appendEvidence("text_menu_not_applied", { decision_id: decision.decision_id, result });
+      if (!recorded) await this.taintWithoutEvidence("agent_evidence_write_failed_after_submit");
+      this.confirmedInteraction = null;
       if (this.mode === "one_step") await this.completeOneStep();
-      else if (this.mode === "auto") await this.releaseControllerAndReturnHuman("action_not_applied");
+      else if (this.mode === "auto") {
+        // A new observation and policy call may follow only an explicitly
+        // unapplied stale result. The old action, scores and request are spent.
+        const refreshable = this.options.evidence != null && recorded && !this.tainted
+          && submissionEpoch === this.recoveryEpoch && !this.mutationCancellationRequested()
+          && previous.schema === "sts2.player-environment/text-menu-snapshot-2"
+          && result.reason_code === "stale_snapshot" && result.retry === "reobserve"
+          && result.native_delivery === null;
+        await this.finishKnownNonDelivery(refreshable, "action_not_applied");
+      }
       return { type: "text_not_applied", decision, result, status: this.status() };
     }
+    this.consecutiveStaleSubmissions = 0;
     if (action.effect_domain === "text_menu") {
       if (result.native_delivery !== null || !result.successor || !this.validTextMenuSuccessor(previous, result.successor, true)) {
         await this.taint("menu_navigation_successor_invalid");
@@ -699,6 +709,12 @@ export class PolicyRuntime {
   private setObservedSnapshot(observed: AnyDecisionBundle["observation"]): void {
     this.lastSnapshotId = observed.snapshot_id;
     this.lastSnapshot = { snapshot_id: observed.snapshot_id, sequence: observed.sequence, status: observed.status, runtime_instance_id: observed.session.runtime_instance_id, environment_fingerprint: observed.session.environment_fingerprint };
+  }
+
+  private async finishKnownNonDelivery(refreshable: boolean, handoffReason: string): Promise<void> {
+    if (!refreshable || ++this.consecutiveStaleSubmissions >= 3)
+      await this.releaseControllerAndReturnHuman(handoffReason);
+    else await this.releaseController();
   }
 
   async stop(): Promise<RuntimeStatus> {
