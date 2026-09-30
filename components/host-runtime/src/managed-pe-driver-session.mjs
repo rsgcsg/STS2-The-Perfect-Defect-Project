@@ -39,6 +39,22 @@ export class ManagedPeDriverSession {
 
   get closed() { return this.#closed; }
 
+  status() {
+    return {
+      closed: this.#closed,
+      episode_available: this.#available && !this.#closed,
+      game_continuity_id: this.#closed ? null : this.#gameContinuityId,
+      control_held: this.#control != null,
+      control: this.#control == null ? null : {
+        control_epoch: this.#control.epoch,
+        runtime_instance_id: this.#control.runtimeInstanceId,
+        game_continuity_id: this.#control.gameContinuityId
+      },
+      tainted: this.#started.session.tainted === true,
+      taint_reason: this.#started.session.taintReason ?? null
+    };
+  }
+
   // EOF and force-close must interrupt an in-flight native request, rather
   // than joining the JSONL mutation queue that request is waiting on.
   shutdown({ force = false } = {}) {
@@ -65,6 +81,17 @@ export class ManagedPeDriverSession {
     if (this.#closed) throw new Error("driver_closed");
     if (!this.#available || this.#gameContinuityId == null) {
       throw new Error("managed_episode_unavailable_reset_required");
+    }
+  }
+
+  #requireExpectedEpisode(request) {
+    if (Object.hasOwn(request, "expected_runtime_instance_id")
+      && request.expected_runtime_instance_id !== this.#started.runtime.adapterRuntimeInstanceId) {
+      throw new Error("stale_managed_runtime_instance");
+    }
+    if (Object.hasOwn(request, "expected_game_continuity_id")
+      && request.expected_game_continuity_id !== this.#gameContinuityId) {
+      throw new Error("stale_game_continuity");
     }
   }
 
@@ -113,6 +140,7 @@ export class ManagedPeDriverSession {
     switch (request?.command) {
       case "reset": {
         this.#requireControlIntent(intent);
+        this.#requireExpectedEpisode(request);
         const seed = canonicalizeEpisodeSeed(request.seed);
         // reset_run first destroys the old simulator. A failed/unknown reset
         // cannot leave either public action route bound to that old episode.
@@ -163,6 +191,7 @@ export class ManagedPeDriverSession {
             timeoutMs: this.#timeoutMs
           }) };
       case "text_observe": {
+        if (request.require_control === true) this.#requireControlIntent(intent);
         this.#requireEpisode();
         const profile = request.input_profile ?? MANAGED_TEXT_MENU_PROFILE;
         if (profile !== MANAGED_TEXT_MENU_PROFILE && profile !== MANAGED_TEXT_MENU_V2_PROFILE) {
@@ -208,6 +237,7 @@ export class ManagedPeDriverSession {
       }
       case "claim_control": {
         this.#requireEpisode();
+        this.#requireExpectedEpisode(request);
         if (this.#started.session.tainted === true) {
           throw new Error(this.#started.session.taintReason === "successor_projection_failed"
             ? "managed_session_tainted_after_successor_projection_failure"
