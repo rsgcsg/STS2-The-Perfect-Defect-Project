@@ -276,3 +276,20 @@ def test_rollback_rejects_changed_archive_without_switch(generation):
                        expected_active_sha256=hashlib.sha256(current).hexdigest(),
                        archived_profile_sha256=hashlib.sha256(old).hexdigest())
     assert active.read_bytes() == current
+
+
+def test_noop_switch_rejected_before_ambiguous_io_readback(generation):
+    config, active, _, profile, archive, _ = generation
+    _upgrade(generation)
+    current = active.read_bytes()
+    with pytest.raises(BoundaryError, match="runtime_generation_already_active"):
+        owner.upgrade(config, "text-menu-m2-v1",
+                      expected_active_sha256=hashlib.sha256(current).hexdigest(),
+                      new_profile_file=profile,
+                      expected_new_profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest(),
+                      archive=archive)
+    with pytest.raises(BoundaryError, match="runtime_generation_already_active"):
+        owner.rollback(config, "text-menu-m2-v1",
+                       expected_active_sha256=hashlib.sha256(current).hexdigest(),
+                       archived_profile_sha256=hashlib.sha256(current).hexdigest())
+    assert active.read_bytes() == current

@@ -216,13 +216,15 @@ def upgrade(config: ProjectConfig, profile_id: str, *, expected_active_sha256: s
                     import shutil
 
                     shutil.rmtree(stage)
+        after = (json.dumps({"schema": SCHEMA, "profile": profile,
+                             "generation": generation}, sort_keys=True, indent=2) + "\n").encode()
+        if after == before:
+            raise BoundaryError("local_model", "runtime_generation_already_active")
         affected = _affected(service, profile_id)
         archive_dir = slot / "profiles"
         _safe_directory(archive_dir)
         archive_dir.mkdir(parents=True, exist_ok=True)
         _publish_profile(archive_dir / (expected_active_sha256 + ".json"), before)
-        after = (json.dumps({"schema": SCHEMA, "profile": profile,
-                             "generation": generation}, sort_keys=True, indent=2) + "\n").encode()
         state, observed = _switch(active, before, after)
         return _receipt(affected, profile_id, state, generation, expected_active_sha256,
                         hashlib.sha256(after).hexdigest(), observed)
@@ -232,6 +234,8 @@ def rollback(config: ProjectConfig, profile_id: str, *, expected_active_sha256: 
              archived_profile_sha256: str) -> dict[str, Any]:
     digest(expected_active_sha256, "local_model.expected_active")
     digest(archived_profile_sha256, "local_model.archived_profile")
+    if archived_profile_sha256 == expected_active_sha256:
+        raise BoundaryError("local_model", "runtime_generation_already_active")
     with instance_lock(config.state_dir / "instance.lock"):
         service = _admit(config)
         active, slot, _ = _active_path(service, profile_id)
