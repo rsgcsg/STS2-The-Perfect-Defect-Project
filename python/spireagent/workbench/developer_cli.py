@@ -118,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             "readiness",
             "download",
             "install-runtime",
+            "initialize-runtime-generation",
             "upgrade-runtime-generation",
             "rollback-runtime-generation",
             "start",
@@ -127,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
             "auto",
             "stop",
         ),
-        help="local model action; requires an open workbench",
+        help="local model action; generation changes require a stopped Workbench",
     )
     parser.add_argument("--credential-file", type=Path)
     parser.add_argument(

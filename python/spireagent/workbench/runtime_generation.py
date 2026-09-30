@@ -143,13 +143,14 @@ def _affected(service: Any, profile_id: str) -> list[str]:
 
 
 def _receipt(affected: list[str], profile_id: str, state: str, generation: str,
-             prior_sha256: str, intended_sha256: str,
+             prior_sha256: str | None, intended_sha256: str,
              observed_sha256: str | None) -> dict[str, Any]:
     return {"schema": SCHEMA, "status": "OK" if state == "switched" else "BLOCKED",
             "runtime_profile": profile_id,
             "switch_state": state,
             "activated": (True if state in {"switched", "new_after_io_error"} else
-                          False if state == "old_after_io_error" else "unknown"),
+                          False if state in {"old_after_io_error", "absent_after_io_error"}
+                          else "unknown"),
             "generation": generation,
             "previous_profile_sha256": prior_sha256,
             "intended_profile_sha256": intended_sha256,
@@ -157,21 +158,28 @@ def _receipt(affected: list[str], profile_id: str, state: str, generation: str,
             "affected_selections": affected}
 
 
-def upgrade(config: ProjectConfig, profile_id: str, *, expected_active_sha256: str,
-            new_profile_file: Path, expected_new_profile_sha256: str,
-            archive: Path) -> dict[str, Any]:
-    """Install a separate immutable generation, then switch the one active pin."""
-    digest(expected_active_sha256, "local_model.expected_active")
+def _check_initial_slot(slot: Path, generation: str) -> None:
+    """An absent active name permits only an empty slot or this exact orphan."""
+    _safe_directory(slot)
+    if not slot.exists():
+        return
+    for entry in slot.iterdir():
+        if entry.name != "generations" or entry.is_symlink():
+            raise BoundaryError("local_model", "runtime_initial_slot_unsafe")
+    generations = slot / "generations"
+    _safe_directory(generations)
+    if generations.exists() and any(
+            child.name != generation or child.is_symlink() or not child.is_dir()
+            for child in generations.iterdir()):
+        raise BoundaryError("local_model", "runtime_initial_slot_unsafe")
+
+
+def _prepare_new_generation(service: Any, profile_id: str, slot: Path, schema: str,
+                            new_profile_file: Path, expected_new_profile_sha256: str,
+                            archive: Path, *, initial: bool = False) -> tuple[str, bytes]:
+    """Verify one operator-selected package and stage or reverify its immutable slot."""
     digest(expected_new_profile_sha256, "local_model.expected_new")
-    with instance_lock(config.state_dir / "instance.lock"):
-        service = _admit(config)
-        active, slot, schema = _active_path(service, profile_id)
-        before = _read_active(active)
-        if hashlib.sha256(before).hexdigest() != expected_active_sha256:
-            raise BoundaryError("local_model", "runtime_active_profile_changed")
-        # The current pin must be structurally bound; explicit recovery may replace
-        # a damaged installed generation with a separately verified one.
-        service.text_runtime_profile(profile_id)
+    try:
         if new_profile_file.is_symlink() or not new_profile_file.is_file():
             raise BoundaryError("local_model", "runtime_new_profile_unsafe")
         raw = _ordinary_file(new_profile_file)
@@ -192,6 +200,8 @@ def upgrade(config: ProjectConfig, profile_id: str, *, expected_active_sha256: s
                                   {"memory": profile_id == "text-menu-m2-v1"}))
         generation = _profile_hash(profile)
         directory = slot / "generations" / generation
+        if initial:
+            _check_initial_slot(slot, generation)
         _safe_directory(slot)
         _safe_directory(slot / "generations")
         _safe_directory(directory)
@@ -218,6 +228,82 @@ def upgrade(config: ProjectConfig, profile_id: str, *, expected_active_sha256: s
                     shutil.rmtree(stage)
         after = (json.dumps({"schema": SCHEMA, "profile": profile,
                              "generation": generation}, sort_keys=True, indent=2) + "\n").encode()
+        return generation, after
+    except OSError as error:
+        raise BoundaryError("local_model", "runtime_generation_install_invalid") from error
+
+
+def _publish_initial(path: Path, after: bytes) -> tuple[str, str | None]:
+    """Create the active name exclusively; never reinterpret a racing writer as ours."""
+    temporary = path.with_name(".pending-" + uuid4().hex)
+    linked = False
+    io_failed = False
+    try:
+        _write_new_file(temporary, after)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise BoundaryError("local_model", "runtime_active_profile_exists") from None
+        linked = True
+        _sync_directory(path.parent)
+    except OSError:
+        io_failed = True
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            io_failed = True
+    if io_failed:
+        try:
+            current = _read_active(path)
+        except BoundaryError:
+            current = None
+        state = ("new_after_io_error" if linked and current == after else
+                 "absent_after_io_error" if current is None and not path.exists()
+                 and not path.is_symlink()
+                 else "unknown_after_io_error")
+        return state, hashlib.sha256(current).hexdigest() if current is not None else None
+    return "switched", hashlib.sha256(after).hexdigest()
+
+
+def initialize(config: ProjectConfig, profile_id: str, *, new_profile_file: Path,
+               expected_new_profile_sha256: str, archive: Path) -> dict[str, Any]:
+    """Explicit first generation: absent active name and exclusive publication."""
+    with instance_lock(config.state_dir / "instance.lock"):
+        service = _admit(config)
+        active, slot, schema = _active_path(service, profile_id)
+        if active.exists() or active.is_symlink():
+            raise BoundaryError("local_model", "runtime_active_profile_exists")
+        generation, after = _prepare_new_generation(
+            service, profile_id, slot, schema, new_profile_file,
+            expected_new_profile_sha256, archive, initial=True)
+        _safe_directory(active.parent)
+        active.parent.mkdir(parents=True, exist_ok=True)
+        affected = _affected(service, profile_id)
+        state, observed = _publish_initial(active, after)
+        receipt = _receipt(affected, profile_id, state, generation, None,
+                           hashlib.sha256(after).hexdigest(), observed)
+        receipt["origin"] = "operator_selected"
+        return receipt
+
+
+def upgrade(config: ProjectConfig, profile_id: str, *, expected_active_sha256: str,
+            new_profile_file: Path, expected_new_profile_sha256: str,
+            archive: Path) -> dict[str, Any]:
+    """Install a separate immutable generation, then switch the one active pin."""
+    digest(expected_active_sha256, "local_model.expected_active")
+    with instance_lock(config.state_dir / "instance.lock"):
+        service = _admit(config)
+        active, slot, schema = _active_path(service, profile_id)
+        before = _read_active(active)
+        if hashlib.sha256(before).hexdigest() != expected_active_sha256:
+            raise BoundaryError("local_model", "runtime_active_profile_changed")
+        # The current pin must be structurally bound; explicit recovery may replace
+        # a damaged installed generation with a separately verified one.
+        service.text_runtime_profile(profile_id)
+        generation, after = _prepare_new_generation(
+            service, profile_id, slot, schema, new_profile_file,
+            expected_new_profile_sha256, archive)
         if after == before:
             raise BoundaryError("local_model", "runtime_generation_already_active")
         affected = _affected(service, profile_id)
