@@ -63,6 +63,102 @@ export type AutonomyBudgetEndReason = "human_recovery" | "mode_changed" | "stopp
 export type AutonomyBudgetState = "inactive" | "active" | "exhausted";
 
 /** Identity only. A Manifest never carries a per-decision catalog or Agent Run mode. */
+export interface ManagedEnvironmentBinding {
+  schema: "sts2.policy-runtime/managed-environment-binding-1";
+  /** Digest of the private operator profile only; the profile bytes are not public evidence. */
+  profile_sha256: string;
+  input_profile: "text-menu-v2";
+  host_package_identity: {
+    package: "@rsgcsg/sts2-host-runtime";
+    version: string;
+    source_revision: string;
+    component_tree_revision: string;
+    release_asset_sha256: string;
+    package_content_sha256: string;
+  };
+  candidate_build: {
+    upstream_revision: string;
+    source_patch_sha256: string;
+    artifact_sha256: string;
+    artifact_mvid: string;
+    original_sts2_sha256: string;
+    runtime_sts2_sha256: string;
+  };
+}
+
+export interface ManagedEnvironmentStatus {
+  kind: "managed_text_v2";
+  binding_sha256: string;
+  service_instance_id: string;
+  runtime_instance_id: string;
+  environment_fingerprint: string;
+  game_continuity_id: string;
+  text_protocol_version: string;
+  input_profile: "text-menu-v2";
+  host_package_identity: ManagedEnvironmentBinding["host_package_identity"];
+  host_identity: { package_name: string; version: string; distribution_kind: "installed_package" | "git_checkout";
+    source_revision: string | null; component_tree_revision: string | null; source_digest_sha256: string };
+  candidate_build: ManagedEnvironmentBinding["candidate_build"];
+  game_version: string;
+  game_commit: string;
+  game_assembly_sha256: string;
+  episode_provenance: { verdict: "provenance_pass"; requested_seed: string; actual_seed: string; runtime_instance_id: string };
+}
+
+export interface ManagedCapabilities {
+  kind: "managed_text_v2";
+  protocol_version: string;
+  input_profile: "text-menu-v2";
+  snapshot_schema: "sts2.player-environment/text-menu-snapshot-2";
+  receipt_schema: "sts2.player-environment/text-menu-action-result-2";
+  interaction_kinds: string[];
+  observed_terminal_kinds: string[];
+  action_verbs: string[];
+  execution_available: boolean;
+  control_held: boolean;
+  control_owned: boolean;
+  tainted: boolean;
+  environment: ManagedEnvironmentStatus;
+}
+
+export interface ManagedControlConfirmation {
+  status: "held" | "released";
+  service_instance_id: string;
+  runtime_instance_id: string;
+  game_continuity_id: string;
+  control_epoch: string;
+}
+
+export interface ConnectorPolicyRequirements {
+  connector_protocol_version: string;
+  environment: {
+    host_kind: PlayerEnvironmentCapabilities["host"]["host_kind"];
+    connector_version: string;
+    connector_source_revision: string;
+    connector_artifact_sha256: string;
+    connector_module_version_id: string;
+    modset_status: string;
+    modset_fingerprint: string;
+    loaded_mod_ids: string[];
+  };
+  reads: string[];
+  whole_decision_admission: true;
+  candidate_order_digest: "sha256-json-bound-action-id-order" | "sha256-json-menu-action-id-order";
+  score_count_matches_candidate_count: true;
+  selected_index: true;
+  successor_required: true;
+}
+
+export interface ManagedPolicyRequirements {
+  environment: { kind: "managed_text_v2"; text_protocol_version: string; input_profile: "text-menu-v2" };
+  reads: [];
+  whole_decision_admission: true;
+  candidate_order_digest: "sha256-json-menu-action-id-order";
+  score_count_matches_candidate_count: true;
+  selected_index: true;
+  successor_required: true;
+}
+
 export interface PolicyManifest {
   schema: typeof POLICY_MANIFEST_SCHEMA;
   manifest_id: string;
@@ -70,25 +166,7 @@ export interface PolicyManifest {
   adapter: { id: string; version: string; protocol: "sts2.policy-runtime/decision-only-ndjson-1" | "sts2.policy-runtime/decision-only-ndjson-2" | "sts2.policy-runtime/decision-only-ndjson-3"; code_sha256: string };
   artifact: { id: string; path: string; sha256: string };
   representation: { id: string; version: string; input_schema: "sts2.player-environment/snapshot-1" | "sts2.player-environment/text-menu-snapshot-1" | "sts2.player-environment/text-menu-snapshot-2" };
-  requirements: {
-    connector_protocol_version: string;
-    environment: {
-      host_kind: PlayerEnvironmentCapabilities["host"]["host_kind"];
-      connector_version: string;
-      connector_source_revision: string;
-      connector_artifact_sha256: string;
-      connector_module_version_id: string;
-      modset_status: string;
-      modset_fingerprint: string;
-      loaded_mod_ids: string[];
-    };
-    reads: string[];
-    whole_decision_admission: true;
-    candidate_order_digest: "sha256-json-bound-action-id-order" | "sha256-json-menu-action-id-order";
-    score_count_matches_candidate_count: true;
-    selected_index: true;
-    successor_required: true;
-  };
+  requirements: ConnectorPolicyRequirements | ManagedPolicyRequirements;
   support: { game_versions: string[]; game_commits: string[]; interaction_kinds: string[]; action_verbs: string[] };
   adapter_config: Record<string, unknown>;
   claims: { full_run: boolean; selector: boolean; catalog_filtered: false; creates_action_authority: false; creates_native_operands: false };
@@ -125,6 +203,7 @@ export interface AgentRunManifest {
   mode: RuntimeMode;
   tainted: boolean;
   append_only: true;
+  environment_binding?: ManagedEnvironmentBinding;
 }
 
 export interface DecisionBundle { observation: PlayerEnvironmentSnapshot; reads: PlayerEnvironmentReadResponse[] }
@@ -209,11 +288,11 @@ export interface PolicyPortV3DecisionResponse { schema: typeof POLICY_PORT_V3_SC
 export interface PolicyPortV3ErrorResponse { schema: typeof POLICY_PORT_V3_SCHEMA; message_type: "error"; request_id: string; error: { code: string; message: string } }
 
 export interface PolicyConnector {
-  capabilities(options?: { fresh?: boolean; inputProfile?: TextInputProfile }): Promise<PlayerEnvironmentCapabilities | TextMenuCapabilities | TextMenuV2Capabilities>;
+  capabilities(options?: { fresh?: boolean; inputProfile?: TextInputProfile }): Promise<PlayerEnvironmentCapabilities | TextMenuCapabilities | TextMenuV2Capabilities | ManagedCapabilities>;
   observeBundle(requiredReadKinds: readonly string[], inputProfile?: TextInputProfile): Promise<AnyDecisionBundle>;
   observeTextMenuContext?(inputProfile?: TextInputProfile): Promise<TextObservationContext>;
-  acquireController(): Promise<void>;
-  releaseController(): Promise<void>;
+  acquireController(): Promise<void | ManagedControlConfirmation>;
+  releaseController(): Promise<void | ManagedControlConfirmation>;
   submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string; inputProfile?: TextInputProfile; previousSnapshot?: TextMenuV2Snapshot }): Promise<DecisionResult>;
 }
 
@@ -230,7 +309,7 @@ export interface RuntimeStatus {
   run_id: string;
   lifecycle: "running" | "stopped";
   mode: RuntimeMode;
-  controller: "held" | "released";
+  controller: "held" | "released" | "unknown";
   autonomy_budget: {
     state: AutonomyBudgetState;
     max_submissions: number;
@@ -267,7 +346,7 @@ export interface RuntimeStatus {
     modset_status: string;
     modset_fingerprint: string;
     loaded_mod_ids: string[];
-  } | null;
+  } | ManagedEnvironmentStatus | null;
 }
 
 export type TickResult =
@@ -318,8 +397,19 @@ export function validatePolicyManifest(value: unknown): PolicyManifest {
   const adapter = object(root.adapter, "manifest.adapter"); exactKeys(adapter, ["id", "version", "protocol", "code_sha256"]); nonEmpty(adapter, "id"); nonEmpty(adapter, "version"); enumField(adapter, "protocol", ["sts2.policy-runtime/decision-only-ndjson-1", "sts2.policy-runtime/decision-only-ndjson-2", "sts2.policy-runtime/decision-only-ndjson-3"]); sha256Field(adapter, "code_sha256");
   const artifact = object(root.artifact, "manifest.artifact"); exactKeys(artifact, ["id", "path", "sha256"]); nonEmpty(artifact, "id"); nonEmpty(artifact, "path"); sha256Field(artifact, "sha256");
   const representation = object(root.representation, "manifest.representation"); exactKeys(representation, ["id", "version", "input_schema"]); nonEmpty(representation, "id"); nonEmpty(representation, "version"); enumField(representation, "input_schema", ["sts2.player-environment/snapshot-1", "sts2.player-environment/text-menu-snapshot-1", "sts2.player-environment/text-menu-snapshot-2"]);
-  const requirements = object(root.requirements, "manifest.requirements"); exactKeys(requirements, ["connector_protocol_version", "environment", "reads", "whole_decision_admission", "candidate_order_digest", "score_count_matches_candidate_count", "selected_index", "successor_required"]); nonEmpty(requirements, "connector_protocol_version");
-  const environment = object(requirements.environment, "manifest.requirements.environment"); exactKeys(environment, ["host_kind", "connector_version", "connector_source_revision", "connector_artifact_sha256", "connector_module_version_id", "modset_status", "modset_fingerprint", "loaded_mod_ids"]); enumField(environment, "host_kind", ["live_ui", "headless", "replay", "test"]); nonEmpty(environment, "connector_version"); nonEmpty(environment, "connector_source_revision"); sha256Field(environment, "connector_artifact_sha256"); nonEmpty(environment, "connector_module_version_id"); nonEmpty(environment, "modset_status"); nonEmpty(environment, "modset_fingerprint"); stringArray(environment, "loaded_mod_ids"); uniqueStringArray(environment, "loaded_mod_ids");
+  const requirements = object(root.requirements, "manifest.requirements");
+  const environment = object(requirements.environment, "manifest.requirements.environment");
+  const managed = environment.kind === "managed_text_v2";
+  if (managed) {
+    exactKeys(requirements, ["environment", "reads", "whole_decision_admission", "candidate_order_digest", "score_count_matches_candidate_count", "selected_index", "successor_required"]);
+    exactKeys(environment, ["kind", "text_protocol_version", "input_profile"]);
+    nonEmpty(environment, "text_protocol_version"); literal(environment, "input_profile", "text-menu-v2");
+    literal(representation, "input_schema", "sts2.player-environment/text-menu-snapshot-2");
+    literal(adapter, "protocol", "sts2.policy-runtime/decision-only-ndjson-3");
+  } else {
+    exactKeys(requirements, ["connector_protocol_version", "environment", "reads", "whole_decision_admission", "candidate_order_digest", "score_count_matches_candidate_count", "selected_index", "successor_required"]); nonEmpty(requirements, "connector_protocol_version");
+    exactKeys(environment, ["host_kind", "connector_version", "connector_source_revision", "connector_artifact_sha256", "connector_module_version_id", "modset_status", "modset_fingerprint", "loaded_mod_ids"]); enumField(environment, "host_kind", ["live_ui", "headless", "replay", "test"]); nonEmpty(environment, "connector_version"); nonEmpty(environment, "connector_source_revision"); sha256Field(environment, "connector_artifact_sha256"); nonEmpty(environment, "connector_module_version_id"); nonEmpty(environment, "modset_status"); nonEmpty(environment, "modset_fingerprint"); stringArray(environment, "loaded_mod_ids"); uniqueStringArray(environment, "loaded_mod_ids");
+  }
   stringArray(requirements, "reads"); uniqueStringArray(requirements, "reads"); literal(requirements, "whole_decision_admission", true); literal(requirements, "candidate_order_digest", representation.input_schema !== "sts2.player-environment/snapshot-1" ? "sha256-json-menu-action-id-order" : "sha256-json-bound-action-id-order"); literal(requirements, "score_count_matches_candidate_count", true); literal(requirements, "selected_index", true); literal(requirements, "successor_required", true);
   if (representation.input_schema !== "sts2.player-environment/snapshot-1" && (requirements.reads as string[]).length !== 0) throw new Error("text menu profile has no Reads");
   if (adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-1" && representation.input_schema === "sts2.player-environment/snapshot-1") throw new Error("stateful policy port requires text menu input");
@@ -328,6 +418,25 @@ export function validatePolicyManifest(value: unknown): PolicyManifest {
   object(root.adapter_config, "manifest.adapter_config");
   const claims = object(root.claims, "manifest.claims"); exactKeys(claims, ["full_run", "selector", "catalog_filtered", "creates_action_authority", "creates_native_operands"]); booleanField(claims, "full_run"); booleanField(claims, "selector"); literal(claims, "catalog_filtered", false); literal(claims, "creates_action_authority", false); literal(claims, "creates_native_operands", false);
   return root as unknown as PolicyManifest;
+}
+
+export function validateManagedEnvironmentBinding(value: unknown): ManagedEnvironmentBinding {
+  const binding = object(value, "Managed Environment Binding");
+  exactKeys(binding, ["schema", "profile_sha256", "input_profile", "host_package_identity", "candidate_build"]);
+  literal(binding, "schema", "sts2.policy-runtime/managed-environment-binding-1");
+  sha256Field(binding, "profile_sha256");
+  literal(binding, "input_profile", "text-menu-v2");
+  const pin = object(binding.host_package_identity, "binding.host_package_identity");
+  exactKeys(pin, ["package", "version", "source_revision", "component_tree_revision", "release_asset_sha256", "package_content_sha256"]);
+  literal(pin, "package", "@rsgcsg/sts2-host-runtime");
+  nonEmpty(pin, "version");
+  for (const key of ["source_revision", "component_tree_revision"] as const) hexField(pin, key, 40);
+  for (const key of ["release_asset_sha256", "package_content_sha256"] as const) sha256Field(pin, key);
+  const build = object(binding.candidate_build, "binding.candidate_build");
+  exactKeys(build, ["upstream_revision", "source_patch_sha256", "artifact_sha256", "artifact_mvid", "original_sts2_sha256", "runtime_sts2_sha256"]);
+  nonEmpty(build, "upstream_revision"); nonEmpty(build, "artifact_mvid");
+  for (const key of ["source_patch_sha256", "artifact_sha256", "original_sts2_sha256", "runtime_sts2_sha256"] as const) sha256Field(build, key);
+  return binding as unknown as ManagedEnvironmentBinding;
 }
 
 export function validateAdapterDecision(value: unknown, expectedDigest: string, expectedCount: number): AdapterDecision {
@@ -354,6 +463,7 @@ function literal(value: Record<string, unknown>, key: string, expected: unknown)
 function enumField(value: Record<string, unknown>, key: string, expected: readonly string[]): void { if (typeof value[key] !== "string" || !expected.includes(value[key])) throw new Error(`${key} has an invalid value`); }
 function nonEmpty(value: Record<string, unknown>, key: string): void { if (typeof value[key] !== "string" || value[key].length === 0) throw new Error(`${key} must be a non-empty string`); }
 function sha256Field(value: Record<string, unknown>, key: string): void { if (typeof value[key] !== "string" || !/^[a-f0-9]{64}$/u.test(value[key])) throw new Error(`${key} must be a lowercase SHA-256`); }
+function hexField(value: Record<string, unknown>, key: string, length: number): void { if (typeof value[key] !== "string" || value[key].length !== length || !/^[a-f0-9]+$/u.test(value[key])) throw new Error(`${key} must be lowercase hex`); }
 function stringArray(value: Record<string, unknown>, key: string): void { if (!Array.isArray(value[key]) || value[key].some((item) => typeof item !== "string" || item.length === 0)) throw new Error(`${key} must be an array of non-empty strings`); }
 function uniqueStringArray(value: Record<string, unknown>, key: string): void { const items = value[key] as string[]; if (new Set(items).size !== items.length) throw new Error(`${key} must not contain duplicates`); }
 function nonEmptyUniqueStringArray(value: Record<string, unknown>, key: string): void { stringArray(value, key); const items = value[key] as string[]; if (items.length === 0) throw new Error(`${key} must not be empty`); uniqueStringArray(value, key); }

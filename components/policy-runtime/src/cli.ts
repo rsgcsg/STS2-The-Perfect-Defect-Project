@@ -9,6 +9,7 @@ import { PlayerEnvironmentRestClient } from "@rsgcsg/sts2-connector-client";
 import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, validatePolicyManifest, type AutonomyBudgetConfig, type RuntimeMode } from "./contracts.js";
 import { ConnectorPolicyClient } from "./connector.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
+import { ManagedServicePolicyClient, type ManagedTarget } from "./managed.js";
 import { NdjsonPolicyPort } from "./policy-port.js";
 import { PolicyRuntime } from "./runtime.js";
 import { startPolicyRuntimeHttpServer } from "./server.js";
@@ -19,6 +20,8 @@ interface CliOptions {
   adapterArgs: string[];
   adapterCwd?: string;
   connectorEndpoint: string;
+  connectorEndpointExplicit: boolean;
+  managed?: { bindingPath: string; attachmentPath: string; target: ManagedTarget };
   listenPort: number;
   evidenceRoot: string;
   mode: RuntimeMode;
@@ -29,6 +32,9 @@ async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const manifestPath = resolve(options.manifestPath);
   const manifest = validatePolicyManifest(JSON.parse(await readFile(manifestPath, "utf8")));
+  const isManaged = "kind" in manifest.requirements.environment;
+  if (isManaged !== Boolean(options.managed)) throw new Error("Managed manifest requires exact Managed attachment and binding arguments");
+  if (isManaged && options.connectorEndpointExplicit) throw new Error("Managed Runtime cannot use a Connector endpoint");
   const artifactPath = isAbsolute(manifest.artifact.path)
     ? manifest.artifact.path
     : resolve(dirname(manifestPath), manifest.artifact.path);
@@ -39,6 +45,9 @@ async function main(): Promise<void> {
   if (artifactSha256 !== manifest.artifact.sha256) throw new Error("policy artifact SHA-256 differs from Policy Manifest");
   const policyManifestSha256 = createHash("sha256").update(canonicalJson(manifest)).digest("hex");
   const runtimeCodeSha256 = await codeDigest(dirname(fileURLToPath(import.meta.url)));
+  const managedClient = options.managed
+    ? await ManagedServicePolicyClient.attach(options.managed.bindingPath, options.managed.attachmentPath, options.managed.target)
+    : undefined;
 
   await mkdir(resolve(options.evidenceRoot), { recursive: true });
   const evidence = await AgentRunEvidence.create({
@@ -46,7 +55,8 @@ async function main(): Promise<void> {
     policyManifest: manifest,
     runtimeVersion: POLICY_RUNTIME_VERSION,
     runtimeCodeSha256,
-    mode: options.mode
+    mode: options.mode,
+    ...(managedClient ? { managedEnvironmentBinding: managedClient.binding } : {})
   });
   let port: NdjsonPolicyPort | undefined;
   let runtime: PolicyRuntime | undefined;
@@ -71,7 +81,7 @@ async function main(): Promise<void> {
     });
     const adapter = await port.attest(manifest.adapter);
     await evidence.attestAdapter(adapter);
-    const connector = new ConnectorPolicyClient(
+    const connector = managedClient ?? new ConnectorPolicyClient(
       new PlayerEnvironmentRestClient(options.connectorEndpoint, 5_000),
       { productVersion: POLICY_RUNTIME_VERSION }
     );
@@ -90,6 +100,7 @@ async function main(): Promise<void> {
       autoBudget: options.autoBudget,
       runId: evidence.runId,
       evidence,
+      ...(managedClient ? { managedBindingSha256: managedClient.bindingSha256 } : {}),
       runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: runtimeCodeSha256 }
     });
     service = await startPolicyRuntimeHttpServer(runtime, {
@@ -118,7 +129,13 @@ async function main(): Promise<void> {
     runtime_version: POLICY_RUNTIME_VERSION,
     runtime_code_sha256: runtimeCodeSha256,
     mode: options.mode,
-    autonomy_budget: options.autoBudget
+    autonomy_budget: options.autoBudget,
+    ...(managedClient ? { managed_environment: {
+      binding_sha256: managedClient.bindingSha256,
+      service_instance_id: managedClient.initialEnvironment.service_instance_id,
+      runtime_instance_id: managedClient.initialEnvironment.runtime_instance_id,
+      game_continuity_id: managedClient.initialEnvironment.game_continuity_id
+    } } : {})
   })}\n`);
   service.startDriving();
 
@@ -143,7 +160,7 @@ function parseArgs(args: string[]): CliOptions {
     if (!value) throw new Error(`${key} requires a value`);
     index += 1;
     if (key === "--adapter-arg") adapterArgs.push(value);
-    else if (["--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms"].includes(key)) values.set(key, value);
+    else if (["--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
     else throw new Error(`unknown argument: ${key}`);
   }
   const manifestPath = required(values, "--manifest");
@@ -160,12 +177,24 @@ function parseArgs(args: string[]): CliOptions {
     maxPolicyCalls: positiveOption(values, "--max-policy-calls", DEFAULT_AUTONOMY_BUDGET.maxPolicyCalls),
     deadlineMs: positiveOption(values, "--auto-deadline-ms", DEFAULT_AUTONOMY_BUDGET.deadlineMs)
   };
+  const managedKeys = ["--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"];
+  const managed = managedKeys.some((key) => values.has(key)) ? {
+    bindingPath: required(values, "--managed-binding"),
+    attachmentPath: required(values, "--managed-attachment"),
+    target: {
+      serviceInstanceId: required(values, "--managed-expected-service-instance-id"),
+      runtimeInstanceId: required(values, "--managed-expected-runtime-instance-id"),
+      gameContinuityId: required(values, "--managed-expected-game-continuity-id")
+    }
+  } : undefined;
   return {
     manifestPath,
     adapterCommand,
     adapterArgs,
     adapterCwd: values.get("--adapter-cwd"),
     connectorEndpoint,
+    connectorEndpointExplicit: values.has("--connector-endpoint"),
+    managed,
     listenPort,
     evidenceRoot: values.get("--evidence-root") ?? ".local/evidence/agent-runs",
     mode,
