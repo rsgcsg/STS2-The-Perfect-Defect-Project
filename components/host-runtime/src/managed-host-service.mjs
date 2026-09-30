@@ -225,6 +225,17 @@ export async function startManagedHostService(started, {
   const error = (response, status, code) => json(response, status, {
     schema: ERROR_SCHEMA, service_instance_id: serviceInstanceId, error: code
   });
+  const managerStatus = () => {
+    const status = driver.status();
+    const control = status.control;
+    if (heldClaim != null && status.control_held && control != null
+      && control.control_epoch === heldClaim.epoch
+      && control.runtime_instance_id === heldClaim.runtimeInstanceId
+      && control.game_continuity_id === heldClaim.gameContinuityId) {
+      status.control = { ...control, claim_request_id: heldClaim.requestId };
+    }
+    return status;
+  };
   const requireService = (request, response) => {
     if (headerCount(request, "x-sts2-managed-service-id") !== 1
       || request.headers["x-sts2-managed-service-id"] !== serviceInstanceId) {
@@ -247,7 +258,7 @@ export async function startManagedHostService(started, {
       if (request.method === "GET" && request.url === "/v1/admin/status") {
         if (role !== "manager") { error(response, 403, "managed_service_manager_required"); return; }
         json(response, 200, { schema: READY_SCHEMA, service_instance_id: serviceInstanceId,
-          status: driver.status() });
+          status: managerStatus() });
         return;
       }
       if (request.method !== "POST" || ![
@@ -286,6 +297,7 @@ export async function startManagedHostService(started, {
         if (command === "claim_control") {
           heldClaim = {
             token: value.control_token, epoch: value.control_epoch,
+            requestId: body.request_id,
             runtimeInstanceId: value.runtime_instance_id,
             gameContinuityId: value.game_continuity_id
           };

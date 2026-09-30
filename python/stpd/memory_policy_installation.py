@@ -13,6 +13,7 @@ from spireagent.policy_files import _inside, _object_file
 
 from .fullrun.confirmed_interaction import (
     HISTORY_PROFILES,
+    V2_HISTORY_INPUT_PROFILE,
 )
 from .fullrun.text_menu_inputs import INPUT_PROFILE, V2_INPUT_PROFILE
 from .policy.memory_export import MANIFEST_NAME, validate_memory_package
@@ -21,6 +22,7 @@ from .token_policy_installation import _manifest_artifact_path
 CONFIG_SCHEMA = "stpd/m2-policy-config-v1"
 V2_CONFIG_SCHEMA = "stpd/m2-policy-config-v2"
 HISTORY_CONFIG_SCHEMA = "stpd/m2-policy-config-v3"
+MANAGED_HISTORY_CONFIG_SCHEMA = "stpd/m2-policy-config-managed-v1"
 PROTOCOL = "sts2.policy-runtime/decision-only-ndjson-2"
 HISTORY_PROTOCOL = "sts2.policy-runtime/decision-only-ndjson-3"
 ADAPTER = "stpd-m2-decision-adapter"
@@ -31,9 +33,11 @@ REQUIREMENT_FIELDS = {"connector_protocol_version", "environment", "reads",
                       "whole_decision_admission", "candidate_order_digest",
                       "score_count_matches_candidate_count", "selected_index",
                       "successor_required"}
+MANAGED_REQUIREMENT_FIELDS = REQUIREMENT_FIELDS - {"connector_protocol_version"}
 ENVIRONMENT_FIELDS = {"host_kind", "connector_version", "connector_source_revision",
                       "connector_artifact_sha256", "connector_module_version_id",
                       "modset_status", "modset_fingerprint", "loaded_mod_ids"}
+MANAGED_ENVIRONMENT_FIELDS = {"kind", "text_protocol_version", "input_profile"}
 
 
 def input_profile_for_config(value: object) -> str:
@@ -53,6 +57,10 @@ def input_profile_for_config(value: object) -> str:
         profile = config["input_profile"]
         if isinstance(profile, str) and profile in HISTORY_PROFILES:
             return profile
+    if value.get("schema") == MANAGED_HISTORY_CONFIG_SCHEMA:
+        config = object_fields(value, fields | {"input_profile"}, "m2_policy.config")
+        if config["input_profile"] == V2_HISTORY_INPUT_PROFILE:
+            return V2_HISTORY_INPUT_PROFILE
     raise BoundaryError("m2_policy", "unsupported_config")
 
 
@@ -74,25 +82,33 @@ def _protocol(input_profile: str) -> str:
     return HISTORY_PROTOCOL if input_profile in HISTORY_PROFILES else PROTOCOL
 
 
-def _binding_facts(policy: object, requirements: object, support: object) -> None:
+def _binding_facts(policy: object, requirements: object, support: object, *,
+                   managed: bool = False) -> None:
     policy = object_fields(policy, {"id", "version", "provider", "architecture"},
                            "m2_policy.policy")
-    requirements = object_fields(requirements, REQUIREMENT_FIELDS,
+    requirements = object_fields(requirements, (MANAGED_REQUIREMENT_FIELDS if managed else
+                                                REQUIREMENT_FIELDS),
                                  "m2_policy.requirements")
-    environment = object_fields(requirements["environment"], ENVIRONMENT_FIELDS,
+    environment = object_fields(requirements["environment"],
+                                (MANAGED_ENVIRONMENT_FIELDS if managed else
+                                 ENVIRONMENT_FIELDS),
                                 "m2_policy.environment")
     support = object_fields(support, {"game_versions", "game_commits", "interaction_kinds",
                                       "action_verbs"}, "m2_policy.support")
     if (any(not isinstance(item, str) or not item for item in policy.values())
-            or environment["host_kind"] not in {"live_ui", "headless", "replay", "test"}
-            or any(not isinstance(environment[key], str) or not environment[key]
-                   for key in ("connector_version", "connector_source_revision",
-                               "connector_module_version_id", "modset_status",
-                               "modset_fingerprint"))
-            or not isinstance(environment["connector_artifact_sha256"], str)
-            or len(environment["connector_artifact_sha256"]) != 64
-            or not isinstance(environment["loaded_mod_ids"], list)
-            or any(not isinstance(item, str) for item in environment["loaded_mod_ids"])
+            or (managed and environment != {
+                "kind": "managed_text_v2", "text_protocol_version": "1.0.0",
+                "input_profile": V2_INPUT_PROFILE})
+            or (not managed and (
+                environment["host_kind"] not in {"live_ui", "headless", "replay", "test"}
+                or any(not isinstance(environment[key], str) or not environment[key]
+                       for key in ("connector_version", "connector_source_revision",
+                                   "connector_module_version_id", "modset_status",
+                                   "modset_fingerprint"))
+                or not isinstance(environment["connector_artifact_sha256"], str)
+                or len(environment["connector_artifact_sha256"]) != 64
+                or not isinstance(environment["loaded_mod_ids"], list)
+                or any(not isinstance(item, str) for item in environment["loaded_mod_ids"])))
             or any(not isinstance(support[key], list) or not support[key]
                    or any(not isinstance(item, str) or not item for item in support[key])
                    for key in support)
@@ -118,12 +134,12 @@ def code_digest(root: Path) -> str:
     return hashlib.sha256(canonical_json(rows).encode()).hexdigest()
 
 
-def bind_memory_export(root: Path, export_path: Path, config_path: Path,
-                       manifest_path: Path, *, manifest_id: str,
-                       policy: dict[str, Any], requirements: dict[str, Any],
-                       support: dict[str, Any], binding_root: Path | None = None,
-                       input_profile: str = INPUT_PROFILE,
-                       ) -> tuple[dict[str, Any], dict[str, Any]]:
+def _bind_memory_export(root: Path, export_path: Path, config_path: Path,
+                        manifest_path: Path, *, manifest_id: str,
+                        policy: dict[str, Any], requirements: dict[str, Any],
+                        support: dict[str, Any], binding_root: Path | None,
+                        input_profile: str, managed: bool,
+                        ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Bind caller-owned environment facts to an integrity-checked M2 package."""
     root, export_path = root.resolve(), export_path.resolve()
     binding_root = (binding_root or root).resolve()
@@ -133,9 +149,12 @@ def bind_memory_export(root: Path, export_path: Path, config_path: Path,
             or config_path == manifest_path or config_path.exists() or manifest_path.exists()
             or not isinstance(manifest_id, str) or not manifest_id):
         raise BoundaryError("m2_policy", "invalid_binding_destination")
-    _binding_facts(policy, requirements, support)
+    if managed and input_profile != V2_HISTORY_INPUT_PROFILE:
+        raise BoundaryError("m2_policy", "unsupported_managed_input_profile")
+    _binding_facts(policy, requirements, support, managed=managed)
     package, _, _, _ = validate_memory_package(export_path, input_profile=input_profile)
-    config_schema = (HISTORY_CONFIG_SCHEMA if input_profile in HISTORY_PROFILES else
+    config_schema = (MANAGED_HISTORY_CONFIG_SCHEMA if managed else
+                     HISTORY_CONFIG_SCHEMA if input_profile in HISTORY_PROFILES else
                      V2_CONFIG_SCHEMA if input_profile == V2_INPUT_PROFILE else CONFIG_SCHEMA)
     config = {"schema": config_schema, "export_path": str(export_path),
               # The package validator requires canonical bytes. Pin the bytes
@@ -173,6 +192,31 @@ def bind_memory_export(root: Path, export_path: Path, config_path: Path,
         manifest_path.unlink(missing_ok=True)
         raise
     return config, manifest
+
+
+def bind_memory_export(root: Path, export_path: Path, config_path: Path,
+                       manifest_path: Path, *, manifest_id: str,
+                       policy: dict[str, Any], requirements: dict[str, Any],
+                       support: dict[str, Any], binding_root: Path | None = None,
+                       input_profile: str = INPUT_PROFILE,
+                       ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Retain the exact Connector-bound Native policy contract."""
+    return _bind_memory_export(
+        root, export_path, config_path, manifest_path, manifest_id=manifest_id,
+        policy=policy, requirements=requirements, support=support,
+        binding_root=binding_root, input_profile=input_profile, managed=False)
+
+
+def bind_managed_memory_export(root: Path, export_path: Path, config_path: Path,
+                               manifest_path: Path, *, manifest_id: str,
+                               policy: dict[str, Any], requirements: dict[str, Any],
+                               support: dict[str, Any], binding_root: Path | None = None,
+                               ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Bind the same verified v2 history export to Managed text requirements."""
+    return _bind_memory_export(
+        root, export_path, config_path, manifest_path, manifest_id=manifest_id,
+        policy=policy, requirements=requirements, support=support,
+        binding_root=binding_root, input_profile=V2_HISTORY_INPUT_PROFILE, managed=True)
 
 
 def validate(root: Path, config_path: Path, manifest_path: Path, *,
@@ -219,7 +263,8 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
             or manifest.get("representation") != _representation(package)
             or manifest.get("claims") != CLAIMS):
         raise BoundaryError("m2_policy", "trusted_policy_identity_drift")
-    _binding_facts(manifest["policy"], manifest["requirements"], manifest["support"])
+    _binding_facts(manifest["policy"], manifest["requirements"], manifest["support"],
+                   managed=config["schema"] == MANAGED_HISTORY_CONFIG_SCHEMA)
     return config, manifest
 
 

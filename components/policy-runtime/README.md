@@ -1,6 +1,6 @@
 # Policy Runtime
 
-The Policy Runtime is a model-neutral Connector consumer. It owns controller
+The Policy Runtime is a model-neutral Connector or Managed Host consumer. It owns controller
 lifecycle, Human/Shadow/One-Step/Auto modes, stale refresh, delivery safety,
 stable-successor polling, and Agent-run evidence. It does not own game legality,
 model inference, or native operands.
@@ -33,10 +33,37 @@ navigation or native delivery resets that count. Other unapplied results,
 unknown delivery, evidence or release failure, and cancellation do not continue
 Auto. Text-menu-v1 retains its prior handoff on `not_applied`.
 
-Before observation, each Manifest must exactly pin the Connector environment:
+Before observation, each Connector Manifest must exactly pin the Connector environment:
 host kind, Connector version/source revision/artifact SHA-256/module version ID,
 Modset status/fingerprint, and the complete ordered list of loaded Mod IDs. Any
 field drift fails closed before Snapshot observation or policy scoring.
+
+A separate, explicit `managed_text_v2` Manifest branch supports the same v2
+snapshot, complete menu, port-3 confirmed-interaction, finite budget, and
+Agent-run evidence without claiming Connector MVID, Modset, or HTTP lease
+facts. Its model requirements declare text protocol/profile and game support;
+they do not contain a Host package, service, game continuity ID, or seed. A
+separately sealed `managed-environment-binding-1` selects one trusted local
+Host package and candidate build. The operator application verifies its private
+profile and installed package before writing this public binding. Runtime
+checks the binding against the attached Host service's declared identity and
+the explicit selected service/runtime/game-continuity target, then records the
+binding and actual admission in the Agent run. Neither Runtime nor Evidence
+independently re-attests Host archive bytes from the service's JSON identity.
+An installed Host truthfully reports `source_revision` and
+`component_tree_revision` as null; the binding retains the application-verified
+release provenance. The Host's source digest uses a different file inventory
+from the application package-content digest and is recorded separately.
+The binding's `profile_sha256` is an opaque pointer to the private profile,
+not proof that Evidence saw those profile bytes.
+
+The Host owns the one Managed game process and the only native stdin consumer.
+Runtime attaches as a client, observes the Host's complete v2 menu, and uses
+the Host's claim, text-submit, and release confirmations. A stale selected
+episode cannot become a new run target. Stop or Human handoff releases Runtime's
+claim but does not close the Host or end its game. A lost or damaged claim or
+release confirmation leaves controller ownership unknown and the run tainted;
+only the Host manager can recover it. Unknown native delivery is never retried.
 
 For a text-menu Auto page that fails whole-decision admission after exact
 environment and profile checks, Runtime records one
@@ -107,7 +134,7 @@ cancellation-event write taints the Agent Run because its evidence is incomplete
 
 ## Standalone consumer package
 
-Version `0.1.0-rc.15` provides a candidate package for external consumers. Build
+Version `0.1.0-rc.16` provides a candidate package for external consumers. Build
 from a committed component checkout with the checked-in lockfile:
 
 ```bash
@@ -116,7 +143,7 @@ npm --prefix components/policy-runtime run check
 npm --prefix components/policy-runtime run package -- --output /absolute/package-output
 ```
 
-The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.15.tgz`,
+The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.16.tgz`,
 `policy-runtime-package.json` and `checksums.sha256`. It requires committed
 component source and does not publish anything. The package contains compiled
 JavaScript/declarations, CLI entries, license, a component identity record and
@@ -157,6 +184,13 @@ node components/policy-runtime/dist/cli.js \
 Arguments are passed literally. If a child argument begins with `--`, use the
 `--adapter-arg=value` form. The service defaults to Connector
 `http://127.0.0.1:15526` and Policy Runtime `http://127.0.0.1:15527`.
+For a Managed Manifest, the caller must supply `--managed-binding`,
+`--managed-attachment`, `--managed-expected-service-instance-id`,
+`--managed-expected-runtime-instance-id`, and
+`--managed-expected-game-continuity-id`. These select one existing Host-owned
+service and episode; the Managed CLI rejects `--connector-endpoint`. Its
+`startup-1` includes the verified binding digest and selected service/runtime/
+continuity IDs without a token, private path, or seed.
 
 The command fails before startup when the policy artifact is absent, its
 SHA-256 differs from the Policy Manifest, or the adapter's bounded code digest

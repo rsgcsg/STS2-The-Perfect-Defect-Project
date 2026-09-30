@@ -35,7 +35,11 @@ from stpd.fullrun.observed_input_sequence import (
     _agent_view,
     load_observed_input_view,
 )
-from stpd.memory_policy_installation import bind_memory_export, validate
+from stpd.memory_policy_installation import (
+    bind_managed_memory_export,
+    bind_memory_export,
+    validate,
+)
 from stpd.models.dsimple_memory import ExperimentalDSimpleM2
 from stpd.models.token_core import ScratchShape, ScratchTokenCore
 from stpd.policy.memory_export import (
@@ -601,3 +605,63 @@ def test_history_v2_checkpoint_package_and_old_profile_rejection(tmp_path: Path,
     ready, decision = map(json.loads, stream.getvalue().splitlines())
     assert ready["schema"] == decision["schema"] == HISTORY_PORT_SCHEMA
     assert decision["completion"]["previous_interaction_request_id"] is None
+
+    # The same verified export bytes admit a separate Managed policy manifest.
+    # In production the caller must supply support from the public environment
+    # contract; these scoped values belong only to this synthetic fixture.
+    managed_config_path = bindings / "managed-config.json"
+    managed_manifest_path = bindings / "managed-manifest.json"
+    managed_requirements = {
+        "environment": {"kind": "managed_text_v2", "text_protocol_version": "1.0.0",
+                        "input_profile": "text-menu-v2"},
+        "reads": [], "candidate_order_digest": "sha256-json-menu-action-id-order",
+        "whole_decision_admission": True, "score_count_matches_candidate_count": True,
+        "selected_index": True, "successor_required": True,
+    }
+    managed_config, managed_manifest = bind_managed_memory_export(
+        tmp_path, directory, managed_config_path, managed_manifest_path,
+        binding_root=bindings, manifest_id="managed-history-port3",
+        policy={"id": "managed-history-port3", "version": "1", "provider": "test",
+                "architecture": "stage1a.dsimple.m2.k1.confirmed-interaction.v2"},
+        requirements=managed_requirements, support=support)
+    assert managed_config["schema"] == "stpd/m2-policy-config-managed-v1"
+    assert managed_config["export_path"] == config_binding["export_path"]
+    assert managed_config["export_manifest_sha256"] == config_binding["export_manifest_sha256"]
+    assert managed_config["model_id"] == config_binding["model_id"]
+    assert managed_manifest["representation"] == manifest["representation"]
+    assert managed_manifest["adapter"]["protocol"] == manifest["adapter"]["protocol"]
+    assert validate(tmp_path, managed_config_path, managed_manifest_path,
+                    binding_root=bindings) == (managed_config, managed_manifest)
+    managed_adapter = MemoryPolicyAdapter(managed_config_path, managed_manifest_path,
+                                          binding_root=bindings)
+    assert managed_adapter.port_schema == HISTORY_PORT_SCHEMA
+    with pytest.raises(BoundaryError, match="request_identity_mismatch"):
+        managed_adapter.decide(first_request)
+    managed_request = {**first_request, "manifest": managed_manifest}
+    managed_output, managed_completion = managed_adapter.decide(managed_request)
+    assert len(managed_output["scores"]) == len(first_public.action_ids)
+    assert managed_completion["previous_interaction_request_id"] is None
+    with pytest.raises(BoundaryError, match="request_identity_mismatch"):
+        adapter.decide(managed_request)
+
+    for changed_requirements in (
+        {**managed_requirements, "connector_protocol_version": "1.0.0"},
+        {**managed_requirements, "environment": {
+            **managed_requirements["environment"], "text_protocol_version": "2.0.0"}},
+        {**managed_requirements, "environment": {
+            **managed_requirements["environment"], "host_kind": "headless"}},
+    ):
+        managed_manifest_path.write_bytes(json_bytes({
+            **managed_manifest, "requirements": changed_requirements}))
+        with pytest.raises(BoundaryError):
+            validate(tmp_path, managed_config_path, managed_manifest_path,
+                     binding_root=bindings)
+    managed_manifest_path.write_bytes(json_bytes(managed_manifest))
+    manifest_path.write_bytes(json_bytes({**manifest, "requirements": managed_requirements}))
+    with pytest.raises(BoundaryError):
+        validate(tmp_path, config_path, manifest_path, binding_root=bindings)
+    managed_config_path.write_bytes(json_bytes({
+        **managed_config, "schema": config_binding["schema"]}))
+    with pytest.raises(BoundaryError):
+        validate(tmp_path, managed_config_path, managed_manifest_path,
+                 binding_root=bindings)

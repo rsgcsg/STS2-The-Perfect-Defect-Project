@@ -289,6 +289,9 @@ window.SpireProject = (() => {
       trusted_text_runtime_asset_not_bundled: "这份已验证发行包没有附带该文本运行组件；当前没有可用的固定下载资产。",
       private_profile_collision: "现有本机 Runtime pin 与发行包不同；不会自动改绑，请核对后处理。",
       text_menu_capabilities_unavailable: "暂时无法核对当前游戏的文本菜单能力。请打开游戏后刷新，再明确重试。",
+      managed_requires_confirmed_interaction_model: "独立游戏环境需要支持已确认操作历史的 v2 模型；原模型和权重保持不变。",
+      managed_contract_unavailable: "独立游戏环境尚未提供兼容的文字接口；请先核对环境状态。",
+      managed_environment_unavailable: "所选独立游戏环境不可用；请到环境与场景核对，不会自动新开一局。",
       text_menu_capabilities_incompatible: "当前游戏环境不符合此模型的文本菜单要求；尚未登记。",
       registration_metadata_invalid: "本机模型登记资料无法安全确认；请检查恢复状态。",
       verified_export_required: "此模型当前没有可用的已校验导出；请先完成导出校验。",
@@ -3019,46 +3022,54 @@ window.SpireProject = (() => {
       m2_runtime_contract_unavailable: "固定的记忆模型运行组件不支持所需决策协议；记忆模型尚未登记。",
       v2_runtime_contract_unavailable: "本机记忆模型运行组件缺少 text-menu-v2 SDK 合同；尚未登记。",
     };
+    if (code === "managed_requires_confirmed_interaction_model") return "独立游戏环境需要支持已确认操作历史的 v2 模型。";
+    if (["managed_contract_unavailable", "managed_environment_unavailable"].includes(code)) return "请先在环境与场景中启动兼容的独立游戏，再明确登记。";
     return known[code] || "当前无法完成登记。请查看本机模型页的环境状态后，再按需明确重试。";
   }
 
-  async function localModelRegistrationCard(ctx, model) {
+  async function localModelRegistrationCard(ctx, model, environmentKind = "native") {
+    const managed = environmentKind === "managed";
+    const actionName = managed ? "register-managed-model" : "register-local-model";
+    const refreshName = managed ? "refresh-managed-model-registration" : "refresh-local-model-registration";
     const memory = model.parameters?.schema === "stpd/experimental-m2-model-v1";
     const expectedProfile = memory
       ? (model.workbench_memory_recipe?.endsWith(".v2")
         ? "text-menu-m2-v2" : "text-menu-m2-v1") : "text-menu-v1";
     const card = panel(
-      "登记到模型列表",
+      managed ? "用于独立游戏环境" : "用于原游戏",
       "登记会依据本机文本菜单运行环境建立模型选择项；不会安装运行组件、加载模型或进入游戏。之后仍需在模型页单独检查条件并选择加载。",
     );
-    const statusPath = `/api/local-model-registrations/status?model_id=${encodeURIComponent(model.artifact_id)}`;
+    if (managed) card.append(el("p", "先在“环境与场景”启动独立游戏。此登记复用同一份模型权重；加载时绑定所选环境，暂停模型后仍可继续同一局。", "small muted"));
+    const statusPath = `/api/local-model-registrations/status?model_id=${encodeURIComponent(model.artifact_id)}${managed ? "&environment_kind=managed" : ""}`;
     let status;
     try {
       status = await request(ctx, statusPath);
     } catch {
       if (!live(ctx)) return card;
       card.append(el("p", "登记状态暂不可用；刷新只会重新读取状态。", "small muted"));
-      card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
+      card.append(command(ctx, refreshName, "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
       return card;
     }
     if (!live(ctx)) return card;
     const validStatus = status && typeof status === "object" && !Array.isArray(status)
       && status.schema === "stpd/local-model-registration-v1"
       && status.model_id === model.artifact_id
+      && (status.environment_kind || "native") === environmentKind
       && ["not_registered", "registered", "unavailable"].includes(status.status)
       && status.loaded === false && status.runtime_profile === expectedProfile;
     if (!validStatus || (status.status === "registered" && !selectionId(status.selection_id))) {
       card.append(el("p", "登记状态格式未知；未发起模型操作。", "small muted"));
-      card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
+      card.append(command(ctx, refreshName, "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
       return card;
     }
     const csrf = typeof status.csrf_token === "string" && status.csrf_token.length > 0
       ? status.csrf_token : "";
-    const registerAction = (label) => command(ctx, "register-local-model", label, async () => {
+    const registerAction = (label) => command(ctx, actionName, label, async () => {
       if (!live(ctx) || !supportsLocalModelExport(model)) return;
       try {
-        const result = await request(ctx, "/api/local-model-registrations/register", {model_id:model.artifact_id}, csrf);
+        const result = await request(ctx, "/api/local-model-registrations/register", {model_id:model.artifact_id, ...(managed ? {environment_kind:"managed"} : {})}, csrf);
         if (result.schema !== "stpd/local-model-registration-v1"
+            || (result.environment_kind || "native") !== environmentKind
             || result.model_id !== model.artifact_id || result.status !== "registered"
             || result.loaded !== false || result.runtime_profile !== expectedProfile
             || !selectionId(result.selection_id))
@@ -3092,13 +3103,13 @@ window.SpireProject = (() => {
       card.append(el("p", localModelRegistrationReason(status.reason_code), "small muted"));
       if (["text_runtime_profile_required", "text_runtime_local_install_required"].includes(status.reason_code))
         card.append(link("准备本机模型环境", route("local-models")));
-      card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
+      card.append(command(ctx, refreshName, "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
     } else {
       card.append(el("p", status.reason_code === "source_binding_changed"
         ? localModelRegistrationReason(status.reason_code)
         : "登记只建立本机模型选择项，不会自动检查加载条件或执行游戏。", "small muted"));
       card.append(registerAction("登记到模型列表"));
-      card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
+      card.append(command(ctx, refreshName, "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
     }
     return card;
   }
@@ -3201,6 +3212,10 @@ window.SpireProject = (() => {
         card.append(fields([["导出大小", bytes(operation.payload_bytes)]]));
       const registration = await localModelRegistrationCard(ctx, model);
       if (live(ctx)) card.append(registration);
+      if (live(ctx) && variant?.profile === "text-menu-v2-confirmed-interaction") {
+        const managedRegistration = await localModelRegistrationCard(ctx, model, "managed");
+        if (live(ctx)) card.append(managedRegistration);
+      }
     } else if (operation.status === "failed" && sameModel) {
       label = "重新导出并校验";
       card.append(el("p", "上次导出未完成。你可以明确再次发起；不会自动重试。", "small muted"));

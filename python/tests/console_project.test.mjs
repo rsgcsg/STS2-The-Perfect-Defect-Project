@@ -6184,3 +6184,66 @@ test("another recording's unresolved publication blocks a new dataset check", as
     assert.equal(post(env.calls).length, 0);
   }
 });
+
+for (const target of ["native", "managed"]) test(`confirmed v2 model registers explicitly for ${target} without loading or starting a Host`, async () => {
+  const modelId = id("a");
+  const model = memoryModel(modelId);
+  model.workbench_memory_recipe = "stage1a.dsimple.m2.k1.confirmed-interaction.v2";
+  const status = (kind, registered = false) => ({
+    schema:"stpd/local-model-registration-v1", model_id:modelId,
+    status:registered ? "registered" : "not_registered", loaded:false,
+    runtime_profile:"text-menu-m2-v2", csrf_token:"registration-csrf",
+    ...(kind === "managed" ? {environment_kind:"managed"} : {}),
+    ...(registered ? {selection_id:`local-${kind}`} : {}),
+  });
+  const env = setup({view:"local-workspace", query:`&id=${modelId}`,
+    identity:{status:"local_only"}, handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${modelId}`) return model;
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed", model_id:modelId, model_type:"memory", payload_bytes:123,
+      }, {schema:"stpd/local-model-export-operation-v2"});
+      if (url === "/api/local-memory-evaluations/status") return {availability:"unavailable"};
+      if (url.startsWith("/api/local-model-registrations/status?"))
+        return status(url.includes("environment_kind=managed") ? "managed" : "native");
+      if (url === "/api/local-model-registrations/register") {
+        assert.equal(options.method, "POST");
+        assert.deepEqual(JSON.parse(options.body), {model_id:modelId,
+          ...(target === "managed" ? {environment_kind:"managed"} : {})});
+        return status(target, true);
+      }
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.match(text(page), /用于原游戏/);
+  assert.match(text(page), /用于独立游戏环境/);
+  assert.equal(post(env.calls).length, 0);
+  await action(page, target === "managed" ? "register-managed-model" : "register-local-model").onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.equal(post(env.calls)[0].url, "/api/local-model-registrations/register");
+});
+
+test("Managed registration response cannot reuse a Native status", async () => {
+  const modelId = id("a");
+  const model = memoryModel(modelId);
+  model.workbench_memory_recipe = "stage1a.dsimple.m2.k1.confirmed-interaction.v2";
+  const env = setup({view:"local-workspace", query:`&id=${modelId}`,
+    identity:{status:"local_only"}, handler:async url => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${modelId}`) return model;
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed",model_id:modelId,model_type:"memory",
+      }, {schema:"stpd/local-model-export-operation-v2"});
+      if (url === "/api/local-memory-evaluations/status") return {availability:"unavailable"};
+      if (url.startsWith("/api/local-model-registrations/status?")) return {
+        schema:"stpd/local-model-registration-v1",model_id:modelId,status:"not_registered",
+        loaded:false,runtime_profile:"text-menu-m2-v2",csrf_token:"token",
+      };
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.ok(action(page, "register-local-model"));
+  assert.equal(walk(page).some(item => item.dataset?.action === "register-managed-model"), false);
+  assert.match(text(page), /登记状态格式未知/);
+  assert.equal(post(env.calls).length, 0);
+});

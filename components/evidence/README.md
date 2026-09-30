@@ -3,7 +3,20 @@
 This component verifies typed immutable artifacts and moves their bytes without
 owning gameplay, Human action, or research semantics.
 
-Evidence `0.1.0-rc.23` verifies Policy Runtime adapter protocols v1, v2 and v3
+For an explicit Managed text-v2 Agent run, the verifier requires the sealed
+public `environment_binding` alongside the Host-independent model Manifest.
+It recomputes the binding's canonical SHA-256 from the manifest bytes and
+checks each admitted service/runtime/game-continuity identity and candidate
+build against the recorded v2 observations and ordered controller claim,
+dispatch, and release events. A Managed dispatch needs a prior matching claim;
+an unconfirmed owner remains unknown or tainted, never a successful release.
+Existing Connector records keep their strict original field sets. Verification
+checks the producer's typed association; the selected package content digests
+and private-profile digest are provenance supplied by the trusted local
+application, not independent re-attestation of installed bytes or private
+profile contents by Evidence.
+
+Evidence `0.1.0-rc.24` verifies Policy Runtime adapter protocols v1, v2 and v3
 in the Policy Manifest and adapter attestation. The opt-in v3 interaction-memory
 port requires a declared text-menu representation, just as v2 does. This verifier
 checks the existing immutable input/result events; it does not infer model memory
