@@ -154,6 +154,29 @@ and config backup remain available for rollback.
 The new port-3 candidate is not installed in that running application. No public
 package, release asset, model weight or private recording was published.
 
+## Human-history dev evaluation
+
+Independently reviewed consumer commit
+`33f1d1d632f2cfbbe8ab8cb19330457f92ef6164` adds the missing dev path for
+the Human confirmed-interaction profile. It replays the exact stored training
+projection, tokenizer, source map and episode bytes before evaluating a separate
+admitted dev source. Omitted settling limits derive from that pinned profile;
+an explicit incompatible limit fails before the Workbench operation starts.
+The old observation-only profile keeps its previous default and report format.
+
+Overlap comparison for history inputs includes the actual prior-action tokens
+with the page and full candidate menu, excluding the current label. Managed and
+Agent sources remain outside this Human evaluator. Evaluation does not create
+an optimizer or alter model weights. It does not turn a distinct recording ID
+into proof of independent-game data.
+
+The final isolated six-file candidate passed 114 focused tests in 3.40 seconds,
+Ruff on six files and mypy on four source files (all exit 0). Before the repair,
+the two new focused cases failed with `train_projection_identity_mismatch` on
+the old evaluator. These are synthetic source/test results, not new real-data
+dev scores. The consumer was normal-merged into this packet; its combined
+hosted gate remains required.
+
 ## Remaining boundaries
 
 - New Agent history requires recorded context. Old Agent archives without it,
@@ -162,9 +185,9 @@ package, release asset, model weight or private recording was published.
   advance memory. This limitation is not hidden by dropping labels.
 - New Human history still means the last available completed input witness,
   not a claim that all user inputs were captured or that it caused a successor.
-- Ordinary dev evaluation for the new history profiles is not implemented in
-  this packet. Existing K1/K8/Reset dev scores keep their old observation-only
-  identities and cannot qualify the new input. The evaluator is the next owner.
+- Human-history dev evaluation is now implemented; its combined hosted gate
+  and a real-data result are still separate. Existing K1/K8/Reset dev scores
+  keep their old observation-only identities and cannot qualify the new input.
 - The [accepted row-2 mouse capture](STAGE1A_ROW2_MOUSE_CANARY_2026-09-30.md)
   now has a passing producer audit and typed bundle verification. It retains
   one unresolved final successor and does not qualify this candidate's model.

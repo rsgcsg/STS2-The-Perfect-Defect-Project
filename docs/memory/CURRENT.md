@@ -45,6 +45,9 @@ PR119 run 36647445252/1 at `ea06ab2c` failed: Linux succeeded, Windows
 reported two application-test failures and portable failed. One startup
 handoff race is being repaired; the training failure remains under diagnosis.
 The accepted-version native capture does not qualify this candidate.
+The independently reviewed Human-history dev evaluator (`33f1d1d6`) is now
+included locally. Its 114 focused tests passed; no new real-data evaluation
+or model-quality result is claimed. A combined candidate gate is still required.
 
 ## Accepted research and product basis
 
