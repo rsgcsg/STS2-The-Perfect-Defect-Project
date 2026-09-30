@@ -48,13 +48,9 @@ independent games. Both matched 0/10; no memory-benefit or quality claim.
 retains both results. Historical v1 preparation and unknown missing-card causes
 remain in the [preparation receipt](../evidence/STAGE1A_V2_WORKBENCH_PREPARATION_2026-09-30.md).
 
-A six-step Managed v2 sequence produced an exported confirmed-interaction K1
-model. PR123 initialized its v2 generation; the model registered and loaded.
-A native canary recorded five text interactions, one native play delivered and
-one stale/not-applied response, then explicit Stop: Human, released, untainted.
-Typed verification passed; first confirmation-page reset cause remains unknown.
-Exact identities are in the [installed v2 receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/123#issuecomment-5906208577).
-This short canary proves neither quality nor a Full Run.
+The [earlier installed v2 receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/123#issuecomment-5906208577)
+retains the six-step training/export probe and its native canary; its first
+confirmation-page reset cause remains unknown. New evidence does not repair it.
 
 PR124's actual different-seed Managed journey completed: saved scene → isolated
 Host → six explicit operator-agent choices → stopped report → admitted source →
