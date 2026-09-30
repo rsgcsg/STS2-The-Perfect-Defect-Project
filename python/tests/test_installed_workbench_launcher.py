@@ -26,10 +26,22 @@ def test_fixed_launcher_quotes_paths_with_spaces_and_uses_isolated_python(tmp_pa
 
     script = install._launcher_script(release)
 
+    assert install._launcher_files(tmp_path)[1].name == "open"
+    assert script.startswith("#!/bin/sh\n")
     assert f"cd '{python_root}'" in script
     assert f"'{binary}' -I '{tool}' launch" in script
     assert "PYTHONHOME PYTHONPATH" in script
     assert "--config" not in script and "sh -c" not in script
+
+
+def test_fixed_launcher_rejects_unsupported_platforms(tmp_path):
+    with pytest.raises(BoundaryError, match="launcher_platform_unsupported"):
+        install._launcher_directory(platform="win32", home=tmp_path)
+    with pytest.raises(BoundaryError, match="launcher_platform_unsupported"):
+        install._install_open_launcher(
+            tmp_path / ("a" * 64), tmp_path / "profile.json",
+            {"workbench_launcher_schema": install.LAUNCHER_SCHEMA}, platform="win32",
+        )
 
 
 def test_launcher_binding_is_idempotent_for_same_profile_and_rejects_another(
