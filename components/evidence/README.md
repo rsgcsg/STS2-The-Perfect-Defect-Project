@@ -16,7 +16,7 @@ and private-profile digest are provenance supplied by the trusted local
 application, not independent re-attestation of installed bytes or private
 profile contents by Evidence.
 
-Evidence `0.1.0-rc.23` verifies Policy Runtime adapter protocols v1, v2 and v3
+Evidence `0.1.0-rc.24` verifies Policy Runtime adapter protocols v1, v2 and v3
 in the Policy Manifest and adapter attestation. The opt-in v3 interaction-memory
 port requires a declared text-menu representation, just as v2 does. This verifier
 checks the existing immutable input/result events; it does not infer model memory
