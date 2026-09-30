@@ -274,10 +274,12 @@ class LocalEnvironmentService:
         self, config: ProjectConfig, *,
         audit: Callable[[Path, Path], dict[str, str]] = _audit,
         client_factory: Callable[[list[str], Path, dict[str, Any]], Any] | None = None,
+        seed_normalizer: Callable[[Path, dict[str, Any], object], str] | None = None,
     ) -> None:
         self.config = config
         self.audit = audit
         self.client_factory = client_factory or self._public_client
+        self.seed_normalizer = seed_normalizer or self._host_seed
         self.lock = threading.RLock()
         self.client: Any | None = None
         self._unclosed_start_client: Any | None = None
@@ -332,6 +334,27 @@ class LocalEnvironmentService:
         except Exception as error:
             raise HostClientPreparationError("host_public_client_unavailable") from error
         return constructor(command, response_timeout_seconds=15)
+
+    @staticmethod
+    def _host_seed(host_root: Path, pin: dict[str, Any], seed: object) -> str:
+        """Validate with the exact pinned Host client's canonical seed contract."""
+        _verify_host(host_root, pin)
+        from spireagent.host_runtime_client import activate_host_runtime_client
+
+        try:
+            activate_host_runtime_client(host_root, pin)
+            canonicalize = importlib.import_module(
+                "sts2_headless.client"
+            ).canonicalize_episode_seed
+        except Exception as error:
+            raise BoundaryError("local_environment", "host_seed_contract_unavailable") from error
+        try:
+            canonical_seed = canonicalize(seed)
+        except (TypeError, ValueError) as error:
+            raise BoundaryError("local_environment", "scene_seed_invalid") from error
+        if not isinstance(canonical_seed, str):
+            raise BoundaryError("local_environment", "host_seed_contract_invalid")
+        return canonical_seed
 
     def _report_store(self, *, create: bool) -> ManifestArtifactStore | None:
         root = self.config.state_dir / REPORT_ROOT
@@ -391,16 +414,20 @@ class LocalEnvironmentService:
     def comparison(self, artifact_id: object) -> dict[str, Any]:
         return self._artifact(artifact_id, COMPARISON_SCHEMA, "comparison")
 
-    def save_scene(self, name: object) -> dict[str, Any]:
+    def save_scene(self, name: object, seed: object = SCENARIO["seed"]) -> dict[str, Any]:
         if not isinstance(name, str) or not (1 <= len(name.strip()) <= 80) or (
             name != name.strip() or any(ord(char) < 32 for char in name)
         ):
             raise BoundaryError("local_environment", "scene_name_invalid")
         with self.lock:
             profile = _read_profile(self.config)
+            selected_seed = self.seed_normalizer(
+                Path(profile["host_package_directory"]), profile["host_package_pin"],
+                seed,
+            )
             # The artifact is a fixed-seed start recipe, never a prior process snapshot.
             scene = {"schema": SCENE_SCHEMA, "name": name, "scenario_id": SCENARIO["id"],
-                     "seed": SCENARIO["seed"], "character": SCENARIO["character"],
+                     "seed": selected_seed, "character": SCENARIO["character"],
                      "input_profile": profile["input_profile"],
                      "host_package_pin": profile["host_package_pin"],
                      "candidate_build": profile["audit"],
@@ -418,7 +445,11 @@ class LocalEnvironmentService:
 
     def _validate_scene_start(self, scene_id: object, profile: dict[str, Any]) -> None:
         scene = self.scene(scene_id)
-        if (scene.get("scenario_id") != SCENARIO["id"] or scene.get("seed") != SCENARIO["seed"]
+        canonical_seed = self.seed_normalizer(
+            Path(profile["host_package_directory"]), profile["host_package_pin"], scene.get("seed")
+        )
+        if (scene.get("scenario_id") != SCENARIO["id"]
+                or not isinstance(scene.get("seed"), str) or canonical_seed != scene["seed"]
                 or scene.get("character") != SCENARIO["character"]
                 or scene.get("restoration") != "fresh_managed_fixed_seed_new_run"
                 or scene.get("input_profile") != profile["input_profile"]
@@ -434,6 +465,11 @@ class LocalEnvironmentService:
         provenance = identity.get("episode_provenance") if isinstance(identity, dict) else None
         context = report.get("initial_context")
         snapshot = context.get("snapshot") if isinstance(context, dict) else None
+        persistent = snapshot.get("persistent") if isinstance(snapshot, dict) else None
+        persistent_content = (persistent.get("content")
+                              if isinstance(persistent, dict) else None)
+        run = persistent_content.get("run") if isinstance(persistent_content, dict) else None
+        player = persistent_content.get("player") if isinstance(persistent_content, dict) else None
         menu = snapshot.get("menu_actions") if isinstance(snapshot, dict) else None
         if (report.get("scene_artifact_id") != scene_id
                 or report.get("status") != "stopped" or report.get("error_code") is not None
@@ -443,8 +479,13 @@ class LocalEnvironmentService:
                 or identity.get("candidate_build") != scene["candidate_build"]
                 or not isinstance(provenance, dict)
                 or provenance.get("verdict") != "provenance_pass"
+                or report.get("seed") != scene["seed"]
                 or provenance.get("requested_seed") != scene["seed"]
                 or provenance.get("actual_seed") != scene["seed"]
+                or not isinstance(run, dict) or type(run.get("ascension")) is not int
+                or run.get("ascension") != 0
+                or not isinstance(player, dict)
+                or player.get("character_definition_id") != "DEFECT"
                 or not isinstance(provenance.get("runtime_instance_id"), str)
                 or not provenance["runtime_instance_id"]
                 or not isinstance(menu, dict) or menu.get("status") != "complete"
@@ -646,13 +687,17 @@ class LocalEnvironmentService:
             if self.record["status"] in TERMINAL and not self.record.get("report_artifact_id"):
                 raise BoundaryError("local_environment", "report_recovery_required")
             profile = _read_profile(self.config)
+            seed = SCENARIO["seed"]
+            if scene_artifact_id is not None:
+                scene = self.scene(scene_artifact_id)
+                seed = scene["seed"]
             if scene_artifact_id is not None:
                 self._validate_scene_start(scene_artifact_id, profile)
             producer = self._producer()
             session_id = uuid.uuid4().hex
             previous = self.record
             self.record = {"schema": SCHEMA, "status": "starting", "session_id": session_id,
-                           "scenario_id": scenario_id, "seed": SCENARIO["seed"],
+                           "scenario_id": scenario_id, "seed": seed,
                            "input_profile": profile["input_profile"],
                            # The worker verifies these exact package bytes before activation.
                            # Capture only public identity, never private installation paths;
@@ -673,11 +718,11 @@ class LocalEnvironmentService:
                                    "error_code": "journal_restore_failed"}
                 raise BoundaryError("local_environment", "session_persistence_failed")
             self.worker = threading.Thread(target=self._start_worker,
-                                           args=(session_id, profile), daemon=True)
+                                           args=(session_id, profile, seed), daemon=True)
             self.worker.start()
             return self.status()
 
-    def _start_worker(self, session_id: str, profile: dict[str, Any]) -> None:
+    def _start_worker(self, session_id: str, profile: dict[str, Any], seed: str) -> None:
         client = None
         error_code = None
         factory_entered = False
@@ -709,17 +754,26 @@ class LocalEnvironmentService:
                 != SCENARIO["exact_game_assembly_sha256"]
             ):
                 raise BoundaryError("local_environment", "managed_candidate_changed")
-            client.reset(SCENARIO["seed"])
+            client.reset(seed)
             identity = _public_identity(client.episode_identity())
             provenance = identity["episode_provenance"]
             if (identity["candidate_build"] != profile["audit"]
                     or provenance["verdict"] != "provenance_pass"
-                    or provenance["requested_seed"] != SCENARIO["seed"]
-                    or provenance["actual_seed"] != SCENARIO["seed"]):
+                    or provenance["requested_seed"] != seed
+                    or provenance["actual_seed"] != seed):
                 raise BoundaryError("local_environment", "episode_identity_invalid")
             context = self._context(
                 self._observe(client, profile["input_profile"]), profile["input_profile"]
             )
+            persistent = context["snapshot"].get("persistent")
+            content = persistent.get("content") if isinstance(persistent, Mapping) else None
+            run = content.get("run") if isinstance(content, Mapping) else None
+            player = content.get("player") if isinstance(content, Mapping) else None
+            if (not isinstance(run, Mapping) or type(run.get("ascension")) is not int
+                    or run.get("ascension") != 0
+                    or not isinstance(player, Mapping)
+                    or player.get("character_definition_id") != "DEFECT"):
+                raise BoundaryError("local_environment", "initial_character_or_ascension_invalid")
             with self.lock:
                 if self.stopping or self.record.get("session_id") != session_id:
                     return

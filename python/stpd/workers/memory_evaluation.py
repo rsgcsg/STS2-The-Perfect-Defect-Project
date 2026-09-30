@@ -18,8 +18,14 @@ from tokenizers import Tokenizer
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, digest, json_bytes
 from spireagent.storage.store import ArtifactStore
-from stpd.fullrun.confirmed_interaction import HISTORY_INPUT_PROFILE
+from stpd.fullrun.confirmed_interaction import HISTORY_INPUT_PROFILE, V2_HISTORY_INPUT_PROFILE
 from stpd.fullrun.evaluation import candidate_metrics, summarize_rows
+from stpd.fullrun.managed_text_menu_import import (
+    MAX_EVENTS as MAX_MANAGED_EVENTS,
+)
+from stpd.fullrun.managed_text_menu_import import (
+    SOURCE_SCHEMA as MANAGED_SOURCE_SCHEMA,
+)
 from stpd.fullrun.memory_sequence_bridge import (
     MemoryEpisodeBridgeResult,
     MemoryEpisodeProjectionConfig,
@@ -61,11 +67,14 @@ MAX_METRICS_BYTES = 64 * 1024 * 1024
 def _ancestors(store: ArtifactStore, source_id: str) -> set[str]:
     pending = [source_id]
     seen: set[str] = set()
+    # A verified Managed report may contain 4096 immutable event parents.
+    source_schema = store.get_manifest(source_id).parameters.value().get("schema")
+    limit = MAX_MANAGED_EVENTS + 2 if source_schema == MANAGED_SOURCE_SCHEMA else 512
     while pending:
         current = pending.pop()
         if current in seen:
             continue
-        if len(seen) >= 512:
+        if len(seen) >= limit:
             raise BoundaryError("memory_evaluation", "source_lineage_limit")
         manifest = store.get_manifest(current)
         if manifest.parameters.value().get("purpose") in {"gold", "test"}:
@@ -79,6 +88,7 @@ def _stream_scope(store: ArtifactStore, view: ObservedInputView) -> set[tuple[st
     """Session and stream identity survive model episode reset boundaries."""
     scope: set[tuple[str, str]] = set()
     row2_sessions: tuple[str, ...] | None = None
+    managed_run: str | None = None
     for item in view.inputs:
         stream = item.stream_id
         scope.add(("stream", stream))
@@ -104,6 +114,14 @@ def _stream_scope(store: ArtifactStore, view: ObservedInputView) -> set[tuple[st
             if len(parts) != 3 or not all(parts):
                 raise BoundaryError("memory_evaluation", "invalid_agent_stream_identity")
             scope.add(("native_stream", parts[1]))
+        elif item.source_kind == "managed_control_input_stream":
+            # Session IDs are display/transport identity, not the deterministic
+            # engineering split. Reverify the immutable report's seed and build.
+            if managed_run is None:
+                from stpd.fullrun.managed_text_menu_import import load_managed_text_menu_source
+
+                managed_run = load_managed_text_menu_source(store, view.source_id).split_run_id
+            scope.add(("managed_split_run", managed_run))
         else:
             raise BoundaryError("memory_evaluation", "unsupported_observed_stream")
     return scope
@@ -140,7 +158,8 @@ def _evaluation_projection_config(
     if type(projection) is MemoryEpisodeProjectionConfig:
         return projection
     if (type(projection) is MemoryEpisodeProjectionConfigV3
-            and projection.input_profile == HISTORY_INPUT_PROFILE):
+            and projection.input_profile in {HISTORY_INPUT_PROFILE,
+                                             V2_HISTORY_INPUT_PROFILE}):
         return projection
     raise BoundaryError("memory_evaluation", "human_train_projection_required")
 
@@ -194,14 +213,21 @@ def _verify_train_projection(
 ) -> MemoryEpisodeBridgeResult:
     """Bind the model's V2 train bytes to its verified observed source."""
     parameters = training.parameters.value()
-    if source.stream_scope != "partial_human_input_stream":
-        raise BoundaryError("memory_evaluation", "human_train_source_required")
-    history = type(projection_config) is MemoryEpisodeProjectionConfigV3
-    if history and any(item.source_kind != "human_input_stream" for item in source.inputs):
-        raise BoundaryError("memory_evaluation", "human_train_source_required")
+    history_profile = (projection_config.input_profile if isinstance(
+        projection_config, MemoryEpisodeProjectionConfigV3) else None)
+    history = history_profile is not None
+    managed = history_profile == V2_HISTORY_INPUT_PROFILE
+    expected_scope = ("managed_engineering_control_inputs" if managed else
+                      "partial_human_input_stream")
+    expected_kind = "managed_control_input_stream" if managed else "human_input_stream"
+    if source.stream_scope != expected_scope or history and any(
+        item.source_kind != expected_kind for item in source.inputs
+    ):
+        raise BoundaryError("memory_evaluation", "managed_train_source_required" if managed else
+                            "human_train_source_required")
     fitted_bytes, fitted_episodes = fit_observed_memory_tokenizer(
         source, max_settling_events=projection_config.max_settling_events,
-        input_profile=HISTORY_INPUT_PROFILE if history else "text-menu-v1",
+        input_profile=history_profile if history_profile is not None else "text-menu-v1",
     )
     if fitted_bytes != tokenizer_bytes or fitted_episodes != config.episode_count:
         raise BoundaryError("memory_evaluation", "train_tokenizer_fit_mismatch")
@@ -247,10 +273,16 @@ def evaluate_memory(
     if not train_view.inputs or not dev_view.inputs:
         raise BoundaryError("memory_evaluation", "empty_observed_source")
     projection_config = _evaluation_projection_config(training)
-    if (type(projection_config) is MemoryEpisodeProjectionConfigV3
-            and (dev_view.stream_scope != "partial_human_input_stream" or any(
-                item.source_kind != "human_input_stream" for item in dev_view.inputs))):
-        raise BoundaryError("memory_evaluation", "human_dev_source_required")
+    if isinstance(projection_config, MemoryEpisodeProjectionConfigV3):
+        managed = projection_config.input_profile == V2_HISTORY_INPUT_PROFILE
+        expected_scope = ("managed_engineering_control_inputs" if managed else
+                          "partial_human_input_stream")
+        expected_kind = "managed_control_input_stream" if managed else "human_input_stream"
+        if dev_view.stream_scope != expected_scope or any(
+            item.source_kind != expected_kind for item in dev_view.inputs
+        ):
+            raise BoundaryError("memory_evaluation", "managed_dev_source_required" if managed
+                                else "human_dev_source_required")
     if _stream_scope(store, train_view) & _stream_scope(store, dev_view):
         raise BoundaryError("memory_evaluation", "train_dev_session_or_stream_overlap")
     try:
@@ -265,7 +297,9 @@ def evaluate_memory(
     train_projection = _verify_train_projection(
         store, training, train_view, tokenizer, tokenizer_bytes, network, config,
         projection_config)
-    history = type(projection_config) is MemoryEpisodeProjectionConfigV3
+    history_profile = (projection_config.input_profile if isinstance(
+        projection_config, MemoryEpisodeProjectionConfigV3) else None)
+    history = history_profile is not None
     if max_settling_events is None:
         max_settling_events = projection_config.max_settling_events if history else 0
     if (type(max_settling_events) is not int or max_settling_events < 0
@@ -319,11 +353,11 @@ def evaluate_memory(
     projection_identity: dict[str, Any] = {
         "renderer": RENDERER_IDENTITY, "max_settling_events": max_settling_events,
     }
-    if history:
+    if history_profile is not None:
         projection_identity = {
-            "renderer": renderer_identity_for_profile(HISTORY_INPUT_PROFILE),
+            "renderer": renderer_identity_for_profile(history_profile),
             "max_settling_events": max_settling_events,
-            "input_profile": HISTORY_INPUT_PROFILE,
+            "input_profile": history_profile,
             "projection_config": asdict(projection_config),
         }
     input_raw = json_bytes({

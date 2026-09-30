@@ -1863,13 +1863,16 @@ test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} expo
         modelId, "not_registered", {runtime_profile:runtimeProfile});
       if (url === "/api/local-model-registrations/register") return modelRegistrationStatus(
         modelId, "registered", {runtime_profile:runtimeProfile, selection_id:"confirmed-model"});
-      if (version === 1 && url === "/api/local-memory-evaluations/status") return {
+      if (url === "/api/local-memory-evaluations/status") return {
         schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready",
         csrf_token:"memory-csrf", operation:{status:"idle"}};
-      if (version === 1 && url.startsWith("/api/local-workspace?")) return {
-        schema:"stpd/local-workspace-inventory-v1", total:1,
-        items:[{artifact_id:source, kind:"dataset", parameters:{schema:"stpd/human-text-input-source-v1"}}]};
-      if (version === 1 && url === "/api/local-memory-evaluations/start") return {
+      if (url.startsWith("/api/local-workspace?")) return {
+        schema:"stpd/local-workspace-inventory-v1", total:2,
+        items:[{artifact_id:source, kind:"dataset", parameters:{schema:version === 1
+          ? "stpd/human-text-input-source-v1" : "stpd/managed-text-menu-observed-source-v1"}},
+        {artifact_id:id("c"), kind:"dataset", parameters:{schema:version === 1
+          ? "stpd/managed-text-menu-observed-source-v1" : "stpd/human-text-input-source-v1"}}]};
+      if (url === "/api/local-memory-evaluations/start") return {
         schema:"stpd/local-memory-evaluation-operation-v1", availability:"ready", operation:{status:"pending"}};
       throw new Error(`unexpected route ${url}`);
     }});
@@ -1882,19 +1885,26 @@ test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} expo
   assert.equal(post(env.calls).length, 0);
   assert.ok(action(page, "start-local-model-export"));
   assert.ok(action(page, "register-local-model"));
-  if (version === 1) {
+  {
+    const inventoryCall = env.calls.find(call => call.url.startsWith("/api/local-workspace?"));
+    assert.match(inventoryCall.url, new RegExp(version === 1
+      ? "stpd%2Fhuman-text-input-source-v1" : "stpd%2Fmanaged-text-menu-observed-source-v1"));
+    const choices = field(page, "local-memory-dev-source").children.map(option => option.value);
+    assert.deepEqual(choices, ["", source]);
+    assert.equal(post(env.calls).length, 0);
+    if (version === 1) {
     assert.match(text(page), /支持已确认操作历史的 Human 录制格式/);
     assert.doesNotMatch(text(page), /完整操作记录|完整轨迹/);
+    } else {
+      assert.match(text(page), /Managed v2 操作结果/);
+      assert.match(text(page), /同 seed/);
+      assert.doesNotMatch(text(page), /支持已确认操作历史的 Human 录制格式/);
+    }
     field(page, "local-memory-dev-source").value = source;
     await action(page, "start-local-memory-evaluation").onclick();
     const evaluation = post(env.calls)[0];
     assert.deepEqual(body(evaluation), {model_id:modelId, source_id:source});
     assert.equal(evaluation.options.headers["X-CSRF-Token"], "memory-csrf");
-  } else {
-    assert.match(text(page), /Managed 工程操作，actor 未验证/);
-    assert.match(text(page), /此输入版本暂不支持独立 Human 开发集评估/);
-    assert.equal(env.calls.some(call => call.url.includes("local-memory-evaluations")), false);
-    assert.equal(walk(page).some(element => element.dataset?.action === "start-local-memory-evaluation"), false);
   }
   await action(page, "start-local-model-export").onclick();
   await action(page, "register-local-model").onclick();
@@ -1903,7 +1913,7 @@ test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} expo
     ["/api/local-model-exports/start", {model_id:modelId}, "export-csrf"],
     ["/api/local-model-registrations/register", {model_id:modelId}, "registration-csrf"],
   ]);
-  assert.equal(writes.length, version === 1 ? 3 : 2);
+  assert.equal(writes.length, 3);
 });
 
 test("idle M2 evaluation leaves overview and verified export neutral about report existence", async () => {
@@ -3649,6 +3659,38 @@ test("environment page explains missing setup without accepting browser paths", 
   assert.doesNotMatch(text(page), /browser-csrf/);
 });
 
+test("missing scenario keeps reports and stop available without inventing a seed", async () => {
+  const reportId=id("a"), sessionId="b".repeat(32);
+  const env=setup({view:"local-environment",identity:{status:"local_only"},handler:async url=>{
+    if(url==="/api/local-environment") return {
+      schema:"stpd/local-managed-environment-v1",availability:"configured",
+      input_profile:"text-menu-v2",csrf_token:"csrf",scenarios:[],
+      session:{status:"active",session_id:sessionId,events:[]},
+    };
+    if(url==="/api/local-environment/scenes") return {items:[]};
+    if(url==="/api/local-environment/reports") return {items:[{artifact_id:reportId,status:"stopped"}]};
+    if(url===`/api/local-environment/reports/${reportId}`) return {
+      schema:"stpd/local-managed-environment-report-v1",status:"stopped",events:[],
+    };
+    if(url==="/api/local-environment/stop") return {status:"stopped_outcome_unknown"};
+    throw new Error(`unexpected ${url}`);
+  }});
+  const page=await env.render();
+  assert.match(text(page),/当前没有可用场景定义/);
+  assert.equal(field(page,"environment-scene-seed").value,"");
+  assert.equal(field(page,"environment-scene-seed").disabled,true);
+  assert.equal(action(page,"environment-scene-save").disabled,true);
+  assert.equal(action(page,"environment-stop").disabled,false);
+  await action(page,`environment-report-${reportId}`).onclick();
+  assert.match(text(page),/已归档报告/);
+  assert.equal(post(env.calls).length,0);
+  await action(page,"environment-stop").onclick();
+  const writes=post(env.calls);
+  assert.equal(writes.length,1);
+  assert.equal(writes[0].url,"/api/local-environment/stop");
+  assert.deepEqual(body(writes[0]),{session_id:sessionId});
+});
+
 test("cold local environment starts from browser status CSRF without cloud identity", async () => {
   const scenarioId = "managed-defect-a0-map-prefix-20260929";
   const env = setup({view:"local-environment", identity:{status:"local_only"},
@@ -3707,6 +3749,7 @@ test("saved fixed-seed scene and comparison require explicit browser commands", 
   assert.equal(post(env.calls).length,0);
   assert.match(text(page),/不是游戏存档/);
   field(page,"environment-scene-name").value = "A0 named";
+  field(page,"environment-scene-seed").value = "M2H0ST20260929B";
   await action(page,"environment-scene-save").onclick();
   await action(page,`environment-scene-start-${sceneId}`).onclick();
   await action(page,"environment-compare-save").onclick();
@@ -3715,7 +3758,7 @@ test("saved fixed-seed scene and comparison require explicit browser commands", 
     "/api/local-environment/scenes/save", "/api/local-environment/start",
     "/api/local-environment/compare",
   ]);
-  assert.deepEqual(body(writes[0]),{name:"A0 named"});
+  assert.deepEqual(body(writes[0]),{name:"A0 named",seed:"M2H0ST20260929B"});
   assert.deepEqual(body(writes[1]),{scenario_id:scenarioId,scene_artifact_id:sceneId});
   assert.deepEqual(body(writes[2]),{scene_artifact_id:sceneId,
     report_artifact_ids:[firstReport,secondReport]});
