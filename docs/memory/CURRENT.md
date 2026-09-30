@@ -8,15 +8,15 @@ No complete Stage1a or policy-quality qualification is claimed.
 
 ## Current candidate and immediate work
 
-Accepted develop anchor: `8441be3adbaab12340029025638bc4f43c1b926e`,
-normal merge of PR122, tree `600e56eab59350be20233a0cab5d6adeba1ca304`.
-Its exact head `aa341bd738c5131388a83d20831fca4aeb128ac8` passed
-[full 36666716000/1](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36666716000).
-Integration 36669199106/1 passed using verified same-tree execution reuse.
+Accepted develop anchor: `da238b2be83a431e455f862ad46376a80db52948`,
+normal merge of PR123, tree `ff986db292062be23802fe329aa0d4bf7940c40e`.
+Head `1e2017111588c442f7bf41495f57bdf5edbf8601` passed full 36677551489/1;
+integration 36681397958/1 passed with verified same-tree execution reuse.
 PR116 adds row-2 capture/completed-append order. PR117 qualifies only
 **map-boundary** save/load, not combat/selector checkpoints or general MCTS.
 
-The local Workbench runs that accepted anchor with Evidence rc.23, preserving
+The local Workbench remains `8441be3adbaab12340029025638bc4f43c1b926e`
+with Evidence rc.23, preserving
 its research workspace and original records.
 The installed Mod remains `de23ce167fddc5bfe149cd29f2773299b261845d`, cold-load
 verified; this separate producer identity was not upgraded with the Workbench.
@@ -43,22 +43,28 @@ completed for confirmed-interaction K1 and independently trained Reset-K1:
 137 training steps and 10 dev choices from two recorder fragments, not proven
 independent games. Both matched 0/10; no memory-benefit or quality claim.
 [Exact artifact/metric receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/121#issuecomment-5903477486)
-retains both results. The earlier rc.12 registration block has since been
-resolved by an explicit rc.14 generation install, exact rollback and verified
-reactivation. Both models registered; K1 was loaded and exercised, then stopped.
-The [current preparation receipt](../evidence/STAGE1A_V2_WORKBENCH_PREPARATION_2026-09-30.md)
-records the actual package and native canary separately. That canary exposed
-missing v1 card-begin actions despite public playable cards. A subsequent
-read-only v1/v2 comparison did not reproduce the omission; its precise native
-UI predicate remains unknown. Do not blame that loss on model quality.
-The old training exception's exact cause remains unknown.
+retains both results. Historical v1 preparation and unknown missing-card causes
+remain in the [preparation receipt](../evidence/STAGE1A_V2_WORKBENCH_PREPARATION_2026-09-30.md).
 
-The current Workbench now has a verified Managed v2 profile and completed a
-six-step engineering sequence through its own HTTP report/import path. A new
-confirmed-interaction K1 v2 model trained and exported from that report. The
-v2 Runtime slot is still absent, so registration remains blocked honestly;
-explicit initial-generation preparation is the immediate owning repair.
-Managed v2 independent dev evaluation remains a separate missing admission path.
+A six-step Managed v2 sequence produced an exported confirmed-interaction K1
+model. PR123 initialized its v2 generation; the model registered and loaded.
+A native canary recorded five text interactions, one native play delivered and
+one stale/not-applied response, then explicit Stop: Human, released, untainted.
+Typed verification passed; first confirmation-page reset cause remains unknown.
+Exact identities are in the [installed v2 receipt](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/123#issuecomment-5906208577).
+This short canary proves neither quality nor a Full Run.
+
+[PR124](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/124)
+combines seed-selected Managed scenes and separate-source v2 dev evaluation.
+Candidate `e580b4b94b75f8e74ce6210e7f97fbcab9c48897` has local regressions and
+independent source review; full CI 36684376509 is pending at this update.
+No actual different-seed dev result is claimed.
+
+Runtime rc.15 is a source candidate for explicitly unapplied v2 stale recovery.
+Only a durably recorded refreshable rejection permits fresh observation and a
+new decision; three consecutive stale responses hand off Human. Unknown delivery,
+missing/failed evidence and failed release remain fail-closed. It has not replaced
+installed rc.14 or gained native qualification.
 
 ## Accepted research and product basis
 
