@@ -213,6 +213,17 @@ to `PermissionError`) are retained. Fixing that expected exception type does
 not explain or resolve the second Windows failure. The new combined hosted
 candidate must run its own selected full gate.
 
+After normal-merging the evaluator and correction, the six affected consumer
+test files passed together at executable source
+`6a3bc72f9d6ea31c6999997a801c8ef62107c98f`: **121 passed in 38.68 seconds**,
+exit 0, no skips. They were `test_local_environment.py`, `test_local_training.py`,
+`test_memory_evaluation.py`, `test_local_memory_evaluation.py`,
+`test_confirmed_interaction_memory.py` and `test_workbench_memory_recipe.py`.
+The tree was clean at test start; only CURRENT documentation was shortened
+during execution. The first repository check correctly rejected CURRENT at
+8300 bytes against its 8 KiB limit; the summary was condensed while the dated
+receipts retained their details. No governance limit was changed.
+
 ## Remaining boundaries
 
 - New Agent history requires recorded context. Old Agent archives without it,

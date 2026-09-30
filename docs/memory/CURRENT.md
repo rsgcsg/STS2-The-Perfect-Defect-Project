@@ -1,9 +1,8 @@
 # Current project context, 2026-09-30
 
-Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Accepted develop
-anchor is recorded below; earlier dated receipts keep their original identity.
-Resolve live GitHub refs before work; current authorities override this file.
-Check open PRs and writers. This is a bounded routing summary; dated receipts retain exact historical source, CI and runtime details.
+Active repository: `rsgcsg/STS2-The-Perfect-Defect-Project`. Resolve live refs,
+PRs and writers before work. This is a bounded routing summary; dated receipts
+retain exact historical source, CI and runtime details.
 Source, CI, installed/loaded, native/Human and scientific evidence are separate.
 No complete Stage1a or policy-quality qualification is claimed.
 
@@ -102,13 +101,10 @@ report, and truthful cleanup. Neither changes an installed environment merely
 by being merged. V1 Human inputs/tokenizers/models remain v1.
 
 [PR108 v2 M2 receipt](../evidence/STAGE1A_M2_V2_ENGINEERING_2026-09-30.md)
-trained one six-step Managed engineering sequence, exported it, checked
-complete-menu scoring parity and ran six model-selected submissions with two
-native deliveries followed by the declared budget stop. Actor is unverified;
-there are no causal-successor labels or independent dev/quality conclusions.
-PR108 exact head `4bff20ba` passed full run `36588481214`; normal merge
-`5d5a471b` retained its tree. Integration run `36592794499` used verified
-same-tree reuse with fresh guards, not a second OS execution.
+records a six-step Managed training/export probe and six model submissions,
+two native deliveries, then budget stop. Actor is unverified; no causal-successor
+labels or independent quality result follow. Exact source/full CI and subsequent
+same-tree reuse identities remain in that receipt.
 
 ## Remaining Platform non-claims
 
