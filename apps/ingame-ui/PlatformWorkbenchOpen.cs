@@ -31,6 +31,7 @@ public sealed record PlatformWorkbenchOpenResult(
     string? Url = null)
 {
     public bool CanOpen => State == PlatformWorkbenchOpenState.Ready && Url is not null;
+    internal string? RuntimeInstanceId { get; init; }
 }
 
 internal interface IWorkbenchOpenProcess : IDisposable
@@ -205,14 +206,31 @@ public static class PlatformWorkbenchOpenClient
         TimeSpan pollInterval,
         CancellationToken cancellationToken = default)
     {
+        if (cancellationToken.IsCancellationRequested)
+            return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.Unavailable);
         PlatformWorkbenchOpenResult initial = await CheckWithTimeProviderAsync(
             client, timeProvider, cancellationToken);
         if (initial.State != PlatformWorkbenchOpenState.NotRegistered || cancellationToken.IsCancellationRequested)
             return initial;
+        if (initial.RuntimeInstanceId is null)
+            return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.Unavailable);
 
         using var deadline = new CancellationTokenSource(launchDeadline, timeProvider);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, deadline.Token);
+        PlatformWorkbenchOpenResult beforeLaunch = await CheckWithTimeProviderAsync(
+            client, timeProvider, linked.Token);
+        if (linked.IsCancellationRequested)
+            return new PlatformWorkbenchOpenResult(cancellationToken.IsCancellationRequested
+                ? PlatformWorkbenchOpenState.Unavailable : PlatformWorkbenchOpenState.LaunchTimedOut);
+        if (beforeLaunch.RuntimeInstanceId is not null
+            && beforeLaunch.RuntimeInstanceId != initial.RuntimeInstanceId)
+            return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.Stale);
+        if (beforeLaunch.State != PlatformWorkbenchOpenState.NotRegistered)
+            return beforeLaunch;
+        if (beforeLaunch.RuntimeInstanceId is null)
+            return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.Unavailable);
+
         using IWorkbenchOpenProcess? process = launcher.Start(out PlatformWorkbenchOpenState failure);
         if (process is null)
             return new PlatformWorkbenchOpenResult(failure);
@@ -245,6 +263,9 @@ public static class PlatformWorkbenchOpenClient
                     client, timeProvider, linked.Token);
                 if (linked.IsCancellationRequested)
                     break;
+                if (current.RuntimeInstanceId is not null
+                    && current.RuntimeInstanceId != initial.RuntimeInstanceId)
+                    return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.Stale);
                 if (current.State != PlatformWorkbenchOpenState.NotRegistered)
                 {
                     if (exited.IsCompletedSuccessfully && exited.Result != 0)
@@ -302,7 +323,10 @@ public static class PlatformWorkbenchOpenClient
                 || string.IsNullOrWhiteSpace(runtimeInstanceId))
                 return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.Unavailable);
             if (state == "unregistered")
-                return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.NotRegistered);
+                return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.NotRegistered)
+                {
+                    RuntimeInstanceId = runtimeInstanceId
+                };
             if (state != "registered")
                 return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.Unavailable);
             if (!TryGetString(status, "workbench_url", out string url)
@@ -328,6 +352,7 @@ public static class PlatformWorkbenchOpenClient
                 return new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.Stale);
             return observedInstanceId == instanceId
                 ? new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.Ready, url)
+                    { RuntimeInstanceId = runtimeInstanceId }
                 : new PlatformWorkbenchOpenResult(PlatformWorkbenchOpenState.Stale);
         }
         catch (OperationCanceledException)
