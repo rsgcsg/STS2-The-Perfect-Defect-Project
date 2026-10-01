@@ -143,9 +143,50 @@ def _training_binding(store: ArtifactStore, view: Manifest, value: object) -> di
             or value["model_view_id"] != view.artifact_id):
         raise BoundaryError("light_action_inputs", "training_binding_ancestry_mismatch")
     allocation = store.get_manifest(view.parent("allocation"))
-    if (allocation.kind != "protocol" or allocation.parent("dataset") != datasets[0]):
+    from .decision_training import ALLOCATION_SCHEMA
+
+    if (allocation.kind != "protocol"
+            or allocation.parameters.value().get("schema") != ALLOCATION_SCHEMA
+            or [parent.role for parent in allocation.parents] != ["dataset"]
+            or allocation.parent("dataset") != datasets[0]):
         raise BoundaryError("light_action_inputs", "training_binding_ancestry_mismatch")
     return value
+
+
+def _public_source_manifest(view: Manifest) -> tuple[str, dict[str, Any]]:
+    """Validate public source identity from its manifest without loading rows."""
+    from .public_inputs import COMPACT_IDENTITY, IDENTITY
+
+    info = view.parameters.value()
+    schema = info.get("schema")
+    if schema == PUBLIC_COMPACT_VIEW_SCHEMA:
+        renderer = COMPACT_IDENTITY
+    elif schema == PUBLIC_LITE_VIEW_SCHEMA:
+        renderer = IDENTITY
+    else:
+        renderer = None
+    if (view.kind != "model_view" or not isinstance(schema, str) or renderer is None
+            or info.get("serializer") != renderer):
+        raise BoundaryError("light_action_inputs", "public_renderer_mismatch")
+    return schema, renderer
+
+
+def _public_input_binding(
+    store: ArtifactStore, manifest: Manifest, view: Manifest,
+) -> dict[str, Any]:
+    """Validate all public M0 provenance in manifests only, before payload access."""
+    info = manifest.parameters.value()
+    schema, renderer = _public_source_manifest(view)
+    if (manifest.kind != "training_input"
+            or info.get("schema") != PUBLIC_SCHEMA
+            or info.get("format") != PUBLIC_INPUT_FORMAT
+            or info.get("source_schema") != schema
+            or info.get("source_renderer") != renderer
+            or [parent.role for parent in manifest.parents] != ["model_view"]
+            or sorted(payload.role for payload in manifest.payloads)
+            != ["action_codec", "rows", "state_tokenizer"]):
+        raise BoundaryError("light_action_inputs", "public_input_identity_mismatch")
+    return _training_binding(store, view, info.get("training_binding"))
 
 
 def canonical_training_binding(store: ArtifactStore, identity: str) -> dict[str, Any]:
@@ -158,11 +199,23 @@ def canonical_training_binding(store: ArtifactStore, identity: str) -> dict[str,
     manifest = store.get_manifest(identity)
     info = manifest.parameters.value()
     if (manifest.kind != "training_input" or info.get("schema") != CANONICAL_SCHEMA
+            or info.get("format") != CANONICAL_INPUT_FORMAT
             or [parent.role for parent in manifest.parents] != ["model_view"]):
         raise BoundaryError("light_action_inputs", "canonical_training_input_required")
     view = store.get_manifest(manifest.parent("model_view"))
-    if view.parameters.value().get("schema") != "stpd/decision-model-view-v1":
+    if (view.kind != "model_view"
+            or view.parameters.value().get("schema") != "stpd/decision-model-view-v1"
+            or info.get("source_schema") != "stpd/decision-model-view-v1"):
         raise BoundaryError("light_action_inputs", "input_family_source_mismatch")
+    serializer_info = view.parameters.value().get("serializer")
+    if not isinstance(serializer_info, dict):
+        raise BoundaryError("light_action_inputs", "canonical_serializer_mismatch")
+    from .representation import FullRunSerializer
+
+    serializer = FullRunSerializer(serializer_info.get("profile", ""))
+    if (serializer.identity != serializer_info
+            or info.get("source_renderer") != serializer.identity):
+        raise BoundaryError("light_action_inputs", "canonical_serializer_mismatch")
     return _training_binding(store, view, info.get("training_binding"))
 
 
@@ -174,11 +227,7 @@ def public_training_binding(store: ArtifactStore, identity: str) -> dict[str, An
             or [parent.role for parent in manifest.parents] != ["model_view"]):
         raise BoundaryError("light_action_inputs", "public_training_input_required")
     view = store.get_manifest(manifest.parent("model_view"))
-    if view.parameters.value().get("schema") not in {
-        PUBLIC_LITE_VIEW_SCHEMA, PUBLIC_COMPACT_VIEW_SCHEMA,
-    }:
-        raise BoundaryError("light_action_inputs", "input_family_source_mismatch")
-    return _training_binding(store, view, info.get("training_binding"))
+    return _public_input_binding(store, manifest, view)
 
 
 def _state_codec(raw: bytes, tokenizer: Tokenizer, family: Literal["s", "qwen3"],
@@ -311,13 +360,19 @@ def publish_light_action_inputs(
     max_action_bytes: int = DEFAULT_MAX_ACTION_BYTES,
     training_binding: dict[str, Any] | None = None,
 ) -> Manifest:
-    view, samples, renderer = _source_view(store, view_id)
-    source_schema = view.parameters.value().get("schema")
+    # Bind an admitted M0 source from manifests before reprojecting its payloads.
+    view_manifest = store.get_manifest(view_id)
+    source_schema = view_manifest.parameters.value().get("schema")
     canonical = source_schema == "stpd/decision-model-view-v1"
     public = source_schema in {PUBLIC_LITE_VIEW_SCHEMA, PUBLIC_COMPACT_VIEW_SCHEMA}
-    binding = _training_binding(store, view, training_binding) if canonical or public else None
+    binding = (_training_binding(store, view_manifest, training_binding)
+               if canonical or public else None)
+    if public:
+        _public_source_manifest(view_manifest)
     if not (canonical or public) and training_binding is not None:
         raise BoundaryError("light_action_inputs", "training_binding_only_for_admitted_m0")
+    view, samples, renderer = _source_view(store, view_id)
+    source_schema = view.parameters.value().get("schema")
     if state_family == "s" and snapshot is None:
         raw = fit_state_bpe(samples)
     elif state_family == "qwen3" and snapshot is not None:
@@ -375,8 +430,9 @@ def load_light_action_inputs(store: ArtifactStore, identity: str) -> LoadedLight
         raise BoundaryError("light_action_inputs", "input_family_source_mismatch")
     if not canonical and not public and info.get("schema") == CANONICAL_SCHEMA:
         raise BoundaryError("light_action_inputs", "input_family_source_mismatch")
-    binding = (_training_binding(store, view_manifest, info.get("training_binding"))
-               if canonical or public else None)
+    binding = (_public_input_binding(store, manifest, view_manifest) if public else
+               _training_binding(store, view_manifest, info.get("training_binding"))
+               if canonical else None)
     if not canonical and not public and "training_binding" in info:
         raise BoundaryError("light_action_inputs", "unexpected_training_binding")
     view, samples, renderer = _source_view(store, view_id)
