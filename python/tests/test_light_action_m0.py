@@ -354,6 +354,42 @@ def test_worker_checkpoint_write_failure_keeps_last_checkpoint_without_retry(tmp
     assert reporter.completed(run.artifact_id) is None
 
 
+def test_worker_resumed_checkpoint_write_failure_keeps_resume_id_without_retry(
+    tmp_path, monkeypatch,
+):
+    torch.set_num_threads(2)
+    archive, _, inputs = _inputs(tmp_path)
+    config = LightActionM0Config(steps=4, max_state_tokens=8192, max_action_bytes=8192)
+    run = prepare_token_run(archive, inputs, config, PRODUCER, replicate="resume-failure-3")
+    reporter = ObjectStoreRunReporter(archive, archive.blobs)
+    paused = execute_tokens(archive, reporter, run.artifact_id, PRODUCER,
+                            stop_after=2, checkpoint_interval=3)
+    assert paused.state == "paused" and paused.checkpoint_id
+    assert archive.get_manifest(paused.checkpoint_id).parameters.value()["step"] == 2
+
+    original_put_payload = archive.put_payload
+    checkpoint_writes = 0
+
+    def fail_first_checkpoint(role, *args, **kwargs):
+        nonlocal checkpoint_writes
+        if role == "checkpoint":
+            checkpoint_writes += 1
+            raise OSError("injected resumed checkpoint payload failure")
+        return original_put_payload(role, *args, **kwargs)
+
+    monkeypatch.setattr(archive, "put_payload", fail_first_checkpoint)
+    with pytest.raises(OSError, match="injected resumed checkpoint payload failure"):
+        execute_tokens(archive, reporter, run.artifact_id, PRODUCER,
+                       resume=paused.checkpoint_id, checkpoint_interval=3)
+
+    assert checkpoint_writes == 1
+    events = [item.parameters.value() for item in reporter.events(run.artifact_id)]
+    failed = next(item for item in events if item["kind"] == "failed")
+    assert failed["step"] == 3
+    assert failed["details"]["last_checkpoint"] == paused.checkpoint_id
+    assert reporter.completed(run.artifact_id) is None
+
+
 def _tiny_backend(vocab_size: int, *, seed: int = 521):
     from transformers import Qwen3Config, Qwen3Model
 

@@ -458,6 +458,8 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
             engine.restore(b"".join(store.read_payload(saved.payload("checkpoint"))))
             if saved_info.get("step") != engine.step:
                 raise BoundaryError("token_run", "resume_step_mismatch")
+            # Preserve the last known-good checkpoint if the first resumed save fails.
+            checkpoint_id = resume
         initial_step = engine.step
         event("resumed" if resume else "started", **(
             {"checkpoint_interval": checkpoint_interval} if checkpoint_interval > 1 else {}
