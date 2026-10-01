@@ -19,6 +19,9 @@ from ..fullrun.light_action_inputs import (
     CANONICAL_SCHEMA as CANONICAL_LIGHT_ACTION_INPUT_SCHEMA,
 )
 from ..fullrun.light_action_inputs import (
+    PUBLIC_SCHEMA as PUBLIC_LIGHT_ACTION_INPUT_SCHEMA,
+)
+from ..fullrun.light_action_inputs import (
     SCHEMA as LIGHT_ACTION_INPUT_SCHEMA,
 )
 from ..fullrun.light_action_inputs import (
@@ -44,13 +47,17 @@ RUN_SCHEMA = "stpd/stage1a-run-v1"
 MODEL_SCHEMA = "stpd/stage1a-model-v1"
 LIGHT_ACTION_M0_MODEL_SCHEMA = "stpd/stage1a-light-action-m0-model-v1"
 CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA = "stpd/stage1a-light-action-m0-canonical-model-v1"
+PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA = "stpd/stage1a-light-action-m0-public-model-v1"
 
 
 def _load_inputs(
     store: ArtifactStore, identity: str,
 ) -> LoadedTokenInputs | LoadedLightActionInputs:
     info = store.get_manifest(identity).parameters.value()
-    if info.get("schema") in {LIGHT_ACTION_INPUT_SCHEMA, CANONICAL_LIGHT_ACTION_INPUT_SCHEMA}:
+    if info.get("schema") in {
+        LIGHT_ACTION_INPUT_SCHEMA, CANONICAL_LIGHT_ACTION_INPUT_SCHEMA,
+        PUBLIC_LIGHT_ACTION_INPUT_SCHEMA,
+    }:
         return load_light_action_inputs(store, identity)
     return load_token_inputs(store, identity)
 
@@ -59,6 +66,8 @@ def _model_schema(config: Stage1aConfig, input_schema: str | None = None) -> str
     if isinstance(config, LightActionM0Config):
         return (CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA
                 if input_schema == CANONICAL_LIGHT_ACTION_INPUT_SCHEMA
+                else PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA
+                if input_schema == PUBLIC_LIGHT_ACTION_INPUT_SCHEMA
                 else LIGHT_ACTION_M0_MODEL_SCHEMA)
     return MODEL_SCHEMA
 
@@ -97,8 +106,11 @@ def prepare_token_run(
     if isinstance(config, LightActionM0Config):
         expected_family = ("train-only-byte-bpe" if recipe_for(config.recipe).backbone == "s"
                            else "pinned-qwen3")
-        expected_input_schemas = {LIGHT_ACTION_INPUT_SCHEMA, CANONICAL_LIGHT_ACTION_INPUT_SCHEMA}
+        expected_input_schemas = {LIGHT_ACTION_INPUT_SCHEMA,
+                                  CANONICAL_LIGHT_ACTION_INPUT_SCHEMA,
+                                  PUBLIC_LIGHT_ACTION_INPUT_SCHEMA}
         canonical = input_info.get("schema") == CANONICAL_LIGHT_ACTION_INPUT_SCHEMA
+        public = input_info.get("schema") == PUBLIC_LIGHT_ACTION_INPUT_SCHEMA
         if (not isinstance(inputs, LoadedLightActionInputs)
                 or input_info.get("schema") not in expected_input_schemas
                 or input_info.get("graph") != recipe_for(config.recipe).graph
@@ -109,6 +121,13 @@ def prepare_token_run(
             raise BoundaryError("token_run", "light_action_dual_input_or_codec_mismatch")
         if canonical and not isinstance(input_info.get("training_binding"), dict):
             raise BoundaryError("token_run", "canonical_training_binding_required")
+        if public and (not isinstance(input_info.get("training_binding"), dict)
+                       or config.public_profile not in {"public_lite", "public_compact"}
+                       or input_info.get("source_renderer", {}).get("profile")
+                       != config.public_profile):
+            raise BoundaryError("token_run", "public_training_binding_or_profile_required")
+        if not public and config.public_profile is not None:
+            raise BoundaryError("token_run", "public_profile_source_mismatch")
     elif (not isinstance(inputs, LoadedTokenInputs)
           or input_info.get("backbone") != recipe_for(config.recipe).backbone):
         raise BoundaryError("token_run", "input_backbone_mismatch")
@@ -227,7 +246,9 @@ def _verify_completed(store: ArtifactStore, result: Manifest, run: Manifest) -> 
             or len(names) != len(set(names))
         ):
             raise BoundaryError("token_run", "light_action_model_identity_mismatch")
-        if source_info.get("schema") == CANONICAL_LIGHT_ACTION_INPUT_SCHEMA:
+        if source_info.get("schema") in {
+            CANONICAL_LIGHT_ACTION_INPUT_SCHEMA, PUBLIC_LIGHT_ACTION_INPUT_SCHEMA,
+        }:
             expected_eval = {
                 "evaluation_scope": "within_training_purpose_allocation",
                 "historical_external_exposure": "unknown",
@@ -268,7 +289,8 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
         raise BoundaryError("token_run", "invalid_pause_budget")
     inputs = _load_inputs(store, run.parent("training_input"))
     input_info = inputs.manifest.parameters.value()
-    if (input_info.get("schema") == CANONICAL_LIGHT_ACTION_INPUT_SCHEMA
+    if (input_info.get("schema") in {CANONICAL_LIGHT_ACTION_INPUT_SCHEMA,
+                                      PUBLIC_LIGHT_ACTION_INPUT_SCHEMA}
             and info.get("training_binding") != input_info.get("training_binding")):
         raise BoundaryError("token_run", "training_binding_mismatch")
     experiment = store.get_manifest(run.parent("experiment"))
@@ -403,9 +425,11 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
         store.publish(model)
         # Human text-input rows are session-scoped; distinct recorded run IDs do
         # not establish independent native runs across those sessions.
-        canonical = (input_info.get("schema") == CANONICAL_LIGHT_ACTION_INPUT_SCHEMA)
+        admitted = input_info.get("schema") in {
+            CANONICAL_LIGHT_ACTION_INPUT_SCHEMA, PUBLIC_LIGHT_ACTION_INPUT_SCHEMA,
+        }
         dev_admission = None
-        if canonical:
+        if admitted:
             if dev_admitter is None:
                 raise BoundaryError("token_run", "canonical_dev_admission_required")
             dev_admission = dev_admitter(model, view)
@@ -417,7 +441,7 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
                 raise BoundaryError("token_run", "canonical_dev_admission_invalid")
         event("evaluating", model_id=model.artifact_id)
         native_run_independence = (
-            False if canonical else view.parameters.value().get("schema") not in {
+            False if admitted else view.parameters.value().get("schema") not in {
                 "stpd/human-text-input-bc-view-v1", "stpd/human-text-input-bc-view-v2",
             }
         )
