@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   statSync,
   writeFileSync
 } from "node:fs";
@@ -76,6 +77,20 @@ export function toBashPath(value, platform = process.platform) {
     throw new Error(`Managed candidate requires a drive-qualified Windows game path: ${value}`);
   }
   return `/${drive.toLowerCase()}${resolved.slice(2).replaceAll("\\", "/")}`;
+}
+
+/** Resolve candidate aliases physically before clone/setup/MSBuild consume the path. */
+export function canonicalizeManagedCandidateDirectory(candidateDirectory) {
+  const requested = path.resolve(candidateDirectory);
+  const requestedParent = path.dirname(requested);
+  // The leaf and any intermediate parents may not exist before `git clone`.
+  // Create the parent chain through the requested alias, then canonicalize it.
+  mkdirSync(requestedParent, { recursive: true });
+  const canonicalParent = realpathSync.native(requestedParent);
+  return {
+    requested,
+    canonical: path.join(canonicalParent, path.basename(requested))
+  };
 }
 
 async function run(command, args, options = {}) {
@@ -251,7 +266,7 @@ function candidateArtifact(candidateDirectory, manifest) {
 }
 
 export async function inspectManagedCandidateBuild({ root, candidateDirectory, manifest }) {
-  const resolvedCandidateDirectory = path.resolve(candidateDirectory);
+  const resolvedCandidateDirectory = realpathSync.native(path.resolve(candidateDirectory));
   const source = await auditManagedCandidateSource({
     root,
     candidateDirectory: resolvedCandidateDirectory,
@@ -314,13 +329,14 @@ export async function prepareManagedCandidate({
   if (!Number.isSafeInteger(major) || major < manifest.setup_contract.dotnet_major_minimum) {
     throw new Error(`Managed candidate requires .NET ${manifest.setup_contract.dotnet_major_minimum}+.`);
   }
-  const destination = path.resolve(candidateDirectory ?? path.join(
+  const requestedDestination = path.resolve(candidateDirectory ?? path.join(
     localRoot,
     "candidates",
     `${manifest.candidate_id}-${safeTimestamp()}`
   ));
+  const { requested: requestedCandidateDirectory, canonical: destination } =
+    canonicalizeManagedCandidateDirectory(requestedDestination);
   if (existsSync(destination)) throw new Error(`Refusing to overwrite candidate directory: ${destination}`);
-  mkdirSync(path.dirname(destination), { recursive: true });
   // The pinned upstream contains Bash entry points. A Windows global
   // core.autocrlf setting must not rewrite those files before setup.
   await run("git", [
@@ -394,12 +410,19 @@ export async function prepareManagedCandidate({
     manifest,
     exact_game: exactGame,
     dotnet,
+    requested_candidate_directory: requestedCandidateDirectory,
+    canonical_candidate_directory: destination,
     game_assembly_unmodified: build.runtime_sts2_sha256 === build.original_sts2_sha256,
     build,
     non_claims: manifest.admission.forbidden_claims
   };
   writeFileSync(reportFile, `${JSON.stringify(report, null, 2)}\n`);
-  return { report, reportFile, candidateDirectory: destination };
+  return {
+    report,
+    reportFile,
+    requestedCandidateDirectory,
+    candidateDirectory: destination
+  };
 }
 
 export async function startManagedCandidateRuntime({
@@ -413,12 +436,12 @@ export async function startManagedCandidateRuntime({
   const { manifest: loadedManifest } = loadManagedCandidateManifest(root);
   const manifest = selectManagedCandidateManifest(loadedManifest, diskIdentity);
   const exactGame = assertManagedCandidateGame(manifest, diskIdentity);
-  const resolvedCandidateDirectory = path.resolve(candidateDirectory);
   const build = await inspectManagedCandidateBuild({
     root,
-    candidateDirectory: resolvedCandidateDirectory,
+    candidateDirectory,
     manifest
   });
+  const resolvedCandidateDirectory = build.candidate_directory;
   const dotnet = await resolveDotnet();
   const gameDataDirectory = path.dirname(diskIdentity.sts2_assembly.path);
   const { process: child, ready } = await startJsonLineProcess({
