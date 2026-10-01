@@ -12,12 +12,22 @@ import torch
 from tokenizers import Tokenizer
 
 from spireagent.artifact_contracts import Manifest
-from spireagent.json_boundary import BoundaryError, json_bytes, object_fields
+from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
 from spireagent.storage.store import ArtifactStore
 
 from ..fullrun.contracts import SemanticAction, SemanticState
+from ..fullrun.decision_training import VIEW_SCHEMA as CANONICAL_LIGHT_ACTION_M0_VIEW_SCHEMA
+from ..fullrun.light_action_inputs import (
+    CANONICAL_INPUT_FORMAT as CANONICAL_LIGHT_ACTION_M0_INPUT_FORMAT,
+)
+from ..fullrun.light_action_inputs import (
+    CANONICAL_SCHEMA as CANONICAL_LIGHT_ACTION_M0_INPUT_SCHEMA,
+)
 from ..fullrun.light_action_inputs import (
     INPUT_FORMAT as LIGHT_ACTION_M0_INPUT_FORMAT,
+)
+from ..fullrun.light_action_inputs import (
+    SCHEMA as LIGHT_ACTION_M0_INPUT_SCHEMA,
 )
 from ..fullrun.light_action_inputs import (
     TEXT_MENU_VIEW_SCHEMA as LIGHT_ACTION_M0_VIEW_SCHEMA,
@@ -49,6 +59,8 @@ FILES = {"weights": "weights.safetensors", "tokenizer": "tokenizer.json"}
 LIMITS = {"weights": 128 * 1024**2, "tokenizer": 16 * 1024**2}
 LIGHT_ACTION_M0_MODEL_SCHEMA = "stpd/stage1a-light-action-m0-model-v1"
 LIGHT_ACTION_M0_EXPORT_SCHEMA = "stpd/stage1a-light-action-m0-export-v1"
+CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA = "stpd/stage1a-light-action-m0-canonical-model-v1"
+CANONICAL_LIGHT_ACTION_M0_EXPORT_SCHEMA = "stpd/stage1a-light-action-m0-canonical-export-v1"
 LIGHT_ACTION_M0_FILES = {
     "weights": "weights.safetensors",
     "state_tokenizer": "state-tokenizer.json",
@@ -109,29 +121,81 @@ def check_light_action_m0_model(
 ) -> tuple[LightActionM0Config, dict[str, Any]]:
     """Validate the additive stateless M0 artifact without changing legacy model identity."""
     info = model.parameters.value()
-    if (model.kind != "model" or info.get("schema") != LIGHT_ACTION_M0_MODEL_SCHEMA
+    model_schema = info.get("schema")
+    canonical = model_schema == CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA
+    expected_model_schema = (CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA if canonical
+                             else LIGHT_ACTION_M0_MODEL_SCHEMA)
+    expected_input_schema = (CANONICAL_LIGHT_ACTION_M0_INPUT_SCHEMA if canonical
+                             else LIGHT_ACTION_M0_INPUT_SCHEMA)
+    expected_input_format = (CANONICAL_LIGHT_ACTION_M0_INPUT_FORMAT if canonical
+                             else LIGHT_ACTION_M0_INPUT_FORMAT)
+    if (model.kind != "model" or model_schema != expected_model_schema
             or info.get("qualification") != "engineering_only" or info.get("dtype") != "float32"
-            or info.get("input_format") != LIGHT_ACTION_M0_INPUT_FORMAT
+            or info.get("input_schema") != expected_input_schema
+            or info.get("input_format") != expected_input_format
             or sorted(payload.role for payload in model.payloads)
             != ["action_codec", "state_tokenizer", "weights"]):
         raise BoundaryError("token_policy", "unsupported_light_action_model")
     config = LightActionM0Config.decode(info.get("config"))
     recipe = recipe_for(config.recipe)
+    expected_view_schema = (CANONICAL_LIGHT_ACTION_M0_VIEW_SCHEMA if canonical
+                            else LIGHT_ACTION_M0_VIEW_SCHEMA)
     if (info.get("recipe") != config.recipe or info.get("graph") != recipe.graph
             or info.get("steps") != config.steps
-            or info.get("source_view_schema") != LIGHT_ACTION_M0_VIEW_SCHEMA):
+            or info.get("source_view_schema") != expected_view_schema):
         raise BoundaryError("token_policy", "light_action_model_config_mismatch")
     if info.get("config") != config_payload(config):
         raise BoundaryError("token_policy", "light_action_model_config_mismatch")
+    if canonical:
+        binding = info.get("training_binding")
+        if (not isinstance(binding, dict) or binding.get("schema")
+                != "stpd/light-action-m0-training-binding-v1"
+                or not isinstance(binding.get("dataset_ids"), list)
+                or not binding["dataset_ids"]
+                or any(not isinstance(identity, str) for identity in binding["dataset_ids"])
+                or binding["dataset_ids"] != sorted(set(binding["dataset_ids"]))
+                or not isinstance(binding.get("training_operation_id"), str)
+                or len(binding["training_operation_id"]) != 32
+                or any(character not in "0123456789abcdef"
+                       for character in binding["training_operation_id"])
+                or set(binding) != {"schema", "dataset_ids", "training_operation_id",
+                                    "allocation_id", "model_view_id"}):
+            raise BoundaryError("token_policy", "light_action_training_binding_mismatch")
+        digest(binding["allocation_id"], "light_action_m0.allocation_id")
+        digest(binding["model_view_id"], "light_action_m0.model_view_id")
+        if (info.get("input_schema") != CANONICAL_LIGHT_ACTION_M0_INPUT_SCHEMA
+                or info.get("input_format") != CANONICAL_LIGHT_ACTION_M0_INPUT_FORMAT
+                or info.get("source_view_schema") != CANONICAL_LIGHT_ACTION_M0_VIEW_SCHEMA
+                or sorted(parent.role for parent in model.parents)
+                != ["checkpoint", "model_view", "run", "training_input"]
+                or model.parent("model_view") != binding["model_view_id"]):
+            raise BoundaryError("token_policy", "light_action_training_binding_mismatch")
+    elif (info.get("input_schema") != LIGHT_ACTION_M0_INPUT_SCHEMA
+          or info.get("input_format") != LIGHT_ACTION_M0_INPUT_FORMAT):
+        raise BoundaryError("token_policy", "light_action_model_config_mismatch")
     state_codec = info.get("state_codec")
     action_codec = info.get("action_codec")
+    renderer = info.get("source_renderer")
+    expected_renderer = (info.get("source_renderer") if canonical else TEXT_MENU_IDENTITY)
+    if canonical:
+        from ..fullrun.representation import FullRunSerializer
+
+        if not isinstance(renderer, dict):
+            raise BoundaryError("token_policy", "light_action_renderer_mismatch")
+        serializer = FullRunSerializer(renderer.get("profile", ""))
+        if serializer.identity != renderer:
+            raise BoundaryError("token_policy", "light_action_renderer_mismatch")
+        expected_renderer = serializer.identity
+    if renderer != expected_renderer:
+        raise BoundaryError("token_policy", "light_action_renderer_mismatch")
     if (not isinstance(state_codec, dict) or not isinstance(action_codec, dict)
+            or not isinstance(renderer, dict)
             or state_codec.get("sha256") != model.payload("state_tokenizer").sha256
             or info.get("state_tokenizer_sha256") != model.payload("state_tokenizer").sha256
             or action_codec.get("sha256") != LIGHT_ACTION_CODEC_SHA256
             or info.get("action_codec_sha256") != LIGHT_ACTION_CODEC_SHA256
             or action_codec.get("schema") != LIGHT_ACTION_CODEC_SPEC.get("schema")
-            or action_codec.get("source_renderer") != TEXT_MENU_IDENTITY):
+            or action_codec.get("source_renderer") != expected_renderer):
         raise BoundaryError("token_policy", "light_action_codec_identity_mismatch")
     expected_state_family = "train-only-byte-bpe" if recipe.backbone == "s" else "pinned-qwen3"
     expected_state_schema = (
@@ -140,7 +204,7 @@ def check_light_action_m0_model(
     expected_action_codec = {
         **LIGHT_ACTION_CODEC_SPEC,
         "sha256": LIGHT_ACTION_CODEC_SHA256,
-        "source_renderer": TEXT_MENU_IDENTITY,
+        "source_renderer": expected_renderer,
     }
     if (state_codec.get("family") != expected_state_family
             or state_codec.get("schema") != expected_state_schema
@@ -198,7 +262,7 @@ def export_light_action_m0_model(
 ) -> dict[str, Any]:
     """Export the exact three-payload M0 artifact into a standalone directory."""
     model = store.get_manifest(identity)
-    check_light_action_m0_model(model)
+    _, info = check_light_action_m0_model(model)
     raw: dict[str, bytes] = {}
     for role in LIGHT_ACTION_M0_FILES:
         payload = model.payload(role)
@@ -212,7 +276,10 @@ def export_light_action_m0_model(
             raise BoundaryError("token_policy", "payload_digest_mismatch")
     if raw["action_codec"] != LIGHT_ACTION_CODEC_BYTES:
         raise BoundaryError("token_policy", "light_action_codec_identity_mismatch")
-    envelope = {"schema": LIGHT_ACTION_M0_EXPORT_SCHEMA, "model_id": identity,
+    export_schema = (CANONICAL_LIGHT_ACTION_M0_EXPORT_SCHEMA
+                     if info["schema"] == CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA
+                     else LIGHT_ACTION_M0_EXPORT_SCHEMA)
+    envelope = {"schema": export_schema, "model_id": identity,
                 "model": json.loads(model.to_bytes())}
     destination = destination.expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -225,7 +292,7 @@ def export_light_action_m0_model(
         for role, filename in LIGHT_ACTION_M0_FILES.items():
             (stage / filename).write_bytes(raw[role])
         os.rename(stage, destination)
-    return {"model_id": identity, "schema": LIGHT_ACTION_M0_EXPORT_SCHEMA,
+    return {"model_id": identity, "schema": export_schema,
             "payload_bytes": sum(len(value) for value in raw.values())}
 
 
@@ -246,12 +313,19 @@ class LightActionM0DecisionScorer:
             json.loads(envelope_path.read_bytes()), {"schema", "model_id", "model"},
             "light_action_m0_export",
         )
-        if value["schema"] != LIGHT_ACTION_M0_EXPORT_SCHEMA:
+        if value["schema"] not in {LIGHT_ACTION_M0_EXPORT_SCHEMA,
+                                    CANONICAL_LIGHT_ACTION_M0_EXPORT_SCHEMA}:
             raise BoundaryError("token_policy", "unsupported_light_action_export")
         if not isinstance(value["model_id"], str):
             raise BoundaryError("token_policy", "light_action_export_identity_mismatch")
         self.artifact = Manifest.from_bytes(json_bytes(value["model"]), value["model_id"])
         self.config, self.info = check_light_action_m0_model(self.artifact)
+        canonical = self.info["schema"] == CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA
+        expected_export_schema = (CANONICAL_LIGHT_ACTION_M0_EXPORT_SCHEMA if canonical
+                                  else LIGHT_ACTION_M0_EXPORT_SCHEMA)
+        if value["schema"] != expected_export_schema:
+            raise BoundaryError("token_policy", "light_action_export_family_mismatch")
+        self.canonical_input = canonical
         raw: dict[str, bytes] = {}
         for role, filename in LIGHT_ACTION_M0_FILES.items():
             path = directory / filename
@@ -325,6 +399,8 @@ class LightActionM0DecisionScorer:
         return tuple(float(score) for score in scores.detach().cpu().tolist())
 
     def score_snapshot(self, snapshot: dict[str, Any]) -> dict[str, float]:
+        if self.canonical_input:
+            raise BoundaryError("token_policy", "canonical_semantic_input_required")
         if snapshot.get("schema") != TEXT_MENU_SCHEMA:
             raise BoundaryError("token_policy", "text_menu_snapshot_required")
         current = project_text_menu_snapshot(snapshot)
@@ -333,6 +409,25 @@ class LightActionM0DecisionScorer:
             raise BoundaryError("token_policy", "complete_unique_candidate_catalog_required")
         scores = self.score_texts(current.state_text, current.action_texts)
         return dict(zip(current.action_ids, scores, strict=True))
+
+    def score_semantic(
+        self, state: SemanticState, actions: tuple[SemanticAction, ...], *, profile: str,
+    ) -> dict[str, float]:
+        if not self.canonical_input:
+            raise BoundaryError("token_policy", "text_menu_snapshot_model_required")
+        from ..fullrun.representation import FullRunSerializer
+
+        expected = self.info["source_renderer"].get("profile")
+        if profile != expected:
+            raise BoundaryError("token_policy", "canonical_renderer_profile_mismatch")
+        serializer = FullRunSerializer(profile)
+        if (serializer.identity != self.info["source_renderer"] or not actions
+                or len({action.key for action in actions}) != len(actions)):
+            raise BoundaryError("token_policy", "complete_semantic_catalog_required")
+        scores = self.score_texts(serializer.serialize_state(state), tuple(
+            serializer.serialize_action(action) for action in actions
+        ))
+        return {action.key: score for action, score in zip(actions, scores, strict=True)}
 
 
 class TokenDecisionScorer:
