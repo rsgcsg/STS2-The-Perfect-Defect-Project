@@ -11,13 +11,14 @@ import sqlite3
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sts2_platform_evidence.human_session_bundle_v3 import HumanSessionBundleV3
 
-from spireagent.artifact_contracts import Manifest
+from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.hub.database import create_private_database
-from spireagent.json_boundary import BoundaryError, digest
+from spireagent.json_boundary import BoundaryError, FrozenObject, digest
 from spireagent.research_curation import CurationLedger, InventoryPending
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
@@ -35,6 +36,16 @@ REQUIRED_TABLES = {
 REQUIRED_INDEXES = {
     "curation_decision_sources", "curation_run_fingerprints",
     "curation_run_claims", "curation_latest_annotation",
+}
+USER_DECLARATION_SCHEMA = "stpd/local-user-declaration-v1"
+USER_DECLARATION_TABLE = "local_user_declarations"
+DECLARATION_DATASET_SCHEMAS = {
+    "stpd/decision-dataset-v1",
+    "stpd/curated-decision-dataset-v1",
+}
+DECLARATION_SOURCE_SCHEMAS = {
+    "stpd/received-bundle-v1",
+    "stpd/local-verified-bundle-v1",
 }
 
 
@@ -288,6 +299,630 @@ class LocalCurationOwner:
             raise BoundaryError("local_curation", "gold_previously_used_for_evaluation")
         if purpose == "gold" and self.gold_history_unknown(db, related):
             raise BoundaryError("local_curation", "legacy_gold_history_unknown")
+
+    @staticmethod
+    def _timestamp(value: object, stage: str) -> str:
+        if not isinstance(value, str) or not value or len(value) > 64:
+            raise BoundaryError(stage, "invalid_timestamp")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise BoundaryError(stage, "invalid_timestamp") from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise BoundaryError(stage, "invalid_timestamp")
+        return value
+
+    def _declaration_store(self, store: ManifestArtifactStore) -> None:
+        if (not isinstance(store, ManifestArtifactStore)
+                or not isinstance(store.blobs, LocalBlobStore)
+                or store.blobs.root != self.store_dir.resolve()
+                or self.path.is_symlink() or self.store_dir.is_symlink()):
+            raise BoundaryError("local_curation", "store_identity_mismatch")
+
+    @staticmethod
+    def _declaration_dataset(store: ManifestArtifactStore, identity: str,
+                             visited: set[str], sources: dict[str, Manifest],
+                             datasets: dict[str, Manifest]) -> None:
+        """Validate exact supported manifest recipes without opening any payload."""
+        from stpd.fullrun.curated_dataset import SCHEMA as CURATED_SCHEMA
+        from stpd.fullrun.decision_dataset import SCHEMA as DECISION_SCHEMA
+        from stpd.fullrun.decision_dataset import SelectionRules
+
+        if identity in visited:
+            return
+        if len(visited) >= 512:
+            raise BoundaryError("local_curation", "declaration_lineage_limit")
+        visited.add(identity)
+        manifest = store.get_manifest(identity)
+        info = manifest.parameters.value()
+        if manifest.kind == "evidence":
+            schema = info.get("schema")
+            if not isinstance(schema, str) or schema not in DECLARATION_SOURCE_SCHEMAS:
+                raise BoundaryError("local_curation", "declaration_source_unsupported")
+            if ((schema == "stpd/received-bundle-v1" and info.get("disposition") != "verified")
+                    or (schema == "stpd/local-verified-bundle-v1"
+                        and info.get("disposition") != "locally_verified")):
+                raise BoundaryError("local_curation", "declaration_source_unsupported")
+            if [payload.role for payload in manifest.payloads].count("archive") != 1:
+                raise BoundaryError("local_curation", "declaration_source_unsupported")
+            sources[identity] = manifest
+            return
+        schema = info.get("schema")
+        if (manifest.kind != "dataset" or not isinstance(schema, str)
+                or schema not in DECLARATION_DATASET_SCHEMAS):
+            raise BoundaryError("local_curation", "declaration_dataset_unsupported")
+        if schema == DECISION_SCHEMA:
+            if set(info) != {"schema", "logical_id", "rules", "records", "scope", "split_status"}:
+                raise BoundaryError("local_curation", "declaration_dataset_unsupported")
+            if ([payload.role for payload in manifest.payloads] != ["records", "selection"]
+                    or info["scope"] != "platform_verified"
+                    or type(info["records"]) is not int or info["records"] < 1):
+                raise BoundaryError("local_curation", "declaration_dataset_unsupported")
+            SelectionRules.decode(info["rules"])
+            digest(info["logical_id"], "local_curation.declaration_logical_id")
+            expected_prefix = "source_"
+        else:
+            expected = {
+                "schema", "logical_id", "purpose", "rules", "merging", "paired_training",
+                "records", "runs", "scope", "split_status", "materialization",
+                "sealed_test", "reservation", "isolation", "historical_external_exposure",
+            }
+            if set(info) != expected or info["purpose"] != "training":
+                raise BoundaryError("local_curation", "declaration_dataset_unsupported")
+            if ([payload.role for payload in manifest.payloads] != ["selection"]
+                    or type(info["merging"]) is not bool
+                    or info["scope"] != "platform_verified"
+                    or type(info["records"]) is not int or info["records"] < 1
+                    or type(info["runs"]) is not int or info["runs"] < 1
+                    or info["paired_training"] is not None
+                    or info["sealed_test"] is not False
+                    or info["reservation"] is not None
+                    or info["materialization"] != "on_demand"
+                    or info["isolation"] != "ordinary"
+                    or info["historical_external_exposure"] != "unknown"):
+                raise BoundaryError("local_curation", "declaration_dataset_unsupported")
+            SelectionRules.decode(info["rules"])
+            digest(info["logical_id"], "local_curation.declaration_logical_id")
+            expected_prefix = "dataset_" if info["merging"] else "source_"
+        if not manifest.parents or len(manifest.parents) > 100:
+            raise BoundaryError("local_curation", "declaration_dataset_unsupported")
+        parent_ids = [parent.artifact_id for parent in manifest.parents]
+        if (len(set(parent_ids)) != len(parent_ids)
+                or {parent.role for parent in manifest.parents}
+                != {expected_prefix + parent_id for parent_id in parent_ids}):
+            raise BoundaryError("local_curation", "declaration_dataset_unsupported")
+        datasets[identity] = manifest
+        for parent in manifest.parents:
+            parent_manifest = store.get_manifest(parent.artifact_id)
+            if schema == DECISION_SCHEMA or (schema == CURATED_SCHEMA and not info["merging"]):
+                if parent_manifest.kind != "evidence":
+                    raise BoundaryError("local_curation", "declaration_dataset_unsupported")
+            elif parent_manifest.kind != "dataset":
+                raise BoundaryError("local_curation", "declaration_dataset_unsupported")
+            LocalCurationOwner._declaration_dataset(
+                store, parent.artifact_id, visited, sources, datasets,
+            )
+
+    @staticmethod
+    def _declaration_rules_contain(candidate: dict, declared: dict) -> bool:
+        from stpd.fullrun.decision_dataset import SelectionRules
+
+        candidate_rules = SelectionRules.decode(candidate)
+        declared_rules = SelectionRules.decode(declared)
+        if ((declared_rules.complete_only and not candidate_rules.complete_only)
+                or (declared_rules.wins_only and not candidate_rules.wins_only)
+                or (declared_rules.no_failures_only and not candidate_rules.no_failures_only)):
+            return False
+        candidate_filters = candidate_rules.filters.value()
+        declared_filters = declared_rules.filters.value()
+        return all(key in candidate_filters
+                   and set(candidate_filters[key]) <= set(values)
+                   for key, values in declared_filters.items())
+
+    def _declaration_preproof(
+        self, store: ManifestArtifactStore, candidate_id: str, scope: dict,
+        declared_manifests: dict[str, Manifest],
+    ) -> None:
+        """Prove recipe containment from manifests before any source payload is read."""
+        from stpd.fullrun.curated_dataset import SCHEMA as CURATED_SCHEMA
+        from stpd.fullrun.decision_dataset import SCHEMA as DECISION_SCHEMA
+
+        declared_ids = set(scope["dataset_ids"])
+        declared_sources = {item["artifact_id"]: item["archive_sha256"]
+                            for item in scope["sources"]}
+        visited: set[str] = set()
+
+        def covered(identity: str) -> None:
+            if identity in declared_ids:
+                return
+            if identity in visited or len(visited) >= 512:
+                if identity in visited:
+                    return
+                raise BoundaryError("local_curation", "declaration_lineage_limit")
+            visited.add(identity)
+            manifest = store.get_manifest(identity)
+            # Keep the existing manifest-only held-out ancestry gate ahead of
+            # any selection or source payload reads.
+            from stpd.fullrun.dataset_policy import training_sources
+
+            training_sources(store, identity)
+            info = manifest.parameters.value()
+            schema = info.get("schema")
+            if (manifest.kind != "dataset" or not isinstance(schema, str)
+                    or schema not in DECLARATION_DATASET_SCHEMAS):
+                raise BoundaryError("local_curation", "declaration_coverage_unproven")
+            self._declaration_dataset(store, identity, set(), {}, {})
+            if schema == CURATED_SCHEMA and info["merging"]:
+                # A merge can only remove from already covered immutable parents.
+                for parent in manifest.parents:
+                    covered(parent.artifact_id)
+                return
+            if schema in (DECISION_SCHEMA, CURATED_SCHEMA):
+                leaf_sources: dict[str, Manifest] = {}
+                leaf_datasets: dict[str, Manifest] = {}
+                self._declaration_dataset(
+                    store, identity, set(), leaf_sources, leaf_datasets,
+                )
+                inventory = {source_id: source.payload("archive").sha256
+                             for source_id, source in leaf_sources.items()}
+                candidates = []
+                for declared_id, declared_manifest in declared_manifests.items():
+                    declared_info = declared_manifest.parameters.value()
+                    if declared_info.get("schema") != DECISION_SCHEMA:
+                        continue
+                    if set(inventory) <= set(declared_sources) and all(
+                        declared_sources[source_id] == archive
+                        for source_id, archive in inventory.items()
+                    ):
+                        # Direct source recipes must be bounded by one declared canonical
+                        # dataset's complete archive inventory, not a union of siblings.
+                        canonical_scope = self._declaration_scope(store, (declared_id,))
+                        canonical_sources = {
+                            item["artifact_id"]: item["archive_sha256"]
+                            for item in canonical_scope["sources"]
+                        }
+                        if (not set(inventory) <= set(canonical_sources)
+                                or any(canonical_sources[key] != value
+                                       for key, value in inventory.items())):
+                            continue
+                        unrestricted = (
+                            not declared_info["rules"]["complete_only"]
+                            and not declared_info["rules"]["wins_only"]
+                            and not declared_info["rules"]["no_failures_only"]
+                            and not declared_info["rules"]["filters"]
+                        )
+                        if not unrestricted and inventory != canonical_sources:
+                            continue
+                        if not self._declaration_rules_contain(
+                            info["rules"], declared_info["rules"],
+                        ):
+                            continue
+                        candidates.append(declared_id)
+                if not candidates:
+                    raise BoundaryError("local_curation", "declaration_coverage_unproven")
+                return
+            raise BoundaryError("local_curation", "declaration_coverage_unproven")
+
+        covered(digest(candidate_id, "local_curation.training_dataset"))
+
+    def _declaration_scope(self, store: ManifestArtifactStore,
+                           dataset_ids: tuple[str, ...]) -> dict:
+        self._declaration_store(store)
+        if not isinstance(dataset_ids, tuple) or not 1 <= len(dataset_ids) <= 100:
+            raise BoundaryError("local_curation", "declaration_scope_invalid")
+        identities = tuple(digest(item, "local_curation.declaration_dataset")
+                           for item in dataset_ids)
+        if len(set(identities)) != len(identities):
+            raise BoundaryError("local_curation", "declaration_scope_invalid")
+        from stpd.fullrun.curated_dataset import SCHEMA as CURATED_SCHEMA
+        from stpd.fullrun.decision_dataset import SCHEMA as DECISION_SCHEMA
+
+        sources: dict[str, Manifest] = {}
+        datasets: dict[str, Manifest] = {}
+        visited: set[str] = set()
+        for identity in sorted(identities):
+            root = store.get_manifest(identity)
+            # Detect unsupported held-out ancestors without opening any payload.
+            from stpd.fullrun.dataset_policy import training_sources
+
+            training_sources(store, identity)
+            root_schema = root.parameters.value().get("schema")
+            if (root.kind != "dataset" or not isinstance(root_schema, str)
+                    or root_schema not in {DECISION_SCHEMA, CURATED_SCHEMA}):
+                raise BoundaryError("local_curation", "declaration_dataset_unsupported")
+            self._declaration_dataset(store, identity, visited, sources, datasets)
+        if not sources:
+            raise BoundaryError("local_curation", "declaration_source_missing")
+        source_rows = []
+        for identity, source in sorted(sources.items()):
+            source_rows.append({"artifact_id": identity,
+                                "archive_sha256": source.payload("archive").sha256})
+        try:
+            with sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+                row = db.execute("SELECT workspace,ledger,store,store_path "
+                                 "FROM local_curation_identity").fetchone()
+                if row != self.identity or db.execute(
+                    "SELECT count(*) FROM local_curation_identity").fetchone()[0] != 1:
+                    raise BoundaryError("local_curation", "ledger_identity_mismatch")
+                self._validate_existing(db)
+                run_ids: set[str] = set()
+                for source_row in source_rows:
+                    indexed = db.execute(
+                        "SELECT archive,complete FROM curation_sources WHERE id=?",
+                        (source_row["artifact_id"],),
+                    ).fetchone()
+                    if (indexed != (source_row["archive_sha256"], 1)
+                            or not db.execute(
+                                "SELECT 1 FROM curation_exact_source_index WHERE source=?",
+                                (source_row["artifact_id"],),
+                            ).fetchone()):
+                        raise BoundaryError("local_curation", "source_index_incomplete")
+                    run_ids.update(row[0] for row in db.execute(
+                        "SELECT run FROM curation_source_runs WHERE source=?",
+                        (source_row["artifact_id"],),
+                    ))
+        except sqlite3.DatabaseError as error:
+            raise BoundaryError("local_curation", "ledger_recovery_required") from error
+        if not run_ids:
+            raise BoundaryError("local_curation", "declaration_source_run_missing")
+        return {
+            "dataset_ids": sorted(identities), "sources": source_rows,
+            "qualified_run_ids": sorted(run_ids),
+            "scope_boundary": "exact_frozen_dataset_artifacts",
+        }
+
+    def _declaration_artifact(self, store: ManifestArtifactStore, identity: str,
+                              scope: dict | None = None) -> tuple[Manifest, dict]:
+        manifest = store.get_manifest(digest(identity, "local_curation.declaration_id"))
+        info = manifest.parameters.value()
+        required = {
+            "schema", "request_id", "recorded_at", "owner", "scope", "statement",
+            "self_recorded", "project_training_authorized_now", "historical_authorization",
+            "historical_manual_exposure", "human_origin_evidence", "sharing_permission",
+        }
+        if (manifest.kind != "analysis" or manifest.payloads or set(info) != required
+                or info["schema"] != USER_DECLARATION_SCHEMA):
+            raise BoundaryError("local_curation", "declaration_artifact_unavailable")
+        if info["owner"] != {"workspace_id": self.identity[0],
+                             "ledger_id": self.identity[1], "store_id": self.identity[2]}:
+            raise BoundaryError("local_curation", "declaration_owner_mismatch")
+        digest(info["request_id"], "local_curation.declaration_request", length=32)
+        self._timestamp(info["recorded_at"], "local_curation.declaration")
+        if (info["self_recorded"] is not True
+                or info["project_training_authorized_now"] is not True
+                or info["historical_authorization"] != "unknown"
+                or info["historical_manual_exposure"] != "unknown"
+                or info["human_origin_evidence"] != "user_declaration_not_machine_proof"
+                or info["sharing_permission"] != "not_granted_by_this_record"):
+            raise BoundaryError("local_curation", "declaration_statement_invalid")
+        statement = info["statement"]
+        if (not isinstance(statement, dict)
+                or set(statement) != {"text", "text_basis", "source"}
+                or not isinstance(statement["text"], str)
+                or not statement["text"] or len(statement["text"]) > 4096
+                or not isinstance(statement["text_basis"], str)
+                or statement["text_basis"] not in {"verbatim", "normalized"}):
+            raise BoundaryError("local_curation", "declaration_statement_invalid")
+        source = statement["source"]
+        if (not isinstance(source, dict)
+                or set(source) != {"kind", "reference", "written_at"}
+                or source["kind"] != "direct_user_instruction"
+                or not isinstance(source["reference"], str) or not source["reference"]
+                or len(source["reference"]) > 256):
+            raise BoundaryError("local_curation", "declaration_statement_invalid")
+        self._timestamp(source["written_at"], "local_curation.declaration")
+        actual_scope = info["scope"]
+        if (not isinstance(actual_scope, dict)
+                or set(actual_scope) != {"dataset_ids", "sources", "qualified_run_ids",
+                                         "scope_boundary"}
+                or actual_scope["scope_boundary"] != "exact_frozen_dataset_artifacts"
+                or not isinstance(actual_scope["dataset_ids"], list)
+                or not 1 <= len(actual_scope["dataset_ids"]) <= 100
+                or any(not isinstance(item, str) for item in actual_scope["dataset_ids"])
+                or actual_scope["dataset_ids"] != sorted(set(actual_scope["dataset_ids"]))
+                or not isinstance(actual_scope["sources"], list)
+                or not isinstance(actual_scope["qualified_run_ids"], list)
+                or any(not isinstance(item, str) for item in actual_scope["qualified_run_ids"])
+                or actual_scope["qualified_run_ids"] != sorted(
+                    set(actual_scope["qualified_run_ids"]),
+                )):
+            raise BoundaryError("local_curation", "declaration_scope_invalid")
+        for dataset in actual_scope["dataset_ids"]:
+            digest(dataset, "local_curation.declaration_dataset")
+        source_ids = []
+        for item in actual_scope["sources"]:
+            if (not isinstance(item, dict) or set(item) != {"artifact_id", "archive_sha256"}):
+                raise BoundaryError("local_curation", "declaration_scope_invalid")
+            source_ids.append(digest(item["artifact_id"], "local_curation.declaration_source"))
+            digest(item["archive_sha256"], "local_curation.declaration_archive")
+        if source_ids != sorted(set(source_ids)) or not source_ids:
+            raise BoundaryError("local_curation", "declaration_scope_invalid")
+        for run in actual_scope["qualified_run_ids"]:
+            if not isinstance(run, str) or not run or len(run) > 512:
+                raise BoundaryError("local_curation", "declaration_scope_invalid")
+        expected_parents = tuple(sorted(
+            [Parent("dataset_" + item, item) for item in actual_scope["dataset_ids"]]
+            + [Parent("source_" + item["artifact_id"], item["artifact_id"])
+               for item in actual_scope["sources"]]
+        ))
+        if manifest.parents != expected_parents or (scope is not None and actual_scope != scope):
+            raise BoundaryError("local_curation", "declaration_binding_mismatch")
+        return manifest, info
+
+    def _check_declaration_guards(self, db: sqlite3.Connection, scope: dict) -> None:
+        runs = set(scope["qualified_run_ids"])
+        related = LocalLedger._groups(db, runs)
+        if any(purpose in {"test", "gold"}
+               for purpose, _ in LocalLedger._claims(db, related).values()):
+            raise BoundaryError("local_curation", "held_out_data_cannot_train")
+        for source in scope["sources"]:
+            if db.execute(
+                "SELECT 1 FROM curation_source_uses WHERE source=? AND kind IN ('test','gold')",
+                (source["artifact_id"],),
+            ).fetchone():
+                raise BoundaryError("local_curation", "held_out_data_cannot_train")
+
+    def register_user_declaration(
+        self, store: ManifestArtifactStore, dataset_ids: tuple[str, ...], producer: Producer, *,
+        request_id: str, statement: str, statement_source: dict,
+        self_recorded: bool, project_training_authorized_now: bool,
+    ) -> dict:
+        """Publish an immutable current declaration and append its owner registration."""
+        request = digest(request_id, "local_curation.declaration_request", length=32)
+        if not isinstance(producer, Producer):
+            raise BoundaryError("local_curation", "declaration_producer_invalid")
+        if (not isinstance(statement, str) or not statement or len(statement) > 4096
+                or type(self_recorded) is not bool
+                or type(project_training_authorized_now) is not bool
+                or self_recorded is not True or project_training_authorized_now is not True):
+            raise BoundaryError("local_curation", "declaration_statement_invalid")
+        if (not isinstance(statement_source, dict)
+                or set(statement_source) != {"kind", "reference", "written_at", "text_basis"}
+                or statement_source["kind"] != "direct_user_instruction"
+                or not isinstance(statement_source["reference"], str)
+                or not statement_source["reference"] or len(statement_source["reference"]) > 256
+                or not isinstance(statement_source["text_basis"], str)
+                or statement_source["text_basis"] not in {"verbatim", "normalized"}):
+            raise BoundaryError("local_curation", "declaration_statement_invalid")
+        self._timestamp(statement_source["written_at"], "local_curation.declaration")
+        scope = self._declaration_scope(store, dataset_ids)
+        parent_refs = tuple(sorted(
+            [Parent("dataset_" + item, item) for item in scope["dataset_ids"]]
+            + [Parent("source_" + item["artifact_id"], item["artifact_id"])
+               for item in scope["sources"]]
+        ))
+        source = {key: statement_source[key] for key in ("kind", "reference", "written_at")}
+        try:
+            with sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+                tables = {row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                if USER_DECLARATION_TABLE in tables:
+                    rows = db.execute(
+                        "SELECT dataset,artifact,recorded_at FROM local_user_declarations "
+                        "WHERE request_id=? ORDER BY dataset", (request,),
+                    ).fetchall()
+                else:
+                    rows = []
+        except sqlite3.DatabaseError as error:
+            raise BoundaryError("local_curation", "ledger_recovery_required") from error
+        if rows:
+            if ([row[0] for row in rows] != scope["dataset_ids"]
+                    or len({(row[1], row[2]) for row in rows}) != 1):
+                raise BoundaryError("local_curation", "declaration_request_conflict")
+            artifact, recorded_at = rows[0][1], rows[0][2]
+            _, info = self._declaration_artifact(store, artifact, scope)
+            if (info["request_id"] != request or info["recorded_at"] != recorded_at
+                    or info["statement"] != {"text": statement,
+                                              "text_basis": statement_source["text_basis"],
+                                              "source": source}):
+                raise BoundaryError("local_curation", "declaration_request_conflict")
+            with self.transaction() as db:
+                self._check_declaration_guards(db, scope)
+            return {"status": "registered", "declaration_id": artifact,
+                    "recorded_at": recorded_at, "dataset_ids": scope["dataset_ids"],
+                    "scope": scope}
+
+        with self.transaction() as db:
+            self._check_declaration_guards(db, scope)
+        recorded_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z",
+        )
+        manifest = Manifest("analysis", producer, parent_refs, (), FrozenObject.of({
+            "schema": USER_DECLARATION_SCHEMA, "request_id": request,
+            "recorded_at": recorded_at,
+            "owner": {"workspace_id": self.identity[0], "ledger_id": self.identity[1],
+                      "store_id": self.identity[2]},
+            "scope": scope,
+            "statement": {"text": statement, "text_basis": statement_source["text_basis"],
+                          "source": source},
+            "self_recorded": self_recorded,
+            "project_training_authorized_now": project_training_authorized_now,
+            "historical_authorization": "unknown",
+            "historical_manual_exposure": "unknown",
+            "human_origin_evidence": "user_declaration_not_machine_proof",
+            "sharing_permission": "not_granted_by_this_record",
+        }))
+        artifact = store.publish(manifest)
+        if artifact != manifest.artifact_id:
+            raise BoundaryError("local_curation", "declaration_publication_mismatch")
+        with self.transaction() as db:
+            current = self._declaration_scope(store, tuple(scope["dataset_ids"]))
+            if current != scope:
+                raise BoundaryError("local_curation", "declaration_scope_changed")
+            self._check_declaration_guards(db, scope)
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS local_user_declarations ("
+                "sequence INTEGER PRIMARY KEY AUTOINCREMENT,request_id TEXT NOT NULL,"
+                "dataset TEXT NOT NULL,artifact TEXT NOT NULL,recorded_at TEXT NOT NULL,"
+                "UNIQUE(request_id,dataset))"
+            )
+            db.execute("CREATE INDEX IF NOT EXISTS local_user_declarations_latest "
+                       "ON local_user_declarations(dataset,sequence)")
+            existing = db.execute(
+                "SELECT dataset,artifact,recorded_at FROM local_user_declarations "
+                "WHERE request_id=? ORDER BY dataset", (request,),
+            ).fetchall()
+            if existing:
+                if ([row[0] for row in existing] != scope["dataset_ids"]
+                        or len({(row[1], row[2]) for row in existing}) != 1):
+                    raise BoundaryError("local_curation", "declaration_request_conflict")
+                artifact, recorded_at = existing[0][1], existing[0][2]
+                _, current_info = self._declaration_artifact(store, artifact, scope)
+                if (current_info["request_id"] != request
+                        or current_info["recorded_at"] != recorded_at
+                        or current_info["statement"] != {
+                            "text": statement, "text_basis": statement_source["text_basis"],
+                            "source": source,
+                        }):
+                    raise BoundaryError("local_curation", "declaration_request_conflict")
+            else:
+                db.executemany(
+                    "INSERT INTO local_user_declarations(request_id,dataset,artifact,recorded_at) "
+                    "VALUES(?,?,?,?)",
+                    ((request, item, artifact, recorded_at) for item in scope["dataset_ids"]),
+                )
+        return {"status": "registered", "declaration_id": artifact,
+                "recorded_at": recorded_at, "dataset_ids": scope["dataset_ids"],
+                "scope": scope}
+
+    def read_user_declaration(self, store: ManifestArtifactStore, dataset_id: str) -> dict:
+        """Read only the exact latest owner registration; never initialize the ledger."""
+        identity = digest(dataset_id, "local_curation.declaration_dataset")
+        try:
+            self._declaration_store(store)
+            with sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+                owner = db.execute(
+                    "SELECT workspace,ledger,store,store_path FROM local_curation_identity",
+                ).fetchone()
+                if (owner != self.identity or db.execute(
+                    "SELECT count(*) FROM local_curation_identity",
+                ).fetchone()[0] != 1):
+                    raise BoundaryError("local_curation", "ledger_identity_mismatch")
+                self._validate_existing(db)
+                row = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                                 (USER_DECLARATION_TABLE,)).fetchone()
+                if row is None:
+                    return {"status": "not_durably_registered", "dataset_id": identity}
+                latest = db.execute(
+                    "SELECT request_id,artifact,recorded_at FROM local_user_declarations "
+                    "WHERE dataset=? ORDER BY sequence DESC LIMIT 1", (identity,),
+                ).fetchone()
+                if latest is None:
+                    return {"status": "not_durably_registered", "dataset_id": identity}
+                request, artifact, recorded_at = latest
+                rows = db.execute(
+                    "SELECT dataset,artifact,recorded_at FROM local_user_declarations "
+                    "WHERE request_id=? ORDER BY dataset", (request,),
+                ).fetchall()
+            manifest, info = self._declaration_artifact(store, artifact)
+            scope_ids = info["scope"]["dataset_ids"]
+            if ([item[0] for item in rows] != scope_ids
+                    or any(item[1:] != (artifact, recorded_at) for item in rows)
+                    or identity not in scope_ids or info["request_id"] != request
+                    or info["recorded_at"] != recorded_at):
+                raise BoundaryError("local_curation", "declaration_binding_mismatch")
+            current = self._declaration_scope(store, tuple(scope_ids))
+            if current != info["scope"]:
+                raise BoundaryError("local_curation", "declaration_scope_mismatch")
+            return {"status": "registered", "dataset_id": identity,
+                    "declaration_id": manifest.artifact_id, "recorded_at": recorded_at,
+                    "dataset_ids": scope_ids,
+                    "self_recorded": info["self_recorded"],
+                    "project_training_authorized_now": info["project_training_authorized_now"],
+                    "historical_authorization": info["historical_authorization"],
+                    "historical_manual_exposure": info["historical_manual_exposure"]}
+        except (OSError, sqlite3.DatabaseError, BoundaryError, ValueError, TypeError) as error:
+            code = (error.code if isinstance(error, BoundaryError)
+                    else "declaration_storage_unavailable")
+            return {"status": "unavailable", "dataset_id": identity, "reason": code}
+
+    def _verify_declaration_membership(
+        self, store: ManifestArtifactStore, dataset_ids: tuple[str, ...],
+        declared_ids: tuple[str, ...],
+    ) -> None:
+        from stpd.fullrun.curated_dataset import SCHEMA as CURATED_SCHEMA
+        from stpd.fullrun.curated_dataset import load_selection
+        from stpd.fullrun.decision_dataset import DecisionDataset, _fact, _identity
+        from stpd.fullrun.decision_spool import SpoolSelection
+        from stpd.fullrun.decision_store import load as load_decision_dataset
+
+        def selected(manifest: Manifest) -> DecisionDataset:
+            if manifest.parameters.value().get("schema") == CURATED_SCHEMA:
+                return load_selection(store, manifest, cache=None)
+            return load_decision_dataset(store, manifest.artifact_id, cache=None)[1]
+
+        frozen: dict[str, str] = {}
+        opened: list[DecisionDataset] = []
+        try:
+            for identity in declared_ids:
+                source = selected(store.get_manifest(identity))
+                opened.append(source)
+                for record in source.records:
+                    key = _identity(record)
+                    fact = _fact(record)
+                    if key in frozen and frozen[key] != fact:
+                        raise BoundaryError("local_curation", "declaration_membership_conflict")
+                    frozen[key] = fact
+            if not frozen:
+                raise BoundaryError("local_curation", "declaration_membership_empty")
+            for identity in dataset_ids:
+                candidate = selected(store.get_manifest(identity))
+                opened.append(candidate)
+                for record in candidate.records:
+                    key = _identity(record)
+                    if frozen.get(key) != _fact(record):
+                        raise BoundaryError("local_curation", "declaration_membership_mismatch")
+        finally:
+            for dataset in opened:
+                if isinstance(dataset.records, SpoolSelection):
+                    dataset.records.owner.close()
+
+    def require_user_training_declaration(
+        self, store: ManifestArtifactStore, dataset_ids: tuple[str, ...],
+        declaration_id: str, *, training_operation_id: str,
+    ) -> dict:
+        """Require an exact registered declaration and typed covered subset."""
+        self._declaration_store(store)
+        if not isinstance(dataset_ids, tuple) or not 1 <= len(dataset_ids) <= 100:
+            raise BoundaryError("local_curation", "training_dataset_selection_invalid")
+        identities = tuple(digest(item, "local_curation.training_dataset")
+                           for item in dataset_ids)
+        if len(set(identities)) != len(identities):
+            raise BoundaryError("local_curation", "training_dataset_selection_invalid")
+        declaration = digest(declaration_id, "local_curation.declaration_id")
+        operation = digest(training_operation_id, "local_curation.training_operation", length=32)
+        manifest, info = self._declaration_artifact(store, declaration)
+        scope = self._declaration_scope(store, tuple(info["scope"]["dataset_ids"]))
+        if scope != info["scope"]:
+            raise BoundaryError("local_curation", "declaration_scope_mismatch")
+        if (info["self_recorded"] is not True
+                or info["project_training_authorized_now"] is not True):
+            raise BoundaryError("local_curation", "declaration_not_authorized_now")
+        for declared_id in scope["dataset_ids"]:
+            current = self.read_user_declaration(store, declared_id)
+            if (current.get("status") != "registered"
+                    or current.get("declaration_id") != declaration):
+                raise BoundaryError("local_curation", "declaration_not_latest_registration")
+        declared_manifests = {
+            identity: store.get_manifest(identity) for identity in scope["dataset_ids"]
+        }
+        for identity in identities:
+            self._declaration_preproof(store, identity, scope, declared_manifests)
+        with self.transaction() as db:
+            self._check_declaration_guards(db, scope)
+        # This approved helper performs typed source reprojection, exact claims/index
+        # validation and existing no-write exposure checks after metadata coverage passes.
+        admitted = self.require_training_datasets(store, identities, operation)
+        self._verify_declaration_membership(store, identities, tuple(scope["dataset_ids"]))
+        for declared_id in scope["dataset_ids"]:
+            current = self.read_user_declaration(store, declared_id)
+            if (current.get("status") != "registered"
+                    or current.get("declaration_id") != declaration):
+                raise BoundaryError("local_curation", "declaration_registration_changed")
+        return {"declaration_id": manifest.artifact_id,
+                "training_operation_id": operation, "dataset_ids": list(identities),
+                "datasets": admitted["datasets"],
+                "historical_external_exposure": "unknown"}
 
     def _training_dataset_bindings(self, store: ManifestArtifactStore,
                                    dataset_ids: tuple[str, ...], operation_id: str
