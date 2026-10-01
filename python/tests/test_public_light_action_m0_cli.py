@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import replace
+from math import isfinite
 
 import pytest
 
@@ -23,6 +24,8 @@ def _assert_score_maps_float32_permutation_parity(
 ) -> None:
     """Allow one FP32 ULP from candidate batch layout while pinning binding/rank/winner."""
     assert set(actual) == set(expected)
+    assert all(isfinite(value) for value in expected.values())
+    assert all(isfinite(value) for value in actual.values())
     assert all(
         abs(_ordered_float32(actual[key]) - _ordered_float32(expected[key])) <= 1
         for key in expected
@@ -276,9 +279,7 @@ print(json.dumps(scorer.score_snapshot(snapshot), sort_keys=True))
         capture_output=True,
         text=True,
     )
-    _assert_score_maps_float32_permutation_parity(
-        reordered_scores, json.loads(child.stdout),
-    )
+    assert json.loads(child.stdout) == reordered_scores
 
 
 def test_public_score_float32_parity_guard_rejects_material_score_and_winner_changes():
@@ -294,6 +295,20 @@ def test_public_score_float32_parity_guard_rejects_material_score_and_winner_cha
     winner_change = {"candidate-play": 0.4, "candidate-end": 0.6}
     with pytest.raises(AssertionError):
         _assert_score_maps_float32_permutation_parity(expected, winner_change)
+
+    nan_score = {"candidate-play": 0.5, "candidate-end": float("nan")}
+    with pytest.raises(AssertionError):
+        _assert_score_maps_float32_permutation_parity(expected, nan_score)
+
+    infinite_expected = {"candidate-play": float("inf"), "candidate-end": 0.25}
+    with pytest.raises(AssertionError):
+        _assert_score_maps_float32_permutation_parity(infinite_expected, expected)
+
+    max_float32 = struct.unpack("!f", struct.pack("!I", 0x7F7FFFFF))[0]
+    max_finite = {"candidate-play": 0.5, "candidate-end": max_float32}
+    positive_infinity = {"candidate-play": 0.5, "candidate-end": float("inf")}
+    with pytest.raises(AssertionError):
+        _assert_score_maps_float32_permutation_parity(max_finite, positive_infinity)
 
 
 def test_public_capacity_is_profile_scoped_and_serialized():
