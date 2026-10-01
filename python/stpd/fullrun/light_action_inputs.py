@@ -319,13 +319,21 @@ def load_light_action_inputs(store: ArtifactStore, identity: str) -> LoadedLight
             != ["action_codec", "rows", "state_tokenizer"]):
         raise BoundaryError("light_action_inputs", "unsupported_contract")
     view_id = manifest.parent("model_view")
-    view, samples, renderer = _source_view(store, view_id)
-    canonical = view.parameters.value().get("schema") == "stpd/decision-model-view-v1"
+    # Cross-check the declared input family against its immutable source manifest
+    # before _source_view can read the source dataset's row payloads. In particular,
+    # a forged legacy input schema over a canonical allocation must fail closed
+    # before loading training examples.
+    view_manifest = store.get_manifest(view_id)
+    canonical = (view_manifest.kind == "model_view"
+                 and view_manifest.parameters.value().get("schema")
+                 == "stpd/decision-model-view-v1")
     if canonical != (info.get("schema") == CANONICAL_SCHEMA):
         raise BoundaryError("light_action_inputs", "input_family_source_mismatch")
-    binding = _training_binding(store, view, info.get("training_binding")) if canonical else None
+    binding = (_training_binding(store, view_manifest, info.get("training_binding"))
+               if canonical else None)
     if not canonical and "training_binding" in info:
         raise BoundaryError("light_action_inputs", "unexpected_training_binding")
+    view, samples, renderer = _source_view(store, view_id)
     if (manifest.payload("state_tokenizer").size > MAX_TOKENIZER_BYTES
             or manifest.payload("action_codec").size != len(SPEC_BYTES)
             or manifest.payload("rows").size > MAX_PAYLOAD):

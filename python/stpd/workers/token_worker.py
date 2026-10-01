@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import io
+import json
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 import torch
@@ -225,11 +227,35 @@ def _verify_completed(store: ArtifactStore, result: Manifest, run: Manifest) -> 
             or len(names) != len(set(names))
         ):
             raise BoundaryError("token_run", "light_action_model_identity_mismatch")
+        if source_info.get("schema") == CANONICAL_LIGHT_ACTION_INPUT_SCHEMA:
+            expected_eval = {
+                "evaluation_scope": "within_training_purpose_allocation",
+                "historical_external_exposure": "unknown",
+                "physical_game_independence": "unresolved",
+                "clean_held_out_claim": False,
+            }
+            if any(report.parameters.value().get(key) != value
+                   for key, value in expected_eval.items()):
+                raise BoundaryError("token_run", "canonical_dev_qualification_mismatch")
+            payload = report.payload("metrics")
+            if payload.size > 64 * 1024 * 1024:
+                raise BoundaryError("token_run", "evaluation_size_limit")
+            metrics = json.loads(b"".join(store.read_payload(payload)))
+            summaries = [metrics.get("summary", {}).get("bootstrap")]
+            summaries.extend(item.get("bootstrap") for item in
+                             metrics.get("baselines", {}).values())
+            if any(not isinstance(item, dict) or item.get("status") != "unknown"
+                   or item.get("unit") != "session_scoped_run_group" for item in summaries):
+                raise BoundaryError("token_run", "canonical_dev_independence_claim")
+            if metrics.get("admission") != expected_eval:
+                raise BoundaryError("token_run", "canonical_dev_qualification_mismatch")
 
 
 def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, runtime: Producer,
                    *, snapshot: Path | None = None, resume: str | None = None,
-                   stop_after: int | None = None) -> WorkerResult:
+                   stop_after: int | None = None,
+                   dev_admitter: Callable[[Manifest, Manifest], dict] | None = None,
+                   ) -> WorkerResult:
     run = store.get_manifest(run_id)
     info = run.parameters.value()
     if (run.kind != "run" or run.producer != runtime or info.get("schema") != RUN_SCHEMA
@@ -375,12 +401,26 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
         model = Manifest("model", runtime, parents, model_payloads,
                          FrozenObject.of(model_info))
         store.publish(model)
-        event("evaluating", model_id=model.artifact_id)
         # Human text-input rows are session-scoped; distinct recorded run IDs do
         # not establish independent native runs across those sessions.
-        native_run_independence = view.parameters.value().get("schema") not in {
-            "stpd/human-text-input-bc-view-v1", "stpd/human-text-input-bc-view-v2",
-        }
+        canonical = (input_info.get("schema") == CANONICAL_LIGHT_ACTION_INPUT_SCHEMA)
+        dev_admission = None
+        if canonical:
+            if dev_admitter is None:
+                raise BoundaryError("token_run", "canonical_dev_admission_required")
+            dev_admission = dev_admitter(model, view)
+            if (not isinstance(dev_admission, dict)
+                    or dev_admission.get("evaluation_scope")
+                    != "within_training_purpose_allocation"
+                    or dev_admission.get("physical_game_independence") != "unresolved"
+                    or dev_admission.get("clean_held_out_claim") is not False):
+                raise BoundaryError("token_run", "canonical_dev_admission_invalid")
+        event("evaluating", model_id=model.artifact_id)
+        native_run_independence = (
+            False if canonical else view.parameters.value().get("schema") not in {
+                "stpd/human-text-input-bc-view-v1", "stpd/human-text-input-bc-view-v2",
+            }
+        )
         rows, summary = evaluate_samples(
             inputs.samples, engine.scores, seed=config.seed,
             native_run_independence=native_run_independence,
@@ -395,14 +435,22 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
                 inputs.samples, scorer, seed=config.seed,
                 native_run_independence=native_run_independence,
             )
-        metrics = store.put_payload("metrics", io.BytesIO(json_bytes({
-            "rows": rows, "summary": summary, "baselines": baselines,
-        })), "application/json")
+        metric_value = {"rows": rows, "summary": summary, "baselines": baselines}
+        evaluation_info = {"schema": EVALUATION_SCHEMA, "partition": "dev",
+                           "qualification": "engineering_only"}
+        if dev_admission is not None:
+            qualification = {key: dev_admission[key] for key in (
+                "evaluation_scope", "historical_external_exposure",
+                "physical_game_independence", "clean_held_out_claim",
+            )}
+            metric_value["admission"] = qualification
+            evaluation_info.update(qualification)
+        metrics = store.put_payload("metrics", io.BytesIO(json_bytes(metric_value)),
+                                    "application/json")
         evaluation = Manifest(
             "offline_evaluation", runtime,
             (Parent("model", model.artifact_id), Parent("model_view", view.artifact_id)),
-            (metrics,), FrozenObject.of({"schema": EVALUATION_SCHEMA, "partition": "dev",
-                                        "qualification": "engineering_only"}),
+            (metrics,), FrozenObject.of(evaluation_info),
         )
         store.publish(evaluation)
         result = Manifest(
