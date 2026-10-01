@@ -2,13 +2,32 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from types import SimpleNamespace
+from typing import Literal, cast
 from unittest.mock import patch
 
 import pytest
 import torch
+from tokenizers import Tokenizer, models
 
+from spireagent.artifact_contracts import Manifest
+from spireagent.json_boundary import BoundaryError
+from stpd.fullrun.features import ModelSample
+from stpd.fullrun.light_action_inputs import (
+    TRAINING_BINDING_SCHEMA,
+    LightActionTokenRow,
+    LoadedLightActionInputs,
+)
+from stpd.fullrun.light_action_m2_sequences import (
+    LightActionM2SequenceConfig,
+    LightActionM2SourceOccurrence,
+    project_light_action_m2_sequences,
+    sequence_input_bytes,
+)
 from stpd.light_action_codec import BOS_ACT, EOS_ACT
 from stpd.models.light_action_m2 import LIGHT_ACTION_M2_GRAPH, LightActionM2Scorer
+from stpd.models.light_action_m2_training import train_light_action_m2_episode
 from stpd.models.token_core import ScratchShape, ScratchTokenCore
 
 
@@ -40,6 +59,57 @@ def make_model(*, slots: int = 1, reset: bool = False, width: int = 16,
 
 def sample():
     return torch.tensor([1, 2, 3, 4]), (action(10, 11), action(12), action(13, 14))
+
+
+def _sequence_inputs():
+    binding = {
+        "schema": TRAINING_BINDING_SCHEMA,
+        "dataset_ids": ["d" * 64],
+        "training_operation_id": "o" * 32,
+        "allocation_id": "a" * 64,
+        "model_view_id": "v" * 64,
+    }
+    info = {
+        "schema": "stpd/stage1a-light-action-m0-canonical-input-v1",
+        "graph": "dsimple.light-action.m0.v1",
+        "training_binding": binding,
+    }
+    manifest = SimpleNamespace(
+        kind="training_input", artifact_id="m" * 64,
+        parameters=SimpleNamespace(value=lambda: info),
+        parents=(SimpleNamespace(role="model_view"),),
+        parent=lambda _role: "v" * 64,
+    )
+    samples = []
+    rows = []
+    sources = []
+    action_ids = ("left", "right")
+    action_values = ((BOS_ACT, 65, EOS_ACT), (BOS_ACT, 66, EOS_ACT))
+    cases: tuple[tuple[str, Literal["train", "dev"], int], ...] = (
+        ("A", "train", 1), ("A", "train", 3),
+        ("B", "train", 1), ("C", "dev", 1),
+        ("D", "train", 1), ("D", "train", 2),
+    )
+    for index, (session, split, sequence) in enumerate(cases):
+        transition = f"{index + 1:064x}"
+        run_id = f"{session}/run-0001"
+        samples.append(ModelSample(
+            transition, run_id, split, "", "", "state", ("a", "b"),
+            action_ids, index % 2,
+        ))
+        rows.append(LightActionTokenRow((1, 2), action_values, action_ids))
+        sources.append(LightActionM2SourceOccurrence(
+            source_archive_sha256=f"{ord(session):064x}", session_id=session,
+            native_run_id="run-0001", run_id=run_id, source_sequence=sequence,
+            transition_id=transition, split=split,
+            source_disposition="transition_proved", transition_disposition="committed",
+            commit_ref="1" * 64, successor_ref="2" * 64, proof_ref="3" * 64,
+        ))
+    tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0, "x": 1, "y": 2}, unk_token="[UNK]"))
+    loaded = LoadedLightActionInputs(
+        cast(Manifest, manifest), tuple(samples), tuple(rows), tokenizer,
+    )
+    return loaded, tuple(sources)
 
 
 @pytest.mark.parametrize("slots", [1, 8])
@@ -124,7 +194,61 @@ def test_online_steps_match_explicit_offline_unroll_with_shared_gradient_graph()
     for online, offline in zip(online_outputs, offline_outputs, strict=True):
         torch.testing.assert_close(online, offline)
     torch.testing.assert_close(online_memory, offline_memory)
-    assert online_memory.grad_fn is not None  # Caller, not graph, owns BPTT detachment.
+    assert online_memory.grad_fn is not None  # Sequence owner chooses the detach boundary.
+
+
+def test_sequence_projection_uses_occurrence_identity_and_resets_source_gaps():
+    inputs, occurrences = _sequence_inputs()
+    projected = project_light_action_m2_sequences(
+        inputs, occurrences,
+        LightActionM2SequenceConfig("stage1a.dsimple.light-action.m2.s.v1", 1, False),
+    )
+    train = [episode for episode in projected.episodes if episode.split == "train"]
+    assert len(train) == 4  # A has a gap; B and D are distinct run-0001 occurrences.
+    assert len({episode.run_occurrence_id for episode in train}) == 3
+    a_segments = [episode for episode in train if episode.session_id == "A"]
+    assert [episode.steps[0].source_sequence for episode in a_segments] == [1, 3]
+    assert all(episode.steps[0].reset_before for episode in a_segments)
+    assert all(episode.steps[0].previous_actual_action is None for episode in a_segments)
+    b = next(episode for episode in train if episode.session_id == "B")
+    assert b.native_run_id == "run-0001" and b.steps[0].previous_actual_action is None
+    d = next(episode for episode in train if episode.session_id == "D")
+    assert d.steps[1].previous_transition_id == d.steps[0].transition_id
+    assert d.steps[1].previous_actual_action == d.steps[0].actions[0]
+    assert projected.feedback_profile == "none-v1"
+    assert projected.truncation_profile == "fixed-chunk-detach-after-backward-v1"
+    assert b"physical_game_independence" in sequence_input_bytes(projected)
+
+
+def test_sequence_projection_rejects_mixed_split_in_same_source_occurrence():
+    inputs, occurrences = _sequence_inputs()
+    changed = list(occurrences)
+    changed[1] = replace(changed[1], split="dev")
+    samples = list(inputs.samples)
+    samples[1] = replace(samples[1], split="dev")
+    inputs = replace(inputs, samples=tuple(samples))
+    with pytest.raises(BoundaryError, match="mixed_split_run_occurrence"):
+        project_light_action_m2_sequences(
+            inputs, tuple(changed),
+            LightActionM2SequenceConfig("stage1a.dsimple.light-action.m2.s.v1", 1, False),
+        )
+
+
+def test_light_action_sequence_trains_with_bounded_detached_chunks():
+    inputs, occurrences = _sequence_inputs()
+    projected = project_light_action_m2_sequences(
+        inputs, occurrences,
+        LightActionM2SequenceConfig("stage1a.dsimple.light-action.m2.s.v1", 1, False),
+    )
+    episode = next(item for item in projected.episodes if item.session_id == "D")
+    # Two adjacent steps exercise memory carry with an optimizer boundary.
+    model = make_model()
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    loss = train_light_action_m2_episode(model, optimizer, episode, max_chunk_steps=1)
+    assert loss > 0 and torch.isfinite(torch.tensor(loss))
+    bound = replace(episode, config=replace(episode.config, max_bptt_steps=1))
+    with pytest.raises(BoundaryError, match="training_limits_exceed_sequence_identity"):
+        train_light_action_m2_episode(model, optimizer, bound, max_chunk_steps=2)
 
 
 def test_branch_initialization_is_rng_safe_and_shared_across_k_and_core_width():
