@@ -192,8 +192,14 @@ test("managed preparation and runtime launch use the canonical candidate root", 
   const canonicalize = prepare.indexOf("canonicalizeManagedCandidateDirectory(requestedDestination)");
   assert.ok(canonicalize >= 0);
   const canonicalPreparation = prepare.slice(canonicalize);
-  assert.match(canonicalPreparation, /"clone",[\s\S]*manifest\.upstream\.url,\s*destination/u);
-  assert.match(canonicalPreparation, /"setup\.sh",[\s\S]*cwd: destination/u);
+  assert.match(
+    canonicalPreparation,
+    /await run\("git", \[\s*"clone",\s*"--config",\s*"core\.autocrlf=false",\s*manifest\.upstream\.url,\s*destination\s*\]\);/u
+  );
+  assert.match(
+    canonicalPreparation,
+    /await run\("bash", \["setup\.sh", toBashPath\(gameDataDirectory\)\], \{\s*cwd: destination,\s*timeout: 600_000,\s*env: \{ \.\.\.process\.env, DOTNET: dotnet\.command \}\s*\}\);/u
+  );
   assert.match(
     canonicalPreparation,
     /"build", project,[\s\S]*cwd: destination,[\s\S]*STS2_LIB: path\.join\(destination, "lib"\)/u
