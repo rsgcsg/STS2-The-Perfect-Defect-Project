@@ -142,6 +142,68 @@ def test_member_archive_import_http_requires_exact_authenticated_id_request(
         app.close()
 
 
+def test_member_archive_import_http_routes_over_loopback_with_browser_proof(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    config.state_dir.mkdir()
+    config_path = tmp_path / "project.json"
+    atomic_json(config_path, config.to_dict())
+    app = Application(config, config_path=config_path)
+    atomic_json(config.state_dir / "runtime.json", {
+        "instance_id": app.instance_id, "configuration_id": configuration_id(config),
+    })
+    calls = []
+    monkeypatch.setattr(
+        app.local_recording_import, "start_member_archive",
+        lambda export, file, attested: calls.append((export, file, attested))
+        or {"status": "pending"},
+    )
+    monkeypatch.setattr(app.account, "status", lambda: pytest.fail("cloud login not required"))
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root = f"http://127.0.0.1:{server.server_port}"
+    client = build_opener(HTTPCookieProcessor(CookieJar()))
+
+    def post(body: dict, *, origin: str | None = root, csrf: str | None = None,
+             opener=None) -> tuple[int, dict]:
+        headers = {"Content-Type": "application/json",
+                   "X-CSRF-Token": app.account.csrf if csrf is None else csrf}
+        if origin is not None:
+            headers["Origin"] = origin
+        request = Request(
+            root + "/api/local-recordings/import-member-archive",
+            data=json.dumps(body).encode(), headers=headers, method="POST",
+        )
+        try:
+            with (opener or client).open(request) as response:
+                return response.status, json.load(response)
+        except HTTPError as error:
+            return error.code, json.loads(error.read())
+
+    try:
+        valid = {"export_id": "a" * 64, "file_id": "b" * 64,
+                 "human_origin_attested": True}
+        assert post(valid)[0] == 403
+        client.open(root + "/").close()
+        empty_client = build_opener(HTTPCookieProcessor(CookieJar()))
+        assert post(valid, opener=empty_client)[0] == 403
+        assert post(valid, origin="http://localhost:1")[0] == 403
+        assert post(valid, csrf="wrong")[0] == 403
+        assert post({**valid, "extra": "rejected"})[0] == 400
+        assert post({"export_id": "a" * 64, "file_id": "b" * 64})[0] == 400
+        assert calls == []
+        assert post(valid) == (200, {"status": "pending"})
+        assert calls == [("a" * 64, "b" * 64, True)]
+        assert app.hub is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+        app.close()
+
+
 def test_local_preview_http_requires_explicit_authenticated_post(
     tmp_path: Path, monkeypatch,
 ) -> None:
