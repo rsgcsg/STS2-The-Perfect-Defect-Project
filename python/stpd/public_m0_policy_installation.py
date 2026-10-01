@@ -167,6 +167,41 @@ def _validate_export_payloads(export_path: Path, artifact: Any) -> None:
             raise BoundaryError("public_m0_policy", "export_payload_identity_mismatch")
 
 
+def _validate_qwen_snapshot(config: Any, info: dict[str, Any],
+                            snapshot: str | None) -> None:
+    """Require an explicit, content-pinned full-weight snapshot for PF/PL M0."""
+    from .models.stage1a import recipe_for
+
+    backbone = recipe_for(config.recipe).backbone
+    if backbone == "s":
+        if snapshot is not None:
+            raise BoundaryError("public_m0_policy", "scratch_has_no_qwen_dependency")
+        return
+    if not isinstance(snapshot, str) or not snapshot:
+        raise BoundaryError("public_m0_policy", "pinned_snapshot_required")
+    try:
+        from .qwen.l2 import inspect_l2_snapshot
+
+        observed = inspect_l2_snapshot(Path(snapshot))
+        identity = info.get("backbone", {}).get(
+            "qwen" if backbone == "pf" else "qwen_base"
+        )
+        if not isinstance(identity, dict):
+            raise ValueError("model has no pinned Qwen base identity")
+        expected = {
+            "model_id": observed.model_id,
+            "model_revision": observed.repo_revision,
+            "tokenizer_revision": observed.repo_revision,
+            "weights_sha256": observed.weights_sha256,
+            "config_sha256": observed.config_sha256,
+            "tokenizer_sha256": observed.tokenizer_bundle_sha256,
+        }
+        if any(identity.get(key) != value for key, value in expected.items()):
+            raise ValueError("snapshot content differs from model Qwen identity")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        raise BoundaryError("public_m0_policy", "qwen_snapshot_identity_mismatch") from error
+
+
 def bind_public_m0_export(
     root: Path, export_path: Path, config_path: Path, manifest_path: Path, *,
     manifest_id: str, policy: dict[str, Any], requirements: dict[str, Any],
@@ -197,6 +232,8 @@ def bind_public_m0_export(
     from .fullrun.public_inputs import COMPACT_IDENTITY, IDENTITY
 
     renderer = info["renderer"]
+    _validate_qwen_snapshot(config, info, str(qwen_snapshot.resolve())
+                            if qwen_snapshot is not None else None)
     representation = {
         "id": renderer["profile"], "version": renderer["version"],
         "input_schema": SNAPSHOT_SCHEMA,
@@ -330,9 +367,10 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
         or file_sha256(export / "model.json") != config.get("export_manifest_sha256")
     ):
         raise BoundaryError("public_m0_policy", "export_identity_drift")
-    artifact, _, info = _model_details(export, config.get("model_id"))
+    artifact, model_config, info = _model_details(export, config.get("model_id"))
     if info["renderer"] != renderer:
         raise BoundaryError("public_m0_policy", "public_renderer_mismatch")
+    _validate_qwen_snapshot(model_config, info, config.get("qwen_snapshot"))
     _validate_export_payloads(export, artifact)
     return config, manifest
 

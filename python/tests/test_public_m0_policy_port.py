@@ -28,6 +28,7 @@ from stpd.public_m0_policy_installation import (
     GENERIC_ACTION_VERBS,
     GENERIC_INTERACTION_KINDS,
     PROFILE,
+    _validate_qwen_snapshot,
 )
 
 
@@ -234,6 +235,58 @@ def test_public_m0_status_shape_alone_cannot_authorize_registration(
                         lambda _stage: None)
     with pytest.raises(BoundaryError, match="public_m0_export_verification_required"):
         service.register(identity)
+
+
+@pytest.mark.parametrize(("backbone", "identity_key"), [("pf", "qwen"), ("pl", "qwen_base")])
+def test_public_pf_pl_require_explicit_exact_qwen_snapshot(
+    tmp_path, monkeypatch, backbone, identity_key,
+):
+    from types import SimpleNamespace
+
+    from stpd.qwen import l2
+
+    observed = SimpleNamespace(
+        model_id="Qwen/Qwen3-0.6B-Base", repo_revision="1" * 40,
+        weights_sha256="2" * 64, config_sha256="3" * 64,
+        tokenizer_bundle_sha256="4" * 64,
+    )
+    identity = {
+        "model_id": observed.model_id, "model_revision": observed.repo_revision,
+        "tokenizer_revision": observed.repo_revision,
+        "weights_sha256": observed.weights_sha256,
+        "config_sha256": observed.config_sha256,
+        "tokenizer_sha256": observed.tokenizer_bundle_sha256,
+    }
+    calls = []
+
+    def inspect(snapshot):
+        calls.append(snapshot)
+        return observed
+
+    monkeypatch.setattr(l2, "inspect_l2_snapshot", inspect)
+    config = type("M0Config", (), {"recipe": f"stage1a.dsimple.light-action.m0.{backbone}.v1"})()
+    info = {"backbone": {identity_key: identity}}
+    with pytest.raises(BoundaryError, match="pinned_snapshot_required"):
+        _validate_qwen_snapshot(config, info, None)
+    assert calls == []
+
+    snapshot = tmp_path / "pinned-qwen"
+    _validate_qwen_snapshot(config, info, str(snapshot))
+    assert calls == [snapshot]
+
+    wrong = {"backbone": {identity_key: {**identity, "weights_sha256": "5" * 64}}}
+    with pytest.raises(BoundaryError, match="qwen_snapshot_identity_mismatch"):
+        _validate_qwen_snapshot(config, wrong, str(snapshot))
+
+
+def test_public_scratch_rejects_an_unneeded_qwen_snapshot(tmp_path):
+    config = type("M0Config", (), {
+        "recipe": "stage1a.dsimple.light-action.m0.s.v1",
+    })()
+    _validate_qwen_snapshot(config, {"backbone": {"kind": "scratch"}}, None)
+    with pytest.raises(BoundaryError, match="scratch_has_no_qwen_dependency"):
+        _validate_qwen_snapshot(config, {"backbone": {"kind": "scratch"}},
+                                str(tmp_path / "unrelated"))
 
 
 def test_verified_public_export_binds_and_scores_real_current_snapshot(
