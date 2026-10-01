@@ -28,6 +28,7 @@ from spireagent.workbench.local_model_dependencies import (
 )
 from spireagent.workbench.local_model_export import LocalModelExport, _ordinary
 from spireagent.workbench.local_models import LocalModelService, _loopback
+from spireagent.workbench.managed_model_target import managed_manifest
 from spireagent.workbench.memory_recipe import (
     MEMORY_RECIPES,
     V2_MEMORY_RECIPES,
@@ -62,7 +63,7 @@ def _memory_recipe_label(recipe: str) -> str:
 MEMORY_RECIPE_LABELS = {recipe: _memory_recipe_label(recipe) for recipe in MEMORY_RECIPES}
 
 
-def _export_memory_profile(export: Path) -> str:
+def _export_memory_input_profile(export: Path) -> str:
     """Read a closed package projection for display; POST rechecks full lineage."""
     from stpd.fullrun.memory_projection_config import (
         parse_episode_projection_config,
@@ -75,7 +76,12 @@ def _export_memory_profile(export: Path) -> str:
             value.get("projection_config")))
     except (TypeError, ValueError) as error:
         raise BoundaryError("local_model_registration", "export_profile_invalid") from error
-    return V2_M2_PROFILE if profile.startswith("text-menu-v2") else M2_PROFILE
+    return profile
+
+
+def _export_memory_profile(export: Path) -> str:
+    return (V2_M2_PROFILE if _export_memory_input_profile(export).startswith("text-menu-v2")
+            else M2_PROFILE)
 
 
 _v2_sdk_available = v2_sdk_available
@@ -215,6 +221,56 @@ def bind_memory_export(*args: Any, **kwargs: Any) -> Any:
     return bind(*args, **kwargs)
 
 
+def bind_managed_memory_export(*args: Any, **kwargs: Any) -> Any:
+    from stpd.memory_policy_installation import bind_managed_memory_export as bind
+
+    return bind(*args, **kwargs)
+
+
+def _target_kind(value: str) -> None:
+    if not isinstance(value, str) or value not in {"native", "managed"}:
+        raise BoundaryError("local_model_registration", "unsupported_environment_target")
+
+
+def _managed_requirements(target: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Use the Host's declared contract, never extrapolate from the current page."""
+    try:
+        contracts = target["text_menu_contracts"]
+        if not isinstance(contracts, list) or any(not isinstance(item, dict)
+                                                  for item in contracts):
+            raise ValueError
+        matches = [item for item in contracts if item.get("input_profile") == "text-menu-v2"]
+        if len(matches) != 1:
+            raise ValueError
+        contract = matches[0]
+        if (contract.get("snapshot_schema") != "sts2.player-environment/text-menu-snapshot-2"
+                or contract.get("receipt_schema")
+                != "sts2.player-environment/text-menu-action-result-2"
+                or contract.get("protocol_version") != "1.0.0"):
+            raise ValueError
+        game = target["exact_game"]
+        if any(not isinstance(game[key], str) or not game[key] for key in ("version", "commit")):
+            raise ValueError
+        for key in ("interaction_kinds", "action_verbs"):
+            values = contract[key]
+            if (not isinstance(values, list) or not values
+                    or any(not isinstance(item, str) or not item for item in values)
+                    or len(set(values)) != len(values)):
+                raise ValueError
+        return ({
+            "environment": {"kind": "managed_text_v2", "text_protocol_version": "1.0.0",
+                            "input_profile": "text-menu-v2"},
+            "reads": [], "whole_decision_admission": True,
+            "candidate_order_digest": "sha256-json-menu-action-id-order",
+            "score_count_matches_candidate_count": True, "selected_index": True,
+            "successor_required": True,
+        }, {"game_versions": [game["version"]], "game_commits": [game["commit"]],
+            "interaction_kinds": list(contract["interaction_kinds"]),
+            "action_verbs": list(contract["action_verbs"])})
+    except (KeyError, TypeError, ValueError) as error:
+        raise BoundaryError("local_model_registration", "managed_contract_unavailable") from error
+
+
 def bind_text_menu_export(*args: Any, **kwargs: Any) -> Any:
     from stpd.token_policy_installation import bind_text_menu_export as bind
 
@@ -242,7 +298,8 @@ class LocalModelRegistration:
     def _matching(self, model_id: str, export: Path,
                   requirements: dict[str, Any] | None = None,
                   support: dict[str, Any] | None = None, *,
-                  profile: str = PROFILE) -> tuple[str | None, bool]:
+                  profile: str = PROFILE, environment_kind: str = "native"
+                  ) -> tuple[str | None, bool]:
         from stpd.token_policy_installation import code_digest, validate
 
         stale = False
@@ -263,6 +320,8 @@ class LocalModelRegistration:
                 ):
                     continue
                 manifest = _object_file(_inside(self.models.private_root, entry["manifest"]))
+                if managed_manifest(manifest) != (environment_kind == "managed"):
+                    continue
                 if manifest.get("adapter", {}).get("code_sha256") != current_code:
                     stale = True
                     continue
@@ -280,7 +339,14 @@ class LocalModelRegistration:
                                     "registration_metadata_invalid") from error
         return None, stale
 
-    def status(self, model_id: object) -> dict[str, Any]:
+    def status(self, model_id: object, *, environment_kind: str = "native") -> dict[str, Any]:
+        _target_kind(environment_kind)
+        result = self._status(model_id, environment_kind=environment_kind)
+        if environment_kind == "managed":
+            result["environment_kind"] = environment_kind
+        return result
+
+    def _status(self, model_id: object, *, environment_kind: str) -> dict[str, Any]:
         identity = digest(model_id, "local_model_registration.model_id")
         observed = self.export.status()
         operation = observed["operation"]
@@ -302,7 +368,15 @@ class LocalModelRegistration:
             if not local_models_available():
                 return _public(identity, "unavailable",
                                reason_code="local_models_extra_required", profile=profile)
-            found, stale = self._matching(identity, export, profile=profile)
+            if environment_kind == "managed" and (
+                not memory or _export_memory_input_profile(export)
+                != "text-menu-v2-confirmed-interaction"
+            ):
+                return _public(identity, "unavailable",
+                               reason_code="managed_requires_confirmed_interaction_model",
+                               profile=profile)
+            found, stale = self._matching(identity, export, profile=profile,
+                                          environment_kind=environment_kind)
             if found is not None:
                 return _public(identity, "registered", selection_id=found, profile=profile)
             if stale:
@@ -319,7 +393,7 @@ class LocalModelRegistration:
                     validate_runtime_install(node_modules, pin, self.models._connector_pin())
                     sdk = (node_modules / RUNTIME_PACKAGE / "node_modules" /
                            CONNECTOR_PACKAGE / "dist" / "index.js")
-                    if not _v2_sdk_available(sdk):
+                    if environment_kind == "native" and not _v2_sdk_available(sdk):
                         return _public(identity, "unavailable",
                                        reason_code="v2_runtime_contract_unavailable",
                                        profile=profile)
@@ -414,7 +488,14 @@ class LocalModelRegistration:
             raise BoundaryError("local_model_registration",
                                 "m2_runtime_contract_unavailable") from error
 
-    def register(self, model_id: object) -> dict[str, Any]:
+    def register(self, model_id: object, *, environment_kind: str = "native") -> dict[str, Any]:
+        _target_kind(environment_kind)
+        result = self._register(model_id, environment_kind=environment_kind)
+        if environment_kind == "managed":
+            result["environment_kind"] = environment_kind
+        return result
+
+    def _register(self, model_id: object, *, environment_kind: str) -> dict[str, Any]:
         identity = digest(model_id, "local_model_registration.model_id")
 
         deadline = monotonic() + REGISTRATION_SECONDS
@@ -447,6 +528,11 @@ class LocalModelRegistration:
             recipe = check_model(artifact)[0].recipe
             if recipe not in RECIPE_LABELS:
                 raise BoundaryError("local_model_registration", "unsupported_model_recipe")
+        managed = environment_kind == "managed"
+        if managed and (not memory or input_profile_for_recipe(recipe)
+                        != "text-menu-v2-confirmed-interaction"):
+            raise BoundaryError("local_model_registration",
+                                "managed_requires_confirmed_interaction_model")
         try:
             directory, pin = self.models.text_runtime_profile(profile)
         except BoundaryError as error:
@@ -463,17 +549,20 @@ class LocalModelRegistration:
                                 "text_runtime_local_install_required") from error
         sdk = (node_modules / RUNTIME_PACKAGE / "node_modules" / CONNECTOR_PACKAGE
                / "dist" / "index.js")
-        if profile == V2_M2_PROFILE and not _v2_sdk_available(sdk):
+        if not managed and profile == V2_M2_PROFILE and not _v2_sdk_available(sdk):
             raise BoundaryError("local_model_registration", "v2_runtime_contract_unavailable")
         _remaining(deadline)
         input_profile = "text-menu-v2" if profile == V2_M2_PROFILE else PROFILE
-        capabilities = (self._capabilities(sdk, deadline=deadline,
-                                           input_profile=input_profile)
-                        if profile == V2_M2_PROFILE else
-                        self._capabilities(sdk, deadline=deadline))
-        requirements, support = _requirements(capabilities,
-                                              input_profile=input_profile)
-        if memory:
+        if managed:
+            requirements, support = _managed_requirements(self.models._managed_runtime_target())
+        else:
+            capabilities = (self._capabilities(sdk, deadline=deadline,
+                                               input_profile=input_profile)
+                            if profile == V2_M2_PROFILE else
+                            self._capabilities(sdk, deadline=deadline))
+            requirements, support = _requirements(capabilities,
+                                                  input_profile=input_profile)
+        if memory and not managed:
             if profile == V2_M2_PROFILE:
                 self._context_available(sdk, deadline=deadline,
                                         input_profile=input_profile)
@@ -494,7 +583,7 @@ class LocalModelRegistration:
             with instance_lock(lock_path):
                 _remaining(deadline)
                 found, _ = self._matching(identity, export, requirements, support,
-                                           profile=profile)
+                                           profile=profile, environment_kind=environment_kind)
                 if found is not None:
                     _remaining(deadline)
                     return _public(identity, "registered", selection_id=found,
@@ -512,13 +601,14 @@ class LocalModelRegistration:
                 target.mkdir(mode=0o700)
                 config_path, manifest_path = target / "config.json", target / "manifest.json"
                 try:
-                    binder = bind_memory_export if memory else bind_text_menu_export
+                    binder = (bind_managed_memory_export if managed else
+                              bind_memory_export if memory else bind_text_menu_export)
                     binding: dict[str, Any] = {"manifest_id": selection,
                                "policy": {"id": selection, "version": "1.0.0",
                                           "provider": "stpd", "architecture": recipe},
                                "requirements": requirements, "support": support,
                                "binding_root": self.models.private_root}
-                    if memory and input_profile_for_recipe(recipe) != PROFILE:
+                    if memory and not managed and input_profile_for_recipe(recipe) != PROFILE:
                         binding["input_profile"] = input_profile_for_recipe(recipe)
                     binder(self.models.root, export, config_path, manifest_path,
                            **binding)
@@ -529,7 +619,8 @@ class LocalModelRegistration:
                     label = (MEMORY_RECIPE_LABELS[recipe] if memory
                              else RECIPE_LABELS[recipe])
                     entry = {"id": selection,
-                             "label": "本机文字菜单 " + label + " " + identity[:8],
+                             "label": ("独立游戏环境 " if managed else "本机文字菜单 ")
+                                      + label + " " + identity[:8],
                              "adapter": "stpd-m2-decision-adapter" if memory else "token-v1",
                              "runtime_profile": profile,
                              "manifest": manifest_path.relative_to(

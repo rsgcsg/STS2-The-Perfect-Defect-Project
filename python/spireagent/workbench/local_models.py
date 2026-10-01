@@ -39,6 +39,12 @@ from spireagent.workbench.kit_runtime import (
     KIT_RUNTIME_PAIRS,
     text_runtime_pin,
 )
+from spireagent.workbench.managed_model_target import (
+    confirm_target,
+    managed_manifest,
+    public_target,
+    runtime_arguments,
+)
 from spireagent.workbench.native_tasks import NativeTasks
 from spireagent.workbench.runtime_install import (
     ARCHIVE_LIMIT,
@@ -328,8 +334,10 @@ class RuntimeClient:
 
 
 class LocalModelService:
-    def __init__(self, config: ProjectConfig, hub: HubClient | None = None) -> None:
+    def __init__(self, config: ProjectConfig, hub: HubClient | None = None, *,
+                 managed_target: Callable[[], dict[str, Any]] | None = None) -> None:
         self.config, self.hub = config, hub
+        self.managed_target = managed_target
         self.root = ROOT
         self.directory = config.state_dir / "models"
         # The checkout supplies executable code and the shipped catalog. This
@@ -885,6 +893,10 @@ class LocalModelService:
                                 "runtime_recovery_epoch_mismatch",
                                 "runtime_game_precondition_required",
                                 "runtime_recovery_precondition_required",
+                                "managed_environment_unavailable",
+                                "managed_environment_target_unavailable",
+                                "managed_environment_target_changed",
+                                "managed_environment_target_invalid",
                             }
                             self.state.update(
                                 status="command_unknown"
@@ -1000,6 +1012,16 @@ class LocalModelService:
             if self.closed or intent != self.intent_generation:
                 raise BoundaryError("local_model", "command_superseded")
 
+    def _managed_runtime_target(self) -> dict[str, Any]:
+        if self.managed_target is None:
+            raise BoundaryError("local_model", "managed_environment_target_unavailable")
+        try:
+            return self.managed_target()
+        except (BoundaryError, OSError, ValueError) as error:
+            # This callback is the environment owner's read-only precondition;
+            # no model or native command has been sent by this operation.
+            raise BoundaryError("local_model", "managed_environment_unavailable") from error
+
     def _send_control(
         self, client: RuntimeClient, route: str, body: dict[str, Any], intent: int,
         binding: RuntimeControlBinding | None = None,
@@ -1036,7 +1058,16 @@ class LocalModelService:
         manifest = _object_file(manifest_path)
         package = self._runtime_package(identity)
         _check_runtime_port(15527)
-        connector = _loopback(self.config.platform_url or "http://127.0.0.1:15526")
+        managed = managed_manifest(manifest)
+        target = self._managed_runtime_target() if managed else None
+        selected_target = public_target(target) if target is not None else None
+        connector = (None if managed else
+                     _loopback(self.config.platform_url or "http://127.0.0.1:15526"))
+        if target is not None:
+            environment_arguments = runtime_arguments(target, self.private_root)
+        else:
+            assert connector is not None
+            environment_arguments = ["--connector-endpoint", connector]
         command = [
             "node",
             str(self._node_modules(identity) / RUNTIME_PACKAGE / "dist/cli.js"),
@@ -1047,8 +1078,7 @@ class LocalModelService:
             "--adapter-cwd",
             str(self.root),
             *["--adapter-arg=" + arg for arg in self.adapter_arguments(entry)],
-            "--connector-endpoint",
-            connector,
+            *environment_arguments,
             "--listen-port",
             "15527",
             "--evidence-root",
@@ -1088,6 +1118,10 @@ class LocalModelService:
             for key in ("startup", "runtime", "evaluation", "recovery_evidence"):
                 self.state.pop(key, None)
             self.state.update(status="loading", loaded=False, connector_endpoint=connector)
+            if selected_target is None:
+                self.state.pop("managed_environment", None)
+            else:
+                self.state["managed_environment"] = selected_target
             self._save()
         lines: queue.Queue[bytes] = queue.Queue(maxsize=1)
         stdout = process.stdout
@@ -1115,6 +1149,8 @@ class LocalModelService:
             if any(
                 startup.get(key) != value for key, value in expected.items()
             ) or not re.fullmatch(r"run-[a-f0-9-]{36}", startup.get("run_id", "")):
+                raise ValueError
+            if startup.get("managed_environment") != selected_target:
                 raise ValueError
             if text_menu and startup.get("autonomy_budget") != {
                 "maxSubmissions": limits["max_submissions"],
@@ -1211,6 +1247,7 @@ class LocalModelService:
             intent = self.intent_generation
             client = self.client
             connector_endpoint = self.state.get("connector_endpoint")
+            managed_environment = self.state.get("managed_environment")
 
         def execute() -> None:
             assert client is not None
@@ -1221,24 +1258,33 @@ class LocalModelService:
             binding = None
             if action in {"shadow", "one_step", "auto"}:
                 self._require_intent(intent)
-                bound_endpoint = NativeTasks.bound_connector(connector_endpoint)
                 binding = RuntimeControlBinding.from_environment(
                     client.request("/environment"), observation["run_id"]
                 )
                 # Capture the shared Runtime epoch before native preparation.
                 # A recovery from either UI invalidates this exact observation;
                 # never refresh its epoch to make a stale intent eligible again.
-                instance = self.native_tasks.connector_instance(bound_endpoint)
-                if instance != binding.runtime_instance_id:
-                    raise BoundaryError("local_model", "runtime_game_mismatch")
-                NativeTasks.confirm_runtime(observation, binding.runtime_instance_id)
-                self._require_intent(intent)
-                native = self.native_tasks.prepare_model(observation, bound_endpoint)
-                if native["runtime_instance_id"] != binding.runtime_instance_id:
-                    raise BoundaryError("local_model", "runtime_game_mismatch")
-                # Native Close cannot authorize a replacement Runtime or game.
-                latest = client.request("/status")["status"]
-                NativeTasks.confirm_runtime(latest, binding.runtime_instance_id)
+                if managed_environment is not None:
+                    current_target = self._managed_runtime_target()
+                    confirm_target(managed_environment, current_target)
+                    if current_target["runtime_instance_id"] != binding.runtime_instance_id:
+                        raise BoundaryError("local_model", "runtime_game_mismatch")
+                    # Managed attaches to the selected Host. It must never call
+                    # the native Mod's recorder preparation or reset the Host.
+                    self._require_intent(intent)
+                else:
+                    bound_endpoint = NativeTasks.bound_connector(connector_endpoint)
+                    instance = self.native_tasks.connector_instance(bound_endpoint)
+                    if instance != binding.runtime_instance_id:
+                        raise BoundaryError("local_model", "runtime_game_mismatch")
+                    NativeTasks.confirm_runtime(observation, binding.runtime_instance_id)
+                    self._require_intent(intent)
+                    native = self.native_tasks.prepare_model(observation, bound_endpoint)
+                    if native["runtime_instance_id"] != binding.runtime_instance_id:
+                        raise BoundaryError("local_model", "runtime_game_mismatch")
+                    # Native Close cannot authorize a replacement Runtime or game.
+                    latest = client.request("/status")["status"]
+                    NativeTasks.confirm_runtime(latest, binding.runtime_instance_id)
             if action == "stop":
                 runtime = self._send_control(client, "/stop", {}, intent)["status"]
             else:
@@ -1303,10 +1349,19 @@ class LocalModelService:
         # Older sessions did not persist their Connector endpoint. Their exact
         # Runtime can still be returned to Human or stopped, but cannot safely be
         # retargeted from today's project config. Stop then load again to bind it.
-        try:
-            connector_endpoint = NativeTasks.bound_connector(previous.get("connector_endpoint"))
-        except BoundaryError:
+        managed_environment = (previous.get("managed_environment")
+                               if managed_manifest(manifest) else None)
+        if managed_manifest(manifest):
             connector_endpoint = None
+            if not isinstance(managed_environment, dict) or (
+                managed_environment != startup.get("managed_environment")
+            ):
+                managed_environment = None
+        else:
+            try:
+                connector_endpoint = NativeTasks.bound_connector(previous.get("connector_endpoint"))
+            except BoundaryError:
+                connector_endpoint = None
         with self.lock:
             self._require_intent(intent)
             self.client = client if observed["lifecycle"] == "running" else None
@@ -1319,10 +1374,16 @@ class LocalModelService:
                 previous_session=None,
                 connector_endpoint=connector_endpoint,
                 error_code=(
-                    "runtime_connector_binding_required"
-                    if self.client is not None and connector_endpoint is None else None
+                    ("managed_environment_target_unavailable" if managed_manifest(manifest)
+                     else "runtime_connector_binding_required")
+                    if self.client is not None and connector_endpoint is None
+                    and managed_environment is None else None
                 ),
             )
+            if managed_environment is None:
+                self.state.pop("managed_environment", None)
+            else:
+                self.state["managed_environment"] = managed_environment
         if self.client is None:
             self._evaluation_handoff()
         else:

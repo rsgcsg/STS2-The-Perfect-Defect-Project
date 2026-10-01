@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync
+} from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -11,6 +20,7 @@ import {
 } from "../src/game-installation.mjs";
 import {
   addedPatchPaths,
+  canonicalizeManagedCandidateDirectory,
   inspectManagedCandidateBuild,
   assertManagedCandidateGame,
   chooseManagedCandidateAction,
@@ -142,6 +152,70 @@ test("managed setup converts drive-qualified Windows paths for Git Bash", () => 
   assert.throws(() => toBashPath("\\\\server\\share\\game", "win32"), /drive-qualified/u);
 });
 
+test("managed candidate path aliases resolve before creating a missing build root", (context) => {
+  const temporaryRoot = mkdtempSync(path.join(os.tmpdir(), "sts2-managed-candidate-path-"));
+  try {
+    const physicalParent = path.join(temporaryRoot, "physical");
+    const aliasedParent = path.join(temporaryRoot, "alias");
+    mkdirSync(physicalParent);
+    try {
+      symlinkSync(physicalParent, aliasedParent, process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+      if (["EPERM", "EACCES", "ENOTSUP"].includes(error?.code)) {
+        context.skip(`directory symlinks are unavailable: ${error.code}`);
+        return;
+      }
+      throw error;
+    }
+
+    const requested = path.join(aliasedParent, "not-yet-created", "candidate");
+    const resolved = canonicalizeManagedCandidateDirectory(requested);
+    assert.equal(resolved.requested, path.resolve(requested));
+    assert.equal(resolved.canonical, path.join(realpathSync.native(physicalParent), "not-yet-created", "candidate"));
+    assert.equal(existsSync(path.dirname(requested)), true);
+    assert.equal(existsSync(resolved.canonical), false);
+    const requestedThroughPhysicalParent = canonicalizeManagedCandidateDirectory(
+      path.join(physicalParent, "not-yet-created", "candidate")
+    );
+    assert.equal(requestedThroughPhysicalParent.canonical, resolved.canonical);
+    assert.notEqual(requestedThroughPhysicalParent.requested, resolved.requested);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("managed preparation and runtime launch use the canonical candidate root", () => {
+  const source = readFileSync(path.join(ROOT, "src", "managed-candidate.mjs"), "utf8");
+  const prepareStart = source.indexOf("export async function prepareManagedCandidate(");
+  const runtimeStart = source.indexOf("export async function startManagedCandidateRuntime(");
+  const prepare = source.slice(prepareStart, runtimeStart);
+  const canonicalize = prepare.indexOf("canonicalizeManagedCandidateDirectory(requestedDestination)");
+  assert.ok(canonicalize >= 0);
+  const canonicalPreparation = prepare.slice(canonicalize);
+  assert.match(
+    canonicalPreparation,
+    /await run\("git", \[\s*"clone",\s*"--config",\s*"core\.autocrlf=false",\s*manifest\.upstream\.url,\s*destination\s*\]\);/u
+  );
+  assert.match(
+    canonicalPreparation,
+    /await run\("bash", \["setup\.sh", toBashPath\(gameDataDirectory\)\], \{\s*cwd: destination,\s*timeout: 600_000,\s*env: \{ \.\.\.process\.env, DOTNET: dotnet\.command \}\s*\}\);/u
+  );
+  assert.match(
+    canonicalPreparation,
+    /"build", project,[\s\S]*cwd: destination,[\s\S]*STS2_LIB: path\.join\(destination, "lib"\)/u
+  );
+  assert.match(
+    canonicalPreparation,
+    /inspectManagedCandidateBuild\(\{ root, candidateDirectory: destination, manifest \}\)/u
+  );
+
+  const runtimeEnd = source.indexOf("\nfunction stateDigest", runtimeStart);
+  const runtime = source.slice(runtimeStart, runtimeEnd);
+  assert.match(runtime, /const resolvedCandidateDirectory = build\.candidate_directory;/u);
+  assert.match(runtime, /cwd: resolvedCandidateDirectory/u);
+  assert.match(runtime, /STS2_LIB: path\.join\(resolvedCandidateDirectory, "lib"\)/u);
+});
+
 test("managed probe policy uses advertised semantic operands and fails closed on unknown decisions", () => {
   assert.deepEqual(chooseManagedCandidateAction({
     decision: "map_select",
@@ -204,7 +278,7 @@ test("managed probe policy uses advertised semantic operands and fails closed on
   assert.equal(chooseManagedCandidateAction({ decision: "unrecognized" }), null);
 });
 
-test("managed build inspection resolves a relative candidate path before returning it", async (context) => {
+test("managed build inspection reports the physical path for a candidate alias", async (context) => {
   const candidate = process.env.STS2_MANAGED_TEST_CANDIDATE;
   if (!candidate) {
     context.skip("set STS2_MANAGED_TEST_CANDIDATE for the proprietary exact-build integration gate");
@@ -219,6 +293,7 @@ test("managed build inspection resolves a relative candidate path before returni
   );
   const result = await inspectManagedCandidateBuild({ root: ROOT, candidateDirectory: candidate, manifest });
   assert.equal(path.isAbsolute(result.candidate_directory), true);
+  assert.equal(result.candidate_directory, realpathSync.native(path.resolve(candidate)));
   assert.equal(path.isAbsolute(result.artifact), true);
   assert.equal(result.artifact_mvid, manifest.expected_build.artifact_mvid);
 });

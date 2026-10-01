@@ -3773,6 +3773,40 @@ test("environment page explains missing setup without accepting browser paths", 
   assert.doesNotMatch(text(page), /browser-csrf/);
 });
 
+test("continuing a held Managed episode is an explicit POST and does not render stale actions", async () => {
+  const env=setup({view:"local-environment",identity:{status:"local_only"},handler:async url=>{
+    if(url==="/api/local-environment") return {
+      schema:"stpd/local-managed-environment-v1",availability:"configured",
+      input_profile:"text-menu-v2",csrf_token:"csrf",host_control:{held:true,tainted:false,closed:false,
+        service_instance_id:"managed_service_x",runtime_instance_id:"runtime_x",
+        game_continuity_id:"episode_x"},
+      scenarios:[{id:"managed-defect-a0-map-prefix-20260929",label:"Defect",seed:"M2H0ST20260929A",
+        character:"Defect",scope:"manual"}],
+      session:{status:"control_held",session_id:"a".repeat(32),service_binding:{
+        service_instance_id:"managed_service_x",runtime_instance_id:"runtime_x",
+        game_continuity_id:"episode_x"},context:{snapshot:{
+          schema:"sts2.player-environment/text-menu-snapshot-2",input_profile:"text-menu-v2",
+          snapshot_id:"stale",status:"interactive",menu_actions:{status:"complete",actions:[]},
+        }},events:[]},
+    };
+    if(url==="/api/local-environment/resume") return {status:"resuming"};
+    return {items:[]};
+  }});
+  const page=await env.render();
+  assert.match(text(page),/模型或其他客户端正在控制/);
+  assert.ok(action(page,"environment-resume"));
+  assert.equal(walk(page).some(element=>element.dataset?.action?.startsWith("environment-action-")),false);
+  assert.equal(post(env.calls).length,0,"render and held status never claim or observe");
+  await action(page,"environment-resume").onclick();
+  const writes=post(env.calls);
+  assert.equal(writes.length,1);
+  assert.equal(writes[0].url,"/api/local-environment/resume");
+  assert.deepEqual(body(writes[0]),{session_id:"a".repeat(32),
+    service_instance_id:"managed_service_x",runtime_instance_id:"runtime_x",
+    game_continuity_id:"episode_x"});
+  assert.equal(writes[0].options.headers["X-CSRF-Token"],"csrf");
+});
+
 test("missing scenario keeps reports and stop available without inventing a seed", async () => {
   const reportId=id("a"), sessionId="b".repeat(32);
   const env=setup({view:"local-environment",identity:{status:"local_only"},handler:async url=>{
@@ -3904,7 +3938,7 @@ test("environment refresh preserves reading and form state without replaying com
   status="cleanup_unknown";
   assert.equal(await env.ui.refresh("local-environment"),false);
   const changed=await env.render();
-  assert.match(text(changed),/清理尚未确认/);
+  assert.match(text(changed),/本段清理结果未确认/);
   assert.equal(field(changed,"environment-scene-name").value,"My draft");
   assert.equal(field(changed,"environment-compare-first").value,second);
   assert.match(text(changed),/verified_fixed_seed_starts/);
@@ -4159,10 +4193,70 @@ test("unknown environment action has Stop only and keeps its receipt visible", a
     } : {schema:"stpd/local-managed-environment-report-v1",items:[]},
   });
   const page = await env.render();
-  assert.match(text(page), /动作交付或后续页面未确认/);
+  assert.match(text(page), /本段动作或后续页面结果未知/);
   assert.ok(action(page, "environment-stop"));
   assert.equal(walk(page).filter(item => item.dataset?.action?.startsWith("environment-action-")).length, 0);
   assert.equal(post(env.calls).length, 0);
+});
+
+test("release-unknown exposes only an explicit Host control recovery action", async () => {
+  const writes = [];
+  const env = setup({view:"local-environment", identity:{status:"local_only", csrf_token:"csrf"},
+    handler: async (url, options) => {
+      if (url === "/api/local-environment") return {
+        schema:"stpd/local-managed-environment-v1", availability:"configured", csrf_token:"csrf",
+        host_control:{held:true, tainted:false, closed:false,
+          service_instance_id:"service-1", runtime_instance_id:"runtime-1",
+          game_continuity_id:"episode-1"}, scenarios:[],
+        session:{status:"unknown", session_id:"b".repeat(32),
+          error_code:"managed_control_release_unknown",
+          service_binding:{service_instance_id:"service-1", runtime_instance_id:"runtime-1",
+            game_continuity_id:"episode-1"},
+          session_semantics:"workbench-segment-v2-host-owned-service"},
+      };
+      if (url === "/api/local-environment/reports") return {items:[]};
+      writes.push({url, options});
+      return {status:"released", outcome:"still_unknown"};
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /动作结果仍未知/);
+  assert.equal(writes.length, 0);
+  await action(page, "environment-recover-control").onclick();
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, "/api/local-environment/recover-control");
+  assert.deepEqual(body(writes[0]), {session_id:"b".repeat(32),
+    service_instance_id:"service-1", runtime_instance_id:"runtime-1",
+    game_continuity_id:"episode-1"});
+});
+
+test("claim-unknown exposes explicit recovery only while the exact Host remains held", async () => {
+  const writes = [];
+  const env = setup({view:"local-environment", identity:{status:"local_only", csrf_token:"csrf"},
+    handler: async (url, options) => {
+      if (url === "/api/local-environment") return {
+        schema:"stpd/local-managed-environment-v1", availability:"configured", csrf_token:"csrf",
+        host_control:{held:true, tainted:false, closed:false, service_instance_id:"service-2",
+          runtime_instance_id:"runtime-2", game_continuity_id:"episode-2"}, scenarios:[],
+        session:{status:"control_held", session_id:"c".repeat(32),
+          error_code:"managed_control_claim_unknown",
+          service_binding:{service_instance_id:"service-2", runtime_instance_id:"runtime-2",
+            game_continuity_id:"episode-2"},
+          session_semantics:"workbench-segment-v2-host-owned-service"},
+      };
+      if (url === "/api/local-environment/reports") return {items:[]};
+      writes.push({url, options});
+      return {status:"released", outcome:"still_unknown"};
+    },
+  });
+  const page = await env.render();
+  assert.match(text(page), /原请求编号/);
+  assert.equal(writes.length, 0);
+  await action(page, "environment-recover-control").onclick();
+  assert.equal(writes[0].url, "/api/local-environment/recover-control");
+  assert.deepEqual(body(writes[0]), {session_id:"c".repeat(32),
+    service_instance_id:"service-2", runtime_instance_id:"runtime-2",
+    game_continuity_id:"episode-2"});
 });
 
 test("confirmed stop with pending report offers archive retry without a game action", async () => {
@@ -6183,4 +6277,67 @@ test("another recording's unresolved publication blocks a new dataset check", as
     await action(page, "refresh-local-dataset-status").onclick();
     assert.equal(post(env.calls).length, 0);
   }
+});
+
+for (const target of ["native", "managed"]) test(`confirmed v2 model registers explicitly for ${target} without loading or starting a Host`, async () => {
+  const modelId = id("a");
+  const model = memoryModel(modelId);
+  model.workbench_memory_recipe = "stage1a.dsimple.m2.k1.confirmed-interaction.v2";
+  const status = (kind, registered = false) => ({
+    schema:"stpd/local-model-registration-v1", model_id:modelId,
+    status:registered ? "registered" : "not_registered", loaded:false,
+    runtime_profile:"text-menu-m2-v2", csrf_token:"registration-csrf",
+    ...(kind === "managed" ? {environment_kind:"managed"} : {}),
+    ...(registered ? {selection_id:`local-${kind}`} : {}),
+  });
+  const env = setup({view:"local-workspace", query:`&id=${modelId}`,
+    identity:{status:"local_only"}, handler:async (url, options) => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${modelId}`) return model;
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed", model_id:modelId, model_type:"memory", payload_bytes:123,
+      }, {schema:"stpd/local-model-export-operation-v2"});
+      if (url === "/api/local-memory-evaluations/status") return {availability:"unavailable"};
+      if (url.startsWith("/api/local-model-registrations/status?"))
+        return status(url.includes("environment_kind=managed") ? "managed" : "native");
+      if (url === "/api/local-model-registrations/register") {
+        assert.equal(options.method, "POST");
+        assert.deepEqual(JSON.parse(options.body), {model_id:modelId,
+          ...(target === "managed" ? {environment_kind:"managed"} : {})});
+        return status(target, true);
+      }
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.match(text(page), /用于原游戏/);
+  assert.match(text(page), /用于独立游戏环境/);
+  assert.equal(post(env.calls).length, 0);
+  await action(page, target === "managed" ? "register-managed-model" : "register-local-model").onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.equal(post(env.calls)[0].url, "/api/local-model-registrations/register");
+});
+
+test("Managed registration response cannot reuse a Native status", async () => {
+  const modelId = id("a");
+  const model = memoryModel(modelId);
+  model.workbench_memory_recipe = "stage1a.dsimple.m2.k1.confirmed-interaction.v2";
+  const env = setup({view:"local-workspace", query:`&id=${modelId}`,
+    identity:{status:"local_only"}, handler:async url => {
+      if (url === "/api/local-workspace/managed") return {status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${modelId}`) return model;
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed",model_id:modelId,model_type:"memory",
+      }, {schema:"stpd/local-model-export-operation-v2"});
+      if (url === "/api/local-memory-evaluations/status") return {availability:"unavailable"};
+      if (url.startsWith("/api/local-model-registrations/status?")) return {
+        schema:"stpd/local-model-registration-v1",model_id:modelId,status:"not_registered",
+        loaded:false,runtime_profile:"text-menu-m2-v2",csrf_token:"token",
+      };
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.ok(action(page, "register-local-model"));
+  assert.equal(walk(page).some(item => item.dataset?.action === "register-managed-model"), false);
+  assert.match(text(page), /登记状态格式未知/);
+  assert.equal(post(env.calls).length, 0);
 });

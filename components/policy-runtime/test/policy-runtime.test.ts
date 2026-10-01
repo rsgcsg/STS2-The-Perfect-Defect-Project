@@ -3,19 +3,19 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpRequest, type ClientRequest } from "node:http";
-import { decodePlayerControllerLeaseResponse, type PlayerEnvironmentBoundAction, type PlayerEnvironmentReceipt, type PlayerEnvironmentSnapshot } from "@rsgcsg/sts2-connector-client";
+import { decodePlayerControllerLeaseResponse, type PlayerEnvironmentBoundAction, type PlayerEnvironmentCapabilities, type PlayerEnvironmentReceipt, type PlayerEnvironmentSnapshot } from "@rsgcsg/sts2-connector-client";
 import { admitWholeDecision } from "../src/admission.js";
 import { candidateOrderDigest } from "../src/digest.js";
 import { PolicyRuntime, admitWholeDecisionBundle } from "../src/runtime.js";
 import { ConnectorPolicyClient } from "../src/connector.js";
 import { DEFAULT_POLICY_ADAPTER_STARTUP_TIMEOUT_MS, NdjsonPolicyPort } from "../src/policy-port.js";
-import { decisionActionId, decisionActions, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type ConnectorAdapterClient, type DecisionBundle, type PolicyConnector, type PolicyManifest } from "../src/contracts.js";
+import { decisionActionId, decisionActions, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type ConnectorAdapterClient, type ConnectorPolicyRequirements, type DecisionBundle, type PolicyConnector, type PolicyManifest } from "../src/contracts.js";
 import { startPolicyRuntimeHttpServer } from "../src/server.js";
 import { AgentRunEvidence, verifyEvidenceDirectory } from "../src/evidence.js";
 // @ts-expect-error The Workbench consumer is a JavaScript package; exercise its real decoder.
 import { decodePolicyRuntimeStatus, PolicyRuntimeClient } from "../../../apps/workbench/src/policy-runtime-client.mjs";
 
-const manifest = (): PolicyManifest => ({
+const manifest = (): PolicyManifest & { requirements: ConnectorPolicyRequirements } => ({
   schema: "sts2.policy-runtime/policy-manifest-1",
   manifest_id: "manifest-test",
   policy: { id: "policy-test", version: "1", provider: "fixture", architecture: "fixture" },
@@ -413,7 +413,7 @@ class FakeConnector implements PolicyConnector {
       host: { id: "fixture", name: "fixture", version: "1", runtime_instance_id: "runtime", host_kind: "test", implementation: { source_revision: "source", module_version_id: "mvid", artifact_sha256: "b".repeat(64) } },
       game: { version: "fixture-game", commit: "fixture-commit", branch: null, main_assembly_hash: null, compatibility: { status: "exact", observation_allowed: true, detail: "fixture" }, modset: { status: "exact", fingerprint: "modset", scope: "fixture", loaded_mod_ids: ["fixture-mod"], detail: "fixture" } },
       environment_fingerprint: "environment", verbs: ["end_turn"], snapshot_bound: true, single_controller: true, execution_available: true, control: { recommended_renewal_ms: 1000 }, evidence_profiles: [], non_claims: []
-    } as Awaited<ReturnType<PolicyConnector["capabilities"]>>;
+    } as PlayerEnvironmentCapabilities;
   }
   async observeBundle(requiredReadKinds: readonly string[]) { this.observeCount += 1; this.requiredReadRequests.push([...requiredReadKinds]); if (this.stale) { this.stale = false; throw Object.assign(new Error("stale_state"), { code: "stale_state" }); } return this.observationQueue.shift() ?? this.current; }
   async acquireController() { this.acquireCount += 1; }
@@ -655,7 +655,7 @@ describe("cross-interface Runtime control preconditions", () => {
 });
 
 describe("runtime integration fake", () => {
-  const environmentDriftCases: Array<[string, string, (value: PolicyManifest) => void]> = [
+  const environmentDriftCases: Array<[string, string, (value: PolicyManifest & { requirements: ConnectorPolicyRequirements }) => void]> = [
     ["host_kind", "environment_host_kind_drift", (value) => { value.requirements.environment.host_kind = "headless"; }],
     ["connector version", "environment_connector_version_drift", (value) => { value.requirements.environment.connector_version = "different"; }],
     ["connector source", "environment_connector_source_revision_drift", (value) => { value.requirements.environment.connector_source_revision = "different"; }],

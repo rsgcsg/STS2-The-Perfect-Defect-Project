@@ -6,15 +6,18 @@ The installed public Host client owns the native process and gameplay delivery.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import os
 import re
 import stat
 import subprocess
 import threading
 import uuid
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, digest, json_bytes
@@ -34,6 +37,7 @@ PROFILE_FILE = "managed-host-profile-v1.json"
 JOURNAL_FILE = "managed-environment-session-v1.json"
 REPORT_ROOT = "managed-environment-reports"
 HOST_PACKAGE = "@rsgcsg/sts2-host-runtime"
+TEXT_STATE_OWNER_CONTRACT = "sts2.host-runtime/text-menu-v2-owner-1"
 TEXT_PROFILES = {
     "text-menu-v1": (
         "sts2.player-environment/text-menu-observation-context-1",
@@ -61,7 +65,8 @@ AUDIT_FIELDS = (
     "upstream_revision", "source_patch_sha256", "artifact_sha256", "artifact_mvid",
     "original_sts2_sha256", "runtime_sts2_sha256",
 )
-ACTIVE = frozenset({"starting", "active", "submitting", "stopping"})
+ACTIVE = frozenset({"starting", "resuming", "active", "control_held",
+                    "submitting", "stopping"})
 UNRESOLVED = frozenset({"unknown", "interrupted_unknown", "cleanup_unknown"})
 TERMINAL = frozenset({"stopped", "stopped_outcome_unknown", "failed"})
 
@@ -70,6 +75,208 @@ class HostClientPreparationError(RuntimeError):
     """The public Host client was not constructed and no process was spawned."""
 
     cleanup_confirmed = True
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class _ManagedServiceEnvironment:
+    """Workbench operations over the pinned Host-owned attachment API."""
+
+    def __init__(self, client: Any, manager: Any, ready: dict[str, Any],
+                 input_profile: str,
+                 before_claim: Callable[[str, dict[str, str]], None] | None = None,
+                 *, session_id: str | None = None) -> None:
+        self._client = client
+        self._manager = manager
+        self.ready = ready
+        self.input_profile = input_profile
+        self.text_state_owner: str | None = None
+        if input_profile == "text-menu-v2":
+            contracts = ready.get("text_menu_contracts")
+            v2 = [item for item in contracts if isinstance(item, Mapping)
+                  and item.get("input_profile") == "text-menu-v2"] \
+                if isinstance(contracts, list) else []
+            if len(v2) != 1 or v2[0].get("text_state_owner_contract") != (
+                TEXT_STATE_OWNER_CONTRACT
+            ):
+                raise BoundaryError(
+                    "local_environment", "managed_text_state_owner_unsupported"
+                )
+            if (not isinstance(session_id, str)
+                    or re.fullmatch(r"[a-f0-9]{32}", session_id) is None):
+                raise BoundaryError("local_environment", "managed_text_state_owner_invalid")
+            self.text_state_owner = f"workbench:{session_id}"
+        self.control: dict[str, str] | None = None
+        self.last_submit_result: dict[str, Any] | None = None
+        self.before_claim = before_claim
+
+    def refresh(self) -> dict[str, Any]:
+        self.ready = self._client.ready()
+        return self.ready
+
+    def binding(self) -> dict[str, str]:
+        episode = self.ready.get("episode")
+        runtime = self.ready.get("adapter_runtime_instance_id")
+        continuity = episode.get("game_continuity_id") if isinstance(episode, Mapping) else None
+        service = self.ready.get("service_instance_id")
+        if (not isinstance(service, str) or not service
+                or not isinstance(runtime, str) or not runtime
+                or not isinstance(continuity, str) or not continuity):
+            raise BoundaryError("local_environment", "managed_service_episode_unavailable")
+        return {"service_instance_id": service, "runtime_instance_id": runtime,
+                "game_continuity_id": continuity}
+
+    def request(self, command: str, **values: Any) -> dict[str, Any]:
+        try:
+            value = self._client.request({"command": command, **values})
+        except Exception as error:
+            if getattr(error, "code", None) == "managed_control_held":
+                raise BoundaryError("local_environment", "managed_control_held") from error
+            raise
+        result = value.get("result")
+        if not isinstance(result, dict):
+            raise BoundaryError("local_environment", "managed_service_result_invalid")
+        return result
+
+    def reset(self, seed: str) -> dict[str, Any]:
+        runtime = self.ready.get("adapter_runtime_instance_id")
+        episode = self.ready.get("episode")
+        continuity = episode.get("game_continuity_id") if isinstance(episode, Mapping) else None
+        if not isinstance(runtime, str) or not runtime:
+            raise BoundaryError("local_environment", "managed_service_identity_invalid")
+        value = self._manager.reset(seed, expected_runtime_instance_id=runtime,
+                                    expected_game_continuity_id=continuity)
+        result = value.get("result")
+        if not isinstance(result, dict) or result.get("type") != "reset_result":
+            raise BoundaryError("local_environment", "managed_service_reset_unconfirmed")
+        self.refresh()
+        return result
+
+    def episode_identity(self) -> dict[str, Any]:
+        result = self.request("episode_identity")
+        identity = result.get("identity")
+        if not isinstance(identity, dict):
+            raise BoundaryError("local_environment", "episode_identity_invalid")
+        return identity
+
+    def _claim(self) -> dict[str, str]:
+        binding = self.binding()
+        request_id = uuid.uuid4().hex
+        if self.before_claim is not None:
+            self.before_claim(request_id, binding)
+        try:
+            result = self.request("claim_control", expected_runtime_instance_id=binding[
+                "runtime_instance_id"], expected_game_continuity_id=binding[
+                    "game_continuity_id"], request_id=request_id,
+                **({"text_state_owner": self.text_state_owner}
+                   if self.text_state_owner is not None else {}))
+        except Exception as error:
+            if isinstance(error, BoundaryError) and error.code == "managed_control_held":
+                raise
+            error_code = getattr(error, "code", None)
+            if error_code in {
+                "managed_text_state_owner_required", "managed_text_state_owner_invalid"
+            }:
+                # The Host explicitly rejected this claim before accepting it;
+                # this is a known no-effect response, not an uncertain lease.
+                raise BoundaryError(
+                    "local_environment", cast(str, error_code)
+                ) from error
+            # The offer may have been accepted without its response. There is no
+            # credential with which to release safely, so quarantine the handle.
+            self.control = {"uncertain": "claim", "request_id": request_id}
+            raise BoundaryError("local_environment", "managed_control_claim_unknown") from error
+        token = result.get("control_token")
+        epoch = result.get("control_epoch")
+        if (result.get("type") != "claim_control_result" or not isinstance(token, str)
+                or not token or not isinstance(epoch, str) or not epoch
+                or result.get("runtime_instance_id") != binding["runtime_instance_id"]
+                or result.get("game_continuity_id") != binding["game_continuity_id"]
+                or (self.text_state_owner is not None
+                    and result.get("text_state_owner") != self.text_state_owner)):
+            self.control = {"uncertain": "claim", "request_id": request_id}
+            raise BoundaryError("local_environment", "managed_control_claim_unconfirmed")
+        self.control = {"token": token, "epoch": epoch, "request_id": request_id}
+        return self.control
+
+    def _release(self) -> None:
+        control = self.control
+        if control is None:
+            return
+        if "uncertain" in control:
+            raise BoundaryError("local_environment", "managed_control_release_unknown")
+        binding = self.binding()
+        try:
+            result = self.request("release_control", control_token=control["token"],
+                                  control_epoch=control["epoch"],
+                                  expected_runtime_instance_id=binding["runtime_instance_id"],
+                                  expected_game_continuity_id=binding["game_continuity_id"])
+        except Exception as error:
+            self.control = {"uncertain": "release", "epoch": control["epoch"],
+                            "request_id": control["request_id"]}
+            raise BoundaryError("local_environment", "managed_control_release_unknown") from error
+        if (result.get("type") != "release_control_result" or result.get("status") != "released"
+                or result.get("control_epoch") != control["epoch"]
+                or result.get("runtime_instance_id") != binding["runtime_instance_id"]
+                or result.get("game_continuity_id") != binding["game_continuity_id"]):
+            self.control = {"uncertain": "release", "epoch": control["epoch"],
+                            "request_id": control["request_id"]}
+            raise BoundaryError("local_environment", "managed_control_release_unconfirmed")
+        self.control = None
+        self.refresh()
+
+    def observe_text_menu(self, *, input_profile: str | None = None) -> dict[str, Any]:
+        binding = self.binding()
+        self._claim()
+        try:
+            control = self.control
+            assert control is not None
+            result = self.request("text_observe", input_profile=input_profile or self.input_profile,
+                                  control_token=control["token"],
+                                  control_epoch=control["epoch"])
+            context = result.get("context")
+            if not isinstance(context, dict) or context.get("game_continuity_id") != binding[
+                "game_continuity_id"]:
+                raise BoundaryError("local_environment", "managed_observation_unconfirmed")
+            return context
+        finally:
+            self._release()
+
+    def submit_text_menu(
+        self, action_id: str, snapshot_id: str, continuity_id: str,
+        mutation_request_id: str, *, input_profile: str | None = None,
+    ) -> dict[str, Any]:
+        binding = self.binding()
+        if binding["game_continuity_id"] != continuity_id:
+            raise BoundaryError("local_environment", "stale_text_context")
+        self.last_submit_result = None
+        self._claim()
+        try:
+            control = self.control
+            assert control is not None
+            result = self.request(
+                "text_submit", action_id=action_id, expected_snapshot_id=snapshot_id,
+                expected_game_continuity_id=continuity_id,
+                mutation_request_id=mutation_request_id,
+                input_profile=input_profile or self.input_profile,
+                control_token=control["token"], control_epoch=control["epoch"],
+            )
+            if result.get("type") != "text_submit_result":
+                raise BoundaryError("local_environment", "managed_submit_unconfirmed")
+            submitted = result.get("result", result)
+            if not isinstance(submitted, dict):
+                raise BoundaryError("local_environment", "managed_submit_unconfirmed")
+            self.last_submit_result = submitted
+            return submitted
+        finally:
+            self._release()
+
+    def close(self, force: bool = False) -> None:
+        # Workbench close and session Stop detach; only an explicit manager action
+        # may close the Host-owned service/native child.
+        self._release()
 
 
 def _ordinary(path: Path, *, directory: bool) -> bool:
@@ -281,6 +488,7 @@ class LocalEnvironmentService:
         self.client_factory = client_factory or self._public_client
         self.seed_normalizer = seed_normalizer or self._host_seed
         self.lock = threading.RLock()
+        self.lifecycle_lock = threading.RLock()
         self.client: Any | None = None
         self._unclosed_start_client: Any | None = None
         self.worker: threading.Thread | None = None
@@ -323,17 +531,343 @@ class LocalEnvironmentService:
         except Exception:
             return False
 
-    @staticmethod
-    def _public_client(command: list[str], host_root: Path, pin: dict[str, Any]) -> Any:
+    def _persist_claim_offer(self, session_id: str, request_id: str,
+                             binding: dict[str, str]) -> None:
+        """Persist the owner correlation before the Host can accept a claim."""
+        with self.lock:
+            if self.record.get("session_id") != session_id:
+                raise BoundaryError("local_environment", "session_ownership_changed")
+            self.record["service_binding"] = dict(binding)
+            self.record["session_semantics"] = "workbench-segment-v2-host-owned-service"
+            self.record["pending_control_claim_request_id"] = request_id
+            if not self._try_save():
+                raise BoundaryError("local_environment", "session_persistence_failed_before_offer")
+
+    def _public_client(self, command: list[str], host_root: Path,
+                       pin: dict[str, Any]) -> Any:
         from spireagent.host_runtime_client import activate_host_runtime_client
 
         try:
             activate_host_runtime_client(host_root, pin)
-            client = importlib.import_module("sts2_headless.client")
-            constructor = client.ManagedPlayerEnvironment
+            if (not _ordinary(host_root / "consumers/python/sts2_headless/managed_service.py",
+                              directory=False)
+                    or not _ordinary(host_root / "tools/managed-host-service.mjs",
+                                     directory=False)):
+                raise HostClientPreparationError("host_managed_service_unavailable")
+            api = importlib.import_module("sts2_headless")
+            launch_service = api.launch_managed_host_service
+            client_type = api.ManagedHostServiceClient
+            manager_type = api.ManagedHostServiceManager
         except Exception as error:
+            if isinstance(error, (BoundaryError, HostClientPreparationError)):
+                raise
             raise HostClientPreparationError("host_public_client_unavailable") from error
-        return constructor(command, response_timeout_seconds=15)
+
+        input_profile = self._profile_for_service(host_root, pin)
+        try:
+            candidate_index = command.index("--candidate") + 1
+            candidate = Path(command[candidate_index])
+        except (ValueError, IndexError) as error:
+            raise BoundaryError(
+                "local_environment", "managed_candidate_argument_invalid"
+            ) from error
+        directory = self.config.state_dir / "managed-host-service"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if directory.is_symlink() or not _ordinary(directory, directory=True):
+            raise BoundaryError("local_environment", "managed_attachment_directory_unsafe")
+        if os.name != "nt" and directory.stat().st_mode & 0o077:
+            raise BoundaryError("local_environment", "managed_attachment_directory_unsafe")
+        client_file = directory / "client.json"
+        manager_file = directory / "manager.json"
+        log_file = directory / f"launch-{uuid.uuid4().hex}.log"
+        existing = client_file.exists() or manager_file.exists()
+        if existing:
+            if (client_file.is_symlink() or manager_file.is_symlink()
+                    or not client_file.is_file() or not manager_file.is_file()):
+                raise BoundaryError("local_environment", "managed_attachment_incomplete")
+            client = client_type.from_attachment(client_file)
+            manager = manager_type.from_attachment(manager_file)
+            if client.service_instance_id != manager.service_instance_id:
+                raise BoundaryError("local_environment", "managed_attachment_identity_mismatch")
+            ready = client.ready()
+        else:
+            # Launch exceptions remain uncertain: the owner may have spawned
+            # the detached process before failing to return its attachment.
+            launch_service(
+                host_package_dir=host_root, candidate_dir=candidate,
+                client_attachment=client_file, manager_attachment=manager_file,
+                log_file=log_file, character=SCENARIO["character"],
+            )
+            client = client_type.from_attachment(client_file)
+            manager = manager_type.from_attachment(manager_file)
+            ready = client.ready()
+        pin_host = ready.get("host_identity")
+        if not isinstance(pin_host, Mapping) or (
+            pin_host.get("version") != pin["version"]
+            or pin_host.get("package_name") != HOST_PACKAGE
+        ):
+            raise BoundaryError("local_environment", "managed_host_identity_mismatch")
+        with self.lock:
+            session_id = self.record.get("session_id")
+        callback = (lambda request_id, binding: self._persist_claim_offer(
+            session_id, request_id, binding
+        )) if isinstance(session_id, str) else None
+        return _ManagedServiceEnvironment(client, manager, ready, input_profile, callback,
+                                          session_id=session_id)
+
+    def _profile_for_service(self, host_root: Path, pin: dict[str, Any]) -> str:
+        profile = _read_profile(self.config)
+        if profile["host_package_directory"] != str(host_root) or profile[
+            "host_package_pin"
+        ] != pin:
+            raise BoundaryError("local_environment", "managed_profile_changed")
+        return cast(str, profile["input_profile"])
+
+    def _managed_service_handles(self, profile: dict[str, Any]) -> tuple[Any, Any, dict[str, Any]]:
+        from spireagent.host_runtime_client import activate_host_runtime_client
+
+        host_root = Path(profile["host_package_directory"])
+        pin = profile["host_package_pin"]
+        _verify_host(host_root, pin)
+        directory = self.config.state_dir / "managed-host-service"
+        client_file, manager_file = directory / "client.json", directory / "manager.json"
+        if (directory.is_symlink() or not _ordinary(directory, directory=True)
+                or client_file.is_symlink() or manager_file.is_symlink()
+                or not client_file.is_file() or not manager_file.is_file()):
+            raise BoundaryError("local_environment", "managed_service_not_attached")
+        if os.name != "nt" and directory.stat().st_mode & 0o077:
+            raise BoundaryError("local_environment", "managed_attachment_directory_unsafe")
+        activate_host_runtime_client(host_root, pin)
+        api = importlib.import_module("sts2_headless")
+        client = api.ManagedHostServiceClient.from_attachment(client_file)
+        manager = api.ManagedHostServiceManager.from_attachment(manager_file)
+        ready = client.ready()
+        if client.service_instance_id != manager.service_instance_id:
+            raise BoundaryError("local_environment", "managed_attachment_identity_mismatch")
+        identity = ready.get("host_identity")
+        if not isinstance(identity, Mapping) or identity.get("package_name") != HOST_PACKAGE or (
+            identity.get("version") != pin["version"]
+        ):
+            raise BoundaryError("local_environment", "managed_host_identity_mismatch")
+        candidate = ready.get("candidate_build")
+        exact_game = ready.get("exact_game")
+        if not isinstance(candidate, Mapping) or any(
+            candidate.get(key) != profile["audit"][key] for key in AUDIT_FIELDS
+        ) or not isinstance(exact_game, Mapping) or exact_game.get(
+            "sts2_dll_sha256"
+        ) != SCENARIO["exact_game_assembly_sha256"]:
+            raise BoundaryError("local_environment", "managed_candidate_identity_mismatch")
+        return client, manager, ready
+
+    def managed_runtime_target(self) -> dict[str, Any]:
+        """Private backend contract for a Runtime attach; never exposed by HTTP."""
+        profile = _read_profile(self.config)
+        client, manager, ready = self._managed_service_handles(profile)
+        manager_status = manager.status().get("status")
+        episode = ready.get("episode")
+        if not isinstance(episode, Mapping) or not isinstance(manager_status, Mapping):
+            raise BoundaryError("local_environment", "managed_service_status_invalid")
+        if (episode.get("closed") is not False or episode.get("tainted") is not False
+                or episode.get("control_held") is not False):
+            raise BoundaryError("local_environment", "managed_episode_unavailable")
+        status_episode = manager_status.get("control")
+        if manager_status.get("control_held") is not False or status_episode is not None:
+            raise BoundaryError("local_environment", "managed_control_held")
+        runtime = ready.get("adapter_runtime_instance_id")
+        continuity = episode.get("game_continuity_id")
+        if (not isinstance(runtime, str) or not runtime
+                or not isinstance(continuity, str) or not continuity):
+            raise BoundaryError("local_environment", "managed_service_episode_unavailable")
+        profile_bytes = (self.config.state_dir / PROFILE_FILE).read_bytes()
+        return {
+            "schema": "stpd/workbench-managed-runtime-target-v1",
+            "client_attachment": self.config.state_dir / "managed-host-service" / "client.json",
+            "host_package_pin": dict(profile["host_package_pin"]),
+            "candidate_build": dict(profile["audit"]),
+            "profile_sha256": hashlib.sha256(profile_bytes).hexdigest(),
+            "service_instance_id": client.service_instance_id,
+            "runtime_instance_id": runtime,
+            "game_continuity_id": continuity,
+            "environment_fingerprint": ready.get("environment_fingerprint"),
+            "exact_game": ready.get("exact_game"),
+            "text_menu_contracts": ready.get("text_menu_contracts"),
+            "input_profile": profile["input_profile"],
+        }
+
+    def close_environment(self, *, expected_service_instance_id: str | None = None,
+                          expected_runtime_instance_id: str | None = None,
+                          expected_game_continuity_id: str | None = None,
+                          expected_session_id: str | None = None) -> dict[str, Any]:
+        """Explicitly close the Host child; ordinary Stop/Workbench exit never calls this."""
+        with self.lifecycle_lock:
+            return self._close_environment_locked(
+                expected_service_instance_id=expected_service_instance_id,
+                expected_runtime_instance_id=expected_runtime_instance_id,
+                expected_game_continuity_id=expected_game_continuity_id,
+                expected_session_id=expected_session_id,
+            )
+
+    def _close_environment_locked(self, *, expected_service_instance_id: str | None,
+                                  expected_runtime_instance_id: str | None,
+                                  expected_game_continuity_id: str | None,
+                                  expected_session_id: str | None) -> dict[str, Any]:
+        with self.lock:
+            if self.record.get("status") in ACTIVE or (
+                self.worker is not None and self.worker.is_alive()
+            ):
+                raise BoundaryError("local_environment", "session_in_progress_or_unknown")
+            current_session_id = self.record.get("session_id")
+            if expected_session_id is not None and current_session_id != expected_session_id:
+                raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+            if current_session_id is not None and expected_session_id != current_session_id:
+                raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+        profile = _read_profile(self.config)
+        _client, manager, ready = self._managed_service_handles(profile)
+        episode = ready.get("episode")
+        if isinstance(episode, Mapping) and episode.get("control_held") is not False:
+            raise BoundaryError("local_environment", "managed_control_held")
+        expected = self.record.get("service_binding")
+        if isinstance(expected, Mapping) and expected.get("service_instance_id") != ready.get(
+            "service_instance_id"
+        ):
+            raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+        if expected_service_instance_id is not None and expected_service_instance_id != ready.get(
+            "service_instance_id"
+        ):
+            raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+        if expected_runtime_instance_id is not None and expected_runtime_instance_id != ready.get(
+            "adapter_runtime_instance_id"
+        ):
+            raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+        if expected_game_continuity_id is not None and expected_game_continuity_id != (
+            episode.get("game_continuity_id") if isinstance(episode, Mapping) else None
+        ):
+            raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+        directory = self.config.state_dir / "managed-host-service"
+        for filename in ("client.json", "manager.json"):
+            path = directory / filename
+            if path.is_symlink() or not _ordinary(path, directory=False):
+                raise BoundaryError("local_environment", "managed_attachment_invalid")
+        response = manager.close_host()
+        result = response.get("result") if isinstance(response, Mapping) else None
+        if not isinstance(result, Mapping) or result.get("type") != "close_result":
+            raise BoundaryError("local_environment", "managed_host_close_unconfirmed")
+        for filename in ("client.json", "manager.json"):
+            (directory / filename).unlink()
+        with self.lock:
+            self.client = None
+            self.record["host_service_closed"] = True
+            self._save()
+        return {"status": "closed", "service_instance_id": ready["service_instance_id"]}
+
+    def recover_control(self, *, expected_session_id: str | None = None,
+                        expected_service_instance_id: str | None = None,
+                        expected_runtime_instance_id: str | None = None,
+                        expected_game_continuity_id: str | None = None) -> dict[str, Any]:
+        """Explicitly release only a Workbench action whose control reply was lost."""
+        with self.lifecycle_lock:
+            return self._recover_control_locked(
+                expected_session_id=expected_session_id,
+                expected_service_instance_id=expected_service_instance_id,
+                expected_runtime_instance_id=expected_runtime_instance_id,
+                expected_game_continuity_id=expected_game_continuity_id,
+            )
+
+    def _recover_control_locked(self, *, expected_session_id: str | None,
+                                expected_service_instance_id: str | None,
+                                expected_runtime_instance_id: str | None,
+                                expected_game_continuity_id: str | None) -> dict[str, Any]:
+        with self.lock:
+            if self.worker is not None and self.worker.is_alive():
+                raise BoundaryError("local_environment", "session_in_progress_or_unknown")
+            if expected_session_id is not None and self.record.get("session_id") != (
+                expected_session_id
+            ):
+                raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+            uncertain_claim = self.record.get("error_code") == "managed_control_claim_unknown"
+            uncertain_release = self.record.get("error_code") == "managed_control_release_unknown"
+            if not uncertain_claim and not uncertain_release:
+                raise BoundaryError("local_environment", "managed_control_recovery_not_applicable")
+            expected = self.record.get("service_binding")
+            if not isinstance(expected, Mapping):
+                raise BoundaryError("local_environment", "managed_service_binding_unavailable")
+            expected = dict(expected)
+            expected_epoch = self.record.get("uncertain_control_epoch")
+            expected_claim_id = self.record.get("uncertain_claim_request_id")
+            if uncertain_release and (not isinstance(expected_epoch, str) or not expected_epoch):
+                raise BoundaryError("local_environment", "managed_control_owner_unverifiable")
+            if uncertain_claim and (not isinstance(expected_claim_id, str)
+                                    or not expected_claim_id):
+                raise BoundaryError("local_environment", "managed_control_owner_unverifiable")
+            original_error = self.record["error_code"]
+
+        profile = _read_profile(self.config)
+        client, manager, ready = self._managed_service_handles(profile)
+        if (client.service_instance_id != expected.get("service_instance_id")
+                or ready.get("adapter_runtime_instance_id") != expected.get("runtime_instance_id")):
+            raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+        if (expected_service_instance_id is not None
+                and expected_service_instance_id != expected.get("service_instance_id")) or (
+            expected_runtime_instance_id is not None
+            and expected_runtime_instance_id != expected.get("runtime_instance_id")
+        ) or (expected_game_continuity_id is not None
+              and expected_game_continuity_id != expected.get("game_continuity_id")):
+            raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+        episode = ready.get("episode")
+        if not isinstance(episode, Mapping) or episode.get("game_continuity_id") != expected.get(
+            "game_continuity_id"
+        ) or episode.get("tainted") is True or episode.get("closed") is True:
+            raise BoundaryError("local_environment", "managed_episode_unavailable")
+        status_value = manager.status().get("status")
+        if not isinstance(status_value, Mapping) or status_value.get("control_held") is not True:
+            raise BoundaryError("local_environment", "managed_control_not_held")
+        control = status_value.get("control")
+        if not isinstance(control, Mapping) or any(
+            not isinstance(control.get(key), str) or not control.get(key)
+            for key in ("control_epoch", "runtime_instance_id", "game_continuity_id")
+        ) or control.get("runtime_instance_id") != expected["runtime_instance_id"] or (
+            control.get("game_continuity_id") != expected["game_continuity_id"]
+        ) or (expected_epoch is not None and control.get("control_epoch") != expected_epoch) or (
+            expected_claim_id is not None and control.get("claim_request_id") != expected_claim_id
+        ):
+            raise BoundaryError("local_environment", "managed_control_identity_mismatch")
+
+        response = manager.recover_control(
+            expected_control_epoch=control["control_epoch"],
+            expected_runtime_instance_id=expected["runtime_instance_id"],
+            expected_game_continuity_id=expected["game_continuity_id"],
+        )
+        result = response.get("result") if isinstance(response, Mapping) else None
+        if not isinstance(result, Mapping) or result.get("type") != "release_control_result" or (
+            result.get("status") != "released"
+        ) or result.get("control_epoch") != control["control_epoch"] or (
+            result.get("runtime_instance_id") != expected["runtime_instance_id"]
+        ) or result.get("game_continuity_id") != expected["game_continuity_id"]:
+            raise BoundaryError("local_environment", "managed_control_recovery_unconfirmed")
+
+        after_ready = client.ready()
+        after_status = manager.status().get("status")
+        after_episode = after_ready.get("episode")
+        if (not isinstance(after_episode, Mapping) or after_episode.get("control_held") is not False
+                or after_episode.get("game_continuity_id") != expected["game_continuity_id"]
+                or not isinstance(after_status, Mapping)
+                or after_status.get("control_held") is not False
+                or after_status.get("control") is not None):
+            raise BoundaryError("local_environment", "managed_control_recovery_unconfirmed")
+        with self.lock:
+            if self.record.get("service_binding") != expected or self.record.get(
+                "error_code"
+            ) != original_error:
+                raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+            # Control is released, but the earlier operation remains outcome-unknown.
+            self.record["control_recovery"] = "released_acknowledged_outcome_still_unknown"
+            if expected_claim_id is not None:
+                self.record["uncertain_claim_request_id"] = expected_claim_id
+            if expected_epoch is not None:
+                self.record["uncertain_control_epoch"] = expected_epoch
+            self._save()
+        return {"status": "released", "outcome": "still_unknown",
+                "service_instance_id": expected["service_instance_id"]}
 
     @staticmethod
     def _host_seed(host_root: Path, pin: dict[str, Any], seed: object) -> str:
@@ -471,8 +1005,11 @@ class LocalEnvironmentService:
         run = persistent_content.get("run") if isinstance(persistent_content, dict) else None
         player = persistent_content.get("player") if isinstance(persistent_content, dict) else None
         menu = snapshot.get("menu_actions") if isinstance(snapshot, dict) else None
+        service_binding = report.get("service_binding")
+        legacy_closed_instance = service_binding is None and report.get("session_semantics") is None
         if (report.get("scene_artifact_id") != scene_id
                 or report.get("status") != "stopped" or report.get("error_code") is not None
+                or report.get("continued_from_session_id") is not None
                 or report.get("input_profile") != scene["input_profile"]
                 or report.get("host_package_pin") != scene["host_package_pin"]
                 or not isinstance(identity, dict)
@@ -488,6 +1025,14 @@ class LocalEnvironmentService:
                 or player.get("character_definition_id") != "DEFECT"
                 or not isinstance(provenance.get("runtime_instance_id"), str)
                 or not provenance["runtime_instance_id"]
+                or (not legacy_closed_instance and (
+                    not isinstance(service_binding, dict)
+                    or not isinstance(service_binding.get("service_instance_id"), str)
+                    or not isinstance(service_binding.get("game_continuity_id"), str)
+                    or report.get("session_semantics") != (
+                        "workbench-segment-v2-host-owned-service"
+                    )
+                ))
                 or not isinstance(menu, dict) or menu.get("status") != "complete"
                 or not isinstance(menu.get("actions"), list)
                 or menu.get("materialized_count") != len(menu["actions"])
@@ -499,6 +1044,11 @@ class LocalEnvironmentService:
             raise BoundaryError("local_environment", "repeatability_proof_unavailable")
         return {"session_id": report["session_id"],
                 "runtime_instance_id": provenance["runtime_instance_id"],
+                "service_instance_id": (service_binding.get("service_instance_id")
+                                         if isinstance(service_binding, dict) else None),
+                "game_continuity_id": (service_binding.get("game_continuity_id")
+                                       if isinstance(service_binding, dict) else None),
+                "session_semantics": report.get("session_semantics"),
                 "actual_seed": provenance["actual_seed"],
                 "input_profile": report["input_profile"],
                 "candidate_build": identity["candidate_build"],
@@ -514,15 +1064,33 @@ class LocalEnvironmentService:
             scene = self.scene(scene_id)
             reports = [self.report(report_id) for report_id in report_ids]
             runs = [self._start_proof(report, scene_id, scene) for report in reports]
-            if runs[0]["runtime_instance_id"] == runs[1]["runtime_instance_id"] or (
-                runs[0]["session_id"] == runs[1]["session_id"]
-            ):
-                raise BoundaryError("local_environment", "same_runtime_instance")
+            if runs[0]["session_id"] == runs[1]["session_id"]:
+                raise BoundaryError("local_environment", "same_episode")
+            modern = [run["service_instance_id"] is not None for run in runs]
+            if modern[0] != modern[1]:
+                raise BoundaryError("local_environment", "comparison_semantics_mismatch")
+            if modern[0]:
+                if runs[0]["game_continuity_id"] == runs[1]["game_continuity_id"]:
+                    raise BoundaryError("local_environment", "same_game_continuity")
+                comparison_scope = (
+                    "two distinct fixed-seed Host episodes; service/process may be shared; "
+                    "only Workbench client actions are recorded; "
+                    "no trajectory or policy equivalence"
+                )
+            else:
+                if runs[0]["runtime_instance_id"] == runs[1]["runtime_instance_id"]:
+                    raise BoundaryError("local_environment", "same_runtime_instance")
+                comparison_scope = (
+                    "legacy v1 proof of two independent closed fixed-seed starts; "
+                    "no trajectory or policy equivalence"
+                )
             result = {"schema": COMPARISON_SCHEMA, "scene_artifact_id": scene_id,
                       "report_artifact_ids": report_ids, "status": "verified_fixed_seed_starts",
                       "runs": runs,
-                      "scope": "two_independent_closed_fixed_seed_starts; "
-                               "no trajectory or policy equivalence"}
+                      "scope": comparison_scope,
+                      "comparison_semantics": (
+                          "host_episode_v2" if modern[0] else "closed_instance_v1"
+                      )}
             source = self._producer()
             producer = Producer(REPOSITORY, source["source_revision"], source["uv_lock_sha256"])
             store = self._report_store(create=True)
@@ -546,7 +1114,15 @@ class LocalEnvironmentService:
         source = self.record["producer"]
         producer = Producer(REPOSITORY, source["source_revision"], source["uv_lock_sha256"])
         public = {key: value for key, value in self.record.items()
-                  if key not in {"producer", "pending_request_id", "stop_requested"}}
+                  if key not in {"producer", "pending_request_id", "stop_requested",
+                                 "pending_control_claim_request_id",
+                                 "uncertain_claim_request_id", "uncertain_control_epoch"}}
+        if self.record.get("service_binding") is not None:
+            public.update(
+                session_semantics="workbench-segment-v2-host-owned-service",
+                host_service_status="not_closed_by_workbench",
+                evidence_scope="workbench-client-actions-only",
+            )
         report_bytes = json_bytes(public)
         if len(report_bytes) > 8 * 1024 * 1024:
             raise BoundaryError("local_environment", "report_index_too_large")
@@ -561,7 +1137,10 @@ class LocalEnvironmentService:
             parameters=FrozenObject.of({
                 "schema": REPORT_SCHEMA, "session_id": self.record["session_id"],
                 "scenario_id": self.record["scenario_id"], "status": self.record["status"],
-                "scope": "managed_text_menu_engineering_only",
+                "scope": ("managed_text_menu_engineering_only; only operations made through "
+                          "this Workbench client are recorded"),
+                **({"session_semantics": "workbench-segment-v2-host-owned-service"}
+                   if self.record.get("service_binding") is not None else {}),
             }),
         )
         self.record["report_artifact_id"] = store.publish(manifest)
@@ -570,7 +1149,9 @@ class LocalEnvironmentService:
     def status(self) -> dict[str, Any]:
         with self.lock:
             record = {key: value for key, value in self.record.items()
-                      if key not in {"producer", "pending_request_id", "stop_requested"}}
+                      if key not in {"producer", "pending_request_id", "stop_requested",
+                                     "pending_control_claim_request_id",
+                                     "uncertain_claim_request_id", "uncertain_control_epoch"}}
             record = decode_json(json_bytes(record))
             try:
                 profile = _read_profile(self.config)
@@ -579,8 +1160,50 @@ class LocalEnvironmentService:
             except BoundaryError as error:
                 availability = error.code
                 input_profile = None
+            host_control = None
+            if isinstance(self.client, _ManagedServiceEnvironment):
+                try:
+                    ready = self.client.refresh()
+                    episode = ready.get("episode")
+                    manager_state = self.client._manager.status().get("status")
+                    if isinstance(episode, Mapping) and isinstance(manager_state, Mapping) and (
+                        manager_state.get("control_held") == episode.get("control_held")
+                    ):
+                        host_control = {"held": episode.get("control_held") is True,
+                                        "tainted": episode.get("tainted") is True,
+                                        "closed": episode.get("closed") is True,
+                                        "service_instance_id": ready.get("service_instance_id"),
+                                        "runtime_instance_id": ready.get(
+                                            "adapter_runtime_instance_id"),
+                                        "game_continuity_id": episode.get(
+                                            "game_continuity_id")}
+                    else:
+                        host_control = {"status": "identity_mismatch"}
+                except Exception:
+                    host_control = {"status": "unavailable"}
+            elif availability == "configured":
+                paths = self.config.state_dir / "managed-host-service"
+                if (paths / "client.json").is_file() or (paths / "manager.json").is_file():
+                    try:
+                        _client, manager, ready = self._managed_service_handles(
+                            _read_profile(self.config)
+                        )
+                        episode = ready.get("episode")
+                        manager_state = manager.status().get("status")
+                        if isinstance(episode, Mapping) and isinstance(manager_state, Mapping):
+                            host_control = {"held": episode.get("control_held") is True,
+                                            "tainted": episode.get("tainted") is True,
+                                            "closed": episode.get("closed") is True,
+                                            "service_instance_id": ready.get("service_instance_id"),
+                                            "runtime_instance_id": ready.get(
+                                                "adapter_runtime_instance_id"),
+                                            "game_continuity_id": episode.get(
+                                                "game_continuity_id")}
+                    except Exception:
+                        host_control = {"status": "unavailable"}
             return {"schema": SCHEMA, "availability": availability,
                     "input_profile": input_profile,
+                    "host_control": host_control,
                     "scenarios": [{key: SCENARIO[key] for key in
                                    ("id", "label", "seed", "character", "scope")}],
                     "session": record}
@@ -655,12 +1278,22 @@ class LocalEnvironmentService:
         assert store is not None
         source = self.record["producer"]
         producer = Producer(REPOSITORY, source["source_revision"], source["uv_lock_sha256"])
+        binding = self.record.get("service_binding")
+        if isinstance(binding, Mapping):
+            value["managed_episode_binding"] = {
+                key: binding[key] for key in
+                ("service_instance_id", "runtime_instance_id", "game_continuity_id")
+            }
         payload = store.put_bytes("event", json_bytes(value))
         manifest = Manifest(
             "run_event", producer, payloads=(payload,),
             parameters=FrozenObject.of({
                 "schema": EVENT_SCHEMA, "scenario_id": SCENARIO["id"],
                 "session_id": session_id, "request_id": request_id,
+                **({"service_instance_id": binding["service_instance_id"],
+                    "runtime_instance_id": binding["runtime_instance_id"],
+                    "game_continuity_id": binding["game_continuity_id"]}
+                   if isinstance(binding, Mapping) else {}),
             }),
         )
         return store.publish(manifest)
@@ -674,7 +1307,12 @@ class LocalEnvironmentService:
         return {"source_revision": identity["source_revision"],
                 "uv_lock_sha256": identity["uv_lock_sha256"]}
 
-    def start(
+    def start(self, scenario_id: object, *, scene_artifact_id: object | None = None
+              ) -> dict[str, Any]:
+        with self.lifecycle_lock:
+            return self._start_locked(scenario_id, scene_artifact_id=scene_artifact_id)
+
+    def _start_locked(
         self, scenario_id: object, *, scene_artifact_id: object | None = None
     ) -> dict[str, Any]:
         if scenario_id != SCENARIO["id"]:
@@ -722,6 +1360,181 @@ class LocalEnvironmentService:
             self.worker.start()
             return self.status()
 
+    def resume(self, *, expected_session_id: str | None = None,
+               expected_service_instance_id: str | None = None,
+               expected_runtime_instance_id: str | None = None,
+               expected_game_continuity_id: str | None = None) -> dict[str, Any]:
+        with self.lifecycle_lock:
+            return self._resume_locked(
+                expected_session_id=expected_session_id,
+                expected_service_instance_id=expected_service_instance_id,
+                expected_runtime_instance_id=expected_runtime_instance_id,
+                expected_game_continuity_id=expected_game_continuity_id,
+            )
+
+    def _resume_locked(self, *, expected_session_id: str | None,
+                       expected_service_instance_id: str | None,
+                       expected_runtime_instance_id: str | None,
+                       expected_game_continuity_id: str | None) -> dict[str, Any]:
+        """Continue the exact attached episode as a new Workbench report segment."""
+        with self.lock:
+            state = self.record.get("status")
+            binding = self.record.get("service_binding")
+            if state in {"starting", "resuming", "submitting", "stopping"}:
+                raise BoundaryError("local_environment", "session_in_progress_or_unknown")
+            if not isinstance(binding, Mapping) or set(binding) != {
+                "service_instance_id", "runtime_instance_id", "game_continuity_id"
+            }:
+                raise BoundaryError("local_environment", "managed_service_binding_unavailable")
+            if expected_session_id is not None and self.record.get("session_id") != (
+                expected_session_id
+            ):
+                raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+            if (expected_service_instance_id is not None
+                    and expected_service_instance_id != binding.get("service_instance_id")) or (
+                expected_runtime_instance_id is not None
+                and expected_runtime_instance_id != binding.get("runtime_instance_id")
+            ) or (expected_game_continuity_id is not None
+                  and expected_game_continuity_id != binding.get("game_continuity_id")):
+                raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+            if self.worker is not None and self.worker.is_alive():
+                raise BoundaryError("local_environment", "session_in_progress_or_unknown")
+            profile = _read_profile(self.config)
+            producer = self._producer()
+            previous = self.record
+            same_segment = state in {"control_held", "active"}
+            uncertain_claim_id = previous.get("uncertain_claim_request_id") or previous.get(
+                "pending_control_claim_request_id"
+            )
+            session_id = previous["session_id"] if same_segment else uuid.uuid4().hex
+            self.record = {
+                "schema": SCHEMA, "status": "resuming", "session_id": session_id,
+                "scenario_id": SCENARIO["id"], "seed": previous.get("seed", SCENARIO["seed"]),
+                "input_profile": profile["input_profile"],
+                "host_package_pin": dict(profile["host_package_pin"]),
+                "producer": producer, "events": previous.get("events", []) if same_segment else [],
+                "context": None, "initial_context": previous.get("initial_context")
+                if same_segment else None,
+                "episode_identity": previous.get("episode_identity") if same_segment else None,
+                "service_binding": dict(binding),
+                "session_semantics": "workbench-segment-v2-host-owned-service",
+                "continued_from_session_id": previous.get("continued_from_session_id")
+                if same_segment else previous.get("session_id"),
+                "continued_from_report_artifact_id": previous.get("report_artifact_id"),
+                "scene_artifact_id": previous.get("scene_artifact_id"),
+                **({"uncertain_claim_request_id": uncertain_claim_id}
+                   if isinstance(uncertain_claim_id, str) else {}),
+                **({"uncertain_control_epoch": previous["uncertain_control_epoch"]}
+                   if isinstance(previous.get("uncertain_control_epoch"), str) else {}),
+            }
+            self.stopping = False
+            self.cleanup_confirmed = False
+            self.stop_outcome_unknown = False
+            if not self._try_save():
+                self.record = previous
+                raise BoundaryError("local_environment", "session_persistence_failed")
+            self.worker = threading.Thread(
+                target=self._resume_worker, args=(session_id, profile, dict(binding)), daemon=True
+            )
+            self.worker.start()
+            return self.status()
+
+    def _resume_worker(self, session_id: str, profile: dict[str, Any],
+                       expected: dict[str, Any]) -> None:
+        client = None
+        try:
+            client_handle, manager, ready = self._managed_service_handles(profile)
+            client = _ManagedServiceEnvironment(
+                client_handle, manager, ready, profile["input_profile"],
+                lambda request_id, binding: self._persist_claim_offer(
+                    session_id, request_id, binding
+                ),
+                session_id=session_id,
+            )
+            episode = ready.get("episode")
+            binding = client.binding()
+            if any(binding[key] != expected[key] for key in expected):
+                raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+            if not isinstance(episode, Mapping) or episode.get("closed") is True or (
+                episode.get("tainted") is True
+            ):
+                raise BoundaryError("local_environment", "managed_episode_unavailable")
+            with self.lock:
+                if self.record.get("session_id") != session_id:
+                    return
+                self.client = client
+            if episode.get("control_held") is True:
+                manager_state = manager.status().get("status")
+                control = manager_state.get("control") if isinstance(
+                    manager_state, Mapping
+                ) else None
+                claim_id = self.record.get("uncertain_claim_request_id")
+                epoch = self.record.get("uncertain_control_epoch")
+                ownership_matches = isinstance(control, Mapping) and (
+                    control.get("runtime_instance_id") == expected["runtime_instance_id"]
+                    and control.get("game_continuity_id") == expected["game_continuity_id"]
+                    and (not isinstance(claim_id, str)
+                         or control.get("claim_request_id") == claim_id)
+                    and (not isinstance(epoch, str) or control.get("control_epoch") == epoch)
+                )
+                with self.lock:
+                    error_code = "managed_control_held"
+                    if ownership_matches and isinstance(claim_id, str):
+                        error_code = ("managed_control_release_unknown"
+                                      if isinstance(epoch, str)
+                                      else "managed_control_claim_unknown")
+                    self.record.update(status="control_held", error_code=error_code)
+                    self._save()
+                return
+            with self.lock:
+                # An unheld lease cannot be the outstanding control offer.
+                self.record.pop("pending_control_claim_request_id", None)
+                self.record.pop("uncertain_claim_request_id", None)
+                self.record.pop("uncertain_control_epoch", None)
+            identity = _public_identity(client.episode_identity())
+            if identity["episode_provenance"].get("runtime_instance_id") != expected[
+                "runtime_instance_id"
+            ]:
+                raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+            context = self._context(
+                client.observe_text_menu(input_profile=profile["input_profile"]),
+                profile["input_profile"],
+            )
+            if context["game_continuity_id"] != expected["game_continuity_id"]:
+                raise BoundaryError("local_environment", "managed_service_binding_mismatch")
+            with self.lock:
+                if self.record.get("session_id") == session_id:
+                    self.record.update(status="active", context=context,
+                                       initial_context=context, episode_identity=identity,
+                                       error_code=None)
+                    self._save()
+        except Exception as error:
+            with self.lock:
+                if self.record.get("session_id") == session_id:
+                    code = error.code if isinstance(error, BoundaryError) else getattr(
+                        error, "code", "managed_resume_failed"
+                    )
+                    if isinstance(client, _ManagedServiceEnvironment) and client.control and (
+                        "uncertain" in client.control
+                    ):
+                        code = ("managed_control_claim_unknown"
+                                if client.control["uncertain"] == "claim"
+                                else "managed_control_release_unknown")
+                        if client.control["uncertain"] == "claim":
+                            self.record["uncertain_claim_request_id"] = client.control.get(
+                                "request_id"
+                            )
+                        if client.control["uncertain"] == "release":
+                            self.record["uncertain_control_epoch"] = client.control.get("epoch")
+                            self.record["uncertain_claim_request_id"] = client.control.get(
+                                "request_id"
+                            )
+                    self.record.pop("pending_control_claim_request_id", None)
+                    self.record.update(status="failed", error_code=code)
+                    self._try_save()
+                    with suppress(Exception):
+                        self._publish()
+
     def _start_worker(self, session_id: str, profile: dict[str, Any], seed: str) -> None:
         client = None
         error_code = None
@@ -745,11 +1558,12 @@ class LocalEnvironmentService:
                     return
                 self.client = client
             ready_build = client.ready.get("candidate_build")
+            is_managed_service = isinstance(client, _ManagedServiceEnvironment)
             if not isinstance(ready_build, Mapping) or any(
                 ready_build.get(key) != profile["audit"][key] for key in AUDIT_FIELDS
-            ) or client.ready.get("protocol") != (
+            ) or (not is_managed_service and client.ready.get("protocol") != (
                 "sts2.headless/managed-player-environment-driver-1"
-            ) or not isinstance(client.ready.get("exact_game"), Mapping) or (
+            )) or not isinstance(client.ready.get("exact_game"), Mapping) or (
                 client.ready["exact_game"].get("sts2_dll_sha256")
                 != SCENARIO["exact_game_assembly_sha256"]
             ):
@@ -762,6 +1576,18 @@ class LocalEnvironmentService:
                     or provenance["requested_seed"] != seed
                     or provenance["actual_seed"] != seed):
                 raise BoundaryError("local_environment", "episode_identity_invalid")
+            service_binding = client.binding() if isinstance(
+                client, _ManagedServiceEnvironment
+            ) else None
+            if service_binding is not None:
+                with self.lock:
+                    if self.stopping or self.record.get("session_id") != session_id:
+                        return
+                    self.record.update(service_binding=service_binding,
+                                       session_semantics=(
+                                           "workbench-segment-v2-host-owned-service"
+                                       ))
+                    self._save()
             context = self._context(
                 self._observe(client, profile["input_profile"]), profile["input_profile"]
             )
@@ -778,7 +1604,11 @@ class LocalEnvironmentService:
                 if self.stopping or self.record.get("session_id") != session_id:
                     return
                 self.record.update(status="active", context=context, initial_context=context,
-                                   episode_identity=identity)
+                                   episode_identity=identity, service_binding=service_binding)
+                if service_binding is not None:
+                    self.record["session_semantics"] = (
+                        "workbench-segment-v2-host-owned-service"
+                    )
                 try:
                     self._save()
                 except Exception as error:
@@ -787,7 +1617,14 @@ class LocalEnvironmentService:
                     ) from error
                 active_saved = True
         except Exception as error:
-            error_code = error.code if isinstance(error, BoundaryError) else "managed_start_failed"
+            error_code = (error.code if isinstance(error, BoundaryError) else
+                          getattr(error, "code", "managed_start_failed"))
+            if isinstance(client, _ManagedServiceEnvironment) and client.control and (
+                "uncertain" in client.control
+            ):
+                error_code = ("managed_control_claim_unknown"
+                              if client.control["uncertain"] == "claim"
+                              else "managed_control_release_unknown")
             constructor_cleanup_confirmed = getattr(error, "cleanup_confirmed", None) is True
         finally:
             # A saved active session transfers client ownership to submit/stop.
@@ -829,10 +1666,25 @@ class LocalEnvironmentService:
                                        error_code="startup_client_ownership_changed")
                     self._try_save()
                 else:
-                    self.record.update(
-                        status="cleanup_unknown" if close_failed else "failed",
-                        error_code="host_cleanup_unknown" if close_failed else error_code,
-                    )
+                    if isinstance(client, _ManagedServiceEnvironment) and client.control and (
+                        "uncertain" in client.control
+                    ):
+                        self.record.pop("pending_control_claim_request_id", None)
+                        self.record["uncertain_claim_request_id"] = client.control.get(
+                            "request_id"
+                        )
+                        if client.control["uncertain"] == "release":
+                            self.record["uncertain_control_epoch"] = client.control.get("epoch")
+                    if (isinstance(client, _ManagedServiceEnvironment) and client.control
+                            and client.control.get("uncertain") == "release"):
+                        self.record["uncertain_control_epoch"] = client.control.get("epoch")
+                    if close_failed and error_code not in {
+                        "managed_control_claim_unknown", "managed_control_release_unknown"
+                    }:
+                        self.record.update(status="cleanup_unknown",
+                                           error_code="host_cleanup_unknown")
+                    else:
+                        self.record.update(status="failed", error_code=error_code)
                     if not close_failed:
                         self.client = None
                     saved = self._try_save()
@@ -915,6 +1767,7 @@ class LocalEnvironmentService:
         context = None
         error_code = None
         event_artifact_id = None
+        control_held = False
         try:
             if input_profile == "text-menu-v2":
                 result = client.submit_text_menu(
@@ -926,19 +1779,51 @@ class LocalEnvironmentService:
                     action_id, snapshot_id, continuity_id, request_id,
                 )
             if result.get("status") != "unknown" and result.get("successor") is not None:
-                context = self._context(
-                    self._observe(client, input_profile), input_profile,
-                )
-                if context["snapshot"] != result["successor"] or (
-                    context["game_continuity_id"] != continuity_id
-                ):
-                    error_code = "successor_observation_mismatch"
+                if isinstance(client, _ManagedServiceEnvironment):
+                    context = self._context({
+                        "schema": TEXT_PROFILES[input_profile][0],
+                        "snapshot": result["successor"],
+                        "game_continuity_id": continuity_id,
+                    }, input_profile)
+                else:
+                    context = self._context(
+                        self._observe(client, input_profile), input_profile,
+                    )
+                    if context["snapshot"] != result["successor"] or (
+                        context["game_continuity_id"] != continuity_id
+                    ):
+                        error_code = "successor_observation_mismatch"
             elif result.get("status") == "unknown":
                 error_code = "native_delivery_unknown"
             else:
                 error_code = "successor_unavailable"
+        except BoundaryError as error:
+            if error.code == "managed_control_held":
+                control_held = True
+                error_code = error.code
+            else:
+                error_code = error.code
+                if isinstance(client, _ManagedServiceEnvironment):
+                    result = client.last_submit_result
+                    if client.control and "uncertain" in client.control:
+                        error_code = ("managed_control_claim_unknown"
+                                      if client.control["uncertain"] == "claim"
+                                      else "managed_control_release_unknown")
         except Exception:
             error_code = "submission_outcome_unknown"
+            if isinstance(client, _ManagedServiceEnvironment):
+                result = client.last_submit_result
+                if client.control and "uncertain" in client.control:
+                    error_code = ("managed_control_claim_unknown"
+                                  if client.control["uncertain"] == "claim"
+                                  else "managed_control_release_unknown")
+        if control_held:
+            with self.lock:
+                if self.record.get("session_id") == session_id:
+                    self.record.update(status="control_held", error_code=error_code)
+                    self.record.pop("pending_request_id", None)
+                    self._try_save()
+            return
         event = {"request_id": request_id, "action_id": action_id,
                  "before_context": before_context,
                  "expected_snapshot_id": snapshot_id, "result": result,
@@ -959,6 +1844,13 @@ class LocalEnvironmentService:
             if self.record.get("session_id") != session_id:
                 return
             self.record["events"].append(summary)
+            if isinstance(client, _ManagedServiceEnvironment) and client.control and (
+                "uncertain" in client.control
+            ):
+                self.record.pop("pending_control_claim_request_id", None)
+                self.record["uncertain_claim_request_id"] = client.control.get("request_id")
+                if client.control["uncertain"] == "release":
+                    self.record["uncertain_control_epoch"] = client.control.get("epoch")
             self.record.pop("pending_request_id", None)
             if self.stopping:
                 if error_code is not None:
@@ -1014,6 +1906,10 @@ class LocalEnvironmentService:
         self._publish()
 
     def stop(self, session_id: object) -> dict[str, Any]:
+        with self.lifecycle_lock:
+            return self._stop_locked(session_id)
+
+    def _stop_locked(self, session_id: object) -> dict[str, Any]:
         with self.lock:
             if self.record.get("session_id") != session_id:
                 raise BoundaryError("local_environment", "session_not_found")

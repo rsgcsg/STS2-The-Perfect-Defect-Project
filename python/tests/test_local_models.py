@@ -974,6 +974,154 @@ def test_environment_observation_and_control_headers_bind_one_runtime_owner(serv
     assert all(path != "/environment" for path, _ in requests)
 
 
+@pytest.mark.parametrize("action", ["auto", "one_step", "shadow"])
+def test_managed_commands_use_selected_episode_and_never_native_recorder(
+    service, runtime_http, monkeypatch, tmp_path, action,
+):
+    from test_managed_model_target import target
+
+    client, _, requests = runtime_http
+    selected = {**target(tmp_path), "runtime_instance_id": "game-1"}
+    service.managed_target = lambda: selected
+    service.client = client
+    service.state.update(status="loaded", loaded=True,
+                         managed_environment=local_models.public_target(selected),
+                         connector_endpoint=None)
+
+    def unexpected(*_args):
+        pytest.fail("Managed command reached native Mod/Recorder preparation")
+
+    monkeypatch.setattr(service.native_tasks, "connector_instance", unexpected)
+    monkeypatch.setattr(service.native_tasks, "prepare_model", unexpected)
+    service.command(action)
+    assert finished(service)["operation"]["status"] == "completed"
+    writes = [(route, body) for route, body in requests if body is not None]
+    assert writes == [("/v2/mode", {"mode": action})] + (
+        [("/v2/tick", {"max_ticks": 1})] if action == "one_step" else []
+    )
+
+
+@pytest.mark.parametrize("changed", ["service_instance_id", "runtime_instance_id",
+                                    "game_continuity_id", "unavailable"])
+@pytest.mark.parametrize("recovery", ["human", "stop"])
+def test_managed_target_drift_blocks_decisions_but_preserves_explicit_recovery(
+    service, runtime_http, tmp_path, monkeypatch, changed, recovery,
+):
+    from test_managed_model_target import target
+
+    client, runtime, requests = runtime_http
+    selected = {**target(tmp_path), "runtime_instance_id": "game-1"}
+    service.client = client
+    service.state.update(status="loaded", loaded=True,
+                         managed_environment=local_models.public_target(selected),
+                         connector_endpoint=None)
+
+    def current():
+        if changed == "unavailable":
+            raise BoundaryError("local_environment", "managed_control_held")
+        return {**selected, changed: "replacement"}
+
+    service.managed_target = current
+    monkeypatch.setattr(service, "_evaluation_handoff", lambda: None)
+    service.command("one_step")
+    failed = finished(service)
+    assert failed["operation"]["status"] == "failed"
+    assert failed["status"] == "loaded" and failed["loaded"] is True
+    assert not any(body is not None for _, body in requests)
+    assert runtime["mode"] == "human"
+    service.command(recovery)
+    assert finished(service)["operation"]["status"] == "completed"
+    assert [(route, body) for route, body in requests if body is not None] == [
+        ("/v2/stop", {}) if recovery == "stop" else ("/v2/mode", {"mode": "human"})]
+
+
+@pytest.mark.parametrize("drift", [None, "binding_sha256", "service_instance_id",
+                                  "runtime_instance_id", "game_continuity_id"])
+def test_managed_load_binds_cli_and_checks_actual_startup_target(
+    service, monkeypatch, tmp_path, drift,
+):
+    from test_managed_model_target import target
+
+    selected = target(tmp_path)
+    service.managed_target = lambda: selected
+    expected_target = local_models.public_target(selected)
+    manifest = {"manifest_id": "managed-fixture", "artifact": {"sha256": "a" * 64},
+                "requirements": {"environment": {"kind": "managed_text_v2"}}}
+    manifest_path = tmp_path / "managed-manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    entry = {"id": "managed-fixture", "adapter": "stpd-m2-decision-adapter"}
+    monkeypatch.setattr(service, "selection", lambda _: entry)
+    monkeypatch.setattr(service, "entry_path", lambda _entry, _key: manifest_path)
+    monkeypatch.setattr(service, "entry_root", lambda _: tmp_path)
+    monkeypatch.setattr(service, "_run_profile", lambda *_: True)
+    monkeypatch.setattr(service, "readiness", lambda _: {"status": "ready_to_load"})
+    monkeypatch.setattr(service, "_runtime_package", lambda _: {
+        "version": "managed-candidate", "code_sha256": "b" * 64})
+    monkeypatch.setattr(service, "_node_modules", lambda _: tmp_path / "node_modules")
+    monkeypatch.setattr(local_models, "_check_runtime_port", lambda _: None)
+    monkeypatch.setattr(service, "start_observer", lambda: None)
+    limits = local_models.RUN_PROFILES["short"]
+    claimed_target = {**expected_target, **({drift: "foreign"} if drift else {})}
+    observed_startup = {
+        "schema": "sts2.policy-runtime/startup-1", "mode": "human",
+        "manifest_id": manifest["manifest_id"],
+        "policy_artifact_sha256": manifest["artifact"]["sha256"],
+        "policy_manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
+        "runtime_version": "managed-candidate", "runtime_code_sha256": "b" * 64,
+        "address": "http://127.0.0.1:15527", "run_id": startup()["run_id"],
+        "managed_environment": claimed_target,
+        "autonomy_budget": {"maxSubmissions": limits["max_submissions"],
+                            "maxPolicyCalls": limits["max_policy_calls"],
+                            "deadlineMs": limits["deadline_ms"]},
+    }
+    commands = []
+
+    class Process:
+        stopped = False
+
+        def __init__(self, command, **_kwargs):
+            commands.append(command)
+            self.stdout = io.BytesIO(json.dumps(observed_startup).encode() + b"\n")
+
+        def poll(self):
+            return 0 if self.stopped else None
+
+        def terminate(self):
+            self.stopped = True
+
+        def wait(self, timeout):
+            return 0
+
+    class Client:
+        def __init__(self, *_args):
+            pass
+
+        def request(self, route):
+            assert route == "/status"
+            return {"status": {"autonomy_budget": limits}}
+
+    monkeypatch.setattr(local_models.subprocess, "Popen", Process)
+    monkeypatch.setattr(local_models, "RuntimeClient", Client)
+    service.start("managed-fixture")
+    result = finished(service)
+    assert len(commands) == 1
+    command = commands[0]
+    assert "--connector-endpoint" not in command
+    assert command[command.index("--managed-attachment") + 1] == str(selected["client_attachment"])
+    assert command[command.index("--managed-expected-game-continuity-id") + 1] == "episode-one"
+    assert "stpd.policy.memory_port" in " ".join(command)
+    if drift:
+        assert result["error_code"] == "runtime_load_or_attestation_failed"
+        assert service.process.stopped
+    else:
+        assert result["loaded"] is True
+        assert result["managed_environment"] == expected_target
+        assert result["connector_endpoint"] is None
+        assert "client_attachment" not in result["managed_environment"]
+    service.client = None
+    service.process.terminate()
+
+
 @pytest.mark.parametrize("epoch", [-1, True, 1.5, "1", None, 9007199254740992])
 def test_control_binding_rejects_non_decimal_or_unsafe_epochs(epoch):
     with pytest.raises(BoundaryError, match="invalid_runtime_control_binding"):

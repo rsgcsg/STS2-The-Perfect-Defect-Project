@@ -13,13 +13,23 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from .light_action_encoder import LightActionEncoder
 from .token_core import TokenCore
 
 
-# Retain the historical private import name and unchanged default parameter shapes.
-class _LightActionEncoder(LightActionEncoder):
-    """Keep M2's historical class boundary while sharing the encoder implementation."""
+class _LightActionEncoder(nn.Module):
+    """An independent token embedding and local convolution, with no page core."""
+
+    def __init__(self, vocab_size: int, width: int) -> None:
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, width)
+        self.conv = nn.Conv1d(width, width, kernel_size=3, padding=1)
+        self.projection = nn.Linear(width, width)
+        self.norm = nn.LayerNorm(width)
+
+    def forward(self, ids: Tensor) -> Tensor:
+        embedded = self.embedding(ids).transpose(0, 1).unsqueeze(0)
+        pooled = F.gelu(self.conv(embedded)).mean(dim=-1).squeeze(0)
+        return self.norm(self.projection(pooled))  # type: ignore[no-any-return]
 
 
 class ExperimentalDSimpleM2(nn.Module):

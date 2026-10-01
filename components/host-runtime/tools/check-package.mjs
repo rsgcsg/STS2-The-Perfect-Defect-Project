@@ -37,10 +37,13 @@ const sourcePackage = JSON.parse(readFileSync(path.join(root, "package.json"), "
 for (const required of [
   "tools/headless.mjs",
   "tools/managed-pe-driver.mjs",
+  "tools/managed-host-service.mjs",
   "src/managed-player-environment.mjs",
+  "src/managed-host-service.mjs",
   "src/project-identity.mjs",
   "consumers/python/sts2_headless/__init__.py",
   "consumers/python/sts2_headless/client.py",
+  "consumers/python/sts2_headless/managed_service.py",
   "experiments/managed-exact/manifest.json",
   "package.json",
   "README.md",
@@ -48,7 +51,8 @@ for (const required of [
 ]) {
   if (!files.has(required)) throw new Error(`Host Runtime package is missing ${required}`);
 }
-for (const executable of ["tools/headless.mjs", "tools/managed-pe-driver.mjs"]) {
+for (const executable of ["tools/headless.mjs", "tools/managed-pe-driver.mjs",
+  "tools/managed-host-service.mjs"]) {
   const mode = fileMetadata.get(executable)?.mode;
   const index = spawnSync("git", ["ls-files", "--stage", "--", executable], {
     cwd: root,

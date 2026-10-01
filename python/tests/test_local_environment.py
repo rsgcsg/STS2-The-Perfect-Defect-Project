@@ -1,9 +1,7 @@
 from __future__ import annotations
 
+import hashlib
 import json
-import shutil
-import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -21,6 +19,7 @@ from spireagent.workbench.local_environment import (
     PROFILE_FILE,
     SCENARIO,
     LocalEnvironmentService,
+    _ManagedServiceEnvironment,
     configure_managed_host,
 )
 
@@ -441,6 +440,39 @@ def test_comparison_rejects_report_seed_mismatch_before_verified_claim(tmp_path:
     }
     with pytest.raises(BoundaryError, match="repeatability_proof_unavailable"):
         service.compare(scene["artifact_id"], report_ids)
+
+
+def test_resumed_segment_cannot_prove_a_fixed_seed_start(tmp_path: Path) -> None:
+    config, _host, _candidate, _pin, audit, checked = fixture(tmp_path)
+    clients: list[PublicClientFixture] = []
+
+    def make_client(*_args: Any) -> PublicClientFixture:
+        client = PublicClientFixture(audit)
+        client.number = len(clients) + 1
+        clients.append(client)
+        return client
+
+    service = LocalEnvironmentService(
+        config, audit=checked, client_factory=make_client,
+        seed_normalizer=normalize_seed_fixture,
+    )
+    scene = service.save_scene("Resumed segment", "SEEDRESUMED1")
+    reports = []
+    for _ in range(2):
+        session = service.start(SCENARIO["id"], scene_artifact_id=scene["artifact_id"])[
+            "session"
+        ]
+        wait_status(service, "active")
+        service.stop(session["session_id"])
+        reports.append(wait_status(service, "stopped")["session"]["report_artifact_id"])
+
+    read_report = service.report
+    service.report = lambda report_id: {
+        **read_report(report_id),
+        **({"continued_from_session_id": "prior-segment"} if report_id == reports[0] else {}),
+    }
+    with pytest.raises(BoundaryError, match="repeatability_proof_unavailable"):
+        service.compare(scene["artifact_id"], reports)
 
 
 def test_exact_profile_start_one_explicit_action_stop_and_immutable_report(tmp_path: Path) -> None:
@@ -1379,118 +1411,656 @@ def test_private_profile_setup_requires_stopped_workbench(tmp_path: Path) -> Non
         )
 
 
-def test_real_public_python_consumer_from_private_pinned_fixture_package(
+def test_old_host_package_without_managed_service_fails_before_native_spawn(
     tmp_path: Path,
 ) -> None:
-    """Exercise the installed public JSONL client without a game or private candidate."""
-    config, host, candidate, pin, audit, checked = fixture(tmp_path)
-    source = Path(__file__).resolve().parents[2] / (
-        "components/host-runtime/consumers/python/sts2_headless"
-    )
-    target = host / "consumers/python/sts2_headless"
-    shutil.rmtree(target)
-    shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    first, second = snapshot(0), snapshot(1)
-    driver = (
-        """
-import readline from 'node:readline';
-const build = __AUDIT__;
-const pages = [__FIRST__, __SECOND__];
-let observed = 0;
-function emit(value) {{ process.stdout.write(JSON.stringify(value) + '\\n'); }}
-emit({{type:'ready',protocol:'sts2.headless/managed-player-environment-driver-1',
-  candidate_build:build,exact_game:{{sts2_dll_sha256:__GAME_SHA__}}}});
-const input = readline.createInterface({{input:process.stdin}});
-input.on('line', line => {{
-  const request = JSON.parse(line);
-  const base = {{request_id:request.request_id}};
-  if (request.command === 'reset') emit({{...base,type:'reset_result',snapshot:pages[0]}});
-  else if (request.command === 'episode_identity') emit({{
-    ...base,type:'episode_identity_result',identity:{{
-    candidate_build:build,environment_fingerprint:'e'.repeat(64),
-    episode_provenance:{{verdict:'provenance_pass',requested_seed:'M2H0ST20260929A',
-      actual_seed:'M2H0ST20260929A',runtime_instance_id:'synthetic'}}
-  }}}});
-  else if (request.command === 'text_observe') emit({{...base,type:'text_observe_result',context:{{
-    schema:'sts2.player-environment/text-menu-observation-context-1',
-    snapshot:pages[Math.min(observed++,1)],game_continuity_id:'episode-1'
-  }}}});
-  else if (request.command === 'text_submit') emit({{...base,type:'text_submit_result',result:{{
-    protocol_version:'1.0.0',schema:'sts2.player-environment/text-menu-action-result-1',
-    input_profile:'text-menu-v1',request_id:request.mutation_request_id,status:'applied',
-    effect_domain:'native_input',native_delivery:'delivered',
-    action:{{action_id:request.action_id,kind:'native_input',effect_domain:'native_input'}},
-    reason_code:'accepted',detail:'',retry:'never',successor:pages[1],attribution:null
-  }}}});
-  else if (request.command === 'close') {{ emit({{...base,type:'close_result'}}); input.close(); }}
-}});
-""".replace("{{", "{")
-        .replace("}}", "}")
-        .replace("__AUDIT__", json.dumps(audit))
-        .replace("__FIRST__", json.dumps(first))
-        .replace("__SECOND__", json.dumps(second))
-    )
-    driver = driver.replace("__GAME_SHA__", json.dumps(SCENARIO["exact_game_assembly_sha256"]))
-    (host / "tools/managed-pe-driver.mjs").write_text(driver)
-    (host / "package.json").write_text(
-        json.dumps(
-            {
-                "name": HOST_PACKAGE,
-                "version": "1.1.0-rc.20",
-                "type": "module",
-            }
-        )
-    )
-    pin["package_content_sha256"] = directory_sha256(host)
-    (config.state_dir / PROFILE_FILE).unlink()
-    configure_managed_host(
-        config, candidate, host_root=host, host_pin=pin, input_profile="text-menu-v1", audit=checked
-    )
-    script = tmp_path / "run_public_consumer.py"
-    script.write_text("""
-import json
-import sys
-import time
-from pathlib import Path
-from spireagent.workbench.developer import ProjectConfig, combination
-from spireagent.workbench.local_environment import LocalEnvironmentService, SCENARIO
+    config, host, _candidate, _pin, _audit, checked = fixture(tmp_path)
+    service = LocalEnvironmentService(config, audit=checked)
+    service.start(SCENARIO["id"])
+    failed = wait_status(service, "failed")
+    assert failed["session"]["error_code"] == "host_managed_service_unavailable"
+    assert failed["session"]["report_artifact_id"]
+    assert not (config.state_dir / "managed-host-service" / "client.json").exists()
+    assert not (config.state_dir / "managed-host-service" / "manager.json").exists()
+    assert not list((host / "tools").glob("launch-*.log"))
 
-state, audit_path = map(Path, sys.argv[1:])
-audit = json.loads(audit_path.read_text())
-config = ProjectConfig(state, '', '', None, combination())
-service = LocalEnvironmentService(config, audit=lambda *_: audit)
-service.start(SCENARIO['id'])
-def ready(expected):
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        value = service.status()['session']
-        if value['status'] == expected:
-            return value
-        if value['status'] in {'failed', 'cleanup_unknown'}:
-            raise RuntimeError(value['error_code'])
-        time.sleep(0.01)
-    raise RuntimeError('timeout')
-active = ready('active')
-sid = active['session_id']
-service.submit(sid, 'action-0', 'page-0', 'episode-1')
-next_page = ready('active')
-assert next_page['context']['snapshot']['snapshot_id'] == 'page-1'
-final = service.stop(sid)['session']
-assert final['status'] == 'stopped'
-event_id = service.report(final['report_artifact_id'])['events'][0]['event_artifact_id']
-assert service.event(event_id)['result']['status'] == 'applied'
-print(json.dumps({'status':final['status'],'submissions':len(final['events'])}))
-""")
-    audit_path = tmp_path / "audit.json"
-    audit_path.write_text(json.dumps(audit))
-    before = directory_sha256(host)
-    completed = subprocess.run(
-        [sys.executable, str(script), str(config.state_dir), str(audit_path)],
-        text=True,
-        capture_output=True,
-        timeout=25,
-        check=False,
+
+class ManagedServiceFixture:
+    def __init__(self, *, held: bool = False, fail_release: bool = False) -> None:
+        self.service_instance_id = "managed_service_fixture"
+        self.calls: list[dict[str, Any]] = []
+        self.held = held
+        self.fail_release = fail_release
+        self.audit = {
+            "upstream_revision": "d" * 40,
+            "source_patch_sha256": SCENARIO["source_patch_sha256"],
+            "artifact_sha256": SCENARIO["artifact_sha256"],
+            "artifact_mvid": SCENARIO["artifact_mvid"],
+            "original_sts2_sha256": SCENARIO["exact_game_assembly_sha256"],
+            "runtime_sts2_sha256": SCENARIO["exact_game_assembly_sha256"],
+        }
+
+    def ready(self) -> dict[str, Any]:
+        return {"service_instance_id": self.service_instance_id,
+                "adapter_runtime_instance_id": "runtime-fixture",
+                "episode": {"game_continuity_id": "episode-fixture",
+                            "control_held": self.held, "tainted": False, "closed": False},
+                "text_menu_contracts": [
+                    {"input_profile": "text-menu-v2",
+                     "text_state_owner_contract": "sts2.host-runtime/text-menu-v2-owner-1"}
+                ]}
+
+    def request(self, command: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(command)
+        operation = command["command"]
+        if operation == "claim_control":
+            if self.held:
+                error = RuntimeError("managed_control_held")
+                error.code = "managed_control_held"
+                raise error
+            self.held = True
+            result = {"type": "claim_control_result", "control_token": "private-token",
+                      "control_epoch": "epoch-fixture", "runtime_instance_id": "runtime-fixture",
+                      "game_continuity_id": "episode-fixture"}
+            if "text_state_owner" in command:
+                result["text_state_owner"] = command["text_state_owner"]
+        elif operation == "text_observe":
+            result = {"type": "text_observe_result",
+                      "context": {"schema": (
+                          "sts2.player-environment/text-menu-observation-context-1"
+                      ),
+                                  "snapshot": snapshot(0),
+                                  "game_continuity_id": "episode-fixture"}}
+        elif operation == "text_submit":
+            result = {"type": "text_submit_result", "result": {
+                "status": "applied", "successor": snapshot(1)}}
+        elif operation == "episode_identity":
+            result = {"type": "episode_identity_result", "identity": {
+                "candidate_build": self.audit, "environment_fingerprint": "f" * 64,
+                "episode_provenance": {"verdict": "provenance_pass",
+                    "requested_seed": SCENARIO["seed"], "actual_seed": SCENARIO["seed"],
+                    "runtime_instance_id": "runtime-fixture"}}}
+        elif operation == "release_control":
+            if self.fail_release:
+                raise RuntimeError("release response unknown")
+            self.held = False
+            result = {"type": "release_control_result", "status": "released",
+                      "control_epoch": "epoch-fixture", "runtime_instance_id": "runtime-fixture",
+                      "game_continuity_id": "episode-fixture"}
+        else:
+            raise AssertionError(operation)
+        return {"service_instance_id": self.service_instance_id, "result": result}
+
+
+def test_host_service_manual_observe_and_submit_use_acknowledged_control_without_extra_observe(
+) -> None:
+    transport = ManagedServiceFixture()
+    environment = _ManagedServiceEnvironment(
+        transport, object(), transport.ready(), "text-menu-v1"
     )
-    assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == {"status": "stopped", "submissions": 1}
-    assert directory_sha256(host) == before
+    context = environment.observe_text_menu()
+    assert context["snapshot"]["snapshot_id"] == "page-0"
+    assert [call["command"] for call in transport.calls] == [
+        "claim_control", "text_observe", "release_control"
+    ]
+    assert transport.calls[1]["control_token"] == "private-token"
+    assert transport.calls[1]["control_epoch"] == "epoch-fixture"
+    transport.calls.clear()
+    result = environment.submit_text_menu(
+        "action-0", "page-0", "episode-fixture", "request-fixture",
+    )
+    assert result["status"] == "applied"
+    assert [call["command"] for call in transport.calls] == [
+        "claim_control", "text_submit", "release_control"
+    ]
+    assert transport.calls[1]["expected_snapshot_id"] == "page-0"
+    assert transport.calls[1]["mutation_request_id"] == "request-fixture"
+
+
+def test_workbench_v2_binds_claims_to_server_owned_segment_id_and_keeps_short_lease_continuity(
+) -> None:
+    transport = ManagedServiceFixture()
+    session_id = "d" * 32
+    environment = _ManagedServiceEnvironment(
+        transport, object(), transport.ready(), "text-menu-v2", session_id=session_id
+    )
+    environment._claim()
+    assert transport.calls[0]["text_state_owner"] == f"workbench:{session_id}"
+    environment._release()
+    environment._claim()
+    assert transport.calls[2]["text_state_owner"] == f"workbench:{session_id}"
+    environment._release()
+
+
+def test_workbench_v2_fails_closed_if_host_or_segment_owner_identity_is_missing() -> None:
+    transport = ManagedServiceFixture()
+    with pytest.raises(BoundaryError, match="managed_text_state_owner_unsupported"):
+        _ManagedServiceEnvironment(transport, object(),
+            {**transport.ready(), "text_menu_contracts": []}, "text-menu-v2",
+            session_id="d" * 32)
+    with pytest.raises(BoundaryError, match="managed_text_state_owner_invalid"):
+        _ManagedServiceEnvironment(transport, object(), transport.ready(),
+            "text-menu-v2", session_id="not-a-session")
+
+
+def test_known_host_owner_rejection_does_not_taint_workbench_claim_as_unknown() -> None:
+    class RejectingTransport(ManagedServiceFixture):
+        def request(self, command: dict[str, Any]) -> dict[str, Any]:
+            if command.get("command") == "claim_control":
+                error = RuntimeError("managed_text_state_owner_invalid")
+                error.code = "managed_text_state_owner_invalid"
+                raise error
+            return super().request(command)
+
+    transport = RejectingTransport()
+    environment = _ManagedServiceEnvironment(
+        transport, object(), transport.ready(), "text-menu-v2", session_id="e" * 32
+    )
+    with pytest.raises(BoundaryError, match="managed_text_state_owner_invalid"):
+        environment._claim()
+    assert environment.control is None
+
+
+def test_lost_release_reply_can_be_explicitly_recovered_without_resolving_game_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, pin, _audit, _checked = fixture(tmp_path)
+    service = LocalEnvironmentService(config)
+    service.record = {
+        "schema": "stpd/local-managed-environment-v1", "status": "failed",
+        "error_code": "managed_control_release_unknown", "session_id": "f" * 32,
+        "scenario_id": SCENARIO["id"], "seed": SCENARIO["seed"],
+        "host_package_pin": pin, "producer": service._producer(), "events": [],
+        "service_binding": {"service_instance_id": "managed_service_fixture",
+                             "runtime_instance_id": "runtime-fixture",
+                             "game_continuity_id": "episode-fixture"},
+        "uncertain_control_epoch": "epoch-fixture",
+        "session_semantics": "workbench-segment-v2-host-owned-service",
+    }
+    transport = ManagedServiceFixture(held=True)
+    calls: list[dict[str, Any]] = []
+
+    class ManagerFixture:
+        def status(self) -> dict[str, Any]:
+            return {"status": {"control_held": transport.held, "control": (
+                {"control_epoch": "epoch-fixture", "runtime_instance_id": "runtime-fixture",
+                 "game_continuity_id": "episode-fixture"} if transport.held else None
+            )}}
+
+        def recover_control(self, **expected: str) -> dict[str, Any]:
+            calls.append(expected)
+            assert expected == {"expected_control_epoch": "epoch-fixture",
+                                "expected_runtime_instance_id": "runtime-fixture",
+                                "expected_game_continuity_id": "episode-fixture"}
+            transport.held = False
+            return {"result": {"type": "release_control_result", "status": "released",
+                               "control_epoch": "epoch-fixture",
+                               "runtime_instance_id": "runtime-fixture",
+                               "game_continuity_id": "episode-fixture"}}
+
+    manager = ManagerFixture()
+    monkeypatch.setattr(service, "_managed_service_handles",
+                        lambda _profile: (transport, manager, transport.ready()))
+    result = service.recover_control()
+    assert result["status"] == "released"
+    assert result["outcome"] == "still_unknown"
+    assert calls and transport.calls == []
+    assert service.record["error_code"] == "managed_control_release_unknown"
+    assert service.record["control_recovery"] == (
+        "released_acknowledged_outcome_still_unknown"
+    )
+
+
+def test_lost_control_reply_is_normalized_for_explicit_recovery() -> None:
+    order: list[tuple[str, str]] = []
+
+    class LostClaim(ManagedServiceFixture):
+        def request(self, command: dict[str, Any]) -> dict[str, Any]:
+            if command["command"] == "claim_control":
+                self.calls.append(command)
+                order.append(("post", command["request_id"]))
+                self.held = True
+                raise RuntimeError("claim response lost")
+            return super().request(command)
+
+    transport = LostClaim()
+    environment = _ManagedServiceEnvironment(transport, object(), transport.ready(),
+                                             "text-menu-v1",
+                                             lambda request_id, _binding:
+                                             order.append(("persist", request_id)))
+    with pytest.raises(BoundaryError, match="managed_control_claim_unknown"):
+        environment.observe_text_menu()
+    assert environment.control is not None
+    assert environment.control["uncertain"] == "claim"
+    assert environment.control["request_id"]
+    assert order == [("persist", environment.control["request_id"]),
+                     ("post", environment.control["request_id"])]
+
+
+def test_restart_retains_claim_correlation_and_explicitly_recovers_same_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, pin, _audit, _checked = fixture(tmp_path)
+    journal = {
+        "schema": "stpd/local-managed-environment-v1", "status": "submitting",
+        "session_id": "e" * 32, "scenario_id": SCENARIO["id"], "seed": SCENARIO["seed"],
+        "input_profile": "text-menu-v1", "host_package_pin": pin,
+        "producer": {"source_revision": "a" * 40, "uv_lock_sha256": "b" * 64},
+        "events": [], "context": None, "pending_request_id": "action-request",
+        "pending_control_claim_request_id": "claim-before-crash",
+        "service_binding": {"service_instance_id": "managed_service_fixture",
+                             "runtime_instance_id": "runtime-fixture",
+                             "game_continuity_id": "episode-fixture"},
+    }
+    (config.state_dir / JOURNAL_FILE).write_text(json.dumps(journal))
+    service = LocalEnvironmentService(config)
+    assert service.record["status"] == "interrupted_unknown"
+    assert service.record["pending_control_claim_request_id"] == "claim-before-crash"
+    transport = ManagedServiceFixture(held=True)
+
+    class ManagerFixture:
+        recovered: list[dict[str, str]] = []
+
+        def status(self) -> dict[str, Any]:
+            control = ({"control_epoch": "epoch-after-crash", "runtime_instance_id":
+                        "runtime-fixture", "game_continuity_id": "episode-fixture",
+                        "claim_request_id": "claim-before-crash"} if transport.held else None)
+            return {"status": {"control_held": transport.held, "control": control}}
+
+        def recover_control(self, **expected: str) -> dict[str, Any]:
+            self.recovered.append(expected)
+            transport.held = False
+            return {"result": {"type": "release_control_result", "status": "released",
+                               "control_epoch": "epoch-after-crash",
+                               "runtime_instance_id": "runtime-fixture",
+                               "game_continuity_id": "episode-fixture"}}
+
+    manager = ManagerFixture()
+    monkeypatch.setattr(service, "_managed_service_handles",
+                        lambda _profile: (transport, manager, transport.ready()))
+    service.resume()
+    held = wait_status(service, "control_held")["session"]
+    assert held["error_code"] == "managed_control_claim_unknown"
+    assert service.record["uncertain_claim_request_id"] == "claim-before-crash"
+    assert transport.calls == []
+    assert service.recover_control()["outcome"] == "still_unknown"
+    assert manager.recovered == [{"expected_control_epoch": "epoch-after-crash",
+                                  "expected_runtime_instance_id": "runtime-fixture",
+                                  "expected_game_continuity_id": "episode-fixture"}]
+    assert service.record["error_code"] == "managed_control_claim_unknown"
+    assert service.record["control_recovery"] == (
+        "released_acknowledged_outcome_still_unknown"
+    )
+
+
+def test_lost_claim_reply_recovers_only_matching_claim_request_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, pin, _audit, _checked = fixture(tmp_path)
+    service = LocalEnvironmentService(config)
+    service.record = {
+        "schema": "stpd/local-managed-environment-v1", "status": "failed",
+        "error_code": "managed_control_claim_unknown", "session_id": "f" * 32,
+        "scenario_id": SCENARIO["id"], "seed": SCENARIO["seed"],
+        "host_package_pin": pin, "producer": service._producer(), "events": [],
+        "service_binding": {"service_instance_id": "managed_service_fixture",
+                             "runtime_instance_id": "runtime-fixture",
+                             "game_continuity_id": "episode-fixture"},
+        "uncertain_claim_request_id": "claim-workbench-old",
+    }
+    transport = ManagedServiceFixture(held=True)
+    recovered: list[dict[str, str]] = []
+
+    class MatchingManager:
+        def status(self) -> dict[str, Any]:
+            control = ({"control_epoch": "epoch-fixture", "runtime_instance_id":
+                        "runtime-fixture", "game_continuity_id": "episode-fixture",
+                        "claim_request_id": "claim-workbench-old"} if transport.held else None)
+            return {"status": {"control_held": transport.held, "control": control}}
+
+        def recover_control(self, **expected: str) -> dict[str, Any]:
+            recovered.append(expected)
+            transport.held = False
+            return {"result": {"type": "release_control_result", "status": "released",
+                               "control_epoch": "epoch-fixture",
+                               "runtime_instance_id": "runtime-fixture",
+                               "game_continuity_id": "episode-fixture"}}
+
+    manager = MatchingManager()
+    monkeypatch.setattr(service, "_managed_service_handles",
+                        lambda _profile: (transport, manager, transport.ready()))
+    assert service.recover_control()["outcome"] == "still_unknown"
+    assert recovered == [{"expected_control_epoch": "epoch-fixture",
+                          "expected_runtime_instance_id": "runtime-fixture",
+                          "expected_game_continuity_id": "episode-fixture"}]
+
+
+def test_release_recovery_does_not_release_a_newer_same_episode_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, pin, _audit, _checked = fixture(tmp_path)
+    service = LocalEnvironmentService(config)
+    service.record = {
+        "schema": "stpd/local-managed-environment-v1", "status": "unknown",
+        "error_code": "managed_control_release_unknown", "session_id": "f" * 32,
+        "scenario_id": SCENARIO["id"], "seed": SCENARIO["seed"],
+        "host_package_pin": pin, "producer": service._producer(), "events": [],
+        "service_binding": {"service_instance_id": "managed_service_fixture",
+                             "runtime_instance_id": "runtime-fixture",
+                             "game_continuity_id": "episode-fixture"},
+        "uncertain_control_epoch": "old-epoch",
+    }
+    transport = ManagedServiceFixture(held=True)
+    calls: list[bool] = []
+
+    class NewOwnerManager:
+        def status(self) -> dict[str, Any]:
+            return {"status": {"control_held": True, "control": {
+                "control_epoch": "new-epoch", "runtime_instance_id": "runtime-fixture",
+                "game_continuity_id": "episode-fixture",
+                "claim_request_id": "claim-runtime-new"}}}
+
+        def recover_control(self, **_expected: str) -> dict[str, Any]:
+            calls.append(True)
+            raise AssertionError("must not release a later owner's lease")
+
+    manager = NewOwnerManager()
+    monkeypatch.setattr(service, "_managed_service_handles",
+                        lambda _profile: (transport, manager, transport.ready()))
+    with pytest.raises(BoundaryError, match="managed_control_identity_mismatch"):
+        service.recover_control()
+    assert calls == []
+
+
+def test_lost_claim_reply_does_not_recover_a_later_same_episode_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, pin, _audit, _checked = fixture(tmp_path)
+    service = LocalEnvironmentService(config)
+    service.record = {
+        "schema": "stpd/local-managed-environment-v1", "status": "failed",
+        "error_code": "managed_control_claim_unknown", "session_id": "f" * 32,
+        "scenario_id": SCENARIO["id"], "seed": SCENARIO["seed"],
+        "host_package_pin": pin, "producer": service._producer(), "events": [],
+        "service_binding": {"service_instance_id": "managed_service_fixture",
+                             "runtime_instance_id": "runtime-fixture",
+                             "game_continuity_id": "episode-fixture"},
+        "uncertain_claim_request_id": "claim-workbench-old",
+    }
+    transport = ManagedServiceFixture(held=True)
+
+    class LaterOwnerManager:
+        def status(self) -> dict[str, Any]:
+            return {"status": {"control_held": True, "control": {
+                "control_epoch": "later-epoch", "runtime_instance_id": "runtime-fixture",
+                "game_continuity_id": "episode-fixture",
+                "claim_request_id": "claim-runtime-new"}}}
+
+        def recover_control(self, **_expected: str) -> dict[str, Any]:
+            pytest.fail("must not release a later same-episode claim")
+
+    manager = LaterOwnerManager()
+    monkeypatch.setattr(service, "_managed_service_handles",
+                        lambda _profile: (transport, manager, transport.ready()))
+    with pytest.raises(BoundaryError, match="managed_control_identity_mismatch"):
+        service.recover_control()
+
+
+def test_host_service_held_control_rejects_without_observe_or_steal() -> None:
+    transport = ManagedServiceFixture(held=True)
+    environment = _ManagedServiceEnvironment(
+        transport, object(), transport.ready(), "text-menu-v1"
+    )
+    with pytest.raises(BoundaryError, match="managed_control_held"):
+        environment.observe_text_menu()
+    assert [call["command"] for call in transport.calls] == ["claim_control"]
+
+
+def test_host_service_unknown_release_is_not_retried_by_detach() -> None:
+    transport = ManagedServiceFixture(fail_release=True)
+    environment = _ManagedServiceEnvironment(
+        transport, object(), transport.ready(), "text-menu-v1"
+    )
+    with pytest.raises(BoundaryError, match="managed_control_release_unknown"):
+        environment.observe_text_menu()
+    assert environment.control is not None
+    assert environment.control["uncertain"] == "release"
+    assert environment.control["epoch"] == "epoch-fixture"
+    assert environment.control["request_id"]
+    with pytest.raises(BoundaryError, match="managed_control_release_unknown"):
+        environment.close()
+    assert [call["command"] for call in transport.calls].count("release_control") == 1
+
+
+def test_workbench_detach_never_calls_manager_close() -> None:
+    transport = ManagedServiceFixture()
+    manager = type("Manager", (), {"close_host": lambda _self: pytest.fail(
+        "Workbench detach must not close the Host"
+    )})()
+    environment = _ManagedServiceEnvironment(
+        transport, manager, transport.ready(), "text-menu-v1"
+    )
+    environment.close()
+    assert transport.calls == []
+
+
+def test_host_service_malformed_submit_result_releases_without_claiming_delivery() -> None:
+    class MalformedSubmit(ManagedServiceFixture):
+        def request(self, command: dict[str, Any]) -> dict[str, Any]:
+            response = super().request(command)
+            if command["command"] == "text_submit":
+                response["result"]["result"] = None
+            return response
+
+    transport = MalformedSubmit()
+    environment = _ManagedServiceEnvironment(
+        transport, object(), transport.ready(), "text-menu-v1"
+    )
+    with pytest.raises(BoundaryError, match="managed_submit_unconfirmed"):
+        environment.submit_text_menu("action-0", "page-0", "episode-fixture", "bad-result")
+    assert environment.last_submit_result is None
+    assert environment.control is None
+    assert [call["command"] for call in transport.calls] == [
+        "claim_control", "text_submit", "release_control"
+    ]
+
+
+def test_host_service_submit_unknown_does_not_reuse_prior_receipt() -> None:
+    class FailsSecondSubmit(ManagedServiceFixture):
+        submits = 0
+
+        def request(self, command: dict[str, Any]) -> dict[str, Any]:
+            if command["command"] == "text_submit":
+                self.submits += 1
+                if self.submits == 2:
+                    self.calls.append(command)
+                    raise RuntimeError("reply lost")
+            return super().request(command)
+
+    transport = FailsSecondSubmit()
+    environment = _ManagedServiceEnvironment(
+        transport, object(), transport.ready(), "text-menu-v1"
+    )
+    assert environment.submit_text_menu(
+        "action-0", "page-0", "episode-fixture", "request-first"
+    )["status"] == "applied"
+    with pytest.raises(RuntimeError, match="reply lost"):
+        environment.submit_text_menu(
+            "action-1", "page-1", "episode-fixture", "request-second"
+        )
+    assert environment.last_submit_result is None
+
+
+def test_resume_reconnects_same_host_episode_without_reset_and_archives_new_segment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, pin, audit, _checked = fixture(tmp_path)
+    service = LocalEnvironmentService(config)
+    service.record = {
+        "schema": "stpd/local-managed-environment-v1", "status": "stopped",
+        "session_id": "a" * 32, "scenario_id": SCENARIO["id"], "seed": SCENARIO["seed"],
+        "input_profile": "text-menu-v1", "host_package_pin": pin,
+        "producer": service._producer(), "events": [], "context": None,
+        "episode_identity": None, "service_binding": {
+            "service_instance_id": "managed_service_fixture",
+            "runtime_instance_id": "runtime-fixture", "game_continuity_id": "episode-fixture"},
+        "report_artifact_id": "b" * 64,
+    }
+    transport = ManagedServiceFixture()
+    transport.audit = audit
+    ready = transport.ready()
+    ready["candidate_build"] = audit
+    ready["exact_game"] = {"sts2_dll_sha256": SCENARIO["exact_game_assembly_sha256"]}
+    monkeypatch.setattr(service, "_managed_service_handles",
+                        lambda _profile: (transport, object(), ready))
+
+    started = service.resume()["session"]
+    resumed = wait_status(service, "active")["session"]
+    assert started["status"] == "resuming"
+    assert resumed["continued_from_session_id"] == "a" * 32
+    assert resumed["continued_from_report_artifact_id"] == "b" * 64
+    assert resumed["service_binding"]["game_continuity_id"] == "episode-fixture"
+    assert [call["command"] for call in transport.calls] == [
+        "episode_identity", "claim_control", "text_observe", "release_control"
+    ]
+    assert not any(call["command"] == "reset" for call in transport.calls)
+
+    stopped = service.stop(resumed["session_id"])["session"]
+    report = service.report(stopped["report_artifact_id"])
+    assert report["session_semantics"] == "workbench-segment-v2-host-owned-service"
+    assert report["host_service_status"] == "not_closed_by_workbench"
+    assert report["evidence_scope"] == "workbench-client-actions-only"
+    assert report["continued_from_report_artifact_id"] == "b" * 64
+
+
+def test_resume_while_host_control_is_held_does_not_claim_or_observe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, pin, _audit, _checked = fixture(tmp_path)
+    service = LocalEnvironmentService(config)
+    service.record = {
+        "schema": "stpd/local-managed-environment-v1", "status": "interrupted_unknown",
+        "session_id": "c" * 32, "scenario_id": SCENARIO["id"], "seed": SCENARIO["seed"],
+        "input_profile": "text-menu-v1", "host_package_pin": pin,
+        "producer": service._producer(), "events": [], "context": None,
+        "episode_identity": None, "service_binding": {
+            "service_instance_id": "managed_service_fixture",
+            "runtime_instance_id": "runtime-fixture", "game_continuity_id": "episode-fixture"},
+    }
+    transport = ManagedServiceFixture(held=True)
+    ready = transport.ready()
+    manager = type("ManagerFixture", (), {"status": lambda _self: {"status": {
+        "control_held": True, "control": {"control_epoch": "epoch-other",
+            "runtime_instance_id": "runtime-fixture", "game_continuity_id": "episode-fixture",
+            "claim_request_id": "claim-other"}}}})()
+    monkeypatch.setattr(service, "_managed_service_handles",
+                        lambda _profile: (transport, manager, ready))
+    service.resume()
+    held = wait_status(service, "control_held")["session"]
+    assert held["context"] is None
+    assert held["error_code"] == "managed_control_held"
+    assert transport.calls == []
+
+
+def test_management_actions_reject_stale_session_target_before_host_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, pin, _audit, _checked = fixture(tmp_path)
+    service = LocalEnvironmentService(config)
+    service.record = {
+        "schema": "stpd/local-managed-environment-v1", "status": "unknown",
+        "session_id": "new-session", "scenario_id": SCENARIO["id"],
+        "seed": SCENARIO["seed"], "input_profile": "text-menu-v1",
+        "host_package_pin": pin, "producer": service._producer(), "events": [],
+        "service_binding": {"service_instance_id": "service-new",
+                             "runtime_instance_id": "runtime-new",
+                             "game_continuity_id": "episode-new"},
+        "error_code": "managed_control_release_unknown",
+    }
+    monkeypatch.setattr(service, "_managed_service_handles",
+                        lambda _profile: pytest.fail("stale target must not reach Host"))
+    expected = {"expected_session_id": "old-session",
+                "expected_service_instance_id": "service-new",
+                "expected_runtime_instance_id": "runtime-new",
+                "expected_game_continuity_id": "episode-new"}
+    with pytest.raises(BoundaryError, match="managed_service_binding_mismatch"):
+        service.resume(**expected)
+    with pytest.raises(BoundaryError, match="managed_service_binding_mismatch"):
+        service.recover_control(**expected)
+    with pytest.raises(BoundaryError, match="managed_service_binding_mismatch"):
+        service.close_environment(**{key: value for key, value in expected.items()
+                                    if key != "expected_session_id"},
+                                  expected_session_id="old-session")
+
+
+def test_managed_runtime_target_is_read_only_and_returns_private_attach_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, pin, audit, _checked = fixture(tmp_path)
+    service = LocalEnvironmentService(config)
+    transport = ManagedServiceFixture()
+    manager_status = {"control_held": False, "control": None}
+
+    class ManagerFixture:
+        def status(self) -> dict[str, Any]:
+            return {"status": manager_status}
+
+    ready = {**transport.ready(), "host_identity": {
+        "package_name": HOST_PACKAGE, "version": pin["version"]},
+        "candidate_build": audit,
+        "exact_game": {"sts2_dll_sha256": SCENARIO["exact_game_assembly_sha256"]},
+        "environment_fingerprint": "f" * 64,
+        "text_menu_contracts": [{"input_profile": "text-menu-v2"}]}
+    monkeypatch.setattr(service, "_managed_service_handles",
+                        lambda _profile: (transport, ManagerFixture(), ready))
+    target = service.managed_runtime_target()
+    assert target["schema"] == "stpd/workbench-managed-runtime-target-v1"
+    assert target["client_attachment"] == config.state_dir / "managed-host-service" / "client.json"
+    assert target["host_package_pin"] == pin
+    assert target["candidate_build"] == audit
+    assert target["service_instance_id"] == "managed_service_fixture"
+    assert target["runtime_instance_id"] == "runtime-fixture"
+    assert target["game_continuity_id"] == "episode-fixture"
+    assert target["text_menu_contracts"] == ready["text_menu_contracts"]
+    assert target["profile_sha256"] == hashlib.sha256(
+        (config.state_dir / PROFILE_FILE).read_bytes()
+    ).hexdigest()
+    assert transport.calls == []
+    ready["episode"]["control_held"] = True
+    manager_status["control_held"] = True
+    with pytest.raises(BoundaryError, match="managed_episode_unavailable"):
+        service.managed_runtime_target()
+    assert transport.calls == []
+
+
+def test_explicit_host_close_requires_ack_then_removes_only_fixed_attachments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _host, _candidate, pin, _audit, _checked = fixture(tmp_path)
+    service = LocalEnvironmentService(config)
+    directory = config.state_dir / "managed-host-service"
+    directory.mkdir(mode=0o700)
+    client_file, manager_file = directory / "client.json", directory / "manager.json"
+    client_file.write_text("private descriptor")
+    manager_file.write_text("private descriptor")
+    ready = {"service_instance_id": "managed_service_fixture",
+             "episode": {"control_held": False, "tainted": False, "closed": False}}
+
+    class ManagerFixture:
+        def status(self) -> dict[str, Any]:
+            return {"status": {"control_held": False, "control": None}}
+
+        def close_host(self) -> dict[str, Any]:
+            return {"result": {"type": "close_result"}}
+
+    manager = ManagerFixture()
+    monkeypatch.setattr(service, "_managed_service_handles",
+                        lambda _profile: (object(), manager, ready))
+    result = service.close_environment()
+    assert result == {"status": "closed", "service_instance_id": "managed_service_fixture"}
+    assert not client_file.exists() and not manager_file.exists()
+    assert service.record["host_service_closed"] is True

@@ -97,8 +97,25 @@ def test_missing_model_backend_preserves_valid_training_input(tmp_path, monkeypa
         with pytest.raises(BoundaryError, match="local_models_extra_required"):
             service.start(dataset_id)
     assert service.status()["operation"]["status"] == "idle"
+    assert service.status()["availability"] == "ready"
     assert service._thread is None
     assert store.manifest_ids() == before
+    owner = configured_owner(config)
+    path = owner.path.parent / OPERATION_FILE
+    lock_path = path.parent / LOCK_FILE
+    assert lock_path.is_file() and not path.exists()
+    lock_bytes = lock_path.read_bytes()
+
+    def parked(held, _path, _identity, _owner, _store):
+        held.__exit__(None, None, None)
+
+    monkeypatch.setattr(service, "_run", parked)
+    started = service.start(dataset_id)["operation"]
+    assert started["status"] == "pending"
+    assert service._thread is not None
+    service._thread.join(timeout=10)
+    assert not service._thread.is_alive()
+    assert lock_path.read_bytes() == lock_bytes
 
 
 def test_private_child_drains_large_stderr_and_keeps_stdout_machine_record(tmp_path: Path):
@@ -1000,6 +1017,186 @@ def test_http_explicit_start_tracks_exact_completed_run_without_get_replay(
         server.shutdown()
         server.server_close()
         app.close()
+
+
+@pytest.mark.parametrize("probe", ["exists", "is_file"])
+def test_http_status_reads_journal_after_transient_missing_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: str,
+) -> None:
+    """A completed replacement must supersede a stale pathname probe."""
+    config, dataset_id, _, store = _ready(tmp_path, monkeypatch)
+    config_path = tmp_path / "project.json"
+    config_path.write_text(json.dumps(config.to_dict()))
+    app = Application(config, config_path=config_path)
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    cookie = f"{app.account.cookie_name}={app.account.cookie}"
+    (config.state_dir / "runtime.json").write_text(json.dumps({
+        "instance_id": app.instance_id, "configuration_id": configuration_id(config),
+        "port": server.server_port,
+    }))
+    finish = threading.Event()
+    launches = []
+
+    def parked(held, _path, identity, _owner, _store):
+        launches.append(identity)
+        try:
+            assert finish.wait(10)
+        finally:
+            held.__exit__(None, None, None)
+
+    monkeypatch.setattr(app.local_training, "_run", parked)
+    owner = configured_owner(config)
+    path = owner.path.parent / OPERATION_FILE
+    try:
+        headers = {"Cookie": cookie, "Content-Type": "application/json",
+                   "Origin": url, "X-CSRF-Token": app.account.csrf}
+        body = json.dumps({"dataset_id": dataset_id}).encode()
+        with urlopen(Request(url + "/api/local-training/start", data=body,
+                             headers=headers), timeout=5) as response:
+            started = json.load(response)["operation"]
+        assert started["status"] == "pending"
+        journal = path.read_bytes()
+        manifests = tuple(store.manifest_ids())
+        original_probe = getattr(Path, probe)
+
+        def missing_during_replacement(self):
+            if self == path:
+                # Observe the rename gap, then complete publication and cleanup
+                # before the reader checks for unresolved replacement files.
+                backup = path.with_name("." + path.name + ".previous-race")
+                os.replace(path, backup)
+                missing = original_probe(path)
+                os.replace(backup, path)
+                assert missing is False
+                return missing
+            return original_probe(self)
+
+        with monkeypatch.context() as racing:
+            racing.setattr(Path, probe, missing_during_replacement)
+            with urlopen(Request(url + "/api/local-training/status",
+                                 headers={"Cookie": cookie}), timeout=5) as response:
+                observed = json.load(response)
+        assert observed["availability"] == "ready", observed
+        assert observed["operation"] == started
+        assert path.read_bytes() == journal
+        assert tuple(store.manifest_ids()) == manifests
+        assert launches == [started["operation_id"]]
+    finally:
+        finish.set()
+        if app.local_training._thread is not None:
+            app.local_training._thread.join(timeout=10)
+            assert not app.local_training._thread.is_alive()
+        server.shutdown()
+        server.server_close()
+        app.close()
+
+
+@pytest.mark.parametrize("winerror", [2, 5, 32])
+def test_replaceable_journal_read_reconciles_windows_observation_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winerror: int,
+) -> None:
+    path = tmp_path / "operation.json"
+    path.write_bytes(b"durable operation")
+    original_open = replaceable_file.open_replaceable_read
+    attempts = []
+
+    @contextmanager
+    def interrupted_open(file):
+        attempts.append(file)
+        if len(attempts) == 1:
+            error = (FileNotFoundError(2, "synthetic rename gap") if winerror == 2 else
+                     PermissionError(13, "synthetic Windows sharing denial"))
+            error.winerror = winerror
+            raise error
+        with original_open(file) as stream:
+            yield stream
+
+    monkeypatch.setattr(replaceable_file, "open_replaceable_read", interrupted_open)
+    assert replaceable_file.read_replaceable_bytes(path) == b"durable operation"
+    assert attempts == [path, path]
+    assert path.read_bytes() == b"durable operation"
+
+
+@pytest.mark.parametrize("winerror,expected_attempts", [(2, 10), (5, 10), (32, 10), (87, 1)])
+def test_replaceable_journal_observation_failure_is_bounded_and_readonly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winerror: int, expected_attempts: int,
+) -> None:
+    path = tmp_path / "operation.json"
+    path.write_bytes(b"durable operation")
+    attempts = []
+
+    @contextmanager
+    def unavailable(file):
+        attempts.append(file)
+        error = PermissionError(13, "synthetic persistent observation failure")
+        error.winerror = winerror
+        raise error
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(replaceable_file, "open_replaceable_read", unavailable)
+    with pytest.raises(PermissionError):
+        replaceable_file.read_replaceable_bytes(path)
+    assert attempts == [path] * expected_attempts
+    assert path.read_bytes() == b"durable operation"
+    assert tuple(tmp_path.iterdir()) == (path,)
+
+
+def test_status_missing_journal_while_owner_holds_lock_requires_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, _, store = _ready(tmp_path, monkeypatch)
+    service = LocalTrainingService(config)
+    owner = configured_owner(config)
+    path = owner.path.parent / OPERATION_FILE
+    lock_path = path.parent / LOCK_FILE
+    manifests = tuple(store.manifest_ids())
+    assert service.status()["operation"] == {"status": "idle"}
+    assert not lock_path.exists()  # A GET must not initialize the owner path.
+    with instance_lock(lock_path):
+        assert not path.exists()
+        before = tuple(path.parent.iterdir())
+        observed = service.status()
+        assert observed["availability"] == "recovery_required"
+        assert observed["reason"] == "operation_recovery_required"
+        assert tuple(path.parent.iterdir()) == before
+        assert not path.exists()
+    assert service._thread is None
+    assert tuple(store.manifest_ids()) == manifests
+
+
+def test_existing_instance_lock_never_creates_missing_owner_path(tmp_path: Path) -> None:
+    path = tmp_path / "absent" / "owner.lock"
+    with pytest.raises(FileNotFoundError), instance_lock(path, create=False):
+        pytest.fail("missing lock must not be acquired")
+    assert not path.parent.exists()
+    path.parent.mkdir()
+    path.write_bytes(b"existing lock")
+    with (instance_lock(path, create=False),
+          pytest.raises(BoundaryError, match="already_running"),
+          instance_lock(path, create=False)):
+        pytest.fail("held lock must not be acquired")
+    assert path.read_bytes() == b"existing lock"
+
+
+@pytest.mark.parametrize("kind", ["directory", "corrupt", "wrong_owner"])
+def test_journal_descriptor_read_retains_recovery_boundaries(
+    tmp_path: Path, kind: str,
+) -> None:
+    path = tmp_path / "operation.json"
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "corrupt":
+        path.write_bytes(b"{broken")
+    else:
+        path.write_text(json.dumps({
+            "schema": training_module.SCHEMA, "status": "pending", "stage": "reserving",
+            "operation_id": "a" * 32, "dataset_id": "b" * 64, "_owner": ["other"],
+        }))
+    with pytest.raises(BoundaryError, match="operation_recovery_required"):
+        LocalTrainingService._read(path, ("owner",))
 
 
 def test_status_reader_does_not_block_training_journal_replacement(
