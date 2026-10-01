@@ -21,6 +21,8 @@ from torch import Tensor, nn
 from spireagent.json_boundary import BoundaryError, object_fields
 
 from ..canonical import semantic_hash
+from ..fullrun.light_action_inputs import CANONICAL_SCHEMA as CANONICAL_LIGHT_ACTION_INPUT_SCHEMA
+from ..fullrun.light_action_inputs import SCHEMA as LIGHT_ACTION_INPUT_SCHEMA
 from ..fullrun.light_action_inputs import LoadedLightActionInputs
 from ..fullrun.token_inputs import LoadedTokenInputs
 from ..light_action_codec import SPEC_SHA256
@@ -302,7 +304,9 @@ class TokenRankingEngine:
             expected_family = ("train-only-byte-bpe" if family == "scratch"
                                else "pinned-qwen3")
             action_codec = info.get("action_codec")
-            if (info.get("schema") != "stpd/stage1a-light-action-m0-dual-input-v1"
+            if (info.get("schema") not in {
+                    LIGHT_ACTION_INPUT_SCHEMA, CANONICAL_LIGHT_ACTION_INPUT_SCHEMA,
+            }
                     or info.get("graph") != LIGHT_ACTION_M0_GRAPH
                     or not isinstance(state_codec, dict)
                     or state_codec.get("family") != expected_family
