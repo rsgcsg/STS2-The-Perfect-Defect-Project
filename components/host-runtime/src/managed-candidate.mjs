@@ -436,12 +436,12 @@ export async function startManagedCandidateRuntime({
   const { manifest: loadedManifest } = loadManagedCandidateManifest(root);
   const manifest = selectManagedCandidateManifest(loadedManifest, diskIdentity);
   const exactGame = assertManagedCandidateGame(manifest, diskIdentity);
-  const resolvedCandidateDirectory = path.resolve(candidateDirectory);
   const build = await inspectManagedCandidateBuild({
     root,
-    candidateDirectory: resolvedCandidateDirectory,
+    candidateDirectory,
     manifest
   });
+  const resolvedCandidateDirectory = build.candidate_directory;
   const dotnet = await resolveDotnet();
   const gameDataDirectory = path.dirname(diskIdentity.sts2_assembly.path);
   const { process: child, ready } = await startJsonLineProcess({

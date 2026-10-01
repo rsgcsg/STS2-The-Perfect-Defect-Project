@@ -184,6 +184,32 @@ test("managed candidate path aliases resolve before creating a missing build roo
   }
 });
 
+test("managed preparation and runtime launch use the canonical candidate root", () => {
+  const source = readFileSync(path.join(ROOT, "src", "managed-candidate.mjs"), "utf8");
+  const prepareStart = source.indexOf("export async function prepareManagedCandidate(");
+  const runtimeStart = source.indexOf("export async function startManagedCandidateRuntime(");
+  const prepare = source.slice(prepareStart, runtimeStart);
+  const canonicalize = prepare.indexOf("canonicalizeManagedCandidateDirectory(requestedDestination)");
+  assert.ok(canonicalize >= 0);
+  const canonicalPreparation = prepare.slice(canonicalize);
+  assert.match(canonicalPreparation, /"clone",[\s\S]*manifest\.upstream\.url,\s*destination/u);
+  assert.match(canonicalPreparation, /"setup\.sh",[\s\S]*cwd: destination/u);
+  assert.match(
+    canonicalPreparation,
+    /"build", project,[\s\S]*cwd: destination,[\s\S]*STS2_LIB: path\.join\(destination, "lib"\)/u
+  );
+  assert.match(
+    canonicalPreparation,
+    /inspectManagedCandidateBuild\(\{ root, candidateDirectory: destination, manifest \}\)/u
+  );
+
+  const runtimeEnd = source.indexOf("\nfunction stateDigest", runtimeStart);
+  const runtime = source.slice(runtimeStart, runtimeEnd);
+  assert.match(runtime, /const resolvedCandidateDirectory = build\.candidate_directory;/u);
+  assert.match(runtime, /cwd: resolvedCandidateDirectory/u);
+  assert.match(runtime, /STS2_LIB: path\.join\(resolvedCandidateDirectory, "lib"\)/u);
+});
+
 test("managed probe policy uses advertised semantic operands and fails closed on unknown decisions", () => {
   assert.deepEqual(chooseManagedCandidateAction({
     decision: "map_select",
