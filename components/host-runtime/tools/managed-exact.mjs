@@ -93,6 +93,8 @@ async function main() {
     console.log(JSON.stringify({
       status: result.report.status,
       candidate_directory: result.candidateDirectory,
+      requested_candidate_directory: result.requestedCandidateDirectory,
+      canonical_candidate_directory: result.report.canonical_candidate_directory,
       report_file: result.reportFile,
       build: result.report.build
     }, null, 2));
