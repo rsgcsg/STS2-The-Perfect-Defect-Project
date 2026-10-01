@@ -27,9 +27,37 @@ LEGACY_SELECTION_RULE_SCHEMA = "stpd/decision-selection-v1"
 MAX_LINEAGE_NODES = 512
 MAX_SOURCE_INDEXES = 512
 MAX_OVERLAP_RUNS = 50_000
+MAX_RUN_GROUP_ROWS = 100_000
+MAX_OVERLAP_SQLITE_VM_STEPS = 5_000_000
+MAX_RUN_GROUP_SQLITE_VM_STEPS = 5_000_000
 MAX_LEGACY_DATASETS = 256
 MAX_LEGACY_DEPTH = 8
 MAX_LEGACY_SOURCES = 100
+
+
+def _bounded_rows(
+    db: sqlite3.Connection,
+    query: str,
+    parameters: tuple[Any, ...] = (),
+    *,
+    vm_steps: int = MAX_OVERLAP_SQLITE_VM_STEPS,
+) -> list[sqlite3.Row] | None:
+    """Materialize only capped query results and interrupt excessive SQLite work."""
+    remaining = [max(1, vm_steps // 1_000)]
+
+    def abort_on_budget() -> int:
+        remaining[0] -= 1
+        return int(remaining[0] <= 0)
+
+    db.set_progress_handler(abort_on_budget, 1_000)
+    try:
+        return db.execute(query, parameters).fetchall()
+    except sqlite3.OperationalError as error:
+        if getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT:
+            return None
+        raise
+    finally:
+        db.set_progress_handler(None, 0)
 
 
 def _legacy_source_superset(
@@ -391,15 +419,26 @@ def overlap_metadata(
                 ):
                     return candidate_unavailable()
 
-            claims = db.execute(
-                "SELECT id,purpose,artifact FROM curation_claims "
-                "WHERE purpose='gold' ORDER BY id"
-            ).fetchall()
-            candidate_claims = db.execute(
-                "SELECT id,purpose,artifact FROM curation_claims WHERE artifact=?",
+            claim_rows = _bounded_rows(
+                db,
+                "SELECT id,purpose,artifact FROM curation_claims WHERE purpose='gold' LIMIT ?",
+                (MAX_OVERLAP_RUNS + 1,),
+            )
+            candidate_claims = _bounded_rows(
+                db,
+                "SELECT id,purpose,artifact FROM curation_claims WHERE artifact=? LIMIT 2",
                 (candidate_id,),
-            ).fetchall()
-            target_claims = [row for row in claims if row["artifact"] == gold_id]
+            )
+            target_claims = _bounded_rows(
+                db,
+                "SELECT id FROM curation_claims "
+                "WHERE purpose='gold' AND artifact=? LIMIT 2",
+                (gold_id,),
+            )
+            if claim_rows is None or candidate_claims is None or target_claims is None:
+                return unknown_for("owner_index_query_limit")
+            gold_claims_complete = len(claim_rows) <= MAX_OVERLAP_RUNS
+            claims = sorted(claim_rows[:MAX_OVERLAP_RUNS], key=lambda row: row["id"])
             if len(target_claims) != 1:
                 return unknown_for("gold_unavailable")
 
@@ -414,19 +453,7 @@ def overlap_metadata(
                     return unknown_for("candidate_owner_claim_missing")
                 candidate_claim_id = candidate_claims[0]["id"]
 
-            gold_claim_runs: dict[str, set[str]] = {}
-            for claim in claims:
-                gold_claim_runs[claim["id"]] = {
-                    row[0]
-                    for row in db.execute(
-                        "SELECT run FROM curation_claim_runs WHERE claim=?", (claim["id"],)
-                    )
-                }
-            gold_runs = set().union(*gold_claim_runs.values()) if gold_claim_runs else set()
-            if not gold_runs:
-                return unknown_for("gold_owner_membership_missing")
-
-            source_states: dict[str, tuple[bool, set[str]]] = {}
+            source_states: dict[str, bool] = {}
             for source_id in source_ids:
                 source_row = db.execute(
                     "SELECT complete FROM curation_sources WHERE id=?", (source_id,)
@@ -434,90 +461,159 @@ def overlap_metadata(
                 exact = db.execute(
                     "SELECT 1 FROM curation_exact_source_index WHERE source=?", (source_id,)
                 ).fetchone()
-                runs = {
-                    row[0]
-                    for row in db.execute(
-                        "SELECT run FROM curation_source_runs WHERE source=?", (source_id,)
-                    )
-                }
                 source_states[source_id] = (
-                    source_row is not None and source_row[0] == 1 and exact is not None,
-                    runs,
+                    source_row is not None and source_row[0] == 1 and exact is not None
                 )
-            indexed_candidate_runs = set().union(
-                *(runs for _, runs in source_states.values())
+
+            source_ids_json = json.dumps(sorted(source_ids))
+            exact_source_rows = _bounded_rows(
+                db,
+                "WITH candidate_sources(source) AS ("
+                "SELECT CAST(value AS TEXT) FROM json_each(?)) "
+                "SELECT DISTINCT s.source FROM candidate_sources x "
+                "JOIN curation_source_runs s ON s.source=x.source "
+                "WHERE EXISTS (SELECT 1 FROM curation_claim_runs r "
+                "JOIN curation_claims c ON c.id=r.claim "
+                "WHERE c.purpose='gold' AND r.run=s.run) LIMIT ?",
+                (source_ids_json, MAX_SOURCE_INDEXES + 1),
             )
+            exact_sources = (
+                {row[0] for row in exact_source_rows}
+                if exact_source_rows is not None else set()
+            )
+            source_match_complete = (
+                exact_source_rows is not None and len(exact_source_rows) <= MAX_SOURCE_INDEXES
+            )
+
+            gold_pair_rows = _bounded_rows(
+                db,
+                "SELECT r.claim,r.run FROM curation_claim_runs r "
+                "JOIN curation_claims c ON c.id=r.claim WHERE c.purpose='gold' LIMIT ?",
+                (MAX_OVERLAP_RUNS + 1,),
+            )
+            gold_run_query_limited = gold_pair_rows is None
+            gold_run_pairs_complete = (
+                gold_pair_rows is not None and len(gold_pair_rows) <= MAX_OVERLAP_RUNS
+            )
+            gold_runs = {row["run"] for row in gold_pair_rows or []}
+            if not gold_runs and gold_run_pairs_complete:
+                return unknown_for("gold_owner_membership_missing")
+
             if legacy_candidate:
-                candidate_runs = indexed_candidate_runs
-                if not candidate_runs:
+                candidate_run_rows = _bounded_rows(
+                    db,
+                    "WITH candidate_sources(source) AS ("
+                    "SELECT CAST(value AS TEXT) FROM json_each(?)) "
+                    "SELECT DISTINCT s.run FROM candidate_sources x "
+                    "JOIN curation_source_runs s ON s.source=x.source LIMIT ?",
+                    (source_ids_json, MAX_OVERLAP_RUNS + 1),
+                )
+                candidate_run_query_limited = candidate_run_rows is None
+                candidate_runs = {row[0] for row in candidate_run_rows or []}
+                candidate_runs_complete = (
+                    candidate_run_rows is not None
+                    and len(candidate_run_rows) <= MAX_OVERLAP_RUNS
+                )
+                if not candidate_runs and candidate_runs_complete:
                     return unknown_for("candidate_source_run_index_missing")
             else:
-                candidate_runs = {
-                    row[0]
-                    for row in db.execute(
-                        "SELECT run FROM curation_claim_runs WHERE claim=?",
-                        (candidate_claim_id,),
-                    )
-                }
-                if not candidate_runs:
+                candidate_run_rows = _bounded_rows(
+                    db,
+                    "SELECT run FROM curation_claim_runs WHERE claim=? LIMIT ?",
+                    (candidate_claim_id, MAX_OVERLAP_RUNS + 1),
+                )
+                candidate_run_query_limited = candidate_run_rows is None
+                candidate_runs = {row[0] for row in candidate_run_rows or []}
+                candidate_runs_complete = (
+                    candidate_run_rows is not None
+                    and len(candidate_run_rows) <= MAX_OVERLAP_RUNS
+                )
+                if not candidate_runs and candidate_runs_complete:
                     return unknown_for("candidate_owner_membership_missing")
-                if not candidate_runs <= indexed_candidate_runs:
-                    return unknown_for("candidate_claim_source_mismatch")
-
-            if len(candidate_runs) > MAX_OVERLAP_RUNS or len(gold_runs) > MAX_OVERLAP_RUNS:
-                return unknown_for("overlap_run_limit")
-
-            gold_sources = {
-                row[0]
-                for row in db.execute(
-                    "SELECT DISTINCT s.source FROM curation_source_runs s "
-                    "JOIN curation_claim_runs r ON r.run=s.run "
-                    "JOIN curation_claims c ON c.id=r.claim WHERE c.purpose='gold'"
-                )
-            }
-            indexed_gold_runs = {
-                row[0]
-                for row in db.execute(
-                    "SELECT DISTINCT s.run FROM curation_source_runs s "
-                    "JOIN curation_sources c ON c.id=s.source WHERE c.complete=1"
-                )
-            }
-            if not gold_runs <= indexed_gold_runs:
-                return unknown_for("gold_claim_source_mismatch")
-
-            source_complete = all(complete for complete, _ in source_states.values())
-            all_source_indexes_complete = db.execute(
+            source_complete = all(source_states.values())
+            all_source_rows = _bounded_rows(
+                db,
                 "SELECT 1 FROM curation_sources s LEFT JOIN curation_exact_source_index e "
-                "ON e.source=s.id WHERE s.complete!=1 OR e.source IS NULL LIMIT 1"
-            ).fetchone() is None
+                "ON e.source=s.id WHERE s.complete!=1 OR e.source IS NULL LIMIT 1",
+            )
+            all_source_indexes_complete = all_source_rows is not None and not all_source_rows
             inventory_pending = _hub_inventory_pending(db)
-            missing_fingerprints = db.execute(
-                "SELECT 1 FROM curation_source_runs s JOIN curation_sources c ON c.id=s.source "
+            fingerprint_rows = _bounded_rows(
+                db,
+                "SELECT 1 FROM curation_source_runs s "
+                "JOIN curation_sources c ON c.id=s.source "
                 "LEFT JOIN curation_fingerprints f ON f.run=s.run "
-                "WHERE c.complete=1 AND f.run IS NULL LIMIT 1"
-            ).fetchone() is not None
+                "WHERE c.complete=1 AND f.run IS NULL LIMIT 1",
+            )
+            missing_fingerprints = fingerprint_rows is None or bool(fingerprint_rows)
+            gold_source_rows = _bounded_rows(
+                db,
+                "SELECT r.run FROM curation_claim_runs r "
+                "JOIN curation_claims c ON c.id=r.claim WHERE c.purpose='gold' "
+                "AND NOT EXISTS (SELECT 1 FROM curation_source_runs s "
+                "JOIN curation_sources i ON i.id=s.source "
+                "WHERE s.run=r.run AND i.complete=1) LIMIT 1",
+            )
+            gold_claim_sources_complete = gold_source_rows is not None and not gold_source_rows
+            gold_claim_source_mismatch = bool(gold_source_rows)
 
-            exact_sources = source_ids & gold_sources
+            candidate_claim_source_rows: list[sqlite3.Row] | None = []
+            if not legacy_candidate:
+                candidate_claim_source_rows = _bounded_rows(
+                    db,
+                    "SELECT r.run FROM curation_claim_runs r WHERE r.claim=? "
+                    "AND NOT EXISTS (SELECT 1 FROM json_each(?) x "
+                    "JOIN curation_source_runs s ON s.source=CAST(x.value AS TEXT) "
+                    "AND s.run=r.run) LIMIT 1",
+                    (candidate_claim_id, source_ids_json),
+                )
+            candidate_claim_sources_complete = (
+                candidate_claim_source_rows is not None
+                and not candidate_claim_source_rows
+            )
+            candidate_claim_source_mismatch = bool(candidate_claim_source_rows)
+            gold_claim_runs: dict[str, set[str]] = {
+                claim["id"]: set() for claim in claims
+            }
+            for row in gold_pair_rows or []:
+                if row["claim"] in gold_claim_runs:
+                    gold_claim_runs[row["claim"]].add(row["run"])
             exact_runs = candidate_runs & gold_runs
-            grouped = db.execute(
+            grouped_rows = _bounded_rows(
+                db,
                 "WITH RECURSIVE seeds(side,run) AS ("
                 "SELECT 'candidate',CAST(value AS TEXT) FROM json_each(?) UNION ALL "
                 "SELECT 'gold',CAST(value AS TEXT) FROM json_each(?)), "
                 "connected(side,run) AS (SELECT side,run FROM seeds UNION "
                 "SELECT c.side,b.run FROM connected c "
                 "JOIN curation_fingerprints a ON a.run=c.run "
-                "JOIN curation_fingerprints b ON b.fingerprint=a.fingerprint) "
-                "SELECT side,run FROM connected",
-                (json.dumps(sorted(candidate_runs)), json.dumps(sorted(gold_runs))),
-            ).fetchall()
+                "JOIN curation_fingerprints b ON b.fingerprint=a.fingerprint "
+                "LIMIT ?) SELECT side,run FROM connected",
+                (
+                    json.dumps(sorted(candidate_runs)), json.dumps(sorted(gold_runs)),
+                    MAX_RUN_GROUP_ROWS + 1,
+                ),
+                vm_steps=MAX_RUN_GROUP_SQLITE_VM_STEPS,
+            )
+            grouped = grouped_rows or []
+            run_group_query_complete = (
+                grouped_rows is not None and len(grouped_rows) <= MAX_RUN_GROUP_ROWS
+            )
             candidate_group_runs = {row["run"] for row in grouped if row["side"] == "candidate"}
             gold_group_runs = {row["run"] for row in grouped if row["side"] == "gold"}
             group_overlap = candidate_group_runs & gold_group_runs
             source_coverage_complete = (
                 source_complete and all_source_indexes_complete and not inventory_pending
+                and source_match_complete and gold_claim_sources_complete
             )
-            run_coverage_complete = source_coverage_complete
-            run_group_coverage_complete = run_coverage_complete and not missing_fingerprints
+            run_coverage_complete = (
+                source_coverage_complete and candidate_runs_complete and gold_run_pairs_complete
+                and candidate_claim_sources_complete
+            )
+            run_group_coverage_complete = (
+                run_coverage_complete and not missing_fingerprints
+                and run_group_query_complete
+            )
             coverage_complete = (
                 source_coverage_complete and run_coverage_complete
                 and run_group_coverage_complete
@@ -530,33 +626,6 @@ def overlap_metadata(
             else:
                 status = "unknown"
 
-            candidate_membership = {
-                "artifact": candidate_id,
-                "claim": candidate_claim_id,
-                "scope": candidate_scope,
-                "sources": sorted(source_ids),
-                "runs": sorted(candidate_runs),
-            }
-            gold_membership = [
-                {
-                    "claim": claim["id"],
-                    "artifact": claim["artifact"],
-                    "runs": sorted(gold_claim_runs[claim["id"]]),
-                }
-                for claim in claims
-            ]
-            candidate_commitment = hashlib.sha256(json_bytes(candidate_membership)).hexdigest()
-            gold_commitment = hashlib.sha256(json_bytes(gold_membership)).hexdigest()
-            comparison_commitment = hashlib.sha256(
-                json_bytes(
-                    {
-                        "candidate": candidate_commitment,
-                        "requested_gold": gold_id,
-                        "gold_reservations": gold_commitment,
-                    }
-                )
-            ).hexdigest()
-
             reasons: list[str] = []
             if not coverage_complete:
                 reasons.extend(
@@ -566,6 +635,21 @@ def overlap_metadata(
                          "source_index_incomplete"),
                         (inventory_pending, "verified_source_inventory_pending"),
                         (missing_fingerprints, "duplicate_group_index_incomplete"),
+                        (not source_match_complete, "source_overlap_query_incomplete"),
+                        (not gold_claim_sources_complete,
+                         "gold_claim_source_mismatch" if gold_claim_source_mismatch
+                         else "owner_index_query_limit"),
+                        (not candidate_claim_sources_complete,
+                         "candidate_claim_source_mismatch" if candidate_claim_source_mismatch
+                         else "owner_index_query_limit"),
+                        (candidate_run_query_limited or gold_run_query_limited,
+                         "owner_index_query_limit"),
+                        (not candidate_runs_complete or not gold_run_pairs_complete,
+                         "overlap_run_limit"),
+                        (not gold_claims_complete, "overlap_claim_limit"),
+                        (not run_group_query_complete,
+                         "run_group_query_limit" if grouped_rows is None
+                         else "run_group_limit"),
                     )
                     if active
                 )
@@ -580,12 +664,14 @@ def overlap_metadata(
                     len(exact_sources) if exact_sources or source_coverage_complete else None
                 ),
             }
+            run_finding: dict[str, Any]
             if legacy_candidate and exact_runs:
                 run_finding = {
                     "status": "possible_overlap",
                     "count": None,
-                    "observed_superset_count": len(exact_runs),
                 }
+                if candidate_runs_complete and gold_run_pairs_complete:
+                    run_finding["observed_superset_count"] = len(exact_runs)
             else:
                 run_finding = {
                     "status": (
@@ -593,15 +679,18 @@ def overlap_metadata(
                         "none" if run_coverage_complete else "unknown"
                     ),
                     "count": (
-                        len(exact_runs) if exact_runs or run_coverage_complete else None
+                        len(exact_runs)
+                        if run_coverage_complete and (exact_runs or run_coverage_complete)
+                        else None
                     ),
                 }
             if legacy_candidate and group_overlap:
-                run_group_finding = {
+                run_group_finding: dict[str, Any] = {
                     "status": "possible_overlap",
                     "related_runs": None,
-                    "observed_superset_runs": len(group_overlap),
                 }
+                if run_group_coverage_complete:
+                    run_group_finding["observed_superset_runs"] = len(group_overlap)
             else:
                 run_group_finding = {
                     "status": (
@@ -610,9 +699,48 @@ def overlap_metadata(
                     ),
                     "related_runs": (
                         len(group_overlap)
-                        if group_overlap or run_group_coverage_complete else None
+                        if run_group_coverage_complete
+                        and (group_overlap or run_group_coverage_complete) else None
                     ),
                 }
+            gold_membership = [
+                {
+                    "claim": claim["id"],
+                    "artifact": claim["artifact"],
+                    "runs": sorted(gold_claim_runs[claim["id"]]),
+                }
+                for claim in claims
+            ]
+            candidate_commitment = (
+                hashlib.sha256(
+                    json_bytes(
+                        {
+                            "artifact": candidate_id,
+                            "claim": candidate_claim_id,
+                            "scope": candidate_scope,
+                            "sources": sorted(source_ids),
+                            "runs": sorted(candidate_runs),
+                        }
+                    )
+                ).hexdigest()
+                if candidate_runs_complete else None
+            )
+            gold_commitment = (
+                hashlib.sha256(json_bytes(gold_membership)).hexdigest()
+                if gold_claims_complete and gold_run_pairs_complete else None
+            )
+            comparison_commitment = (
+                hashlib.sha256(
+                    json_bytes(
+                        {
+                            "candidate": candidate_commitment,
+                            "requested_gold": gold_id,
+                            "gold_reservations": gold_commitment,
+                        }
+                    )
+                ).hexdigest()
+                if candidate_commitment is not None and gold_commitment is not None else None
+            )
             return {
                 **unknown,
                 "observed_at": timestamp(),
@@ -626,7 +754,9 @@ def overlap_metadata(
                 "coverage": {
                     "candidate_source": "complete" if source_complete else "incomplete",
                     "gold_source": (
-                        "complete" if all_source_indexes_complete and not inventory_pending
+                        "complete"
+                        if all_source_indexes_complete and not inventory_pending
+                        and source_match_complete and gold_claim_sources_complete
                         else "incomplete"
                     ),
                     "verified_source_inventory": (

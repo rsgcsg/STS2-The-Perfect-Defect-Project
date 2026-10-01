@@ -16,6 +16,7 @@ from test_hub_console import service
 from test_hub_console import signed as signed
 
 from spireagent.artifact_contracts import Manifest, Parent
+from spireagent.hub import curation_access
 from spireagent.hub.campaigns import create_campaign_tables
 from spireagent.hub.console_auth import ConsolePrincipal
 from spireagent.hub.curation import CurationLedger
@@ -617,6 +618,139 @@ def test_curation_overlap_finds_cross_source_duplicate_run_group(api):
     assert result["findings"]["source"] == {"status": "none", "count": 0}
     assert result["findings"]["run"] == {"status": "none", "count": 0}
     assert result["findings"]["run_group"] == {"status": "overlap", "related_runs": 2}
+
+
+@pytest.mark.parametrize("overflow_scope", ["legacy_source", "candidate_claim", "gold_claim"])
+def test_curation_overlap_run_materialization_cap_is_unknown(api, monkeypatch, overflow_scope):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(
+        api, candidate_schema="legacy" if overflow_scope == "legacy_source" else None
+    )
+    extra_run = "synthetic-over-cap-" + overflow_scope
+    source_id = (
+        candidate.parents[0].artifact_id
+        if overflow_scope != "gold_claim" else gold.parents[0].artifact_id
+    )
+    with owner.operations.transaction() as db:
+        db.execute(
+            "INSERT INTO curation_source_runs VALUES(?,?)", (source_id, extra_run)
+        )
+        db.execute(
+            "INSERT INTO curation_fingerprints VALUES(?,?)",
+            ("fingerprint-" + extra_run, extra_run),
+        )
+        if overflow_scope == "candidate_claim":
+            claim_id = db.execute(
+                "SELECT id FROM curation_claims WHERE artifact=?", (candidate.artifact_id,)
+            ).fetchone()[0]
+            db.execute("INSERT INTO curation_claim_runs VALUES(?,?)", (claim_id, extra_run))
+        elif overflow_scope == "gold_claim":
+            claim_id = db.execute(
+                "SELECT id FROM curation_claims WHERE artifact=?", (gold.artifact_id,)
+            ).fetchone()[0]
+            db.execute("INSERT INTO curation_claim_runs VALUES(?,?)", (claim_id, extra_run))
+
+    monkeypatch.setattr(curation_access, "MAX_OVERLAP_RUNS", 1)
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["status"] == "unknown"
+    assert result["coverage"]["run"] == "incomplete"
+    assert result["coverage"]["run_group"] == "incomplete"
+    assert result["findings"]["run"]["status"] == "unknown"
+    assert "overlap_run_limit" in result["reasons"]
+
+
+def test_curation_overlap_retains_exact_hit_when_run_cap_is_exceeded(api, monkeypatch):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api)
+    with owner.operations.transaction() as db:
+        claim_id = db.execute(
+            "SELECT id FROM curation_claims WHERE artifact=?", (candidate.artifact_id,)
+        ).fetchone()[0]
+        source_id = candidate.parents[0].artifact_id
+        db.execute(
+            "INSERT INTO curation_source_runs VALUES(?,?)",
+            (source_id, "synthetic-gold-run"),
+        )
+        db.execute(
+            "INSERT INTO curation_claim_runs VALUES(?,?)",
+            (claim_id, "synthetic-gold-run"),
+        )
+    monkeypatch.setattr(curation_access, "MAX_OVERLAP_RUNS", 1)
+
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["status"] == "overlap"
+    assert result["findings"]["run"] == {"status": "overlap", "count": None}
+    assert result["coverage"]["run"] == "incomplete"
+    assert result["coverage"]["run_group"] == "incomplete"
+
+
+def test_curation_overlap_run_group_expansion_cap_is_unknown(api, monkeypatch):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api)
+    runs = [
+        "synthetic-training-run", "synthetic-chain-1", "synthetic-chain-2",
+        "synthetic-chain-3", "synthetic-gold-run",
+    ]
+    with owner.operations.transaction() as db:
+        for index, (left, right) in enumerate(zip(runs[:-1], runs[1:], strict=True)):
+            fingerprint = f"synthetic-chain-edge-{index}"
+            db.executemany(
+                "INSERT INTO curation_fingerprints VALUES(?,?)",
+                ((fingerprint, left), (fingerprint, right)),
+            )
+    monkeypatch.setattr(curation_access, "MAX_RUN_GROUP_ROWS", 2)
+
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["status"] == "unknown"
+    assert result["coverage"]["run"] == "complete"
+    assert result["coverage"]["run_group"] == "incomplete"
+    assert result["findings"]["run_group"] == {
+        "status": "unknown", "related_runs": None
+    }
+    assert "run_group_limit" in result["reasons"]
+
+
+def test_curation_overlap_run_group_sqlite_budget_is_unknown(api, monkeypatch):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api)
+    with owner.operations.transaction() as db:
+        db.executemany(
+            "INSERT INTO curation_fingerprints VALUES(?,?)",
+            (("synthetic-wide-fanout", "synthetic-training-run"),)
+            + tuple(
+                ("synthetic-wide-fanout", f"synthetic-wide-run-{index}")
+                for index in range(2_000)
+            ),
+        )
+    monkeypatch.setattr(curation_access, "MAX_RUN_GROUP_SQLITE_VM_STEPS", 1_000)
+
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["status"] == "unknown"
+    assert result["coverage"]["run_group"] == "incomplete"
+    assert result["findings"]["run_group"] == {
+        "status": "unknown", "related_runs": None
+    }
+    assert "run_group_query_limit" in result["reasons"]
 
 
 def test_curation_overlap_route_is_member_only_and_rejects_ambiguous_queries(api):
