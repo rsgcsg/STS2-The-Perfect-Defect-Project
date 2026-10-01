@@ -289,6 +289,209 @@ class LocalCurationOwner:
         if purpose == "gold" and self.gold_history_unknown(db, related):
             raise BoundaryError("local_curation", "legacy_gold_history_unknown")
 
+    def _training_dataset_bindings(self, store: ManifestArtifactStore,
+                                   dataset_ids: tuple[str, ...], operation_id: str
+                                   ) -> list[dict]:
+        """Reproject canonical selections; callers cannot supply source/run identities."""
+        from stpd.fullrun.curated_dataset import SCHEMA, load_selection
+        from stpd.fullrun.dataset_policy import training_sources
+        from stpd.fullrun.decision_dataset import DecisionDataset
+        from stpd.fullrun.decision_spool import SpoolSelection
+
+        digest(operation_id, "local_curation.training_operation", length=32)
+        if (not isinstance(store.blobs, LocalBlobStore)
+                or store.blobs.root != self.store_dir.resolve()):
+            raise BoundaryError("local_curation", "store_identity_mismatch")
+        if not isinstance(dataset_ids, tuple) or not 1 <= len(dataset_ids) <= 100:
+            raise BoundaryError("local_curation", "training_dataset_selection_invalid")
+        dataset_ids = tuple(digest(identity, "local_curation.training_dataset")
+                            for identity in dataset_ids)
+        if len(set(dataset_ids)) != len(dataset_ids):
+            raise BoundaryError("local_curation", "training_dataset_selection_invalid")
+        bindings = []
+        for identity in sorted(dataset_ids):
+            manifest = store.get_manifest(digest(identity, "local_curation.training_dataset"))
+            info = manifest.parameters.value()
+            training_sources(store, identity)
+            if (manifest.kind != "dataset" or info.get("schema") != SCHEMA
+                    or info.get("purpose") != "training"):
+                raise BoundaryError("local_curation", "curated_training_dataset_required")
+            pending = [manifest]
+            seen: set[str] = set()
+            sources: dict[str, Manifest] = {}
+            while pending:
+                item = pending.pop()
+                if item.artifact_id in seen:
+                    continue
+                seen.add(item.artifact_id)
+                if len(seen) > 512:
+                    raise BoundaryError("curation", "lineage_limit")
+                if item.kind == "evidence":
+                    if item.parameters.value().get("schema") not in {
+                        "stpd/received-bundle-v1", "stpd/local-verified-bundle-v1",
+                    }:
+                        raise BoundaryError("local_curation", "source_evidence_required")
+                    sources[item.artifact_id] = item
+                pending.extend(store.get_manifest(parent.artifact_id) for parent in item.parents)
+            if not sources:
+                raise BoundaryError("local_curation", "source_evidence_required")
+            memo: dict[str, DecisionDataset] = {}
+            try:
+                dataset = load_selection(store, manifest, cache=None, memo=memo)
+                runs = dataset.run_ids
+                if not runs:
+                    raise BoundaryError("local_curation", "source_run_identity_missing")
+                bindings.append({
+                    "artifact_id": identity, "logical_id": dataset.logical_id,
+                    "qualified_run_ids": sorted(runs),
+                    "sources": [{"artifact_id": source.artifact_id,
+                                 "archive_sha256": source.payload("archive").sha256}
+                                for source in sorted(sources.values(),
+                                                     key=lambda item: item.artifact_id)],
+                })
+            finally:
+                for selected in memo.values():
+                    if isinstance(selected.records, SpoolSelection):
+                        selected.records.owner.close()
+        self._check_training_bindings(bindings)
+        return bindings
+
+    def _check_training_bindings(self, bindings: list[dict]) -> None:
+        ledger = self.ledger
+        with self.transaction() as db:
+            for binding in bindings:
+                runs = set(binding["qualified_run_ids"])
+                claims = db.execute("SELECT id,purpose FROM curation_claims WHERE artifact=?",
+                                    (binding["artifact_id"],)).fetchall()
+                if len(claims) != 1 or claims[0][1] != "training":
+                    raise BoundaryError("curation", "training_claim_mismatch")
+                claimed = {row[0] for row in db.execute(
+                    "SELECT run FROM curation_claim_runs WHERE claim=?", (claims[0][0],))}
+                if claimed != runs:
+                    raise BoundaryError("curation", "training_claim_mismatch")
+                indexed: set[str] = set()
+                for source in binding["sources"]:
+                    ready = db.execute(
+                        "SELECT s.archive FROM curation_sources s "
+                        "JOIN curation_exact_source_index e ON e.source=s.id "
+                        "WHERE s.id=? AND s.complete=1", (source["artifact_id"],)).fetchone()
+                    if ready is None:
+                        raise BoundaryError("curation", "source_index_incomplete")
+                    if ready[0] != source["archive_sha256"]:
+                        raise BoundaryError("curation", "source_identity_conflict")
+                    indexed.update(row[0] for row in db.execute(
+                        "SELECT run FROM curation_source_runs WHERE source=?",
+                        (source["artifact_id"],)))
+                if not runs <= indexed:
+                    raise BoundaryError("curation", "source_run_identity_mismatch")
+                related = ledger._groups(db, indexed)
+                if any(purpose in {"test", "gold"} for purpose, _ in
+                       ledger._claims(db, related).values()):
+                    raise BoundaryError("curation", "held_out_data_cannot_train")
+
+    @staticmethod
+    def _training_use_summary(bindings: list[dict], operation_id: str) -> dict:
+        return {"operation_id": operation_id, "datasets": bindings,
+                "input_family": "canonical_curated_decisions",
+                "ledger_scope": "source_and_run_exposure_not_dataset_operation_binding",
+                "historical_external_exposure": "unknown"}
+
+    def reserve_training_datasets(self, store: ManifestArtifactStore,
+                                  dataset_ids: tuple[str, ...], operation_id: str) -> dict:
+        """Reserve before derivatives/compute; history unknown does not ban training.
+
+        Existing rows record source/run exposure, not an immutable dataset-to-operation
+        binding. Consumers must also bind dataset IDs and operation in their run inputs.
+        A failed preparation retains its conservative reservation, never a completion.
+        """
+        bindings = self._training_dataset_bindings(store, dataset_ids, operation_id)
+        for binding in bindings:
+            for source in binding["sources"]:
+                self.ledger.use_source(source["artifact_id"], "training", operation_id)
+            self.ledger.use(binding["qualified_run_ids"], "training", operation_id)
+        return self.require_training_datasets(store, dataset_ids, operation_id)
+
+    def require_training_datasets(self, store: ManifestArtifactStore,
+                                  dataset_ids: tuple[str, ...], operation_id: str) -> dict:
+        """Independently verify an admitted downstream operation without adding use rows."""
+        bindings = self._training_dataset_bindings(store, dataset_ids, operation_id)
+        for binding in bindings:
+            self.ledger.require_training_use(
+                binding["artifact_id"],
+                (source["artifact_id"] for source in binding["sources"]),
+                binding["qualified_run_ids"], operation_id,
+            )
+        return self._training_use_summary(bindings, operation_id)
+
+    def reserve_allocation_dev(self, store: ManifestArtifactStore, model_id: str,
+                               allocation_id: str, training_operation_id: str,
+                               evaluation_operation_id: str) -> dict:
+        """Reserve diagnostic dev from a training-purpose allocation, never clean test.
+
+        The caller verifies its model's immutable training-operation binding separately;
+        the existing ledger alone cannot establish that dataset/operation relationship.
+        """
+        from stpd.fullrun.dataset_policy import training_sources
+        from stpd.fullrun.decision_spool import SpoolSelection
+        from stpd.fullrun.decision_training import load_allocation
+
+        digest(evaluation_operation_id, "local_curation.evaluation_operation", length=32)
+        model = store.get_manifest(digest(model_id, "local_curation.evaluation_model"))
+        if model.kind != "model":
+            raise BoundaryError("local_curation", "model_training_lineage_mismatch")
+        training_sources(store, model_id)
+        pending = [model]
+        seen: set[str] = set()
+        while pending:
+            item = pending.pop()
+            if item.artifact_id in seen:
+                continue
+            seen.add(item.artifact_id)
+            if len(seen) > 512:
+                raise BoundaryError("curation", "lineage_limit")
+            pending.extend(store.get_manifest(parent.artifact_id) for parent in item.parents)
+        if allocation_id not in seen:
+            raise BoundaryError("local_curation", "model_allocation_mismatch")
+        manifest, dataset, allocation = load_allocation(store, allocation_id)
+        try:
+            admission = self.require_training_datasets(
+                store, (manifest.parent("dataset"),), training_operation_id)
+            dev_members = [member for member in allocation["members"] if member["split"] == "dev"]
+            runs = {member["run_id"] for member in dev_members}
+            archives = {member["source_archive_sha256"] for member in dev_members}
+            sources = admission["datasets"][0]["sources"]
+            if not archives <= {source["archive_sha256"] for source in sources}:
+                raise BoundaryError("local_curation", "allocation_source_mismatch")
+            dev_sources = {source["artifact_id"] for source in sources
+                           if source["archive_sha256"] in archives}
+            train_runs = {member["run_id"] for member in allocation["members"]
+                          if member["split"] == "train"}
+            if not runs:
+                raise BoundaryError("local_curation", "empty_dev_allocation")
+            with self.transaction() as db:
+                related = self.ledger._groups(db, runs)
+                if any(purpose in {"test", "gold"} for purpose, _ in
+                       self.ledger._claims(db, related).values()):
+                    raise BoundaryError("local_curation", "sealed_dev_source_forbidden")
+                overlap = bool(related & self.ledger._groups(db, train_runs))
+                db.executemany("INSERT OR IGNORE INTO curation_uses VALUES(?,?,?,?)",
+                               ((run, "evaluation", evaluation_operation_id, time.time())
+                                for run in sorted(related)))
+                db.executemany("INSERT OR IGNORE INTO curation_source_uses VALUES(?,?,?)",
+                               ((source, "evaluation", evaluation_operation_id)
+                                for source in sorted(dev_sources)))
+            return {"model_id": model_id, "allocation_id": allocation_id,
+                    "training_operation_id": training_operation_id,
+                    "evaluation_operation_id": evaluation_operation_id,
+                    "qualified_run_ids": sorted(runs), "semantic_overlap": overlap,
+                    "evaluation_scope": "within_training_purpose_allocation",
+                    "historical_external_exposure": "unknown",
+                    "physical_game_independence": "unresolved", "clean_held_out_claim": False,
+                    "ledger_scope": admission["ledger_scope"]}
+        finally:
+            if isinstance(dataset.records, SpoolSelection):
+                dataset.records.owner.close()
+
     def reserve_memory_dev(self, store: ManifestArtifactStore, train_source_id: str,
                            dev_source_id: str, model_operation_id: str,
                            evaluation_operation_id: str) -> bool:
