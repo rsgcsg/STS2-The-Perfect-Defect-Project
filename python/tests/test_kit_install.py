@@ -7,8 +7,10 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from private_host_fixture import private_host_fixture
 
 from spireagent.json_boundary import BoundaryError
+from spireagent.workbench.kit_runtime import private_host_runtime_pin
 from tools import install_developer_kit as install
 
 
@@ -42,18 +44,37 @@ def archive(tmp_path: Path, *, extra: str | None = None) -> tuple[Path, str]:
     return target, install.sha(target.read_bytes())
 
 
-def prepared_status_fixture(tmp_path: Path, monkeypatch, *, include_text_runtime: bool = False):
+def prepared_status_fixture(tmp_path: Path, monkeypatch, *, include_text_runtime: bool = False,
+                            include_private_host: bool = False):
     directory = tmp_path / ("f" * 64)
     kit, source = directory / "kit", directory / "source"
     files = {name: ("synthetic:" + name).encode() for name in install.STAGING}
     files["combination.json"] = b"{}"
+    files["developer-combination.json"] = b"synthetic combination"
+    files["mod/STS2_PLATFORM.json"] = b"synthetic Mod manifest"
+    private = None
+    if include_private_host:
+        fixture_dir = tmp_path / "private-host-fixture"
+        fixture_dir.mkdir()
+        private = private_host_fixture(fixture_dir)
+        profile_raw, archive_raw, bom_raw = private
+        files["platform-bom.json"] = bom_raw
+        files[install.PRIVATE_HOST_PROFILE] = profile_raw
+        files[install.PRIVATE_HOST_ARCHIVE] = archive_raw
+    else:
+        files["platform-bom.json"] = b"synthetic selected BOM"
     runtime_pair = install.KIT_RUNTIME_PAIRS["text-menu-v1"]
     if include_text_runtime:
         files[runtime_pair[0]] = b"synthetic profile"
         files[runtime_pair[1]] = b"synthetic archive"
     manifest = {
         "stpd_source_revision": "a" * 40,
+        "uv_lock_sha256": "b" * 64,
         "collection_tool_release_id": "c" * 64,
+        "mod_sha256": install.sha(files["mod/STS2_PLATFORM.dll"]),
+        "mod_manifest_sha256": install.sha(files["mod/STS2_PLATFORM.json"]),
+        "platform_bom_sha256": install.sha(files["platform-bom.json"]),
+        "developer_combination_sha256": install.sha(files["developer-combination.json"]),
         "files": {name: install.sha(raw) for name, raw in files.items()
                   if name != "combination.json"},
     }
@@ -61,6 +82,11 @@ def prepared_status_fixture(tmp_path: Path, monkeypatch, *, include_text_runtime
         manifest[runtime_pair[4]] = {
             "profile_sha256": install.sha(files[runtime_pair[0]]),
             "archive_sha256": install.sha(files[runtime_pair[1]]),
+        }
+    if private is not None:
+        manifest[install.PRIVATE_HOST_MANIFEST_KEY] = {
+            "profile_sha256": install.sha(files[install.PRIVATE_HOST_PROFILE]),
+            "archive_sha256": install.sha(files[install.PRIVATE_HOST_ARCHIVE]),
         }
     kit.mkdir(parents=True)
     (kit / "combination.json").write_bytes(files["combination.json"])
@@ -74,12 +100,27 @@ def prepared_status_fixture(tmp_path: Path, monkeypatch, *, include_text_runtime
         destination = source / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(files[name])
+    (source / "platform-bom.json").write_bytes(files["platform-bom.json"])
     if include_text_runtime:
         for name, relative in ((runtime_pair[0], runtime_pair[2]),
                                (runtime_pair[1], runtime_pair[3])):
             destination = source / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(files[name])
+    if private is not None:
+        from spireagent.workbench.kit_runtime import PRIVATE_HOST_PIN_DESTINATION
+
+        profile_raw, archive_raw, bom_raw = private
+        identity = private_host_runtime_pin(profile_raw, archive_raw, bom_raw)
+        for name, relative in (
+            (install.PRIVATE_HOST_PROFILE, install.PRIVATE_HOST_PROFILE_DESTINATION),
+            (install.PRIVATE_HOST_ARCHIVE, install.PRIVATE_HOST_ARCHIVE_DESTINATION),
+            (None, PRIVATE_HOST_PIN_DESTINATION),
+        ):
+            destination = source / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(files[name] if name is not None else
+                                   json.dumps(identity["host_runtime"]).encode())
 
     monkeypatch.setattr(install, "verified_archive", lambda *_: (manifest, files))
     monkeypatch.setattr(
@@ -106,8 +147,14 @@ def package_tuple_fixture():
     combination = {"schema": "stpd/developer-combination-v1",
                    "node_packages": [host, sdk]}
     bom = {
-        "components": {"host_runtime": {"version": "1.1.0-rc.22"},
-                       "connector": {"version": "1.3.0-rc.8"},
+        "components": {"host_runtime": {
+                           "version": "1.1.0-rc.22", "source_revision": "a" * 40,
+                           "component_tree_revision": "b" * 40,
+                           "component_source_digest_sha256": "c" * 64},
+                       "connector": {"version": "1.3.0-rc.8", "source_revision": "d" * 40,
+                                     "component_tree_revision": "e" * 40,
+                                     "component_source_digest_sha256": "f" * 64},
+                       "typescript_sdk": "1.3.0-rc.5",
                        "player_environment_protocol": "1.0.0"},
         "public_packages": {
             "host_runtime": {
@@ -132,7 +179,7 @@ def package_tuple_fixture():
     return combination, bom, connector_release
 
 
-def preflight_fixture(tmp_path: Path, monkeypatch):
+def preflight_fixture(tmp_path: Path, monkeypatch, *, include_private_host: bool = False):
     combination, bom, connector_release = package_tuple_fixture()
     directory = tmp_path / ("a" * 64)
     source, kit = directory / "source", directory / "kit"
@@ -143,6 +190,12 @@ def preflight_fixture(tmp_path: Path, monkeypatch):
     kit.mkdir(parents=True)
     combination_bytes = json.dumps(combination).encode()
     bom_bytes = json.dumps(bom).encode()
+    private = None
+    private_identity = None
+    if include_private_host:
+        private = private_host_fixture(tmp_path / "private-host-fixture")
+        profile_raw, host_archive_raw, _candidate_bom = private
+        private_identity = private_host_runtime_pin(profile_raw, host_archive_raw, bom_bytes)
     (kit / "developer-combination.json").write_bytes(combination_bytes)
     (source / "python/configs/developer/combination-v1.json").write_bytes(combination_bytes)
     (kit / "platform-bom.json").write_bytes(bom_bytes)
@@ -182,14 +235,38 @@ def preflight_fixture(tmp_path: Path, monkeypatch):
               "architecture": "arm64", "installation": {
                   "game_dir": str(game), "data_dir": str(data),
                   "release_info": str(game / "release_info.json")}}
-    monkeypatch.setattr(install, "status", lambda _: {"source_revision": "3" * 40})
+    status_result = {"source_revision": "3" * 40}
     archive_files = {
         "developer-combination.json": combination_bytes,
         "platform-bom.json": bom_bytes,
         "collection-tool/game-mod/build-provenance.json": build_provenance.read_bytes(),
     }
+    archive_manifest = {"files": {"developer-combination.json": install.sha(combination_bytes)}}
+    if private is not None and private_identity is not None:
+        profile_raw, host_archive_raw, _ = private
+        archive_files[install.PRIVATE_HOST_PROFILE] = profile_raw
+        archive_files[install.PRIVATE_HOST_ARCHIVE] = host_archive_raw
+        group = {
+            "profile_sha256": install.sha(profile_raw),
+            "archive_sha256": install.sha(host_archive_raw),
+        }
+        archive_manifest[install.PRIVATE_HOST_MANIFEST_KEY] = group
+        status_result.update({
+            "private_host_runtime": "bundled_installation_not_checked",
+            "private_host_runtime_selection": "not_observed",
+            "private_host_runtime_identity": {
+                "distribution": private_identity["distribution"],
+                **group,
+                "host_runtime": private_identity["host_runtime"],
+                "component_source_digest_sha256": private_identity[
+                    "component_source_digest_sha256"],
+                "dependency_layout": private_identity["dependency_layout"],
+                "bundled_connector_pin": private_identity["bundled_connector_pin"],
+            },
+        })
+    monkeypatch.setattr(install, "status", lambda _: status_result)
     monkeypatch.setattr(install, "verified_archive", lambda *_: (
-        {"files": {"developer-combination.json": install.sha(combination_bytes)}},
+        archive_manifest,
         archive_files,
     ))
 
@@ -217,6 +294,68 @@ def test_verified_inventory_needs_independent_archive_hash(tmp_path):
         z.writestr("unlisted", b"not in manifest")
     with pytest.raises(BoundaryError, match="inventory"):
         install.verified_archive(path, install.sha(path.read_bytes()))
+
+
+def test_status_separates_private_host_candidate_from_public_tuple_and_selection(
+        tmp_path, monkeypatch):
+    directory, source, _, files = prepared_status_fixture(
+        tmp_path, monkeypatch, include_private_host=True)
+    prepared = install.status(directory)
+    assert prepared["private_host_runtime"] == "bundled_installation_not_checked"
+    assert prepared["private_host_runtime_selection"] == "not_observed"
+    identity = prepared["private_host_runtime_identity"]
+    assert identity["distribution"] == "private_kit_candidate"
+    assert identity["host_runtime"]["source_revision"] == "a" * 40
+    assert install.PRIVATE_HOST_PROFILE not in install.STAGING
+
+    profile_raw = files[install.PRIVATE_HOST_PROFILE]
+    archive_raw = files[install.PRIVATE_HOST_ARCHIVE]
+    bom_raw = files["platform-bom.json"]
+    from spireagent.workbench.kit_runtime import stage_private_host_runtime
+
+    stage_private_host_runtime(profile_raw, archive_raw, bom_raw, source)
+    assert install.status(directory)["private_host_runtime"] == "installed_verified"
+
+    outside = tmp_path / "outside-package.json"
+    outside.write_bytes(b"{}")
+    package = source / install.PRIVATE_HOST_PACKAGE_DESTINATION
+    staged_sdk = package / "node_modules/@rsgcsg/sts2-connector-client/package.json"
+    staged_sdk.unlink()
+    staged_sdk.symlink_to(outside)
+    with pytest.raises(BoundaryError, match="staged_private_host_package_changed"):
+        install.status(directory)
+
+
+def test_initialize_stages_private_host_for_existing_environment_profile_only(
+        tmp_path, monkeypatch):
+    from test_project_console import config
+
+    directory, source, _, files = prepared_status_fixture(
+        tmp_path, monkeypatch, include_private_host=True)
+    profile_root = tmp_path / "profile"
+    profile_root.mkdir()
+    selected = config(profile_root)
+    profile = profile_root / "project.json"
+    profile.write_text(json.dumps(selected.to_dict()))
+    commands = []
+    original_run = install.run
+
+    def record_run(args, cwd, **kwargs):
+        commands.append(args)
+        return original_run(args, cwd, **kwargs)
+
+    monkeypatch.setattr(install, "run", record_run)
+    result = install.initialize(directory, profile)
+    assert result["environment"] == "initialized"
+    assert result["private_host_runtime"] == "installed_verified"
+    assert result["private_host_runtime_selection"] == "not_observed"
+    assert [args for args in commands if args and args[0] in {"npm", "uv"}] == [
+        ["npm", "ci"], ["npm", "ci", "--prefix", "python"],
+        ["uv", "sync", "--project", "python", "--locked", "--extra", "cloud"],
+    ]
+    assert all("environment-profile" not in args for args in commands)
+    assert (source / install.PRIVATE_HOST_PACKAGE_DESTINATION).is_dir()
+
 
 
 def test_status_rejects_symlinked_combination_and_staged_native_file(tmp_path, monkeypatch):
@@ -276,6 +415,21 @@ def test_preflight_accepts_published_package_ahead_of_current_source_when_bom_ha
     assert claims["source_revision"] == "9" * 40
     assert claims["package_content_sha256"] == "8" * 64
     assert claims["provenance"] == "self_asserted_in_archive_bound_combination"
+
+
+def test_preflight_reports_private_host_separately_from_public_tuple_and_selection(
+        tmp_path, monkeypatch):
+    directory, game, *_ = preflight_fixture(
+        tmp_path, monkeypatch, include_private_host=True)
+    report = install.preflight(directory, game)
+    runtime_candidates = report["runtime_candidates"]
+    assert runtime_candidates["public_combination_dependency_tuple"]["host"][
+        "bom_anchored"]["version"] == "1.1.0-rc.7"
+    private = runtime_candidates["private_host_candidate"]
+    assert private["distribution"] == "private_kit_candidate"
+    assert private["host_runtime"]["version"] == "1.1.0-rc.22"
+    assert runtime_candidates["environment_profile_selection"] == "not_observed"
+    assert report["effects"] == {"installed": False, "started": False, "loaded": False}
 
 
 def test_preflight_rejects_package_hash_protocol_and_duplicate_identity():
