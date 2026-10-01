@@ -66,15 +66,16 @@ per-file source inventory, Host source/tree/digest, producer tool git-blob and S
 identities, Node/npm/TypeScript tool versions, selected SDK source/tree/digest and bundle
 hash, locked Zod integrity and bundle hash, and the derived package-content/archive
 hashes in the external profile. Its internal `private-host-derivation.json` repeats the
-input and recipe identity; the verifier requires that receipt to match the profile,
-requires `--source-root/python` to be the clean checkout executing the producer, and
-rechecks that producer identity after derivation completes.
-requires every original Host file except the transformed `package.json` to be byte and
-mode identical, validates the exact allowed manifest changes (`dependencies`,
+input and recipe identity. Derivation requires the clean checkout executing the producer
+and rechecks that producer identity after completion. The verifier requires the receipt to
+match the profile, every original Host file except the transformed `package.json` to be
+byte and mode identical, the exact allowed manifest changes (`dependencies`,
 `bundleDependencies`, and `files`), and rejects any file outside the source inventory,
 SDK/Zod bundles, shrinkwrap, and derivation receipt. Only the two new derivation-format
 profiles carry this receipt; ordinary kits without a private Host group and older
 private profile groups remain readable.
+Kit consumers verify the receipt against their own clean, exact-revision source clone;
+it may be a separate clone from the producer.
 
 The original Host `package.json` selects the public SDK rc1 URL. The derived package
 changes that dependency to the SDK package version selected by the kit BOM, adds Zod as

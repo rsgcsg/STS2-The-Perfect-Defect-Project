@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import tarfile
 from io import BytesIO
-from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 from private_host_fixture import derived_private_host_fixture, private_host_fixture
@@ -22,7 +23,6 @@ from spireagent.workbench.kit_runtime import (
     stage_private_host_runtime,
     validate_private_host_package_directory,
     verify_private_host_offline_install,
-    verify_private_host_source_binding,
 )
 
 
@@ -219,20 +219,51 @@ def test_derived_private_host_bundle_installs_offline_and_imports_exact_selected
 
 
 def _bind_source_fixture(monkeypatch, tmp_path, *, source_file_count=None,
-                         producer_revision=None, reject_executing_checkout=False):
+                         producer_revision=None, dirty_checkout=False):
     profile_raw, archive_raw, bom_raw = derived_private_host_fixture(tmp_path / "fixture")
     profile = json.loads(profile_raw)
     derivation = profile["derivation"]
-    source_revision = derivation["producer"]["workspace_revision"]
-    if producer_revision is not None:
-        derivation["producer"]["workspace_revision"] = producer_revision
     host_count = derivation["host_source"]["source_file_count"]
     if source_file_count is not None:
         derivation["host_source"]["source_file_count"] = source_file_count
-    source_root = tmp_path / "source"
-    (source_root / "components/host-runtime").mkdir(parents=True)
-    (source_root / "components/connector/sdk/typescript").mkdir(parents=True)
-    (source_root / "python").mkdir()
+
+    owner = tmp_path / "producer-owner"
+    owner.mkdir()
+    source_root = tmp_path / "source-clone"
+    tool_bytes = {
+        "python/tools/package_developer_kit.py": b"fixture package producer",
+        "python/spireagent/workbench/kit_runtime.py": b"fixture runtime producer",
+    }
+    for directory in (
+        "python/tools", "python/spireagent", "components/host-runtime",
+        "components/connector/sdk/typescript",
+    ):
+        path = owner / directory
+        path.mkdir(parents=True, exist_ok=True)
+        (path / ".fixture").write_bytes(b"fixture\n")
+    (owner / "python/uv.lock").write_bytes(b"fixture lock\n")
+    for relative, raw in tool_bytes.items():
+        path = owner / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    for command in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.name", "Fixture"],
+        ["git", "config", "user.email", "fixture@example.invalid"],
+        ["git", "add", "."],
+        ["git", "commit", "-qm", "fixture producer checkout"],
+    ):
+        subprocess.run(command, cwd=owner, check=True, capture_output=True)
+    subprocess.run(["git", "clone", "--quiet", str(owner), str(source_root)],
+                   check=True, capture_output=True)
+    source_revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=source_root, text=True,
+    ).strip()
+    derivation["producer"]["workspace_revision"] = (
+        producer_revision if producer_revision is not None else source_revision
+    )
+    if dirty_checkout:
+        (source_root / "unexpected-producer-file").write_text("dirty\n")
 
     bom = json.loads(bom_raw)
     host_bom = bom["components"]["host_runtime"]
@@ -263,21 +294,25 @@ def _bind_source_fixture(monkeypatch, tmp_path, *, source_file_count=None,
         returncode = 0
         stdout = json.dumps(identity_report)
 
-    monkeypatch.setattr(kit_runtime.subprocess, "run", lambda *args, **kwargs: IdentityProcess())
+    original_run = subprocess.run
+
+    def run_with_identity(command, *args, **kwargs):
+        if command[-1] == "tools/component-identity.mjs":
+            return IdentityProcess()
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(kit_runtime.subprocess, "run", run_with_identity)
     monkeypatch.setattr(kit_runtime.shutil, "which", lambda name: f"/test/{name}")
     monkeypatch.setattr(kit_runtime, "_fresh_npm_environment", lambda *args, **kwargs: {})
     source_files = derivation["source_archive"]["files"]
     archive_records = kit_runtime._private_host_archive_records(archive_raw)
     source_manifest = derivation["source_archive"]["package_json_utf8"].encode()
-    tool_bytes = {
-        "python/tools/package_developer_kit.py": b"fixture package producer",
-        "python/spireagent/workbench/kit_runtime.py": b"fixture runtime producer",
-    }
-    tool_blobs = {}
     for name, raw in tool_bytes.items():
         record = derivation["producer"]["tool_files"][name]
         record["sha256"] = hashlib.sha256(raw).hexdigest()
-        tool_blobs[name] = record["git_blob_sha1"]
+        record["git_blob_sha1"] = subprocess.check_output(
+            ["git", "hash-object", "--", name], cwd=source_root, text=True,
+        ).strip()
     sdk_manifest = {
         "name": "@rsgcsg/sts2-connector-client", "version": "1.3.0-rc.5",
         "dependencies": {"zod": "^3.25.76"}, "devDependencies": {},
@@ -314,24 +349,25 @@ def _bind_source_fixture(monkeypatch, tmp_path, *, source_file_count=None,
         raise AssertionError(f"unexpected source read: {relative}")
 
     monkeypatch.setattr(kit_runtime, "_read_source_regular", read_source)
-    monkeypatch.setattr(kit_runtime, "_git_value", lambda root, args, code: tool_blobs[args[-1]])
     file_inventory = json.dumps([{"files": [{"path": name} for name in source_files]}])
     monkeypatch.setattr(kit_runtime, "_run_npm", lambda *args, **kwargs: file_inventory)
-    if reject_executing_checkout:
-        def reject_checkout(root):
-            raise BoundaryError("source", "executing_package_checkout_mismatch")
-        monkeypatch.setattr(kit_runtime, "source_identity", reject_checkout, raising=False)
-    else:
-        monkeypatch.setattr(
-            kit_runtime, "source_identity",
-            lambda root: SimpleNamespace(source_revision=source_revision), raising=False,
-        )
+    archive_raw = _replace_archive_member(
+        archive_raw, "package/private-host-derivation.json",
+        json.dumps(derivation, sort_keys=True, separators=(",", ":")).encode(),
+    )
+    archive_entries = {
+        name: raw for name, (raw, _mode) in
+        kit_runtime._private_host_archive_records(archive_raw).items()
+    }
+    profile["host_runtime"]["release_asset_sha256"] = hashlib.sha256(archive_raw).hexdigest()
+    profile["host_runtime"]["package_content_sha256"] = kit_runtime._tree_sha256(archive_entries)
     return json.dumps(profile).encode(), archive_raw, bom_raw, source_root
 
 
-def test_private_host_source_binding_accepts_exact_source_report(monkeypatch, tmp_path):
+def test_private_host_source_binding_accepts_clean_separate_clone(monkeypatch, tmp_path):
     profile, archive, bom, source_root = _bind_source_fixture(monkeypatch, tmp_path)
-    verify_private_host_source_binding(profile, archive, bom, source_root)
+    assert source_root.resolve() != Path(kit_runtime.__file__).resolve().parents[3]
+    private_host_runtime_pin(profile, archive, bom, source_root=source_root)
 
 
 def test_private_host_source_binding_rejects_unbound_file_count(monkeypatch, tmp_path):
@@ -339,7 +375,7 @@ def test_private_host_source_binding_rejects_unbound_file_count(monkeypatch, tmp
         monkeypatch, tmp_path, source_file_count=11,
     )
     with pytest.raises(BoundaryError, match="private_host_source_file_count_mismatch"):
-        verify_private_host_source_binding(profile, archive, bom, source_root)
+        private_host_runtime_pin(profile, archive, bom, source_root=source_root)
 
 
 def test_private_host_source_binding_rejects_unbound_workspace_revision(monkeypatch, tmp_path):
@@ -347,15 +383,15 @@ def test_private_host_source_binding_rejects_unbound_workspace_revision(monkeypa
         monkeypatch, tmp_path, producer_revision="8" * 40,
     )
     with pytest.raises(BoundaryError, match="private_host_producer_workspace_mismatch"):
-        verify_private_host_source_binding(profile, archive, bom, source_root)
+        private_host_runtime_pin(profile, archive, bom, source_root=source_root)
 
 
-def test_private_host_source_binding_rejects_different_executing_checkout(monkeypatch, tmp_path):
+def test_private_host_source_binding_rejects_dirty_producer_checkout(monkeypatch, tmp_path):
     profile, archive, bom, source_root = _bind_source_fixture(
-        monkeypatch, tmp_path, reject_executing_checkout=True,
+        monkeypatch, tmp_path, dirty_checkout=True,
     )
-    with pytest.raises(BoundaryError, match="executing_package_checkout_mismatch"):
-        verify_private_host_source_binding(profile, archive, bom, source_root)
+    with pytest.raises(BoundaryError, match="private_host_source_tree_dirty"):
+        private_host_runtime_pin(profile, archive, bom, source_root=source_root)
 
 
 def test_private_host_producer_rejects_unrelated_source_root(tmp_path):

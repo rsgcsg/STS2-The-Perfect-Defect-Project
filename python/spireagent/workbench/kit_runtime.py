@@ -1073,7 +1073,18 @@ def verify_private_host_source_binding(profile_raw: bytes, archive_raw: bytes,
     derivation = profile["derivation"]
     assert isinstance(derivation, dict)
     root = source_root.resolve(strict=True)
-    producer_identity = source_identity(root / "python")
+    repository_root = Path(_git_value(
+        root, ["rev-parse", "--show-toplevel"],
+        "private_host_source_identity_unavailable",
+    )).resolve(strict=True)
+    if repository_root != root:
+        raise BoundaryError("developer_kit", "private_host_source_tree_unsafe")
+    checkout_revision = _git_value(
+        root, ["rev-parse", "HEAD"], "private_host_source_identity_unavailable",
+    )
+    if _git_value(root, ["status", "--porcelain"],
+                  "private_host_source_identity_unavailable"):
+        raise BoundaryError("developer_kit", "private_host_source_tree_dirty")
     host_root = root / "components/host-runtime"
     sdk_root = root / "components/connector/sdk/typescript"
     component_roots = (root / "components", host_root, root / "components/connector",
@@ -1138,7 +1149,7 @@ def verify_private_host_source_binding(profile_raw: bytes, archive_raw: bytes,
             raise BoundaryError("developer_kit", "private_host_source_bom_mismatch")
 
     _verify_private_host_provenance_report(
-        identity_report, derivation, producer_identity.source_revision,
+        identity_report, derivation, checkout_revision,
     )
 
     sdk_version = components.get("typescript_sdk")
@@ -1233,8 +1244,8 @@ def verify_private_host_source_binding(profile_raw: bytes, archive_raw: bytes,
 
 def _verify_private_host_provenance_report(identity_report: dict[str, Any],
                                            derivation: dict[str, Any],
-                                           executing_revision: str) -> None:
-    """Bind receipt-only provenance fields to the live source identity report."""
+                                           checkout_revision: str) -> None:
+    """Bind receipt-only provenance fields to the exact clean source checkout."""
     components = identity_report.get("components")
     host_source = derivation.get("host_source")
     producer = derivation.get("producer")
@@ -1247,7 +1258,7 @@ def _verify_private_host_provenance_report(identity_report: dict[str, Any],
     if actual_host.get("source_file_count") != host_source.get("source_file_count"):
         raise BoundaryError("developer_kit", "private_host_source_file_count_mismatch")
     if (producer.get("workspace_revision") != identity_report.get("workspace_revision")
-            or producer.get("workspace_revision") != executing_revision):
+            or producer.get("workspace_revision") != checkout_revision):
         raise BoundaryError("developer_kit", "private_host_producer_workspace_mismatch")
 
 
