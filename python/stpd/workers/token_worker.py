@@ -12,7 +12,7 @@ import torch
 
 from spireagent.artifact_contracts import Manifest, Parent, Payload, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes, text
-from spireagent.storage.store import ArtifactStore
+from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
 
 from ..fullrun.evaluation import action_only_prior, evaluate_samples
 from ..fullrun.light_action_inputs import (
@@ -155,7 +155,9 @@ def prepare_token_run(
     return run
 
 
-def _verify_completed(store: ArtifactStore, result: Manifest, run: Manifest) -> None:
+def _verify_completed(
+    store: ArtifactStore, result: Manifest, run: Manifest, *, verify_payloads: bool = True,
+) -> None:
     """Do not silently replace a damaged completion with a fresh optimization attempt."""
     if (result.kind != "run_result" or result.producer != run.producer
             or result.parameters.value().get("state") != "completed"
@@ -247,16 +249,20 @@ def _verify_completed(store: ArtifactStore, result: Manifest, run: Manifest) -> 
             payload = report.payload("metrics")
             if payload.size > 64 * 1024 * 1024:
                 raise BoundaryError("token_run", "evaluation_size_limit")
-            metrics = json.loads(b"".join(store.read_payload(payload)))
-            summaries = [metrics.get("summary", {}).get("bootstrap")]
-            summaries.extend(item.get("bootstrap") for item in
-                             metrics.get("baselines", {}).values())
-            if any(not isinstance(item, dict) or item.get("status") != "unknown"
-                   or item.get("unit") != "session_scoped_run_group" for item in summaries):
-                raise BoundaryError("token_run", "canonical_dev_independence_claim")
-            if metrics.get("admission") != expected_eval:
-                raise BoundaryError("token_run", "canonical_dev_qualification_mismatch")
+            if verify_payloads:
+                metrics = json.loads(b"".join(store.read_payload(payload)))
+                summaries = [metrics.get("summary", {}).get("bootstrap")]
+                summaries.extend(item.get("bootstrap") for item in
+                                 metrics.get("baselines", {}).values())
+                if any(not isinstance(item, dict) or item.get("status") != "unknown"
+                       or item.get("unit") != "session_scoped_run_group"
+                       for item in summaries):
+                    raise BoundaryError("token_run", "canonical_dev_independence_claim")
+                if metrics.get("admission") != expected_eval:
+                    raise BoundaryError("token_run", "canonical_dev_qualification_mismatch")
     # Validate every manifest-known completion edge before consuming payloads.
+    if not verify_payloads:
+        return
     pending = [result.artifact_id]
     seen: set[str] = set()
     while pending:
@@ -271,6 +277,36 @@ def _verify_completed(store: ArtifactStore, result: Manifest, run: Manifest) -> 
             for _ in store.read_payload(payload):
                 pass
         pending.extend(p.artifact_id for p in item.parents)
+
+
+def _m0_completion_pair(
+    store: ManifestArtifactStore, model: Manifest,
+) -> tuple[Manifest, Manifest]:
+    from spireagent.storage.run_reporter import ObjectStoreRunReporter
+
+    if (model.kind != "model" or model.parameters.value().get("schema") not in {
+            CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA, PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA,
+    }):
+        raise BoundaryError("light_action_m0", "canonical_model_required")
+    run = store.get_manifest(model.parent("run"))
+    completed = ObjectStoreRunReporter(store, store.blobs).completed(run.artifact_id)
+    if completed is None or completed.parent("model") != model.artifact_id:
+        raise BoundaryError("light_action_m0", "completed_model_required")
+    return completed, run
+
+
+def preflight_m0_model_completion(store: ManifestArtifactStore, model: Manifest) -> Manifest:
+    """Validate completed model lineage from manifests only, without reading payloads."""
+    completed, run = _m0_completion_pair(store, model)
+    _verify_completed(store, completed, run, verify_payloads=False)
+    return completed
+
+
+def verify_m0_model_completion(store: ManifestArtifactStore, model: Manifest) -> Manifest:
+    """Validate the exact completed M0 model and then verify its referenced bytes."""
+    completed, run = _m0_completion_pair(store, model)
+    _verify_completed(store, completed, run)
+    return completed
 
 
 def preflight_token_run(
@@ -315,12 +351,27 @@ def preflight_token_run(
         expected_schema = (LIGHT_ACTION_M0_CHECKPOINT_SCHEMA
                            if isinstance(config, LightActionM0Config)
                            else CHECKPOINT_SCHEMA)
+        expected_checkpoint_identity = {}
+        if isinstance(config, LightActionM0Config):
+            expected_checkpoint_identity = {
+                "recipe": config.recipe,
+                "graph": recipe_for(config.recipe).graph,
+                "state_codec": input_info.get("state_codec"),
+                "action_codec": input_info.get("action_codec"),
+                "input_schema": input_info.get("schema"),
+                "input_format": input_info.get("format"),
+                "source_view_schema": input_info.get("source_schema"),
+                "source_renderer": input_info.get("source_renderer"),
+                "training_binding": input_info.get("training_binding"),
+            }
         if (resume_manifest.kind != "checkpoint" or resume_manifest.producer != runtime
                 or resume_info.get("schema") != expected_schema
-                or resume_manifest.parent("run") != run_id
-                or resume_manifest.parent("training_input") != input_manifest.artifact_id
                 or sorted(p.role for p in resume_manifest.parents)
                 != ["run", "training_input"]
+                or resume_manifest.parent("run") != run_id
+                or resume_manifest.parent("training_input") != input_manifest.artifact_id
+                or any(resume_info.get(key) != value
+                       for key, value in expected_checkpoint_identity.items())
                 or [payload.role for payload in resume_manifest.payloads] != ["checkpoint"]
                 or resume_manifest.payload("checkpoint").size > 512 * 1024**2
                 or type(resume_info.get("step")) is not int
