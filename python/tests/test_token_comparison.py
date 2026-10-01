@@ -186,12 +186,45 @@ def fixed_dev_source(tmp_path_factory):
     return _CompletedPairSource(owner.store, (results[0], results[1]))
 
 
+@pytest.fixture(scope="module")
+def multi_candidate_fixed_dev_source(tmp_path_factory):
+    from test_artifact_store_v1 import PRODUCER
+    from test_text_menu_data import row
+
+    from stpd.fullrun.text_menu_data import publish_text_menu_bc_view, publish_text_menu_source
+    from stpd.fullrun.token_inputs import load_token_inputs, publish_token_inputs
+
+    store = ManifestArtifactStore(LocalBlobStore(
+        tmp_path_factory.mktemp("multi-candidate-fixed-dev-source") / "store"))
+    rows = [row(f"decision-{index}", native=bool(index % 2)) for index in range(6)]
+    for index, item in enumerate(rows):
+        item.update(run_id="dev-fixed" if index < 2 else "train-fixed",
+                    step_index=index if index < 2 else index - 2)
+        # Unique visible inputs prevent duplicate-input collapse across these groups.
+        item["snapshot"]["persistent"]["content"]["player"]["hp"] = 40 + index
+    results = []
+    for train_count in (1, 4):
+        source = publish_text_menu_source(store, tuple(rows[:2 + train_count]), PRODUCER)
+        view = publish_text_menu_bc_view(store, source.artifact_id, PRODUCER)
+        token = publish_token_inputs(store, view.artifact_id, "s", PRODUCER)
+        inputs = load_token_inputs(store, token.artifact_id)
+        assert len([s for s in inputs.samples if s.split == "dev"]) == 2
+        assert all(len(s.action_keys) == 2 for s in inputs.samples)
+        run = prepare_token_run(store, inputs, replace(tiny_config(), steps=1), PRODUCER)
+        outcome = execute_tokens(store, ObjectStoreRunReporter(store, store.blobs),
+                                 run.artifact_id, PRODUCER)
+        assert outcome.result_id is not None
+        results.append(outcome.result_id)
+    return _CompletedPairSource(store, (results[0], results[1]))
+
+
+@pytest.mark.parametrize("source_fixture", ["fixed_dev_source", "multi_candidate_fixed_dev_source"])
 def test_real_fixed_dev_comparison_accepts_train_growth_and_cli_option(
-    tmp_path, fixed_dev_source, monkeypatch,
+    tmp_path, request, source_fixture, monkeypatch,
 ):
     from test_light_action_m0_canonical_cli import _cli
 
-    store, results = _clone_pair(fixed_dev_source, tmp_path)
+    store, results = _clone_pair(request.getfixturevalue(source_fixture), tmp_path)
     with pytest.raises(BoundaryError, match="same_fixed_dev_view_required"):
         compare_token_results(store, results)
     comparison = compare_token_results(store, results, comparison_mode="fixed-dev")
@@ -212,7 +245,10 @@ def test_real_fixed_dev_comparison_accepts_train_growth_and_cli_option(
         "descriptive_paired_comparison_not_causal_or_quality_verdict"
     cli = _cli(monkeypatch, "--store", str(store.blobs.root), "compare-tokens",
                "--result", results[0], "--result", results[1], "--comparison-mode", "fixed-dev")
-    assert cli == comparison
+    elapsed = cli.pop("elapsed_seconds")
+    verification = cli.pop("verification")
+    assert elapsed >= 0 and isinstance(verification, dict)
+    assert cli == comparison  # Only the two declared CLI wrapper fields are removed.
     with pytest.raises(BoundaryError, match="unsupported_comparison_mode"):
         compare_token_results(store, results, comparison_mode="unchecked")
 
@@ -221,11 +257,13 @@ def test_real_fixed_dev_comparison_accepts_train_growth_and_cli_option(
     "state_text", "action_texts", "action_keys", "candidate_order", "chosen_index",
     "transition_id", "run_id", "surface", "family", "split", "omit", "duplicate", "extra",
 ])
-def test_fixed_dev_rejects_every_changed_sample_fact(fixed_dev_source, monkeypatch, damage):
+def test_fixed_dev_rejects_every_changed_sample_fact(
+    multi_candidate_fixed_dev_source, monkeypatch, damage,
+):
     import stpd.fullrun.token_comparison as module
 
-    store = fixed_dev_source.store
-    results = list(fixed_dev_source.results)
+    store = multi_candidate_fixed_dev_source.store
+    results = list(multi_candidate_fixed_dev_source.results)
     second_input = store.get_manifest(results[1]).parent("training_input")
     original_loader = module._load_inputs
 
@@ -235,7 +273,8 @@ def test_fixed_dev_rejects_every_changed_sample_fact(fixed_dev_source, monkeypat
         if identity != second_input:
             return loaded
         samples = list(loaded.samples)
-        index = next(i for i, sample in enumerate(samples) if sample.split == "dev")
+        index = next(i for i, sample in enumerate(samples)
+                     if sample.split == "dev" and len(sample.action_keys) > 1)
         sample = samples[index]
         if damage == "omit":
             del samples[index]
