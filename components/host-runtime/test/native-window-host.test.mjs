@@ -13,6 +13,7 @@ import {
   evaluateHostCapabilities,
   inspectRecordedProcess,
   processCommand,
+  processCommandResult,
   queryHeadlessStatus,
   runHeadlessHost,
   stopHeadlessHost
@@ -56,17 +57,31 @@ function exactCapabilities({ hostKind = "live_ui" } = {}) {
 }
 
 function isolatedProfile() {
+  const profileRoot = path.join(os.tmpdir(), "native-test");
+  const home = path.join(profileRoot, "home");
+  const environment = { HOME: home, USERPROFILE: home };
+  let expectedUserDataRoot;
+  if (process.platform === "win32") {
+    environment.APPDATA = path.join(home, "AppData", "Roaming");
+    environment.LOCALAPPDATA = path.join(home, "AppData", "Local");
+    expectedUserDataRoot = path.join(environment.APPDATA, "SlayTheSpire2");
+  } else if (process.platform === "linux") {
+    environment.XDG_DATA_HOME = path.join(home, ".local", "share");
+    expectedUserDataRoot = path.join(environment.XDG_DATA_HOME, "SlayTheSpire2");
+  } else {
+    expectedUserDataRoot = path.join(home, "Library", "Application Support", "SlayTheSpire2");
+  }
   return {
     mode: "isolated_local_profile",
     isolation_status: "source_backed_experimental",
     profile_id: "native-test",
     generation_id: "profile-generation-1",
-    profile_root: "/tmp/native-test",
-    expected_user_data_root: "/tmp/native-test/home/Library/Application Support/SlayTheSpire2",
+    profile_root: profileRoot,
+    expected_user_data_root: expectedUserDataRoot,
     steam: "disabled_before_platform_initialization",
     client_id: "1",
     args: ["--force-steam=off", "--clientId=1"],
-    environment: { HOME: "/tmp/native-test/home", USERPROFILE: "/tmp/native-test/home" }
+    environment
   };
 }
 
@@ -86,6 +101,7 @@ test("Headless launch remains the default and native-window launch uses the isol
   const visible = shippedRuntimeLaunch({ executable: "/game/Slay the Spire 2", executable_cwd: "/game" }, {
     displayMode: "native_window",
     launchProfile: profile,
+    connectorEndpoint: "http://127.0.0.1:15526",
     spawnProcess: (...args) => {
       calls.push(args);
       return fakeChild(12002);
@@ -97,6 +113,8 @@ test("Headless launch remains the default and native-window launch uses the isol
   assert.equal("audio_driver" in visible.hostConfiguration, false);
   assert.equal(calls[1][2].env.HOME, profile.environment.HOME);
   assert.equal(calls[1][2].env.USERPROFILE, profile.environment.USERPROFILE);
+  assert.equal(calls[1][2].env.STS2_CONNECTOR_PORT, "15526");
+  assert.equal(calls[1][2].env.STS2_CONNECTOR_HOST_CONTROL_TOKEN, visible.hostControlToken);
   assert.equal(calls[1][2].cwd, "/game");
   assert.throws(() => shippedRuntimeLaunch({ executable: "/game", executable_cwd: "/game" }, {
     displayMode: "native_window",
@@ -108,6 +126,74 @@ test("Headless launch remains the default and native-window launch uses the isol
     launchProfile: { ...profile, environment: { HOME: "/wrong", USERPROFILE: "/wrong" } },
     spawnProcess: () => assert.fail("forged profile must be rejected before spawn")
   }), /exact Host-owned isolated profile/u);
+  let spawnCount = 0;
+  assert.throws(() => shippedRuntimeLaunch({ executable: "/game", executable_cwd: "/game" }, {
+    displayMode: "native_window",
+    launchProfile: profile,
+    extraEnvironment: { HOME: "/normal/home" },
+    spawnProcess: () => { spawnCount += 1; return fakeChild(); }
+  }), /cannot override protected native Host variable HOME/u);
+  assert.throws(() => shippedRuntimeLaunch({ executable: "/game", executable_cwd: "/game" }, {
+    displayMode: "native_window",
+    launchProfile: profile,
+    connectorEndpoint: "http://127.0.0.1:15526",
+    extraEnvironment: { STS2_CONNECTOR_HOST_CONTROL_TOKEN: "forged" },
+    spawnProcess: () => { spawnCount += 1; return fakeChild(); }
+  }), /protected native Host variable STS2_CONNECTOR_HOST_CONTROL_TOKEN/u);
+  assert.throws(() => shippedRuntimeLaunch({ executable: "/game", executable_cwd: "/game" }, {
+    displayMode: "native_window",
+    launchProfile: profile,
+    connectorEndpoint: "http://127.0.0.1:15526",
+    extraEnvironment: { STS2_CONNECTOR_PORT: "15527" },
+    spawnProcess: () => { spawnCount += 1; return fakeChild(); }
+  }), /protected native Host variable STS2_CONNECTOR_PORT/u);
+  assert.throws(() => shippedRuntimeLaunch({ executable: "/game", executable_cwd: "/game" }, {
+    displayMode: "native_window",
+    launchProfile: profile,
+    extraEnvironment: { SteamAppId: "646570" },
+    spawnProcess: () => { spawnCount += 1; return fakeChild(); }
+  }), /protected native Host variable SteamAppId/u);
+  assert.equal(spawnCount, 0);
+});
+
+test("Windows process lookup distinguishes explicit absence from query failure or unknown command", () => {
+  const invoke = (result) => processCommandResult(7310, "win32", {
+    spawnProcess: (_command, args) => {
+      assert.equal(args[0], "-NoProfile");
+      assert.match(args[3], /-ErrorAction Stop/u);
+      assert.match(args[3], /HOST_STATUS=ABSENT/u);
+      return result;
+    }
+  });
+  assert.deepEqual(invoke({ status: 0, stdout: "HOST_STATUS=ABSENT\n" }), {
+    status: "absent",
+    command: null
+  });
+  assert.deepEqual(invoke({ status: 0, stdout: "", stderr: "Access is denied" }), {
+    status: "unknown",
+    command: null
+  });
+  assert.deepEqual(invoke(null), { status: "unknown", command: null });
+  assert.deepEqual(invoke({ status: 0, stdout: "HOST_STATUS=ABSENT\n", stderr: "Access is denied" }), {
+    status: "unknown",
+    command: null
+  });
+  assert.deepEqual(invoke({ status: 2, stdout: "", stderr: "Access is denied" }), {
+    status: "unknown",
+    command: null
+  });
+  assert.deepEqual(invoke({ status: 0, stdout: "HOST_STATUS=UNKNOWN\n" }), {
+    status: "unknown",
+    command: null
+  });
+  assert.deepEqual(invoke({ status: 0, stdout: "HOST_STATUS=ABSENT\nunexpected\n" }), {
+    status: "unknown",
+    command: null
+  });
+  assert.deepEqual(invoke({ status: 0, stdout: "HOST_STATUS=OBSERVED\n/game/game.exe --verbose\n" }), {
+    status: "observed",
+    command: "/game/game.exe --verbose"
+  });
 });
 
 test("Headless admission stays stable while visible mode requires live_ui and exact installed identity", () => {
@@ -222,6 +308,71 @@ function writeOwnedRecord(localRoot, { displayMode = "native_window", startedAt 
 }
 
 const ownedCommand = '"/game/Slay the Spire 2" --verbose --force-steam=off --clientId=1';
+
+function visibleSignalDependencies({ child, signalSource, signalAt = null, stopBehavior = "null", onReady = () => {} }) {
+  const stamp = "2026-10-01T00:00:00.000Z";
+  const maybeSignal = (stage) => {
+    if (signalAt === stage) signalSource.emit("SIGINT");
+  };
+  let stopCalls = 0;
+  const dependencies = {
+    getDiskIdentity: () => ({}),
+    requireSupported: () => ({ status: "supported_exact" }),
+    getInstalledIdentity: () => ({
+      status: "verified",
+      installed_sha256: "b".repeat(64),
+      identity: { source_revision: "a".repeat(40), artifact_mvid: "12345678-1234-1234-1234-123456789abc" }
+    }),
+    enumerateGameProcesses: () => [],
+    readEndpoint: async () => ({ ok: false, error: "endpoint_clear" }),
+    snapshotSharedProfile: () => ({ root: "/shared", present: true, tree_sha256: "stable" }),
+    compareSnapshots: () => ({ unchanged: true }),
+    launchRuntime: () => ({
+      child,
+      args: ["--verbose", "--force-steam=off", "--clientId=1"],
+      connector: { endpoint: "http://127.0.0.1:15526" },
+      hostControlToken: "test-only"
+    }),
+    getProcessCommand: () => ownedCommand,
+    getProcessStartedAt: () => stamp,
+    waitEndpoint: async () => {
+      maybeSignal("endpoint");
+      return { ok: true, value: exactCapabilities() };
+    },
+    requestProvenance: async ({ expectedRuntimeInstanceId }) => {
+      maybeSignal("provenance");
+      return { status: "observed", response: { runtime_instance_id: expectedRuntimeInstanceId } };
+    },
+    waitSnapshot: async () => {
+      maybeSignal("snapshot");
+      return [{ ok: true, value: {
+        status: "interactive",
+        snapshot_id: "signal-snapshot",
+        interaction: { interaction_id: "signal-interaction", kind: "main_menu" },
+        bound_actions: { status: "complete", actions: [{ bound_action_id: "signal-action" }] }
+      } }];
+    },
+    waitChildExit: (ownedChild) => {
+      onReady();
+      return new Promise((resolve) => ownedChild.once("exit", (code, signal) => resolve({ code, signal })));
+    },
+    stopRuntimeChild: async () => {
+      stopCalls += 1;
+      if (stopBehavior === "reject") throw new Error("synthetic stop failure");
+      if (stopBehavior === "never") return new Promise(() => {});
+      if (stopBehavior === "close") {
+        child.exitCode = 0;
+        child.emit("exit", 0, null);
+        return { code: 0, signal: null };
+      }
+      return null;
+    },
+    signalSource,
+    installSignalHandlers: true,
+    projectIdentity: () => ({ version: "test" })
+  };
+  return { dependencies, get stopCalls() { return stopCalls; } };
+}
 
 test("status binds the recorded mode and process generation to the exact command", async () => {
   const localRoot = temporaryDirectory("sts2-visible-status-");
@@ -535,7 +686,7 @@ test("visible startup endpoint collision blocks launch and failed startup closes
         wait: async () => {},
         installSignalHandlers: true
       }
-    }), /startup_timeout/u);
+    }), /Host launch interrupted by an operator signal/u);
     assert.equal(launches, 1);
     assert.equal(sentinelReads, 2);
     assert.equal(signalSource.listenerCount("SIGINT"), 0);
@@ -650,6 +801,115 @@ test("visible startup without Host control retains the child record without sign
     await new Promise((resolve) => setImmediate(resolve));
     fake.stdout.destroy();
     fake.stderr.destroy();
+    rmSync(localRoot, { recursive: true, force: true });
+  }
+});
+
+for (const stage of ["endpoint", "provenance", "snapshot"]) {
+  test(`operator signal during ${stage} startup gate prevents ready publication`, async () => {
+    const localRoot = temporaryDirectory(`sts2-visible-signal-${stage}-`);
+    const child = fakeChild(7400 + ["endpoint", "provenance", "snapshot"].indexOf(stage));
+    const signalSource = new EventEmitter();
+    const fixture = visibleSignalDependencies({ child, signalSource, signalAt: stage });
+    const originalLog = console.log;
+    let readyLogs = 0;
+    console.log = (line) => { if (String(line).includes('"status": "ready"')) readyLogs += 1; };
+    try {
+      await assert.rejects(runHeadlessHost({
+        installation: { executable: "/game/Slay the Spire 2", executable_cwd: "/game" },
+        localRoot,
+        isolatedProfileId: "signal-startup",
+        displayMode: "native_window",
+        dependencies: fixture.dependencies
+      }), /Host signal shutdown did not confirm process exit/u);
+      const current = JSON.parse(readFileSync(path.join(localRoot, "runtime", "current.json"), "utf8"));
+      assert.equal(current.status, "close_unconfirmed");
+      assert.equal(current.ready_at, undefined);
+      assert.equal(current.loaded_identity, null);
+      assert.equal(readyLogs, 0);
+      assert.equal(fixture.stopCalls, 1);
+      assert.equal(current.shared_profile_integrity_status, "pending_process_close");
+    } finally {
+      console.log = originalLog;
+      child.kill("SIGKILL");
+      await new Promise((resolve) => setImmediate(resolve));
+      child.stdout.destroy();
+      child.stderr.destroy();
+      rmSync(localRoot, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const stopBehavior of ["null", "reject", "never"]) {
+  test(`ready-phase signal records ${stopBehavior} shutdown as bounded close-unconfirmed`, async () => {
+    const localRoot = temporaryDirectory(`sts2-visible-ready-stop-${stopBehavior}-`);
+    const child = fakeChild(7410 + ["null", "reject", "never"].indexOf(stopBehavior));
+    const signalSource = new EventEmitter();
+    let resolveReady;
+    const ready = new Promise((resolve) => { resolveReady = resolve; });
+    const fixture = visibleSignalDependencies({ child, signalSource, stopBehavior, onReady: resolveReady });
+    const originalLog = console.log;
+    const unhandled = [];
+    const onUnhandled = (error) => unhandled.push(error);
+    process.on("unhandledRejection", onUnhandled);
+    console.log = () => {};
+    try {
+      const run = runHeadlessHost({
+        installation: { executable: "/game/Slay the Spire 2", executable_cwd: "/game" },
+        localRoot,
+        isolatedProfileId: "signal-ready",
+        displayMode: "native_window",
+        dependencies: { ...fixture.dependencies, signalStopTimeoutMs: stopBehavior === "never" ? 20 : 100 }
+      });
+      await ready;
+      signalSource.emit("SIGINT");
+      await assert.rejects(run, /Host signal shutdown did not confirm process exit/u);
+      await new Promise((resolve) => setImmediate(resolve));
+      const current = JSON.parse(readFileSync(path.join(localRoot, "runtime", "current.json"), "utf8"));
+      assert.equal(current.status, "close_unconfirmed");
+      assert.equal(current.shared_profile_integrity_status, "pending_process_close");
+      assert.equal(fixture.stopCalls, 1);
+      assert.deepEqual(unhandled, []);
+    } finally {
+      console.log = originalLog;
+      process.off("unhandledRejection", onUnhandled);
+      child.kill("SIGKILL");
+      await new Promise((resolve) => setImmediate(resolve));
+      child.stdout.destroy();
+      child.stderr.destroy();
+      rmSync(localRoot, { recursive: true, force: true });
+    }
+  });
+}
+
+test("ready-phase signal persists and closes only after child exit is observed", async () => {
+  const localRoot = temporaryDirectory("sts2-visible-ready-stop-closed-");
+  const child = fakeChild(7420);
+  const signalSource = new EventEmitter();
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  const fixture = visibleSignalDependencies({ child, signalSource, stopBehavior: "close", onReady: resolveReady });
+  try {
+    const record = await (async () => {
+      const run = runHeadlessHost({
+        installation: { executable: "/game/Slay the Spire 2", executable_cwd: "/game" },
+        localRoot,
+        isolatedProfileId: "signal-ready-close",
+        displayMode: "native_window",
+        dependencies: fixture.dependencies
+      });
+      await ready;
+      signalSource.emit("SIGINT");
+      return run;
+    })();
+    assert.equal(record.status, "exited");
+    assert.equal(record.exit.code, 0);
+    assert.equal(record.shared_profile_integrity_status, "unchanged");
+    assert.equal(fixture.stopCalls, 1);
+    assert.equal(readFileSync(path.join(record.session_directory, "lifecycle.json"), "utf8").includes("test-only"), false);
+  } finally {
+    child.stdout.destroy();
+    child.stderr.destroy();
     rmSync(localRoot, { recursive: true, force: true });
   }
 });

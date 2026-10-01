@@ -48,23 +48,43 @@ export function readHostRecord(file) {
   return JSON.parse(readFileSync(file, "utf8"));
 }
 
-export function processCommandResult(pid, platform = process.platform) {
+export function processCommandResult(pid, platform = process.platform, { spawnProcess = spawnSync } = {}) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return { status: "absent", command: null };
   if (platform === "win32") {
     const script = [
-      `$p = Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\" -ErrorAction SilentlyContinue`,
-      "if ($null -ne $p) { $p.CommandLine }"
-    ].join("; ");
-    const result = spawnSync(
+      "$ErrorActionPreference = 'Stop'",
+      "try {",
+      `  $p = Get-CimInstance -ClassName Win32_Process -Filter \"ProcessId = ${pid}\" -ErrorAction Stop`,
+      "  if ($null -eq $p) { [Console]::Out.WriteLine('HOST_STATUS=ABSENT'); exit 0 }",
+      "  if ([string]::IsNullOrWhiteSpace($p.CommandLine)) { [Console]::Out.WriteLine('HOST_STATUS=UNKNOWN'); exit 0 }",
+      "  [Console]::Out.WriteLine('HOST_STATUS=OBSERVED')",
+      "  [Console]::Out.WriteLine($p.CommandLine)",
+      "} catch {",
+      "  [Console]::Error.WriteLine($_.Exception.Message)",
+      "  exit 2",
+      "}"
+    ].join("\n");
+    const result = spawnProcess(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
       { encoding: "utf8", windowsHide: true }
     );
-    if (result.error || result.status !== 0) return { status: "unknown", command: null };
-    const command = result.stdout.trim();
-    return command ? { status: "observed", command } : { status: "absent", command: null };
+    if (!result || result.error || result.status !== 0 || result.stderr?.trim()) {
+      return { status: "unknown", command: null };
+    }
+    const lines = (result.stdout ?? "").trimEnd().split(/\r?\n/u);
+    if (lines.length === 1 && lines[0] === "HOST_STATUS=ABSENT") {
+      return { status: "absent", command: null };
+    }
+    if (lines.length === 1 && lines[0] === "HOST_STATUS=UNKNOWN") {
+      return { status: "unknown", command: null };
+    }
+    if (lines.length !== 2 || lines[0] !== "HOST_STATUS=OBSERVED" || !lines[1].trim()) {
+      return { status: "unknown", command: null };
+    }
+    return { status: "observed", command: lines[1] };
   }
-  const result = spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+  const result = spawnProcess("ps", ["-p", String(pid), "-o", "command="], {
     encoding: "utf8"
   });
   if (result.error) return { status: "unknown", command: null };
@@ -539,8 +559,12 @@ export async function runHeadlessHost({
     projectIdentity = readProjectIdentity,
     writeRecord = writeJson,
     signalSource = process,
-    installSignalHandlers = true
+    installSignalHandlers = true,
+    signalStopTimeoutMs = 25_000
   } = dependencies;
+  if (!Number.isSafeInteger(signalStopTimeoutMs) || signalStopTimeoutMs < 1) {
+    throw new Error("Signal stop timeout must be a positive safe integer.");
+  }
   const launchProfile = resolveLaunchProfile({
     localRoot,
     isolatedProfileId,
@@ -613,23 +637,94 @@ export async function runHeadlessHost({
     shared_profile_integrity_status: displayMode === "native_window" ? "pending" : "not_required",
     loaded_identity: null
   };
-  let signalPromise = null;
+  let stopAttemptPromise = null;
+  let stopOutcomePromise = null;
   let signalRequested = false;
   let signalHandlersInstalled = false;
   let completedSentinel = false;
   let childExit = null;
   let runtimeInstanceId = null;
+  let resolveSignalRequested;
+  let resolveChildExit;
+  const signalRequest = new Promise((resolve) => { resolveSignalRequested = resolve; });
+  const childExitObserved = new Promise((resolve) => { resolveChildExit = resolve; });
+  const startStopAttempt = () => {
+    if (child == null || !record.process_started_at) return null;
+    if (stopAttemptPromise == null) {
+      stopAttemptPromise = Promise.resolve()
+        .then(() => stopRuntimeChild(child, {
+          endpoint,
+          hostControlToken: launch?.hostControlToken ?? null,
+          expectedRuntimeInstanceId: runtimeInstanceId,
+          beforeSignal: () => inspectRecordedProcess(record, { getProcessCommand, getProcessStartedAt }).matches
+        }))
+        .then(
+          (result) => ({ kind: "result", result }),
+          (error) => ({ kind: "error", error })
+        );
+    }
+    return stopAttemptPromise;
+  };
   const beginSignalShutdown = () => {
-    if (!signalRequested || signalPromise != null || child == null || !record.process_started_at) return;
-    signalPromise = stopRuntimeChild(child, {
-      endpoint,
-      hostControlToken: launch?.hostControlToken ?? null,
-      expectedRuntimeInstanceId: runtimeInstanceId,
-      beforeSignal: () => inspectRecordedProcess(record, { getProcessCommand, getProcessStartedAt }).matches
-    });
+    if (!signalRequested) return null;
+    return startStopAttempt();
+  };
+  const stopOutcome = () => {
+    if (closeConfirmed()) {
+      return Promise.resolve({
+        status: "closed",
+        exit: childExit ?? { code: child?.exitCode ?? null, signal: child?.signalCode ?? null }
+      });
+    }
+    const attempt = startStopAttempt();
+    if (attempt == null) return Promise.resolve({ status: "ownership_unproven" });
+    if (stopOutcomePromise == null) {
+      let timer = null;
+      const timeout = new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ kind: "timeout" }), signalStopTimeoutMs);
+      });
+      stopOutcomePromise = Promise.race([
+        attempt,
+        childExitObserved.then((exit) => ({ kind: "exit", exit })),
+        timeout
+      ]).then((outcome) => {
+        if (timer != null) clearTimeout(timer);
+        if (closeConfirmed()) return { status: "closed", exit: childExit };
+        if (outcome.kind === "error") {
+          return {
+            status: "stop_failed",
+            error: outcome.error instanceof Error ? outcome.error.message : String(outcome.error)
+          };
+        }
+        if (outcome.kind === "timeout") return { status: "close_unconfirmed", reason: "stop_timeout" };
+        return { status: "close_unconfirmed", result: outcome.result ?? null };
+      });
+    }
+    return stopOutcomePromise;
+  };
+  const signalInterruption = async () => {
+    const outcome = await stopOutcome();
+    if (outcome.status === "closed") {
+      throw new Error("Host launch interrupted by an operator signal.");
+    }
+    throw new Error(`Host signal shutdown did not confirm process exit (${outcome.status}); lifecycle ownership is retained.`);
+  };
+  const awaitStartupPhase = async (pending) => {
+    const phase = Promise.resolve(pending).then(
+      (value) => ({ kind: "value", value }),
+      (error) => ({ kind: "error", error })
+    );
+    const outcome = await Promise.race([
+      phase,
+      signalRequest.then(() => ({ kind: "signal" }))
+    ]);
+    if (outcome.kind === "signal" || signalRequested) await signalInterruption();
+    if (outcome.kind === "error") throw outcome.error;
+    return outcome.value;
   };
   const onSignal = () => {
     signalRequested = true;
+    resolveSignalRequested();
     beginSignalShutdown();
   };
   const writeLifecycle = () => writeRecord(lifecycleFile, record);
@@ -676,7 +771,10 @@ export async function runHeadlessHost({
       child.stdout.pipe(process.stdout);
       child.stderr.pipe(process.stderr);
     }
-    child.once("exit", (code, signal) => { childExit = { code, signal }; });
+    child.once("exit", (code, signal) => {
+      childExit = { code, signal };
+      resolveChildExit(childExit);
+    });
     if (installSignalHandlers) {
       signalSource.once("SIGINT", onSignal);
       signalSource.once("SIGTERM", onSignal);
@@ -709,9 +807,11 @@ export async function runHeadlessHost({
       throw new Error("Connector Host lifecycle control was not configured for the process.");
     }
     beginSignalShutdown();
-    if (signalRequested) throw new Error("Host launch interrupted by an operator signal during startup.");
+    if (signalRequested) await signalInterruption();
 
-    const capabilitiesResult = await waitEndpoint(endpoint, timeoutMs, childReference(child));
+    const capabilitiesResult = await awaitStartupPhase(
+      waitEndpoint(endpoint, timeoutMs, childReference(child))
+    );
     if (!capabilitiesResult.ok) {
       throw new Error(`Connector endpoint did not become ready: ${capabilitiesResult.error}`);
     }
@@ -724,17 +824,17 @@ export async function runHeadlessHost({
       throw new Error(`Loaded environment failed the ${displayMode} Host gate: ${capabilityGate.errors.join(", ")}`);
     }
     if (displayMode === "native_window") {
-      const provenance = await requestProvenance({
-        endpoint,
-        hostControlToken: launch.hostControlToken,
-        expectedRuntimeInstanceId: runtimeInstanceId
-      });
+      const provenance = await awaitStartupPhase(requestProvenance({
+          endpoint,
+          hostControlToken: launch.hostControlToken,
+          expectedRuntimeInstanceId: runtimeInstanceId
+        }));
       if (provenance.status !== "observed"
           || provenance.response?.runtime_instance_id !== runtimeInstanceId) {
         throw new Error("Authenticated Host provenance did not bind the isolated native-window process to its endpoint.");
       }
     }
-    const snapshots = await waitSnapshot(endpoint, timeoutMs, childReference(child));
+    const snapshots = await awaitStartupPhase(waitSnapshot(endpoint, timeoutMs, childReference(child)));
     const snapshot = snapshots.at(-1);
     if (!snapshotIsInteractive(snapshot)) {
       throw new Error("The real runtime loaded but did not mount an interactive Player Environment decision.");
@@ -760,21 +860,27 @@ export async function runHeadlessHost({
     writeLifecycle();
     console.log(JSON.stringify({ status: "ready", ...record.loaded_identity, initial_snapshot: record.initial_snapshot }, null, 2));
     const exitPromise = childExit == null ? waitChildExit(child) : Promise.resolve(childExit);
-    let exit = null;
-    if (signalPromise == null) {
-      exit = await exitPromise;
-    } else {
-      const outcome = await Promise.race([
-        exitPromise.then((value) => ({ kind: "exit", value })),
-        signalPromise.then((value) => ({ kind: "signal", value }))
-      ]);
-      if (outcome.kind === "exit") exit = outcome.value;
-      else {
-        if (outcome.value == null && !closeConfirmed()) {
-          throw new Error("Host signal shutdown did not confirm process exit; lifecycle ownership is retained.");
-        }
-        exit = childExit ?? { code: outcome.value?.code ?? null, signal: outcome.value?.signal ?? null };
+    const normalExit = Promise.resolve(exitPromise).then(
+      (value) => ({ kind: "exit", value }),
+      (error) => ({ kind: "wait_error", error })
+    );
+    const lifecycleOutcome = await Promise.race([
+      normalExit,
+      signalRequest.then(() => ({ kind: "signal" }))
+    ]);
+    let exit;
+    if (lifecycleOutcome.kind === "wait_error") throw lifecycleOutcome.error;
+    if (lifecycleOutcome.kind === "signal" || signalRequested) {
+      const closed = await stopOutcome();
+      if (closed.status !== "closed") {
+        throw new Error(`Host signal shutdown did not confirm process exit (${closed.status}); lifecycle ownership is retained.`);
       }
+      exit = closed.exit ?? childExit ?? {
+        code: child?.exitCode ?? null,
+        signal: child?.signalCode ?? null
+      };
+    } else {
+      exit = lifecycleOutcome.value;
     }
     childExit = exit;
     record = { ...record, status: "exited", exited_at: new Date().toISOString(), exit };
@@ -790,23 +896,7 @@ export async function runHeadlessHost({
   } catch (error) {
     let stopResult = null;
     if (child != null && !closeConfirmed()) {
-      try {
-        stopResult = signalPromise == null
-          ? await stopRuntimeChild(child, {
-              endpoint,
-              hostControlToken: launch?.hostControlToken ?? null,
-              expectedRuntimeInstanceId: runtimeInstanceId,
-              beforeSignal: () => inspectRecordedProcess(record, { getProcessCommand, getProcessStartedAt }).matches
-            })
-          : await signalPromise;
-      } catch (stopError) {
-        stopResult = { status: "stop_error", error: stopError instanceof Error ? stopError.message : String(stopError) };
-      }
-    }
-    if (childExit == null && stopResult != null
-        && typeof stopResult === "object"
-        && (Object.hasOwn(stopResult, "code") || Object.hasOwn(stopResult, "signal"))) {
-      childExit = { code: stopResult.code ?? null, signal: stopResult.signal ?? null };
+      stopResult = await stopOutcome();
     }
     const closed = child == null || closeConfirmed();
     record = {
