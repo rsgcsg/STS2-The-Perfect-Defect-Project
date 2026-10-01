@@ -20,9 +20,13 @@ def _assert_score_maps_float32_permutation_parity(
     assert set(actual) == set(expected)
     assert all(isfinite(value) for value in expected.values())
     assert all(isfinite(value) for value in actual.values())
+    actual_tensor = torch.tensor([actual[key] for key in expected], dtype=torch.float32)
+    expected_tensor = torch.tensor([expected[key] for key in expected], dtype=torch.float32)
+    assert bool(torch.isfinite(actual_tensor).all())
+    assert bool(torch.isfinite(expected_tensor).all())
     torch.testing.assert_close(
-        torch.tensor([actual[key] for key in expected], dtype=torch.float32),
-        torch.tensor([expected[key] for key in expected], dtype=torch.float32),
+        actual_tensor,
+        expected_tensor,
         rtol=1e-6,
         atol=1e-8,
         check_dtype=True,
