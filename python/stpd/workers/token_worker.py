@@ -14,6 +14,7 @@ from spireagent.artifact_contracts import Manifest, Parent, Payload, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes, text
 from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
 
+from ..fullrun.dataset_policy import token_dev_qualification
 from ..fullrun.evaluation import action_only_prior, evaluate_samples
 from ..fullrun.light_action_inputs import (
     CANONICAL_SCHEMA as CANONICAL_LIGHT_ACTION_INPUT_SCHEMA,
@@ -531,8 +532,6 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
         model = Manifest("model", runtime, parents, model_payloads,
                          FrozenObject.of(model_info))
         store.publish(model)
-        # Human text-input rows are session-scoped; distinct recorded run IDs do
-        # not establish independent native runs across those sessions.
         admitted = input_info.get("schema") in {
             CANONICAL_LIGHT_ACTION_INPUT_SCHEMA, PUBLIC_LIGHT_ACTION_INPUT_SCHEMA,
         }
@@ -544,15 +543,13 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
             if (not isinstance(dev_admission, dict)
                     or dev_admission.get("evaluation_scope")
                     != "within_training_purpose_allocation"
+                    or dev_admission.get("historical_external_exposure") != "unknown"
                     or dev_admission.get("physical_game_independence") != "unresolved"
                     or dev_admission.get("clean_held_out_claim") is not False):
                 raise BoundaryError("token_run", "canonical_dev_admission_invalid")
         event("evaluating", model_id=model.artifact_id)
-        native_run_independence = (
-            False if admitted else view.parameters.value().get("schema") not in {
-                "stpd/human-text-input-bc-view-v1", "stpd/human-text-input-bc-view-v2",
-            }
-        )
+        qualification = token_dev_qualification(store, view, admission=dev_admission)
+        native_run_independence = qualification["native_run_independence"]
         rows, summary = evaluate_samples(
             inputs.samples, engine.scores, seed=config.seed,
             native_run_independence=native_run_independence,
@@ -569,14 +566,15 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
             )
         metric_value = {"rows": rows, "summary": summary, "baselines": baselines}
         evaluation_info = {"schema": EVALUATION_SCHEMA, "partition": "dev",
-                           "qualification": "engineering_only"}
-        if dev_admission is not None:
-            qualification = {key: dev_admission[key] for key in (
-                "evaluation_scope", "historical_external_exposure",
-                "physical_game_independence", "clean_held_out_claim",
-            )}
-            metric_value["admission"] = qualification
-            evaluation_info.update(qualification)
+                           "qualification": "engineering_only",
+                           "native_run_independence": native_run_independence}
+        restrictions = {key: qualification[key] for key in (
+            "evaluation_scope", "historical_external_exposure",
+            "physical_game_independence", "clean_held_out_claim",
+        )}
+        metric_value["admission"] = restrictions
+        metric_value["qualification_evidence"] = qualification["evidence"]
+        evaluation_info.update(restrictions)
         metrics = store.put_payload("metrics", io.BytesIO(json_bytes(metric_value)),
                                     "application/json")
         evaluation = Manifest(

@@ -152,6 +152,9 @@ def test_public_m0_owner_train_resume_export_and_snapshot_parity(
     assert completed["state"] == "completed"
     run = store.get_manifest(paused["run_id"])
     result = store.get_manifest(completed["result_id"])
+    from test_token_comparison import assert_m0_comparison_preserves_qualification
+
+    assert_m0_comparison_preserves_qualification(store, completed["result_id"])
     model_id = result.parent("model")
     exported = tmp_path / "public-m0-export"
     receipt = _cli(
