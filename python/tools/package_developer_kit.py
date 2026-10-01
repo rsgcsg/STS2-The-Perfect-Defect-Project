@@ -1,4 +1,4 @@
-"""Assemble an offline developer kit from explicit, independently pinned public bytes.
+"""Assemble an offline developer kit from pinned inputs and a private Host candidate.
 
 This packages identities only. Release notes separately establish CI, native load,
 supported systems, Human approval and cloud qualification. No installation or upload occurs.
@@ -12,6 +12,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from spireagent.workbench.kit_runtime import (
     PRIVATE_HOST_ARCHIVE,
     PRIVATE_HOST_MANIFEST_KEY,
     PRIVATE_HOST_PROFILE,
+    derive_private_host_candidate,
     text_runtime_pin,
     verify_private_host_offline_install,
 )
@@ -184,7 +186,8 @@ def package(
         # Exercise npm's real offline consumer path with an empty isolated cache.
         # The private candidate tarball is a kit artifact; this does not alter Host source.
         verify_private_host_offline_install(host_profile_raw, host_archive_raw,
-                                            files["platform-bom.json"])
+                                            files["platform-bom.json"],
+                                            source_root=root.parent)
         files[PRIVATE_HOST_PROFILE] = host_profile_raw
         files[PRIVATE_HOST_ARCHIVE] = host_archive_raw
     for profile_id, (supplied_profile, supplied_archive) in supplied.items():
@@ -305,7 +308,57 @@ def package(
     }
 
 
+def derive_private_host_main(arguments: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="package_developer_kit.py derive-private-host",
+        description="Derive a BOM-bound Host package with an offline bundled SDK closure.",
+    )
+    parser.add_argument("--source-root", type=Path, default=ROOT.parent)
+    parser.add_argument("--host-source-archive", required=True, type=Path)
+    parser.add_argument("--host-source-archive-sha256", required=True)
+    parser.add_argument("--platform-bom", required=True, type=Path)
+    parser.add_argument("--platform-bom-sha256", required=True)
+    parser.add_argument("--output-directory", required=True, type=Path)
+    args = parser.parse_args(arguments)
+    try:
+        source_root = args.source_root.resolve(strict=True)
+        output = args.output_directory
+        if output.exists() or output.is_symlink() or not output.parent.is_dir():
+            raise BoundaryError("developer_kit", "private_host_output_unavailable")
+        if output.resolve(strict=False).is_relative_to(source_root):
+            raise BoundaryError("developer_kit", "private_host_output_inside_source")
+        source_archive_raw = PinnedFile(
+            args.host_source_archive, args.host_source_archive_sha256
+        ).read()
+        bom_raw = PinnedFile(args.platform_bom, args.platform_bom_sha256).read()
+        profile_raw, archive_raw, summary = derive_private_host_candidate(
+            source_archive_raw, args.host_source_archive.name,
+            args.host_source_archive_sha256, bom_raw, source_root,
+        )
+        with tempfile.TemporaryDirectory(prefix=".private-host-candidate-",
+                                         dir=output.parent) as temporary:
+            pending = Path(temporary) / "candidate"
+            pending.mkdir()
+            profile_path = pending / "profile.json"
+            archive_path = pending / "runtime.tgz"
+            profile_path.write_bytes(profile_raw)
+            archive_path.write_bytes(archive_raw)
+            profile_path.chmod(0o600)
+            archive_path.chmod(0o600)
+            os.rename(pending, output)
+        print(json.dumps({**summary, "output_files": ["profile.json", "runtime.tgz"]},
+                         sort_keys=True))
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        code = error.code if isinstance(error, BoundaryError) else type(error).__name__
+        print(json.dumps({"status": "FAILED", "code": code}, sort_keys=True))
+        return 1
+    return 0
+
+
 def main() -> int:
+    arguments = sys.argv[1:]
+    if arguments and arguments[0] == "derive-private-host":
+        return derive_private_host_main(arguments[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("mod-dll", "mod-manifest", "platform-bom"):
         parser.add_argument(f"--{name}", required=True, type=Path)

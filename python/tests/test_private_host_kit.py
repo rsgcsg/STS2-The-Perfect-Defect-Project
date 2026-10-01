@@ -6,7 +6,7 @@ import tarfile
 from io import BytesIO
 
 import pytest
-from private_host_fixture import private_host_fixture
+from private_host_fixture import derived_private_host_fixture, private_host_fixture
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.kit_runtime import (
@@ -14,6 +14,8 @@ from spireagent.workbench.kit_runtime import (
     PRIVATE_HOST_PACKAGE_DESTINATION,
     PRIVATE_HOST_PROFILE,
     _private_host_archive_records,
+    _tree_sha256,
+    _verify_private_host_provenance_report,
     private_host_files,
     private_host_runtime_pin,
     stage_private_host_runtime,
@@ -156,6 +158,90 @@ def test_private_host_bundle_installs_offline_without_scripts_and_imports_host_s
         tmp_path):
     profile, archive, bom = private_host_fixture(tmp_path)
     verify_private_host_offline_install(profile, archive, bom)
+
+
+def test_derived_private_host_records_original_and_selected_current_sdk_identity(tmp_path):
+    profile_raw, archive_raw, bom_raw = derived_private_host_fixture(tmp_path)
+    identity = private_host_runtime_pin(profile_raw, archive_raw, bom_raw)
+    derivation = identity["derivation"]
+    assert derivation["source_archive"]["archive_sha256"] != hashlib.sha256(
+        archive_raw).hexdigest()
+    assert derivation["source_archive"]["filename"].endswith("rc.22.tgz")
+    assert derivation["source_archive"]["package_content_sha256"] != identity[
+        "host_runtime"]["package_content_sha256"]
+    assert derivation["manifest_transform"]["source_dependencies"][
+        "@rsgcsg/sts2-connector-client"].endswith("rc.1.tgz")
+    assert derivation["selected_sdk"]["version"] == "1.3.0-rc.5"
+    assert derivation["selected_sdk"]["source_revision"] == "d" * 40
+    assert derivation["zod"]["version"] == "3.25.76"
+    assert derivation["zod"]["integrity"].startswith("sha512-")
+
+
+def test_derived_private_host_rejects_receipt_drift_manifest_edits_and_extra_files(tmp_path):
+    profile_raw, archive_raw, bom_raw = derived_private_host_fixture(tmp_path)
+    profile = json.loads(profile_raw)
+    profile["derivation"]["source_archive"]["archive_sha256"] = "f" * 64
+    with pytest.raises(BoundaryError, match="private_host_derivation_mismatch"):
+        private_host_runtime_pin(json.dumps(profile).encode(), archive_raw, bom_raw)
+
+    profile_raw, archive_raw, bom_raw = derived_private_host_fixture(tmp_path / "extra")
+    changed_archive = _append_archive_member(archive_raw, "package/untracked.txt", b"extra")
+    profile = json.loads(profile_raw)
+    entries = {name: raw for name, (raw, _mode) in
+               _private_host_archive_records(changed_archive).items()}
+    profile["host_runtime"]["release_asset_sha256"] = hashlib.sha256(
+        changed_archive).hexdigest()
+    profile["host_runtime"]["package_content_sha256"] = _tree_sha256(entries)
+    with pytest.raises(BoundaryError, match="private_host_unexpected_package_files"):
+        private_host_runtime_pin(json.dumps(profile).encode(), changed_archive, bom_raw)
+
+    profile_raw, archive_raw, bom_raw = derived_private_host_fixture(tmp_path / "manifest")
+    with tarfile.open(fileobj=BytesIO(archive_raw), mode="r:gz") as archive:
+        package = json.loads(archive.extractfile("package/package.json").read())
+    package["author"] = "unapproved metadata"
+    changed_archive = _replace_archive_member(
+        archive_raw, "package/package.json", json.dumps(package).encode())
+    profile = json.loads(profile_raw)
+    entries = {name: raw for name, (raw, _mode) in
+               _private_host_archive_records(changed_archive).items()}
+    profile["host_runtime"]["release_asset_sha256"] = hashlib.sha256(
+        changed_archive).hexdigest()
+    profile["host_runtime"]["package_content_sha256"] = _tree_sha256(entries)
+    with pytest.raises(BoundaryError, match="private_host_derivation_invalid"):
+        private_host_runtime_pin(json.dumps(profile).encode(), changed_archive, bom_raw)
+
+
+def test_derived_private_host_bundle_installs_offline_and_imports_exact_selected_sdk(tmp_path):
+    profile, archive, bom = derived_private_host_fixture(tmp_path)
+    verify_private_host_offline_install(profile, archive, bom)
+
+
+def test_private_host_source_binding_rejects_unbound_provenance_claims():
+    source_revision = "9" * 40
+    identity_report = {
+        "workspace_revision": source_revision,
+        "components": {"host-runtime": {"source_file_count": 10}},
+    }
+    derivation = {
+        "host_source": {"source_file_count": 10},
+        "producer": {"workspace_revision": source_revision},
+    }
+
+    _verify_private_host_provenance_report(identity_report, derivation)
+
+    wrong_count = {
+        **derivation,
+        "host_source": {"source_file_count": 11},
+    }
+    with pytest.raises(BoundaryError, match="private_host_source_file_count_mismatch"):
+        _verify_private_host_provenance_report(identity_report, wrong_count)
+
+    wrong_workspace = {
+        **derivation,
+        "producer": {"workspace_revision": "8" * 40},
+    }
+    with pytest.raises(BoundaryError, match="private_host_producer_workspace_mismatch"):
+        _verify_private_host_provenance_report(identity_report, wrong_workspace)
 
 
 def test_private_host_runtime_stages_exact_tree_and_rejects_symlinked_bundle(tmp_path):

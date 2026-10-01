@@ -245,7 +245,8 @@ def prepare(archive: Path, expected: str, releases: Path) -> dict[str, Any]:
                 if destination.exists() or destination.is_symlink():
                     reject("text_runtime_staging_exists")
                 destination.write_bytes(files[name])
-        private_host = private_host_files(manifest, files, files["platform-bom.json"])
+        private_host = private_host_files(manifest, files, files["platform-bom.json"],
+                                          source_root=source)
         if private_host is not None:
             staged_pairs = (
                 (PRIVATE_HOST_PROFILE, PRIVATE_HOST_PROFILE_DESTINATION),
@@ -305,7 +306,8 @@ def status(directory: Path) -> dict[str, Any]:
             staged = _read_tree_file(source, relative, "staged_text_runtime")
             if sha(staged) != manifest["files"][name]:
                 reject("staged_text_runtime_changed")
-    private_host = private_host_files(manifest, files, files["platform-bom.json"])
+    private_host = private_host_files(manifest, files, files["platform-bom.json"],
+                                      source_root=source)
     private_host_status = "not_bundled"
     private_host_identity = None
     private_host_selection = "not_observed"
@@ -341,6 +343,7 @@ def status(directory: Path) -> dict[str, Any]:
                 "component_source_digest_sha256"],
             "dependency_layout": private_host["dependency_layout"],
             "bundled_connector_pin": private_host["bundled_connector_pin"],
+            "derivation": private_host.get("derivation"),
         }
     CollectionTool(directory / "kit/collection-tool", manifest["collection_tool_release_id"])
     return {
