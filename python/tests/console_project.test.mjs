@@ -258,7 +258,8 @@ function setup({
   };
 }
 function localDatasetEnv({artifact = id("a"), sampleStatus = null, datasetStatus = null,
-  managedStatus = null, curationStatus = undefined, datasetHandler = () => {}} = {}) {
+  managedStatus = null, curationStatus = undefined, dataFacts = null,
+  datasetHandler = () => {}} = {}) {
   return setup({
     identity: {status: "signed_out"}, view: "local-workspace", query: `&id=${artifact}`,
     ...(curationStatus ? {curationStatus} : {}),
@@ -270,6 +271,7 @@ function localDatasetEnv({artifact = id("a"), sampleStatus = null, datasetStatus
       if (url === `/api/local-workspace/artifacts/${artifact}`) return {
         kind: "evidence", artifact_id: artifact,
         parameters: {schema: "stpd/local-verified-bundle-v1"},
+        ...(dataFacts ? {data_facts:dataFacts} : {}),
       };
       if (url === "/api/local-recordings/preview/status") return sampleStatus || {
         status: "completed", artifact_id: artifact, availability: "available",
@@ -289,6 +291,37 @@ function localDatasetEnv({artifact = id("a"), sampleStatus = null, datasetStatus
     },
   });
 }
+
+test("local artifact detail presents data history facts and keeps uncertainty explicit", async () => {
+  const artifact = id("a"), model = id("b"), evaluation = id("c");
+  const env = localDatasetEnv({artifact, dataFacts:{
+    schema:"stpd/local-data-facts-v1", status:"partial",
+    dataset:{artifact_id:id("d"), purpose:"training", samples:{selected:814, excluded:null, excluded_known:false}},
+    recording:{bundle_count:2, session_count:2, qualified_run_occurrence_count:2,
+      native_starts:{known:false, value:null}, native_ends:{known:false, value:null},
+      physical_game_independence:"unresolved"},
+    user_declaration:{status:"not_durably_registered"},
+    purpose_and_allocation:{allocation_roles:[{train_count:50, dev_count:16}]},
+    descendants:{models:[{artifact_id:model, kind:"model", producer_completion_status:"completed"}],
+      evaluations:[{artifact_id:evaluation, kind:"offline_evaluation", producer_completion_status:"unknown"}],
+      run_results:[]},
+    ledger:{status:"available", coverage:"incomplete", label:"历史使用记录不完整", uses:[],
+      historical_manual_exposure:"unknown"},
+    eligibility:{clean_dev_test_claim:false, gold_claim:false},
+    lineage:{artifact_id:artifact, qualified_run_occurrences:["session-a/run-0001", "session-b/run-0001"]},
+  }});
+  const page = await env.render();
+  const rendered = text(page);
+  assert.match(rendered, /资料来源与使用概况/);
+  assert.match(rendered, /已记录的使用|历史使用记录不完整/);
+  assert.match(rendered, /人工查看或调参历史未知/);
+  assert.match(rendered, /未知，尚未证明独立/);
+  assert.match(rendered, /查看来源、历史使用引用与关联对象/);
+  assert.match(rendered, /completed/);
+  assert.match(rendered, /session-a\/run-0001/);
+  assert.doesNotMatch(rendered, /从未使用/);
+  assert.equal(post(env.calls).length, 0);
+});
 function localTrainingEnv({artifact = id("a"), kind = "dataset", parameters = null,
   trainingStatus = null, trainingHandler = () => {}} = {}) {
   return setup({

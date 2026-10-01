@@ -146,6 +146,51 @@ def test_unconfigured_local_workspace_endpoint_is_authenticated_and_side_effect_
         app.close()
 
 
+def test_managed_artifact_detail_reads_data_facts_without_touching_owner_ledger(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    from spireagent.workbench.managed_local_workspace import create_managed_workspace
+
+    registration = create_managed_workspace(state_dir)
+    workspace_dir = state_dir / ROOT_NAME / registration["workspace_id"]
+    artifact_store = ManifestArtifactStore(LocalBlobStore(workspace_dir / "store"))
+    manifest = Manifest(
+        "dataset", Producer("local/fixture", "a" * 40, "b" * 64),
+        parameters=FrozenObject.of({
+            "schema": "stpd/curated-decision-dataset-v1", "purpose": "training",
+            "logical_id": "c" * 64, "records": 4,
+        }),
+    )
+    artifact_store.publish(manifest)
+    registry = SQLiteRegistry(workspace_dir / "registry.sqlite")
+    sync_registry(artifact_store, registry)
+    ledger_path = registration["curation_owner"].path
+    before_ledger = ledger_path.read_bytes()
+    app = Application(ProjectConfig(state_dir, "", "", None, combination()))
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root = f"http://127.0.0.1:{server.server_port}"
+    client = build_opener(HTTPCookieProcessor(CookieJar()))
+    try:
+        client.open(root + "/").close()
+        path = root + "/api/local-workspace/artifacts/" + manifest.artifact_id
+        with client.open(path) as response:
+            detail = json.load(response)
+        assert detail["data_facts"]["schema"] == "stpd/local-data-facts-v1"
+        assert detail["data_facts"]["dataset"]["samples"]["selected"] == 4
+        assert detail["data_facts"]["ledger"]["coverage"] == "incomplete"
+        assert detail["data_facts"]["user_declaration"]["status"] == "not_durably_registered"
+        assert ledger_path.read_bytes() == before_ledger
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+        app.close()
+
+
 def test_invalid_registered_registry_is_reported_without_initializing_it(tmp_path: Path) -> None:
     store_dir = tmp_path / "existing-store"
     store_dir.mkdir()
