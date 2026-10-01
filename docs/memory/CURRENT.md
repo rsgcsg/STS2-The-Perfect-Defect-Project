@@ -52,8 +52,11 @@ Workbench execution is scratch-only, while the advanced CLI and pinned adapter
 have separately tested frozen-Qwen/LoRA routes. Source acceptance is supported by synthetic tests. A separate private run on
 `be5a9c78` used the authorized 814-row corpus to project 49 training and 16
 diagnostic decisions, complete 10 scratch updates with pause/resume and export.
-Its diagnostic probabilities remain near uniform; no model strength or native
-model execution is qualified. Generic public M0 has no current
+A further 100-update run completed on the same 49/16 projection. Training
+top-1 improved from 0.4405 to 0.5102; diagnostic top-1 remained 0.375 and
+probabilities remain near uniform. No model strength or native model execution
+is qualified. The user requested a safe stop after this round; no further
+training or new native canary is scheduled. Generic public M0 has no current
 Managed Runtime bridge. Native-v1 M2 still needs its distinct engine, worker,
 export, online scorer and product integration. Its projector/common kernel
 cannot make a usable live model by itself. Public M0 is not a same-input matched

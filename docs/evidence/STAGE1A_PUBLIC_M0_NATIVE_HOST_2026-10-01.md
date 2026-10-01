@@ -81,6 +81,37 @@ evidence, not a usable-policy claim. The diagnostic data's prior exposure is
 unknown and physical-game independence unresolved. No new corpus authorization,
 clean held-out assessment or model-quality qualification follows from this run.
 
+## Final repair and safe-stop addendum
+
+The next hosted run still exposed a second fake-stream cleanup omission and an
+unsupported cross-platform one-ULP assumption. Accepted fixes `78ee6d1c` and
+`d6b30e31` close the omitted stream and use finite float32 tolerances for
+catalog permutation; exact same-layout fresh-process equality, action IDs,
+ranking and winner remain required. A root follow-up also rejects overflow
+after float32 conversion. The rc.24 BOM now binds Host source `78ee6d1c`;
+this is source identity, not a newly installed artifact.
+
+Reviewed checkpoint cadence `aaa4df58` adds an operational interval to all four
+token CLI routes, retaining default every-update saves and every loss event.
+Pause and final updates force a checkpoint. Failed resumed saves retain the
+last fully verified checkpoint; no automatic retry is introduced. Independent
+review passed 12 focused checks and serialized predecessor-checkpoint resume.
+The change has no measured actual-data speedup claim yet.
+
+A further private 100-update scratch run used the same owner-admitted 49/16
+projection. It completed in 222.584 seconds, with 47.675 seconds in updates.
+Tie-aware training top-1 increased from 0.440476 to 0.510204; diagnostic top-1
+remained 0.375. Diagnostic NLL 1.72117428 remains effectively at the uniform
+baseline 1.72121967. This small, exposure-unknown diagnostic is not independent
+held-out evidence. No new 1000-update run or corpus expansion was started.
+
+The user requested completion of this round followed by a safe stop. Preserve
+reviewed but unintegrated M2 engine/epoch/worker/consumer branches and declaration
+display work. The prepared native public-M0 runner was not executed; its runtime
+pin remains unresolved. The ordinary Steam game was restored to the main menu
+with profile 2 and its Continue entry visible; no saved-game action was taken.
+Final combined local and hosted gate outcomes belong to the integration PR.
+
 ## Next gates and limits
 
 Run the exact combined source gates after final repairs, derive a fresh private
