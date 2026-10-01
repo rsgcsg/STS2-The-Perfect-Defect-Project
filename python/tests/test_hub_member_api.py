@@ -317,6 +317,7 @@ def test_curation_overlap_no_indexed_overlap_and_incomplete_inventory_is_unknown
     result = router.read("curation-overlap", query, member)
     assert result["status"] == "no_indexed_overlap"
     assert result["findings"]["source"]["count"] == 0
+    assert result["findings"]["run"]["status"] == "none"
     assert result["findings"]["run"]["count"] == 0
 
     pending = owner.operations.create_upload("one", "c" * 64, "d" * 64, {})
@@ -329,8 +330,28 @@ def test_curation_overlap_no_indexed_overlap_and_incomplete_inventory_is_unknown
     assert incomplete["status"] == "unknown"
     assert incomplete["coverage"]["verified_source_inventory"] == "incomplete"
     assert incomplete["findings"]["source"]["status"] == "unknown"
+    assert incomplete["findings"]["run"] == {"status": "unknown", "count": None}
     assert incomplete["findings"]["run_group"]["status"] == "unknown"
     assert "verified_source_inventory_pending" in incomplete["reasons"]
+
+
+def test_curation_overlap_missing_exact_source_index_keeps_run_unknown(api):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api)
+    candidate_source = candidate.parents[0].artifact_id
+    with owner.operations.transaction() as db:
+        db.execute("DELETE FROM curation_exact_source_index WHERE source=?", (candidate_source,))
+
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["status"] == "unknown"
+    assert result["coverage"]["candidate_source"] == "incomplete"
+    assert result["findings"]["source"] == {"status": "unknown", "count": None}
+    assert result["findings"]["run"] == {"status": "unknown", "count": None}
 
 
 def test_curation_overlap_finds_cross_source_duplicate_run_group(api):

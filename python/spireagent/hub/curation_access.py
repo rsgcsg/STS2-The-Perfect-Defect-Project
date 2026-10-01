@@ -437,8 +437,11 @@ def overlap_metadata(
                         "count": len(exact_sources) if exact_sources or coverage_complete else None,
                     },
                     "run": {
-                        "status": "overlap" if exact_runs else "none",
-                        "count": len(exact_runs),
+                        "status": (
+                            "overlap" if exact_runs else
+                            "none" if coverage_complete else "unknown"
+                        ),
+                        "count": len(exact_runs) if exact_runs or coverage_complete else None,
                     },
                     "run_group": {
                         "status": (
