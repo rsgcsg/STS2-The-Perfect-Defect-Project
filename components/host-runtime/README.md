@@ -4,14 +4,17 @@
 > component name. `headless` is a stable CLI/runtime compatibility term and is
 > not a separate current source repository.
 
-Run the **real installed Slay the Spire 2 process** without a display and
-control its normal single-player decisions through a verified fair-player
-interface. STS2 remains the rules, RNG, legality, task, and effects engine.
+Run the **real installed Slay the Spire 2 process** in the default Headless
+mode or, for an isolated operator canary, in a visible native window. Control
+normal single-player decisions through a verified fair-player interface. STS2
+remains the rules, RNG, legality, task, and effects engine.
 
-The current route launches the shipped Godot executable with `--headless`,
-retains the official SceneTree and Mod loader, and uses the Platform Connector
-component for observations, Reads, current BoundActions, delivery Receipts, and
-successors. It is not a simulator or a wrapper around a reimplemented game.
+The default route launches the shipped Godot executable with `--headless` and
+retains the official SceneTree and Mod loader. An explicit `native_window`
+launch omits that flag and requires a named isolated profile; both modes use
+the same Host-owned process, identity, and shutdown lifecycle. Connector owns
+observations, Reads, current BoundActions, delivery Receipts, and successors.
+This is not a simulator or a wrapper around a reimplemented game.
 
 ## Current Status
 
@@ -135,6 +138,19 @@ Keep the first terminal open:
 ```bash
 npm start -- --shared-profile
 ```
+
+The default remains Headless. For an isolated operator-controlled visible
+session, use a previously bootstrapped profile:
+
+```bash
+npm start -- --isolated-profile native-canary --display-mode native_window
+```
+
+The visible mode rejects the shared Steam profile, requires an exact loaded
+`live_ui` Connector identity, authenticates Host provenance, and records a
+before/after sentinel for the shared game profile. A sentinel change or failed
+measurement fails the lifecycle gate. This mode is operator canary tooling;
+it does not by itself prove Human evidence or qualification.
 
 After it prints `"status": "ready"`, another local program can consume the
 versioned Player Environment REST/SDK contract. Inspect or stop the exact
