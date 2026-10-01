@@ -135,13 +135,26 @@ configuration comparison. Actual Workbench/Mod execution remains a separate pend
 
 `--store STORE compare-tokens --result REFERENCE_RESULT --result OTHER_RESULT`
 produces a JSON analysis projection (repeat `--result` for more configurations).
-It verifies completed-result lineage and payloads, requires exactly the same ModelView,
-and matches every dev row by transition identity. Different tokenizers/backbones are
-allowed; missing/duplicate rows, different views and non-dev rows are rejected.
-It recomputes decision-weighted, run-weighted and multi-candidate metrics, and reports
-paired differences from the first result, explicit config/source identities and each
-recorded worker attempt's elapsed time. It does not access test/Gold labels or launch
-training. Store the output with the experiment's private receipts; it is a rebuildable
+The default `--comparison-mode same-view` requires the same ModelView. Explicit
+`--comparison-mode fixed-dev` permits different training allocations only when each
+verified dev ModelSample has identical complete input text, ordered candidates, keys,
+label, transition/run identity, surface and family. Every report must still bind its own
+model/view and contain every dev row exactly once. Different tokenizers/backbones are
+allowed. Output records each view, training row count, steps/config, renderer, tokenizer
+and complete dev commitment; train-only tokenizer changes alongside training data are
+marked as covariation, not a causal single-variable experiment. Run-group means are
+descriptive: current token source contracts do not prove physical-game independence.
+Source/report independence and exposure statements are retained with provenance, and
+known restrictions override unknown defaults; conflicting explicit facts retain their
+values and origins in the effective qualification. Affirmative independence statements
+cannot establish proof or enable a bootstrap. Old immutable reports remain unchanged.
+The `stpd/stage1a-comparison-v2` projection replaces the v1 `independent_runs` / `run_weighted`
+with `reported_run_groups` / `reported_run_group_weighted`; consumers should migrate
+those field names and treat group counts/means as descriptive. Paired differences and
+decision/run-group and multi-candidate metrics, source identities and recorded attempt
+time are engineering projections. The command does not access test/Gold labels or launch
+training.
+Store the output with the experiment's private receipts; it is a rebuildable
 view of existing artifacts, not another database. One attempt's time excludes other
 attempts, input preparation and tuning. Shared data and update counts do not isolate
 pretraining from differences in backbone size, tokenizer or trainable capacity.

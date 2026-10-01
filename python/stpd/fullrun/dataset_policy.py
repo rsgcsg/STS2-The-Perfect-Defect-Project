@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 from spireagent.artifact_contracts import Manifest
-from spireagent.json_boundary import BoundaryError
+from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 from spireagent.storage.store import ArtifactStore
 
 from .contracts import ResearchTransitionV1
@@ -27,6 +28,108 @@ def training_sources(store: ArtifactStore, identity: str) -> tuple[Manifest, ...
             raise BoundaryError("curation", "held_out_data_cannot_train")
         pending.extend(parent.artifact_id for parent in item.parents)
     return tuple(item for item in found.values() if item.kind == "dataset")
+
+
+def token_dev_qualification(
+    store: ArtifactStore, view: Manifest, *, report: Manifest | None = None,
+    metrics: dict[str, Any] | None = None, admission: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Project existing restrictions; no current token source proves physical independence.
+
+    Allocation isolation and distinct recorded run IDs are not that proof. Preserve
+    source/report statements with provenance, including historical summaries that
+    assumed independence, without changing their immutable artifacts or adopting
+    their assumptions as a fresh qualification.
+    """
+    keys = ("native_run_independence", "physical_game_independence",
+            "historical_external_exposure", "clean_held_out_claim", "evaluation_scope",
+            "split_basis", "human_origin", "isolation", "sealed_test", "semantic_overlap",
+            "ledger_scope", "qualified_run_ids")
+    evidence: list[dict[str, Any]] = []
+
+    def retain(origin: str, value: Any) -> None:
+        if not isinstance(value, dict):
+            raise BoundaryError("curation", "invalid_dev_qualification")
+        facts = {key: value[key] for key in keys if key in value}
+        if facts:
+            evidence.append({"origin": origin, "facts": facts})
+
+    for source in sorted(training_sources(store, view.artifact_id),
+                         key=lambda item: item.artifact_id):
+        retain(source.artifact_id, source.parameters.value())
+    retain(view.artifact_id, view.parameters.value())
+    # Human view loaders already verify their lineage projection byte for byte.
+    for payload in view.payloads:
+        if payload.role == "lineage":
+            if payload.size > 64 * 1024**2:
+                raise BoundaryError("curation", "lineage_size_limit")
+            value = decode_json(b"".join(store.read_payload(payload)))
+            if isinstance(value, dict):
+                retain(view.artifact_id + ":lineage", value)
+    if report is not None:
+        retain(report.artifact_id, report.parameters.value())
+    if metrics is not None:
+        retain("report:admission", metrics.get("admission", {}))
+        summary = metrics.get("summary", {})
+        if not isinstance(summary, dict):
+            raise BoundaryError("curation", "invalid_dev_qualification")
+        bootstrap = summary.get("bootstrap")
+        if bootstrap is not None:
+            if not isinstance(bootstrap, dict):
+                raise BoundaryError("curation", "invalid_dev_qualification")
+            evidence.append({"origin": "report:bootstrap", "facts": bootstrap})
+        prior_evidence = metrics.get("qualification_evidence", [])
+        if not isinstance(prior_evidence, list):
+            raise BoundaryError("curation", "invalid_dev_qualification")
+        for item in prior_evidence:
+            if (not isinstance(item, dict) or not isinstance(item.get("origin"), str)
+                    or not isinstance(item.get("facts"), dict)):
+                raise BoundaryError("curation", "invalid_dev_qualification")
+            retain(item["origin"], item["facts"])
+    if admission is not None:
+        retain("current_dev_admission", admission)
+
+    def restriction(key: str, unknown: str) -> Any:
+        claims: list[dict[str, Any]] = []
+        for item in evidence:
+            if key not in item["facts"]:
+                continue
+            value = item["facts"][key]
+            # Reproject our explicit conflicts without nesting earlier projections.
+            candidates = (value["claims"] if isinstance(value, dict)
+                          and value.get("status") in {
+                              "conflicting_reported_facts", "unverified_reported_facts",
+                          } and isinstance(value.get("claims"), list)
+                          else [{"origin": item["origin"], "value": value}])
+            for claim in candidates:
+                if (not isinstance(claim, dict) or not isinstance(claim.get("origin"), str)
+                        or "value" not in claim):
+                    raise BoundaryError("curation", "invalid_dev_qualification")
+                if (claim["value"] is not None and claim["value"] not in (unknown, "unknown")
+                        and claim not in claims):
+                    claims.append(claim)
+        if not claims:
+            return unknown
+        values = {json_bytes(claim["value"]) for claim in claims}
+        if len(values) > 1:
+            return {"status": "conflicting_reported_facts", "claims": claims}
+        value = claims[0]["value"]
+        known_dependence = value is False or (isinstance(value, str) and value in {
+            "shared_physical_game", "not_independent", "non_independent",
+        })
+        if key == "physical_game_independence" and not known_dependence:
+            # No affirmative physical-independence proof contract exists here.
+            return {"status": "unverified_reported_facts", "claims": claims}
+        return value
+
+    return {
+        "native_run_independence": False,
+        "evaluation_scope": restriction("evaluation_scope", "engineering_dev_from_model_view"),
+        "historical_external_exposure": restriction("historical_external_exposure", "unknown"),
+        "physical_game_independence": restriction("physical_game_independence", "unresolved"),
+        "clean_held_out_claim": False,
+        "evidence": evidence,
+    }
 
 
 def check_dataset_pair(store: ArtifactStore, training: str, test: str) -> dict[str, object]:
