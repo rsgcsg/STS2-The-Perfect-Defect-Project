@@ -234,6 +234,18 @@ def test_sequence_projection_rejects_mixed_split_in_same_source_occurrence():
         )
 
 
+def test_sequence_projection_rejects_single_step_over_episode_token_budget():
+    inputs, occurrences = _sequence_inputs()
+    with pytest.raises(BoundaryError, match="single_step_episode_budget_exceeded"):
+        project_light_action_m2_sequences(
+            inputs, occurrences,
+            LightActionM2SequenceConfig(
+                "stage1a.dsimple.light-action.m2.s.v1", 1, False,
+                max_episode_input_tokens=1,
+            ),
+        )
+
+
 def test_light_action_sequence_trains_with_bounded_detached_chunks():
     inputs, occurrences = _sequence_inputs()
     projected = project_light_action_m2_sequences(
@@ -249,6 +261,24 @@ def test_light_action_sequence_trains_with_bounded_detached_chunks():
     bound = replace(episode, config=replace(episode.config, max_bptt_steps=1))
     with pytest.raises(BoundaryError, match="training_limits_exceed_sequence_identity"):
         train_light_action_m2_episode(model, optimizer, bound, max_chunk_steps=2)
+
+
+@pytest.mark.parametrize(("declared_reset", "model_reset"), [(False, True), (True, False)])
+def test_light_action_sequence_rejects_memory_reset_profile_mismatch(
+    declared_reset: bool, model_reset: bool,
+):
+    inputs, occurrences = _sequence_inputs()
+    projected = project_light_action_m2_sequences(
+        inputs, occurrences,
+        LightActionM2SequenceConfig(
+            "stage1a.dsimple.light-action.m2.s.v1", 1, declared_reset,
+        ),
+    )
+    episode = next(item for item in projected.episodes if item.session_id == "D")
+    model = make_model(reset=model_reset)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    with pytest.raises(BoundaryError, match="training_limits_exceed_sequence_identity"):
+        train_light_action_m2_episode(model, optimizer, episode)
 
 
 def test_branch_initialization_is_rng_safe_and_shared_across_k_and_core_width():

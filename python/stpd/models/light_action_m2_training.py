@@ -54,6 +54,7 @@ def _preflight(
     config = episode.config
     if (not isinstance(config, LightActionM2SequenceConfig)
             or config.slots != model.slots
+            or config.reset_each_step != model.reset_each_step
             or len(episode.steps) > config.max_episode_steps
             or max_chunk_steps > config.max_bptt_steps
             or max_chunk_input_tokens > config.max_chunk_input_tokens

@@ -381,10 +381,18 @@ def project_light_action_m2_sequences(
             step_tokens = _step_tokens(row, prior_action)
             if step_tokens > config.max_chunk_input_tokens:
                 raise BoundaryError("light_action_m2_sequence", "single_step_chunk_budget_exceeded")
+            if step_tokens > config.max_episode_input_tokens:
+                raise BoundaryError(
+                    "light_action_m2_sequence", "single_step_episode_budget_exceeded",
+                )
             if segment and not adjacent:
                 emit()
                 prior_action, prior_transition = None, None
                 step_tokens = _step_tokens(row, None)
+                if step_tokens > config.max_episode_input_tokens:
+                    raise BoundaryError(
+                        "light_action_m2_sequence", "single_step_episode_budget_exceeded",
+                    )
             if segment and (len(segment) >= config.max_episode_steps
                             or segment_tokens + step_tokens > config.max_episode_input_tokens):
                 emit()
