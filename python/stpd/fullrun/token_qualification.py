@@ -105,20 +105,29 @@ def known_physical_non_independence(value: object) -> bool:
 def merge_qualification_fact(
     evidence: list[dict[str, Any]], key: str, unknown: object,
 ) -> Any:
-    claims = reported_claims(
-        evidence, key,
-        unknown=None if key == "physical_game_independence" else unknown,
-    )
+    claims = reported_claims(evidence, key, unknown=unknown)
     if not claims:
         return unknown
+    values = {json_bytes(claim["value"]) for claim in claims}
+    if len(values) > 1:
+        return {"status": "conflicting_reported_facts", "claims": claims}
     if key == "physical_game_independence" and any(
         not known_physical_non_independence(claim["value"]) for claim in claims
     ):
         return {"status": "unverified_reported_facts", "claims": claims}
-    values = {json_bytes(claim["value"]) for claim in claims}
-    if len(values) > 1:
-        return {"status": "conflicting_reported_facts", "claims": claims}
     return claims[0]["value"]
+
+
+def consumer_physical_independence(evidence: list[dict[str, Any]]) -> Any:
+    """Keep the producer's unresolved default while refusing affirmative proof."""
+    value = merge_qualification_fact(evidence, "physical_game_independence", "unresolved")
+    if (value == "unresolved" or known_physical_non_independence(value)
+            or isinstance(value, dict) and value.get("status") in _PROJECTED_STATUSES):
+        return value
+    claims = reported_claims(evidence, "physical_game_independence", unknown="unresolved")
+    if not claims:
+        return "unresolved"
+    return {"status": "unverified_reported_facts", "claims": claims}
 
 
 def _safe_qualification_value(key: str, value: object) -> Any:
@@ -222,10 +231,15 @@ def project_token_report_qualification(
             continue
         distinct = {json_bytes(claim["value"]) for claim in claims}
         if key == "physical_game_independence":
-            if any(not known_physical_non_independence(claim["value"]) for claim in claims):
-                status = "unverified_reported_facts"
-            elif len(distinct) > 1:
+            active_claims = reported_claims(unique, key, unknown="unresolved")
+            active_distinct = {json_bytes(claim["value"]) for claim in active_claims}
+            if not active_claims:
+                status = "reported_unresolved"
+            elif len(active_distinct) > 1:
                 status = "conflicting_reported_facts"
+            elif any(not known_physical_non_independence(claim["value"])
+                     for claim in active_claims):
+                status = "unverified_reported_facts"
             else:
                 status = "reported_non_independence"
         elif key == "native_run_independence":
@@ -242,9 +256,7 @@ def project_token_report_qualification(
         "historical_external_exposure": merge_qualification_fact(
             unique, "historical_external_exposure", defaults["historical_external_exposure"]
         ),
-        "physical_game_independence": merge_qualification_fact(
-            unique, "physical_game_independence", defaults["physical_game_independence"]
-        ),
+        "physical_game_independence": consumer_physical_independence(unique),
         "clean_held_out_claim": False,
         "reported_restrictions": restrictions,
         "evidence": unique,

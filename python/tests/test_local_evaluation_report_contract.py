@@ -233,7 +233,9 @@ def test_legacy_admission_report_remains_readable_as_unknown(tmp_path: Path) -> 
     assert qualification["native_run_independence"] == "unknown"
     assert qualification["evaluation_scope"] == ADMISSION["evaluation_scope"]
     assert qualification["historical_external_exposure"] == "unknown"
-    assert qualification["physical_game_independence"]["status"] == "unverified_reported_facts"
+    assert qualification["physical_game_independence"] == "unresolved"
+    assert qualification["reported_restrictions"][
+        "physical_game_independence"]["status"] == "reported_unresolved"
     assert qualification["clean_held_out_claim"] is False
 
 
@@ -259,7 +261,9 @@ def test_qualified_public_report_and_baselines_are_read_without_source_lineage(
     assert qualification["native_run_independence"] == "unknown"
     assert qualification["evaluation_scope"] == ADMISSION["evaluation_scope"]
     assert qualification["historical_external_exposure"] == "unknown"
-    assert qualification["physical_game_independence"]["status"] == "unverified_reported_facts"
+    assert qualification["physical_game_independence"] == "unresolved"
+    assert qualification["reported_restrictions"][
+        "physical_game_independence"]["status"] == "reported_unresolved"
     assert qualification["clean_held_out_claim"] is False
 
 
