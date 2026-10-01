@@ -29,23 +29,34 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sts2_platform_evidence.collection_tool import CollectionTool  # noqa: E402
 
-from spireagent.json_boundary import BoundaryError, decode_json, digest  # noqa: E402
+from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes  # noqa: E402
 from spireagent.workbench.kit_runtime import (  # noqa: E402
     KIT_RUNTIME_PAIRS,
     M2_ARCHIVE_DESTINATION,
     M2_RUNTIME_ARCHIVE,
     M2_RUNTIME_DESTINATION,
     M2_RUNTIME_PROFILE,
+    PRIVATE_HOST_ARCHIVE,
+    PRIVATE_HOST_ARCHIVE_DESTINATION,
+    PRIVATE_HOST_MANIFEST_KEY,
+    PRIVATE_HOST_PACKAGE_DESTINATION,
+    PRIVATE_HOST_PIN_DESTINATION,
+    PRIVATE_HOST_PROFILE,
+    PRIVATE_HOST_PROFILE_DESTINATION,
     TEXT_ARCHIVE_DESTINATION,
     TEXT_RUNTIME_ARCHIVE,
     TEXT_RUNTIME_DESTINATION,
     TEXT_RUNTIME_PROFILE,
+    private_host_files,
+    stage_private_host_runtime,
     text_runtime_pin,
+    validate_private_host_package_directory,
 )
 
 # Retain the established public test/operator constants as importable aliases.
 __all__ = ("M2_RUNTIME_ARCHIVE", "M2_RUNTIME_DESTINATION", "M2_RUNTIME_PROFILE",
-           "TEXT_RUNTIME_ARCHIVE", "TEXT_RUNTIME_DESTINATION", "TEXT_RUNTIME_PROFILE")
+           "TEXT_RUNTIME_ARCHIVE", "TEXT_RUNTIME_DESTINATION", "TEXT_RUNTIME_PROFILE",
+           "PRIVATE_HOST_ARCHIVE", "PRIVATE_HOST_PROFILE")
 
 REPOSITORY = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git"
 LIMIT = 256 * 1024 * 1024
@@ -159,6 +170,7 @@ def verified_archive(archive: Path, expected: str) -> tuple[dict[str, Any], dict
         reject("native_installation_files_missing")
     for profile_id in KIT_RUNTIME_PAIRS:
         text_runtime_files(manifest, files, required_profile=profile_id)
+    private_host_files(manifest, files, files["platform-bom.json"])
     return manifest, files
 
 
@@ -233,6 +245,23 @@ def prepare(archive: Path, expected: str, releases: Path) -> dict[str, Any]:
                 if destination.exists() or destination.is_symlink():
                     reject("text_runtime_staging_exists")
                 destination.write_bytes(files[name])
+        private_host = private_host_files(manifest, files, files["platform-bom.json"])
+        if private_host is not None:
+            staged_pairs = (
+                (PRIVATE_HOST_PROFILE, PRIVATE_HOST_PROFILE_DESTINATION),
+                (PRIVATE_HOST_ARCHIVE, PRIVATE_HOST_ARCHIVE_DESTINATION),
+                (None, PRIVATE_HOST_PIN_DESTINATION),
+            )
+            for archive_name, relative in staged_pairs:
+                destination = source / relative
+                if any(parent.is_symlink() for parent in (destination, *destination.parents)):
+                    reject("private_host_staging_path_unsafe")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if destination.exists() or destination.is_symlink():
+                    reject("private_host_staging_exists")
+                raw = (files[archive_name] if archive_name is not None else json_bytes(
+                    private_host["host_runtime"]))
+                destination.write_bytes(raw)
         if run(["git", "status", "--porcelain"], source).strip():
             reject("staging_changed_tracked_source")
         # Rename before uv: virtualenv interpreter paths must use the permanent location.
@@ -276,6 +305,43 @@ def status(directory: Path) -> dict[str, Any]:
             staged = _read_tree_file(source, relative, "staged_text_runtime")
             if sha(staged) != manifest["files"][name]:
                 reject("staged_text_runtime_changed")
+    private_host = private_host_files(manifest, files, files["platform-bom.json"])
+    private_host_status = "not_bundled"
+    private_host_identity = None
+    private_host_selection = "not_observed"
+    if private_host is not None:
+        for name, relative in (
+            (PRIVATE_HOST_PROFILE, PRIVATE_HOST_PROFILE_DESTINATION),
+            (PRIVATE_HOST_ARCHIVE, PRIVATE_HOST_ARCHIVE_DESTINATION),
+        ):
+            staged = _read_tree_file(source, relative,
+                                     "staged_private_host")
+            if sha(staged) != manifest["files"][name]:
+                reject("staged_private_host_changed")
+        pin_raw = _read_tree_file(source, PRIVATE_HOST_PIN_DESTINATION,
+                                  "staged_private_host_pin")
+        if decode_json(pin_raw) != private_host["host_runtime"]:
+            reject("staged_private_host_pin_changed")
+        package_root = source / PRIVATE_HOST_PACKAGE_DESTINATION
+        if package_root.exists() or package_root.is_symlink():
+            try:
+                validate_private_host_package_directory(package_root, private_host)
+            except BoundaryError:
+                reject("staged_private_host_package_changed")
+            private_host_status = "installed_verified"
+        else:
+            private_host_status = "bundled_installation_not_checked"
+        group = manifest[PRIVATE_HOST_MANIFEST_KEY]
+        private_host_identity = {
+            "distribution": private_host["distribution"],
+            "profile_sha256": group["profile_sha256"],
+            "archive_sha256": group["archive_sha256"],
+            "host_runtime": private_host["host_runtime"],
+            "component_source_digest_sha256": private_host[
+                "component_source_digest_sha256"],
+            "dependency_layout": private_host["dependency_layout"],
+            "bundled_connector_pin": private_host["bundled_connector_pin"],
+        }
     CollectionTool(directory / "kit/collection-tool", manifest["collection_tool_release_id"])
     return {
         "status": "prepared",
@@ -295,6 +361,9 @@ def status(directory: Path) -> dict[str, Any]:
         # caller-supplied profile or path.
         **{pair[4] + "_identity": manifest.get(pair[4])
            for pair in KIT_RUNTIME_PAIRS.values()},
+        "private_host_runtime": private_host_status,
+        "private_host_runtime_identity": private_host_identity,
+        "private_host_runtime_selection": private_host_selection,
     }
 
 
@@ -614,6 +683,11 @@ def preflight(directory: Path, game: Path) -> dict[str, Any]:
         "package": {"archive_sha256": directory.name,
                     "source_revision": prepared["source_revision"],
                     **package_identity},
+        "runtime_candidates": {
+            "public_combination_dependency_tuple": package_identity,
+            "private_host_candidate": prepared.get("private_host_runtime_identity"),
+            "environment_profile_selection": "not_observed",
+        },
         "target": {"platform": target_platform, "architecture": target_architecture,
                    "identity_source": "verified_build_provenance_and_read_only_doctor"},
         "game": {"identity": "matched", "identity_scope": "on_disk_files",
@@ -885,6 +959,7 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
         if (not config_path.exists() and
                 (any(prepared.get(pair[4]) == "bundled_installation_not_checked"
                      for pair in KIT_RUNTIME_PAIRS.values())
+                 or prepared.get("private_host_runtime") == "bundled_installation_not_checked"
                  or prepared.get("workbench_launcher_schema") == LAUNCHER_SCHEMA)):
             # Let the selected release own the profile and its default private state.
             report = json.loads(run([
@@ -906,6 +981,16 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
             # Workbench's transport SDKs are a separate locked consumer environment.
             run(["npm", "ci", "--prefix", "python"], source)
             run(["uv", "sync", "--project", "python", "--locked", *extras], source)
+            result = status(directory)
+        if result.get("private_host_runtime") == "bundled_installation_not_checked":
+            staged_profile = _read_tree_file(
+                source, PRIVATE_HOST_PROFILE_DESTINATION,
+                "staged_private_host")
+            staged_archive = _read_tree_file(
+                source, PRIVATE_HOST_ARCHIVE_DESTINATION,
+                "staged_private_host")
+            bom_raw = _read_tree_file(source, "platform-bom.json", "private_host_bom")
+            stage_private_host_runtime(staged_profile, staged_archive, bom_raw, source)
             result = status(directory)
         if result.get("text_runtime") == "bundled_installation_not_checked":
             # The selected CLI takes this same lock and checks Runtime liveness.

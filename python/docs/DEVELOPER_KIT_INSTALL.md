@@ -37,6 +37,48 @@ hash; its source revision and package-content digest remain self-asserted combin
 claims, tied to the combination bytes in the verified kit archive but not independently
 anchored by the BOM. Preflight reports these as unverified claims.
 
+An optional private Host group is separate from those legacy public package claims.
+The packager accepts `--private-host-profile` and `--private-host-archive`, each with
+an independently supplied SHA256. The profile must declare
+`distribution: private_kit_candidate`; its Host version/source/tree/source digest must
+match `components.host_runtime` in the kit BOM. The profile binds the archive SHA and
+installed package-content SHA, and separately records the Connector SDK source identity
+and package version from the BOM plus the SDK and Zod bundled-tree hashes. The tarball must carry the SDK,
+Zod, and npm shrinkwrap as a `bundled_source_candidate` closure. Packaging proves that
+this exact tarball installs and imports Host, SDK, and Zod with a fresh empty npm cache,
+explicit `--offline`, empty user/global npm config, and `--ignore-scripts`.
+
+The approved Host rc23 source tar declares the public Connector SDK rc1 release URL.
+A private kit candidate instead binds to and bundles the SDK version/source selected by
+the current BOM (currently 1.3.0-rc.5); this is a dependency change in the private
+distribution. Tests or canary evidence for the old rc1 dependency do not qualify that
+new SDK pairing. The actual derived bundle must pass fresh offline install/import checks
+and separate selected-profile/runtime validation before it can be called usable.
+This is a private kit archive format; it does not modify the Host component source,
+rewrite BOM `public_packages`, or relabel a public release.
+
+`prepare` stages an included candidate under
+`source/python/.local/private-host-runtime/`; `initialize` verifies and extracts the
+fixed Host package there. This does not automatically configure a Managed environment.
+After a separately reviewed exact Managed candidate is available, use the existing
+stopped-Workbench `environment-profile` command to select it explicitly:
+
+```bash
+uv run --locked --extra cloud python -m spireagent.workbench project environment-profile \
+  --config /ABS/project.json \
+  --candidate-directory /ABS/APPROVED_MANAGED_CANDIDATE \
+  --host-package-directory /ABS/releases/APPROVED_ZIP_SHA256/source/python/.local/private-host-runtime/package \
+  --host-package-pin /ABS/releases/APPROVED_ZIP_SHA256/source/python/.local/private-host-runtime/host-package-pin.json \
+  --input-profile text-menu-v1
+```
+
+Kit status reports the candidate package as staged/verified separately from the
+public `developer-combination` dependency tuple. It reports environment-profile
+selection as unobserved; configuration is not a loaded or running Host. The currently
+installed CollectionTool remains its own immutable Annotator/Evidence consumer and is
+not rebuilt or relabeled by this kit change. The candidate archive closure does not
+qualify the full kit's Node/Python setup or complete offline operation.
+
 Preflight resolves the explicit game directory and the doctor's selected directory to the
 same canonical root. This permits normal symlinked ancestors and a selected-directory alias,
 while rejecting symlinks and escapes below the canonical game root for the four identity
