@@ -65,6 +65,12 @@ claim but does not close the Host or end its game. A lost or damaged claim or
 release confirmation leaves controller ownership unknown and the run tainted;
 only the Host manager can recover it. Unknown native delivery is never retried.
 
+For guarded Managed observation, Runtime briefly claims control before reading
+the Host context and releases that claim before asking the policy. An existing
+Auto claim stays held across observation. Cancellation fences observation after
+a new claim; uncertain claim or release confirmation taints the run without
+automatic retry. Connector-native observation retains its existing lifecycle.
+
 For shared Host text-menu-v2, Runtime verifies the Host's advertised
 `sts2.host-runtime/text-menu-v2-owner-1` contract before claiming control. It
 then sends `policy-runtime:<run_id>` on each claim and checks the Host's exact
