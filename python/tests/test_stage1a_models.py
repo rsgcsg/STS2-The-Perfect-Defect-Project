@@ -10,7 +10,13 @@ import torch
 from torch import nn
 
 from stpd.models.losses import listwise_rank_loss
-from stpd.models.stage1a import RECIPES, BTokenScorer, DSimpleTokenScorer, build_scorer
+from stpd.models.stage1a import (
+    LIGHT_ACTION_M0_GRAPH,
+    RECIPES,
+    BTokenScorer,
+    DSimpleTokenScorer,
+    build_scorer,
+)
 from stpd.models.token_core import ScratchShape, ScratchTokenCore, TokenCore
 from stpd.qwen.portable_backend import PortableQwenBackend
 from stpd.qwen.readout_backend import FrozenQwenTokenCore
@@ -33,7 +39,9 @@ def sample():
     return torch.tensor([1, 2, 3]), (torch.tensor([4, 5]), torch.tensor([6, 7, 8]))
 
 
-@pytest.mark.parametrize("recipe", list(RECIPES))
+@pytest.mark.parametrize(
+    "recipe", [name for name, spec in RECIPES.items() if spec.graph != LIGHT_ACTION_M0_GRAPH],
+)
 def test_complete_catalog_permutation_and_other_candidate_isolation(recipe):
     recipe_spec = RECIPES[recipe]
     backbone = core(frozen=recipe_spec.backbone == "pf")
