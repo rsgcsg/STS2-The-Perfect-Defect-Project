@@ -158,7 +158,12 @@ def test_publication_does_not_seed_without_the_exact_active_store_session(
     with context as session:
         view = publish_public_bc_view(owner.store, allocation.artifact_id, owner.producer)
         loaded = load_model_view(owner.store, view.artifact_id)
-        assert loaded[0] == view and len(loaded[1]) == 3
+        assert loaded[0].artifact_id == view.artifact_id
+        assert loaded[0].to_bytes() == view.to_bytes()
+        assert {payload.role: payload for payload in loaded[0].payloads} == {
+            payload.role: payload for payload in view.payloads
+        }
+        assert len(loaded[1]) == 3
         assert calls == 2
     if session is not None:
         assert session.identity is None and session.value is None

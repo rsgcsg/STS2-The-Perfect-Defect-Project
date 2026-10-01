@@ -61,8 +61,8 @@ def _seed_published_public_bc_view(
     if session is None or session.store is not store:
         return
 
-    from .public_bc import LEGACY_VIEW_SCHEMA, VIEW_SCHEMA
     from .features import ModelSample
+    from .public_bc import LEGACY_VIEW_SCHEMA, VIEW_SCHEMA
 
     parameters = manifest.parameters.value()
     schema = parameters.get("schema")
