@@ -17,6 +17,7 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes
 from spireagent.package_identity import PackageIdentityError, validate_installed_package
+from spireagent.source import source_identity
 from spireagent.workbench.runtime_install import (
     ARCHIVE_LIMIT,
     BUNDLED_LAYOUT,
@@ -716,10 +717,11 @@ def derive_private_host_candidate(original_archive_raw: bytes, original_archive_
                                   expected_archive_sha256: str, bom_raw: bytes,
                                   source_root: Path) -> tuple[bytes, bytes, dict[str, Any]]:
     """Derive a BOM-bound Host archive using a fresh, locked SDK build/install cache."""
+    root = source_root.resolve(strict=True)
+    producer_identity = source_identity(root / "python")
     digest(expected_archive_sha256, "developer_kit.private_host.source_archive")
     if hashlib.sha256(original_archive_raw).hexdigest() != expected_archive_sha256:
         raise BoundaryError("developer_kit", "private_host_source_archive_checksum_mismatch")
-    root = source_root.resolve(strict=True)
     host_root = root / "components/host-runtime"
     sdk_root = root / "components/connector/sdk/typescript"
     component_roots = (root / "components", host_root, root / "components/connector",
@@ -884,8 +886,6 @@ def derive_private_host_candidate(original_archive_raw: bytes, original_archive_
         transformed_manifest_raw = (json.dumps(transformed_manifest, indent=2,
                                                ensure_ascii=False) + "\n").encode("utf-8")
         producer_files: dict[str, dict[str, str]] = {}
-        workspace_revision = _git_value(root, ["rev-parse", "HEAD"],
-                                        "private_host_producer_identity_unavailable")
         for relative in ("python/tools/package_developer_kit.py",
                          "python/spireagent/workbench/kit_runtime.py"):
             tool_raw, _ = _read_source_regular(root, relative)
@@ -939,7 +939,7 @@ def derive_private_host_candidate(original_archive_raw: bytes, original_archive_
                 "bundle_sha256": zod_bundle_sha,
             },
             "producer": {
-                "workspace_revision": workspace_revision,
+                "workspace_revision": producer_identity.source_revision,
                 "tool_files": producer_files,
                 "node_version": node_version,
                 "npm_version": npm_version,
@@ -1033,6 +1033,8 @@ def derive_private_host_candidate(original_archive_raw: bytes, original_archive_
         # Recheck after all tool runs so a concurrent source change cannot produce
         # an archive whose source receipt was assembled from mixed snapshots.
         verify_private_host_source_binding(profile_raw, derived_archive, bom_raw, root)
+        if source_identity(root / "python") != producer_identity:
+            raise BoundaryError("developer_kit", "private_host_producer_source_changed")
         summary = {
             "schema": "stpd/private-host-derived-package-report-v1",
             "package": HOST_PACKAGE,
@@ -1071,6 +1073,7 @@ def verify_private_host_source_binding(profile_raw: bytes, archive_raw: bytes,
     derivation = profile["derivation"]
     assert isinstance(derivation, dict)
     root = source_root.resolve(strict=True)
+    producer_identity = source_identity(root / "python")
     host_root = root / "components/host-runtime"
     sdk_root = root / "components/connector/sdk/typescript"
     component_roots = (root / "components", host_root, root / "components/connector",
@@ -1134,7 +1137,9 @@ def verify_private_host_source_binding(profile_raw: bytes, archive_raw: bytes,
         if actual_version != expected_version or claimed_version != expected_version:
             raise BoundaryError("developer_kit", "private_host_source_bom_mismatch")
 
-    _verify_private_host_provenance_report(identity_report, derivation)
+    _verify_private_host_provenance_report(
+        identity_report, derivation, producer_identity.source_revision,
+    )
 
     sdk_version = components.get("typescript_sdk")
     if derivation["selected_sdk"].get("version") != sdk_version:
@@ -1227,7 +1232,8 @@ def verify_private_host_source_binding(profile_raw: bytes, archive_raw: bytes,
 
 
 def _verify_private_host_provenance_report(identity_report: dict[str, Any],
-                                           derivation: dict[str, Any]) -> None:
+                                           derivation: dict[str, Any],
+                                           executing_revision: str) -> None:
     """Bind receipt-only provenance fields to the live source identity report."""
     components = identity_report.get("components")
     host_source = derivation.get("host_source")
@@ -1240,7 +1246,8 @@ def _verify_private_host_provenance_report(identity_report: dict[str, Any],
     assert isinstance(producer, dict)
     if actual_host.get("source_file_count") != host_source.get("source_file_count"):
         raise BoundaryError("developer_kit", "private_host_source_file_count_mismatch")
-    if producer.get("workspace_revision") != identity_report.get("workspace_revision"):
+    if (producer.get("workspace_revision") != identity_report.get("workspace_revision")
+            or producer.get("workspace_revision") != executing_revision):
         raise BoundaryError("developer_kit", "private_host_producer_workspace_mismatch")
 
 

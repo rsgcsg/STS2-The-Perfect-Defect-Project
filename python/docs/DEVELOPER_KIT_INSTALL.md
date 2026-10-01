@@ -67,6 +67,8 @@ identities, Node/npm/TypeScript tool versions, selected SDK source/tree/digest a
 hash, locked Zod integrity and bundle hash, and the derived package-content/archive
 hashes in the external profile. Its internal `private-host-derivation.json` repeats the
 input and recipe identity; the verifier requires that receipt to match the profile,
+requires `--source-root/python` to be the clean checkout executing the producer, and
+rechecks that producer identity after derivation completes.
 requires every original Host file except the transformed `package.json` to be byte and
 mode identical, validates the exact allowed manifest changes (`dependencies`,
 `bundleDependencies`, and `files`), and rejects any file outside the source inventory,
