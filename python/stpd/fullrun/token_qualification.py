@@ -133,6 +133,8 @@ def consumer_physical_independence(evidence: list[dict[str, Any]]) -> Any:
 def _safe_qualification_value(key: str, value: object) -> Any:
     projected = _projected_claims(value)
     if projected is not None:
+        if not isinstance(value, dict):
+            raise BoundaryError("token_qualification", "invalid_projected_claims")
         return {
             "status": value["status"],
             "claims": [
