@@ -24,6 +24,8 @@ from spireagent.hub.identity import IdentityService
 from spireagent.hub.member_api import MemberApi, grant_collection_sharing
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from stpd.collection_activity import CONSENT_FIELDS
+from stpd.fullrun.decision_dataset import SCHEMA as DECISION_DATASET_SCHEMA
+from stpd.fullrun.decision_union import UNION_SCHEMA
 from stpd.fullrun.platform_bundle3 import archive_bundle
 
 
@@ -82,32 +84,106 @@ def staged(api, tmp_path):
     return upload_id, bundle, enrollment
 
 
-def indexed_overlap_pair(api, *, shared_source: bool = False):
-    """Synthetic curation identities; this fixture never reads a selection payload."""
+def indexed_overlap_pair(
+    api, *, shared_source: bool = False, candidate_schema: str | None = None
+):
+    """Synthetic curation identities and currently shared source receipts."""
     _, owner, _, _, _ = api
-    source_a = Manifest(
-        "evidence", owner.producer,
-        parameters=FrozenObject.of({
-            "schema": "stpd/received-bundle-v1", "content_id": "1" * 64,
-        }),
-    )
-    source_b = source_a if shared_source else Manifest(
-        "evidence", owner.producer,
-        parameters=FrozenObject.of({
-            "schema": "stpd/received-bundle-v1", "content_id": "2" * 64,
-        }),
-    )
-    owner.store.publish(source_a)
-    if source_b.artifact_id != source_a.artifact_id:
-        owner.store.publish(source_b)
-    candidate = Manifest(
-        "dataset", owner.producer,
-        parents=(Parent("source_" + source_a.artifact_id, source_a.artifact_id),),
-        parameters=FrozenObject.of({
-            "schema": "stpd/curated-decision-dataset-v1",
-            "purpose": "training", "sealed_test": False,
-        }),
-    )
+    def verified_source(content_id: str) -> Manifest:
+        archive_bytes = b"synthetic-owner-source-archive-" + content_id.encode()
+        archive = owner.store.put_payload("archive", io.BytesIO(archive_bytes))
+        source = Manifest(
+            "evidence", owner.producer, payloads=(archive,),
+            parameters=FrozenObject.of({
+                "schema": "stpd/received-bundle-v1",
+                "content_id": content_id,
+                "disposition": "verified",
+            }),
+        )
+        owner.store.publish(source)
+        upload = owner.operations.create_upload(
+            "one", content_id, source.artifact_id,
+            {"archive_sha256": archive.sha256, "archive_bytes": archive.size},
+        )
+        with owner.operations.transaction() as db:
+            db.execute(
+                "UPDATE uploads SET status='verified',receipt=? WHERE id=?",
+                (json.dumps({
+                    "evidence_id": source.artifact_id,
+                    "content_id": content_id,
+                    "status": "verified",
+                }), upload["id"]),
+            )
+        return source
+
+    source_a = verified_source("1" * 64)
+    source_b = source_a if shared_source else verified_source("2" * 64)
+
+    def legacy_dataset(source: Manifest, schema: str) -> Manifest:
+        records = owner.store.put_payload("records", io.BytesIO(b"synthetic-records"))
+        selection = owner.store.put_payload("selection", io.BytesIO(b"synthetic-selection"))
+        return Manifest(
+            "dataset", owner.producer,
+            parents=(Parent("source_" + source.artifact_id, source.artifact_id),),
+            payloads=(records, selection),
+            parameters=FrozenObject.of({
+                "schema": schema,
+                "logical_id": hashlib.sha256((schema + source.artifact_id).encode()).hexdigest(),
+                "rules": {
+                    "schema": "stpd/decision-selection-v1",
+                    "complete_only": False,
+                    "wins_only": False,
+                    "no_failures_only": False,
+                    "filters": {},
+                    "seed": 0,
+                },
+                "records": 1,
+                "scope": "platform_verified",
+                "split_status": "assigned",
+            }),
+        )
+
+    if candidate_schema is None:
+        candidate = Manifest(
+            "dataset", owner.producer,
+            parents=(Parent("source_" + source_a.artifact_id, source_a.artifact_id),),
+            parameters=FrozenObject.of({
+                "schema": "stpd/curated-decision-dataset-v1",
+                "purpose": "training", "sealed_test": False,
+            }),
+        )
+    else:
+        candidate = legacy_dataset(source_a, DECISION_DATASET_SCHEMA)
+        if candidate_schema == "legacy_union":
+            owner.store.publish(candidate)
+            union_records = owner.store.put_payload(
+                "records", io.BytesIO(b"synthetic-union-records")
+            )
+            union_selection = owner.store.put_payload(
+                "selection", io.BytesIO(b"synthetic-union-selection")
+            )
+            candidate = Manifest(
+                "dataset", owner.producer,
+                parents=(Parent("dataset_" + candidate.artifact_id, candidate.artifact_id),),
+                payloads=(union_records, union_selection),
+                parameters=FrozenObject.of({
+                    "schema": UNION_SCHEMA,
+                    "logical_id": hashlib.sha256(b"synthetic-union").hexdigest(),
+                    "rules": {
+                        "schema": "stpd/decision-selection-v1",
+                        "complete_only": False,
+                        "wins_only": False,
+                        "no_failures_only": False,
+                        "filters": {},
+                        "seed": 0,
+                    },
+                    "records": 1,
+                    "scope": "platform_verified",
+                    "split_status": "assigned",
+                }),
+            )
+        elif candidate_schema != "legacy":
+            raise ValueError("unknown synthetic candidate schema")
     payload = owner.store.put_payload(
         "selection", io.BytesIO(b"synthetic-only-gold-selection-payload")
     )
@@ -144,8 +220,9 @@ def indexed_overlap_pair(api, *, shared_source: bool = False):
                 "INSERT OR IGNORE INTO curation_fingerprints VALUES(?,?)",
                 ("fingerprint-" + run_id, run_id),
             )
-    ledger.claim("synthetic-training-claim", "training", (candidate_run,))
-    ledger.bind("synthetic-training-claim", candidate.artifact_id)
+    if candidate_schema is None:
+        ledger.claim("synthetic-training-claim", "training", (candidate_run,))
+        ledger.bind("synthetic-training-claim", candidate.artifact_id)
     ledger.claim("synthetic-gold-claim", "gold", (gold_run,), require_inventory=True)
     ledger.bind("synthetic-gold-claim", gold.artifact_id)
     return candidate, gold
@@ -332,6 +409,7 @@ def test_curation_overlap_no_indexed_overlap_and_incomplete_inventory_is_unknown
     assert incomplete["findings"]["source"]["status"] == "unknown"
     assert incomplete["findings"]["run"] == {"status": "unknown", "count": None}
     assert incomplete["findings"]["run_group"]["status"] == "unknown"
+    assert incomplete["coverage"]["run_group"] == "incomplete"
     assert "verified_source_inventory_pending" in incomplete["reasons"]
 
 
@@ -350,8 +428,172 @@ def test_curation_overlap_missing_exact_source_index_keeps_run_unknown(api):
 
     assert result["status"] == "unknown"
     assert result["coverage"]["candidate_source"] == "incomplete"
+    assert result["coverage"]["run_group"] == "incomplete"
     assert result["findings"]["source"] == {"status": "unknown", "count": None}
     assert result["findings"]["run"] == {"status": "unknown", "count": None}
+
+
+def test_curation_overlap_run_group_coverage_tracks_missing_fingerprints(api):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api)
+    with owner.operations.transaction() as db:
+        db.execute(
+            "DELETE FROM curation_fingerprints WHERE run='synthetic-training-run'"
+        )
+
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["status"] == "unknown"
+    assert result["coverage"]["run"] == "complete"
+    assert result["coverage"]["run_group"] == "incomplete"
+    assert result["findings"]["run"] == {"status": "none", "count": 0}
+    assert result["findings"]["run_group"] == {
+        "status": "unknown", "related_runs": None
+    }
+
+
+@pytest.mark.parametrize("candidate_schema", ["legacy", "legacy_union"])
+def test_curation_overlap_legacy_source_superset_needs_no_claim_or_payload_reads(
+    api, candidate_schema, monkeypatch
+):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api, candidate_schema=candidate_schema)
+    with owner.operations.transaction() as db:
+        assert db.execute(
+            "SELECT count(*) FROM curation_claims WHERE artifact=?", (candidate.artifact_id,)
+        ).fetchone()[0] == 0
+    monkeypatch.setattr(
+        owner.store,
+        "read_payload",
+        lambda *_args, **_kwargs: pytest.fail("legacy overlap metadata must not read payloads"),
+    )
+
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["status"] == "no_indexed_overlap"
+    assert result["candidate_scope"] == "source_superset"
+    assert result["findings"]["run"] == {"status": "none", "count": 0}
+    assert result["coverage"]["run_group"] == "complete"
+    assert result["coverage"]["physical_game"] == "unknown"
+    serialized = json.dumps(result)
+    assert candidate.artifact_id not in serialized and gold.artifact_id not in serialized
+    assert b"synthetic-only-gold-selection-payload" not in serialized.encode()
+
+
+def test_curation_overlap_legacy_source_superset_reports_possible_overlap(api):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api, shared_source=True, candidate_schema="legacy")
+
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["status"] == "possible_overlap"
+    assert result["candidate_scope"] == "source_superset"
+    assert result["findings"]["source"] == {"status": "overlap", "count": 1}
+    assert result["findings"]["run"]["status"] == "possible_overlap"
+    assert result["findings"]["run"]["count"] is None
+    assert "candidate_source_superset_requires_refinement" in result["reasons"]
+
+
+def test_curation_overlap_missing_legacy_source_index_stays_unknown(api):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api, candidate_schema="legacy")
+    candidate_source = candidate.parents[0].artifact_id
+    with owner.operations.transaction() as db:
+        db.execute("DELETE FROM curation_exact_source_index WHERE source=?", (candidate_source,))
+
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["status"] == "unknown"
+    assert result["candidate_scope"] == "source_superset"
+    assert result["findings"]["run"] == {"status": "unknown", "count": None}
+    assert result["coverage"]["run_group"] == "incomplete"
+
+
+def test_curation_overlap_hides_missing_or_unauthorized_catalog_candidates(api, monkeypatch):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api)
+    with owner.operations.transaction() as db:
+        db.execute("DELETE FROM console_artifacts WHERE artifact_id=?", (candidate.artifact_id,))
+
+    get_manifest = owner.store.get_manifest
+    manifest_reads = []
+
+    def tracked_get_manifest(identity):
+        manifest_reads.append(identity)
+        return get_manifest(identity)
+
+    monkeypatch.setattr(owner.store, "get_manifest", tracked_get_manifest)
+    unauthorized = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+    absent = router.read(
+        "curation-overlap",
+        f"candidate={'a' * 64}&gold={gold.artifact_id}",
+        member,
+    )
+    def without_observed_at(result):
+        return {key: value for key, value in result.items() if key != "observed_at"}
+
+    assert manifest_reads == []
+    assert without_observed_at(unauthorized) == without_observed_at(absent)
+    assert unauthorized["reasons"] == ["candidate_unavailable"]
+
+
+@pytest.mark.parametrize("sharing_state", ["missing_upload", "withdrawn"])
+def test_curation_overlap_requires_current_source_access_and_hides_denial(
+    api, sharing_state
+):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api)
+    candidate_source = candidate.parents[0].artifact_id
+    with owner.operations.transaction() as db:
+        row = db.execute(
+            "SELECT id FROM uploads WHERE json_extract(receipt,'$.evidence_id')=?",
+            (candidate_source,),
+        ).fetchone()
+        assert row is not None
+        if sharing_state == "missing_upload":
+            db.execute("DELETE FROM uploads WHERE id=?", (row[0],))
+        else:
+            db.execute(
+                "INSERT INTO collection_sharing VALUES(?,?,?,?)",
+                (row[0], 0, "b" * 64, 1.0),
+            )
+
+    unavailable = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+    absent = router.read(
+        "curation-overlap",
+        f"candidate={'a' * 64}&gold={gold.artifact_id}",
+        member,
+    )
+    def normalize(result):
+        return {key: value for key, value in result.items() if key != "observed_at"}
+
+    assert unavailable["status"] == "unknown"
+    assert unavailable["reasons"] == ["candidate_unavailable"]
+    assert normalize(unavailable) == normalize(absent)
 
 
 def test_curation_overlap_finds_cross_source_duplicate_run_group(api):

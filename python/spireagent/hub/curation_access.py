@@ -11,18 +11,108 @@ from typing import Any
 
 from spireagent.artifact_contracts import Manifest
 from spireagent.hub.access import project_member, require_artifact_access
+from spireagent.hub.collections import CollectionAccess
 from spireagent.hub.console_auth import ConsolePrincipal
 from spireagent.hub.curation import CurationLedger, _hub_inventory_pending
 from spireagent.hub.database import Operations
 from spireagent.hub.uploads import UploadService
-from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.json_boundary import BoundaryError, digest, json_bytes
 from spireagent.storage.store import ArtifactStore
 
 CURATED_DATASET_SCHEMA = "stpd/curated-decision-dataset-v1"
 RECEIVED_SOURCE_SCHEMA = "stpd/received-bundle-v1"
+LEGACY_DECISION_DATASET_SCHEMA = "stpd/decision-dataset-v1"
+LEGACY_DECISION_UNION_SCHEMA = "stpd/decision-union-v1"
+LEGACY_SELECTION_RULE_SCHEMA = "stpd/decision-selection-v1"
 MAX_LINEAGE_NODES = 512
 MAX_SOURCE_INDEXES = 512
 MAX_OVERLAP_RUNS = 50_000
+MAX_LEGACY_DATASETS = 256
+MAX_LEGACY_DEPTH = 8
+MAX_LEGACY_SOURCES = 100
+
+
+def _legacy_source_superset(
+    root: Manifest, nodes: tuple[Manifest, ...]
+) -> set[str] | None:
+    """Return only a validated legacy decision artifact's complete source closure."""
+    node_by_id = {item.artifact_id: item for item in nodes}
+    source_ids: set[str] = set()
+    visited: dict[str, int] = {}
+    visiting: set[str] = set()
+
+    def visit(item: Manifest, depth: int) -> int | None:
+        if depth > MAX_LEGACY_DEPTH or item.artifact_id in visiting:
+            return None
+        prior_height = visited.get(item.artifact_id)
+        if prior_height is not None:
+            return prior_height if depth + prior_height <= MAX_LEGACY_DEPTH else None
+        if len(visited) + len(visiting) >= MAX_LEGACY_DATASETS:
+            return None
+        if item.kind != "dataset":
+            return None
+        info = item.parameters.value()
+        schema = info.get("schema")
+        if schema not in {LEGACY_DECISION_DATASET_SCHEMA, LEGACY_DECISION_UNION_SCHEMA}:
+            return None
+        try:
+            logical_id = digest(info.get("logical_id"), "decision_dataset.logical_id")
+            records = info.get("records")
+            if (
+                not logical_id
+                or type(records) is not int
+                or records <= 0
+                or info.get("scope") != "platform_verified"
+            ):
+                return None
+        except BoundaryError:
+            return None
+        rules = info.get("rules")
+        if not isinstance(rules, dict) or rules.get("schema") != LEGACY_SELECTION_RULE_SCHEMA:
+            return None
+        if not 1 <= len(item.parents) <= 100:
+            return None
+
+        visiting.add(item.artifact_id)
+        height = 0
+        for parent in item.parents:
+            parent_node = node_by_id.get(parent.artifact_id)
+            if parent_node is None:
+                visiting.remove(item.artifact_id)
+                return None
+            if schema == LEGACY_DECISION_DATASET_SCHEMA:
+                if parent.role != "source_" + parent.artifact_id:
+                    visiting.remove(item.artifact_id)
+                    return None
+                source_info = parent_node.parameters.value()
+                if (
+                    parent_node.kind != "evidence"
+                    or source_info.get("schema") != RECEIVED_SOURCE_SCHEMA
+                    or source_info.get("disposition") != "verified"
+                ):
+                    visiting.remove(item.artifact_id)
+                    return None
+                source_ids.add(parent_node.artifact_id)
+            else:
+                if parent.role != "dataset_" + parent.artifact_id:
+                    visiting.remove(item.artifact_id)
+                    return None
+                child_height = visit(parent_node, depth + 1)
+                if child_height is None:
+                    visiting.remove(item.artifact_id)
+                    return None
+                height = max(height, child_height + 1)
+        visiting.remove(item.artifact_id)
+        if depth + height > MAX_LEGACY_DEPTH:
+            return None
+        visited[item.artifact_id] = height
+        return height
+
+    if visit(root, 0) is None or not source_ids or len(source_ids) > MAX_LEGACY_SOURCES:
+        return None
+    if set(node_by_id) != set(visited) | source_ids:
+        return None
+    return source_ids
 
 
 def guarded_runs(
@@ -119,18 +209,18 @@ def overlap_metadata(
     manifest closure is read, and only for its source identities.
     """
     from spireagent.hub.console_index import timestamp
-    from spireagent.json_boundary import digest
-
     candidate_id = digest(candidate_id, "curation_overlap.candidate")
     gold_id = digest(gold_id, "curation_overlap.gold")
     if not project_member(principal):
         raise BoundaryError("hub", "unauthorized")
+    candidate_scope = "unknown"
 
     unknown: dict[str, Any] = {
         "schema": "stpd/curation-overlap-v1",
         "observed_at": timestamp(),
         "scope": "candidate_against_owner_gold_reservations",
         "status": "unknown",
+        "candidate_scope": "unknown",
         "findings": {
             "source": {"status": "unknown", "count": None},
             "run": {"status": "unknown", "count": None},
@@ -153,94 +243,128 @@ def overlap_metadata(
 
     def unknown_for(reason: str) -> dict[str, Any]:
         result = deepcopy(unknown)
+        result["candidate_scope"] = candidate_scope
         result["reasons"] = [reason]
         return result
 
+    def candidate_unavailable() -> dict[str, Any]:
+        result = deepcopy(unknown)
+        result["reasons"] = ["candidate_unavailable"]
+        return result
+
+    # The member catalog is the existing discoverability gate. Do not retrieve or
+    # classify an artifact until its ID is present in that authorized catalog scope.
     try:
+        with closing(service.console_index.read()) as scope_db:
+            candidate_visible = scope_db.execute(
+                "SELECT 1 FROM console_artifacts WHERE artifact_id=?", (candidate_id,)
+            ).fetchone()
+        if candidate_visible is None:
+            return candidate_unavailable()
         candidate = service.store.get_manifest(candidate_id)
-        if candidate.kind != "dataset":
-            return unknown_for("candidate_not_dataset")
-        candidate_info = candidate.parameters.value()
-        if (
-            candidate_info.get("schema") != CURATED_DATASET_SCHEMA
-            or candidate_info.get("purpose") != "training"
-        ):
-            return unknown_for("candidate_not_supported_training_dataset")
         candidate_nodes = require_artifact_access(
             candidate, project_member=True, store=service.store
         )
-    except (BoundaryError, OSError, ValueError):
-        return unknown_for("candidate_metadata_unavailable")
+    except (BoundaryError, OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError):
+        # Keep absent, sealed, and otherwise inaccessible candidate IDs indistinguishable.
+        return candidate_unavailable()
+    if candidate.kind != "dataset":
+        return unknown_for("candidate_not_supported_dataset")
 
+    candidate_info = candidate.parameters.value()
+    candidate_schema = candidate_info.get("schema")
+    legacy_candidate = False
     # Follow only the versioned source/dataset parent edges emitted by the owner.
     # This never opens a selection payload or infers relationships from filenames.
     node_by_id = {item.artifact_id: item for item in candidate_nodes}
-    pending = [candidate]
-    visited: set[str] = set()
     source_ids: set[str] = set()
-    lineage_complete = True
-    while pending:
-        item = pending.pop()
-        if item.artifact_id in visited:
-            continue
-        visited.add(item.artifact_id)
-        if len(visited) > MAX_LINEAGE_NODES:
-            lineage_complete = False
-            break
-        info = item.parameters.value()
-        if item.kind != "dataset" or info.get("schema") != CURATED_DATASET_SCHEMA:
-            lineage_complete = False
-            break
-        if not item.parents or len(item.parents) > 100:
-            lineage_complete = False
-            break
-        for parent in item.parents:
-            if parent.role == "source_" + parent.artifact_id:
-                source = node_by_id.get(parent.artifact_id)
-                if source is None:
-                    lineage_complete = False
-                    break
-                if (
-                    source.kind != "evidence"
-                    or source.parameters.value().get("schema") != RECEIVED_SOURCE_SCHEMA
-                ):
-                    lineage_complete = False
-                    break
-                source_ids.add(source.artifact_id)
-            elif parent.role == "dataset_" + parent.artifact_id:
-                parent_manifest = node_by_id.get(parent.artifact_id)
-                if parent_manifest is None:
-                    lineage_complete = False
-                    break
-                pending.append(parent_manifest)
-            else:
+    if candidate_schema == CURATED_DATASET_SCHEMA:
+        candidate_scope = "owner_claim_runs"
+        if candidate_info.get("purpose") != "training":
+            return unknown_for("candidate_not_supported_training_dataset")
+        pending = [candidate]
+        visited: set[str] = set()
+        lineage_complete = True
+        while pending:
+            item = pending.pop()
+            if item.artifact_id in visited:
+                continue
+            visited.add(item.artifact_id)
+            if len(visited) > MAX_LINEAGE_NODES:
                 lineage_complete = False
                 break
-        if not lineage_complete:
-            break
-        if len(source_ids) > MAX_SOURCE_INDEXES:
-            lineage_complete = False
-            break
-    if not lineage_complete or not source_ids:
-        result = unknown_for("candidate_source_lineage_incomplete")
-        result["coverage"]["candidate_source"] = "incomplete"
-        return result
+            info = item.parameters.value()
+            if item.kind != "dataset" or info.get("schema") != CURATED_DATASET_SCHEMA:
+                lineage_complete = False
+                break
+            if not item.parents or len(item.parents) > 100:
+                lineage_complete = False
+                break
+            for parent in item.parents:
+                if parent.role == "source_" + parent.artifact_id:
+                    source = node_by_id.get(parent.artifact_id)
+                    if source is None:
+                        lineage_complete = False
+                        break
+                    if (
+                        source.kind != "evidence"
+                        or source.parameters.value().get("schema") != RECEIVED_SOURCE_SCHEMA
+                        or source.parameters.value().get("disposition") != "verified"
+                    ):
+                        lineage_complete = False
+                        break
+                    source_ids.add(source.artifact_id)
+                elif parent.role == "dataset_" + parent.artifact_id:
+                    parent_manifest = node_by_id.get(parent.artifact_id)
+                    if parent_manifest is None:
+                        lineage_complete = False
+                        break
+                    pending.append(parent_manifest)
+                else:
+                    lineage_complete = False
+                    break
+            if not lineage_complete:
+                break
+            if len(source_ids) > MAX_SOURCE_INDEXES:
+                lineage_complete = False
+                break
+        if not lineage_complete or not source_ids:
+            result = unknown_for("candidate_source_lineage_incomplete")
+            result["coverage"]["candidate_source"] = "incomplete"
+            return result
+    elif candidate_schema in {
+        LEGACY_DECISION_DATASET_SCHEMA, LEGACY_DECISION_UNION_SCHEMA
+    }:
+        legacy_candidate = True
+        candidate_scope = "source_superset"
+        legacy_sources = _legacy_source_superset(candidate, candidate_nodes)
+        if legacy_sources is None:
+            result = unknown_for("legacy_parent_contract_unproven")
+            result["coverage"]["candidate_source"] = "incomplete"
+            return result
+        source_ids = legacy_sources
+    else:
+        return unknown_for("candidate_not_supported_dataset")
 
-    # Preserve the existing project-member artifact catalog and withdrawal check.
-    # The target Gold is authorized by the owner claim below; its catalog projection
-    # deliberately contains no parent IDs or payload descriptors.
+    # The target Gold is resolved only from its redacted catalog row and owner claim;
+    # no Gold manifest, parent list, payload descriptor, or payload is opened.
     try:
         with closing(service.console_index.read()) as db:
-            for identity in (candidate_id, gold_id):
-                row = db.execute(
-                    "SELECT kind,summary FROM console_artifacts WHERE artifact_id=?",
-                    (identity,),
-                ).fetchone()
-                if row is None or row["kind"] != "dataset":
-                    raise BoundaryError("curation_overlap", "resource_not_found")
-                summary = json.loads(row["summary"])
-                if identity == gold_id and summary.get("metadata", {}).get("purpose") != "gold":
-                    raise BoundaryError("curation_overlap", "resource_not_found")
+            candidate_row = db.execute(
+                "SELECT 1 FROM console_artifacts WHERE artifact_id=? AND kind='dataset'",
+                (candidate_id,),
+            ).fetchone()
+            if candidate_row is None:
+                return candidate_unavailable()
+            gold_row = db.execute(
+                "SELECT kind,summary FROM console_artifacts WHERE artifact_id=?",
+                (gold_id,),
+            ).fetchone()
+            if gold_row is None or gold_row["kind"] != "dataset":
+                return unknown_for("gold_unavailable")
+            gold_summary = json.loads(gold_row["summary"])
+            if gold_summary.get("metadata", {}).get("purpose") != "gold":
+                return unknown_for("gold_unavailable")
             tables = {
                 row[0]
                 for row in db.execute(
@@ -255,16 +379,17 @@ def overlap_metadata(
             if not required <= tables:
                 return unknown_for("owner_index_unavailable")
 
-            # A project member may compare current candidates backed by sources that
-            # remain shared. This reads existing withdrawal state; no owner is created.
+            # Reuse CollectionAccess's current upload/receipt/share checks against this
+            # same read snapshot. Missing upload rows and explicit withdrawals are not
+            # interpreted as public/shared, and this path never calls its use-recording API.
             for source_id in source_ids:
-                withdrawn = db.execute(
-                    "SELECT 1 FROM uploads u JOIN collection_sharing s ON s.upload_id=u.id "
-                    "WHERE json_extract(u.receipt,'$.evidence_id')=? AND s.approved=0 LIMIT 1",
-                    (source_id,),
-                ).fetchone()
-                if withdrawn:
-                    raise BoundaryError("hub", "unauthorized")
+                try:
+                    CollectionAccess.manifests_for_evidence(db, service.store, source_id)
+                except (
+                    BoundaryError, OSError, ValueError, KeyError, TypeError,
+                    sqlite3.DatabaseError,
+                ):
+                    return candidate_unavailable()
 
             claims = db.execute(
                 "SELECT id,purpose,artifact FROM curation_claims "
@@ -275,19 +400,20 @@ def overlap_metadata(
                 (candidate_id,),
             ).fetchall()
             target_claims = [row for row in claims if row["artifact"] == gold_id]
-            if len(candidate_claims) != 1 or candidate_claims[0]["purpose"] != "training":
-                return unknown_for("candidate_owner_claim_missing")
             if len(target_claims) != 1:
-                return unknown_for("gold_owner_claim_missing")
+                return unknown_for("gold_unavailable")
 
-            candidate_claim_id = candidate_claims[0]["id"]
-            candidate_runs = {
-                row[0]
-                for row in db.execute(
-                    "SELECT run FROM curation_claim_runs WHERE claim=?",
-                    (candidate_claim_id,),
-                )
-            }
+            candidate_claim_id: str | None = None
+            if legacy_candidate:
+                # A legacy selection has no owner claim. Do not invent one: its full
+                # source closure will supply a conservative run superset below.
+                if candidate_claims:
+                    return unknown_for("legacy_candidate_claim_conflict")
+            else:
+                if len(candidate_claims) != 1 or candidate_claims[0]["purpose"] != "training":
+                    return unknown_for("candidate_owner_claim_missing")
+                candidate_claim_id = candidate_claims[0]["id"]
+
             gold_claim_runs: dict[str, set[str]] = {}
             for claim in claims:
                 gold_claim_runs[claim["id"]] = {
@@ -297,10 +423,8 @@ def overlap_metadata(
                     )
                 }
             gold_runs = set().union(*gold_claim_runs.values()) if gold_claim_runs else set()
-            if not candidate_runs or not gold_runs:
-                return unknown_for("owner_claim_membership_missing")
-            if len(candidate_runs) > MAX_OVERLAP_RUNS or len(gold_runs) > MAX_OVERLAP_RUNS:
-                return unknown_for("overlap_run_limit")
+            if not gold_runs:
+                return unknown_for("gold_owner_membership_missing")
 
             source_states: dict[str, tuple[bool, set[str]]] = {}
             for source_id in source_ids:
@@ -323,8 +447,25 @@ def overlap_metadata(
             indexed_candidate_runs = set().union(
                 *(runs for _, runs in source_states.values())
             )
-            if not candidate_runs <= indexed_candidate_runs:
-                return unknown_for("candidate_claim_source_mismatch")
+            if legacy_candidate:
+                candidate_runs = indexed_candidate_runs
+                if not candidate_runs:
+                    return unknown_for("candidate_source_run_index_missing")
+            else:
+                candidate_runs = {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT run FROM curation_claim_runs WHERE claim=?",
+                        (candidate_claim_id,),
+                    )
+                }
+                if not candidate_runs:
+                    return unknown_for("candidate_owner_membership_missing")
+                if not candidate_runs <= indexed_candidate_runs:
+                    return unknown_for("candidate_claim_source_mismatch")
+
+            if len(candidate_runs) > MAX_OVERLAP_RUNS or len(gold_runs) > MAX_OVERLAP_RUNS:
+                return unknown_for("overlap_run_limit")
 
             gold_sources = {
                 row[0]
@@ -372,15 +513,18 @@ def overlap_metadata(
             candidate_group_runs = {row["run"] for row in grouped if row["side"] == "candidate"}
             gold_group_runs = {row["run"] for row in grouped if row["side"] == "gold"}
             group_overlap = candidate_group_runs & gold_group_runs
+            source_coverage_complete = (
+                source_complete and all_source_indexes_complete and not inventory_pending
+            )
+            run_coverage_complete = source_coverage_complete
+            run_group_coverage_complete = run_coverage_complete and not missing_fingerprints
             coverage_complete = (
-                source_complete
-                and all_source_indexes_complete
-                and not inventory_pending
-                and not missing_fingerprints
+                source_coverage_complete and run_coverage_complete
+                and run_group_coverage_complete
             )
 
             if exact_sources or exact_runs or group_overlap:
-                status = "overlap"
+                status = "possible_overlap" if legacy_candidate else "overlap"
             elif coverage_complete:
                 status = "no_indexed_overlap"
             else:
@@ -389,6 +533,7 @@ def overlap_metadata(
             candidate_membership = {
                 "artifact": candidate_id,
                 "claim": candidate_claim_id,
+                "scope": candidate_scope,
                 "sources": sorted(source_ids),
                 "runs": sorted(candidate_runs),
             }
@@ -424,42 +569,73 @@ def overlap_metadata(
                     )
                     if active
                 )
+            if legacy_candidate and (exact_sources or exact_runs or group_overlap):
+                reasons.append("candidate_source_superset_requires_refinement")
+            source_finding = {
+                "status": (
+                    "overlap" if exact_sources else
+                    "none" if source_coverage_complete else "unknown"
+                ),
+                "count": (
+                    len(exact_sources) if exact_sources or source_coverage_complete else None
+                ),
+            }
+            if legacy_candidate and exact_runs:
+                run_finding = {
+                    "status": "possible_overlap",
+                    "count": None,
+                    "observed_superset_count": len(exact_runs),
+                }
+            else:
+                run_finding = {
+                    "status": (
+                        "overlap" if exact_runs else
+                        "none" if run_coverage_complete else "unknown"
+                    ),
+                    "count": (
+                        len(exact_runs) if exact_runs or run_coverage_complete else None
+                    ),
+                }
+            if legacy_candidate and group_overlap:
+                run_group_finding = {
+                    "status": "possible_overlap",
+                    "related_runs": None,
+                    "observed_superset_runs": len(group_overlap),
+                }
+            else:
+                run_group_finding = {
+                    "status": (
+                        "overlap" if group_overlap else
+                        "none" if run_group_coverage_complete else "unknown"
+                    ),
+                    "related_runs": (
+                        len(group_overlap)
+                        if group_overlap or run_group_coverage_complete else None
+                    ),
+                }
             return {
                 **unknown,
                 "observed_at": timestamp(),
                 "status": status,
+                "candidate_scope": candidate_scope,
                 "findings": {
-                    "source": {
-                        "status": (
-                            "overlap" if exact_sources else
-                            "none" if coverage_complete else "unknown"
-                        ),
-                        "count": len(exact_sources) if exact_sources or coverage_complete else None,
-                    },
-                    "run": {
-                        "status": (
-                            "overlap" if exact_runs else
-                            "none" if coverage_complete else "unknown"
-                        ),
-                        "count": len(exact_runs) if exact_runs or coverage_complete else None,
-                    },
-                    "run_group": {
-                        "status": (
-                            "overlap" if group_overlap else
-                            "none" if coverage_complete else "unknown"
-                        ),
-                        "related_runs": (
-                            len(group_overlap) if group_overlap or coverage_complete else None
-                        ),
-                    },
+                    "source": source_finding,
+                    "run": run_finding,
+                    "run_group": run_group_finding,
                 },
                 "coverage": {
                     "candidate_source": "complete" if source_complete else "incomplete",
-                    "gold_source": "complete" if all_source_indexes_complete else "incomplete",
+                    "gold_source": (
+                        "complete" if all_source_indexes_complete and not inventory_pending
+                        else "incomplete"
+                    ),
                     "verified_source_inventory": (
                         "incomplete" if inventory_pending else "complete"
                     ),
-                    "run_group": "complete" if not missing_fingerprints else "incomplete",
+                    "run": "complete" if run_coverage_complete else "incomplete",
+                    "run_group": (
+                        "complete" if run_group_coverage_complete else "incomplete"
+                    ),
                     "physical_game": "unknown",
                 },
                 "commitments": {
@@ -470,7 +646,9 @@ def overlap_metadata(
                 "reasons": reasons or (["no_overlap_in_indexed_scope"]
                                         if status == "no_indexed_overlap" else []),
             }
-    except BoundaryError:
+    except BoundaryError as error:
+        if error.stage in {"sharing", "hub"}:
+            return candidate_unavailable()
         raise
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError, KeyError):
         return unknown_for("owner_metadata_unavailable")
