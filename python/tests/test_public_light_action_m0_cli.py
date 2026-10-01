@@ -149,6 +149,61 @@ def test_public_m0_owner_train_resume_export_and_snapshot_parity(
         run.parameters.value()["training_binding"] == model.parameters.value()["training_binding"]
     )
 
+    if not compact:
+        # A forged completion edge must be rejected from manifests before owner or
+        # worker payloads are read during export verification.
+        from spireagent.artifact_contracts import Parent
+        from spireagent.json_boundary import BoundaryError
+        from spireagent.research_cli import _verify_m0_completion
+        from stpd.workers.token_worker import _verify_completed
+
+        forged_model = replace(
+            model,
+            parents=tuple(
+                Parent("checkpoint", paused["checkpoint_id"])
+                if parent.role == "checkpoint" else parent
+                for parent in model.parents
+            ),
+        )
+        store.publish(forged_model)
+        completed_manifest = store.get_manifest(completed["result_id"])
+        evaluation = store.get_manifest(completed_manifest.parent("offline_evaluation"))
+        forged_evaluation = replace(
+            evaluation,
+            parents=tuple(
+                Parent("model", forged_model.artifact_id)
+                if parent.role == "model" else parent
+                for parent in evaluation.parents
+            ),
+        )
+        store.publish(forged_evaluation)
+        forged_result = replace(
+            completed_manifest,
+            parents=tuple(
+                (Parent("model", forged_model.artifact_id)
+                 if parent.role == "model" else
+                 Parent("offline_evaluation", forged_evaluation.artifact_id)
+                 if parent.role == "offline_evaluation" else parent)
+                for parent in completed_manifest.parents
+            ),
+        )
+        store.publish(forged_result)
+        payload_reads = []
+        original_read_payload = ManifestArtifactStore.read_payload
+
+        def record_payload_read(self, payload):
+            payload_reads.append(payload.role)
+            yield from original_read_payload(self, payload)
+
+        monkeypatch.setattr(ManifestArtifactStore, "read_payload", record_payload_read)
+        with pytest.raises(BoundaryError, match="completed_model_required"):
+            _verify_m0_completion(store, forged_model)
+        assert payload_reads == []
+        with pytest.raises(BoundaryError, match="light_action_model_identity_mismatch"):
+            _verify_completed(store, forged_result, run)
+        assert payload_reads == []
+        monkeypatch.setattr(ManifestArtifactStore, "read_payload", original_read_payload)
+
     observation = snapshot()
     scorer = LightActionM0DecisionScorer(exported)
     scores = scorer.score_snapshot(observation)
@@ -275,6 +330,159 @@ def test_public_input_family_forgery_rejects_before_payload_reads(tmp_path, monk
     with pytest.raises(BoundaryError, match="input_family_source_mismatch"):
         load_light_action_inputs(store, forged.artifact_id)
     assert payload_reads == []
+
+
+def test_public_manifest_and_owner_preflight_reject_before_payload_reads(tmp_path, monkeypatch):
+    import io
+
+    pytest.importorskip("torch")
+    pytest.importorskip("tokenizers")
+    pytest.importorskip("jwt")
+    import test_decision_store
+    from platform_bundle3_fixture import bundle3
+    from test_artifact_store_v1 import PRODUCER
+    from test_light_action_m0_canonical_cli import _cli, _synthetic_workspace
+
+    monkeypatch.setattr(
+        test_decision_store, "bundle3", lambda path: bundle3(path, public_bindings=True)
+    )
+    config_path, store_dir, dataset_id, owner = _synthetic_workspace(tmp_path)
+    operation = "f" * 32
+    prepared = _cli(
+        monkeypatch,
+        "--store", str(store_dir), "prepare-light-action-m0",
+        "--project-config", str(config_path), "--dataset", dataset_id,
+        "--operation", operation, "--backbone", "s", "--input-profile", "public_lite",
+        "--train-limit", "8", "--dev-limit", "4",
+    )
+    store = ManifestArtifactStore(LocalBlobStore(store_dir, create=False))
+    from spireagent.artifact_contracts import Manifest, Parent
+    from spireagent.json_boundary import BoundaryError, FrozenObject
+    from spireagent.research_cli import _admit_m0_input, _admit_m0_run
+    from stpd.fullrun.light_action_inputs import (
+        public_training_binding,
+        publish_light_action_inputs,
+    )
+
+    original = store.get_manifest(prepared["training_input_id"])
+    original_info = original.parameters.value()
+    view = store.get_manifest(prepared["model_view_id"])
+    allocation = store.get_manifest(prepared["allocation_id"])
+
+    def republish_input(new_view=None, changes=None):
+        source = view if new_view is None else new_view
+        info = {**original_info, **(changes or {})}
+        binding = dict(original_info["training_binding"])
+        binding["model_view_id"] = source.artifact_id
+        binding["allocation_id"] = source.parent("allocation")
+        info["training_binding"] = binding
+        item = replace(
+            original,
+            parents=(Parent("model_view", source.artifact_id),),
+            parameters=FrozenObject.of(info),
+        )
+        store.publish(item)
+        return item
+
+    bad_format = republish_input(changes={
+        "format": "stpd-token-light-action-m0-canonical-v1",
+        "source_schema": "stpd/decision-model-view-v1",
+    })
+    bad_renderer = replace(
+        view,
+        parameters=FrozenObject.of({
+            **view.parameters.value(),
+            "serializer": {"schema": "stpd/fullrun-serializer-v1", "profile": "standard"},
+        }),
+    )
+    store.publish(bad_renderer)
+    bad_renderer_input = republish_input(bad_renderer)
+    bad_allocation = replace(
+        allocation,
+        parameters=FrozenObject.of({
+            **allocation.parameters.value(), "schema": "stpd/unrelated-allocation-v1",
+        }),
+    )
+    store.publish(bad_allocation)
+    bad_allocation_view = replace(
+        view,
+        parents=tuple(Parent(parent.role, bad_allocation.artifact_id)
+                      if parent.role == "allocation" else parent for parent in view.parents),
+        parameters=FrozenObject.of({
+            **view.parameters.value(), "allocation_id": bad_allocation.artifact_id,
+        }),
+    )
+    store.publish(bad_allocation_view)
+    bad_allocation_input = republish_input(bad_allocation_view)
+
+    reads = []
+    original_read_payload = ManifestArtifactStore.read_payload
+
+    def record_read(self, payload):
+        reads.append(payload.role)
+        yield from original_read_payload(self, payload)
+
+    monkeypatch.setattr(ManifestArtifactStore, "read_payload", record_read)
+    for invalid in (bad_format, bad_renderer_input, bad_allocation_input):
+        reads.clear()
+        with pytest.raises(BoundaryError):
+            public_training_binding(store, invalid.artifact_id)
+        assert reads == []
+        with pytest.raises(BoundaryError):
+            _admit_m0_input(owner, store, invalid.artifact_id, operation)
+        assert reads == []
+
+    reads.clear()
+    with pytest.raises(BoundaryError, match="training_binding_required"):
+        publish_light_action_inputs(store, view.artifact_id, "s", PRODUCER)
+    assert reads == []
+
+    # A run's immutable operation mismatch must be rejected before owner archive access.
+    from stpd.workers.token_ranking import LightActionM0Config
+    from stpd.workers.token_worker import prepare_token_run
+
+    config = LightActionM0Config(
+        recipe="stage1a.dsimple.light-action.m0.s.v1", steps=2,
+        max_state_tokens=8192, max_action_bytes=8192, public_profile="public_lite",
+    )
+    from stpd.fullrun.light_action_inputs import load_light_action_inputs
+
+    inputs = load_light_action_inputs(store, original.artifact_id)
+    run = prepare_token_run(store, inputs, config, PRODUCER)
+    run_info = run.parameters.value()
+    bad_binding = {**run_info["training_binding"], "training_operation_id": "0" * 32}
+    forged_run = replace(
+        run,
+        parameters=FrozenObject.of({**run_info, "training_binding": bad_binding}),
+    )
+    store.publish(forged_run)
+    reads.clear()
+    with pytest.raises(BoundaryError, match="training_binding_mismatch"):
+        _admit_m0_run(owner, store, forged_run.artifact_id, operation)
+    assert reads == []
+
+    # The shared CLI/worker preflight rejects a checkpoint bound to another run
+    # before loading source rows or checkpoint bytes.
+    from stpd.workers.token_worker import preflight_token_run
+
+    checkpoint_payload = store.put_payload(
+        "checkpoint", io.BytesIO(b"synthetic checkpoint"), "application/octet-stream",
+    )
+    checkpoint = Manifest(
+        "checkpoint", PRODUCER,
+        (Parent("run", run.artifact_id), Parent("training_input", original.artifact_id)),
+        (checkpoint_payload,),
+        FrozenObject.of({
+            "schema": "stpd/stage1a-token-light-action-m0-checkpoint-v1", "step": 1,
+        }),
+    )
+    store.publish(checkpoint)
+    another_run = prepare_token_run(store, inputs, config, PRODUCER, replicate="other")
+    reads.clear()
+    with pytest.raises(BoundaryError, match="resume_identity_mismatch"):
+        preflight_token_run(store, another_run.artifact_id, PRODUCER,
+                            resume=checkpoint.artifact_id)
+    assert reads == []
 
 
 def test_public_m0_excludes_native_only_row_without_losing_allocation_disposition(
