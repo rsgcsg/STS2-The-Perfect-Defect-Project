@@ -15,13 +15,14 @@ from test_campaign_onboarding import campaign as campaign
 from test_hub_console import service
 from test_hub_console import signed as signed
 
-from spireagent.artifact_contracts import Manifest
+from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.hub.campaigns import create_campaign_tables
 from spireagent.hub.console_auth import ConsolePrincipal
+from spireagent.hub.curation import CurationLedger
 from spireagent.hub.exports import REQUEST_SCHEMA
 from spireagent.hub.identity import IdentityService
 from spireagent.hub.member_api import MemberApi, grant_collection_sharing
-from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from stpd.collection_activity import CONSENT_FIELDS
 from stpd.fullrun.platform_bundle3 import archive_bundle
 
@@ -79,6 +80,75 @@ def staged(api, tmp_path):
     owner.staging.write(upload_id, io.BytesIO(archive), len(archive))
     owner.operations.request_verification(upload_id)
     return upload_id, bundle, enrollment
+
+
+def indexed_overlap_pair(api, *, shared_source: bool = False):
+    """Synthetic curation identities; this fixture never reads a selection payload."""
+    _, owner, _, _, _ = api
+    source_a = Manifest(
+        "evidence", owner.producer,
+        parameters=FrozenObject.of({
+            "schema": "stpd/received-bundle-v1", "content_id": "1" * 64,
+        }),
+    )
+    source_b = source_a if shared_source else Manifest(
+        "evidence", owner.producer,
+        parameters=FrozenObject.of({
+            "schema": "stpd/received-bundle-v1", "content_id": "2" * 64,
+        }),
+    )
+    owner.store.publish(source_a)
+    if source_b.artifact_id != source_a.artifact_id:
+        owner.store.publish(source_b)
+    candidate = Manifest(
+        "dataset", owner.producer,
+        parents=(Parent("source_" + source_a.artifact_id, source_a.artifact_id),),
+        parameters=FrozenObject.of({
+            "schema": "stpd/curated-decision-dataset-v1",
+            "purpose": "training", "sealed_test": False,
+        }),
+    )
+    payload = owner.store.put_payload(
+        "selection", io.BytesIO(b"synthetic-only-gold-selection-payload")
+    )
+    gold = Manifest(
+        "dataset", owner.producer,
+        parents=(Parent("source_" + source_b.artifact_id, source_b.artifact_id),),
+        payloads=(payload,),
+        parameters=FrozenObject.of({
+            "schema": "stpd/curated-decision-dataset-v1",
+            "purpose": "gold", "sealed_test": True,
+        }),
+    )
+    for manifest in (candidate, gold):
+        owner.store.publish(manifest)
+        owner.console_index.artifact(manifest)
+
+    candidate_run, gold_run = "synthetic-training-run", "synthetic-gold-run"
+    ledger = CurationLedger(owner.operations)
+    for source_id, run_id in (
+        (source_a.artifact_id, candidate_run), (source_b.artifact_id, gold_run)
+    ):
+        with owner.operations.transaction() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO curation_sources VALUES(?,?,1)",
+                (source_id, hashlib.sha256(source_id.encode()).hexdigest()),
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO curation_source_runs VALUES(?,?)", (source_id, run_id)
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO curation_exact_source_index VALUES(?)", (source_id,)
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO curation_fingerprints VALUES(?,?)",
+                ("fingerprint-" + run_id, run_id),
+            )
+    ledger.claim("synthetic-training-claim", "training", (candidate_run,))
+    ledger.bind("synthetic-training-claim", candidate.artifact_id)
+    ledger.claim("synthetic-gold-claim", "gold", (gold_run,), require_inventory=True)
+    ledger.bind("synthetic-gold-claim", gold.artifact_id)
+    return candidate, gold
 
 
 def test_member_routes_owned_enrollment_and_exact_detail(api):
@@ -203,6 +273,105 @@ def test_payload_export_and_stale_membership_rechecked(api):
             call()
     with pytest.raises(BoundaryError):
         router.read("campaigns", "", ConsolePrincipal("collector", ("one",)))
+
+
+def test_curation_overlap_reports_source_overlap_without_recording_use(api, monkeypatch):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api, shared_source=True)
+    monkeypatch.setattr(
+        owner.store,
+        "read_payload",
+        lambda *_args, **_kwargs: pytest.fail("overlap metadata must not read payloads"),
+    )
+    with owner.operations.transaction() as db:
+        uses_before = db.execute("SELECT count(*) FROM curation_uses").fetchone()[0]
+        source_uses_before = db.execute("SELECT count(*) FROM curation_source_uses").fetchone()[0]
+
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["schema"] == "stpd/curation-overlap-v1"
+    assert result["status"] == "overlap"
+    assert result["findings"]["source"] == {"status": "overlap", "count": 1}
+    assert result["findings"]["run"] == {"status": "none", "count": 0}
+    assert result["coverage"]["physical_game"] == "unknown"
+    assert result["commitments"]["comparison_sha256"]
+    serialized = json.dumps(result)
+    assert candidate.artifact_id not in serialized and gold.artifact_id not in serialized
+    assert b"synthetic-only-gold-selection-payload" not in serialized.encode()
+    with owner.operations.transaction() as db:
+        assert db.execute("SELECT count(*) FROM curation_uses").fetchone()[0] == uses_before
+        assert (
+            db.execute("SELECT count(*) FROM curation_source_uses").fetchone()[0]
+            == source_uses_before
+        )
+
+
+def test_curation_overlap_no_indexed_overlap_and_incomplete_inventory_is_unknown(api):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api)
+    query = f"candidate={candidate.artifact_id}&gold={gold.artifact_id}"
+    result = router.read("curation-overlap", query, member)
+    assert result["status"] == "no_indexed_overlap"
+    assert result["findings"]["source"]["count"] == 0
+    assert result["findings"]["run"]["count"] == 0
+
+    pending = owner.operations.create_upload("one", "c" * 64, "d" * 64, {})
+    with owner.operations.transaction() as db:
+        db.execute(
+            "UPDATE uploads SET status='verified',receipt=? WHERE id=?",
+            (json.dumps({"evidence_id": "e" * 64}), pending["id"]),
+        )
+    incomplete = router.read("curation-overlap", query, member)
+    assert incomplete["status"] == "unknown"
+    assert incomplete["coverage"]["verified_source_inventory"] == "incomplete"
+    assert incomplete["findings"]["source"]["status"] == "unknown"
+    assert incomplete["findings"]["run_group"]["status"] == "unknown"
+    assert "verified_source_inventory_pending" in incomplete["reasons"]
+
+
+def test_curation_overlap_finds_cross_source_duplicate_run_group(api):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api)
+    with owner.operations.transaction() as db:
+        db.executemany(
+            "INSERT INTO curation_fingerprints VALUES(?,?)",
+            (
+                ("late-shared-fingerprint", "synthetic-training-run"),
+                ("late-shared-fingerprint", "synthetic-gold-run"),
+            ),
+        )
+
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+    assert result["status"] == "overlap"
+    assert result["findings"]["source"] == {"status": "none", "count": 0}
+    assert result["findings"]["run"] == {"status": "none", "count": 0}
+    assert result["findings"]["run_group"] == {"status": "overlap", "related_runs": 2}
+
+
+def test_curation_overlap_route_is_member_only_and_rejects_ambiguous_queries(api):
+    router, _, _, member, _ = api
+    with pytest.raises(BoundaryError, match="invalid_curation_overlap_query"):
+        router.read("curation-overlap", "candidate=" + "a" * 64, member)
+    with pytest.raises(BoundaryError, match="invalid_curation_overlap_query"):
+        router.read(
+            "curation-overlap",
+            f"candidate={'a' * 64}&candidate={'b' * 64}&gold={'c' * 64}",
+            member,
+        )
+    with pytest.raises(BoundaryError, match="membership_not_authorized"):
+        router.read(
+            "curation-overlap",
+            f"candidate={'a' * 64}&gold={'b' * 64}",
+            ConsolePrincipal("collector", ("one",)),
+        )
 
 
 @pytest.mark.parametrize(
