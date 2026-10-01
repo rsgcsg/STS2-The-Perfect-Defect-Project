@@ -10,7 +10,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -538,7 +538,9 @@ class LocalCurationOwner:
             source_rows.append({"artifact_id": identity,
                                 "archive_sha256": source.payload("archive").sha256})
         try:
-            with sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+            with closing(sqlite3.connect(
+                self.path.resolve().as_uri() + "?mode=ro", uri=True,
+            )) as db:
                 row = db.execute("SELECT workspace,ledger,store,store_path "
                                  "FROM local_curation_identity").fetchone()
                 if row != self.identity or db.execute(
@@ -693,7 +695,9 @@ class LocalCurationOwner:
         ))
         source = {key: statement_source[key] for key in ("kind", "reference", "written_at")}
         try:
-            with sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+            with closing(sqlite3.connect(
+                self.path.resolve().as_uri() + "?mode=ro", uri=True,
+            )) as db:
                 tables = {row[0] for row in db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'")}
                 if USER_DECLARATION_TABLE in tables:
@@ -790,7 +794,9 @@ class LocalCurationOwner:
         identity = digest(dataset_id, "local_curation.declaration_dataset")
         try:
             self._declaration_store(store)
-            with sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+            with closing(sqlite3.connect(
+                self.path.resolve().as_uri() + "?mode=ro", uri=True,
+            )) as db:
                 owner = db.execute(
                     "SELECT workspace,ledger,store,store_path FROM local_curation_identity",
                 ).fetchone()

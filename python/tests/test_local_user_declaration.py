@@ -120,7 +120,7 @@ def test_register_is_immutable_idempotent_and_keeps_times_separate(
         )
 
 
-def test_read_missing_optional_table_is_read_only_and_unbound_copy_is_not_registered(
+def test_read_missing_optional_table_is_logically_read_only_and_unbound_copy_is_not_registered(
     tmp_path: Path, monkeypatch,
 ) -> None:
     _, _, owner, store, _, canonical, _, _ = _prepared(tmp_path, monkeypatch)
@@ -141,12 +141,78 @@ def test_read_missing_optional_table_is_read_only_and_unbound_copy_is_not_regist
     assert owner.path.read_bytes() == before_ledger
     assert store.manifest_ids() == before_manifests
     assert reads == 0
+    connection = sqlite3.connect(
+        owner.path.resolve().as_uri() + "?mode=ro", uri=True,
+    )
+    try:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='local_user_declarations'",
+        ).fetchone() is None
+    finally:
+        connection.close()
     unbound = Manifest("analysis", PRODUCER, parameters=FrozenObject.of({
         "schema": "stpd/local-user-declaration-v1",
     }))
     store.publish(unbound)
     assert owner.read_user_declaration(store, canonical.artifact_id)["status"] == \
         "not_durably_registered"
+
+
+def test_read_closes_sqlite_connections_on_success_and_failure(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    _, _, owner, store, _, canonical, _, _ = _prepared(tmp_path, monkeypatch)
+    _register(owner, store, canonical.artifact_id)
+    import spireagent.workbench.local_curation as curation
+
+    connect = sqlite3.connect
+    opened = []
+
+    def tracked_connect(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(curation.sqlite3, "connect", tracked_connect)
+    result = owner.read_user_declaration(store, canonical.artifact_id)
+    assert result["status"] == "registered"
+    assert len(opened) == 2  # registration lookup and current source-scope recheck
+    for connection in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            connection.execute("SELECT 1")
+
+    opened.clear()
+
+    def fail_validation(_db):
+        raise BoundaryError("local_curation", "synthetic_read_failure")
+
+    monkeypatch.setattr(owner, "_validate_existing", fail_validation)
+    failure = owner.read_user_declaration(store, canonical.artifact_id)
+    assert failure == {"status": "unavailable", "dataset_id": canonical.artifact_id,
+                       "reason": "synthetic_read_failure"}
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        opened[0].execute("SELECT 1")
+
+
+def test_read_sees_latest_committed_declaration_while_wal_is_nonempty(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    _, _, owner, store, _, canonical, _, _ = _prepared(tmp_path, monkeypatch)
+    keeper = sqlite3.connect(owner.path)
+    try:
+        assert keeper.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        keeper.execute("PRAGMA wal_autocheckpoint=0")
+        result = _register(owner, store, canonical.artifact_id)
+        wal_path = owner.path.with_name(owner.path.name + "-wal")
+        assert wal_path.is_file() and wal_path.stat().st_size > 0
+        current = owner.read_user_declaration(store, canonical.artifact_id)
+        assert current["status"] == "registered"
+        assert current["declaration_id"] == result["declaration_id"]
+        assert wal_path.stat().st_size > 0
+    finally:
+        keeper.close()
 
 
 def test_unregistered_declaration_copy_cannot_satisfy_require_without_payload_reads(
