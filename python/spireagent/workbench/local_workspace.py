@@ -136,17 +136,17 @@ def _data_facts(
         current = pending.pop(0)
         if current in lineage:
             continue
-        manifest = manifests.get(current)
-        if manifest is None:
+        lineage_manifest = manifests.get(current)
+        if lineage_manifest is None:
             try:
-                manifest = store.get_manifest(current)
+                lineage_manifest = store.get_manifest(current)
             except (BoundaryError, OSError, ValueError):
                 inventory_truncated = True
                 continue
-        lineage[current] = manifest
+        lineage[current] = lineage_manifest
         pending.extend(
             parent.artifact_id
-            for parent in manifest.parents
+            for parent in lineage_manifest.parents
             if parent.artifact_id not in lineage and parent.artifact_id not in pending
         )
     if any(item not in lineage for item in pending):
@@ -164,20 +164,20 @@ def _data_facts(
         if _parameters(manifest).get("schema") == "stpd/decision-allocation-v1"
     ]
     models = [
-        manifest
+        candidate
         for identity in descendants[1:]
-        if (manifest := manifests.get(identity)) is not None and manifest.kind == "model"
+        if (candidate := manifests.get(identity)) is not None and candidate.kind == "model"
     ]
     evaluations = [
-        manifest
+        candidate
         for identity in descendants[1:]
-        if (manifest := manifests.get(identity)) is not None
-        and manifest.kind == "offline_evaluation"
+        if (candidate := manifests.get(identity)) is not None
+        and candidate.kind == "offline_evaluation"
     ]
     run_results = [
-        manifest
+        candidate
         for identity in descendants[1:]
-        if (manifest := manifests.get(identity)) is not None and manifest.kind == "run_result"
+        if (candidate := manifests.get(identity)) is not None and candidate.kind == "run_result"
     ]
     completed_models = {
         parent.artifact_id
@@ -195,6 +195,7 @@ def _data_facts(
     }
 
     # Prefer an explicitly curated wrapper, then a canonical source dataset.
+    dataset: Manifest | None
     if selected.kind == "dataset":
         dataset = selected
     else:
