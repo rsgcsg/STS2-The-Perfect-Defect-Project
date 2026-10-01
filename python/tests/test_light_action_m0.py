@@ -245,6 +245,7 @@ def test_scratch_engine_resume_and_worker_preserve_m0_identity(tmp_path):
     assert restored.scores(0) == baseline.scores(0)
 
     run = prepare_token_run(archive, inputs, config, PRODUCER)
+    assert "checkpoint_interval" not in run.parameters.value()
     reporter = ObjectStoreRunReporter(archive, archive.blobs)
     first = execute_tokens(archive, reporter, run.artifact_id, PRODUCER, stop_after=1)
     assert first.state == "paused" and first.checkpoint_id
@@ -254,6 +255,14 @@ def test_scratch_engine_resume_and_worker_preserve_m0_identity(tmp_path):
     result = archive.get_manifest(final.result_id)
     model = archive.get_manifest(result.parent("model"))
     checkpoint = archive.get_manifest(final.checkpoint_id)
+    events = [item.parameters.value() for item in reporter.events(run.artifact_id)]
+    assert [item["step"] for item in events if item["kind"] == "step"] == [1, 2]
+    assert [archive.get_manifest(item["details"]["checkpoint_id"]).parameters.value()["step"]
+            for item in events if item["kind"] == "checkpoint"] == [1, 2]
+    assert all("checkpoint_interval" not in item["details"] for item in events
+               if item["kind"] in {"started", "resumed"})
+    assert all(type(item["details"]["loss"]) is float for item in events
+               if item["kind"] == "step")
     info = model.parameters.value()
     assert info["schema"] == LIGHT_ACTION_M0_MODEL_SCHEMA
     assert info["graph"] == LIGHT_ACTION_M0_GRAPH
@@ -268,6 +277,81 @@ def test_scratch_engine_resume_and_worker_preserve_m0_identity(tmp_path):
     with pytest.raises(BoundaryError, match="light_action_m0_recipe_required"):
         replace(config, recipe="stage1a.dsimple.s.v1")
     assert CHECKPOINT_SCHEMA != LIGHT_ACTION_M0_CHECKPOINT_SCHEMA
+
+
+def test_worker_checkpoint_interval_forces_pause_and_final_and_resumes_exactly(tmp_path):
+    torch.set_num_threads(2)
+    archive, _, inputs = _inputs(tmp_path)
+    config = LightActionM0Config(steps=5, max_state_tokens=8192, max_action_bytes=8192)
+    baseline = TokenRankingEngine(inputs, config)
+    baseline_losses = [baseline.advance() for _ in range(config.steps)]
+    baseline_weights = baseline.model_bytes()
+
+    run = prepare_token_run(archive, inputs, config, PRODUCER, replicate="interval-3")
+    reporter = ObjectStoreRunReporter(archive, archive.blobs)
+    for invalid in (0, -1, True, 1.5, "3"):
+        with pytest.raises(BoundaryError, match="invalid_checkpoint_interval"):
+            execute_tokens(archive, reporter, run.artifact_id, PRODUCER,
+                           checkpoint_interval=invalid)
+    assert reporter.events(run.artifact_id) == ()
+
+    paused = execute_tokens(archive, reporter, run.artifact_id, PRODUCER,
+                            stop_after=2, checkpoint_interval=3)
+    assert paused.state == "paused" and paused.checkpoint_id
+    assert archive.get_manifest(paused.checkpoint_id).parameters.value()["step"] == 2
+    completed = execute_tokens(archive, reporter, run.artifact_id, PRODUCER,
+                               resume=paused.checkpoint_id, checkpoint_interval=3)
+    assert completed.state == "completed" and completed.checkpoint_id
+
+    events = [item.parameters.value() for item in reporter.events(run.artifact_id)]
+    step_events = [item for item in events if item["kind"] == "step"]
+    checkpoint_events = [item for item in events if item["kind"] == "checkpoint"]
+    assert [item["step"] for item in step_events] == [1, 2, 3, 4, 5]
+    assert [item["details"]["loss"] for item in step_events] == baseline_losses
+    assert [item["step"] for item in checkpoint_events] == [2, 3, 5]
+    starts = [item for item in events if item["kind"] in {"started", "resumed"}]
+    assert [item["kind"] for item in starts] == ["started", "resumed"]
+    assert all(item["details"]["checkpoint_interval"] == 3 for item in starts)
+
+    final_checkpoint = archive.get_manifest(completed.checkpoint_id)
+    model = archive.get_manifest(archive.get_manifest(completed.result_id).parent("model"))
+    assert final_checkpoint.parameters.value()["step"] == 5
+    assert b"".join(archive.read_payload(model.payload("weights"))) == baseline_weights
+
+
+def test_worker_checkpoint_write_failure_keeps_last_checkpoint_without_retry(tmp_path,
+                                                                              monkeypatch):
+    torch.set_num_threads(2)
+    archive, _, inputs = _inputs(tmp_path)
+    config = LightActionM0Config(steps=3, max_state_tokens=8192, max_action_bytes=8192)
+    run = prepare_token_run(archive, inputs, config, PRODUCER, replicate="failure-2")
+    reporter = ObjectStoreRunReporter(archive, archive.blobs)
+    original_put_payload = archive.put_payload
+    checkpoint_writes = 0
+
+    def fail_second_checkpoint(role, *args, **kwargs):
+        nonlocal checkpoint_writes
+        if role == "checkpoint":
+            checkpoint_writes += 1
+            if checkpoint_writes == 2:
+                raise OSError("injected checkpoint payload failure")
+        return original_put_payload(role, *args, **kwargs)
+
+    monkeypatch.setattr(archive, "put_payload", fail_second_checkpoint)
+    with pytest.raises(OSError, match="injected checkpoint payload failure"):
+        execute_tokens(archive, reporter, run.artifact_id, PRODUCER,
+                       checkpoint_interval=2)
+
+    assert checkpoint_writes == 2
+    events = [item.parameters.value() for item in reporter.events(run.artifact_id)]
+    checkpoint_events = [item for item in events if item["kind"] == "checkpoint"]
+    step_events = [item for item in events if item["kind"] == "step"]
+    failed = next(item for item in events if item["kind"] == "failed")
+    assert [item["step"] for item in checkpoint_events] == [2]
+    assert [item["step"] for item in step_events] == [1, 2, 3]
+    assert failed["details"]["last_checkpoint"] == checkpoint_events[0]["details"][
+        "checkpoint_id"]
+    assert reporter.completed(run.artifact_id) is None
 
 
 def _tiny_backend(vocab_size: int, *, seed: int = 521):
