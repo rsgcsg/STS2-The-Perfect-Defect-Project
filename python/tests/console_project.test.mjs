@@ -755,6 +755,156 @@ test("local recording import uses one explicit selection and resets attestation 
   assert.equal(writes[0].options.headers["X-CSRF-Token"], "browser-csrf");
 });
 
+const memberArchiveCatalog = (extra = {}) => ({
+  schema:"stpd/local-member-collection-archive-catalog-v1", status:"ready",
+  items:[{
+    name:"项目成员集合归档", export_id:id("e"), file_id:id("f"), artifact_id:id("a"),
+    upload_id:"b".repeat(32), size:2048,
+  }], excluded_count:0, truncated:false, ...extra,
+});
+const localWorkspaceBase = (handler, importStatus = undefined, renderOnReload = false) => setup({
+  identity:{status:"local_only"}, view:"local-workspace", renderOnReload,
+  ...(importStatus ? {importStatus} : {}),
+  handler:async (url, options) => {
+    if (url === "/api/local-workspace/managed") return {
+      schema:"stpd/managed-local-workspace-registration-v1", status:"ready",
+      workspace_id:"c".repeat(32),
+    };
+    if (url === "/api/local-workspace?limit=25&offset=0") return {
+      schema:"stpd/local-workspace-inventory-v1", total:0, items:[],
+    };
+    return handler(url, options);
+  },
+});
+
+test("member archive import requires a single explicit selection and Human attestation", async () => {
+  let imports = 0;
+  const env = localWorkspaceBase((url, options) => {
+    if (url === "/api/local-recordings/member-archives") return memberArchiveCatalog();
+    if (url === "/api/local-recordings/import-member-archive") {
+      imports++;
+      assert.equal(options.method, "POST");
+      return {status:"pending"};
+    }
+    throw new Error(`unexpected route ${url}`);
+  });
+  const initial = await env.render();
+  assert.equal(env.calls.some(call => call.url === "/api/local-recordings/member-archives"), false,
+    "the local scan is explicit");
+  await action(initial, "read-member-archives").onclick();
+  const page = await env.render();
+  const selection = field(page, "member-archive-selection");
+  const checkbox = field(page, "member-archive-attestation");
+  const submit = action(page, "import-member-archive");
+  assert.match(text(page), /2 KiB/);
+  assert.match(text(page), /bbbbbbbbbbbbbbbb/);
+  assert.match(text(page), /eeeeeeeeeeeeeeee/);
+  assert.match(text(page), /ffffffffffffffff/);
+  assert.equal(checkbox.checked, false);
+  assert.equal(submit.disabled, true);
+  await submit.onclick();
+  assert.equal(imports, 0);
+  selection.value = `${id("e")}/${id("f")}`;
+  selection.onchange();
+  assert.equal(checkbox.checked, false);
+  assert.equal(submit.disabled, true);
+  checkbox.checked = true;
+  checkbox.onchange();
+  assert.equal(submit.disabled, false);
+  await submit.onclick();
+  const posted = post(env.calls);
+  assert.equal(imports, 1);
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].url, "/api/local-recordings/import-member-archive");
+  assert.deepEqual(body(posted[0]), {
+    export_id:id("e"), file_id:id("f"), human_origin_attested:true,
+  });
+  assert.equal(posted[0].options.headers["X-CSRF-Token"], "browser-csrf");
+});
+
+test("member archive repeated clicks are blocked and cancelling clears the selection", async () => {
+  let resolveImport;
+  const env = localWorkspaceBase((url, options) => {
+    if (url === "/api/local-recordings/member-archives") return memberArchiveCatalog();
+    if (url === "/api/local-recordings/import-member-archive")
+      return new Promise(resolve => { resolveImport = resolve; });
+    throw new Error(`unexpected route ${url}`);
+  });
+  const initial = await env.render();
+  await action(initial, "read-member-archives").onclick();
+  const page = await env.render();
+  const selection = field(page, "member-archive-selection");
+  const checkbox = field(page, "member-archive-attestation");
+  const submit = action(page, "import-member-archive");
+  selection.value = `${id("e")}/${id("f")}`;
+  selection.onchange();
+  checkbox.checked = true;
+  checkbox.onchange();
+  const first = submit.onclick();
+  assert.equal(submit.disabled, true);
+  await submit.onclick();
+  assert.equal(post(env.calls).length, 1);
+  resolveImport({status:"pending"});
+  await first;
+
+  const another = await env.render();
+  const nextSelection = field(another, "member-archive-selection");
+  const nextCheckbox = field(another, "member-archive-attestation");
+  nextSelection.value = `${id("e")}/${id("f")}`;
+  nextSelection.onchange();
+  nextCheckbox.checked = true;
+  nextCheckbox.onchange();
+  await action(another, "cancel-member-archive-selection").onclick();
+  assert.equal(nextSelection.value, "");
+  assert.equal(nextCheckbox.checked, false);
+  assert.equal(action(another, "import-member-archive").disabled, true);
+  assert.equal(post(env.calls).length, 1);
+});
+
+test("member archive status survives page reload without replay and explains terminal failures", async () => {
+  const resumed = localWorkspaceBase((url) => {
+    if (url === "/api/local-recordings/member-archives") return memberArchiveCatalog();
+    throw new Error(`unexpected route ${url}`);
+  }, {
+    schema:"stpd/local-recording-import-operation-v1", status:"interrupted_unknown",
+    source_kind:"member_archive", export_id:id("e"), file_id:id("f"),
+    error_code:"previous_import_interrupted", csrf_token:"browser-csrf",
+  });
+  let page = await resumed.render();
+  assert.match(text(page), /成员归档导入未完成或结果未知/);
+  assert.match(text(page), /不会自动重试/);
+  assert.equal(post(resumed.calls).length, 0);
+
+  const completedArtifact = id("9");
+  const completed = localWorkspaceBase((url) => {
+    if (url === "/api/local-recordings/member-archives") return memberArchiveCatalog();
+    throw new Error(`unexpected route ${url}`);
+  }, {
+    schema:"stpd/local-recording-import-operation-v1", status:"completed",
+    source_kind:"member_archive", export_id:id("e"), file_id:id("f"),
+    artifact_id:completedArtifact, csrf_token:"browser-csrf",
+  });
+  page = await completed.render();
+  assert.match(text(page), /来源索引与训练用途资格仍需另行评估/);
+  const detail = find(page, element => element.tag === "a"
+    && element.href === `?view=local-workspace&id=${completedArtifact}`);
+  assert.match(detail.textContent, /单独预览样本/);
+  assert.equal(post(completed.calls).length, 0);
+
+  const failed = localWorkspaceBase((url) => {
+    if (url === "/api/local-recordings/member-archives") return memberArchiveCatalog();
+    throw new Error(`unexpected route ${url}`);
+  }, {
+    schema:"stpd/local-recording-import-operation-v1", status:"failed",
+    source_kind:"member_archive", export_id:id("e"), file_id:id("f"),
+    error_code:"download_checksum_mismatch", csrf_token:"browser-csrf",
+  });
+  page = await failed.render();
+  assert.match(text(page), /成员归档导入未完成或结果未知/);
+  assert.match(text(page), /大小或校验值不符/);
+  assert.match(text(page), /download_checksum_mismatch/);
+});
+
 test("local verified artifact preview is explicit and scoped to the selected detail", async () => {
   const artifact = id("a"), other = id("b");
   let previewStatus = {status: "completed", artifact_id: other, human_input_labels: 99};
@@ -4644,6 +4794,7 @@ test("raw export selection is exact, csrf scoped, and creating a manifest does n
           verified_bytes: 42,
           total_files: 2,
           total_bytes: 84,
+          directory: "/private/user/profile/downloads/private-export",
         };
       return exportManifest;
     },
@@ -4666,10 +4817,28 @@ test("raw export selection is exact, csrf scoped, and creating a manifest does n
   page = await env.render();
   assert.match(text(page), /1 \/ 2/);
   assert.match(text(page), /42 B \/ 84 B/);
+  assert.doesNotMatch(text(page), /\/private\/user\/profile/);
   assert.doesNotMatch(text(page), /所选文件已通过本机完整性校验/);
   await action(page, "export-download-" + id("c")).onclick();
   assert.ok(post(env.calls)[1].url.endsWith("/download"));
   assert.match(text(env.notice), /服务已接收下载请求/);
+});
+
+test("verified member download links to local import without displaying its saved path", async () => {
+  const privatePath = "/private/user/profile/downloads/opaque-export";
+  const env = setup({
+    view:"downloads",
+    handler:url => url.includes("/collections?") ? emptyList()
+      : url.endsWith("/download-status") ? {
+        status:"verified", export_id:id("c"), verified_files:1, total_files:1,
+        verified_bytes:64, total_bytes:64, directory:privatePath,
+      } : exportManifest,
+  });
+  const page = await env.render();
+  const entry = find(page, element => element.tag === "a"
+    && element.href === "?view=local-workspace");
+  assert.match(entry.textContent, /导入已下载的成员归档/);
+  assert.doesNotMatch(text(page), /\/private\/user\/profile/);
 });
 
 test("export artifact payloads require explicit selected own roles; manifest does not recursively select parents", async () => {

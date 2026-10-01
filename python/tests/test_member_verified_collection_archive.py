@@ -82,6 +82,78 @@ def test_selected_export_returns_exact_hash_verified_archive(tmp_path: Path) -> 
     assert source.upload_id == "b" * 32
 
 
+def test_saved_download_catalog_projects_only_collection_archive_metadata(tmp_path: Path) -> None:
+    archive = b"synthetic private archive bytes"
+    client, export_id, file_id = saved_export(tmp_path, archive)
+    directory = tmp_path / "downloads" / export_id
+    atomic_json(directory / "download.json", {
+        "status": "verified", "export_id": export_id,
+        "verified_files": 1, "verified_bytes": len(archive),
+        "total_files": 1, "total_bytes": len(archive),
+        "directory": str(directory), "training_admitted": False,
+    })
+
+    catalog = client.verified_collection_archive_catalog()
+
+    assert catalog["schema"] == "stpd/local-member-collection-archive-catalog-v1"
+    assert catalog["status"] == "ready"
+    assert catalog["items"] == [{
+        "export_id": export_id,
+        "name": "项目成员集合归档",
+        "file_id": file_id,
+        "artifact_id": "a" * 64,
+        "upload_id": "b" * 32,
+        "size": len(archive),
+    }]
+    assert "directory" not in catalog and "archive" not in catalog
+    encoded = json_bytes(catalog).decode()
+    assert str(directory) not in encoded
+    assert archive.decode() not in encoded
+
+
+def test_saved_download_catalog_ignores_missing_or_unverified_receipts(tmp_path: Path) -> None:
+    client, export_id, _ = saved_export(tmp_path, b"synthetic archive bytes")
+    assert client.verified_collection_archive_catalog()["items"] == []
+
+    directory = tmp_path / "downloads" / export_id
+    atomic_json(directory / "download.json", {
+        "status": "downloading", "export_id": export_id,
+        "verified_files": 1, "verified_bytes": 24,
+        "total_files": 1, "total_bytes": 24,
+        "directory": str(directory), "training_admitted": False,
+    })
+    catalog = client.verified_collection_archive_catalog()
+    assert catalog["items"] == []
+    assert catalog["excluded_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "row_changes",
+    [
+        {"upload_id": None},
+        {"role": "records"},
+        {"type": "manifest", "role": None, "upload_id": None,
+         "media_type": "application/json"},
+    ],
+)
+def test_saved_download_catalog_excludes_artifacts_and_non_archive_files(
+    tmp_path: Path, row_changes: dict,
+) -> None:
+    archive = b"synthetic artifact bytes"
+    client, export_id, _ = saved_export(tmp_path, archive, row_changes=row_changes)
+    directory = tmp_path / "downloads" / export_id
+    atomic_json(directory / "download.json", {
+        "status": "verified", "export_id": export_id,
+        "verified_files": 1, "verified_bytes": len(archive),
+        "total_files": 1, "total_bytes": len(archive),
+        "directory": str(directory), "training_admitted": False,
+    })
+
+    catalog = client.verified_collection_archive_catalog()
+
+    assert catalog["items"] == []
+
+
 @pytest.mark.parametrize(
     ("kwargs", "maximum", "expected_code"),
     [

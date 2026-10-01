@@ -57,6 +57,7 @@ window.SpireProject = (() => {
   const commandControls = new Map();
   let activeDataset = null;
   let localRecordingSnapshot = null;
+  let localMemberArchiveSnapshot = null;
   const datasetSnapshots = new WeakMap();
   const datasetReads = new Map();
   let datasetReadEpoch = 0;
@@ -278,6 +279,16 @@ window.SpireProject = (() => {
       runtime_game_mismatch: "模型运行器连接的不是当前游戏，请重新加载模型。",
       runtime_recovery_epoch_mismatch: "你已暂停或结束测试，这条旧操作已取消。",
       request_unknown: "请求结果尚未确认，请先刷新状态。不会自动重发操作。",
+      download_checksum_mismatch: "本机归档与已保存清单的大小或校验值不符，未导入。请刷新已下载归档后再明确重试。",
+      download_file_unavailable: "本机归档文件当前不可用，未导入。请确认下载完整后刷新归档目录。",
+      download_inventory_unavailable: "本机下载清单无法读取，未导入。请重新检查已下载归档状态。",
+      download_receipt_unavailable: "没有可用的完整下载回执，未导入。请确认成员归档已经下载并通过校验。",
+      invalid_export_inventory: "本机导出清单未通过身份校验，未导入。请刷新归档目录并核对来源。",
+      collection_archive_not_selected: "所选文件不是该导出中明确选取的 collection archive，未导入。",
+      member_download_unavailable: "本机成员下载服务不可用，未导入。请重新读取本机状态。",
+      workspace_required: "请先建立或选择本机资料空间，再导入成员归档。",
+      curation_owner_recovery_required: "本机来源用途状态需要先恢复，归档尚未导入。",
+      previous_import_interrupted: "工作台上次关闭时导入仍在处理中，结果未知。先刷新并核对状态；不会自动重试。",
       local_model_export_failed: "本机模型导出与校验未完成。请刷新状态后再按需明确重试。",
       local_model_registration_invalid: "本机模型登记状态格式未知；未发起模型操作。请刷新状态。",
       local_models_extra_required: "本机模型计算依赖尚未按发行包准备；请先用已验证的开发者工具包初始化模型环境。未启动训练或登记。",
@@ -1261,37 +1272,40 @@ window.SpireProject = (() => {
     return box;
   }
   function downloadState(value) {
+    const safeValue = Object.fromEntries(
+      Object.entries(value).filter(([key]) => key !== "directory"),
+    );
     const box = panel(
       "本机下载状态",
       "仅显示服务已报告的进展。没有百分比或预计完成时间的推算。",
     );
     box.append(
       fields([
-        ["状态", show(value.status)],
-        ["导出身份", value.export_id || "尚无下载"],
+        ["状态", show(safeValue.status)],
+        ["导出身份", safeValue.export_id || "尚无下载"],
         [
           "已校验 / 总文件",
-          `${count(value.verified_files)} / ${count(value.total_files)}`,
+          `${count(safeValue.verified_files)} / ${count(safeValue.total_files)}`,
         ],
         [
           "已校验 / 总字节",
-          `${bytes(value.verified_bytes)} / ${bytes(value.total_bytes)}`,
+          `${bytes(safeValue.verified_bytes)} / ${bytes(safeValue.total_bytes)}`,
         ],
       ]),
     );
-    if (value.error_code || value.error)
+    if (safeValue.error_code || safeValue.error)
       box.append(
         el(
           "p",
-          failure({ message: value.error_code || value.error }),
+          failure({ message: safeValue.error_code || safeValue.error }),
           "banner error",
         ),
       );
-    if (["pending", "downloading"].includes(value.status))
+    if (["pending", "downloading"].includes(safeValue.status))
       box.append(
         el("p", "下载仍由本机后台服务处理。关闭网页不表示下载完成。", "muted"),
       );
-    if (value.status === "verified")
+    if (safeValue.status === "verified")
       box.append(
         el(
           "p",
@@ -1299,9 +1313,9 @@ window.SpireProject = (() => {
           "banner good",
         ),
       );
-    if (value.directory)
-      box.append(fields([["服务管理的本机保存目录", value.directory]]));
-    box.append(technical(value, "实际下载回执与观测"));
+    if (local && safeValue.status === "verified")
+      box.append(link("在本机资料中导入已下载的成员归档", route("local-workspace")));
+    box.append(technical(safeValue, "实际下载回执与观测"));
     return box;
   }
   function boundaryLabel(coverage) {
@@ -3868,18 +3882,34 @@ window.SpireProject = (() => {
       "选择已结束的录制，验证后加入本机资料库。原始录制保留，不会上传或开始训练。",
     );
     const {csrf_token: localCsrfToken, ...safeImportStatus} = importStatus;
+    const memberArchiveImport = importStatus.source_kind === "member_archive";
     if (importStatus.status === "pending") {
-      section.append(el("p", "本机正在打包并验证所选录制；可离开本页，稍后刷新状态。", "small muted"));
+      section.append(el("p", memberArchiveImport
+        ? "本机正在核对并导入所选成员归档；可离开本页，稍后刷新状态。不会自动重试。"
+        : "本机正在打包并验证所选录制；可离开本页，稍后刷新状态。", "small muted"));
     } else if (importStatus.status === "completed") {
-      section.append(el("p", "上一次本机导入已完成。", "small muted"));
+      section.append(el("p", memberArchiveImport
+        ? "成员归档已验证并导入本机。导入本身不会评定训练资格或开始训练。"
+        : "上一次本机导入已完成。", "small muted"));
       if (importStatus.artifact_id)
-        section.append(link("查看已导入对象", route("local-workspace", importStatus.artifact_id)));
+        section.append(link(memberArchiveImport ? "打开对象并单独预览样本" : "查看已导入对象",
+          route("local-workspace", importStatus.artifact_id)));
+      if (memberArchiveImport)
+        section.append(el("p", "下一步：在对象详情中明确预览样本；来源索引与训练用途资格仍需另行评估。", "small muted"));
     } else if (importStatus.status === "published_index_unavailable") {
-      section.append(el("p", "归档已写入本机资料库，但索引更新失败；请查看状态并修复后再明确重试。", "small muted"));
+      section.append(el("p", memberArchiveImport
+        ? "成员归档证据已写入本机资料库，但本机索引更新失败；请查看状态并处理索引后再单独预览。不会自动重试或训练。"
+        : "归档已写入本机资料库，但索引更新失败；请查看状态并修复后再明确重试。", "small muted"));
     } else if (["failed", "interrupted_unknown", "publication_unknown"].includes(importStatus.status)) {
-      section.append(el("p", "上一次导入未确认完成；不会自动重试。请查看状态并核对后再明确操作。", "small muted"));
+      section.append(el("p", memberArchiveImport
+        ? "成员归档导入未完成或结果未知。原下载保留，不会自动重试；请查看具体错误并刷新可用归档后再明确操作。"
+        : "上一次导入未确认完成；不会自动重试。请查看状态并核对后再明确操作。", "small muted"));
     }
-    if (importStatus.error_code) section.append(technical(safeImportStatus, "查看导入状态"));
+    if (importStatus.error_code) {
+      if (memberArchiveImport && ["failed", "interrupted_unknown", "publication_unknown"].includes(importStatus.status))
+        section.append(el("p", failure({message:importStatus.error_code}), "small muted"));
+      section.append(technical(safeImportStatus, "查看导入状态"));
+    }
     section.append(command(ctx, "refresh-local-import-status", "刷新导入状态", async () => {
       await reload(ctx);
     }, {type:"secondary"}));
@@ -3950,6 +3980,89 @@ window.SpireProject = (() => {
     }
     if (!data.candidate_count)
       section.append(empty("没有检测到已结束的录制", "尚未结束或信息不完整的录制不会列出。"));
+    return section;
+  }
+
+  function localMemberArchiveCard(ctx, importStatus, csrfToken) {
+    const section = panel(
+      "导入已下载的成员归档",
+      "只列出本机已有完整下载回执的集合归档。此操作仅导入到本机；来源索引和训练资格另行评估，不会自动训练。",
+    );
+    if (localMemberArchiveSnapshot === null) {
+      section.append(command(ctx, "read-member-archives", "查看已下载成员归档", async () => {
+        localMemberArchiveSnapshot = await request(ctx, "/api/local-recordings/member-archives");
+        await reload(ctx);
+      }, {type:"secondary"}));
+      return section;
+    }
+
+    const data = localMemberArchiveSnapshot;
+    section.append(command(ctx, "refresh-member-archives", "刷新已下载归档", async () => {
+      localMemberArchiveSnapshot = await request(ctx, "/api/local-recordings/member-archives");
+      await reload(ctx);
+    }, {type:"secondary"}));
+    if (data.schema !== "stpd/local-member-collection-archive-catalog-v1"
+        || !Array.isArray(data.items)) {
+      section.append(el("p", "本机已下载归档目录格式不可用；请刷新状态。", "small muted"));
+      return section;
+    }
+    if (data.excluded_count)
+      section.append(el("p", `${count(data.excluded_count)} 个不完整或不符合条件的下载未列入可导入清单。`, "small muted"));
+    if (data.truncated)
+      section.append(el("p", "本次目录检查只处理了前 200 个导出目录；超出部分暂未列出。", "small muted"));
+
+    const items = data.items.filter(item =>
+      hex(item?.export_id) && hex(item?.file_id) && hex(item?.artifact_id)
+      && hex(item?.upload_id, 32) && Number.isSafeInteger(item?.size) && item.size > 0
+      && item.name === "项目成员集合归档");
+    const rows = items.map(item => [
+      item.name,
+      bytes(item.size),
+      el("span", item.upload_id, "mono break"),
+      el("span", `${item.export_id} · ${item.file_id}`, "mono break"),
+    ]);
+    if (rows.length) section.append(table(["名称", "大小", "来源 collection ID", "导出 / 文件身份"], rows));
+
+    const alreadyImported = item => importStatus.status === "completed"
+      && importStatus.source_kind === "member_archive"
+      && importStatus.export_id === item.export_id && importStatus.file_id === item.file_id;
+    const selectable = items.filter(item => !alreadyImported(item));
+    if (importStatus.status === "pending") {
+      section.append(el("p", "已有本机导入任务正在处理。刷新导入状态后再选择其他归档。", "small muted"));
+    } else if (selectable.length) {
+      const choiceId = item => `${item.export_id}/${item.file_id}`;
+      const selection = select(section, "选择一个集合归档", "member-archive-selection", [
+        ["", "请选择一份已下载归档"],
+        ...selectable.map(item => [choiceId(item), `${item.name} · ${item.upload_id.slice(0, 12)} · ${bytes(item.size)}`]),
+      ], "");
+      const checkbox = input(section, "我确认所选归档来自真人操作", "member-archive-attestation", false, "checkbox");
+      const selectedItem = () => selectable.find(item => choiceId(item) === selection.value);
+      const canImport = () => checkbox.checked && !!selectedItem() && !!csrfToken;
+      const button = command(ctx, "import-member-archive", "验证并导入本机", async () => {
+        const item = selectedItem();
+        if (!canImport() || !item) return;
+        await request(ctx, "/api/local-recordings/import-member-archive", {
+          export_id: item.export_id,
+          file_id: item.file_id,
+          human_origin_attested: true,
+        }, csrfToken);
+        await reload(ctx);
+      }, {disabled:true, primary:true});
+      selection.onchange = () => {
+        checkbox.checked = false;
+        button.disabled = true;
+      };
+      checkbox.onchange = () => { button.disabled = !canImport(); };
+      section.append(button, command(ctx, "cancel-member-archive-selection", "取消选择", async () => {
+        selection.value = "";
+        checkbox.checked = false;
+        button.disabled = true;
+      }, {type:"secondary"}));
+    } else if (!items.length) {
+      section.append(empty("没有可导入的已验证成员归档", "这里只显示可验证的 collection archive；产物文件与其他下载不会作为录制导入。"));
+    } else {
+      section.append(el("p", "当前列出的成员归档已导入。", "small muted"));
+    }
     return section;
   }
 
@@ -4827,6 +4940,7 @@ window.SpireProject = (() => {
 
     const importStatus = await request(ctx, "/api/local-recordings/import/status");
     box.append(localRecordingCard(ctx, importStatus));
+    box.append(localMemberArchiveCard(ctx, importStatus, importStatus.csrf_token));
 
     const query = drafts.get("local-workspace-search") || "";
     const selectedKind = drafts.get("local-workspace-kind") || "";
@@ -5058,6 +5172,7 @@ window.SpireProject = (() => {
       const nextAccount = `${identity?.principal?.subject || "anonymous"}:${identity?.principal?.role || ""}:${identity?.status || ""}`;
       if (account !== nextAccount) {
         account = nextAccount;
+        localMemberArchiveSnapshot = null;
         activeDataset = null;
         offsets = new Map();
         drafts = new Map();
