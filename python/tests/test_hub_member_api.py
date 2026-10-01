@@ -6,6 +6,7 @@ import concurrent.futures
 import hashlib
 import io
 import json
+import sqlite3
 from dataclasses import replace
 
 import pytest
@@ -18,6 +19,7 @@ from test_hub_console import signed as signed
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.hub import curation_access
 from spireagent.hub.campaigns import create_campaign_tables
+from spireagent.hub.collections import CollectionAccess
 from spireagent.hub.console_auth import ConsolePrincipal
 from spireagent.hub.curation import CurationLedger
 from spireagent.hub.exports import REQUEST_SCHEMA
@@ -751,6 +753,160 @@ def test_curation_overlap_run_group_sqlite_budget_is_unknown(api, monkeypatch):
         "status": "unknown", "related_runs": None
     }
     assert "run_group_query_limit" in result["reasons"]
+
+
+def test_curation_overlap_source_authorization_scan_uses_request_budget(api, monkeypatch):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api)
+    receipt = json.dumps({
+        "evidence_id": "f" * 64,
+        "content_id": "e" * 64,
+        "status": "verified",
+    })
+    with owner.operations.transaction() as db:
+        db.executemany(
+            "INSERT INTO uploads(id,device,content_id,manifest_sha,intent,status,receipt) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (
+                (
+                    f"synthetic-source-auth-{index:06d}",
+                    "synthetic-source-auth-device",
+                    f"{index:064x}",
+                    "a" * 64,
+                    "{}",
+                    "verified",
+                    receipt,
+                )
+                for index in range(40_000)
+            ),
+        )
+
+    monkeypatch.setattr(curation_access, "MAX_OVERLAP_REQUEST_SQLITE_VM_STEPS", 100_000)
+    original = CollectionAccess.manifests_for_evidence.__func__
+    observed = {"called": False, "interrupted": False}
+
+    def observe_source_read(cls, db, store, evidence_id, *, max_rows=None):
+        observed["called"] = True
+        try:
+            return original(cls, db, store, evidence_id, max_rows=max_rows)
+        except sqlite3.OperationalError as error:
+            observed["interrupted"] = (
+                getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT
+            )
+            raise
+
+    monkeypatch.setattr(
+        CollectionAccess, "manifests_for_evidence", classmethod(observe_source_read)
+    )
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert observed == {"called": True, "interrupted": True}
+    assert result["status"] == "unknown"
+    assert result["reasons"] == ["owner_index_query_limit"]
+    assert result["findings"]["source"] == {"status": "unknown", "count": None}
+
+
+def test_curation_overlap_source_authorization_row_cap_is_unknown(api, monkeypatch):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api)
+    source_id = candidate.parents[0].artifact_id
+    with owner.operations.transaction() as db:
+        row = db.execute(
+            "SELECT device,content_id,manifest_sha,intent,status,receipt FROM uploads "
+            "WHERE json_extract(receipt,'$.evidence_id')=?",
+            (source_id,),
+        ).fetchone()
+        assert row is not None
+        db.execute(
+            "INSERT INTO uploads(id,device,content_id,manifest_sha,intent,status,receipt) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (
+                "synthetic-source-auth-duplicate", "synthetic-second-device", row["content_id"],
+                row["manifest_sha"], row["intent"], row["status"], row["receipt"],
+            ),
+        )
+
+    monkeypatch.setattr(curation_access, "MAX_OVERLAP_SOURCE_UPLOAD_ROWS", 1)
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["status"] == "unknown"
+    assert result["reasons"] == ["owner_index_query_limit"]
+    assert result["findings"]["source"] == {"status": "unknown", "count": None}
+
+
+def test_curation_overlap_inventory_scan_uses_request_budget(api, monkeypatch):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api)
+    with owner.operations.transaction() as db:
+        # Synthetic-only expression index isolates the full inventory scan from the
+        # separately tested receipt-authorization scan; production adds no index.
+        db.execute(
+            "CREATE INDEX synthetic_receipt_evidence ON uploads "
+            "(json_extract(receipt,'$.evidence_id'))"
+        )
+        sources = [
+            (
+                hashlib.sha256(f"synthetic-inventory-source-{index}".encode()).hexdigest(),
+                hashlib.sha256(f"synthetic-inventory-digest-{index}".encode()).hexdigest(),
+                1,
+            )
+            for index in range(20_000)
+        ]
+        db.executemany("INSERT INTO curation_sources VALUES(?,?,?)", sources)
+        db.executemany(
+            "INSERT INTO uploads(id,device,content_id,manifest_sha,intent,status,receipt) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (
+                (
+                    f"synthetic-inventory-upload-{index:06d}",
+                    "synthetic-inventory-device",
+                    f"{index:064x}",
+                    "b" * 64,
+                    "{}",
+                    "verified",
+                    json.dumps({
+                        "evidence_id": sources[index][0],
+                        "content_id": f"{index:064x}",
+                        "status": "verified",
+                    }),
+                )
+                for index in range(len(sources))
+            ),
+        )
+
+    monkeypatch.setattr(curation_access, "MAX_OVERLAP_REQUEST_SQLITE_VM_STEPS", 100_000)
+    original = curation_access._hub_inventory_pending
+    observed = {"called": False, "interrupted": False}
+
+    def observe_inventory_read(db):
+        observed["called"] = True
+        try:
+            return original(db)
+        except sqlite3.OperationalError as error:
+            observed["interrupted"] = (
+                getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT
+            )
+            raise
+
+    monkeypatch.setattr(curation_access, "_hub_inventory_pending", observe_inventory_read)
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert observed == {"called": True, "interrupted": True}
+    assert result["status"] == "unknown"
+    assert result["reasons"] == ["owner_index_query_limit"]
+    assert result["coverage"]["verified_source_inventory"] == "unknown"
 
 
 def test_curation_overlap_route_is_member_only_and_rejects_ambiguous_queries(api):

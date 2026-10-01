@@ -28,11 +28,55 @@ MAX_LINEAGE_NODES = 512
 MAX_SOURCE_INDEXES = 512
 MAX_OVERLAP_RUNS = 50_000
 MAX_RUN_GROUP_ROWS = 100_000
+MAX_OVERLAP_REQUEST_SQLITE_VM_STEPS = 20_000_000
 MAX_OVERLAP_SQLITE_VM_STEPS = 5_000_000
 MAX_RUN_GROUP_SQLITE_VM_STEPS = 5_000_000
+MAX_OVERLAP_SOURCE_UPLOAD_ROWS = 4_096
 MAX_LEGACY_DATASETS = 256
 MAX_LEGACY_DEPTH = 8
 MAX_LEGACY_SOURCES = 100
+
+
+class _SqliteReadBudget:
+    """One VM-step allowance shared by every SQLite connection in an overlap request."""
+
+    _PROGRESS_OPS = 1_000
+
+    def __init__(self, max_vm_steps: int) -> None:
+        self.max_vm_steps = max(self._PROGRESS_OPS, max_vm_steps)
+        self.steps = 0
+        self.exhausted = False
+        self.statement_limited = False
+        self._statement_limit: int | None = None
+        self._statement_steps = 0
+
+    def attach(self, db: sqlite3.Connection) -> None:
+        # Keep this handler installed for the full lifetime of each route connection.
+        # Per-query limits are layered into _step; helpers never replace or clear it.
+        db.set_progress_handler(self._step, self._PROGRESS_OPS)
+
+    def _step(self) -> int:
+        self.steps += self._PROGRESS_OPS
+        if self._statement_limit is not None:
+            self._statement_steps += self._PROGRESS_OPS
+        if self.steps >= self.max_vm_steps:
+            self.exhausted = True
+            return 1
+        if (
+            self._statement_limit is not None
+            and self._statement_steps >= self._statement_limit
+        ):
+            self.statement_limited = True
+            return 1
+        return 0
+
+    def begin_statement(self, max_vm_steps: int) -> None:
+        self._statement_limit = max(self._PROGRESS_OPS, max_vm_steps)
+        self._statement_steps = 0
+        self.statement_limited = False
+
+    def end_statement(self) -> None:
+        self._statement_limit = None
 
 
 def _bounded_rows(
@@ -40,16 +84,11 @@ def _bounded_rows(
     query: str,
     parameters: tuple[Any, ...] = (),
     *,
+    budget: _SqliteReadBudget,
     vm_steps: int = MAX_OVERLAP_SQLITE_VM_STEPS,
 ) -> list[sqlite3.Row] | None:
-    """Materialize only capped query results and interrupt excessive SQLite work."""
-    remaining = [max(1, vm_steps // 1_000)]
-
-    def abort_on_budget() -> int:
-        remaining[0] -= 1
-        return int(remaining[0] <= 0)
-
-    db.set_progress_handler(abort_on_budget, 1_000)
+    """Bound rows and add a statement cap under the route-wide SQLite handler."""
+    budget.begin_statement(vm_steps)
     try:
         return db.execute(query, parameters).fetchall()
     except sqlite3.OperationalError as error:
@@ -57,7 +96,7 @@ def _bounded_rows(
             return None
         raise
     finally:
-        db.set_progress_handler(None, 0)
+        budget.end_statement()
 
 
 def _legacy_source_superset(
@@ -280,10 +319,12 @@ def overlap_metadata(
         result["reasons"] = ["candidate_unavailable"]
         return result
 
+    read_budget = _SqliteReadBudget(MAX_OVERLAP_REQUEST_SQLITE_VM_STEPS)
     # The member catalog is the existing discoverability gate. Do not retrieve or
     # classify an artifact until its ID is present in that authorized catalog scope.
     try:
         with closing(service.console_index.read()) as scope_db:
+            read_budget.attach(scope_db)
             candidate_visible = scope_db.execute(
                 "SELECT 1 FROM console_artifacts WHERE artifact_id=?", (candidate_id,)
             ).fetchone()
@@ -293,6 +334,10 @@ def overlap_metadata(
         candidate_nodes = require_artifact_access(
             candidate, project_member=True, store=service.store
         )
+    except sqlite3.OperationalError:
+        if read_budget.exhausted:
+            return unknown_for("owner_index_query_limit")
+        return candidate_unavailable()
     except (BoundaryError, OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError):
         # Keep absent, sealed, and otherwise inaccessible candidate IDs indistinguishable.
         return candidate_unavailable()
@@ -378,6 +423,7 @@ def overlap_metadata(
     # no Gold manifest, parent list, payload descriptor, or payload is opened.
     try:
         with closing(service.console_index.read()) as db:
+            read_budget.attach(db)
             candidate_row = db.execute(
                 "SELECT 1 FROM console_artifacts WHERE artifact_id=? AND kind='dataset'",
                 (candidate_id,),
@@ -393,47 +439,65 @@ def overlap_metadata(
             gold_summary = json.loads(gold_row["summary"])
             if gold_summary.get("metadata", {}).get("purpose") != "gold":
                 return unknown_for("gold_unavailable")
-            tables = {
-                row[0]
-                for row in db.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                )
-            }
             required = {
                 "curation_sources", "curation_source_runs", "curation_exact_source_index",
                 "curation_fingerprints", "curation_claims", "curation_claim_runs", "uploads",
                 "collection_sharing",
             }
+            table_names = tuple(sorted(required))
+            table_rows = _bounded_rows(
+                db,
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ("
+                + ",".join("?" for _ in table_names)
+                + ") LIMIT ?",
+                (*table_names, len(table_names)),
+                budget=read_budget,
+            )
+            if table_rows is None:
+                return unknown_for("owner_index_query_limit")
+            tables = {row[0] for row in table_rows}
             if not required <= tables:
                 return unknown_for("owner_index_unavailable")
 
             # Reuse CollectionAccess's current upload/receipt/share checks against this
             # same read snapshot. Missing upload rows and explicit withdrawals are not
             # interpreted as public/shared, and this path never calls its use-recording API.
+            source_upload_rows_remaining = MAX_OVERLAP_SOURCE_UPLOAD_ROWS
             for source_id in source_ids:
                 try:
-                    CollectionAccess.manifests_for_evidence(db, service.store, source_id)
-                except (
-                    BoundaryError, OSError, ValueError, KeyError, TypeError,
-                    sqlite3.DatabaseError,
-                ):
+                    manifests = CollectionAccess.manifests_for_evidence(
+                        db, service.store, source_id, max_rows=source_upload_rows_remaining
+                    )
+                    source_upload_rows_remaining -= len(manifests)
+                except BoundaryError as error:
+                    if error.stage == "sharing" and error.code == "source_upload_limit":
+                        return unknown_for("owner_index_query_limit")
+                    return candidate_unavailable()
+                except sqlite3.OperationalError:
+                    if read_budget.exhausted:
+                        return unknown_for("owner_index_query_limit")
+                    return candidate_unavailable()
+                except (OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError):
                     return candidate_unavailable()
 
             claim_rows = _bounded_rows(
                 db,
                 "SELECT id,purpose,artifact FROM curation_claims WHERE purpose='gold' LIMIT ?",
                 (MAX_OVERLAP_RUNS + 1,),
+                budget=read_budget,
             )
             candidate_claims = _bounded_rows(
                 db,
                 "SELECT id,purpose,artifact FROM curation_claims WHERE artifact=? LIMIT 2",
                 (candidate_id,),
+                budget=read_budget,
             )
             target_claims = _bounded_rows(
                 db,
                 "SELECT id FROM curation_claims "
                 "WHERE purpose='gold' AND artifact=? LIMIT 2",
                 (gold_id,),
+                budget=read_budget,
             )
             if claim_rows is None or candidate_claims is None or target_claims is None:
                 return unknown_for("owner_index_query_limit")
@@ -464,6 +528,8 @@ def overlap_metadata(
                 source_states[source_id] = (
                     source_row is not None and source_row[0] == 1 and exact is not None
                 )
+                if read_budget.exhausted:
+                    return unknown_for("owner_index_query_limit")
 
             source_ids_json = json.dumps(sorted(source_ids))
             exact_source_rows = _bounded_rows(
@@ -476,6 +542,7 @@ def overlap_metadata(
                 "JOIN curation_claims c ON c.id=r.claim "
                 "WHERE c.purpose='gold' AND r.run=s.run) LIMIT ?",
                 (source_ids_json, MAX_SOURCE_INDEXES + 1),
+                budget=read_budget,
             )
             exact_sources = (
                 {row[0] for row in exact_source_rows}
@@ -490,6 +557,7 @@ def overlap_metadata(
                 "SELECT r.claim,r.run FROM curation_claim_runs r "
                 "JOIN curation_claims c ON c.id=r.claim WHERE c.purpose='gold' LIMIT ?",
                 (MAX_OVERLAP_RUNS + 1,),
+                budget=read_budget,
             )
             gold_run_query_limited = gold_pair_rows is None
             gold_run_pairs_complete = (
@@ -507,6 +575,7 @@ def overlap_metadata(
                     "SELECT DISTINCT s.run FROM candidate_sources x "
                     "JOIN curation_source_runs s ON s.source=x.source LIMIT ?",
                     (source_ids_json, MAX_OVERLAP_RUNS + 1),
+                    budget=read_budget,
                 )
                 candidate_run_query_limited = candidate_run_rows is None
                 candidate_runs = {row[0] for row in candidate_run_rows or []}
@@ -521,6 +590,7 @@ def overlap_metadata(
                     db,
                     "SELECT run FROM curation_claim_runs WHERE claim=? LIMIT ?",
                     (candidate_claim_id, MAX_OVERLAP_RUNS + 1),
+                    budget=read_budget,
                 )
                 candidate_run_query_limited = candidate_run_rows is None
                 candidate_runs = {row[0] for row in candidate_run_rows or []}
@@ -535,6 +605,7 @@ def overlap_metadata(
                 db,
                 "SELECT 1 FROM curation_sources s LEFT JOIN curation_exact_source_index e "
                 "ON e.source=s.id WHERE s.complete!=1 OR e.source IS NULL LIMIT 1",
+                budget=read_budget,
             )
             all_source_indexes_complete = all_source_rows is not None and not all_source_rows
             inventory_pending = _hub_inventory_pending(db)
@@ -544,6 +615,7 @@ def overlap_metadata(
                 "JOIN curation_sources c ON c.id=s.source "
                 "LEFT JOIN curation_fingerprints f ON f.run=s.run "
                 "WHERE c.complete=1 AND f.run IS NULL LIMIT 1",
+                budget=read_budget,
             )
             missing_fingerprints = fingerprint_rows is None or bool(fingerprint_rows)
             gold_source_rows = _bounded_rows(
@@ -553,6 +625,7 @@ def overlap_metadata(
                 "AND NOT EXISTS (SELECT 1 FROM curation_source_runs s "
                 "JOIN curation_sources i ON i.id=s.source "
                 "WHERE s.run=r.run AND i.complete=1) LIMIT 1",
+                budget=read_budget,
             )
             gold_claim_sources_complete = gold_source_rows is not None and not gold_source_rows
             gold_claim_source_mismatch = bool(gold_source_rows)
@@ -566,6 +639,7 @@ def overlap_metadata(
                     "JOIN curation_source_runs s ON s.source=CAST(x.value AS TEXT) "
                     "AND s.run=r.run) LIMIT 1",
                     (candidate_claim_id, source_ids_json),
+                    budget=read_budget,
                 )
             candidate_claim_sources_complete = (
                 candidate_claim_source_rows is not None
@@ -593,8 +667,11 @@ def overlap_metadata(
                     json.dumps(sorted(candidate_runs)), json.dumps(sorted(gold_runs)),
                     MAX_RUN_GROUP_ROWS + 1,
                 ),
+                budget=read_budget,
                 vm_steps=MAX_RUN_GROUP_SQLITE_VM_STEPS,
             )
+            if read_budget.exhausted:
+                return unknown_for("owner_index_query_limit")
             grouped = grouped_rows or []
             run_group_query_complete = (
                 grouped_rows is not None and len(grouped_rows) <= MAX_RUN_GROUP_ROWS
@@ -780,5 +857,9 @@ def overlap_metadata(
         if error.stage in {"sharing", "hub"}:
             return candidate_unavailable()
         raise
+    except sqlite3.OperationalError:
+        if read_budget.exhausted:
+            return unknown_for("owner_index_query_limit")
+        return unknown_for("owner_metadata_unavailable")
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError, KeyError):
         return unknown_for("owner_metadata_unavailable")

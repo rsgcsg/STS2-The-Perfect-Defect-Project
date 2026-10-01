@@ -232,15 +232,28 @@ class CollectionAccess:
 
     @classmethod
     def manifests_for_evidence(
-        cls, db: sqlite3.Connection, store: Any, evidence_id: str
+        cls,
+        db: sqlite3.Connection,
+        store: Any,
+        evidence_id: str,
+        *,
+        max_rows: int | None = None,
     ) -> tuple[Manifest, ...]:
         """Require current project-shareable uploads for one source in a caller snapshot."""
         digest(evidence_id, "sharing.evidence_id")
-        rows = db.execute(
+        query = (
             "SELECT u.*,s.approved FROM uploads u LEFT JOIN collection_sharing s "
-            "ON s.upload_id=u.id WHERE json_extract(u.receipt,'$.evidence_id')=? ORDER BY u.id",
-            (evidence_id,),
-        ).fetchall()
+            "ON s.upload_id=u.id WHERE json_extract(u.receipt,'$.evidence_id')=? ORDER BY u.id"
+        )
+        parameters: tuple[Any, ...] = (evidence_id,)
+        if max_rows is not None:
+            if max_rows < 0:
+                raise ValueError("max_rows must not be negative")
+            query += " LIMIT ?"
+            parameters += (max_rows + 1,)
+        rows = db.execute(query, parameters).fetchall()
+        if max_rows is not None and len(rows) > max_rows:
+            raise BoundaryError("sharing", "source_upload_limit")
         if not rows:
             raise BoundaryError("sharing", "collection_not_shared")
         manifests = tuple(cls._manifest_for_shared_row(row, store) for row in rows)
