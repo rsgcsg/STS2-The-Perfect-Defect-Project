@@ -232,7 +232,7 @@ def _public_m0_lineage(store: Any, owner: Any, model: Manifest) -> dict[str, Any
         profile = renderer.get("profile") if isinstance(renderer, dict) else None
         renderer_identity = {"public_lite": ("stpd-public-snapshot-lite-v1", "provisional"),
                              "public_compact": ("stpd-public-snapshot-compact-v2", "provisional")}
-        expected_renderer = renderer_identity.get(profile)
+        expected_renderer = renderer_identity.get(profile) if isinstance(profile, str) else None
         if (training_input.parameters.value().get("schema") != PUBLIC_SCHEMA
                 or not expected_renderer
                 or renderer != {"version": expected_renderer[0], "profile": profile,
