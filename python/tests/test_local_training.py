@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import subprocess
 import sys
 import threading
@@ -163,18 +162,9 @@ def test_public_m0_workbench_http_train_export_and_registration_verifier(
         "instance_id": app.instance_id,
         "configuration_id": configuration_id(config),
     })
-    wrapper = tmp_path / "python-child"
-    child_python = sys.executable
-    package_path = str(ROOT)
-    tests_path = str(ROOT / "tests")
-    wrapper.write_text(
-        "#!/bin/sh\n"
-        f"PYTHONPATH={shlex.quote(package_path)}:{shlex.quote(tests_path)} exec "
-        f"{shlex.quote(child_python)} \"$@\"\n",
-        encoding="utf-8",
-    )
-    wrapper.chmod(0o700)
-    monkeypatch.setattr(sys, "executable", str(wrapper))
+    # LocalTrainingService starts real `sys.executable -m ...` children in ROOT.
+    # Keep that interpreter/module path intact; a POSIX shebang wrapper is not a
+    # Windows executable and would bypass the service's clean child environment.
     server = create_server(app)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
