@@ -41,10 +41,14 @@ from spireagent.workbench.native_workbench import (
 
 
 @contextlib.contextmanager
-def instance_lock(path: Path) -> Iterator[None]:
-    """OS-held lock; process death releases it without PID guesses or stale lock deletion."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
+def instance_lock(path: Path, *, create: bool = True) -> Iterator[None]:
+    """OS-held lock; process death releases it without PID guesses or stale deletion.
+
+    Observation callers use create=False to avoid initializing an owner path.
+    """
+    if create:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b" if create else "r+b") as handle:
         handle.seek(0)
         # Windows permits a byte lock beyond EOF; do not read another owner's
         # locked byte merely to initialize the lock file.
