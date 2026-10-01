@@ -1,4 +1,7 @@
 import { readFileSync } from "node:fs";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -10,6 +13,11 @@ import { PolicyRuntime } from "../src/runtime.js";
 import { candidateOrderDigest } from "../src/digest.js";
 import { serveStatefulPolicyPort } from "../src/policy-port.js";
 import { type PolicyConnector, type PolicyManifest, validatePolicyManifest } from "../src/contracts.js";
+import { ManagedServicePolicyClient } from "../src/managed.js";
+// @ts-expect-error The integration test intentionally exercises the adjacent in-repo Host runtime implementation.
+import { ManagedPlayerEnvironmentSession } from "../../host-runtime/src/managed-player-environment.mjs";
+// @ts-expect-error The integration test intentionally exercises the adjacent in-repo Host runtime implementation.
+import { startManagedHostService } from "../../host-runtime/src/managed-host-service.mjs";
 
 const sdkFixture = (name: string): unknown => JSON.parse(readFileSync(
   new URL(`../../connector/sdk/typescript/test/fixtures/${name}.json`, import.meta.url), "utf8"));
@@ -109,7 +117,276 @@ function fixture() {
     evidence: { append: async (kind: string, payload: Record<string, unknown>) => { events.push({ kind, payload }); } } as never };
 }
 
+function managedManifest(): PolicyManifest {
+  const value = manifest();
+  value.adapter.protocol = "sts2.policy-runtime/decision-only-ndjson-3";
+  value.requirements = { environment: { kind: "managed_text_v2", text_protocol_version: "1.0.0",
+    input_profile: "text-menu-v2" }, reads: [], whole_decision_admission: true,
+    candidate_order_digest: "sha256-json-menu-action-id-order", score_count_matches_candidate_count: true,
+    selected_index: true, successor_required: true };
+  return value;
+}
+
+function managedCapabilities() {
+  return { kind: "managed_text_v2" as const, protocol_version: "1.0.0", input_profile: "text-menu-v2" as const,
+    snapshot_schema: "sts2.player-environment/text-menu-snapshot-2" as const,
+    receipt_schema: "sts2.player-environment/text-menu-action-result-2" as const,
+    interaction_kinds: ["combat_turn"], observed_terminal_kinds: ["game_over"],
+    action_verbs: ["select_card", "select_target", "cancel_selection", "play"],
+    execution_available: true, control_held: false, control_owned: false, tainted: false,
+    environment: { kind: "managed_text_v2" as const, binding_sha256: "9".repeat(64),
+      service_instance_id: "service-1", runtime_instance_id: "runtime-1",
+      environment_fingerprint: "environment-1", game_continuity_id: "game-1",
+      text_protocol_version: "1.0.0", input_profile: "text-menu-v2" as const,
+      host_package_identity: { package: "@rsgcsg/sts2-host-runtime" as const, version: "1", source_revision: "b".repeat(40),
+        component_tree_revision: "c".repeat(40), release_asset_sha256: "d".repeat(64), package_content_sha256: "e".repeat(64) },
+      host_identity: { package_name: "@rsgcsg/sts2-host-runtime", version: "1",
+        distribution_kind: "installed_package" as const, source_revision: null,
+        component_tree_revision: null, source_digest_sha256: "f".repeat(64) },
+      candidate_build: { upstream_revision: "upstream", source_patch_sha256: "1".repeat(64),
+        artifact_sha256: "2".repeat(64), artifact_mvid: "mvid", original_sts2_sha256: "3".repeat(64),
+        runtime_sts2_sha256: "4".repeat(64) },
+      game_version: "fixture-game", game_commit: "fixture-commit", game_assembly_sha256: "4".repeat(64),
+      episode_provenance: { verdict: "provenance_pass" as const, requested_seed: "seed", actual_seed: "seed", runtime_instance_id: "runtime-1" } }
+  };
+}
+
+function nativeCombatDecision() {
+  return { type: "decision", decision: "combat_play",
+    context: { act: 1, act_index: 0, act_definition_id: "OVERGROWTH", act_name: "Overgrowth",
+      floor: 2, total_floor: 2, ascension: 0, room_type: "Combat", bosses: [], modifiers: [] },
+    encounter_type: "normal", turn_owner: "player", is_play_phase: true, round: 1,
+    energy: 3, max_energy: 3, exhaust_pile_count: 0, orb_slots: 0, orbs: [], companions: [],
+    player_statuses: [], hand: [{ index: 0, native_ref: "native-strike", id: "CARD.STRIKE",
+      name: "Strike", can_play: true, target_type: "AnyEnemy", valid_target_refs: ["native-enemy"],
+      type: "Attack", rarity: "Basic", cost: 1 }],
+    enemies: [{ index: 0, native_ref: "native-enemy", id: "MONSTER.CULTIST", combat_id: 1,
+      name: "Cultist", hp: 10, max_hp: 10, block: 0, statuses: [], intents: [] }],
+    player: { name: "The Defect", character_id: "DEFECT", hp: 70, max_hp: 70, gold: 99,
+      native_ref: "native-player", max_potion_slots: 3, relics: [], potions: [], deck: [] } };
+}
+
+function managedControlConfirmation(status: "held" | "released") {
+  return { status, service_instance_id: "service-1", runtime_instance_id: "runtime-1",
+    game_continuity_id: "game-1", control_epoch: "epoch-1" } as const;
+}
+
+async function cancelledManagedPreparation(phase: "capabilities" | "claim" | "observation", command: "human" | "stop") {
+  const f = fixture();
+  let enter!: () => void;
+  let resume!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  const gate = new Promise<void>((resolve) => { resume = resolve; });
+  f.connector.capabilities = vi.fn(async () => {
+    if (phase === "capabilities") { enter(); await gate; }
+    return managedCapabilities();
+  });
+  f.connector.acquireController = vi.fn(async () => {
+    if (phase === "claim") { enter(); await gate; }
+    return managedControlConfirmation("held");
+  });
+  f.connector.releaseController = vi.fn(async () => managedControlConfirmation("released"));
+  f.connector.observeTextMenuContext = vi.fn(async () => {
+    if (phase === "observation") { enter(); await gate; }
+    return { schema: "sts2.player-environment/text-menu-observation-context-2" as const,
+      snapshot: root(), game_continuity_id: "game-1" };
+  });
+  const inference = vi.fn(async () => { throw new Error("cancelled preparation invoked policy"); });
+  const runtime = new PolicyRuntime({ manifest: managedManifest(), connector: f.connector,
+    managedBindingSha256: "9".repeat(64), mode: "auto", evidence: {
+      append: async (kind: string, payload: Record<string, unknown>) => { f.events.push({ kind, payload }); },
+      finalize: async () => {}
+    } as never, runtimeIdentity: { version: "test", code_sha256: "8".repeat(64) },
+    statefulPolicy: inference });
+  const tick = runtime.tick();
+  await entered;
+  const recovery = command === "human" ? runtime.setMode("human") : runtime.stop();
+  expect(inference).not.toHaveBeenCalled();
+  expect(f.connector.acquireController).toHaveBeenCalledTimes(phase === "capabilities" ? 0 : 1);
+  resume();
+  expect(await tick).toMatchObject({ type: "not_admitted", reason: "runtime_recovery_epoch_mismatch" });
+  await recovery;
+  expect(inference).not.toHaveBeenCalled();
+  expect(f.connector.observeTextMenuContext).toHaveBeenCalledTimes(phase === "observation" ? 1 : 0);
+  expect(f.connector.releaseController).toHaveBeenCalledTimes(phase === "capabilities" ? 0 : 1);
+  expect(runtime.status()).toMatchObject({ mode: "human", lifecycle: command === "stop" ? "stopped" : "running",
+    controller: "released", tainted: false });
+}
+
 describe("explicit text-menu-v2 Runtime consumer", () => {
+  it("claims the real Managed Host only for observation and releases before policy", async () => {
+    const build = { upstream_revision: "upstream", source_patch_sha256: "1".repeat(64),
+      artifact_sha256: "2".repeat(64), artifact_mvid: "candidate-mvid",
+      original_sts2_sha256: "3".repeat(64), runtime_sts2_sha256: "4".repeat(64) };
+    const hostPackage = { package: "@rsgcsg/sts2-host-runtime" as const, version: "1",
+      source_revision: "b".repeat(40), component_tree_revision: "c".repeat(40),
+      release_asset_sha256: "d".repeat(64), package_content_sha256: "e".repeat(64) };
+    const hostIdentity = { product: "fixture", package_name: hostPackage.package, version: "1", distribution_kind: "git_checkout" as const,
+      workspace_revision: "a".repeat(40), component_path: "components/host-runtime",
+      source_revision: hostPackage.source_revision, component_tree_revision: hostPackage.component_tree_revision,
+      source_worktree_status: "clean", workspace_worktree_status: "clean",
+      source_digest_sha256: "f".repeat(64), source_file_count: 1 };
+    const binding = { schema: "sts2.policy-runtime/managed-environment-binding-1" as const,
+      profile_sha256: "a".repeat(64), input_profile: "text-menu-v2" as const,
+      host_package_identity: hostPackage, candidate_build: build };
+    let actualSeed = "";
+    const process = {
+      async request(request: { cmd: string; seed?: string }) {
+        if (request.cmd === "start_run" || request.cmd === "reset_run") {
+          actualSeed = request.seed ?? ""; return nativeCombatDecision();
+        }
+        if (request.cmd === "run_identity") return { type: "run_identity", active: true, seed: actualSeed };
+        if (request.cmd === "action") return nativeCombatDecision();
+        throw new Error(`unexpected native request ${request.cmd}`);
+      },
+      async stop() { return { code: 0 }; }
+    };
+    const session = new ManagedPlayerEnvironmentSession({ process,
+      runtimeInstanceId: "managed-runtime-1", environmentFingerprint: "managed-environment-1", sequence: 1 });
+    const started = { session, runtime: {
+      manifest: { candidate_id: "test", status: "ready", upstream: { revision: build.upstream_revision },
+        expected_build: { source_patch_sha256: build.source_patch_sha256,
+          artifact_sha256: build.artifact_sha256, artifact_mvid: build.artifact_mvid } },
+      exactGame: { version: "fixture-game", commit: "fixture-commit", sts2_dll_sha256: build.runtime_sts2_sha256 },
+      process, build, runtimeIdentity: { type: "managed", process_id: 1, sts2_assembly_sha256: build.runtime_sts2_sha256 },
+      adapterRuntimeInstanceId: "managed-runtime-1" }, environmentFingerprint: "managed-environment-1" };
+    const service = await startManagedHostService(started, { hostIdentity });
+    const directory = await realpath(resolve(await mkdtemp(join(tmpdir(), "policy-observation-lease-"))));
+    try {
+      const reset = await fetch(`${service.endpoint}/v1/admin/reset`, { method: "POST",
+        headers: { authorization: `Bearer ${service.managerToken}`, "x-sts2-managed-service-id": service.serviceInstanceId,
+          "content-type": "application/json" },
+        body: JSON.stringify({ request_id: "reset-observation-lease", seed: "OBSLEASE",
+          expected_runtime_instance_id: "managed-runtime-1", expected_game_continuity_id: null }) });
+      expect(reset.status).toBe(200);
+      const ready = await fetch(`${service.endpoint}/v1/ready`, {
+        headers: { authorization: `Bearer ${service.clientToken}` } }).then(response => response.json());
+      const bindingPath = join(directory, "binding.json");
+      const attachmentPath = join(directory, "attachment.json");
+      await writeFile(bindingPath, JSON.stringify(binding));
+      await writeFile(attachmentPath, JSON.stringify({ schema: "sts2.host-runtime/managed-service-attachment-1",
+        endpoint: service.endpoint, service_instance_id: service.serviceInstanceId, host_identity: hostIdentity,
+        role: "client", token: service.clientToken }), { mode: 0o600 });
+      const client = await ManagedServicePolicyClient.attach(bindingPath, attachmentPath, {
+        serviceInstanceId: service.serviceInstanceId, runtimeInstanceId: ready.adapter_runtime_instance_id,
+        gameContinuityId: ready.episode.game_continuity_id
+      }, "run-00000000-0000-4000-8000-000000000001");
+      const order: string[] = [];
+      const acquire = client.acquireController.bind(client);
+      const observe = client.observeTextMenuContext.bind(client);
+      const release = client.releaseController.bind(client);
+      const submit = client.submit.bind(client);
+      client.acquireController = async () => { order.push("claim"); return acquire(); };
+      client.observeTextMenuContext = async profile => { order.push("observe"); return observe(profile); };
+      client.releaseController = async () => { order.push("release"); return release(); };
+      client.submit = async input => { order.push("submit"); return submit(input); };
+      const inference = vi.fn(async (input: Parameters<NonNullable<ConstructorParameters<typeof PolicyRuntime>[0]["statefulPolicy"]>>[0]) => {
+        order.push("policy");
+        const actions = input.bundle.observation.schema === "sts2.player-environment/snapshot-1" ? []
+          : input.bundle.observation.menu_actions.actions;
+        const selected = actions.findIndex(action => action.verb === "select_card" || action.verb === "select_target");
+        return { output: { candidate_digest: input.candidate_digest,
+          scores: actions.map((_action, index) => -index), selected_index: selected },
+          completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
+            sequence: input.bundle.observation.sequence,
+            previous_interaction_request_id: input.previous_interaction?.request_id ?? null } };
+      });
+      const hostManifest = managedManifest();
+      hostManifest.support.action_verbs.push("end_turn", "back");
+      const runtime = new PolicyRuntime({ manifest: hostManifest, connector: client,
+        managedBindingSha256: client.bindingSha256, mode: "auto", runtimeIdentity: { version: "test", code_sha256: "8".repeat(64) },
+        evidence: { append: async () => {}, finalize: async () => {} } as never,
+        statefulPolicy: inference });
+      const firstResult = await runtime.tick();
+      expect(firstResult.type).toBe("navigated");
+      expect(order).toEqual(["claim", "observe", "release", "policy", "claim", "submit"]);
+      expect(service.driver.status().control_held).toBe(true);
+      const beforeSecondTick = order.length;
+      const continued = await runtime.tick();
+      expect(continued.type).toBe("navigated");
+      expect(order.slice(beforeSecondTick)).toEqual(["observe", "policy", "submit"]);
+      expect(order.filter(item => item === "claim")).toHaveLength(2);
+      expect(order.filter(item => item === "release")).toHaveLength(1);
+      expect(inference).toHaveBeenCalledTimes(2);
+      expect(service.driver.status().control_held).toBe(true);
+    } finally {
+      await service.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it.each(["capabilities", "claim", "observation"] as const)("does not start Managed inference after Human cancels pending %s", async phase => {
+    await cancelledManagedPreparation(phase, "human");
+  });
+
+  it.each(["capabilities", "claim", "observation"] as const)("does not start Managed inference after Stop cancels pending %s", async phase => {
+    await cancelledManagedPreparation(phase, "stop");
+  });
+
+  it("keeps a successful but malformed Managed claim unknown without a second claim or release", async () => {
+    const m = managedManifest();
+    const f = fixture();
+    const claim = vi.fn(async () => ({ status: "held" as const, service_instance_id: "service-1",
+      runtime_instance_id: "runtime-1", game_continuity_id: "wrong-game", control_epoch: "epoch-1" }));
+    const release = vi.fn(async () => undefined);
+    f.connector.capabilities = vi.fn(async () => managedCapabilities());
+    f.connector.acquireController = claim;
+    f.connector.releaseController = release;
+    const runtime = new PolicyRuntime({ manifest: m, connector: f.connector, managedBindingSha256: "9".repeat(64),
+      mode: "auto", evidence: { append: async (kind: string, payload: Record<string, unknown>) => {
+        f.events.push({ kind, payload }); }, finalize: async () => {} } as never,
+      runtimeIdentity: { version: "test", code_sha256: "8".repeat(64) },
+      statefulPolicy: async (input, _signal, onOffer) => {
+        onOffer(); return { output: { candidate_digest: input.candidate_digest,
+          scores: input.bundle.observation.schema === "sts2.player-environment/snapshot-1" ? []
+            : input.bundle.observation.menu_actions.actions.map((_action, index) => -index), selected_index: 0 },
+          completion: { continuity_token: input.continuity_token, snapshot_id: input.bundle.observation.snapshot_id,
+            sequence: input.bundle.observation.sequence,
+            previous_interaction_request_id: input.previous_interaction?.request_id ?? null } };
+      } });
+    expect((await runtime.tick()).type).toBe("not_admitted");
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "unknown", tainted: true });
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(release).not.toHaveBeenCalled();
+    await runtime.stop();
+    expect(runtime.status()).toMatchObject({ lifecycle: "stopped", controller: "unknown", tainted: true });
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it("releases a transient observation claim after a known read failure", async () => {
+    const f = fixture();
+    const order: string[] = [];
+    f.connector.capabilities = vi.fn(async () => managedCapabilities());
+    f.connector.acquireController = vi.fn(async () => { order.push("claim"); return managedControlConfirmation("held"); });
+    f.connector.observeTextMenuContext = vi.fn(async () => { order.push("observe"); throw new Error("known_read_rejection"); });
+    f.connector.releaseController = vi.fn(async () => { order.push("release"); return managedControlConfirmation("released"); });
+    const runtime = new PolicyRuntime({ manifest: managedManifest(), connector: f.connector,
+      managedBindingSha256: "9".repeat(64), mode: "one_step",
+      evidence: f.evidence, runtimeIdentity: { version: "test", code_sha256: "8".repeat(64) },
+      statefulPolicy: async () => { throw new Error("policy must not run"); } });
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: "observation_failed" });
+    expect(runtime.status().errors).toContain("observation_failed:known_read_rejection");
+    expect(order).toEqual(["claim", "observe", "release"]);
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "released", tainted: false });
+  });
+
+  it("marks a transient observation release failure unknown without retry", async () => {
+    const f = fixture();
+    f.connector.capabilities = vi.fn(async () => managedCapabilities());
+    f.connector.acquireController = vi.fn(async () => managedControlConfirmation("held"));
+    f.connector.observeTextMenuContext = vi.fn(async () => { throw new Error("read_failed"); });
+    f.connector.releaseController = vi.fn(async () => { throw new Error("release_ack_lost"); });
+    const runtime = new PolicyRuntime({ manifest: managedManifest(), connector: f.connector,
+      managedBindingSha256: "9".repeat(64), mode: "one_step", evidence: f.evidence,
+      runtimeIdentity: { version: "test", code_sha256: "8".repeat(64) },
+      statefulPolicy: async () => { throw new Error("policy must not run"); } });
+    expect(await runtime.tick()).toMatchObject({ type: "not_admitted", reason: expect.stringContaining("observation_failed:read_failed") });
+    expect(runtime.status()).toMatchObject({ mode: "human", controller: "unknown", tainted: true });
+    expect(f.connector.acquireController).toHaveBeenCalledTimes(1);
+    expect(f.connector.releaseController).toHaveBeenCalledTimes(1);
+    await expect(runtime.stop()).rejects.toThrow("controller_release_unconfirmed");
+    expect(f.connector.releaseController).toHaveBeenCalledTimes(1);
+  });
   it("keeps old manifests and port-2 v1 valid but rejects v2 on port-1", () => {
     expect(validatePolicyManifest(manifest()).representation.input_schema).toBe("sts2.player-environment/text-menu-snapshot-2");
     const legacy = manifest(); legacy.representation.input_schema = "sts2.player-environment/text-menu-snapshot-1";

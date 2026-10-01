@@ -37,6 +37,99 @@ hash; its source revision and package-content digest remain self-asserted combin
 claims, tied to the combination bytes in the verified kit archive but not independently
 anchored by the BOM. Preflight reports these as unverified claims.
 
+An optional private Host group is separate from those legacy public package claims.
+Derive it from the reviewed Host source tar and the exact source checkout before assembling
+the kit:
+
+```bash
+uv run --locked --project python python tools/package_developer_kit.py derive-private-host \
+  --source-root /ABS/source-checkout \
+  --host-source-archive /ABS/approved/rsgcsg-sts2-host-runtime-1.1.0-rc.23.tgz \
+  --host-source-archive-sha256 96fcf1c906dacb43819688cf75a4ed11c6fb257efbde734afbd5998b37b1fc5a \
+  --platform-bom /ABS/source-checkout/platform-bom.json \
+  --platform-bom-sha256 APPROVED_BOM_SHA256 \
+  --output-directory /ABS/private-host-candidate
+```
+
+The output directory contains `profile.json` and the derived `runtime.tgz`; pass those
+files and their printed SHA256 values to the existing `--private-host-profile` and
+`--private-host-archive` kit-packaging options. The producer checks the original tar
+hash and npm file inventory, compares every original packaged file with the clean
+BOM-bound Host source tree, and re-reads the Host and Connector component identities
+from that checkout. It copies the locked Connector SDK source to a temporary directory,
+installs its lockfile into a new private npm cache with scripts disabled, builds its
+`dist`, and uses the locked TypeScript and Zod package integrity. It does not use an
+author npm cache, pre-existing SDK `dist`, or `node_modules`.
+
+The derived tar records the original archive SHA and source package-content digest,
+per-file source inventory, Host source/tree/digest, producer tool git-blob and SHA256
+identities, Node/npm/TypeScript tool versions, selected SDK source/tree/digest and bundle
+hash, locked Zod integrity and bundle hash, and the derived package-content/archive
+hashes in the external profile. Its internal `private-host-derivation.json` repeats the
+input and recipe identity. Derivation requires the clean checkout executing the producer
+and rechecks that producer identity after completion. The verifier requires the receipt to
+match the profile, every original Host file except the transformed `package.json` to be
+byte and mode identical, the exact allowed manifest changes (`dependencies`,
+`bundleDependencies`, and `files`), and rejects any file outside the source inventory,
+SDK/Zod bundles, shrinkwrap, and derivation receipt. Only the two new derivation-format
+profiles carry this receipt; ordinary kits without a private Host group and older
+private profile groups remain readable.
+Kit consumers verify the receipt against their own clean, exact-revision source clone;
+it may be a separate clone from the producer.
+
+The original Host `package.json` selects the public SDK rc1 URL. The derived package
+changes that dependency to the SDK package version selected by the kit BOM, adds Zod as
+an exact dependency, declares SDK and Zod as `bundleDependencies`, and adds
+`npm-shrinkwrap.json` plus the derivation receipt to the package file allowlist. It keeps
+Host source files unchanged. The checked-in Host `package-lock.json` is not in the
+approved source tar and is not used as the derived lock. The current BOM SDK pairing is
+1.3.0-rc.5 from Connector source 89ffa45cb6401827e5f64d6f1927a3843ae6ebf7, tree
+98643b4de67073dca4d95da2f9d753f5198a33f0, source digest
+6aa96c8bbc6d69f2bf5fd39c52816747fc1c608da559fe690c309742a3729f62. Zod is 3.25.76
+with the integrity in the current SDK lockfile. Old rc1 tests or canary evidence do not
+qualify this changed pairing.
+
+Before the producer returns, and again when the kit packager consumes a v2 profile, the
+exact derived tar must install from a new empty npm cache with explicit `--offline`,
+empty user/global npm config, and `--ignore-scripts`. It then imports a side-effect-free
+Host source module (the Host package has no package-root import entry), the selected SDK,
+and Zod. Host setup/start and game launch are never run by these packaging checks.
+The producer needs network access only to obtain the SDK's public lockfile dependencies
+into its temporary fresh cache; the resulting tarball itself is tested offline. This
+proves the Host/SDK/Zod package closure, not full Node/Python kit offline operation or a
+loaded/runtime qualification.
+
+The approved Host rc23 source tar declares the public Connector SDK rc1 release URL.
+A private kit candidate instead binds to and bundles the SDK version/source selected by
+the current BOM (currently 1.3.0-rc.5); this is a dependency change in the private
+distribution. Tests or canary evidence for the old rc1 dependency do not qualify that
+new SDK pairing. The actual derived bundle must pass fresh offline install/import checks
+and separate selected-profile/runtime validation before it can be called usable.
+This is a private kit archive format; it does not modify the Host component source,
+rewrite BOM `public_packages`, or relabel a public release.
+
+`prepare` stages an included candidate under
+`source/python/.local/private-host-runtime/`; `initialize` verifies and extracts the
+fixed Host package there. This does not automatically configure a Managed environment.
+After a separately reviewed exact Managed candidate is available, use the existing
+stopped-Workbench `environment-profile` command to select it explicitly:
+
+```bash
+uv run --locked --extra cloud python -m spireagent.workbench project environment-profile \
+  --config /ABS/project.json \
+  --candidate-directory /ABS/APPROVED_MANAGED_CANDIDATE \
+  --host-package-directory /ABS/releases/APPROVED_ZIP_SHA256/source/python/.local/private-host-runtime/package \
+  --host-package-pin /ABS/releases/APPROVED_ZIP_SHA256/source/python/.local/private-host-runtime/host-package-pin.json \
+  --input-profile text-menu-v1
+```
+
+Kit status reports the candidate package as staged/verified separately from the
+public `developer-combination` dependency tuple. It reports environment-profile
+selection as unobserved; configuration is not a loaded or running Host. The currently
+installed CollectionTool remains its own immutable Annotator/Evidence consumer and is
+not rebuilt or relabeled by this kit change. The candidate archive closure does not
+qualify the full kit's Node/Python setup or complete offline operation.
+
 Preflight resolves the explicit game directory and the doctor's selected directory to the
 same canonical root. This permits normal symlinked ancestors and a selected-directory alias,
 while rejecting symlinks and escapes below the canonical game root for the four identity

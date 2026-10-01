@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import json
 import os
+import stat
+import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, BinaryIO
+
+_WINDOWS_READ_ATTEMPTS = 10
+_WINDOWS_READ_DELAY = 0.01
 
 
 @contextmanager
@@ -20,8 +26,8 @@ def open_replaceable_read(path: Path) -> Iterator[BinaryIO]:
     replacement needs that access even though the reader only reads the old
     version. Keep the handle open only for the caller's read.
     """
-    if os.name != "nt":
-        descriptor = os.open(path, os.O_RDONLY)
+    if sys.platform != "win32":
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     else:
         import importlib
         from ctypes import wintypes
@@ -51,8 +57,21 @@ def open_replaceable_read(path: Path) -> Iterator[BinaryIO]:
 
 
 def read_replaceable_bytes(path: Path) -> bytes:
-    with open_replaceable_read(path) as stream:
-        return stream.read()
+    # ReplaceFileW combines rename/publication steps. A pathname can briefly be
+    # absent or unavailable even though the writer will publish successfully.
+    # Reconcile only Windows read observations, never a replacement or operation.
+    for attempt in range(_WINDOWS_READ_ATTEMPTS):
+        try:
+            with open_replaceable_read(path) as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("replaceable file must be regular")
+                return stream.read()
+        except OSError as error:
+            if (getattr(error, "winerror", None) not in {2, 3, 5, 32}
+                    or attempt == _WINDOWS_READ_ATTEMPTS - 1):
+                raise
+            time.sleep(_WINDOWS_READ_DELAY)
+    raise AssertionError("unreachable replaceable read")
 
 
 def _replace_existing_windows(temporary: Path, path: Path, backup: Path) -> None:

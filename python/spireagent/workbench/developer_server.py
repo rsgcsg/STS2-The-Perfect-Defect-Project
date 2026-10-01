@@ -41,10 +41,14 @@ from spireagent.workbench.native_workbench import (
 
 
 @contextlib.contextmanager
-def instance_lock(path: Path) -> Iterator[None]:
-    """OS-held lock; process death releases it without PID guesses or stale lock deletion."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
+def instance_lock(path: Path, *, create: bool = True) -> Iterator[None]:
+    """OS-held lock; process death releases it without PID guesses or stale deletion.
+
+    Observation callers use create=False to avoid initializing an owner path.
+    """
+    if create:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b" if create else "r+b") as handle:
         handle.seek(0)
         # Windows permits a byte lock beyond EOF; do not read another owner's
         # locked byte merely to initialize the lock file.
@@ -282,8 +286,11 @@ class Application:
         self.console = LocalConsole(
             config, self.hub, self.delivery_environment, self.delivery_process, self.identity
         )
-        self.models = LocalModelService(config, hub=self.hub)
         self.local_environment = LocalEnvironmentService(config)
+        self.models = LocalModelService(
+            config, hub=self.hub,
+            managed_target=self.local_environment.managed_runtime_target,
+        )
         self.local_managed_sources = LocalManagedSourceService(config, self.local_environment)
         self.local_recordings = LocalRecordingCatalog(config)
         # Keep command-time owner observations separate from concurrent browser GET scans.
@@ -488,7 +495,12 @@ class Application:
 
         if self.config.research_workspace is not None:
             return open_registered_workspace(self.config.research_workspace)
-        return self.managed_local_workspace().get("workspace")
+        managed = self.managed_local_workspace()
+        workspace = managed.get("workspace")
+        if workspace is not None:
+            # This is a read-only projection over the verified owner path.
+            workspace.curation_owner = managed.get("curation_owner")
+        return workspace
 
     def managed_local_workspace(self) -> dict[str, Any]:
         if self.config.research_workspace is not None:
@@ -663,7 +675,8 @@ class Application:
             raise BoundaryError("local_model_export", "running_configuration_mismatch")
         return self.local_model_export.start(model_id)
 
-    def register_local_model(self, model_id: object) -> dict[str, Any]:
+    def register_local_model(self, model_id: object, *,
+                             environment_kind: str = "native") -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_model_registration", "running_instance_unavailable")
         try:
@@ -677,7 +690,7 @@ class Application:
                 or runtime.get("instance_id") != self.instance_id
                 or runtime.get("configuration_id") != configuration_id(self.config)):
             raise BoundaryError("local_model_registration", "running_configuration_mismatch")
-        return self.local_model_registration.register(model_id)
+        return self.local_model_registration.register(model_id, environment_kind=environment_kind)
 
     def close(self) -> None:
         self.local_environment.close()
@@ -1008,10 +1021,14 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
                 try:
-                    query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=1)
-                    if set(query) != {"model_id"} or len(query["model_id"]) != 1:
+                    query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=2,
+                                     keep_blank_values=True)
+                    if (set(query) not in ({"model_id"}, {"model_id", "environment_kind"})
+                            or any(len(values) != 1 or not values[0] for values in query.values())):
                         raise ValueError
-                    value = {**app.local_model_registration.status(query["model_id"][0]),
+                    target = query.get("environment_kind", ["native"])[0]
+                    value = {**app.local_model_registration.status(
+                        query["model_id"][0], environment_kind=target),
                              "csrf_token": app.account.csrf}
                     self.respond(200, json.dumps(value).encode())
                 except (BoundaryError, ValueError) as error:
@@ -1244,6 +1261,41 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         "session_id"
                     }:
                         value = app.local_environment.stop(body["session_id"])
+                    elif self.path == "/api/local-environment/resume" and set(body) == {
+                        "session_id", "service_instance_id", "runtime_instance_id",
+                        "game_continuity_id"
+                    } and all(isinstance(body[key], str) and body[key] for key in body):
+                        app.check_environment_instance()
+                        value = app.local_environment.resume(
+                            expected_session_id=body["session_id"],
+                            expected_service_instance_id=body["service_instance_id"],
+                            expected_runtime_instance_id=body["runtime_instance_id"],
+                            expected_game_continuity_id=body["game_continuity_id"],
+                        )
+                    elif self.path == "/api/local-environment/close" and set(body) in ({
+                        "service_instance_id", "runtime_instance_id", "game_continuity_id"
+                    }, {"session_id", "service_instance_id", "runtime_instance_id",
+                        "game_continuity_id"}) and all(
+                            isinstance(body[key], str) and body[key] for key in body
+                        ):
+                        app.check_environment_instance()
+                        value = app.local_environment.close_environment(
+                            expected_session_id=body.get("session_id"),
+                            expected_service_instance_id=body["service_instance_id"],
+                            expected_runtime_instance_id=body["runtime_instance_id"],
+                            expected_game_continuity_id=body["game_continuity_id"],
+                        )
+                    elif self.path == "/api/local-environment/recover-control" and set(body) == {
+                        "session_id", "service_instance_id", "runtime_instance_id",
+                        "game_continuity_id"
+                    } and all(isinstance(body[key], str) and body[key] for key in body):
+                        app.check_environment_instance()
+                        value = app.local_environment.recover_control(
+                            expected_session_id=body["session_id"],
+                            expected_service_instance_id=body["service_instance_id"],
+                            expected_runtime_instance_id=body["runtime_instance_id"],
+                            expected_game_continuity_id=body["game_continuity_id"],
+                        )
                     elif self.path == "/api/local-environment/reports/import" and set(body) == {
                         "report_artifact_id", "purpose"
                     }:
@@ -1421,9 +1473,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 try:
                     body = self.json_body(maximum=128)
-                    if set(body) != {"model_id"}:
+                    if set(body) not in ({"model_id"}, {"model_id", "environment_kind"}):
                         raise ValueError
-                    value = app.register_local_model(body["model_id"])
+                    value = app.register_local_model(
+                        body["model_id"], environment_kind=body.get("environment_kind", "native"))
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
