@@ -38,6 +38,15 @@ TOKEN_VIEW_SCHEMAS = frozenset({
     DECISION_VIEW_SCHEMA, LEGACY_PUBLIC_BC_VIEW_SCHEMA, PUBLIC_BC_VIEW_SCHEMA,
     "stpd/text-menu-bc-view-v1",
 }) | HUMAN_VIEW_SCHEMAS
+LEGACY_TOKEN_METRICS_FIELDS = frozenset({"rows", "summary", "baselines"})
+LEGACY_ADMITTED_TOKEN_METRICS_FIELDS = LEGACY_TOKEN_METRICS_FIELDS | {"admission"}
+QUALIFIED_TOKEN_METRICS_FIELDS = LEGACY_TOKEN_METRICS_FIELDS | {
+    "admission", "qualification_evidence",
+}
+TOKEN_ADMISSION_FIELDS = frozenset({
+    "evaluation_scope", "historical_external_exposure",
+    "physical_game_independence", "clean_held_out_claim",
+})
 # FullRun feature compilation supports these two views, even though the shared
 # view loader also serves other model families.
 FULLRUN_VIEW_SCHEMAS = frozenset({FULLRUN_VIEW_SCHEMA, DECISION_VIEW_SCHEMA})
@@ -76,7 +85,9 @@ def _overall(value: object) -> dict[str, int | float]:
     return {name: value[name] for name in ("count", *METRICS)}
 
 
-def _report(value: object, *, human_input: bool = False
+def _report(value: object, *, human_input: bool = False,
+            unknown_run_independence: bool = False,
+            expected_run_groups: int | None = None,
             ) -> tuple[dict[str, int | float], int, int]:
     if not isinstance(value, dict):
         raise BoundaryError("local_evaluation", "invalid_report_summary")
@@ -86,14 +97,15 @@ def _report(value: object, *, human_input: bool = False
     groups = value.get("by_candidate_count")
     if not isinstance(bootstrap, dict) or not isinstance(groups, dict):
         raise BoundaryError("local_evaluation", "invalid_report_summary")
-    if human_input and (
+    requires_unknown = human_input or unknown_run_independence
+    if requires_unknown and (
         set(bootstrap) != {"status", "reason", "unit", "reported_run_groups"}
         or bootstrap["status"] != "unknown"
         or bootstrap["reason"] != "native_run_independence_unknown_across_sessions"
         or bootstrap["unit"] != "session_scoped_run_group"
     ):
         raise BoundaryError("local_evaluation", "invalid_report_summary")
-    runs = bootstrap.get("reported_run_groups" if human_input else "runs")
+    runs = bootstrap.get("reported_run_groups" if requires_unknown else "runs")
     if type(runs) is not int or runs < 1:
         raise BoundaryError("local_evaluation", "invalid_report_summary")
     multiple = total = 0
@@ -105,15 +117,23 @@ def _report(value: object, *, human_input: bool = False
         total += count
         if int(key) > 1:
             multiple += count
-    if total != overall["count"] or runs > overall["count"]:
+    if (total != overall["count"] or runs > overall["count"]
+            or (expected_run_groups is not None and runs != expected_run_groups)):
         raise BoundaryError("local_evaluation", "invalid_report_summary")
     return overall, runs, multiple
 
 
 def _public(manifest: Any, model: Any, view: Any, report: object, *,
-            baseline: str, baselines: object = None) -> dict[str, Any]:
+            baseline: str, baselines: object = None,
+            unknown_run_independence: bool = False,
+            expected_run_groups: int | None = None,
+            dev_qualification: dict[str, Any] | None = None) -> dict[str, Any]:
     human_input = view.parameters.value().get("schema") in HUMAN_VIEW_SCHEMAS
-    overall, runs, multiple = _report(report, human_input=human_input)
+    overall, runs, multiple = _report(
+        report, human_input=human_input,
+        unknown_run_independence=unknown_run_independence,
+        expected_run_groups=expected_run_groups,
+    )
     config = model.parameters.value().get("config")
     recipe = config.get("recipe") if isinstance(config, dict) else None
     if recipe is not None and (not isinstance(recipe, str) or recipe not in RECIPES):
@@ -141,10 +161,16 @@ def _public(manifest: Any, model: Any, view: Any, report: object, *,
     if human_input:
         result.update(grouping="session_scoped_run_group",
                       native_run_independence="unknown_across_sessions")
+    if dev_qualification is not None:
+        result["dev_qualification"] = dev_qualification
     if baselines is not None:
         if not isinstance(baselines, dict) or set(baselines) != {"uniform_legal", "action_only"}:
             raise BoundaryError("local_evaluation", "invalid_report_baselines")
-        reports = {name: _report(value, human_input=human_input)[0]
+        reports = {name: _report(
+            value, human_input=human_input,
+            unknown_run_independence=unknown_run_independence,
+            expected_run_groups=expected_run_groups,
+        )[0]
                    for name, value in sorted(baselines.items())}
         if any(value["count"] != overall["count"] for value in reports.values()):
             raise BoundaryError("local_evaluation", "invalid_report_baselines")
@@ -173,6 +199,88 @@ def _payload(store: ManifestArtifactStore, manifest: Any, role: str, limit: int)
     return decode_json(b"".join(store.read_payload(payload)))
 
 
+def _token_qualification(
+    manifest: Any, metrics: dict[str, Any], *, human_input: bool,
+) -> tuple[bool, dict[str, Any]]:
+    """Validate report-local qualification without reopening source lineage."""
+    parameters = manifest.parameters.value()
+    native_independence = parameters.get("native_run_independence")
+    physical_independence = parameters.get("physical_game_independence")
+    scientific_verdict = parameters.get("scientific_verdict")
+    if (native_independence is True
+            or physical_independence is True
+            or isinstance(physical_independence, str)
+            and physical_independence in {"independent", "independent_runs"}
+            or "clean_held_out_claim" in parameters
+            and parameters["clean_held_out_claim"] is not False
+            or scientific_verdict is not None and scientific_verdict != "not_claimed"):
+        raise BoundaryError("local_evaluation", "contradictory_token_qualification")
+
+    fields = frozenset(metrics)
+    if fields in {LEGACY_TOKEN_METRICS_FIELDS, LEGACY_ADMITTED_TOKEN_METRICS_FIELDS}:
+        if "native_run_independence" in parameters and native_independence is not False:
+            raise BoundaryError("local_evaluation", "contradictory_token_qualification")
+        has_admission = fields == LEGACY_ADMITTED_TOKEN_METRICS_FIELDS
+        admission = _token_admission(manifest, metrics["admission"]) if has_admission else None
+        return (human_input or native_independence is False or has_admission,
+                _dev_qualification(admission))
+    if fields != QUALIFIED_TOKEN_METRICS_FIELDS:
+        object_fields(metrics, set(LEGACY_TOKEN_METRICS_FIELDS), "local_evaluation.metrics")
+        raise BoundaryError("local_evaluation", "invalid_token_metrics_contract")
+
+    admission = _token_admission(manifest, metrics["admission"])
+    evidence = metrics["qualification_evidence"]
+    if not isinstance(evidence, list):
+        raise BoundaryError("local_evaluation", "invalid_token_qualification_evidence")
+    for item in evidence:
+        record = object_fields(item, {"origin", "facts"},
+                               "local_evaluation.token_qualification_evidence")
+        if (not isinstance(record["origin"], str) or not record["origin"]
+                or not isinstance(record["facts"], dict)):
+            raise BoundaryError("local_evaluation", "invalid_token_qualification_evidence")
+    if native_independence is not False:
+        raise BoundaryError("local_evaluation", "contradictory_token_qualification")
+    return True, _dev_qualification(admission)
+
+
+def _dev_qualification(admission: dict[str, Any] | None) -> dict[str, Any]:
+    value: dict[str, Any] = {"native_run_independence": "unknown"}
+    if admission is not None:
+        value.update(admission)
+    return value
+
+
+def _token_admission(manifest: Any, value: object) -> dict[str, Any]:
+    admission = object_fields(value, set(TOKEN_ADMISSION_FIELDS),
+                              "local_evaluation.token_admission")
+    parameters = manifest.parameters.value()
+    for key in TOKEN_ADMISSION_FIELDS - {"clean_held_out_claim"}:
+        fact = admission[key]
+        if isinstance(fact, dict):
+            projection = object_fields(fact, {"status", "claims"},
+                                       "local_evaluation.token_admission_fact")
+            if (projection["status"] not in (
+                    "conflicting_reported_facts", "unverified_reported_facts",
+            ) or not isinstance(projection["claims"], list)):
+                raise BoundaryError("local_evaluation", "invalid_token_admission")
+            for claim in projection["claims"]:
+                record = object_fields(claim, {"origin", "value"},
+                                       "local_evaluation.token_admission_claim")
+                if not isinstance(record["origin"], str) or not record["origin"]:
+                    raise BoundaryError("local_evaluation", "invalid_token_admission")
+        elif not isinstance(fact, str) and type(fact) is not bool:
+            raise BoundaryError("local_evaluation", "invalid_token_admission")
+    physical_independence = admission["physical_game_independence"]
+    if (physical_independence is True
+            or isinstance(physical_independence, str)
+            and physical_independence in {"independent", "independent_runs"}
+            or admission["clean_held_out_claim"] is not False
+            or any(parameters.get(key) != admission[key]
+                   for key in TOKEN_ADMISSION_FIELDS)):
+        raise BoundaryError("local_evaluation", "contradictory_token_qualification")
+    return admission
+
+
 def _token_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str, Any]:
     if (manifest.parameters.value().get("qualification") != "engineering_only"
             or [payload.role for payload in manifest.payloads] != ["metrics"]):
@@ -199,8 +307,13 @@ def _token_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str, Any
             or model.parameters.value().get("config") != run_config
             or model.parameters.value().get("steps") != run_config.get("steps")):
         raise BoundaryError("local_evaluation", "invalid_report_parentage")
-    value = object_fields(_payload(store, manifest, "metrics", MAX_TOKEN_METRICS),
-                          {"rows", "summary", "baselines"}, "local_evaluation.metrics")
+    value = _payload(store, manifest, "metrics", MAX_TOKEN_METRICS)
+    if not isinstance(value, dict):
+        raise BoundaryError("local_evaluation", "invalid_token_metrics_contract")
+    view_schema = view.parameters.value().get("schema")
+    unknown_run_independence, dev_qualification = _token_qualification(
+        manifest, value, human_input=view_schema in HUMAN_VIEW_SCHEMAS,
+    )
     _finite(value)
     if not isinstance(value["rows"], list):
         raise BoundaryError("local_evaluation", "invalid_report_structure")
@@ -213,8 +326,12 @@ def _token_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str, Any
                        ("transition_id", "run_id", "surface", "family"))):
             raise BoundaryError("local_evaluation", "invalid_report_structure")
         _overall({"count": 1, **{key: row[key] for key in METRICS}})
+    run_groups = len({row["run_id"] for row in value["rows"]})
     result = _public(manifest, model, view, value["summary"], baseline="model",
-                     baselines=value["baselines"])
+                     baselines=value["baselines"],
+                     unknown_run_independence=unknown_run_independence,
+                     expected_run_groups=run_groups,
+                     dev_qualification=dev_qualification)
     if result["decision_count"] != len(value["rows"]):
         raise BoundaryError("local_evaluation", "invalid_report_summary")
     return result
