@@ -22,6 +22,7 @@ from spireagent.json_boundary import BoundaryError, object_fields
 
 from ..canonical import semantic_hash
 from ..fullrun.light_action_inputs import CANONICAL_SCHEMA as CANONICAL_LIGHT_ACTION_INPUT_SCHEMA
+from ..fullrun.light_action_inputs import PUBLIC_SCHEMA as PUBLIC_LIGHT_ACTION_INPUT_SCHEMA
 from ..fullrun.light_action_inputs import SCHEMA as LIGHT_ACTION_INPUT_SCHEMA
 from ..fullrun.light_action_inputs import LoadedLightActionInputs
 from ..fullrun.token_inputs import LoadedTokenInputs
@@ -110,6 +111,7 @@ class LightActionM0Config:
     device: str = "cpu"
     max_state_tokens: int = 8192
     max_action_bytes: int = 8192
+    public_profile: str | None = None
 
     def __post_init__(self) -> None:
         recipe = recipe_for(self.recipe)
@@ -126,9 +128,12 @@ class LightActionM0Config:
                 raise BoundaryError("token_training", "invalid_optimizer")
         if not self.learning_rate or not self.gradient_clip:
             raise BoundaryError("token_training", "zero_learning_rate_or_clip")
-        if (type(self.max_state_tokens) is not int or not 1 <= self.max_state_tokens <= 8192
+        if self.public_profile not in {None, "public_lite", "public_compact"}:
+            raise BoundaryError("token_training", "invalid_public_m0_profile")
+        cap = 1_000_000 if self.public_profile is not None else 8192
+        if (type(self.max_state_tokens) is not int or not 1 <= self.max_state_tokens <= cap
                 or type(self.max_action_bytes) is not int
-                or not 1 <= self.max_action_bytes <= 8192):
+                or not 1 <= self.max_action_bytes <= cap):
             raise BoundaryError("token_training", "invalid_independent_length_limits")
 
     @classmethod
@@ -136,6 +141,8 @@ class LightActionM0Config:
         if not isinstance(value, dict) or value.get("schema") != LIGHT_ACTION_M0_CONFIG_SCHEMA:
             raise BoundaryError("token_config", "unsupported_light_action_config")
         raw = {key: item for key, item in value.items() if key != "schema"}
+        if "public_profile" not in raw:
+            raw["public_profile"] = None
         return cls(**object_fields(raw, set(cls.__dataclass_fields__), "light_action_m0_config"))
 
 
@@ -144,7 +151,11 @@ Stage1aConfig = TokenConfig | LightActionM0Config
 
 def config_payload(config: Stage1aConfig) -> dict[str, Any]:
     if isinstance(config, LightActionM0Config):
-        return {"schema": LIGHT_ACTION_M0_CONFIG_SCHEMA, **asdict(config)}
+        raw = asdict(config)
+        # Keep historical M0 config bytes and artifact identities unchanged.
+        if raw["public_profile"] is None:
+            del raw["public_profile"]
+        return {"schema": LIGHT_ACTION_M0_CONFIG_SCHEMA, **raw}
     return asdict(config)
 
 
@@ -220,6 +231,7 @@ def construct_model(
             model = build_scorer(
                 config.recipe, core, max_action_bytes=config.max_action_bytes,
                 scoring_seed=_scoring_seed(config.seed),
+                public_profile=config.public_profile,
             )
             model.to(config.device)
             return model, identity
@@ -304,9 +316,18 @@ class TokenRankingEngine:
             expected_family = ("train-only-byte-bpe" if family == "scratch"
                                else "pinned-qwen3")
             action_codec = info.get("action_codec")
-            if (info.get("schema") not in {
+            input_schema = info.get("schema")
+            public = input_schema == PUBLIC_LIGHT_ACTION_INPUT_SCHEMA
+            renderer = info.get("source_renderer")
+            profile_matches = (
+                config.public_profile is not None and public and isinstance(renderer, dict)
+                and renderer.get("profile") == config.public_profile
+            ) or (config.public_profile is None and not public)
+            if (input_schema not in {
                     LIGHT_ACTION_INPUT_SCHEMA, CANONICAL_LIGHT_ACTION_INPUT_SCHEMA,
+                    PUBLIC_LIGHT_ACTION_INPUT_SCHEMA,
             }
+                    or not profile_matches
                     or info.get("graph") != LIGHT_ACTION_M0_GRAPH
                     or not isinstance(state_codec, dict)
                     or state_codec.get("family") != expected_family
