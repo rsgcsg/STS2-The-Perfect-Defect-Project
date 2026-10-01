@@ -155,9 +155,11 @@ def _encoded(samples, report):
 
 
 def publish_public_bc_view(
-    store: ArtifactStore, allocation_id: str, producer: Producer,
+    store: ArtifactStore, allocation_id: str, producer: Producer, *, compact: bool = True,
 ) -> Manifest:
-    allocation, dataset, samples, report = project_allocation(store, allocation_id)
+    allocation, dataset, samples, report = project_allocation(
+        store, allocation_id, compact=compact,
+    )
     if {s.split for s in samples} != {"train", "dev"}:
         raise BoundaryError("public_bc", "nonempty_train_dev_required")
     payloads = tuple(store.put_payload(role, io.BytesIO(raw),

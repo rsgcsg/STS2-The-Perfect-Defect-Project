@@ -76,11 +76,25 @@ def _admit_m0_input(
     owner: LocalCurationOwner, store: ManifestArtifactStore,
     input_id: str, operation_id: str,
 ) -> dict[str, Any]:
-    from stpd.fullrun.light_action_inputs import canonical_training_binding
-
-    binding = canonical_training_binding(store, input_id)
+    binding = _m0_input_binding_manifest_only(store, input_id)
     _admit_m0_binding(owner, store, binding, operation_id)
     return binding
+
+
+def _m0_input_binding_manifest_only(
+    store: ManifestArtifactStore, input_id: str,
+) -> dict[str, Any]:
+    from stpd.fullrun.light_action_inputs import (
+        PUBLIC_SCHEMA,
+        canonical_training_binding,
+        public_training_binding,
+    )
+
+    input_manifest = store.get_manifest(input_id)
+    schema = input_manifest.parameters.value().get("schema")
+    if schema == PUBLIC_SCHEMA:
+        return public_training_binding(store, input_id)
+    return canonical_training_binding(store, input_id)
 
 
 def _admit_m0_run(
@@ -91,12 +105,20 @@ def _admit_m0_run(
     if (run.kind != "run"
             or [parent.role for parent in run.parents] != ["experiment", "training_input"]):
         raise BoundaryError("light_action_m0", "run_identity_mismatch")
-    binding = _admit_m0_input(owner, store, run.parent("training_input"), operation_id)
+    input_id = run.parent("training_input")
+    binding = _m0_input_binding_manifest_only(store, input_id)
     if run.parameters.value().get("training_binding") != binding:
         raise BoundaryError("light_action_m0", "training_binding_mismatch")
     experiment = store.get_manifest(run.parent("experiment"))
-    if experiment.parameters.value().get("training_binding") != binding:
+    run_info = run.parameters.value()
+    experiment_info = experiment.parameters.value()
+    if (experiment.kind != "experiment"
+            or experiment.parameters.value().get("schema") != "stpd/experiment-v1"
+            or experiment.parent("training_input") != input_id
+            or experiment_info.get("config") != run_info.get("config")
+            or experiment_info.get("training_binding") != binding):
         raise BoundaryError("light_action_m0", "training_binding_mismatch")
+    _admit_m0_binding(owner, store, binding, operation_id)
     return binding
 
 
@@ -104,18 +126,23 @@ def _admit_m0_model(
     owner: LocalCurationOwner, store: ManifestArtifactStore,
     model_id: str, operation_id: str,
 ) -> dict[str, Any]:
-    from stpd.policy.token_decision import CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA
+    from stpd.policy.token_decision import (
+        CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA,
+        PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA,
+    )
 
     model = store.get_manifest(digest(model_id, "light_action_m0.model_id"))
-    if model.kind != "model" or model.parameters.value().get("schema") != \
-            CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA:
+    if (model.kind != "model" or model.parameters.value().get("schema") not in {
+            CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA, PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA,
+    }):
         raise BoundaryError("light_action_m0", "canonical_model_required")
-    binding = _admit_m0_input(owner, store, model.parent("training_input"), operation_id)
+    binding = _m0_input_binding_manifest_only(store, model.parent("training_input"))
     if model.parameters.value().get("training_binding") != binding:
         raise BoundaryError("light_action_m0", "training_binding_mismatch")
     run = store.get_manifest(model.parent("run"))
     if run.parameters.value().get("training_binding") != binding:
         raise BoundaryError("light_action_m0", "training_binding_mismatch")
+    _admit_m0_binding(owner, store, binding, operation_id)
     return binding
 
 
@@ -140,14 +167,15 @@ def _reserve_m0_dev(
 
 
 def _verify_m0_completion(store: ManifestArtifactStore, model: Manifest) -> None:
-    from spireagent.storage.run_reporter import ObjectStoreRunReporter
-    from stpd.workers.token_worker import _verify_completed
+    from stpd.workers.token_worker import verify_m0_model_completion
 
-    run = store.get_manifest(model.parent("run"))
-    completed = ObjectStoreRunReporter(store, store.blobs).completed(run.artifact_id)
-    if completed is None or completed.parent("model") != model.artifact_id:
-        raise BoundaryError("light_action_m0", "completed_model_required")
-    _verify_completed(store, completed, run)
+    verify_m0_model_completion(store, model)
+
+
+def _preflight_m0_completion(store: ManifestArtifactStore, model: Manifest) -> None:
+    from stpd.workers.token_worker import preflight_m0_model_completion
+
+    preflight_m0_model_completion(store, model)
 
 
 def add_token_recipe_arguments(parser: argparse.ArgumentParser) -> None:
@@ -180,13 +208,16 @@ def main() -> int:
     tokenize.add_argument("--snapshot", type=Path)
     tokenize.add_argument("--max-tokens", type=int, default=16384)
     m0_prepare = commands.add_parser(
-        "prepare-light-action-m0", help="reserve and prepare exact canonical M0 inputs")
+        "prepare-light-action-m0", help="reserve and prepare exact M0 inputs")
     m0_prepare.add_argument("--project-config", required=True, type=Path)
     m0_prepare.add_argument("--dataset", required=True)
     m0_prepare.add_argument("--operation", required=True)
     m0_prepare.add_argument("--backbone", choices=("s", "pf", "pl"), required=True)
     m0_prepare.add_argument("--profile", choices=("lite", "standard", "full"),
                             default="standard")
+    m0_prepare.add_argument("--input-profile",
+                            choices=("canonical", "public_lite", "public_compact"),
+                            default="canonical")
     m0_prepare.add_argument("--snapshot", type=Path)
     m0_prepare.add_argument("--train-limit", type=int, default=100)
     m0_prepare.add_argument("--dev-limit", type=int, default=32)
@@ -211,6 +242,8 @@ def main() -> int:
     token_train.add_argument("--replicate", default="stage1a")
     token_train.add_argument("--resume")
     token_train.add_argument("--stop-after", type=int)
+    token_train.add_argument("--checkpoint-interval", type=int, default=1,
+                             help="save every N updates; pauses and final update always save")
     token_train.add_argument("--max-tokens", type=int, default=16384)
     m0_train = commands.add_parser(
         "train-light-action-m0", help="train one canonical, owner-admitted M0 run")
@@ -229,6 +262,8 @@ def main() -> int:
     m0_train.add_argument("--max-action-bytes", type=int, default=8192)
     m0_train.add_argument("--replicate", default="light-action-m0")
     m0_train.add_argument("--stop-after", type=int)
+    m0_train.add_argument("--checkpoint-interval", type=int, default=1,
+                           help="save every N updates; pauses and final update always save")
     run_m0 = commands.add_parser(
         "run-light-action-m0", help="resume/continue one exact canonical M0 run")
     run_m0.add_argument("--project-config", required=True, type=Path)
@@ -236,6 +271,8 @@ def main() -> int:
     run_m0.add_argument("--operation", required=True)
     run_m0.add_argument("--resume", help="exact checkpoint ID from this run")
     run_m0.add_argument("--stop-after", type=int)
+    run_m0.add_argument("--checkpoint-interval", type=int, default=1,
+                         help="save every N updates; pauses and final update always save")
     run_m0.add_argument("--snapshot", type=Path)
     run_tokens = commands.add_parser("run-tokens", help="execute an existing exact token run")
     run_tokens.add_argument("--run", required=True)
@@ -243,6 +280,8 @@ def main() -> int:
     run_tokens.add_argument("--operation", help="canonical M0 training operation ID")
     run_tokens.add_argument("--resume", help="exact checkpoint ID from this run")
     run_tokens.add_argument("--stop-after", type=int)
+    run_tokens.add_argument("--checkpoint-interval", type=int, default=1,
+                            help="save every N updates; pauses and final update always save")
     run_tokens.add_argument("--snapshot", type=Path)
     run_memory = commands.add_parser("run-memory", help="execute an existing exact M2 episode run")
     run_memory.add_argument("--run", required=True)
@@ -371,11 +410,7 @@ def main() -> int:
 
             result = compare_token_results(store, args.result)
         elif args.command == "prepare-light-action-m0":
-            from stpd.fullrun.decision_training import (
-                AllocationSpec,
-                publish_allocation,
-                publish_decision_view,
-            )
+            from stpd.fullrun.decision_training import AllocationSpec, publish_allocation
             from stpd.fullrun.light_action_inputs import (
                 TRAINING_BINDING_SCHEMA,
                 load_light_action_inputs,
@@ -395,9 +430,19 @@ def main() -> int:
                 AllocationSpec(isolation="run", max_train=args.train_limit,
                                max_dev=args.dev_limit), runtime,
             )
-            view = publish_decision_view(
-                store, allocation.artifact_id, FullRunSerializer(args.profile), runtime,
-            )
+            if args.input_profile == "canonical":
+                from stpd.fullrun.decision_training import publish_decision_view
+
+                view = publish_decision_view(
+                    store, allocation.artifact_id, FullRunSerializer(args.profile), runtime,
+                )
+            else:
+                from stpd.fullrun.public_bc import publish_public_bc_view
+
+                view = publish_public_bc_view(
+                    store, allocation.artifact_id, runtime,
+                    compact=args.input_profile == "public_compact",
+                )
             binding = {
                 "schema": TRAINING_BINDING_SCHEMA,
                 "dataset_ids": [dataset_id],
@@ -405,6 +450,9 @@ def main() -> int:
                 "allocation_id": allocation.artifact_id,
                 "model_view_id": view.artifact_id,
             }
+            if args.input_profile == "canonical" and (
+                    args.max_state_tokens > 8192 or args.max_action_bytes > 8192):
+                raise BoundaryError("light_action_m0", "canonical_length_limit_exceeded")
             manifest = publish_light_action_inputs(
                 store, view.artifact_id, "s" if args.backbone == "s" else "qwen3",
                 runtime, snapshot=args.snapshot,
@@ -501,6 +549,7 @@ def main() -> int:
             result = asdict(execute_tokens(
                 store, ObjectStoreRunReporter(store, store.blobs), run.artifact_id, runtime,
                 snapshot=args.snapshot, resume=args.resume, stop_after=args.stop_after,
+                checkpoint_interval=args.checkpoint_interval,
             ))
         elif args.command == "train-light-action-m0":
             import torch
@@ -514,18 +563,26 @@ def main() -> int:
             if project_owner is None:
                 raise BoundaryError("light_action_m0", "configured_local_workspace_required")
             binding = _admit_m0_input(project_owner, store, input_id, operation_id)
+            input_manifest = store.get_manifest(input_id)
+            input_info = input_manifest.parameters.value()
+            public_profile = None
+            if input_info.get("schema") == "stpd/stage1a-light-action-m0-public-input-v1":
+                view = store.get_manifest(input_manifest.parent("model_view"))
+                public_profile = view.parameters.value().get("serializer", {}).get("profile")
             m0_inputs = load_light_action_inputs(store, input_id)
             torch.set_num_threads(2)
             m0_config = LightActionM0Config(
                 recipe=args.recipe, steps=args.steps, device=args.backend,
                 max_state_tokens=args.max_state_tokens,
                 max_action_bytes=args.max_action_bytes,
+                public_profile=public_profile,
             )
             run = prepare_token_run(store, m0_inputs, m0_config, runtime,
                                     replicate=args.replicate)
             result = asdict(execute_tokens(
                 store, ObjectStoreRunReporter(store, store.blobs), run.artifact_id, runtime,
                 snapshot=args.snapshot, stop_after=args.stop_after,
+                checkpoint_interval=args.checkpoint_interval,
                 dev_admitter=lambda model, view: _reserve_m0_dev(
                     project_owner, store, binding, operation_id, run.artifact_id,
                     input_id, model, view),
@@ -535,15 +592,19 @@ def main() -> int:
         elif args.command == "run-tokens":
             import torch
 
-            from stpd.workers.token_worker import execute_tokens
+            from stpd.workers.token_worker import execute_tokens, preflight_token_run
 
             torch.set_num_threads(2)
             run_id = digest(args.run, "token_run.id")
             run_manifest = store.get_manifest(run_id)
             input_manifest = store.get_manifest(run_manifest.parent("training_input"))
             dev_admitter = None
-            if input_manifest.parameters.value().get("schema") == \
-                    "stpd/stage1a-light-action-m0-canonical-input-v1":
+            if input_manifest.parameters.value().get("schema") in {
+                    "stpd/stage1a-light-action-m0-canonical-input-v1",
+                    "stpd/stage1a-light-action-m0-public-input-v1",
+            }:
+                resume_id = digest(args.resume, "token_run.resume") if args.resume else None
+                preflight_token_run(store, run_id, runtime, resume=resume_id)
                 if project_owner is None or args.operation is None:
                     raise BoundaryError(
                         "light_action_m0", "configured_owner_and_operation_required")
@@ -559,24 +620,29 @@ def main() -> int:
                 snapshot=args.snapshot,
                 resume=(digest(args.resume, "token_run.resume") if args.resume else None),
                 stop_after=args.stop_after,
+                checkpoint_interval=args.checkpoint_interval,
                 dev_admitter=dev_admitter,
             ))
         elif args.command == "run-light-action-m0":
             import torch
 
-            from stpd.workers.token_worker import execute_tokens
+            from stpd.workers.token_worker import execute_tokens, preflight_token_run
 
             torch.set_num_threads(2)
             run_id = digest(args.run, "light_action_m0.run_id")
             run_manifest = store.get_manifest(run_id)
+            resume_id = (digest(args.resume, "light_action_m0.resume")
+                         if args.resume else None)
+            preflight_token_run(store, run_id, runtime, resume=resume_id)
             if project_owner is None:
                 raise BoundaryError("light_action_m0", "configured_local_workspace_required")
             binding = _admit_m0_run(project_owner, store, run_id, args.operation)
             result = asdict(execute_tokens(
                 store, ObjectStoreRunReporter(store, store.blobs), run_id, runtime,
                 snapshot=args.snapshot,
-                resume=(digest(args.resume, "light_action_m0.resume") if args.resume else None),
+                resume=resume_id,
                 stop_after=args.stop_after,
+                checkpoint_interval=args.checkpoint_interval,
                 dev_admitter=lambda model, view: _reserve_m0_dev(
                     project_owner, store, binding, args.operation, run_id,
                     run_manifest.parent("training_input"), model, view),
@@ -731,17 +797,17 @@ def main() -> int:
 
             result = export_token_model(store, args.model, args.destination)
         elif args.command == "export-light-action-m0":
-            from stpd.policy.token_decision import (
-                CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA,
-                export_light_action_m0_model,
-            )
+            from stpd.policy.token_decision import export_light_action_m0_model
 
             model = store.get_manifest(digest(args.model, "light_action_m0.model_id"))
-            if model.parameters.value().get("schema") == \
-                    CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA:
+            if model.parameters.value().get("schema") in {
+                    "stpd/stage1a-light-action-m0-canonical-model-v1",
+                    "stpd/stage1a-light-action-m0-public-model-v1",
+            }:
                 if project_owner is None or args.operation is None:
                     raise BoundaryError(
                         "light_action_m0", "configured_owner_and_operation_required")
+                _preflight_m0_completion(store, model)
                 _admit_m0_model(project_owner, store, model.artifact_id, args.operation)
                 _verify_m0_completion(store, model)
             result = export_light_action_m0_model(store, model.artifact_id, args.destination)
