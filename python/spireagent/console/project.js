@@ -555,11 +555,11 @@ window.SpireProject = (() => {
     const descendants = value.descendants || {};
     const runResults = Array.isArray(descendants.run_results) ? descendants.run_results : [];
     const card = panel("资料来源与使用概况",
-      "只读取不可变清单和本机用途账本索引，不读取原始样本或模型权重。");
+      "显示来源、样本数量和已知使用记录。");
     card.append(fields([
       ["样本数（已选）", dataset.samples?.selected == null ? "未知" : count(dataset.samples.selected)],
       ["排除数", dataset.samples?.excluded_known ? count(dataset.samples.excluded) : "未知"],
-      ["来源包 / 录制会话 / 合格运行片段",
+      ["来源包数 / 录制会话数 / 已登记运行实例数",
         `${count(recording.bundle_count)} / ${count(recording.session_count)} / ${count(recording.qualified_run_occurrence_count)}`],
       ["原生开局 / 终局", `${countValue(recording.native_starts)} / ${countValue(recording.native_ends)}`],
       ["是否来自不同实体对局", "未知，尚未证明独立"],
@@ -575,7 +575,7 @@ window.SpireProject = (() => {
       ["来源关系扫描", value.descendants?.truncated || value.lineage?.truncated
         ? "已截断，结果不完整" : "未触及扫描上限"],
       ["人工查看或调参历史未知", "未知"],
-      ["适用范围", "仅当前授权的工程训练；开发集仅诊断用途；不作 Gold 声明"],
+      ["适用范围", "训练前须核对用途与授权；开发评测不代表独立测试；此页不授予 Gold 资格"],
     ]));
     const related = el("div", null, "project-actions");
     for (const item of [...(descendants.models || []), ...(descendants.evaluations || [])]) {
