@@ -543,7 +543,6 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
             if (not isinstance(dev_admission, dict)
                     or dev_admission.get("evaluation_scope")
                     != "within_training_purpose_allocation"
-                    or dev_admission.get("historical_external_exposure") != "unknown"
                     or dev_admission.get("physical_game_independence") != "unresolved"
                     or dev_admission.get("clean_held_out_claim") is not False):
                 raise BoundaryError("token_run", "canonical_dev_admission_invalid")

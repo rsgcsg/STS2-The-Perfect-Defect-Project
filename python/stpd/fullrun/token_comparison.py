@@ -95,6 +95,8 @@ def compare_token_results(
                 raise BoundaryError("token_comparison", "model_input_codec_mismatch")
             tokenizer_role = "state_tokenizer" if "state_tokenizer" in codec_roles else "tokenizer"
             tokenizer = inputs.manifest.payload(tokenizer_role)
+            renderer = (input_info["source_renderer"] if "source_renderer" in input_info
+                        else view.parameters.value()["serializer"])
             qualification = token_dev_qualification(store, view, report=report, metrics=metrics)
             multiple = [r for r in rows if r["candidate_count"] > 1]
             by_run: dict[str, list[dict[str, Any]]] = {}
@@ -112,8 +114,7 @@ def compare_token_results(
                 "train_row_count": sum(s.split == "train" for s in samples),
                 "train_inputs_sha256": semantic_hash(_sample_commitment(samples, "train")),
                 "dev_inputs_sha256": semantic_hash(commitment),
-                "renderer": input_info.get("source_renderer",
-                                           view.parameters.value()["serializer"]),
+                "renderer": renderer,
                 "input_format": input_info["format"],
                 "tokenizer": {
                     "sha256": tokenizer.sha256, "size": tokenizer.size,
@@ -138,7 +139,7 @@ def compare_token_results(
     training_changed = len({m["train_inputs_sha256"] for m in models}) > 1
     tokenizer_changed = len({m["tokenizer"]["sha256"] for m in models}) > 1
     return {
-        "schema": "stpd/stage1a-comparison-v1", "qualification": "engineering_only",
+        "schema": "stpd/stage1a-comparison-v2", "qualification": "engineering_only",
         "comparison_mode": comparison_mode,
         "model_view_id": view_ids[0] if len(set(view_ids)) == 1 else None,
         "model_view_ids": view_ids, "dev_inputs_sha256": semantic_hash(common_dev),

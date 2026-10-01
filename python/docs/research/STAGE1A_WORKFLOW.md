@@ -145,9 +145,15 @@ and complete dev commitment; train-only tokenizer changes alongside training dat
 marked as covariation, not a causal single-variable experiment. Run-group means are
 descriptive: current token source contracts do not prove physical-game independence.
 Source/report independence and exposure statements are retained with provenance, and
-old immutable reports remain unchanged. Paired differences, decision/run-group and
-multi-candidate metrics, source identities and recorded attempt time are engineering
-projections. The command does not access test/Gold labels or launch training.
+known restrictions override unknown defaults; conflicting explicit facts retain their
+values and origins in the effective qualification. Affirmative independence statements
+cannot establish proof or enable a bootstrap. Old immutable reports remain unchanged.
+The `stpd/stage1a-comparison-v2` projection replaces the v1 `independent_runs` / `run_weighted`
+with `reported_run_groups` / `reported_run_group_weighted`; consumers should migrate
+those field names and treat group counts/means as descriptive. Paired differences and
+decision/run-group and multi-candidate metrics, source identities and recorded attempt
+time are engineering projections. The command does not access test/Gold labels or launch
+training.
 Store the output with the experiment's private receipts; it is a rebuildable
 view of existing artifacts, not another database. One attempt's time excludes other
 attempts, input preparation and tuning. Shared data and update counts do not isolate

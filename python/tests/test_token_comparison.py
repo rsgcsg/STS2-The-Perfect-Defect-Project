@@ -66,6 +66,7 @@ def completed_pair(
 def test_comparison_aligns_completed_configs_and_rejects_duplicate_results(completed_pair):
     store, results = completed_pair
     comparison = compare_token_results(store, results)
+    assert comparison["schema"] == "stpd/stage1a-comparison-v2"
     left, right = comparison["models"]
     assert left["config"]["recipe"] != right["config"]["recipe"]
     assert left["decision_count"] == right["decision_count"] == 1
@@ -194,6 +195,7 @@ def test_real_fixed_dev_comparison_accepts_train_growth_and_cli_option(
     with pytest.raises(BoundaryError, match="same_fixed_dev_view_required"):
         compare_token_results(store, results)
     comparison = compare_token_results(store, results, comparison_mode="fixed-dev")
+    assert comparison["schema"] == "stpd/stage1a-comparison-v2"
     left, right = comparison["models"]
     assert [left["train_row_count"], right["train_row_count"]] == [1, 4]
     assert left["model_view_id"] != right["model_view_id"]
@@ -375,6 +377,9 @@ def test_qualification_facts_preserve_restrictions_without_schema_inference(tmp_
     facts = token_dev_qualification(store, view, report=report)
     assert facts["native_run_independence"] is False
     assert facts["clean_held_out_claim"] is False
+    assert facts["evaluation_scope"] == "engineering_dev_from_model_view"
+    assert facts["historical_external_exposure"] == "known_prior_exposure"
+    assert facts["physical_game_independence"] == "shared_physical_game"
     assert any(item["origin"] == source.artifact_id and item["facts"] == {
         "historical_external_exposure": "known_prior_exposure",
         "physical_game_independence": "shared_physical_game",
@@ -384,3 +389,106 @@ def test_qualification_facts_preserve_restrictions_without_schema_inference(tmp_
                for item in facts["evidence"])
     assert store.manifest_ids() == before
     assert store.get_manifest(report.artifact_id) == report
+
+
+@pytest.mark.parametrize("source_facts,report_facts,admission,field,expected", [
+    ({"historical_external_exposure": "known_prior_exposure"},
+     {"historical_external_exposure": "unknown"}, None,
+     "historical_external_exposure", "known_prior_exposure"),
+    ({"historical_external_exposure": "unknown"},
+     {"historical_external_exposure": "known_prior_exposure"}, None,
+     "historical_external_exposure", "known_prior_exposure"),
+    ({}, {}, {"historical_external_exposure": "known_prior_exposure"},
+     "historical_external_exposure", "known_prior_exposure"),
+    ({"physical_game_independence": "shared_physical_game"},
+     {"physical_game_independence": "unresolved"}, None,
+     "physical_game_independence", "shared_physical_game"),
+    ({}, {"physical_game_independence": False}, None, "physical_game_independence", False),
+    ({"evaluation_scope": "restricted_source_subset"}, {}, None,
+     "evaluation_scope", "restricted_source_subset"),
+    ({}, {}, {"evaluation_scope": "within_training_purpose_allocation"},
+     "evaluation_scope", "within_training_purpose_allocation"),
+    ({}, {}, None, "evaluation_scope", "engineering_dev_from_model_view"),
+    ({}, {}, None, "historical_external_exposure", "unknown"),
+    ({}, {}, None, "physical_game_independence", "unresolved"),
+])
+def test_qualification_facts_known_restrictions_override_only_unknown_defaults(
+    tmp_path, source_facts, report_facts, admission, field, expected,
+):
+    from test_artifact_store_v1 import PRODUCER
+
+    from stpd.fullrun.dataset_policy import token_dev_qualification
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    source = Manifest("dataset", PRODUCER, parameters=FrozenObject.of({
+        "purpose": "training", **source_facts,
+    }))
+    store.publish(source)
+    view = Manifest("model_view", PRODUCER, (Parent("dataset", source.artifact_id),))
+    store.publish(view)
+    report = Manifest("offline_evaluation", PRODUCER, parameters=FrozenObject.of(report_facts))
+    facts = token_dev_qualification(store, view, report=report, admission=admission)
+    assert facts[field] == expected
+    assert facts["native_run_independence"] is False
+    assert facts["clean_held_out_claim"] is False
+
+
+@pytest.mark.parametrize("field,left,right", [
+    ("historical_external_exposure", "known_prior_exposure", "another_explicit_exposure"),
+    ("physical_game_independence", "shared_physical_game", "independent"),
+    ("evaluation_scope", "restricted_source_subset", "within_training_purpose_allocation"),
+])
+def test_qualification_facts_conflicts_preserve_origins_and_survive_reprojection(
+    tmp_path, field, left, right,
+):
+    from test_artifact_store_v1 import PRODUCER
+
+    from stpd.fullrun.dataset_policy import token_dev_qualification
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    source = Manifest("dataset", PRODUCER,
+                      parameters=FrozenObject.of({"purpose": "training", field: left}))
+    store.publish(source)
+    view = Manifest("model_view", PRODUCER, (Parent("dataset", source.artifact_id),))
+    store.publish(view)
+    report = Manifest("offline_evaluation", PRODUCER, parameters=FrozenObject.of({field: right}))
+    unknown = "unresolved" if field == "physical_game_independence" else "unknown"
+    facts = token_dev_qualification(store, view, report=report, admission={field: unknown})
+    conflict = facts[field]
+    assert conflict["status"] == "conflicting_reported_facts"
+    assert {item["origin"]: item["value"] for item in conflict["claims"]} == {
+        source.artifact_id: left, report.artifact_id: right,
+    }
+    projected_report = replace(report, parameters=FrozenObject.of({field: conflict}))
+    repeated = token_dev_qualification(store, view, report=projected_report, metrics={
+        "admission": {field: conflict}, "qualification_evidence": facts["evidence"],
+    })
+    assert repeated[field] == conflict
+    assert repeated["native_run_independence"] is False
+    assert repeated["clean_held_out_claim"] is False
+
+
+@pytest.mark.parametrize("claim", [
+    True, "independent", "proven_independent", "future_positive_claim",
+])
+def test_qualification_facts_positive_claims_never_supply_a_proof_entry(tmp_path, claim):
+    from test_artifact_store_v1 import PRODUCER
+
+    from stpd.fullrun.dataset_policy import token_dev_qualification
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    source = Manifest("dataset", PRODUCER, parameters=FrozenObject.of({"purpose": "training"}))
+    store.publish(source)
+    view = Manifest("model_view", PRODUCER, (Parent("dataset", source.artifact_id),))
+    store.publish(view)
+    report = Manifest("offline_evaluation", PRODUCER, parameters=FrozenObject.of({
+        "physical_game_independence": claim, "native_run_independence": True,
+        "clean_held_out_claim": True,
+    }))
+    facts = token_dev_qualification(store, view, report=report)
+    assert facts["native_run_independence"] is False
+    assert facts["clean_held_out_claim"] is False
+    assert facts["physical_game_independence"] == {
+        "status": "unverified_reported_facts",
+        "claims": [{"origin": report.artifact_id, "value": claim}],
+    }
