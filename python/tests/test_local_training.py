@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -17,6 +18,7 @@ import pytest
 import test_local_human_dataset as human_fixture
 import test_local_recording_preview as recording_fixture
 
+from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError
 from spireagent.source import source_identity
 from spireagent.storage import replaceable_file
@@ -45,6 +47,8 @@ from spireagent.workbench.local_training import (
     LOCK_FILE,
     MEMORY_RECIPE,
     OPERATION_FILE,
+    PUBLIC_M0_RECIPE,
+    SCHEMA_V3,
     LocalTrainingService,
 )
 from spireagent.workbench.memory_recipe import RESET_K1_RECIPE
@@ -117,6 +121,144 @@ def test_missing_model_backend_preserves_valid_training_input(tmp_path, monkeypa
     service._thread.join(timeout=10)
     assert not service._thread.is_alive()
     assert lock_path.read_bytes() == lock_bytes
+
+
+def test_public_m0_profile_is_closed_and_persisted_in_the_existing_operation(tmp_path, monkeypatch):
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    service = LocalTrainingService(config)
+    with pytest.raises(BoundaryError, match="unsupported_input_profile"):
+        service.start(dataset_id, input_profile="canonical")
+    with pytest.raises(BoundaryError, match="unsupported_input_profile"):
+        service.start(dataset_id, input_profile={"profile": "public_lite"})
+
+    def parked(held, _path, _identity, _owner, _store):
+        held.__exit__(None, None, None)
+
+    monkeypatch.setattr(service, "_run", parked)
+    started = service.start(dataset_id, input_profile="public_lite")["operation"]
+    assert started["schema"] == SCHEMA_V3
+    assert started["input_profile"] == "public_lite"
+    assert started["recipe"] == PUBLIC_M0_RECIPE
+    assert started["result_type"] == "evaluated"
+    assert started["evaluation_status"] == "pending"
+    assert service._thread is not None
+    service._thread.join(timeout=10)
+    assert not service._thread.is_alive()
+    owner = configured_owner(config)
+    operation = LocalTrainingService._read(owner.path.parent / OPERATION_FILE, owner.identity)
+    assert operation["schema"] == SCHEMA_V3
+    assert operation["input_profile"] == "public_lite"
+
+
+def test_public_m0_workbench_http_train_export_and_registration_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dataset_id, _, store = _ready(tmp_path, monkeypatch)
+    config_path = tmp_path / "project.json"
+    config_path.write_text(canonical_json(config.to_dict()), encoding="utf-8")
+    app = Application(config, config_path=config_path)
+    from spireagent.workbench.developer_server import atomic_json
+
+    atomic_json(config.state_dir / "runtime.json", {
+        "instance_id": app.instance_id,
+        "configuration_id": configuration_id(config),
+    })
+    wrapper = tmp_path / "python-child"
+    child_python = sys.executable
+    package_path = str(ROOT)
+    tests_path = str(ROOT / "tests")
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        f"PYTHONPATH={shlex.quote(package_path)}:{shlex.quote(tests_path)} exec "
+        f"{shlex.quote(child_python)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o700)
+    monkeypatch.setattr(sys, "executable", str(wrapper))
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    cookie = f"{app.account.cookie_name}={app.account.cookie}"
+    headers = {"Cookie": cookie, "Content-Type": "application/json", "Origin": url,
+               "X-CSRF-Token": app.account.csrf}
+
+    def request_json(path: str, *, body: dict | None = None) -> dict:
+        request = Request(url + path,
+                          data=json.dumps(body).encode() if body is not None else None,
+                          headers=headers, method="POST" if body is not None else "GET")
+        with urlopen(request, timeout=10) as response:
+            return json.load(response)
+
+    try:
+        started = request_json("/api/local-training/start",
+                               body={"dataset_id": dataset_id,
+                                     "input_profile": "public_lite"})
+        assert started["schema"] == SCHEMA_V3
+        assert started["operation"]["input_profile"] == "public_lite"
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            status = request_json("/api/local-training/status")
+            if status["operation"].get("status") in {"completed", "failed", "interrupted_unknown"}:
+                break
+            time.sleep(0.2)
+        assert status["operation"]["status"] == "completed", status
+        trained = status["operation"]
+        assert trained["schema"] == SCHEMA_V3
+        assert trained["input_profile"] == "public_lite"
+        model = store.get_manifest(trained["model_id"])
+        assert model.parameters.value()["schema"] == \
+            "stpd/stage1a-light-action-m0-public-model-v1"
+        assert model.parameters.value()["config"]["steps"] == 3
+
+        worker_errors = []
+        old_thread_trace = threading.gettrace()
+
+        def trace_export(frame, event, arg):
+            if frame.f_code.co_name == "_run" and event == "exception":
+                worker_errors.append(arg[0])
+
+        threading.settrace(trace_export)
+        try:
+            exporting = request_json("/api/local-model-exports/start",
+                                     body={"model_id": trained["model_id"]})
+            assert exporting["schema"] == "stpd/local-model-export-operation-v3"
+            assert exporting["operation"]["model_type"] == "public_m0"
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                exported = request_json("/api/local-model-exports/status")
+                if exported["operation"].get("status") in {"completed", "failed", "interrupted"}:
+                    break
+                time.sleep(0.2)
+        finally:
+            threading.settrace(old_thread_trace)
+        assert exported["operation"]["status"] == "completed", exported
+        assert UnboundLocalError not in worker_errors
+        destination = app.local_model_export.verified_public_m0_for_registration(
+            trained["model_id"], deadline=time.monotonic() + 10)
+        assert destination.is_dir()
+        package = destination / "model.json"
+        assert package.is_file()
+        original_package = package.read_bytes()
+        package.write_bytes(b"{}\n")
+        with pytest.raises(BoundaryError, match="public_m0_export_verification_failed"):
+            app.local_model_export.start(trained["model_id"])
+        package.write_bytes(original_package)
+        assert app.local_model_export.start(trained["model_id"])["operation"]["status"] == \
+            "completed"
+
+        owner = configured_owner(config)
+        with owner.transaction() as db:
+            db.execute("DELETE FROM curation_source_uses WHERE reference=?",
+                       (trained["operation_id"],))
+            db.execute("DELETE FROM curation_uses WHERE reference=?",
+                       (trained["operation_id"],))
+        with pytest.raises(BoundaryError, match="public_m0_lineage_invalid"):
+            app.local_model_export.start(trained["model_id"])
+    finally:
+        server.shutdown()
+        server.server_close()
+        app.close()
 
 
 def test_private_child_drains_large_stderr_and_keeps_stdout_machine_record(tmp_path: Path):
@@ -379,7 +521,7 @@ def test_m2_rejects_unclaimed_or_unindexed_source_before_derivatives(
                           (failed["operation_id"],)).fetchone() == (0,)
 
 
-def test_m2_preparation_limit_error_is_durable_unknown_without_retry(
+def test_m2_preparation_limit_error_is_durable_failure_without_automatic_retry(
     tmp_path: Path, monkeypatch,
 ) -> None:
     config, dataset_id, _, store = _human_ready(tmp_path, monkeypatch)
@@ -395,14 +537,15 @@ def test_m2_preparation_limit_error_is_durable_unknown_without_retry(
     service = LocalTrainingService(config)
     service.start(dataset_id, recipe=MEMORY_RECIPE)
     failed = _settle(service)
-    assert failed["status"] == "interrupted_unknown", failed
+    assert failed["status"] == "failed", failed
     assert failed["error_code"] == "m2_limit_exceeded_no_truncation"
     assert len(calls) == 1 and "prepare-workbench-memory" in calls[0]
     assert set(store.manifest_ids()) == before
-    assert LocalTrainingService(config).status()["operation"]["status"] == "interrupted_unknown"
-    with pytest.raises(BoundaryError, match="previous_training_outcome_unknown"):
-        service.start(dataset_id, recipe=MEMORY_RECIPE)
-    assert len(calls) == 1
+    assert LocalTrainingService(config).status()["operation"]["status"] == "failed"
+    service.start(dataset_id, recipe=MEMORY_RECIPE)
+    retried = _settle(service)
+    assert retried["status"] == "failed", retried
+    assert len(calls) == 2, "a second child runs only after a separate explicit start"
 
 
 def test_m2_pre_spawn_failure_is_retryable_failed_without_run(
@@ -659,7 +802,7 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
     tmp_path: Path, monkeypatch,
 ) -> None:
     config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
-    producer = source_identity(ROOT)
+    producer = source_identity(ROOT, require_clean=False)
 
     launches = []
 
@@ -675,7 +818,7 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
     service.start(dataset_id)
     result = _settle(service)
     assert len(launches) == 1
-    assert result["status"] == "interrupted_unknown", result
+    assert result["status"] == "failed", result
     assert result["error_code"] == "training_process_failed"
     assert "run_id" in result and "result_id" not in result
     owner = configured_owner(config)
@@ -684,7 +827,7 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
     log = owner.path.parent / ("local-training-" + result["operation_id"] + ".log")
     assert log.read_bytes() == b"synthetic private failure\n"
     assert "synthetic private failure" not in json.dumps(service.status())
-    with pytest.raises(BoundaryError, match="previous_training_outcome_unknown"):
+    with pytest.raises(BoundaryError, match="previous_training_failed"):
         LocalTrainingService(config).start(dataset_id)
 
 
@@ -693,7 +836,7 @@ def test_parent_exception_diagnostic_preserves_unknown_after_child_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, log_write_fails: bool,
 ) -> None:
     config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
-    producer = source_identity(ROOT)
+    producer = source_identity(ROOT, require_clean=False)
     secret = "private-training-dataset-path"
 
     def fail_child(_command, _log_path, _environment, *, on_started):

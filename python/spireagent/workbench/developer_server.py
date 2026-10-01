@@ -297,9 +297,9 @@ class Application:
         self.local_recording_import = LocalRecordingImporter(config, LocalRecordingCatalog(config))
         self.local_recording_preview = LocalRecordingPreview(self.local_research_workspace)
         self.local_datasets = LocalDatasetService(config)
-        self.local_training = LocalTrainingService(config)
+        self.local_training = LocalTrainingService(config, config_path=config_path)
         self.local_memory_evaluation = LocalMemoryEvaluationService(config)
-        self.local_model_export = LocalModelExport(config)
+        self.local_model_export = LocalModelExport(config, config_path=config_path)
         self.local_model_registration = LocalModelRegistration(
             config, self.local_model_export, self.models,
         )
@@ -628,7 +628,8 @@ class Application:
 
     def start_local_training(self, dataset_id: object, *,
                              after_completed_operation_id: object | None = None,
-                             recipe: object = "stage1a.dsimple.s.v1") -> dict[str, Any]:
+                             recipe: object = "stage1a.dsimple.s.v1",
+                             input_profile: object = None) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("local_training", "running_instance_unavailable")
         try:
@@ -642,7 +643,7 @@ class Application:
             raise BoundaryError("local_training", "running_configuration_mismatch")
         return self.local_training.start(
             dataset_id, after_completed_operation_id=after_completed_operation_id,
-            recipe=recipe)
+            recipe=recipe, input_profile=input_profile)
 
     def start_local_memory_evaluation(self, model_id: object, source_id: object,
                                       *, max_settling_events: object = None) -> dict[str, Any]:
@@ -1407,7 +1408,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 try:
                     body = self.json_body(maximum=256)
                     if not {"dataset_id"} <= set(body) or not set(body) <= {
-                        "dataset_id", "after_completed_operation_id", "recipe"
+                        "dataset_id", "after_completed_operation_id", "recipe", "input_profile"
                     }:
                         raise ValueError
                     if ("after_completed_operation_id" in body
@@ -1416,7 +1417,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     value = app.start_local_training(
                         body["dataset_id"],
                         after_completed_operation_id=body.get("after_completed_operation_id"),
-                        recipe=body.get("recipe", "stage1a.dsimple.s.v1"))
+                        recipe=body.get("recipe", "stage1a.dsimple.s.v1"),
+                        input_profile=body.get("input_profile"))
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
