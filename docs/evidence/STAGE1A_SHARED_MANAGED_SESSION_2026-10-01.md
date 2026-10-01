@@ -21,7 +21,7 @@ when it matches the driver's current held lease. Unknown delivery is not retried
 or relabelled. Runtime Evidence, Workbench client segments and native Annotator
 Human witnesses retain different meanings.
 
-## Exact temporary packages
+## Earlier temporary packages
 
 These were built and installed in private test directories, not published or
 installed over the production Workbench/Runtime.
@@ -177,3 +177,53 @@ remain in local logs.
 Final identity/BOM and repository checks use the topic's actual committed
 candidate. Hosted full CI remains a separate required gate, recorded on the PR;
 no previous PR's green status qualifies this combination.
+
+
+## Subsequent exact App canary and repair boundary
+
+The earlier receipts above retain their original source and package identities.
+After canonical path preparation, a fresh App canary at `a676b398` reached the
+advertised combat setup but failed before policy inference because guarded
+Managed observation lacked a Runtime controller lease. Runtime now obtains a
+short observation lease and releases it before inference, preserving an existing
+Auto lease and tainting uncertain acquisition/release without retry.
+
+The next attempt at `8b7fe925` failed model loading before policy inference:
+extracting a shared M0 encoder changed a legacy M2 implementation fingerprint.
+The exact old M2 source bytes were restored at `08656cf5`; strict fingerprint
+validation was preserved. The actual existing export then loaded with the same
+CPU scores and unchanged file hashes. Neither failed attempt is acceptance.
+
+A fresh private project at `08656cf5d681cb73a9ff42fe44e5229f90e7e39a` then used:
+
+- Host rc.23 source `50d88ee44b60566473116ea29864fc9ab485b8fe`, archive SHA-256
+  `5a253b08484c576855bd24a8fef539aa50c7d373eac837848a41a66802add62a`.
+- Runtime rc.17 source `95ae821cc5733259f50cd1edcfc8a7dcdd6914c4`, archive SHA-256
+  `5882c557282b8f3256264758ee9fb42ece6878cf2838f7db56b9c4ec28603103`.
+- Prepared Managed artifact SHA-256
+  `dd726fba38f4fc097a57e9dd4a5fe7d220bd94ea3527e132be31a31c95963d93`,
+  MVID `145c95e9-ace0-42b5-bb46-3fef292ac645`.
+
+After an explicitly recorded setup action entered an advertised monster node,
+the actual App registered and loaded the existing model. Three model decisions
+produced two menu navigations and one native card-play delivery. The sealed run
+`run-0c2f9e73-df2a-4209-a619-3c464f3c2157` contains 33 events; typed Evidence
+rc.24 verification passed with no findings. Its receipt's last-step policy-call
+counter is 1; the event sequence establishes three total decisions. Six controller
+acquire/release pairs completed, returning Runtime to Human/released/untainted.
+
+The real owning Workbench client then reclaimed its menu and submitted its old
+action once. Host rejected `stale_or_unadvertised_action`, with no native delivery.
+This direct client probe is neither a browser interaction nor an archived
+Workbench operation, and intervening native play means it does not isolate
+owner-only invalidation. Two Workbench client segments were archived/stopped on
+the same Host environment. Model stop and explicit Host close succeeded; all
+four original export/operation file hashes matched before and after.
+
+Independent audit checked the typed run, both immutable report payloads, shared
+environment/lineage, package inventories, Runtime code digest and original file
+hashes. Source `08656cf5` subsequently passed hosted CI `36820121927`. The canary
+remains bound to that source and those packages: later training-journal or
+integration changes do not inherit a new runtime execution claim. It establishes
+bounded Managed App execution, not native GUI coverage, Human qualification,
+complete-game policy capability, memory benefit or Stage1a completion.
