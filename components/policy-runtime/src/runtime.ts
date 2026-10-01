@@ -385,19 +385,38 @@ export class PolicyRuntime {
     try {
       if (this.stateful) {
         if (!this.options.connector.observeTextMenuContext) throw new Error("text_menu_context_unsupported");
-        const context = await this.options.connector.observeTextMenuContext(inputProfile);
+        const observation = await this.withManagedObservationLease(preparationEpoch,
+          () => this.options.connector.observeTextMenuContext!(inputProfile));
+        if (observation.cancelled) {
+          this.refreshing = false;
+          return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
+        }
+        const context = observation.value;
         if (context.schema !== (inputProfile === "text-menu-v2"
           ? "sts2.player-environment/text-menu-observation-context-2"
           : "sts2.player-environment/text-menu-observation-context-1")) throw new Error("text_menu_context_schema_mismatch");
         gameContinuityId = context.game_continuity_id;
         bundle = { observation: context.snapshot, reads: [] };
       } else {
-        bundle = await refreshWholeDecisionBundle(this.options.connector, this.options.manifest.requirements.reads, { ...this.staleRefresh, inputProfile, sleep: this.sleep, onStale: async (attempt, delayMs) => { await this.appendEvidence("stale_whole_bundle_discarded", { attempt, delay_ms: delayMs, whole_bundle_discarded: true, action_submission_attempted: false }); } });
+        const observation = await this.withManagedObservationLease(preparationEpoch,
+          () => refreshWholeDecisionBundle(this.options.connector, this.options.manifest.requirements.reads, { ...this.staleRefresh, inputProfile, sleep: this.sleep, onStale: async (attempt, delayMs) => { await this.appendEvidence("stale_whole_bundle_discarded", { attempt, delay_ms: delayMs, whole_bundle_discarded: true, action_submission_attempted: false }); } }));
+        if (observation.cancelled) {
+          this.refreshing = false;
+          return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
+        }
+        bundle = observation.value;
       }
     } catch (error) {
       this.refreshing = false;
+      if (this.controllerReleaseUnconfirmed) {
+        if (!this.tainted) await this.taint(`managed_observation_lease_unknown:${message(error)}`);
+        return { type: "not_admitted", reason: `managed_observation_lease_unconfirmed:${message(error)}`, status: this.status() };
+      }
       if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
         return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
+      if (this.tainted) {
+        return { type: "not_admitted", reason: `observation_failed:${message(error)}`, status: this.status() };
+      }
       await this.failClosed(`observation_failed:${message(error)}`);
       return { type: "not_admitted", reason: "observation_failed", status: this.status() };
     }
@@ -1001,8 +1020,11 @@ export class PolicyRuntime {
     for (let attempt = 1; attempt <= this.successorPoll.maxAttempts; attempt += 1) {
       if (this.mutationCancellationRequested()) return null;
       // One observation per attempt: do not multiply nested retry budgets.
-      const next = await refreshWholeDecisionBundle(this.options.connector, [], { maxAttempts: 1, baseBackoffMs: 0,
-        inputProfile: isTextMenuSnapshot(previous) ? previous.input_profile : undefined, sleep: this.sleep });
+      const observation = await this.withManagedObservationLease(this.recoveryEpoch,
+        () => refreshWholeDecisionBundle(this.options.connector, [], { maxAttempts: 1, baseBackoffMs: 0,
+          inputProfile: isTextMenuSnapshot(previous) ? previous.input_profile : undefined, sleep: this.sleep }));
+      if (observation.cancelled) return null;
+      const next = observation.value;
       if (next) {
         const observed = next.observation;
         if (observed.schema !== previous.schema) throw new Error("successor_profile_drift");
@@ -1023,6 +1045,45 @@ export class PolicyRuntime {
       if (attempt < this.successorPoll.maxAttempts && this.successorPoll.baseBackoffMs > 0) await this.sleep(this.successorPoll.baseBackoffMs);
     }
     return null;
+  }
+
+  private async withManagedObservationLease<T>(expectedRecoveryEpoch: number,
+                                               observe: () => Promise<T>): Promise<
+                                                 { cancelled: true } | { cancelled: false; value: T }
+                                               > {
+    if (!isManagedManifest(this.options.manifest) || this.held) {
+      return { cancelled: false, value: await observe() };
+    }
+    try {
+      await this.acquireController();
+    } catch (error) {
+      await this.taint(`managed_observation_controller_acquire_unknown:${message(error)}`);
+      throw error;
+    }
+    if (this.recoveryEpoch !== expectedRecoveryEpoch || this.mutationCancellationRequested()) {
+      await this.releaseController();
+      return { cancelled: true };
+    }
+    let value!: T;
+    let observationError: unknown;
+    let releaseError: unknown;
+    try {
+      value = await observe();
+    } catch (error) {
+      observationError = error;
+    } finally {
+      try {
+        await this.releaseController();
+      } catch (error) {
+        releaseError = error;
+      }
+    }
+    if (releaseError !== undefined) {
+      const observation = observationError === undefined ? "" : `; observation_failed:${message(observationError)}`;
+      throw new Error(`managed_observation_lease_release_unconfirmed${observation}; release_failed:${message(releaseError)}`);
+    }
+    if (observationError !== undefined) throw observationError;
+    return { cancelled: false, value };
   }
   private mutationCancellationRequested(): boolean {
     return this.stopRequested
