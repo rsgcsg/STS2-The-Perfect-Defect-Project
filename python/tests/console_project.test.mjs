@@ -75,6 +75,23 @@ const memoryModel = (artifactId = id("a"), resetEachStep = false, slots = 1) => 
       max_chunk_input_tokens:24576, max_actions_per_step:256}},
   parents:[], payloads:[],
 });
+const publicM0Model = (artifactId = id("a"), profile = "public_lite") => ({
+  artifact_id:artifactId, kind:"model",
+  parameters:{schema:"stpd/stage1a-light-action-m0-public-model-v1",
+    qualification:"engineering_only", input_schema:"stpd/stage1a-light-action-m0-public-input-v1",
+    input_format:"stpd-token-light-action-m0-public-v1",
+    config:{recipe:"dsimple.light-action.m0.v1", public_profile:profile,
+      steps:3, device:"cpu"},
+    backbone:{kind:"scratch"}, steps:3,
+    source_renderer:profile === "public_lite"
+      ? {version:"stpd-public-snapshot-lite-v1",profile:"public_lite",status:"provisional"}
+      : {version:"stpd-public-snapshot-compact-v2",profile:"public_compact",status:"provisional"},
+    training_binding:{schema:"stpd/light-action-m0-training-binding-v1",
+      dataset_ids:[id("b")],training_operation_id:"1".repeat(32),
+      allocation_id:id("c"),model_view_id:id("d")}},
+  parents:[{role:"run",artifact_id:id("e")},{role:"training_input",artifact_id:id("f")}],
+  payloads:[],
+});
 const modelExportStatus = (operation, extra = {}) => ({
   schema:"stpd/local-model-export-operation-v1",
   availability:"ready",
@@ -302,6 +319,10 @@ function localTrainingEnv({artifact = id("a"), kind = "dataset", parameters = nu
         artifact_id:artifact, kind,
         parameters:parameters || {schema:"stpd/curated-decision-dataset-v1", purpose:"training", records:5},
       };
+      if (url === `/api/local-datasets/binding/${artifact}`
+          && parameters?.schema === "stpd/human-text-input-source-v1") return {
+        schema:"stpd/local-dataset-binding-v1",artifact_id:artifact,
+        sample_type:"human_input",curation_purpose:"training"};
       if (url === "/api/local-training/status") return typeof trainingStatus === "function"
         ? trainingStatus(url, options)
         : trainingStatus || {
@@ -1178,8 +1199,8 @@ test("local training appears only on a fixed training dataset and starts once on
   });
   const page = await env.render();
   assert.match(text(page), /本机短训练/);
-  assert.match(text(page), /新启动的任务默认使用 D-Simple-S v1、CPU 2 线程和 3 步/);
-  assert.match(text(page), /不代表模型策略质量/);
+  assert.match(text(page), /Public M0 Lite 是此入口的默认工程小样/);
+  assert.match(text(page), /不代表策略质量/);
   assert.doesNotMatch(text(page), /training-csrf/);
   assert.equal(env.calls.filter(call => call.url === "/api/local-training/status").length, 1);
   assert.equal(post(env.calls).length, 0, "GET and rendering never start a training job");
@@ -1190,7 +1211,7 @@ test("local training appears only on a fixed training dataset and starts once on
   assert.equal(post(env.calls).length, 1, "double click is guarded while the POST is unresolved");
   const start = post(env.calls)[0];
   assert.equal(start.url, "/api/local-training/start");
-  assert.deepEqual(JSON.parse(start.options.body), {dataset_id:dataset});
+  assert.deepEqual(JSON.parse(start.options.body), {dataset_id:dataset, input_profile:"public_lite"});
   assert.equal(start.options.headers["X-CSRF-Token"], "training-csrf");
   finishStart();
   await Promise.all([first, duplicate]);
@@ -1274,7 +1295,7 @@ test("completed training offers one explicit new experiment with exact prior ide
   const first = button.onclick(), duplicate = button.onclick();
   assert.equal(post(env.calls).length, 1);
   assert.deepEqual(body(post(env.calls)[0]), {
-    dataset_id:dataset, after_completed_operation_id:operationId,
+    dataset_id:dataset, after_completed_operation_id:operationId, input_profile:"public_lite",
   });
   finishStart();
   await Promise.all([first, duplicate]);
@@ -1286,7 +1307,7 @@ test("completed training offers one explicit new experiment with exact prior ide
 for (const slots of [1, 8]) test(`experimental M2-K${slots} is explicit and completed status has no invented evaluation`, async () => {
   const dataset = id("a"), result = id("b"), model = id("c");
   const recipe = `stage1a.dsimple.m2.k${slots}.experimental.v1`;
-  const ready = localTrainingEnv({artifact:dataset, trainingStatus:{
+  const ready = localTrainingEnv({artifact:dataset, parameters:{schema:"stpd/human-text-input-source-v1"}, trainingStatus:{
     schema:"stpd/local-training-operation-v1", availability:"ready", csrf_token:"training-csrf",
     operation:{status:"idle"},
   }});
@@ -1302,7 +1323,7 @@ for (const slots of [1, 8]) test(`experimental M2-K${slots} is explicit and comp
   await action(page, "start-local-training").onclick();
   assert.deepEqual(body(post(ready.calls)[0]), {dataset_id:dataset, recipe});
 
-  const done = localTrainingEnv({artifact:dataset, trainingStatus:{
+  const done = localTrainingEnv({artifact:dataset, parameters:{schema:"stpd/human-text-input-source-v1"}, trainingStatus:{
     schema:"stpd/local-training-operation-v2", availability:"ready", csrf_token:"training-csrf",
     operation:{status:"completed", operation_id:"1".repeat(32), dataset_id:dataset,
       recipe, result_type:"train_only", evaluation_status:"not_run",
@@ -1318,7 +1339,7 @@ for (const slots of [1, 8]) test(`experimental M2-K${slots} is explicit and comp
 
 for (const slots of [1, 8]) test(`Reset-K${slots} is an explicit train-only recipe and starts once with its exact identity`, async () => {
   const dataset = id("a"), reset = `stage1a.dsimple.reset.k${slots}.experimental.v1`;
-  const env = localTrainingEnv({artifact:dataset, trainingHandler:async url => {
+  const env = localTrainingEnv({artifact:dataset, parameters:{schema:"stpd/human-text-input-source-v1"}, trainingHandler:async url => {
     if (url === "/api/local-training/start") return {schema:"stpd/local-training-operation-v2",
       availability:"ready", operation:{status:"pending", recipe:reset}};
     throw new Error(`unexpected route ${url}`);
@@ -1335,7 +1356,7 @@ for (const slots of [1, 8]) test(`Reset-K${slots} is an explicit train-only reci
   assert.equal(post(env.calls)[0].options.headers["X-CSRF-Token"], "training-csrf");
 
   const operationId = "1".repeat(32);
-  const done = localTrainingEnv({artifact:dataset, trainingStatus:{
+  const done = localTrainingEnv({artifact:dataset, parameters:{schema:"stpd/human-text-input-source-v1"}, trainingStatus:{
     schema:"stpd/local-training-operation-v2", availability:"ready", csrf_token:"training-csrf",
     operation:{status:"completed", operation_id:operationId, dataset_id:dataset,
       recipe:reset, result_type:"train_only", evaluation_status:"not_run",
@@ -1383,7 +1404,8 @@ test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} trai
   const dataset = id("a");
   const recipe = `stage1a.dsimple.${reset ? "reset" : "m2"}.k${slots}.confirmed-interaction.v${version}`;
   const env = localTrainingEnv({artifact:dataset,
-    parameters:version === 2 ? {schema:"stpd/managed-text-menu-observed-source-v1"} : null,
+    parameters:version === 2 ? {schema:"stpd/managed-text-menu-observed-source-v1"}
+      : {schema:"stpd/human-text-input-source-v1"},
     trainingHandler:async url => {
       if (version === 2 && url === `/api/local-managed-sources/binding/${dataset}`) return {
         schema:"stpd/local-managed-source-binding-v1", status:"admitted", artifact_id:dataset,
@@ -1418,7 +1440,7 @@ test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} trai
 test("completed confirmed-interaction training preserves its explicit recipe for a new experiment", async () => {
   const dataset = id("a"), operationId = "1".repeat(32);
   const recipe = "stage1a.dsimple.reset.k8.confirmed-interaction.v1";
-  const env = localTrainingEnv({artifact:dataset, trainingStatus:{
+  const env = localTrainingEnv({artifact:dataset, parameters:{schema:"stpd/human-text-input-source-v1"}, trainingStatus:{
     schema:"stpd/local-training-operation-v2", availability:"ready", csrf_token:"training-csrf",
     operation:{status:"completed", operation_id:operationId, dataset_id:dataset, recipe,
       result_type:"train_only", evaluation_status:"not_run", run_id:id("e"), result_id:id("b"), model_id:id("c")}}});
@@ -1446,6 +1468,19 @@ test("unknown or cross-profile training selection cannot silently fall back to t
     await action(page, completed ? "start-local-training-new" : "start-local-training").onclick();
     assert.equal(post(env.calls).length, 0);
   }
+});
+
+test("Public M0 training status requires one exact supported input profile", async () => {
+  const dataset = id("a");
+  const env = localTrainingEnv({artifact:dataset, trainingStatus:{
+    schema:"stpd/local-training-operation-v3",availability:"ready",csrf_token:"training-csrf",
+    operation:{status:"pending",operation_id:"1".repeat(32),dataset_id:dataset,
+      input_profile:"canonical",stage:"training"},
+  }});
+  const page = await env.render();
+  assert.match(text(page), /缺少可核对的公开输入配置/);
+  assert.equal(walk(page).some(element => element.dataset?.action === "start-local-training"), false);
+  assert.equal(post(env.calls).length, 0);
 });
 
 test("M2 model detail selects an existing Human source and starts dev evaluation only on click", async () => {
@@ -1776,6 +1811,53 @@ test("M2 export describes its own scope alongside a completed dev report and gua
   assert.doesNotMatch(text(env.livePage), /没有独立评估|仍没有独立评估/);
   assert.equal(walk(env.livePage).some(element => element.dataset?.action === "register-local-model"), true);
   assert.equal(post(env.calls).some(call => call.url.includes("local-model-registrations")), false);
+});
+
+test("public M0 export card accepts only the exact public renderer and binding, then shows generic registration", async () => {
+  const model = id("a");
+  const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1",status:"ready",curation_status:"ready"};
+      if (url === `/api/local-workspace/artifacts/${model}`) return publicM0Model(model);
+      if (url === "/api/local-model-exports/status") return modelExportStatus({
+        status:"completed",model_id:model,model_type:"public_m0",
+        profile:"public-snapshot-m0-v1",payload_bytes:456},
+      {schema:"stpd/local-model-export-operation-v3"});
+      if (url === `/api/local-model-registrations/status?model_id=${model}`) return {
+        schema:"stpd/local-model-registration-v1",model_id:model,status:"not_registered",
+        loaded:false,runtime_profile:"public-snapshot-m0-v1",csrf_token:"registration-csrf"};
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.match(text(page), /Public Lite（可读内联）/);
+  assert.match(text(page), /D-Simple 轻动作 M0/);
+  assert.match(text(page), /完整动作目录/);
+  assert.match(text(page), /不代表模型策略质量/);
+  assert.match(text(page), /通用 Snapshot Runtime/);
+  assert.equal(action(page, "start-local-model-export").disabled, false);
+  assert.ok(action(page, "register-local-model"));
+  assert.equal(post(env.calls).length, 0, "status and detail reads never register or export");
+
+  for (const alter of [
+    artifact => { artifact.parameters.source_renderer.version = "stpd-text-menu-current-page-v1"; },
+    artifact => { artifact.parameters.training_binding.training_operation_id = "bad"; },
+    artifact => { artifact.parameters.input_schema = "stpd/stage1a-light-action-m0-canonical-input-v1"; },
+  ]) {
+    const broken = publicM0Model(model);
+    alter(broken);
+    const rejected = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1",status:"ready",curation_status:"ready"};
+        if (url === `/api/local-workspace/artifacts/${model}`) return broken;
+        throw new Error(`unexpected route ${url}`);
+      }});
+    const rejectedPage = await rejected.render();
+    assert.equal(walk(rejectedPage).some(element => element.dataset?.action === "start-local-model-export"), false);
+    assert.equal(walk(rejectedPage).some(element => element.dataset?.action === "register-local-model"), false);
+    assert.equal(rejected.calls.some(call => call.url === "/api/local-model-exports/status"), false);
+  }
 });
 
 for (const [slots, reset] of [[1, true], [8, false], [8, true]]) test(`${reset ? "Reset" : "M2"}-K${slots} model identity drives overview, export, and neutral dev evaluation without an automatic write`, async () => {
