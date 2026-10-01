@@ -352,11 +352,13 @@ class TokenRankingEngine:
             random.Random(f"stage1a:{config.seed}:{epoch}").shuffle(order)
             self.plan.extend(order)
         self.plan = self.plan[:config.steps]
-        self.data_identity = semantic_hash({
+        identity_payload = {
             "input": inputs.manifest.artifact_id, "config": config_payload(config),
             "plan": self.plan, "backbone": self.backbone,
-            "graph": recipe.graph, "recipe": recipe.recipe_id,
-        })
+        }
+        if self.is_light_action_m0:
+            identity_payload.update({"graph": recipe.graph, "recipe": recipe.recipe_id})
+        self.data_identity = semantic_hash(identity_payload)
         self.step = 0
 
     def _weights(self) -> dict[str, Tensor]:
