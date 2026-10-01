@@ -44,6 +44,8 @@ from spireagent.workbench.local_training import (
     LOCK_FILE,
     MEMORY_RECIPE,
     OPERATION_FILE,
+    PUBLIC_M0_RECIPE,
+    SCHEMA_V3,
     LocalTrainingService,
 )
 from spireagent.workbench.memory_recipe import RESET_K1_RECIPE
@@ -116,6 +118,33 @@ def test_missing_model_backend_preserves_valid_training_input(tmp_path, monkeypa
     service._thread.join(timeout=10)
     assert not service._thread.is_alive()
     assert lock_path.read_bytes() == lock_bytes
+
+
+def test_public_m0_profile_is_closed_and_persisted_in_the_existing_operation(tmp_path, monkeypatch):
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    service = LocalTrainingService(config)
+    with pytest.raises(BoundaryError, match="unsupported_input_profile"):
+        service.start(dataset_id, input_profile="canonical")
+    with pytest.raises(BoundaryError, match="unsupported_input_profile"):
+        service.start(dataset_id, input_profile={"profile": "public_lite"})
+
+    def parked(held, _path, _identity, _owner, _store):
+        held.__exit__(None, None, None)
+
+    monkeypatch.setattr(service, "_run", parked)
+    started = service.start(dataset_id, input_profile="public_lite")["operation"]
+    assert started["schema"] == SCHEMA_V3
+    assert started["input_profile"] == "public_lite"
+    assert started["recipe"] == PUBLIC_M0_RECIPE
+    assert started["result_type"] == "evaluated"
+    assert started["evaluation_status"] == "pending"
+    assert service._thread is not None
+    service._thread.join(timeout=10)
+    assert not service._thread.is_alive()
+    owner = configured_owner(config)
+    operation = LocalTrainingService._read(owner.path.parent / OPERATION_FILE, owner.identity)
+    assert operation["schema"] == SCHEMA_V3
+    assert operation["input_profile"] == "public_lite"
 
 
 def test_private_child_drains_large_stderr_and_keeps_stdout_machine_record(tmp_path: Path):
@@ -658,7 +687,7 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
     tmp_path: Path, monkeypatch,
 ) -> None:
     config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
-    producer = source_identity(ROOT)
+    producer = source_identity(ROOT, require_clean=False)
 
     launches = []
 
@@ -674,7 +703,7 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
     service.start(dataset_id)
     result = _settle(service)
     assert len(launches) == 1
-    assert result["status"] == "interrupted_unknown", result
+    assert result["status"] == "failed", result
     assert result["error_code"] == "training_process_failed"
     assert "run_id" in result and "result_id" not in result
     owner = configured_owner(config)
@@ -683,7 +712,7 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
     log = owner.path.parent / ("local-training-" + result["operation_id"] + ".log")
     assert log.read_bytes() == b"synthetic private failure\n"
     assert "synthetic private failure" not in json.dumps(service.status())
-    with pytest.raises(BoundaryError, match="previous_training_outcome_unknown"):
+    with pytest.raises(BoundaryError, match="previous_training_failed"):
         LocalTrainingService(config).start(dataset_id)
 
 
@@ -692,7 +721,7 @@ def test_parent_exception_diagnostic_preserves_unknown_after_child_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, log_write_fails: bool,
 ) -> None:
     config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
-    producer = source_identity(ROOT)
+    producer = source_identity(ROOT, require_clean=False)
     secret = "private-training-dataset-path"
 
     def fail_child(_command, _log_path, _environment, *, on_started):

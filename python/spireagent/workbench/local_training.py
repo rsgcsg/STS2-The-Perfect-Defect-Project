@@ -41,7 +41,9 @@ from spireagent.workbench.research_process import private_child as _private_chil
 
 SCHEMA = "stpd/local-training-operation-v1"
 SCHEMA_V2 = "stpd/local-training-operation-v2"
+SCHEMA_V3 = "stpd/local-training-operation-v3"
 DEFAULT_RECIPE = "stage1a.dsimple.s.v1"
+PUBLIC_M0_RECIPE = "stage1a.dsimple.light-action.m0.s.v1"
 MEMORY_RECIPE = M2_K1_RECIPE  # Preserve the existing recipe constant for callers.
 OPERATION_FILE = "local-training-operation.json"
 LOCK_FILE = ".local-training.lock"
@@ -87,8 +89,9 @@ def _write_parent_failure(path: Path, identity: str, error: Exception) -> None:
 
 
 class LocalTrainingService:
-    def __init__(self, config: ProjectConfig) -> None:
+    def __init__(self, config: ProjectConfig, *, config_path: Path | None = None) -> None:
         self.config = config
+        self.config_path = config_path
         self._selection = LocalDatasetService(config)
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
@@ -108,7 +111,7 @@ class LocalTrainingService:
                 raise ValueError
             value = json.loads(read_replaceable_bytes(path))
             schema = value.get("schema") if isinstance(value, dict) else None
-            if (not isinstance(value, dict) or schema not in {SCHEMA, SCHEMA_V2}
+            if (not isinstance(value, dict) or schema not in {SCHEMA, SCHEMA_V2, SCHEMA_V3}
                     or value.get("status") not in
                     {"pending", "completed", "failed", "interrupted_unknown"}
                     or value.get("stage") not in STAGES
@@ -117,7 +120,15 @@ class LocalTrainingService:
             digest(value["operation_id"], "local_training.operation", length=32)
             digest(value["dataset_id"], "local_training.dataset")
             memory = value.get("recipe") in MEMORY_RECIPES
-            if schema == SCHEMA_V2:
+            if schema == SCHEMA_V3:
+                if (value.get("recipe") != PUBLIC_M0_RECIPE
+                        or value.get("input_profile") not in {"public_lite", "public_compact"}
+                        or value.get("result_type") != "evaluated"
+                        or value.get("evaluation_status") not in {"pending", "completed"}
+                        or (value["status"] == "completed"
+                            and value.get("evaluation_status") != "completed")):
+                    raise ValueError
+            elif schema == SCHEMA_V2:
                 if value.get("recipe") not in {DEFAULT_RECIPE, *MEMORY_RECIPES}:
                     raise ValueError
                 if memory:
@@ -132,7 +143,9 @@ class LocalTrainingService:
             for key in IDS:
                 if key in value:
                     digest(value[key], "local_training." + key)
-            completed_ids = (("input_id", "run_id", "checkpoint_id", "result_id", "model_id")
+            completed_ids = (("input_id", "run_id", "result_id", "model_id")
+                             if schema == SCHEMA_V3 else
+                             ("input_id", "run_id", "checkpoint_id", "result_id", "model_id")
                              if schema == SCHEMA_V2 and memory else
                              ("run_id", "result_id", "model_id", "evaluation_id"))
             if value["status"] == "completed" and not all(value.get(key) for key in completed_ids):
@@ -181,7 +194,7 @@ class LocalTrainingService:
     def _public(value: dict[str, Any]) -> dict[str, Any]:
         keys = {"status", "stage", "operation_id", "dataset_id", "error_code",
                 "recipe", "result_type", "evaluation_status", "schema",
-                "previous_completed", *IDS}
+                "input_profile", "previous_completed", *IDS}
         return {key: item for key, item in value.items() if key in keys}
 
     def status(self) -> dict[str, Any]:
@@ -246,11 +259,130 @@ class LocalTrainingService:
             raise BoundaryError("local_training", "operation_superseded")
         write_replaceable_json(path, {**current, **updates})
 
+    def _run_public_m0(self, operation: dict[str, Any], path: Path, identity: str,
+                       owner: LocalCurationOwner, store: ManifestArtifactStore,
+                       on_started: Any, on_finished: Any) -> None:
+        if (self.config_path is None or self.config_path.is_symlink()
+                or not self.config_path.is_file()):
+            raise BoundaryError("local_training", "configured_local_workspace_required")
+        profile = operation.get("input_profile")
+        if profile not in {"public_lite", "public_compact"}:
+            raise BoundaryError("local_training", "unsupported_input_profile")
+        root = getattr(getattr(store, "blobs", None), "root", None)
+        if not isinstance(root, Path):
+            raise BoundaryError("local_training", "unsupported_workspace_store")
+        environment = dict(os.environ)
+        for name in ("STPD_HUB_ADMIN_TOKEN", "PYTHONPATH", "PYTHONHOME"):
+            environment.pop(name, None)
+
+        self._advance(path, identity, stage="allocating")
+        prepare_command = [
+            sys.executable, "-m", "spireagent.research_cli", "--store", str(root),
+            "prepare-light-action-m0", "--project-config", str(self.config_path),
+            "--dataset", operation["dataset_id"], "--operation", identity,
+            "--backbone", "s", "--input-profile", profile,
+        ]
+        prepare_log = owner.path.parent / ("local-training-" + identity + "-prepare.log")
+        prepare_exit, captured = _private_child(prepare_command, prepare_log, environment,
+                                                on_started=on_started)
+        on_finished(prepare_exit)
+        if prepare_exit:
+            raise BoundaryError("local_training", "public_m0_preparation_process_failed")
+        try:
+            prepared = json.loads(captured)
+            expected = {"allocation_id", "model_view_id", "training_input_id", "input_schema",
+                        "backbone", "admission", "counts", "elapsed_seconds", "verification"}
+            if (not isinstance(prepared, dict) or set(prepared) != expected
+                    or prepared["input_schema"] !=
+                    "stpd/stage1a-light-action-m0-public-input-v1"
+                    or prepared["backbone"] != "s"):
+                raise ValueError
+            allocation_id = digest(prepared["allocation_id"], "local_training.allocation_id")
+            view_id = digest(prepared["model_view_id"], "local_training.view_id")
+            input_id = digest(prepared["training_input_id"], "local_training.input_id")
+            allocation = store.get_manifest(allocation_id)
+            view = store.get_manifest(view_id)
+            training_input = store.get_manifest(input_id)
+            from stpd.fullrun.light_action_inputs import PUBLIC_SCHEMA, public_training_binding
+
+            binding = public_training_binding(store, input_id)
+            if (allocation.parent("dataset") != operation["dataset_id"]
+                    or view.parent("allocation") != allocation_id
+                    or training_input.parent("model_view") != view_id
+                    or training_input.parameters.value().get("schema") != PUBLIC_SCHEMA
+                    or binding.get("dataset_ids") != [operation["dataset_id"]]
+                    or binding.get("training_operation_id") != identity
+                    or view.parameters.value().get("serializer", {}).get("profile") != profile):
+                raise ValueError
+        except (BoundaryError, OSError, ValueError, KeyError, TypeError) as error:
+            raise BoundaryError("local_training", "public_m0_preparation_result_invalid") from error
+        self._advance(path, identity, stage="training", allocation_id=allocation_id,
+                      view_id=view_id, input_id=input_id)
+
+        train_command = [
+            sys.executable, "-m", "spireagent.research_cli", "--store", str(root),
+            "train-light-action-m0", "--project-config", str(self.config_path),
+            "--inputs", input_id, "--operation", identity,
+            "--recipe", "stage1a.dsimple.light-action.m0.s.v1",
+            "--steps", "3", "--backend", "cpu",
+        ]
+        train_log = owner.path.parent / ("local-training-" + identity + ".log")
+        train_exit, trained_output = _private_child(train_command, train_log, environment,
+                                                    on_started=on_started)
+        on_finished(train_exit)
+        if train_exit:
+            raise BoundaryError("local_training", "public_m0_training_process_failed")
+        try:
+            trained = json.loads(trained_output)
+            if (not isinstance(trained, dict) or trained.get("state") != "completed"
+                    or trained.get("training_input_id") != input_id
+                    or trained.get("training_binding") != binding):
+                raise ValueError
+            run_id = digest(trained["run_id"], "local_training.run_id")
+            result_id = digest(trained["result_id"], "local_training.result_id")
+            run = store.get_manifest(run_id)
+            result = store.get_manifest(result_id)
+            from spireagent.storage.run_reporter import ObjectStoreRunReporter
+            from stpd.workers.token_worker import _verify_completed
+
+            completed = ObjectStoreRunReporter(store, store.blobs).completed(run_id)
+            if (completed is None or completed.artifact_id != result_id
+                    or run.parent("training_input") != input_id
+                    or run.parameters.value().get("training_binding") != binding
+                    or result.parent("model") != completed.parent("model")):
+                raise ValueError
+            _verify_completed(store, completed, run)
+            model_id = completed.parent("model")
+            model = store.get_manifest(model_id)
+            if model.parameters.value().get("schema") != \
+                    "stpd/stage1a-light-action-m0-public-model-v1":
+                raise ValueError
+            completion = {"run_id": run_id, "result_id": result_id, "model_id": model_id,
+                          "evaluation_id": completed.parent("offline_evaluation"),
+                          "checkpoint_id": model.parent("checkpoint"),
+                          "evaluation_status": "completed"}
+        except (BoundaryError, OSError, ValueError, KeyError, TypeError) as error:
+            raise BoundaryError("local_training", "public_m0_training_result_invalid") from error
+        from spireagent.storage.registry import SQLiteRegistry, sync_registry
+
+        sync_registry(store, SQLiteRegistry(self._selected()[2]))
+        self._advance(path, identity, stage="completed", status="completed", **completion)
+
     def start(self, dataset_id: object, *,
               after_completed_operation_id: object | None = None,
-              recipe: object = DEFAULT_RECIPE) -> dict[str, Any]:
+              recipe: object = DEFAULT_RECIPE,
+              input_profile: object = None) -> dict[str, Any]:
+        public_profile = input_profile
+        if (public_profile is not None
+                and (not isinstance(public_profile, str)
+                     or public_profile not in {"public_lite", "public_compact"})):
+            raise BoundaryError("local_training", "unsupported_input_profile")
+        if public_profile is not None:
+            if recipe != DEFAULT_RECIPE:
+                raise BoundaryError("local_training", "conflicting_training_profile")
+            recipe = PUBLIC_M0_RECIPE
         if (not isinstance(recipe, str)
-                or recipe not in {DEFAULT_RECIPE, *MEMORY_RECIPES}):
+                or recipe not in {DEFAULT_RECIPE, *MEMORY_RECIPES, PUBLIC_M0_RECIPE}):
             raise BoundaryError("local_training", "unsupported_training_recipe")
         dataset_id = digest(dataset_id, "local_training.dataset_id")
         after_completed = (None if after_completed_operation_id is None else
@@ -269,16 +401,17 @@ class LocalTrainingService:
                     raise BoundaryError("local_training", "operation_in_progress") from error
                 operation = self._read(path, owner.identity)
                 if (operation.get("dataset_id") == dataset_id and operation["status"] == "pending"
-                        and operation.get("recipe", DEFAULT_RECIPE) == recipe):
+                        and operation.get("recipe", DEFAULT_RECIPE) == recipe
+                        and operation.get("input_profile") == public_profile):
                     return self.status()
                 raise BoundaryError("local_training", "operation_in_progress") from error
             raise
         try:
             previous = self._read(path, owner.identity)
-            if previous["status"] in {"pending", "interrupted_unknown"} or (
-                previous["status"] == "failed" and previous.get("run_id")
-            ):
+            if previous["status"] in {"pending", "interrupted_unknown"}:
                 raise BoundaryError("local_training", "previous_training_outcome_unknown")
+            if previous["status"] == "failed" and previous.get("run_id"):
+                raise BoundaryError("local_training", "previous_training_failed")
             if after_completed is not None and (
                 previous["status"] != "completed" or previous["dataset_id"] != dataset_id
                 or previous["operation_id"] != after_completed
@@ -286,6 +419,7 @@ class LocalTrainingService:
                 raise BoundaryError("local_training", "new_experiment_precondition_failed")
             if (previous["status"] == "completed" and previous["dataset_id"] == dataset_id
                     and previous.get("recipe", DEFAULT_RECIPE) == recipe
+                    and previous.get("input_profile") == public_profile
                     and after_completed is None):
                 return self.status()
             if (previous["status"] == "completed" and previous["dataset_id"] == dataset_id
@@ -293,12 +427,20 @@ class LocalTrainingService:
                 raise BoundaryError("local_training", "new_experiment_precondition_failed")
             require_local_models("local_training")
             identity = uuid.uuid4().hex
-            operation = {"schema": (SCHEMA_V2 if recipe in MEMORY_RECIPES
+            operation = {"schema": (SCHEMA_V3 if public_profile is not None else
+                                     SCHEMA_V2 if recipe in MEMORY_RECIPES
                                     or previous.get("schema") == SCHEMA_V2 else SCHEMA),
                          "status": "pending", "stage": "reserving",
                          "operation_id": identity, "dataset_id": dataset_id,
                          "_owner": list(owner.identity)}
-            if operation["schema"] == SCHEMA_V2:
+            if operation["schema"] == SCHEMA_V3:
+                operation.update(
+                    recipe=PUBLIC_M0_RECIPE,
+                    input_profile=public_profile,
+                    result_type="evaluated",
+                    evaluation_status="pending",
+                )
+            elif operation["schema"] == SCHEMA_V2:
                 operation.update(
                     recipe=recipe,
                     result_type="train_only" if recipe in MEMORY_RECIPES else "evaluated",
@@ -336,11 +478,15 @@ class LocalTrainingService:
 
     def _run(self, held: AbstractContextManager[None], path: Path, identity: str,
              owner: LocalCurationOwner, store: ManifestArtifactStore) -> None:
-        run_started = False
+        child_outcome_unknown = False
 
         def mark_started() -> None:
-            nonlocal run_started
-            run_started = True
+            nonlocal child_outcome_unknown
+            child_outcome_unknown = True
+
+        def mark_finished(_exit_code: int) -> None:
+            nonlocal child_outcome_unknown
+            child_outcome_unknown = False
 
         try:
             from spireagent.storage.registry import SQLiteRegistry, sync_registry
@@ -373,6 +519,10 @@ class LocalTrainingService:
 
             operation = self._read(path, owner.identity)
             dataset_id = operation["dataset_id"]
+            if operation.get("schema") == SCHEMA_V3:
+                self._run_public_m0(operation, path, identity, owner, store,
+                                    mark_started, mark_finished)
+                return
             memory = operation.get("recipe") in MEMORY_RECIPES
             producer = source_identity(ROOT)
             manifest = store.get_manifest(dataset_id)
@@ -456,6 +606,7 @@ class LocalTrainingService:
                 prepare_exit, captured = _private_child(prepare_command, prepare_log,
                                                         environment,
                                                         on_started=mark_started)
+                mark_finished(prepare_exit)
                 if prepare_exit:
                     failure = None
                     with suppress(ValueError, TypeError):
@@ -523,6 +674,7 @@ class LocalTrainingService:
             log_path = owner.path.parent / ("local-training-" + identity + ".log")
             exit_code, _ = _private_child(command, log_path, environment,
                                          on_started=mark_started)
+            mark_finished(exit_code)
             self._advance(path, identity, stage="verifying_result", _exit_code=exit_code)
             if exit_code:
                 raise BoundaryError("local_training", "training_process_failed")
@@ -539,6 +691,7 @@ class LocalTrainingService:
                 verify_exit, verified_output = _private_child(verify_command, verify_log,
                                                              environment,
                                                              on_started=mark_started)
+                mark_finished(verify_exit)
                 if verify_exit:
                     raise BoundaryError("local_training", "memory_verification_process_failed")
                 verified = json.loads(verified_output)
@@ -577,7 +730,7 @@ class LocalTrainingService:
             # persistence fails, so its run identity is never discarded.
             with suppress(OSError, ValueError, BoundaryError):
                 self._advance(path, identity,
-                              status="interrupted_unknown" if run_started else "failed",
+                              status="interrupted_unknown" if child_outcome_unknown else "failed",
                               error_code=code)
         finally:
             held.__exit__(None, None, None)
