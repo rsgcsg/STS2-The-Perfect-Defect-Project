@@ -6,6 +6,8 @@ for training and serving. The input contains current observation and candidates 
 
 from __future__ import annotations
 
+import hashlib
+
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
@@ -20,6 +22,11 @@ from .light_action_encoder import LightActionEncoder
 from .token_core import TokenCore
 
 LIGHT_ACTION_LATENT_WIDTH = 384
+
+
+def _m0_initialization_seed(seed: int, branch: str) -> int:
+    payload = f"stage1a:{LIGHT_ACTION_M0_GRAPH}:initialization:{seed}:{branch}".encode()
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % (2**63)
 
 
 def validate_catalog(core: TokenCore, state: Tensor, actions: tuple[Tensor, ...]) -> None:
@@ -110,7 +117,8 @@ class DSimpleTokenScorer(nn.Module):
 class LightActionM0Scorer(nn.Module):
     """Stateless shared-state D-Simple with a fixed independent byte-action path."""
 
-    def __init__(self, core: TokenCore, *, max_action_bytes: int) -> None:
+    def __init__(self, core: TokenCore, *, max_action_bytes: int,
+                 initialization_seed: int) -> None:
         super().__init__()
         if type(max_action_bytes) is not int or not 1 <= max_action_bytes <= 8192:
             raise ValueError("invalid action byte limit")
@@ -119,14 +127,32 @@ class LightActionM0Scorer(nn.Module):
         self.core = core
         self.max_action_bytes = max_action_bytes
         width = LIGHT_ACTION_LATENT_WIDTH
-        self.state_projection = nn.Linear(core.width, width)
-        self.action_encoder = LightActionEncoder(VOCAB_SIZE, width, width)
-        self.transition = nn.Sequential(
-            nn.Linear(2 * width, width), nn.GELU(), nn.Linear(width, width),
-        )
-        self.score_head = nn.Sequential(
-            nn.Linear(width, 256), nn.GELU(), nn.Linear(256, 1),
-        )
+        # Each M0 branch gets a stable stream so core.width cannot shift the
+        # initial values of the common action and scoring branches.
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(
+                _m0_initialization_seed(initialization_seed, "state"),
+            )
+            self.state_projection = nn.Linear(core.width, width)
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(
+                _m0_initialization_seed(initialization_seed, "action"),
+            )
+            self.action_encoder = LightActionEncoder(VOCAB_SIZE, width, width)
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(
+                _m0_initialization_seed(initialization_seed, "transition"),
+            )
+            self.transition = nn.Sequential(
+                nn.Linear(2 * width, width), nn.GELU(), nn.Linear(width, width),
+            )
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(
+                _m0_initialization_seed(initialization_seed, "score"),
+            )
+            self.score_head = nn.Sequential(
+                nn.Linear(width, 256), nn.GELU(), nn.Linear(256, 1),
+            )
 
     def encode_state(self, tokens: Tensor) -> Tensor:
         self.core.validate_tokens(tokens)
@@ -179,9 +205,9 @@ def build_scorer(
             raise ValueError("LoRA recipe requires an adapter-enabled core")
         if max_action_bytes is None or scoring_seed is None or readout_initial is not None:
             raise ValueError("M0 requires its independent byte limit and scoring seed")
-        with torch.random.fork_rng(devices=[]):
-            torch.manual_seed(scoring_seed)
-            return LightActionM0Scorer(core, max_action_bytes=max_action_bytes)
+        return LightActionM0Scorer(
+            core, max_action_bytes=max_action_bytes, initialization_seed=scoring_seed,
+        )
     if core.frozen != (recipe.backbone == "pf"):
         raise ValueError("recipe and backbone training scope disagree")
     if recipe.family == "b":

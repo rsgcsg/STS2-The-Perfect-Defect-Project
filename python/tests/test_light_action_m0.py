@@ -194,6 +194,32 @@ def test_m0_encodes_state_once_preflights_full_catalog_and_is_candidate_equivari
         encode_state.assert_not_called()
 
 
+def test_m0_shared_scorer_initialization_is_width_independent_and_rng_isolated():
+    def make(width: int, *, global_seed: int):
+        torch.manual_seed(global_seed)
+        core = ScratchTokenCore(ScratchShape(512, width, 1, 2, 32, 0.0, 64))
+        before = torch.get_rng_state().clone()
+        model = build_scorer(
+            "stage1a.dsimple.light-action.m0.s.v1", core,
+            max_action_bytes=8, scoring_seed=994,
+        )
+        assert torch.equal(torch.get_rng_state(), before)
+        return model
+
+    narrow = make(16, global_seed=1)
+    wide = make(32, global_seed=2)
+    same_shape = make(16, global_seed=3)
+    for name, value in narrow.state_dict().items():
+        if name.startswith("core."):
+            continue
+        torch.testing.assert_close(value, same_shape.state_dict()[name], rtol=0, atol=0)
+    for branch in ("action_encoder", "transition", "score_head"):
+        narrow_state = getattr(narrow, branch).state_dict()
+        wide_state = getattr(wide, branch).state_dict()
+        assert narrow_state.keys() == wide_state.keys()
+        for name in narrow_state:
+            torch.testing.assert_close(narrow_state[name], wide_state[name], rtol=0, atol=0)
+
 def test_shared_m2_encoder_keeps_its_original_parameter_layout():
     old_boundary = _LightActionEncoder(258, 24)
     shared_implementation = LightActionEncoder(258, 24)
