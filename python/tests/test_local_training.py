@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -1197,6 +1198,27 @@ def test_journal_descriptor_read_retains_recovery_boundaries(
         }))
     with pytest.raises(BoundaryError, match="operation_recovery_required"):
         LocalTrainingService._read(path, ("owner",))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX FIFO special file")
+def test_replaceable_journal_rejects_fifo_without_waiting_for_writer(tmp_path: Path) -> None:
+    path = tmp_path / "operation.json"
+    os.mkfifo(path)
+    script = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from spireagent.storage.replaceable_file import read_replaceable_bytes\n"
+        "try:\n"
+        "    read_replaceable_bytes(Path(sys.argv[1]))\n"
+        "except ValueError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise AssertionError('FIFO must not be accepted as a regular journal')\n"
+    )
+    # A missing O_NONBLOCK would wait forever for a writer. Keep that defect
+    # bounded in a separate process instead of hanging the whole test runner.
+    subprocess.run([sys.executable, "-c", script, str(path)], check=True, timeout=5,
+                   capture_output=True, text=True)
 
 
 def test_status_reader_does_not_block_training_journal_replacement(

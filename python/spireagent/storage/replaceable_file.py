@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 import tempfile
 import time
 import uuid
@@ -25,7 +26,7 @@ def open_replaceable_read(path: Path) -> Iterator[BinaryIO]:
     replacement needs that access even though the reader only reads the old
     version. Keep the handle open only for the caller's read.
     """
-    if os.name != "nt":
+    if sys.platform != "win32":
         descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     else:
         import importlib
