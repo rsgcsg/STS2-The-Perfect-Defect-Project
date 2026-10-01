@@ -2,7 +2,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { canonicalizeEpisodeSeed } from "./episode-provenance.mjs";
 import { ManagedTextMenuSessionAdapter, MANAGED_TEXT_MENU_PROFILE } from "./managed-text-menu-map.mjs";
 import { ManagedTextMenuV2SessionAdapter, MANAGED_TEXT_MENU_V2_PROFILE,
-  MANAGED_TEXT_MENU_V2_CONTEXT_SCHEMA } from "./managed-text-menu-v2.mjs";
+  MANAGED_TEXT_MENU_V2_CONTEXT_SCHEMA, isManagedTextStateOwner }
+  from "./managed-text-menu-v2.mjs";
 
 const TEXT_CONTEXT_SCHEMA = "sts2.player-environment/text-menu-observation-context-1";
 
@@ -22,6 +23,7 @@ export class ManagedPeDriverSession {
   #textRequestContinuity = new Map();
   #mutationRoutes = new Map();
   #control = null;
+  #textV2OwnerKey = null;
   #controlGeneration = 0;
   #tail = Promise.resolve();
   #normalShutdown = null;
@@ -39,14 +41,73 @@ export class ManagedPeDriverSession {
 
   get closed() { return this.#closed; }
 
+  status() {
+    return {
+      closed: this.#closed,
+      episode_available: this.#available && !this.#closed,
+      game_continuity_id: this.#closed ? null : this.#gameContinuityId,
+      control_held: this.#control != null,
+      control: this.#control == null ? null : {
+        control_epoch: this.#control.epoch,
+        runtime_instance_id: this.#control.runtimeInstanceId,
+        game_continuity_id: this.#control.gameContinuityId
+      },
+      tainted: this.#started.session.tainted === true,
+      taint_reason: this.#started.session.taintReason ?? null
+    };
+  }
+
   // EOF and force-close must interrupt an in-flight native request, rather
   // than joining the JSONL mutation queue that request is waiting on.
+  #clearTextV2Owner() {
+    this.#textV2.resetSelection();
+    this.#textV2OwnerKey = null;
+    if (this.#control != null) this.#control.textStateOwnerKey = null;
+  }
+
+  #bindTextV2Owner(request, intent) {
+    let ownerId = request.text_state_owner;
+    if (ownerId !== undefined && !isManagedTextStateOwner(ownerId)) {
+      throw new Error("managed_text_state_owner_invalid");
+    }
+    if (ownerId === undefined && intent.sharedService) {
+      // An ownerless shared claim may still serve a legacy text-menu-v1
+      // caller, but it cannot preserve another caller's v2 intent state.
+      // Never treat absence as a stable shared legacy owner.
+      this.#clearTextV2Owner();
+      return { ownerId: null, ownerKey: null };
+    }
+    if (ownerId === undefined && !intent.sharedService) {
+      // JSONL/stdio has one local consumer. Its implicit identity is scoped to
+      // this driver lifetime and is never used for a shared HTTP attachment.
+      ownerId = "stdio:single-consumer";
+    }
+    if (ownerId === undefined) return { ownerId: null, ownerKey: null };
+    const ownerKey = JSON.stringify([
+      intent.principal, this.#started.runtime.adapterRuntimeInstanceId,
+      this.#gameContinuityId, ownerId
+    ]);
+    if (ownerKey !== this.#textV2OwnerKey) {
+      this.#textV2.resetSelection();
+      this.#textV2OwnerKey = ownerKey;
+    }
+    return { ownerId: request.text_state_owner ?? null, ownerKey };
+  }
+
+  #requireTextV2Owner(intent) {
+    if (!intent.sharedService) return;
+    const ownerKey = this.#control?.textStateOwnerKey;
+    if (ownerKey == null || ownerKey !== this.#textV2OwnerKey) {
+      throw new Error("managed_text_state_owner_required");
+    }
+  }
+
   shutdown({ force = false } = {}) {
     if (!this.#closed) {
       this.#closed = true;
       this.#available = false;
       this.#gameContinuityId = null;
-      this.#textV2.resetSelection();
+      this.#clearTextV2Owner();
       // Shutdown interrupts the queue. It revokes local admission without
       // claiming that an in-flight native mutation or release was confirmed.
       this.#control = null;
@@ -65,6 +126,17 @@ export class ManagedPeDriverSession {
     if (this.#closed) throw new Error("driver_closed");
     if (!this.#available || this.#gameContinuityId == null) {
       throw new Error("managed_episode_unavailable_reset_required");
+    }
+  }
+
+  #requireExpectedEpisode(request) {
+    if (Object.hasOwn(request, "expected_runtime_instance_id")
+      && request.expected_runtime_instance_id !== this.#started.runtime.adapterRuntimeInstanceId) {
+      throw new Error("stale_managed_runtime_instance");
+    }
+    if (Object.hasOwn(request, "expected_game_continuity_id")
+      && request.expected_game_continuity_id !== this.#gameContinuityId) {
+      throw new Error("stale_game_continuity");
     }
   }
 
@@ -94,13 +166,18 @@ export class ManagedPeDriverSession {
     }
   }
 
-  handle(request) {
+  handle(request, { principal = "stdio", sharedService = false } = {}) {
+    if (sharedService && principal !== "client" && principal !== "manager") {
+      throw new TypeError("Managed shared service principal is invalid.");
+    }
     // Capture admission before queuing. A request offered under an earlier
     // owner/free state must not become valid after release or a new claim.
     const intent = {
       generation: this.#controlGeneration,
       token: request?.control_token ?? null,
-      epoch: request?.control_epoch ?? null
+      epoch: request?.control_epoch ?? null,
+      principal: sharedService ? principal : "stdio",
+      sharedService
     };
     const next = this.#tail.then(() => this.#handle(request, intent));
     this.#tail = next.catch(() => undefined);
@@ -113,6 +190,7 @@ export class ManagedPeDriverSession {
     switch (request?.command) {
       case "reset": {
         this.#requireControlIntent(intent);
+        this.#requireExpectedEpisode(request);
         const seed = canonicalizeEpisodeSeed(request.seed);
         // reset_run first destroys the old simulator. A failed/unknown reset
         // cannot leave either public action route bound to that old episode.
@@ -121,7 +199,7 @@ export class ManagedPeDriverSession {
         this.#available = false;
         this.#gameContinuityId = null;
         this.#requestedSeed = null;
-        this.#textV2.resetSelection();
+        this.#clearTextV2Owner();
         // A reset may replace the native simulator even when it fails. Neither
         // outcome can carry the old episode's controller into the new one.
         this.#control = null;
@@ -154,7 +232,7 @@ export class ManagedPeDriverSession {
             : "managed_session_tainted_after_unknown");
         }
         this.#claimMutationRoute(request.mutation_request_id, "raw");
-        this.#textV2.resetSelection();
+        this.#clearTextV2Owner();
         return { type: "step_result", request_id: requestId,
           receipt: await this.#started.session.submit({
             requestId: request.mutation_request_id,
@@ -163,11 +241,13 @@ export class ManagedPeDriverSession {
             timeoutMs: this.#timeoutMs
           }) };
       case "text_observe": {
+        if (request.require_control === true) this.#requireControlIntent(intent);
         this.#requireEpisode();
         const profile = request.input_profile ?? MANAGED_TEXT_MENU_PROFILE;
         if (profile !== MANAGED_TEXT_MENU_PROFILE && profile !== MANAGED_TEXT_MENU_V2_PROFILE) {
           throw new TypeError("Unsupported text-menu input_profile.");
         }
+        if (profile === MANAGED_TEXT_MENU_V2_PROFILE) this.#requireTextV2Owner(intent);
         const context = {
           schema: profile === MANAGED_TEXT_MENU_V2_PROFILE
             ? MANAGED_TEXT_MENU_V2_CONTEXT_SCHEMA : TEXT_CONTEXT_SCHEMA,
@@ -187,6 +267,7 @@ export class ManagedPeDriverSession {
         if (request.expected_game_continuity_id !== this.#gameContinuityId) {
           throw new Error("stale_game_continuity");
         }
+        if (profile === MANAGED_TEXT_MENU_V2_PROFILE) this.#requireTextV2Owner(intent);
         const mutationId = request.mutation_request_id;
         if (typeof mutationId !== "string" || mutationId.length === 0) {
           throw new TypeError("text_submit requires mutation_request_id.");
@@ -197,17 +278,26 @@ export class ManagedPeDriverSession {
         }
         this.#claimMutationRoute(mutationId, profile);
         this.#textRequestContinuity.set(mutationId, this.#gameContinuityId);
-        return { type: "text_submit_result", request_id: requestId,
-          result: await (profile === MANAGED_TEXT_MENU_V2_PROFILE ? this.#textV2 : this.#text).submit({
+        if (profile !== MANAGED_TEXT_MENU_V2_PROFILE) this.#clearTextV2Owner();
+        let result;
+        try {
+          result = await (profile === MANAGED_TEXT_MENU_V2_PROFILE ? this.#textV2 : this.#text).submit({
             request_id: mutationId,
             expected_snapshot_id: request.expected_snapshot_id,
             action_id: request.action_id,
             input_profile: profile,
             timeout_ms: this.#timeoutMs
-          }) };
+          });
+        } catch (cause) {
+          if (this.#started.session.tainted === true) this.#clearTextV2Owner();
+          throw cause;
+        }
+        if (result.status === "unknown") this.#clearTextV2Owner();
+        return { type: "text_submit_result", request_id: requestId, result };
       }
       case "claim_control": {
         this.#requireEpisode();
+        this.#requireExpectedEpisode(request);
         if (this.#started.session.tainted === true) {
           throw new Error(this.#started.session.taintReason === "successor_projection_failed"
             ? "managed_session_tainted_after_successor_projection_failure"
@@ -221,18 +311,24 @@ export class ManagedPeDriverSession {
         if (typeof runtimeInstanceId !== "string" || runtimeInstanceId.length === 0) {
           throw new Error("managed_control_runtime_identity_unavailable");
         }
+        const { ownerId, ownerKey } = this.#bindTextV2Owner(request, intent);
         const control = {
           token: randomBytes(32).toString("hex"),
           epoch: randomUUID(),
           runtimeInstanceId,
-          gameContinuityId: this.#gameContinuityId
+          gameContinuityId: this.#gameContinuityId,
+          textStateOwnerId: ownerId,
+          textStateOwnerKey: ownerKey
         };
         this.#control = control;
         this.#controlGeneration += 1;
         return { type: "claim_control_result", request_id: requestId,
           control_token: control.token, control_epoch: control.epoch,
           runtime_instance_id: control.runtimeInstanceId,
-          game_continuity_id: control.gameContinuityId };
+          game_continuity_id: control.gameContinuityId,
+          ...(request.text_state_owner === undefined ? {} : {
+            text_state_owner: control.textStateOwnerId
+          }) };
       }
       case "release_control": {
         if (intent.generation !== this.#controlGeneration) {

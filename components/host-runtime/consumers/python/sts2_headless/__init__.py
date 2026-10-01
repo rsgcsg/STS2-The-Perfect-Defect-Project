@@ -7,6 +7,14 @@ from .client import (
     SyncVectorPlayerEnvironment,
     ThreadedVectorPlayerEnvironment,
 )
+from .managed_service import (
+    ManagedHostServiceClient,
+    ManagedHostServiceError,
+    ManagedHostServiceLaunch,
+    ManagedHostServiceManager,
+    ManagedHostUncertainError,
+    launch_managed_host_service,
+)
 
 __all__ = [
     "DriverCleanupError",
@@ -16,4 +24,10 @@ __all__ = [
     "ManagedPlayerEnvironment",
     "SyncVectorPlayerEnvironment",
     "ThreadedVectorPlayerEnvironment",
+    "ManagedHostServiceClient",
+    "ManagedHostServiceError",
+    "ManagedHostServiceLaunch",
+    "ManagedHostServiceManager",
+    "ManagedHostUncertainError",
+    "launch_managed_host_service",
 ]

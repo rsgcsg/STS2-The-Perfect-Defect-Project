@@ -7,9 +7,12 @@ import {
 } from "../src/managed-player-environment.mjs";
 import {
   MANAGED_TEXT_MENU_PROFILE,
+  managedTextMenuV1Contract,
   ManagedTextMenuSessionAdapter,
   ManagedTextMenuMapSessionAdapter
 } from "../src/managed-text-menu-map.mjs";
+import { managedTextMenuV2Contract, ManagedTextMenuV2SessionAdapter
+} from "../src/managed-text-menu-v2.mjs";
 
 const identity = {
   runtimeInstanceId: "managed-text-menu-test",
@@ -254,6 +257,41 @@ function rewardDecision(kind = "reward_set") {
     ] };
   return { ...common, decision: "combat_rewards_complete", room_ref: "combat-room", is_boss: false };
 }
+
+test("published v1 and v2 contracts cover actual reviewed scene projections", () => {
+  const contracts = [managedTextMenuV1Contract(), managedTextMenuV2Contract()];
+  const scenes = [mapDecision(), restDecision(), eventDecision(),
+    treasureDecision(), treasureDecision("treasure_relic"),
+    treasureDecision("treasure_complete"),
+    deckUpgradeDecision(), deckUpgradeDecision("preview"),
+    combatDecision(), rewardDecision(), rewardDecision("card_reward"),
+    rewardDecision("combat_rewards_complete"),
+    { ...mapDecision(), decision: "game_over", victory: true }];
+  const seenKinds = new Set();
+  for (const state of scenes) {
+    const source = projectManagedCandidateDecision({ state, ...identity }).snapshot;
+    for (const [index, Adapter] of [ManagedTextMenuSessionAdapter,
+      ManagedTextMenuV2SessionAdapter].entries()) {
+      const contract = contracts[index];
+      const page = new Adapter({ observe: () => source,
+        async submit() { throw new Error("contract test is observation only"); } }).observe();
+      assert.equal(page.schema, contract.snapshot_schema);
+      assert.equal(page.input_profile, contract.input_profile);
+      assert.ok(contract.interaction_kinds.includes(page.interaction.kind), page.interaction.kind);
+      seenKinds.add(page.interaction.kind);
+      for (const action of page.menu_actions.actions) {
+        assert.ok(contract.action_verbs.includes(action.verb), action.verb);
+      }
+      if (page.interaction.kind === "game_over") {
+        assert.equal(page.status, "observed");
+        assert.deepEqual(page.menu_actions.actions, []);
+        assert.deepEqual(contract.observed_terminal_kinds, ["game_over"]);
+      } else assert.equal(page.menu_actions.status, "complete", page.interaction.kind);
+    }
+  }
+  assert.deepEqual([...seenKinds].sort(),
+    contracts[0].interaction_kinds.filter((kind) => !["shop_inventory", "deck_card_selection"].includes(kind)).sort());
+});
 
 test("event text menu keeps every visible option and exact current private bindings", async () => {
   const projected = projectManagedCandidateDecision({ state: eventDecision(), ...identity });

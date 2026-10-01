@@ -240,6 +240,93 @@ gameplay actions. The token appears only in the claim response and caller's
 explicit credential fields; observations, episode identity, action results,
 and release responses do not echo it.
 
+## One Managed Host service
+
+An explicit Host operator can keep one prepared Managed candidate alive for
+multiple local clients. The service creates one native child and one
+`ManagedPeDriverSession`; it does not start another game when a client attaches.
+The selected candidate and installed game are still admitted by the existing
+exact-build start path. For a private developer directory:
+
+```sh
+mkdir -m 700 .local/managed-host
+node components/host-runtime/tools/managed-host-service.mjs \
+  --candidate .local/candidates/<exact-candidate> \
+  --client-attachment .local/managed-host/client.json \
+  --manager-attachment .local/managed-host/manager.json
+```
+
+The CLI emits a token-free ready record. It writes separate, exclusive mode-0600
+attachments containing the loopback endpoint, service instance ID, actual Host
+package identity and bearer token. The client attachment permits ready,
+observation, controller claim, text submission and release; raw `step` requires
+the manager bearer. The manager attachment additionally permits explicit reset,
+recovery of a crashed controller, and Host close. Keep the manager attachment
+out of model processes and browser responses. The Host-owned Python API
+`sts2_headless.managed_service` provides `launch_managed_host_service`,
+`ManagedHostServiceClient.from_attachment`, and
+`ManagedHostServiceManager.from_attachment` for applications that launch and
+attach without a terminal. The launcher detaches the Host process; dropping a
+client or stopping Policy Runtime does not stop the game. After an offered POST,
+lost, malformed, truncated, uncorrelated or generic failure replies raise
+`ManagedHostUncertainError`; clients must not retry the native intent as though
+it had been rejected. Only a validated explicit Host rejection is known not
+applied.
+
+Authenticated `GET /v1/ready` reports the same service, candidate, exact game,
+runtime, environment and current episode identity to every client. Its
+`text_menu_contracts` entries describe the current v1/v2 snapshot and receipt
+schemas, reviewed interaction kinds and emitted action verbs. `game_over` is an
+observed terminal kind with zero actions. These lists support registration;
+only each complete current menu catalog and its native binding authorize an
+action. The text-menu-v2 entry also advertises
+`sts2.host-runtime/text-menu-v2-owner-1`. A shared-service v2 controller claim
+must include `text_state_owner` as either `workbench:<32 lowercase hex>` or
+`policy-runtime:<run-UUID>` (55 ASCII bytes maximum). Workbench takes the value
+from its server-created segment ID; Policy Runtime takes it from its immutable
+Agent Run ID. They are control-plane metadata and never part of model input or
+an action. The Host validates their shape, binds them to the authenticated
+client/manager role and current runtime/game continuity, and echoes the value
+in `claim_control_result` so updated clients can verify support. The field only
+names the cursor owner: the existing bearer, control token and epoch still
+authorize control. Processes holding the same client bearer remain one
+authorized principal and can choose the same owner value; this mechanism
+prevents accidental state carryover among trusted Workbench segments and
+Runtime runs, not malicious use by another holder of that bearer.
+
+After a successful claim, a changed owner resets only the v2 text cursor and
+invalidates its snapshots. Reclaiming with the same owner preserves a
+multi-step choice across short leases. Release and read-only status do not
+clear or claim the owner. An ownerless shared claim clears prior v2 state and
+cannot observe or submit v2; it may still use the legacy v1 menu. Reset, close,
+raw mutation, a v1 submit or unknown native delivery clear the association.
+Legacy flat-v1 calls remain supported without an owner field. The
+single-consumer JSONL/stdio path keeps one implicit owner for the driver
+lifetime. This owner change does not rotate game continuity or affect game
+rules.
+
+Every POST
+requires that service ID in `X-STS2-Managed-Service-ID`. `POST /v1/command`
+forwards the existing Managed observe, read, identity, claim, text and release
+commands to the same driver. A claim requires expected runtime and continuity;
+while held, text observation and submission require its private token and epoch.
+Manager `POST /v1/admin/reset` requires the expected current runtime and
+continuity, including explicit `null` before first reset. These checks execute
+inside the driver queue so a delayed HTTP body cannot acquire a later episode.
+`GET /v1/admin/status` exposes the current held epoch, runtime, continuity and
+the successful claim request ID to the manager, but no token. The request ID
+appears only while the retained claim matches the driver's current control;
+client ready never exposes it. To recover a
+disconnected controller, the manager calls `POST /v1/admin/recover-control`
+with that exact epoch, runtime and continuity; the service uses its retained
+private claim credential and waits for prior native work and an actual release
+ack. Recovery never clears unknown-delivery or projection taint. Only explicit
+manager `POST /v1/admin/close` or Host process shutdown reaps the child; process
+shutdown is not a confirmed controller release. The service is loopback-only,
+checks Host, Origin and bearer, and bounds request body size and time. It is a
+Host session attachment surface, not a Connector HTTP lease or a gameplay
+legality authority.
+
 Event options retain the game's visible order and locked options remain visible
 but non-executable. An executable event choice carries the current native room,
 event, and option identities as private operands; the native handler rechecks
@@ -262,9 +349,10 @@ cursor steps, and no cross-Host trajectory equivalence is implied. A completed
 rest option leaves the room visible, may leave other options available, and
 advertises a separate room-bound Proceed input. A cancelled native option
 stays on the rest page; faults or unresolved native delivery taint the Managed
-session. This adapter is not a public Connector service: Managed has no
-text-menu HTTP route or controller-lease/attribution owner, and this projection
-does not qualify Connector text-menu compatibility.
+session. This adapter is not a public Connector service: the Managed HTTP
+attachment route and exclusive permission belong to Host, not Connector
+lease/attribution; this projection does not qualify Connector text-menu
+compatibility.
 
 The current rest/upgrade patch has a new macOS build identity in the candidate manifest.
 The separately retained Windows build tuple is historical; it does not admit

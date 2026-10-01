@@ -289,6 +289,9 @@ window.SpireProject = (() => {
       trusted_text_runtime_asset_not_bundled: "这份已验证发行包没有附带该文本运行组件；当前没有可用的固定下载资产。",
       private_profile_collision: "现有本机 Runtime pin 与发行包不同；不会自动改绑，请核对后处理。",
       text_menu_capabilities_unavailable: "暂时无法核对当前游戏的文本菜单能力。请打开游戏后刷新，再明确重试。",
+      managed_requires_confirmed_interaction_model: "独立游戏环境需要支持已确认操作历史的 v2 模型；原模型和权重保持不变。",
+      managed_contract_unavailable: "独立游戏环境尚未提供兼容的文字接口；请先核对环境状态。",
+      managed_environment_unavailable: "所选独立游戏环境不可用；请到环境与场景核对，不会自动新开一局。",
       text_menu_capabilities_incompatible: "当前游戏环境不符合此模型的文本菜单要求；尚未登记。",
       registration_metadata_invalid: "本机模型登记资料无法安全确认；请检查恢复状态。",
       verified_export_required: "此模型当前没有可用的已校验导出；请先完成导出校验。",
@@ -3077,49 +3080,57 @@ window.SpireProject = (() => {
       m2_runtime_contract_unavailable: "固定的记忆模型运行组件不支持所需决策协议；记忆模型尚未登记。",
       v2_runtime_contract_unavailable: "本机记忆模型运行组件缺少 text-menu-v2 SDK 合同；尚未登记。",
     };
+    if (code === "managed_requires_confirmed_interaction_model") return "独立游戏环境需要支持已确认操作历史的 v2 模型。";
+    if (["managed_contract_unavailable", "managed_environment_unavailable"].includes(code)) return "请先在环境与场景中启动兼容的独立游戏，再明确登记。";
     return known[code] || "当前无法完成登记。请查看本机模型页的环境状态后，再按需明确重试。";
   }
 
-  async function localModelRegistrationCard(ctx, model) {
+  async function localModelRegistrationCard(ctx, model, environmentKind = "native") {
+    const managed = environmentKind === "managed";
+    const actionName = managed ? "register-managed-model" : "register-local-model";
+    const refreshName = managed ? "refresh-managed-model-registration" : "refresh-local-model-registration";
     const memory = model.parameters?.schema === "stpd/experimental-m2-model-v1";
     const publicM0 = publicM0ModelProfile(model) !== null;
     const expectedProfile = publicM0 ? "public-snapshot-m0-v1" : memory
       ? (model.workbench_memory_recipe?.endsWith(".v2")
         ? "text-menu-m2-v2" : "text-menu-m2-v1") : "text-menu-v1";
     const card = panel(
-      "登记到模型列表",
+      managed ? "用于独立游戏环境" : publicM0 ? "登记到模型列表" : "用于原游戏",
       publicM0
         ? "登记会核对公开 Snapshot Runtime 合同与当前 Host/Connector 能力，并建立本机模型选择项；不会安装运行组件或加载模型。之后仍需在模型页单独检查条件并选择加载。"
         : "登记会依据本机文本菜单运行环境建立模型选择项；不会安装运行组件、加载模型或进入游戏。之后仍需在模型页单独检查条件并选择加载。",
     );
-    const statusPath = `/api/local-model-registrations/status?model_id=${encodeURIComponent(model.artifact_id)}`;
+    if (managed) card.append(el("p", "先在“环境与场景”启动独立游戏。此登记复用同一份模型权重；加载时绑定所选环境，暂停模型后仍可继续同一局。", "small muted"));
+    const statusPath = `/api/local-model-registrations/status?model_id=${encodeURIComponent(model.artifact_id)}${managed ? "&environment_kind=managed" : ""}`;
     let status;
     try {
       status = await request(ctx, statusPath);
     } catch {
       if (!live(ctx)) return card;
       card.append(el("p", "登记状态暂不可用；刷新只会重新读取状态。", "small muted"));
-      card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
+      card.append(command(ctx, refreshName, "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
       return card;
     }
     if (!live(ctx)) return card;
     const validStatus = status && typeof status === "object" && !Array.isArray(status)
       && status.schema === "stpd/local-model-registration-v1"
       && status.model_id === model.artifact_id
+      && (status.environment_kind || "native") === environmentKind
       && ["not_registered", "registered", "unavailable"].includes(status.status)
       && status.loaded === false && status.runtime_profile === expectedProfile;
     if (!validStatus || (status.status === "registered" && !selectionId(status.selection_id))) {
       card.append(el("p", "登记状态格式未知；未发起模型操作。", "small muted"));
-      card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
+      card.append(command(ctx, refreshName, "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
       return card;
     }
     const csrf = typeof status.csrf_token === "string" && status.csrf_token.length > 0
       ? status.csrf_token : "";
-    const registerAction = (label) => command(ctx, "register-local-model", label, async () => {
+    const registerAction = (label) => command(ctx, actionName, label, async () => {
       if (!live(ctx) || !supportsLocalModelExport(model)) return;
       try {
-        const result = await request(ctx, "/api/local-model-registrations/register", {model_id:model.artifact_id}, csrf);
+        const result = await request(ctx, "/api/local-model-registrations/register", {model_id:model.artifact_id, ...(managed ? {environment_kind:"managed"} : {})}, csrf);
         if (result.schema !== "stpd/local-model-registration-v1"
+            || (result.environment_kind || "native") !== environmentKind
             || result.model_id !== model.artifact_id || result.status !== "registered"
             || result.loaded !== false || result.runtime_profile !== expectedProfile
             || !selectionId(result.selection_id))
@@ -3153,13 +3164,13 @@ window.SpireProject = (() => {
       card.append(el("p", localModelRegistrationReason(status.reason_code), "small muted"));
       if (["text_runtime_profile_required", "text_runtime_local_install_required"].includes(status.reason_code))
         card.append(link("准备本机模型环境", route("local-models")));
-      card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
+      card.append(command(ctx, refreshName, "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
     } else {
       card.append(el("p", status.reason_code === "source_binding_changed"
         ? localModelRegistrationReason(status.reason_code)
         : "登记只建立本机模型选择项，不会自动检查加载条件或执行游戏。", "small muted"));
       card.append(registerAction("登记到模型列表"));
-      card.append(command(ctx, "refresh-local-model-registration", "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
+      card.append(command(ctx, refreshName, "刷新登记状态", async () => reload(ctx), {type:"secondary"}));
     }
     return card;
   }
@@ -3273,6 +3284,10 @@ window.SpireProject = (() => {
         card.append(fields([["导出大小", bytes(operation.payload_bytes)]]));
       const registration = await localModelRegistrationCard(ctx, model);
       if (live(ctx)) card.append(registration);
+      if (live(ctx) && variant?.profile === "text-menu-v2-confirmed-interaction") {
+        const managedRegistration = await localModelRegistrationCard(ctx, model, "managed");
+        if (live(ctx)) card.append(managedRegistration);
+      }
     } else if (operation.status === "failed" && sameModel) {
       label = "重新导出并校验";
       card.append(el("p", "上次导出未完成。你可以明确再次发起；不会自动重试。", "small muted"));
@@ -4217,16 +4232,16 @@ window.SpireProject = (() => {
         !Array.isArray(data.scenarios) || !data.session) throw new Error("request_unavailable");
     const scenario = data.scenarios.find(item => item && typeof item.id === "string" &&
       typeof item.seed === "string") || null;
-    box.append(panel("环境与场景", "固定种子会重新开一局；这不是房间存档或决策点恢复。此入口只提供人工文字单步，不启动模型。"));
+    box.append(panel("环境与场景", "固定种子会重新开一局；若已有运行环境，继续当前环境只会重新连接同一局，不重置或重放。这不是房间存档或决策点恢复。此入口提供人工文字单步，不启动模型。新局由当前 Host 管理环境运行。"));
     const session = data.session;
     const ready = data.availability === "configured";
-    const setup = panel("本机 Managed 环境", ready
+    const setup = panel("本机游戏环境", ready
       ? `已配置 ${data.input_profile}。启动时仍会复核安装包、候选和游戏身份。`
       : "环境未准备。请由本机环境维护者完成受信任的精确包与候选配置；此页面不接受文件路径或命令。");
     box.append(setup);
     const csrf = typeof data.csrf_token === "string" && data.csrf_token ? data.csrf_token : "";
     const savedScenes = await request(ctx, "/api/local-environment/scenes");
-    const sceneLibrary = panel("已保存的固定种子起点", "每次启动都会新建独立 Managed 实例；保存的是当前固定种子、输入格式与构建身份，不是游戏存档。");
+    const sceneLibrary = panel("已保存的固定种子起点", "每次从起点启动都会在 Host 管理的运行中开始新局；保存的是固定种子、输入格式与构建身份，不是游戏存档。");
     if (!scenario) sceneLibrary.append(el("p", "当前没有可用场景定义；起点创建和启动暂不可用。已保存报告与当前实例操作仍可查看。", "small muted"));
     const draftKey = `environment:${ctx.scope}`;
     const sceneName = input(sceneLibrary, "起点名称", "environment-scene-name",
@@ -4266,26 +4281,80 @@ window.SpireProject = (() => {
       ? session.session_id : null;
     const currentStatus = session.status;
     box.append(panel("当前实例", {
-      idle:"尚未启动游戏实例。", starting:"正在启动独占实例，请刷新状态。",
-      active:"实例正在运行；每次动作都要明确选择当前菜单。",
+      idle:"尚未启动本机游戏环境。", starting:"正在准备 Host 环境与新局，请刷新状态。",
+      resuming:"正在核对并连接当前游戏环境；不会重置或重放。",
+      control_held:"已连接当前环境；模型或其他客户端正在控制，人工菜单不可用。",
+      active:"当前游戏环境可用；每次人工动作都要明确选择当前菜单。",
       submitting:"动作已提交，结果尚未确定；请刷新状态，不要重试。",
       stopping:"正在停止；结束结果尚待确认。",
-      stopped:"实例已停止。",
-      stopped_outcome_unknown:"实例已关闭，动作交付或后续页面未确认。",
-      failed:"启动失败，未开始可操作的新局。", unknown:"动作交付或后续页面未确认，不能继续操作；请明确停止。",
-      interrupted_unknown:"上次工作台中断，旧实例结果未知；请尝试停止，若清理未确认则请维护者处理。",
-      cleanup_unknown:"实例清理尚未确认，不能启动新局；请联系本机环境维护者。",
+      stopped:"当前操作已结束。",
+      stopped_outcome_unknown:"本段结果未知；不要重试先前动作。可查看报告或显式继续同一游戏环境。",
+      failed:"启动或连接失败；请查看诊断和环境状态。",
+      unknown:"本段动作或后续页面结果未知；不要重试先前动作。可结束本段，或显式继续同一游戏环境。",
+      interrupted_unknown:"工作台上次中断，旧段结果未知；可显式继续已绑定的同一游戏环境，不会重置或重放。",
+      cleanup_unknown:"本段清理结果未确认；不要重试游戏动作。请刷新状态后再选择继续或结束本段。",
     }[currentStatus] || "当前实例状态未知，不能操作。"));
+    const errorMessage = {
+      managed_control_claim_unknown:"Host 控制请求回复未确认；只有管理状态仍能按原请求编号、游戏实例和局面确认归属时，才可显式释放。",
+      managed_control_release_unknown:"Host 控制释放回复未确认；可显式按原租约确认释放，先前游戏动作结果仍未知。",
+    }[session.error_code];
+    if (errorMessage) box.append(el("p", errorMessage, "small muted"));
+    if (session.session_semantics === "workbench-segment-v2-host-owned-service") {
+      box.append(el("p", "本段只记录本工作台客户端实际执行的操作；结束本段不会关闭游戏环境。可继续当前局，或在无人控制时显式关闭 Host 环境。", "small muted"));
+    } else if (["stopped", "stopped_outcome_unknown"].includes(currentStatus)) {
+      box.append(el("p", "这是旧版实例记录；当时的停止流程关闭了该 Host 实例。", "small muted"));
+    }
     if (session.error_code) box.append(el("p", `诊断：${session.error_code}`, "small muted"));
     if (["stopped", "stopped_outcome_unknown", "failed"].includes(currentStatus) &&
         !session.report_artifact_id) {
       box.append(el("p", "本次报告尚未保存；请明确重试归档。", "small muted"));
     }
     box.append(command(ctx, "environment-refresh", "刷新实例状态", () => reload(ctx)));
-    if (sessionId && (["starting", "active", "submitting", "unknown", "interrupted_unknown", "cleanup_unknown"].includes(currentStatus) ||
+    const hostControl = data.host_control;
+    if (hostControl?.held === true && ["managed_control_claim_unknown",
+        "managed_control_release_unknown"].includes(session.error_code)) {
+      box.append(el("p", "确认释放控制不会确认或撤销先前游戏动作；动作结果仍未知。", "small muted"));
+      box.append(command(ctx, "environment-recover-control", "确认释放未确认的 Host 控制", async () => {
+        await request(ctx, "/api/local-environment/recover-control", {
+          session_id:sessionId, ...session.service_binding,
+        }, csrf);
+        await reload(ctx);
+      }, {danger:true, disabled:!csrf || !sessionId || !session.service_binding ||
+        hostControl.tainted || hostControl.closed}));
+    }
+    const recoveredUnknown = session.control_recovery ===
+      "released_acknowledged_outcome_still_unknown";
+    const canContinue = session.service_binding && hostControl &&
+      !["starting", "resuming", "submitting", "stopping"].includes(currentStatus) &&
+      (!["idle", "failed"].includes(currentStatus) || recoveredUnknown);
+    if (canContinue) {
+      box.append(command(ctx, "environment-resume", "继续当前环境", async () => {
+        await request(ctx, "/api/local-environment/resume", {
+          session_id:sessionId, ...session.service_binding,
+        }, csrf);
+        await reload(ctx);
+      }, {primary:true, disabled:!csrf || hostControl.tainted || hostControl.closed ||
+        hostControl.status === "unavailable"}));
+    }
+    if (hostControl && hostControl.closed !== true &&
+        !["starting", "resuming", "active", "control_held", "submitting", "stopping"].includes(currentStatus)) {
+      box.append(command(ctx, "environment-close-host", "关闭 Host 环境", async () => {
+        await request(ctx, "/api/local-environment/close", {
+          ...(sessionId ? {session_id:sessionId} : {}),
+          service_instance_id:hostControl.service_instance_id,
+          runtime_instance_id:hostControl.runtime_instance_id,
+          game_continuity_id:hostControl.game_continuity_id,
+        }, csrf);
+        await reload(ctx);
+      }, {danger:true, disabled:!csrf || hostControl.held ||
+        !hostControl.service_instance_id || !hostControl.runtime_instance_id ||
+        !hostControl.game_continuity_id ||
+        hostControl.status === "unavailable"}));
+    }
+    if (sessionId && (["starting", "active", "control_held", "resuming", "submitting", "unknown", "interrupted_unknown", "cleanup_unknown"].includes(currentStatus) ||
         (["stopped", "stopped_outcome_unknown", "failed"].includes(currentStatus) && !session.report_artifact_id))) {
       box.append(command(ctx, "environment-stop", currentStatus === "failed" || currentStatus.startsWith("stopped")
-        ? "重试归档报告" : "停止当前实例", async () => {
+        ? "重试归档报告" : "结束本段操作", async () => {
         await request(ctx, "/api/local-environment/stop", {session_id:sessionId}, csrf);
         await reload(ctx);
       }, {danger:true, disabled:!csrf}));
@@ -4305,7 +4374,9 @@ window.SpireProject = (() => {
     const snapshot = context?.snapshot;
     const expectedSnapshotSchema = data.input_profile === "text-menu-v2"
       ? "sts2.player-environment/text-menu-snapshot-2" : "sts2.player-environment/text-menu-snapshot-1";
-    if (currentStatus === "active" && snapshot?.schema === expectedSnapshotSchema &&
+    if (currentStatus === "active" && hostControl?.held !== true &&
+        hostControl?.tainted !== true && hostControl?.closed !== true &&
+        snapshot?.schema === expectedSnapshotSchema &&
         snapshot?.input_profile === data.input_profile) {
       const content = snapshot.interaction?.content || {};
       const surface = content.surface || {};
