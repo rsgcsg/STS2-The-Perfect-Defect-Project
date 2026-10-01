@@ -393,8 +393,7 @@ test("child fallback refuses a signal when its owner-generation check fails", as
     assert.equal(checks, 1);
     assert.equal(child.signalCode, null);
   } finally {
-    child.stdout.destroy();
-    child.stderr.destroy();
+    await closeFakeChildOutput(child);
   }
 });
 
@@ -845,8 +844,7 @@ test("changed shared-profile sentinel makes a visible lifecycle fail after norma
     assert.equal(provenanceCalls, 1);
     assert.equal(sentinelReads, 2);
   } finally {
-    fake.stdout.destroy();
-    fake.stderr.destroy();
+    await closeFakeChildOutput(fake);
     rmSync(localRoot, { recursive: true, force: true });
   }
 });
@@ -915,8 +913,7 @@ test("unchanged shared-profile sentinel closes a visible lifecycle without a Hea
     assert.equal("headless" in record, false);
     assert.equal(snapshots, 2);
   } finally {
-    fake.stdout.destroy();
-    fake.stderr.destroy();
+    await closeFakeChildOutput(fake);
     rmSync(localRoot, { recursive: true, force: true });
   }
 });
@@ -986,8 +983,7 @@ test("visible startup endpoint collision blocks launch and failed startup closes
     assert.equal(signalSource.listenerCount("SIGINT"), 0);
     assert.equal(signalSource.listenerCount("SIGTERM"), 0);
   } finally {
-    fake.stdout.destroy();
-    fake.stderr.destroy();
+    await closeFakeChildOutput(fake);
     rmSync(localRoot, { recursive: true, force: true });
   }
 });
@@ -1090,9 +1086,7 @@ test("visible startup without Host control retains the child record without sign
     assert.equal(sentinelReads, 1);
   } finally {
     fake.kill("SIGKILL");
-    await new Promise((resolve) => setImmediate(resolve));
-    fake.stdout.destroy();
-    fake.stderr.destroy();
+    await closeFakeChildOutput(fake);
     rmSync(localRoot, { recursive: true, force: true });
   }
 });
@@ -1164,9 +1158,7 @@ for (const stopBehavior of ["null", "reject", "never"]) {
       console.log = originalLog;
       process.off("unhandledRejection", onUnhandled);
       child.kill("SIGKILL");
-      await new Promise((resolve) => setImmediate(resolve));
-      child.stdout.destroy();
-      child.stderr.destroy();
+      await closeFakeChildOutput(child);
       rmSync(localRoot, { recursive: true, force: true });
     }
   });
@@ -1198,8 +1190,7 @@ test("ready-phase signal persists and closes only after child exit is observed",
     assert.equal(fixture.stopCalls, 1);
     assert.equal(readFileSync(path.join(record.session_directory, "lifecycle.json"), "utf8").includes("test-only"), false);
   } finally {
-    child.stdout.destroy();
-    child.stderr.destroy();
+    await closeFakeChildOutput(child);
     rmSync(localRoot, { recursive: true, force: true });
   }
 });
