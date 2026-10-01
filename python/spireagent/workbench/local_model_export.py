@@ -813,7 +813,8 @@ class LocalModelExport:
         except (ValueError, KeyError, TypeError) as error:
             raise BoundaryError("local_model_export", "memory_export_result_invalid") from error
 
-    def _public_m0_child(self, operation_id: str, model: Manifest, destination: Path, *,
+    def _public_m0_child(self, operation_id: str, training_operation_id: str,
+                         model: Manifest, destination: Path, *,
                          on_started: Any, on_finished: Any) -> dict[str, Any]:
         if (self.config_path is None or self.config_path.is_symlink()
                 or not self.config_path.is_file()):
@@ -823,7 +824,7 @@ class LocalModelExport:
             raise BoundaryError("local_model_export", "unsupported_workspace_store")
         command = [sys.executable, "-m", "spireagent.research_cli", "--store", str(root),
                    "export-light-action-m0", "--project-config", str(self.config_path),
-                   "--operation", operation_id, "--model", model.artifact_id,
+                   "--operation", training_operation_id, "--model", model.artifact_id,
                    "--destination", str(destination)]
         environment = dict(os.environ)
         for name in ("STPD_HUB_ADMIN_TOKEN", "PYTHONPATH", "PYTHONHOME"):
@@ -866,7 +867,8 @@ class LocalModelExport:
             operation = self._read()
             if operation.get("model_type") == "public_m0":
                 lineage = _public_m0_lineage(store, model)
-                child = self._public_m0_child(operation_id, model, destination,
+                child = self._public_m0_child(operation_id, operation["training_operation_id"],
+                                              model, destination,
                                               on_started=mark_started,
                                               on_finished=mark_finished)
                 receipt = _verify_public_m0_export(model, destination, lineage)
