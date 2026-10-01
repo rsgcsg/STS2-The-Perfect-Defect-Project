@@ -2,7 +2,7 @@
 import json
 import subprocess
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import pytest
 import torch
@@ -11,6 +11,7 @@ from test_stage1a_models import tiny_qwen_core
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
+from stpd.canonical import semantic_hash
 from stpd.fullrun.decision_training import AllocationSpec, publish_allocation, publish_decision_view
 from stpd.fullrun.representation import FullRunSerializer
 from stpd.fullrun.token_inputs import load_token_inputs, publish_token_inputs
@@ -67,6 +68,33 @@ def test_engine_resume_keeps_dropout_plan_parameters_and_scores(tmp_path, recipe
     altered["optimizer"]["param_groups"][0]["lr"] *= 2
     with pytest.raises(BoundaryError, match="optimizer_config"):
         restored.restore(encode_checkpoint(altered))
+
+
+@pytest.mark.parametrize("recipe", ["stage1a.b.s.v1", "stage1a.b.s.v2",
+                                     "stage1a.dsimple.s.v1"])
+def test_legacy_checkpoint_identity_stays_compatible_with_pre_m0_hash(tmp_path, recipe):
+    _, inputs = token_inputs(tmp_path)
+    config = tiny_config(recipe)
+    paused = TokenRankingEngine(inputs, config)
+    expected_legacy_identity = semantic_hash({
+        "input": inputs.manifest.artifact_id,
+        "config": asdict(config),
+        "plan": paused.plan,
+        "backbone": paused.backbone,
+    })
+    assert paused.data_identity == expected_legacy_identity
+
+    reference = TokenRankingEngine(inputs, config)
+    assert paused.advance() == reference.advance()
+    legacy_hash_checkpoint = paused.checkpoint()
+    checkpoint = decode_checkpoint(legacy_hash_checkpoint)
+    assert checkpoint["data_identity"] == expected_legacy_identity
+    assert checkpoint["optimizer"]["state"]  # The legacy payload carries real optimizer state.
+
+    resumed = TokenRankingEngine(inputs, config)
+    resumed.restore(legacy_hash_checkpoint)
+    assert resumed.advance() == reference.advance()
+    assert resumed.model_bytes() == reference.model_bytes()
 
 
 def test_fixed_qwen_weights_are_not_saved_in_small_checkpoint_model():

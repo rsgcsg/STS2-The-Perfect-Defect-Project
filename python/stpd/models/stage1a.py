@@ -6,15 +6,27 @@ for training and serving. The input contains current observation and candidates 
 
 from __future__ import annotations
 
+import hashlib
+
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from stpd.light_action_codec import BOS_ACT, EOS_ACT, VOCAB_SIZE
+from stpd.stage1a_recipes import LIGHT_ACTION_M0_GRAPH as LIGHT_ACTION_M0_GRAPH
 from stpd.stage1a_recipes import RECIPES as RECIPES
 from stpd.stage1a_recipes import Recipe as Recipe
 from stpd.stage1a_recipes import recipe_for as recipe_for
 
+from .light_action_encoder import LightActionEncoder
 from .token_core import TokenCore
+
+LIGHT_ACTION_LATENT_WIDTH = 384
+
+
+def _m0_initialization_seed(seed: int, branch: str) -> int:
+    payload = f"stage1a:{LIGHT_ACTION_M0_GRAPH}:initialization:{seed}:{branch}".encode()
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % (2**63)
 
 
 def validate_catalog(core: TokenCore, state: Tensor, actions: tuple[Tensor, ...]) -> None:
@@ -102,10 +114,100 @@ class DSimpleTokenScorer(nn.Module):
         return self.score_vectors(current, action_vectors)
 
 
+class LightActionM0Scorer(nn.Module):
+    """Stateless shared-state D-Simple with a fixed independent byte-action path."""
+
+    def __init__(self, core: TokenCore, *, max_action_bytes: int,
+                 initialization_seed: int) -> None:
+        super().__init__()
+        if type(max_action_bytes) is not int or not 1 <= max_action_bytes <= 8192:
+            raise ValueError("invalid action byte limit")
+        if core.width <= 0 or core.vocab_size <= 0:
+            raise ValueError("invalid state core dimensions")
+        self.core = core
+        self.max_action_bytes = max_action_bytes
+        width = LIGHT_ACTION_LATENT_WIDTH
+        # Each M0 branch gets a stable stream so core.width cannot shift the
+        # initial values of the common action and scoring branches.
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(
+                _m0_initialization_seed(initialization_seed, "state"),
+            )
+            self.state_projection = nn.Linear(core.width, width)
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(
+                _m0_initialization_seed(initialization_seed, "action"),
+            )
+            self.action_encoder = LightActionEncoder(VOCAB_SIZE, width, width)
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(
+                _m0_initialization_seed(initialization_seed, "transition"),
+            )
+            self.transition = nn.Sequential(
+                nn.Linear(2 * width, width), nn.GELU(), nn.Linear(width, width),
+            )
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(
+                _m0_initialization_seed(initialization_seed, "score"),
+            )
+            self.score_head = nn.Sequential(
+                nn.Linear(width, 256), nn.GELU(), nn.Linear(256, 1),
+            )
+
+    def encode_state(self, tokens: Tensor) -> Tensor:
+        self.core.validate_tokens(tokens)
+        if self.core.frozen:
+            with torch.no_grad():
+                hidden = self.core.contextualize(self.core.embed_tokens(tokens), causal=True)
+        else:
+            hidden = self.core.contextualize(self.core.embed_tokens(tokens), causal=True)
+        return self.state_projection(hidden.mean(dim=0))  # type: ignore[no-any-return]
+
+    def _validate_action(self, ids: Tensor, device: torch.device) -> None:
+        if (ids.ndim != 1 or ids.dtype != torch.long or ids.device != device
+                or ids.numel() < 3 or ids.numel() - 2 > self.max_action_bytes
+                or int(ids[0]) != BOS_ACT or int(ids[-1]) != EOS_ACT
+                or bool(((ids[1:-1] < 0) | (ids[1:-1] > 255)).any())):
+            raise ValueError("invalid or over-limit byte action; truncation is forbidden")
+
+    def score_vectors(self, state: Tensor, actions: Tensor) -> Tensor:
+        width = LIGHT_ACTION_LATENT_WIDTH
+        if (state.shape != (width,) or actions.ndim != 2
+                or actions.shape[1] != width or actions.shape[0] == 0
+                or not bool(torch.isfinite(state).all())
+                or not bool(torch.isfinite(actions).all())):
+            raise ValueError("invalid M0 scoring latents")
+        current = state.expand(actions.shape[0], -1)
+        future = F.normalize(current + self.transition(torch.cat((current, actions), dim=1)), dim=1)
+        return self.score_head(future).flatten()  # type: ignore[no-any-return]
+
+    def forward(self, state: Tensor, actions: tuple[Tensor, ...]) -> Tensor:
+        # Validate the entire catalog before state or action compute begins.
+        self.core.validate_tokens(state)
+        if not isinstance(actions, tuple) or not actions:
+            raise ValueError("complete candidate catalog must be a nonempty tuple")
+        for action in actions:
+            self._validate_action(action, state.device)
+        current = self.encode_state(state)
+        action_vectors = torch.stack([self.action_encoder(action) for action in actions])
+        return self.score_vectors(current, action_vectors)
+
+
 def build_scorer(
     recipe_id: str, core: TokenCore, *, readout_initial: Tensor | None = None,
-) -> BTokenScorer | DSimpleTokenScorer:
+    max_action_bytes: int | None = None, scoring_seed: int | None = None,
+) -> BTokenScorer | DSimpleTokenScorer | LightActionM0Scorer:
     recipe = recipe_for(recipe_id)
+    if recipe.graph == LIGHT_ACTION_M0_GRAPH:
+        if core.frozen != (recipe.backbone == "pf"):
+            raise ValueError("recipe and backbone training scope disagree")
+        if recipe.backbone == "pl" and not getattr(core, "is_lora", False):
+            raise ValueError("LoRA recipe requires an adapter-enabled core")
+        if max_action_bytes is None or scoring_seed is None or readout_initial is not None:
+            raise ValueError("M0 requires its independent byte limit and scoring seed")
+        return LightActionM0Scorer(
+            core, max_action_bytes=max_action_bytes, initialization_seed=scoring_seed,
+        )
     if core.frozen != (recipe.backbone == "pf"):
         raise ValueError("recipe and backbone training scope disagree")
     if recipe.family == "b":
