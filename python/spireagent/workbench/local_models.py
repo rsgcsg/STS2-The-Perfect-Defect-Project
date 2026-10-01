@@ -65,6 +65,10 @@ TEXT_PROFILES = {"text-menu-v1": ("token-v1", ".local/text-menu-runtime-v1.json"
                  "text-menu-m2-v2": ("stpd-m2-decision-adapter",
                                      ".local/text-menu-m2-runtime-v2.json",
                                      "stpd/local-text-m2-runtime-v2", "text-menu-m2-v2")}
+PUBLIC_M0_PROFILE = "public-snapshot-m0-v1"
+PUBLIC_M0_ADAPTER = "stpd-public-m0-decision-adapter"
+PROFILE_ADAPTERS = {**{profile: values[0] for profile, values in TEXT_PROFILES.items()},
+                    PUBLIC_M0_PROFILE: PUBLIC_M0_ADAPTER}
 
 
 def _validate_text_profile(profile: dict[str, Any], schema: str,
@@ -388,10 +392,13 @@ class LocalModelService:
                     or not isinstance(local["policies"], list)
                     or any(not isinstance(entry, dict)
                            or entry.get("adapter") not in {"token-v1",
-                                                            "stpd-m2-decision-adapter"}
+                                                            "stpd-m2-decision-adapter",
+                                                            PUBLIC_M0_ADAPTER}
                            or (entry.get("adapter") == "stpd-m2-decision-adapter"
                                and entry.get("runtime_profile") not in
                                {"text-menu-m2-v1", "text-menu-m2-v2"})
+                           or (entry.get("adapter") == PUBLIC_M0_ADAPTER
+                               and entry.get("runtime_profile") != PUBLIC_M0_PROFILE)
                            for entry in local["policies"])):
                 raise BoundaryError("local_model", "invalid_local_token_registry")
             value["policies"] = [*shipped, *local["policies"]]
@@ -402,9 +409,11 @@ class LocalModelService:
                 raise BoundaryError("local_model", "invalid_policy_entry")
             profile = entry.get("runtime_profile")
             if "runtime_profile" in entry and (
-                profile not in TEXT_PROFILES
-                or entry.get("adapter") != TEXT_PROFILES[profile][0]
+                profile not in PROFILE_ADAPTERS
+                or entry.get("adapter") != PROFILE_ADAPTERS[profile]
             ):
+                raise BoundaryError("local_model", "unsupported_runtime_profile")
+            if entry.get("adapter") == PUBLIC_M0_ADAPTER and profile != PUBLIC_M0_PROFILE:
                 raise BoundaryError("local_model", "unsupported_runtime_profile")
             object_fields(
                 {key: item for key, item in entry.items() if key != "runtime_profile"},
@@ -434,9 +443,12 @@ class LocalModelService:
         return _inside(self.entry_root(entry), entry[key])
 
     def adapter_arguments(self, entry: dict[str, Any]) -> list[str]:
-        if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter"}:
-            return ["-m", "stpd.policy.token_port" if entry["adapter"] == "token-v1"
-                    else "stpd.policy.memory_port", "--config",
+        if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter",
+                                 PUBLIC_M0_ADAPTER}:
+            module = {"token-v1": "stpd.policy.token_port",
+                      "stpd-m2-decision-adapter": "stpd.policy.memory_port",
+                      PUBLIC_M0_ADAPTER: "stpd.policy.public_m0_port"}[entry["adapter"]]
+            return ["-m", module, "--config",
                     str(self.entry_path(entry, "config")), "--manifest",
                     str(self.entry_path(entry, "manifest")), "--binding-root",
                     str(self.entry_root(entry))]
@@ -461,6 +473,14 @@ class LocalModelService:
                     or representation.get("input_schema") != expected_schema):
                 raise BoundaryError("local_model", "text_runtime_requires_text_model")
             directory, pin = self.text_runtime_profile(entry["runtime_profile"])
+        elif entry is not None and entry.get("runtime_profile") == PUBLIC_M0_PROFILE:
+            if entry.get("adapter") != PUBLIC_M0_ADAPTER:
+                raise BoundaryError("local_model", "unsupported_runtime_profile")
+            adapter = policy_support(PUBLIC_M0_ADAPTER)
+            adapter.validate(self.root, self.entry_path(entry, "config"),
+                             self.entry_path(entry, "manifest"),
+                             binding_root=self.entry_root(entry))
+            directory, pin = self.directory, self.registry()["runtime_package"]
         else:
             directory, pin = self.directory, self.registry()["runtime_package"]
         if not isinstance(pin, dict) or pin.get("package") != RUNTIME_PACKAGE:
@@ -794,7 +814,8 @@ class LocalModelService:
                     else name + "_missing_or_drifted",
                 }
 
-        if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter"}:
+        if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter",
+                                 PUBLIC_M0_ADAPTER}:
             from spireagent.workbench.local_model_dependencies import local_models_available
 
             if local_models_available():
