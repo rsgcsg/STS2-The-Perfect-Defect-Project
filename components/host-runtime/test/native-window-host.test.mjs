@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
+import { finished } from "node:stream/promises";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,6 +32,14 @@ function fakeChild(pid = 12001) {
   child.signalCode = null;
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
+  child.pipeDestinations = new Set();
+  for (const source of [child.stdout, child.stderr]) {
+    const pipe = source.pipe.bind(source);
+    source.pipe = (destination, ...args) => {
+      child.pipeDestinations.add(destination);
+      return pipe(destination, ...args);
+    };
+  }
   child.kill = (signal) => {
     child.signalCode = signal;
     child.emit("exit", null, signal);
@@ -38,6 +47,32 @@ function fakeChild(pid = 12001) {
   };
   return child;
 }
+
+async function waitForFakeChildPipeDestinations(child) {
+  await Promise.all([...child.pipeDestinations].map((destination) => finished(destination)));
+}
+
+async function closeFakeChildOutput(child) {
+  child.stdout.destroy();
+  child.stderr.destroy();
+  await waitForFakeChildPipeDestinations(child);
+  assert.ok([...child.pipeDestinations].every((destination) => destination.closed));
+}
+
+test("fake child cleanup waits for actual pipe destination completion", async () => {
+  const child = fakeChild();
+  const destination = new Writable({ write: (_chunk, _encoding, callback) => callback() });
+  child.stdout.pipe(destination);
+  let completed = false;
+  const waiting = waitForFakeChildPipeDestinations(child).then(() => { completed = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(completed, false);
+  destination.end();
+  await waiting;
+  assert.equal(destination.closed, true);
+  child.stdout.destroy();
+  child.stderr.destroy();
+});
 
 function exactCapabilities({ hostKind = "live_ui" } = {}) {
   return {
@@ -749,9 +784,7 @@ test("visible startup with unconfirmed close retains ownership records and defer
     assert.equal(lifecycle.shared_profile_integrity_status, "pending_process_close");
   } finally {
     fake.kill("SIGKILL");
-    await new Promise((resolve) => setImmediate(resolve));
-    fake.stdout.destroy();
-    fake.stderr.destroy();
+    await closeFakeChildOutput(fake);
     rmSync(localRoot, { recursive: true, force: true });
   }
 });
@@ -832,9 +865,7 @@ for (const stage of ["endpoint", "provenance", "snapshot"]) {
     } finally {
       console.log = originalLog;
       child.kill("SIGKILL");
-      await new Promise((resolve) => setImmediate(resolve));
-      child.stdout.destroy();
-      child.stderr.destroy();
+      await closeFakeChildOutput(child);
       rmSync(localRoot, { recursive: true, force: true });
     }
   });
