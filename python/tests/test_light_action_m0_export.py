@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 from test_artifact_store_v1 import PRODUCER, store
 from test_text_menu_data import row, snapshot
 
-from spireagent.json_boundary import BoundaryError
+from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from stpd.fullrun.light_action_inputs import load_light_action_inputs, publish_light_action_inputs
 from stpd.fullrun.text_menu_data import publish_text_menu_bc_view, publish_text_menu_source
@@ -168,6 +170,24 @@ def test_m0_qwen_backbone_exports_and_scores_from_pinned_tiny_fixture(
     archive, _, scratch_inputs = _inputs(tmp_path)
     inputs = _qwen_family_inputs(scratch_inputs)
     archive.publish(inputs.manifest)
+    state_codec = inputs.manifest.parameters.value()["state_codec"]
+    special_ids = state_codec["special_token_ids"]
+    special_tokens = tuple(
+        SimpleNamespace(token_id=token_id, roles=(role,))
+        for role, token_id in (("bos_token", special_ids["bos"]),
+                               ("eos_token", special_ids["eos"]),
+                               ("pad_token", special_ids["pad"]))
+    )
+    pin = SimpleNamespace(
+        model_id=state_codec["model_id"], repo_revision=state_codec["revision"],
+        file_by_name={"tokenizer.json": SimpleNamespace(
+            sha256=state_codec["sha256"],
+            size_bytes=inputs.manifest.payload("state_tokenizer").size,
+        )},
+        tokenizer_bundle_sha256=state_codec["tokenizer_bundle_sha256"],
+        special_tokens=special_tokens, hard_limit=8192,
+    )
+    monkeypatch.setattr("stpd.policy.token_decision.load_pin", lambda: pin)
 
     def backend_factory(_snapshot, *, device):
         assert device == "cpu"
@@ -192,6 +212,29 @@ def test_m0_qwen_backbone_exports_and_scores_from_pinned_tiny_fixture(
         completed = archive.get_manifest(result.result_id)
         destination = tmp_path / ("export-" + recipe.rsplit(".", 2)[-2])
         export_light_action_m0_model(archive, completed.parent("model"), destination)
+        model = archive.get_manifest(completed.parent("model"))
+        for key, bad_value in (
+            ("model_id", "untrusted/tokenizer"),
+            ("revision", "f" * 40),
+            ("sha256", "f" * 64),
+            ("tokenizer_bundle_sha256", "f" * 64),
+            ("special_token_ids", {"bos": 9, "eos": 10, "pad": 11,
+                                    "additional": []}),
+        ):
+            info = model.parameters.value()
+            forged_codec = dict(info["state_codec"])
+            forged_codec[key] = bad_value
+            forged_info = {**info, "state_codec": forged_codec}
+            forged = replace(model, parameters=FrozenObject.of(forged_info))
+            with pytest.raises(BoundaryError) as error:
+                from stpd.policy.token_decision import check_light_action_m0_model
+
+                check_light_action_m0_model(forged)
+            expected_code = (
+                "light_action_codec_identity_mismatch" if key == "sha256"
+                else "light_action_state_codec_pin_mismatch"
+            )
+            assert error.value.code == expected_code, key
         scorer = LightActionM0DecisionScorer(destination, snapshot=tmp_path)
         scores = scorer.score_snapshot(snapshot("tiny-qwen-" + recipe[-5:]))
         assert list(scores) == ["opaque-nav", "opaque-play"]

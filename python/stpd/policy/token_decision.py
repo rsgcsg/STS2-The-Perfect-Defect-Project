@@ -147,6 +147,28 @@ def check_light_action_m0_model(
             or state_codec.get("max_tokens") != config.max_state_tokens
             or state_codec.get("add_special_tokens") is not False):
         raise BoundaryError("token_policy", "light_action_state_codec_mismatch")
+    if recipe.backbone in {"pf", "pl"}:
+        pin = load_pin()
+        tokenizer_pin = pin.file_by_name["tokenizer.json"]
+        roles = {role: token.token_id for token in pin.special_tokens
+                 for role in token.roles}
+        pinned_special_ids = {
+            "bos": roles.get("bos_token"),
+            "eos": roles.get("eos_token"),
+            "pad": roles.get("pad_token"),
+            "additional": [
+                token.token_id for token in pin.special_tokens
+                if "additional_special_tokens" in token.roles
+            ],
+        }
+        if (state_codec.get("model_id") != pin.model_id
+                or state_codec.get("revision") != pin.repo_revision
+                or state_codec.get("sha256") != tokenizer_pin.sha256
+                or model.payload("state_tokenizer").size != tokenizer_pin.size_bytes
+                or state_codec.get("tokenizer_bundle_sha256") != pin.tokenizer_bundle_sha256
+                or state_codec.get("special_token_ids") != pinned_special_ids
+                or config.max_state_tokens > pin.hard_limit):
+            raise BoundaryError("token_policy", "light_action_state_codec_pin_mismatch")
     if action_codec != expected_action_codec:
         raise BoundaryError("token_policy", "light_action_codec_identity_mismatch")
     if (model.payload("weights").size > LIMITS["weights"]
