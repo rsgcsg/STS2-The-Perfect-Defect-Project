@@ -2,12 +2,35 @@
 
 from __future__ import annotations
 
+import struct
 from dataclasses import replace
 
 import pytest
 
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
+
+
+def _ordered_float32(value: float) -> int:
+    bits = int(struct.unpack("!I", struct.pack("!f", value))[0])
+    if bits & 0x80000000:
+        return 0x80000000 - (bits & 0x7FFFFFFF)
+    return 0x80000000 + bits
+
+
+def _assert_score_maps_float32_permutation_parity(
+    expected: dict[str, float], actual: dict[str, float],
+) -> None:
+    """Allow one FP32 ULP from candidate batch layout while pinning binding/rank/winner."""
+    assert set(actual) == set(expected)
+    assert all(
+        abs(_ordered_float32(actual[key]) - _ordered_float32(expected[key])) <= 1
+        for key in expected
+    )
+    expected_rank = sorted(expected, key=lambda key: (-expected[key], key))
+    actual_rank = sorted(actual, key=lambda key: (-actual[key], key))
+    assert actual_rank == expected_rank
+    assert actual_rank[0] == expected_rank[0]
 
 
 @pytest.mark.parametrize(
@@ -230,7 +253,8 @@ def test_public_m0_owner_train_resume_export_and_snapshot_parity(
     assert tuple(scores) == tuple(action.key for action in current.actions)
     assert tuple(scores.values()) == scorer.score_texts(current.state_text, current.action_texts)
     observation["bound_actions"]["actions"].reverse()
-    assert scorer.score_snapshot(observation) == scores
+    reordered_scores = scorer.score_snapshot(observation)
+    _assert_score_maps_float32_permutation_parity(scores, reordered_scores)
     observation_path = tmp_path / "public-snapshot.json"
     observation_path.write_text(json.dumps(observation), encoding="utf-8")
     child = subprocess.run(
@@ -252,7 +276,24 @@ print(json.dumps(scorer.score_snapshot(snapshot), sort_keys=True))
         capture_output=True,
         text=True,
     )
-    assert json.loads(child.stdout) == scores
+    _assert_score_maps_float32_permutation_parity(
+        reordered_scores, json.loads(child.stdout),
+    )
+
+
+def test_public_score_float32_parity_guard_rejects_material_score_and_winner_changes():
+    expected = {"candidate-play": 0.5, "candidate-end": 0.25}
+    within_one_ulp = {"candidate-play": expected["candidate-play"],
+                      "candidate-end": 0.2500000298023224}
+    _assert_score_maps_float32_permutation_parity(expected, within_one_ulp)
+
+    material_score_change = {"candidate-play": 0.4, "candidate-end": 0.25}
+    with pytest.raises(AssertionError):
+        _assert_score_maps_float32_permutation_parity(expected, material_score_change)
+
+    winner_change = {"candidate-play": 0.4, "candidate-end": 0.6}
+    with pytest.raises(AssertionError):
+        _assert_score_maps_float32_permutation_parity(expected, winner_change)
 
 
 def test_public_capacity_is_profile_scoped_and_serialized():
