@@ -123,15 +123,17 @@ def _data_facts(
         seen.add(current)
         descendants.append(current)
         if len(seen) >= DATA_FACT_LINEAGE_LIMIT:
-            if children.get(current):
+            if any(item not in seen for item in pending) or any(
+                child not in seen for child in children.get(current, ())
+            ):
                 inventory_truncated = True
             break
         pending.extend(children.get(current, ()))
 
     lineage: dict[str, Manifest] = {}
-    pending = list(descendants)
+    pending = [artifact_id]
     while pending and len(lineage) < DATA_FACT_LINEAGE_LIMIT:
-        current = pending.pop()
+        current = pending.pop(0)
         if current in lineage:
             continue
         manifest = manifests.get(current)
@@ -142,8 +144,12 @@ def _data_facts(
                 inventory_truncated = True
                 continue
         lineage[current] = manifest
-        pending.extend(parent.artifact_id for parent in manifest.parents)
-    if pending:
+        pending.extend(
+            parent.artifact_id
+            for parent in manifest.parents
+            if parent.artifact_id not in lineage and parent.artifact_id not in pending
+        )
+    if any(item not in lineage for item in pending):
         inventory_truncated = True
 
     data_manifests = [manifest for manifest in lineage.values() if manifest.kind == "dataset"]
@@ -234,7 +240,7 @@ def _data_facts(
 
     source_ids = tuple(sorted(item.artifact_id for item in bundles))
     known_runs: tuple[str, ...] = ()
-    source_index_complete = bool(source_ids)
+    source_index_complete = False
     source_index_status = "missing_or_unverified"
     uses: list[dict[str, str]] = []
     use_truncated = False
@@ -316,7 +322,7 @@ def _data_facts(
                             )
                             run_rows.update(row[1] for row in indexed_source_runs)
                             indexed_run_sources.update(row[0] for row in indexed_source_runs)
-                        source_index_complete = bool(source_ids) and (
+                        source_index_complete = bool(source_ids) and not inventory_truncated and (
                             len(source_rows) == len(source_ids)
                             and len(exact_index_rows) == len(source_ids)
                             and len(indexed_run_sources) == len(source_ids)
@@ -381,13 +387,62 @@ def _data_facts(
     native_ends = [_recorded_boundary_count(_parameters(item), "native_ends") for item in bundles]
     start_known = all(item["known"] for item in native_starts) and bool(native_starts)
     end_known = all(item["known"] for item in native_ends) and bool(native_ends)
-    has_training_use = any(item["kind"] == "training" for item in uses)
-    has_evaluation_use = any(item["kind"] == "evaluation" for item in uses)
+    def operation_id_for(manifest: Manifest) -> str | None:
+        value = _parameters(manifest).get("operation_id")
+        if isinstance(value, str) and value:
+            return value
+        for parent in manifest.parents:
+            if parent.role != "run":
+                continue
+            run = manifests.get(parent.artifact_id)
+            if run is None:
+                try:
+                    run = store.get_manifest(parent.artifact_id)
+                except (BoundaryError, OSError, ValueError):
+                    return None
+            value = _parameters(run).get("operation_id")
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    exact_use_identities = set(source_ids) | set(known_runs)
+
+    def has_exact_operation_uses(manifests_to_check: list[Manifest], kind: str) -> bool:
+        if not manifests_to_check or not exact_use_identities or use_truncated:
+            return False
+        for manifest in manifests_to_check:
+            operation_id = operation_id_for(manifest)
+            if operation_id is None:
+                return False
+            matched_identities = {
+                item["identity"]
+                for item in uses
+                if item["kind"] == kind and item["reference"] == operation_id
+            }
+            if not exact_use_identities <= matched_identities:
+                return False
+        return True
+
+    has_exact_training_use = has_exact_operation_uses(models, "training")
+    has_exact_evaluation_use = has_exact_operation_uses(evaluations, "evaluation")
+    known_run_result_models = {
+        parent.artifact_id
+        for result in run_results
+        for parent in result.parents
+        if parent.role == "model"
+    }
+    training_history_unbound = bool(models or run_results) and (
+        not has_exact_training_use
+        or not known_run_result_models <= {item.artifact_id for item in models}
+    )
+    evaluation_history_unbound = bool(evaluations) and not has_exact_evaluation_use
     ledger_incomplete = (
         ledger_status != "available"
         or not source_index_complete
-        or (bool(models or run_results) and not has_training_use)
-        or (bool(evaluations) and not has_evaluation_use)
+        or inventory_truncated
+        or use_truncated
+        or training_history_unbound
+        or evaluation_history_unbound
     )
     allocation_roles = []
     for item in allocations:

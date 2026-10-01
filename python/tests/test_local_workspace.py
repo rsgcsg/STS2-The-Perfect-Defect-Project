@@ -230,6 +230,131 @@ def test_data_facts_report_truncation_when_manifest_inventory_is_capped(
     assert len(facts["lineage"]["datasets"]) <= 1
 
 
+def test_dataset_data_facts_stay_on_selected_manifest_ancestry(tmp_path: Path) -> None:
+    artifact_store = store(tmp_path / "store")
+    registry = SQLiteRegistry(tmp_path / "registry.sqlite")
+    first_source = Manifest("evidence", PRODUCER, parameters=FrozenObject.of({
+        "schema": "stpd/local-verified-bundle-v1", "content_id": "a" * 64,
+    }))
+    artifact_store.publish(first_source)
+    selected = Manifest("dataset", PRODUCER,
+        parents=(Parent("source", first_source.artifact_id),),
+        parameters=FrozenObject.of({
+            "schema": "stpd/fullrun-dataset-v1", "records": 100, "purpose": "source",
+        }))
+    artifact_store.publish(selected)
+    curated_child = Manifest("dataset", PRODUCER,
+        parents=(Parent("dataset", selected.artifact_id),),
+        parameters=FrozenObject.of({
+            "schema": "stpd/curated-decision-dataset-v1", "records": 2,
+            "purpose": "training",
+        }))
+    artifact_store.publish(curated_child)
+    second_source = Manifest("evidence", PRODUCER, parameters=FrozenObject.of({
+        "schema": "stpd/local-verified-bundle-v1", "content_id": "b" * 64,
+    }))
+    artifact_store.publish(second_source)
+    other_dataset = Manifest("dataset", PRODUCER,
+        parents=(Parent("source", second_source.artifact_id),),
+        parameters=FrozenObject.of({"schema": "stpd/fullrun-dataset-v1", "records": 50}))
+    artifact_store.publish(other_dataset)
+    model = Manifest("model", PRODUCER,
+        parents=(Parent("dataset_a", selected.artifact_id),
+                 Parent("dataset_b", other_dataset.artifact_id)),
+        parameters=FrozenObject.of({"schema": "model/fixture"}))
+    artifact_store.publish(model)
+    sync_registry(artifact_store, registry)
+
+    facts = LocalWorkspace(registry, artifact_store).artifact(selected.artifact_id)["data_facts"]
+
+    assert facts["dataset"]["artifact_id"] == selected.artifact_id
+    assert facts["dataset"]["samples"]["selected"] == 100
+    assert facts["dataset"]["purpose"] == "source"
+    assert [item["artifact_id"] for item in facts["lineage"]["datasets"]] == [
+        selected.artifact_id
+    ]
+    assert facts["recording"]["bundle_count"] == 1
+    assert [item["artifact_id"] for item in facts["lineage"]["recording_bundles"]] == [
+        first_source.artifact_id
+    ]
+
+
+def test_unverified_source_index_keeps_run_and_session_counts_unknown(tmp_path: Path) -> None:
+    artifact_store = store(tmp_path / "store")
+    registry = SQLiteRegistry(tmp_path / "registry.sqlite")
+    source = Manifest("evidence", PRODUCER, parameters=FrozenObject.of({
+        "schema": "stpd/local-verified-bundle-v1", "content_id": "c" * 64,
+    }))
+    artifact_store.publish(source)
+    dataset = Manifest("dataset", PRODUCER,
+        parents=(Parent("source", source.artifact_id),),
+        parameters=FrozenObject.of({"schema": "stpd/fullrun-dataset-v1", "records": 4}))
+    artifact_store.publish(dataset)
+    sync_registry(artifact_store, registry)
+
+    facts = LocalWorkspace(registry, artifact_store).artifact(dataset.artifact_id)["data_facts"]
+
+    assert facts["recording"]["bundle_count"] == 1
+    assert facts["recording"]["session_count"] is None
+    assert facts["recording"]["qualified_run_occurrence_count"] is None
+    assert facts["ledger"]["source_index_status"] == "missing_or_unverified"
+    assert facts["ledger"]["status"] == "not_available"
+
+
+def test_unbound_training_use_does_not_claim_complete_model_history(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    registration = managed.create_managed_workspace(state_dir)
+    workspace_dir = state_dir / managed.ROOT_NAME / registration["workspace_id"]
+    artifact_store = store(workspace_dir / "store")
+    owner = registration["curation_owner"]
+    source = Manifest("evidence", PRODUCER, parameters=FrozenObject.of({
+        "schema": "stpd/local-verified-bundle-v1", "content_id": "d" * 64,
+    }))
+    artifact_store.publish(source)
+    dataset = Manifest("dataset", PRODUCER,
+        parents=(Parent("source", source.artifact_id),),
+        parameters=FrozenObject.of({
+            "schema": "stpd/curated-decision-dataset-v1", "records": 4,
+            "purpose": "training",
+        }))
+    artifact_store.publish(dataset)
+    for number in (1, 2):
+        model = Manifest("model", PRODUCER,
+            parents=(Parent("training_input", dataset.artifact_id),),
+            parameters=FrozenObject.of({"schema": "model/fixture", "iteration": number}))
+        artifact_store.publish(model)
+        artifact_store.publish(Manifest("run_result", PRODUCER,
+            parents=(Parent("model", model.artifact_id),),
+            parameters=FrozenObject.of({"state": "completed", "iteration": number})))
+    with owner.transaction() as db:
+        db.execute("INSERT INTO curation_sources VALUES(?,?,1)", (source.artifact_id, "d" * 64))
+        db.execute("INSERT INTO curation_exact_source_index VALUES(?)", (source.artifact_id,))
+        db.execute(
+            "INSERT INTO curation_source_runs VALUES(?,?)",
+            (source.artifact_id, "session-a/run-0001"),
+        )
+        db.execute(
+            "INSERT INTO curation_source_uses VALUES(?,?,?)",
+            (source.artifact_id, "training", "unrelated-operation"),
+        )
+    registry = SQLiteRegistry(workspace_dir / "registry.sqlite")
+    sync_registry(artifact_store, registry)
+    workspace = LocalWorkspace(registry, artifact_store)
+    workspace.curation_owner = owner
+
+    facts = workspace.artifact(dataset.artifact_id)["data_facts"]
+
+    assert len(facts["descendants"]["models"]) == 2
+    assert facts["ledger"]["uses"] == [{
+        "scope": "source", "identity": source.artifact_id,
+        "kind": "training", "reference": "unrelated-operation",
+    }]
+    assert facts["ledger"]["coverage"] == "incomplete"
+    assert facts["ledger"]["historical_manual_exposure"] == "unknown"
+    assert facts["status"] == "partial"
+
+
 @pytest.mark.parametrize(("reset", "v2", "expected"), [
     (False, False, M2_K1_RECIPE),
     (True, False, RESET_K1_RECIPE),
