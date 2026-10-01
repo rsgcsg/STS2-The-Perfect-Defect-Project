@@ -210,7 +210,7 @@ def _public_m0_lineage(store: Any, model: Manifest) -> dict[str, Any]:
                 or info.get("qualification") != "engineering_only"
                 or config.recipe != "stage1a.dsimple.light-action.m0.s.v1"
                 or sorted(parent.role for parent in model.parents)
-                != ["checkpoint", "run", "training_input"]):
+                != ["checkpoint", "model_view", "run", "training_input"]):
             raise ValueError
         run_id = model.parent("run")
         input_id = model.parent("training_input")
@@ -227,6 +227,8 @@ def _public_m0_lineage(store: Any, model: Manifest) -> dict[str, Any]:
                 or not expected_renderer
                 or renderer != {"version": expected_renderer[0], "profile": profile,
                                 "status": expected_renderer[1]}
+                or model.parent("model_view") != view.artifact_id
+                or binding.get("model_view_id") != view.artifact_id
                 or run.parent("training_input") != input_id
                 or run.parameters.value().get("training_binding") != binding
                 or info.get("training_binding") != binding

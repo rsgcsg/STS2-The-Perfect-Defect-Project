@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 import threading
 import time
@@ -16,6 +17,7 @@ import pytest
 import test_local_human_dataset as human_fixture
 import test_local_recording_preview as recording_fixture
 
+from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError
 from spireagent.source import source_identity
 from spireagent.storage import replaceable_file
@@ -145,6 +147,88 @@ def test_public_m0_profile_is_closed_and_persisted_in_the_existing_operation(tmp
     operation = LocalTrainingService._read(owner.path.parent / OPERATION_FILE, owner.identity)
     assert operation["schema"] == SCHEMA_V3
     assert operation["input_profile"] == "public_lite"
+
+
+def test_public_m0_workbench_http_train_export_and_registration_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dataset_id, _, store = _ready(tmp_path, monkeypatch)
+    config_path = tmp_path / "project.json"
+    config_path.write_text(canonical_json(config.to_dict()), encoding="utf-8")
+    app = Application(config, config_path=config_path)
+    from spireagent.workbench.developer_server import atomic_json
+
+    atomic_json(config.state_dir / "runtime.json", {
+        "instance_id": app.instance_id,
+        "configuration_id": configuration_id(config),
+    })
+    wrapper = tmp_path / "python-child"
+    child_python = sys.executable
+    package_path = str(ROOT)
+    tests_path = str(ROOT / "tests")
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        f"PYTHONPATH={shlex.quote(package_path)}:{shlex.quote(tests_path)} exec "
+        f"{shlex.quote(child_python)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o700)
+    monkeypatch.setattr(sys, "executable", str(wrapper))
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    cookie = f"{app.account.cookie_name}={app.account.cookie}"
+    headers = {"Cookie": cookie, "Content-Type": "application/json", "Origin": url,
+               "X-CSRF-Token": app.account.csrf}
+
+    def request_json(path: str, *, body: dict | None = None) -> dict:
+        request = Request(url + path,
+                          data=json.dumps(body).encode() if body is not None else None,
+                          headers=headers, method="POST" if body is not None else "GET")
+        with urlopen(request, timeout=10) as response:
+            return json.load(response)
+
+    try:
+        started = request_json("/api/local-training/start",
+                               body={"dataset_id": dataset_id,
+                                     "input_profile": "public_lite"})
+        assert started["schema"] == SCHEMA_V3
+        assert started["operation"]["input_profile"] == "public_lite"
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            status = request_json("/api/local-training/status")
+            if status["operation"].get("status") in {"completed", "failed", "interrupted_unknown"}:
+                break
+            time.sleep(0.2)
+        assert status["operation"]["status"] == "completed", status
+        trained = status["operation"]
+        assert trained["schema"] == SCHEMA_V3
+        assert trained["input_profile"] == "public_lite"
+        model = store.get_manifest(trained["model_id"])
+        assert model.parameters.value()["schema"] == \
+            "stpd/stage1a-light-action-m0-public-model-v1"
+        assert model.parameters.value()["config"]["steps"] == 3
+
+        exporting = request_json("/api/local-model-exports/start",
+                                 body={"model_id": trained["model_id"]})
+        assert exporting["schema"] == "stpd/local-model-export-operation-v3"
+        assert exporting["operation"]["model_type"] == "public_m0"
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            exported = request_json("/api/local-model-exports/status")
+            if exported["operation"].get("status") in {"completed", "failed", "interrupted"}:
+                break
+            time.sleep(0.2)
+        assert exported["operation"]["status"] == "completed", exported
+        destination = app.local_model_export.verified_public_m0_for_registration(
+            trained["model_id"], deadline=time.monotonic() + 10)
+        assert destination.is_dir()
+        assert (destination / "model.json").is_file()
+    finally:
+        server.shutdown()
+        server.server_close()
+        app.close()
 
 
 def test_private_child_drains_large_stderr_and_keeps_stdout_machine_record(tmp_path: Path):
