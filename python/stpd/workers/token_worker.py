@@ -165,20 +165,6 @@ def _verify_completed(store: ArtifactStore, result: Manifest, run: Manifest) -> 
             or result.parent("run") != run.artifact_id
             or result.parent("training_input") != run.parent("training_input")):
         raise BoundaryError("token_run", "completed_identity_mismatch")
-    pending = [result.artifact_id]
-    seen: set[str] = set()
-    while pending:
-        identity = pending.pop()
-        if identity in seen:
-            continue
-        if len(seen) >= 512:
-            raise BoundaryError("token_run", "lineage_limit")
-        seen.add(identity)
-        item = store.get_manifest(identity)
-        for payload in item.payloads:
-            for _ in store.read_payload(payload):
-                pass
-        pending.extend(p.artifact_id for p in item.parents)
     config = decode_config(run.parameters.value()["config"])
     model = store.get_manifest(result.parent("model"))
     report = store.get_manifest(result.parent("offline_evaluation"))
@@ -270,13 +256,27 @@ def _verify_completed(store: ArtifactStore, result: Manifest, run: Manifest) -> 
                 raise BoundaryError("token_run", "canonical_dev_independence_claim")
             if metrics.get("admission") != expected_eval:
                 raise BoundaryError("token_run", "canonical_dev_qualification_mismatch")
+    # Validate every manifest-known completion edge before consuming payloads.
+    pending = [result.artifact_id]
+    seen: set[str] = set()
+    while pending:
+        identity = pending.pop()
+        if identity in seen:
+            continue
+        if len(seen) >= 512:
+            raise BoundaryError("token_run", "lineage_limit")
+        seen.add(identity)
+        item = store.get_manifest(identity)
+        for payload in item.payloads:
+            for _ in store.read_payload(payload):
+                pass
+        pending.extend(p.artifact_id for p in item.parents)
 
 
-def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, runtime: Producer,
-                   *, snapshot: Path | None = None, resume: str | None = None,
-                   stop_after: int | None = None,
-                   dev_admitter: Callable[[Manifest, Manifest], dict] | None = None,
-                   ) -> WorkerResult:
+def preflight_token_run(
+    store: ArtifactStore, run_id: str, runtime: Producer, *, resume: str | None = None,
+) -> tuple[Manifest, Stage1aConfig, Manifest, bool]:
+    """Check run, input binding, experiment and checkpoint identity from manifests only."""
     run = store.get_manifest(run_id)
     info = run.parameters.value()
     if (run.kind != "run" or run.producer != runtime or info.get("schema") != RUN_SCHEMA
@@ -285,27 +285,71 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
             or sorted(p.role for p in run.parents) != ["experiment", "training_input"]):
         raise BoundaryError("token_run", "source_or_contract_mismatch")
     config = decode_config(info["config"])
-    if stop_after is not None and (type(stop_after) is not int or stop_after < 1):
-        raise BoundaryError("token_run", "invalid_pause_budget")
-    inputs = _load_inputs(store, run.parent("training_input"))
-    input_info = inputs.manifest.parameters.value()
-    if (input_info.get("schema") in {CANONICAL_LIGHT_ACTION_INPUT_SCHEMA,
-                                      PUBLIC_LIGHT_ACTION_INPUT_SCHEMA}
-            and info.get("training_binding") != input_info.get("training_binding")):
-        raise BoundaryError("token_run", "training_binding_mismatch")
+    input_manifest = store.get_manifest(run.parent("training_input"))
+    input_info = input_manifest.parameters.value()
+    admitted_m0 = input_info.get("schema") in {
+        CANONICAL_LIGHT_ACTION_INPUT_SCHEMA, PUBLIC_LIGHT_ACTION_INPUT_SCHEMA,
+    }
+    if admitted_m0:
+        from stpd.fullrun.light_action_inputs import (
+            canonical_training_binding,
+            public_training_binding,
+        )
+
+        binding = (public_training_binding(store, input_manifest.artifact_id)
+                   if input_info.get("schema") == PUBLIC_LIGHT_ACTION_INPUT_SCHEMA
+                   else canonical_training_binding(store, input_manifest.artifact_id))
+        if info.get("training_binding") != binding:
+            raise BoundaryError("token_run", "training_binding_mismatch")
     experiment = store.get_manifest(run.parent("experiment"))
     if (experiment.kind != "experiment" or experiment.producer != runtime
-            or experiment.parent("training_input") != inputs.manifest.artifact_id
+            or experiment.parameters.value().get("schema") != "stpd/experiment-v1"
+            or experiment.parent("training_input") != input_manifest.artifact_id
             or experiment.parameters.value().get("config") != config_payload(config)
             or experiment.parameters.value().get("training_binding")
             != info.get("training_binding")):
         raise BoundaryError("token_run", "experiment_mismatch")
+    if resume is not None:
+        resume_manifest = store.get_manifest(resume)
+        resume_info = resume_manifest.parameters.value()
+        expected_schema = (LIGHT_ACTION_M0_CHECKPOINT_SCHEMA
+                           if isinstance(config, LightActionM0Config)
+                           else CHECKPOINT_SCHEMA)
+        if (resume_manifest.kind != "checkpoint" or resume_manifest.producer != runtime
+                or resume_info.get("schema") != expected_schema
+                or resume_manifest.parent("run") != run_id
+                or resume_manifest.parent("training_input") != input_manifest.artifact_id
+                or sorted(p.role for p in resume_manifest.parents)
+                != ["run", "training_input"]
+                or [payload.role for payload in resume_manifest.payloads] != ["checkpoint"]
+                or resume_manifest.payload("checkpoint").size > 512 * 1024**2
+                or type(resume_info.get("step")) is not int
+                or not 0 <= resume_info["step"] <= config.steps):
+            raise BoundaryError("token_run", "resume_identity_mismatch")
+    return run, config, input_manifest, admitted_m0
+
+
+def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, runtime: Producer,
+                   *, snapshot: Path | None = None, resume: str | None = None,
+                   stop_after: int | None = None,
+                   dev_admitter: Callable[[Manifest, Manifest], dict] | None = None,
+                   ) -> WorkerResult:
+    run, config, input_manifest, admitted_m0 = preflight_token_run(
+        store, run_id, runtime, resume=resume,
+    )
+    info = run.parameters.value()
+    if stop_after is not None and (type(stop_after) is not int or stop_after < 1):
+        raise BoundaryError("token_run", "invalid_pause_budget")
     previous = reporter.completed(run_id)
     if previous is not None:
         _verify_completed(store, previous, run)
         return WorkerResult("completed", run_id, result_id=previous.artifact_id)
     if resume is None and reporter.events(run_id):
         raise BoundaryError("token_run", "existing_attempt_requires_explicit_resume")
+    inputs = _load_inputs(store, input_manifest.artifact_id)
+    input_info = inputs.manifest.parameters.value()
+    if (admitted_m0 and info.get("training_binding") != input_info.get("training_binding")):
+        raise BoundaryError("token_run", "training_binding_mismatch")
     attempt, started = uuid.uuid4().hex, time.perf_counter()
     engine: TokenRankingEngine | None = None
     checkpoint_id = None
