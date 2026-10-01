@@ -383,6 +383,7 @@ def preflight_token_run(
 def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, runtime: Producer,
                    *, snapshot: Path | None = None, resume: str | None = None,
                    stop_after: int | None = None,
+                   checkpoint_interval: int = 1,
                    dev_admitter: Callable[[Manifest, Manifest], dict] | None = None,
                    ) -> WorkerResult:
     run, config, input_manifest, admitted_m0 = preflight_token_run(
@@ -391,6 +392,8 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
     info = run.parameters.value()
     if stop_after is not None and (type(stop_after) is not int or stop_after < 1):
         raise BoundaryError("token_run", "invalid_pause_budget")
+    if type(checkpoint_interval) is not int or not 1 <= checkpoint_interval <= 100000:
+        raise BoundaryError("token_run", "invalid_checkpoint_interval")
     previous = reporter.completed(run_id)
     if previous is not None:
         _verify_completed(store, previous, run)
@@ -455,8 +458,12 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
             engine.restore(b"".join(store.read_payload(saved.payload("checkpoint"))))
             if saved_info.get("step") != engine.step:
                 raise BoundaryError("token_run", "resume_step_mismatch")
+            # Preserve the last known-good checkpoint if the first resumed save fails.
+            checkpoint_id = resume
         initial_step = engine.step
-        event("resumed" if resume else "started")
+        event("resumed" if resume else "started", **(
+            {"checkpoint_interval": checkpoint_interval} if checkpoint_interval > 1 else {}
+        ))
         while engine.step < config.steps:
             step_started = time.perf_counter()
             loss = engine.advance()
@@ -464,10 +471,16 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
             event("step", loss=loss, seconds=seconds)
             print(json_bytes({"run_id": run_id, "step": engine.step, "total_steps": config.steps,
                               "loss": loss, "seconds": seconds}).decode(), flush=True)
-            # Small 1a runs: every completed update is recoverable. Never write mid-update state.
-            checkpoint_id = checkpoint()
-            if (stop_after is not None and engine.step - initial_step >= stop_after
-                    and engine.step < config.steps):
+            # Retain every update's loss curve. Checkpoint only at the configured global step
+            # boundary, while forcing pause and final checkpoints so those outcomes stay usable.
+            should_pause = (stop_after is not None
+                           and engine.step - initial_step >= stop_after
+                           and engine.step < config.steps)
+            if (engine.step % checkpoint_interval == 0 or should_pause
+                    or engine.step == config.steps):
+                checkpoint_id = checkpoint()
+            if should_pause:
+                assert checkpoint_id is not None
                 event("paused", checkpoint_id=checkpoint_id)
                 return WorkerResult("paused", run_id, checkpoint_id=checkpoint_id)
         if checkpoint_id is None:

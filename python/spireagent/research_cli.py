@@ -242,6 +242,8 @@ def main() -> int:
     token_train.add_argument("--replicate", default="stage1a")
     token_train.add_argument("--resume")
     token_train.add_argument("--stop-after", type=int)
+    token_train.add_argument("--checkpoint-interval", type=int, default=1,
+                             help="save every N updates; pauses and final update always save")
     token_train.add_argument("--max-tokens", type=int, default=16384)
     m0_train = commands.add_parser(
         "train-light-action-m0", help="train one canonical, owner-admitted M0 run")
@@ -260,6 +262,8 @@ def main() -> int:
     m0_train.add_argument("--max-action-bytes", type=int, default=8192)
     m0_train.add_argument("--replicate", default="light-action-m0")
     m0_train.add_argument("--stop-after", type=int)
+    m0_train.add_argument("--checkpoint-interval", type=int, default=1,
+                           help="save every N updates; pauses and final update always save")
     run_m0 = commands.add_parser(
         "run-light-action-m0", help="resume/continue one exact canonical M0 run")
     run_m0.add_argument("--project-config", required=True, type=Path)
@@ -267,6 +271,8 @@ def main() -> int:
     run_m0.add_argument("--operation", required=True)
     run_m0.add_argument("--resume", help="exact checkpoint ID from this run")
     run_m0.add_argument("--stop-after", type=int)
+    run_m0.add_argument("--checkpoint-interval", type=int, default=1,
+                         help="save every N updates; pauses and final update always save")
     run_m0.add_argument("--snapshot", type=Path)
     run_tokens = commands.add_parser("run-tokens", help="execute an existing exact token run")
     run_tokens.add_argument("--run", required=True)
@@ -274,6 +280,8 @@ def main() -> int:
     run_tokens.add_argument("--operation", help="canonical M0 training operation ID")
     run_tokens.add_argument("--resume", help="exact checkpoint ID from this run")
     run_tokens.add_argument("--stop-after", type=int)
+    run_tokens.add_argument("--checkpoint-interval", type=int, default=1,
+                            help="save every N updates; pauses and final update always save")
     run_tokens.add_argument("--snapshot", type=Path)
     run_memory = commands.add_parser("run-memory", help="execute an existing exact M2 episode run")
     run_memory.add_argument("--run", required=True)
@@ -541,6 +549,7 @@ def main() -> int:
             result = asdict(execute_tokens(
                 store, ObjectStoreRunReporter(store, store.blobs), run.artifact_id, runtime,
                 snapshot=args.snapshot, resume=args.resume, stop_after=args.stop_after,
+                checkpoint_interval=args.checkpoint_interval,
             ))
         elif args.command == "train-light-action-m0":
             import torch
@@ -573,6 +582,7 @@ def main() -> int:
             result = asdict(execute_tokens(
                 store, ObjectStoreRunReporter(store, store.blobs), run.artifact_id, runtime,
                 snapshot=args.snapshot, stop_after=args.stop_after,
+                checkpoint_interval=args.checkpoint_interval,
                 dev_admitter=lambda model, view: _reserve_m0_dev(
                     project_owner, store, binding, operation_id, run.artifact_id,
                     input_id, model, view),
@@ -610,6 +620,7 @@ def main() -> int:
                 snapshot=args.snapshot,
                 resume=(digest(args.resume, "token_run.resume") if args.resume else None),
                 stop_after=args.stop_after,
+                checkpoint_interval=args.checkpoint_interval,
                 dev_admitter=dev_admitter,
             ))
         elif args.command == "run-light-action-m0":
@@ -631,6 +642,7 @@ def main() -> int:
                 snapshot=args.snapshot,
                 resume=resume_id,
                 stop_after=args.stop_after,
+                checkpoint_interval=args.checkpoint_interval,
                 dev_admitter=lambda model, view: _reserve_m0_dev(
                     project_owner, store, binding, args.operation, run_id,
                     run_manifest.parent("training_input"), model, view),
