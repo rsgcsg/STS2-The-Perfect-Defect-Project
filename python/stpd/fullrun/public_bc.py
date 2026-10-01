@@ -162,15 +162,21 @@ def publish_public_bc_view(
     )
     if {s.split for s in samples} != {"train", "dev"}:
         raise BoundaryError("public_bc", "nonempty_train_dev_required")
+    encoded = _encoded(samples, report)
     payloads = tuple(store.put_payload(role, io.BytesIO(raw),
                     "application/x-ndjson" if role == "samples" else "application/json")
-                     for role, raw in _encoded(samples, report).items())
+                     for role, raw in encoded.items())
     manifest = Manifest(
         "model_view", producer,
         (Parent("allocation", allocation_id), Parent("dataset", allocation.parent("dataset"))),
         payloads, FrozenObject.of(_parameters(dataset, samples, report)),
     )
-    store.publish(manifest)
+    published_id = store.publish(manifest)
+    if published_id != manifest.artifact_id:
+        raise BoundaryError("public_bc", "published_view_identity_mismatch")
+    from .view_session import _seed_published_public_bc_view
+
+    _seed_published_public_bc_view(store, manifest, samples, encoded["samples"])
     return manifest
 
 

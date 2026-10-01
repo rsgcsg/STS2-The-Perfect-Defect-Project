@@ -7,6 +7,7 @@ This cache contains no permission, Gold reservation or mutable operational state
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -42,6 +43,49 @@ def verified_model_views(store: ArtifactStore) -> Iterator[ViewSession]:
         yield session
     finally:
         _CURRENT.reset(token)
+
+
+def _seed_published_public_bc_view(
+    store: ArtifactStore,
+    manifest: Manifest,
+    samples: tuple[ModelSample, ...],
+    sample_payload: bytes,
+) -> None:
+    """Remember only the exact view produced by the Public BC publisher.
+
+    This private, domain-specific hook is not a general cache-injection API. The
+    caller invokes it only after the owner projection and durable publication
+    have both succeeded. It is inert outside that exact store's active session.
+    """
+    session = _CURRENT.get()
+    if session is None or session.store is not store:
+        return
+
+    from .public_bc import LEGACY_VIEW_SCHEMA, VIEW_SCHEMA
+    from .features import ModelSample
+
+    parameters = manifest.parameters.value()
+    schema = parameters.get("schema")
+    if (manifest.kind != "model_view" or schema not in {VIEW_SCHEMA, LEGACY_VIEW_SCHEMA}
+            or {parent.role for parent in manifest.parents} != {"allocation", "dataset"}
+            or {payload.role for payload in manifest.payloads} != {"dispositions", "samples"}
+            or type(samples) is not tuple
+            or any(not isinstance(sample, ModelSample) for sample in samples)
+            or parameters.get("samples") != len(samples)
+            or {sample.split for sample in samples} != {"train", "dev"}):
+        raise BoundaryError("view_session", "invalid_published_public_bc_view")
+
+    payload = manifest.payload("samples")
+    if (payload.size != len(sample_payload)
+            or hashlib.sha256(sample_payload).hexdigest() != payload.sha256):
+        raise BoundaryError("view_session", "published_samples_identity_mismatch")
+    if store.get_manifest(manifest.artifact_id).to_bytes() != manifest.to_bytes():
+        raise BoundaryError("view_session", "published_manifest_identity_mismatch")
+
+    session.identity = manifest.artifact_id
+    session.value = (manifest, samples)
+    # The publisher has already paid for and completed the semantic projection.
+    session.misses += 1
 
 
 def load_view(
