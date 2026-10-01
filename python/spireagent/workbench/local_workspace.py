@@ -195,26 +195,29 @@ def _data_facts(
     }
 
     # Prefer an explicitly curated wrapper, then a canonical source dataset.
-    dataset = next(
-        (
-            item
-            for item in data_manifests
-            if _parameters(item).get("schema") == "stpd/curated-decision-dataset-v1"
-        ),
-        next(
+    if selected.kind == "dataset":
+        dataset = selected
+    else:
+        dataset = next(
             (
                 item
                 for item in data_manifests
-                if _parameters(item).get("schema")
-                in {
-                    "stpd/fullrun-dataset-v1",
-                    "stpd/decision-dataset-v1",
-                    "stpd/decision-union-v1",
-                }
+                if _parameters(item).get("schema") == "stpd/curated-decision-dataset-v1"
             ),
-            selected if selected.kind == "dataset" else None,
-        ),
-    )
+            next(
+                (
+                    item
+                    for item in data_manifests
+                    if _parameters(item).get("schema")
+                    in {
+                        "stpd/fullrun-dataset-v1",
+                        "stpd/decision-dataset-v1",
+                        "stpd/decision-union-v1",
+                    }
+                ),
+                None,
+            ),
+        )
     dataset_parameters = _parameters(dataset) if dataset is not None else {}
     schema_versions = [
         {

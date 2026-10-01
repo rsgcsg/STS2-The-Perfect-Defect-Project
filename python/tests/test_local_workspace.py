@@ -250,6 +250,12 @@ def test_dataset_data_facts_stay_on_selected_manifest_ancestry(tmp_path: Path) -
             "purpose": "training",
         }))
     artifact_store.publish(curated_child)
+    selected_union = Manifest("dataset", PRODUCER,
+        parents=(Parent("dataset", curated_child.artifact_id),),
+        parameters=FrozenObject.of({
+            "schema": "stpd/decision-union-v1", "records": 5, "purpose": "union",
+        }))
+    artifact_store.publish(selected_union)
     second_source = Manifest("evidence", PRODUCER, parameters=FrozenObject.of({
         "schema": "stpd/local-verified-bundle-v1", "content_id": "b" * 64,
     }))
@@ -277,6 +283,13 @@ def test_dataset_data_facts_stay_on_selected_manifest_ancestry(tmp_path: Path) -
     assert [item["artifact_id"] for item in facts["lineage"]["recording_bundles"]] == [
         first_source.artifact_id
     ]
+
+    union_facts = LocalWorkspace(registry, artifact_store).artifact(
+        selected_union.artifact_id
+    )["data_facts"]
+    assert union_facts["dataset"]["artifact_id"] == selected_union.artifact_id
+    assert union_facts["dataset"]["samples"]["selected"] == 5
+    assert union_facts["dataset"]["purpose"] == "union"
 
 
 def test_unverified_source_index_keeps_run_and_session_counts_unknown(tmp_path: Path) -> None:
