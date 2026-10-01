@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import io
+import json
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 import torch
@@ -14,7 +16,10 @@ from spireagent.storage.store import ArtifactStore
 
 from ..fullrun.evaluation import action_only_prior, evaluate_samples
 from ..fullrun.light_action_inputs import (
-    INPUT_FORMAT as LIGHT_ACTION_INPUT_FORMAT,
+    CANONICAL_SCHEMA as CANONICAL_LIGHT_ACTION_INPUT_SCHEMA,
+)
+from ..fullrun.light_action_inputs import (
+    SCHEMA as LIGHT_ACTION_INPUT_SCHEMA,
 )
 from ..fullrun.light_action_inputs import (
     LoadedLightActionInputs,
@@ -38,19 +43,24 @@ from .worker import WorkerResult
 RUN_SCHEMA = "stpd/stage1a-run-v1"
 MODEL_SCHEMA = "stpd/stage1a-model-v1"
 LIGHT_ACTION_M0_MODEL_SCHEMA = "stpd/stage1a-light-action-m0-model-v1"
+CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA = "stpd/stage1a-light-action-m0-canonical-model-v1"
 
 
 def _load_inputs(
     store: ArtifactStore, identity: str,
 ) -> LoadedTokenInputs | LoadedLightActionInputs:
     info = store.get_manifest(identity).parameters.value()
-    if info.get("schema") == "stpd/stage1a-light-action-m0-dual-input-v1":
+    if info.get("schema") in {LIGHT_ACTION_INPUT_SCHEMA, CANONICAL_LIGHT_ACTION_INPUT_SCHEMA}:
         return load_light_action_inputs(store, identity)
     return load_token_inputs(store, identity)
 
 
-def _model_schema(config: Stage1aConfig) -> str:
-    return LIGHT_ACTION_M0_MODEL_SCHEMA if isinstance(config, LightActionM0Config) else MODEL_SCHEMA
+def _model_schema(config: Stage1aConfig, input_schema: str | None = None) -> str:
+    if isinstance(config, LightActionM0Config):
+        return (CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA
+                if input_schema == CANONICAL_LIGHT_ACTION_INPUT_SCHEMA
+                else LIGHT_ACTION_M0_MODEL_SCHEMA)
+    return MODEL_SCHEMA
 
 
 def _checkpoint_metadata(engine: TokenRankingEngine) -> dict[str, object]:
@@ -69,7 +79,12 @@ def _checkpoint_metadata(engine: TokenRankingEngine) -> dict[str, object]:
             "backbone": engine.backbone,
             "adapter_config": engine.backbone.get("adapter_config"),
             "adapter_tensor_names": sorted(engine.adapter_tensor_names or set()),
+            "input_schema": source["schema"], "input_format": source["format"],
+            "source_view_schema": source["source_schema"],
+            "source_renderer": source["source_renderer"],
         })
+        if "training_binding" in source:
+            info["training_binding"] = source["training_binding"]
     return info
 
 
@@ -82,21 +97,29 @@ def prepare_token_run(
     if isinstance(config, LightActionM0Config):
         expected_family = ("train-only-byte-bpe" if recipe_for(config.recipe).backbone == "s"
                            else "pinned-qwen3")
+        expected_input_schemas = {LIGHT_ACTION_INPUT_SCHEMA, CANONICAL_LIGHT_ACTION_INPUT_SCHEMA}
+        canonical = input_info.get("schema") == CANONICAL_LIGHT_ACTION_INPUT_SCHEMA
         if (not isinstance(inputs, LoadedLightActionInputs)
+                or input_info.get("schema") not in expected_input_schemas
                 or input_info.get("graph") != recipe_for(config.recipe).graph
                 or not isinstance(input_info.get("state_codec"), dict)
                 or input_info["state_codec"].get("family") != expected_family
                 or input_info.get("max_state_tokens") != config.max_state_tokens
                 or input_info.get("max_action_bytes") != config.max_action_bytes):
             raise BoundaryError("token_run", "light_action_dual_input_or_codec_mismatch")
+        if canonical and not isinstance(input_info.get("training_binding"), dict):
+            raise BoundaryError("token_run", "canonical_training_binding_required")
     elif (not isinstance(inputs, LoadedTokenInputs)
           or input_info.get("backbone") != recipe_for(config.recipe).backbone):
         raise BoundaryError("token_run", "input_backbone_mismatch")
     encoded_config = config_payload(config)
+    training_binding = input_info.get("training_binding")
     experiment = Manifest(
         "experiment", producer, (Parent("training_input", inputs.manifest.artifact_id),),
         parameters=FrozenObject.of({"schema": "stpd/experiment-v1", "purpose": "engineering",
-                                    "config": encoded_config}),
+                                    "config": encoded_config,
+                                    **({"training_binding": training_binding}
+                                       if training_binding is not None else {})}),
     )
     store.publish(experiment)
     run = Manifest(
@@ -105,7 +128,9 @@ def prepare_token_run(
         parameters=FrozenObject.of({"schema": RUN_SCHEMA, "config": encoded_config,
                                     "replicate": replicate,
                                     "cpu_threads": torch.get_num_threads(),
-                                    "torch_version": str(torch.__version__)}),
+                                    "torch_version": str(torch.__version__),
+                                    **({"training_binding": training_binding}
+                                       if training_binding is not None else {})}),
     )
     store.publish(run)
     return run
@@ -138,8 +163,10 @@ def _verify_completed(store: ArtifactStore, result: Manifest, run: Manifest) -> 
     config = decode_config(run.parameters.value()["config"])
     model = store.get_manifest(result.parent("model"))
     report = store.get_manifest(result.parent("offline_evaluation"))
+    training_input = store.get_manifest(run.parent("training_input"))
     if (model.kind != "model" or model.producer != run.producer
-            or model.parameters.value().get("schema") != _model_schema(config)
+            or model.parameters.value().get("schema")
+            != _model_schema(config, training_input.parameters.value().get("schema"))
             or model.parent("run") != run.artifact_id
             or model.parent("training_input") != run.parent("training_input")
             or model.parameters.value().get("steps") != run.parameters.value()["config"]["steps"]
@@ -149,7 +176,7 @@ def _verify_completed(store: ArtifactStore, result: Manifest, run: Manifest) -> 
             or report.parent("model") != model.artifact_id):
         raise BoundaryError("token_run", "completed_model_or_report_mismatch")
     if isinstance(config, LightActionM0Config):
-        source = store.get_manifest(run.parent("training_input"))
+        source = training_input
         source_info = source.parameters.value()
         model_info = model.parameters.value()
         checkpoint = store.get_manifest(model.parent("checkpoint"))
@@ -167,7 +194,11 @@ def _verify_completed(store: ArtifactStore, result: Manifest, run: Manifest) -> 
             or model_info.get("action_codec_sha256")
             != source_info.get("action_codec", {}).get("sha256")
             or model_info.get("source_view_schema") != view.parameters.value().get("schema")
-            or model_info.get("input_format") != LIGHT_ACTION_INPUT_FORMAT
+            or model_info.get("input_schema") != source_info.get("schema")
+            or model_info.get("input_format") != source_info.get("format")
+            or model_info.get("source_renderer") != source_info.get("source_renderer")
+            or model_info.get("training_binding") != source_info.get("training_binding")
+            or source_info.get("training_binding") != run.parameters.value().get("training_binding")
             or model_info.get("weights_sha256") != model.payload("weights").sha256
             or sorted(payload.role for payload in model.payloads)
             != ["action_codec", "state_tokenizer", "weights"]
@@ -182,8 +213,12 @@ def _verify_completed(store: ArtifactStore, result: Manifest, run: Manifest) -> 
             or checkpoint_info.get("step") != config.steps
             or checkpoint_info.get("recipe") != config.recipe
             or checkpoint_info.get("graph") != recipe_for(config.recipe).graph
-            or checkpoint_info.get("state_codec") != source_info.get("state_codec")
             or checkpoint_info.get("action_codec") != source_info.get("action_codec")
+            or checkpoint_info.get("input_schema") != source_info.get("schema")
+            or checkpoint_info.get("input_format") != source_info.get("format")
+            or checkpoint_info.get("source_view_schema") != source_info.get("source_schema")
+            or checkpoint_info.get("source_renderer") != source_info.get("source_renderer")
+            or checkpoint_info.get("training_binding") != source_info.get("training_binding")
             or checkpoint_info.get("backbone") != backbone
             or checkpoint_info.get("adapter_config") != model_info.get("adapter_config")
             or checkpoint_info.get("adapter_tensor_names") != names
@@ -192,11 +227,35 @@ def _verify_completed(store: ArtifactStore, result: Manifest, run: Manifest) -> 
             or len(names) != len(set(names))
         ):
             raise BoundaryError("token_run", "light_action_model_identity_mismatch")
+        if source_info.get("schema") == CANONICAL_LIGHT_ACTION_INPUT_SCHEMA:
+            expected_eval = {
+                "evaluation_scope": "within_training_purpose_allocation",
+                "historical_external_exposure": "unknown",
+                "physical_game_independence": "unresolved",
+                "clean_held_out_claim": False,
+            }
+            if any(report.parameters.value().get(key) != value
+                   for key, value in expected_eval.items()):
+                raise BoundaryError("token_run", "canonical_dev_qualification_mismatch")
+            payload = report.payload("metrics")
+            if payload.size > 64 * 1024 * 1024:
+                raise BoundaryError("token_run", "evaluation_size_limit")
+            metrics = json.loads(b"".join(store.read_payload(payload)))
+            summaries = [metrics.get("summary", {}).get("bootstrap")]
+            summaries.extend(item.get("bootstrap") for item in
+                             metrics.get("baselines", {}).values())
+            if any(not isinstance(item, dict) or item.get("status") != "unknown"
+                   or item.get("unit") != "session_scoped_run_group" for item in summaries):
+                raise BoundaryError("token_run", "canonical_dev_independence_claim")
+            if metrics.get("admission") != expected_eval:
+                raise BoundaryError("token_run", "canonical_dev_qualification_mismatch")
 
 
 def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, runtime: Producer,
                    *, snapshot: Path | None = None, resume: str | None = None,
-                   stop_after: int | None = None) -> WorkerResult:
+                   stop_after: int | None = None,
+                   dev_admitter: Callable[[Manifest, Manifest], dict] | None = None,
+                   ) -> WorkerResult:
     run = store.get_manifest(run_id)
     info = run.parameters.value()
     if (run.kind != "run" or run.producer != runtime or info.get("schema") != RUN_SCHEMA
@@ -208,10 +267,16 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
     if stop_after is not None and (type(stop_after) is not int or stop_after < 1):
         raise BoundaryError("token_run", "invalid_pause_budget")
     inputs = _load_inputs(store, run.parent("training_input"))
+    input_info = inputs.manifest.parameters.value()
+    if (input_info.get("schema") == CANONICAL_LIGHT_ACTION_INPUT_SCHEMA
+            and info.get("training_binding") != input_info.get("training_binding")):
+        raise BoundaryError("token_run", "training_binding_mismatch")
     experiment = store.get_manifest(run.parent("experiment"))
     if (experiment.kind != "experiment" or experiment.producer != runtime
             or experiment.parent("training_input") != inputs.manifest.artifact_id
-            or experiment.parameters.value().get("config") != config_payload(config)):
+            or experiment.parameters.value().get("config") != config_payload(config)
+            or experiment.parameters.value().get("training_binding")
+            != info.get("training_binding")):
         raise BoundaryError("token_run", "experiment_mismatch")
     previous = reporter.completed(run_id)
     if previous is not None:
@@ -303,7 +368,7 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
             model_payloads = (weights, inputs.manifest.payload("state_tokenizer"),
                               inputs.manifest.payload("action_codec"))
             model_info = {
-                "schema": LIGHT_ACTION_M0_MODEL_SCHEMA,
+                "schema": _model_schema(config, input_info["schema"]),
                 "config": config_payload(config), "recipe": config.recipe,
                 "graph": recipe_for(config.recipe).graph, "backbone": engine.backbone,
                 "state_codec": input_info["state_codec"],
@@ -314,10 +379,14 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
                 "action_codec_sha256": input_info["action_codec"]["sha256"],
                 "weights_sha256": weights.sha256,
                 "source_view_schema": view.parameters.value().get("schema"),
-                "input_format": LIGHT_ACTION_INPUT_FORMAT, "steps": engine.step,
+                "source_renderer": input_info["source_renderer"],
+                "input_schema": input_info["schema"],
+                "input_format": input_info["format"], "steps": engine.step,
                 "qualification": "engineering_only", "dtype": "float32",
                 "runtime_integration": "not_included_in_light_action_m0_slice",
             }
+            if "training_binding" in input_info:
+                model_info["training_binding"] = input_info["training_binding"]
         else:
             assert isinstance(inputs, LoadedTokenInputs)
             model_payloads = (weights, inputs.manifest.payload("tokenizer"))
@@ -332,12 +401,26 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
         model = Manifest("model", runtime, parents, model_payloads,
                          FrozenObject.of(model_info))
         store.publish(model)
-        event("evaluating", model_id=model.artifact_id)
         # Human text-input rows are session-scoped; distinct recorded run IDs do
         # not establish independent native runs across those sessions.
-        native_run_independence = view.parameters.value().get("schema") not in {
-            "stpd/human-text-input-bc-view-v1", "stpd/human-text-input-bc-view-v2",
-        }
+        canonical = (input_info.get("schema") == CANONICAL_LIGHT_ACTION_INPUT_SCHEMA)
+        dev_admission = None
+        if canonical:
+            if dev_admitter is None:
+                raise BoundaryError("token_run", "canonical_dev_admission_required")
+            dev_admission = dev_admitter(model, view)
+            if (not isinstance(dev_admission, dict)
+                    or dev_admission.get("evaluation_scope")
+                    != "within_training_purpose_allocation"
+                    or dev_admission.get("physical_game_independence") != "unresolved"
+                    or dev_admission.get("clean_held_out_claim") is not False):
+                raise BoundaryError("token_run", "canonical_dev_admission_invalid")
+        event("evaluating", model_id=model.artifact_id)
+        native_run_independence = (
+            False if canonical else view.parameters.value().get("schema") not in {
+                "stpd/human-text-input-bc-view-v1", "stpd/human-text-input-bc-view-v2",
+            }
+        )
         rows, summary = evaluate_samples(
             inputs.samples, engine.scores, seed=config.seed,
             native_run_independence=native_run_independence,
@@ -352,14 +435,22 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
                 inputs.samples, scorer, seed=config.seed,
                 native_run_independence=native_run_independence,
             )
-        metrics = store.put_payload("metrics", io.BytesIO(json_bytes({
-            "rows": rows, "summary": summary, "baselines": baselines,
-        })), "application/json")
+        metric_value = {"rows": rows, "summary": summary, "baselines": baselines}
+        evaluation_info = {"schema": EVALUATION_SCHEMA, "partition": "dev",
+                           "qualification": "engineering_only"}
+        if dev_admission is not None:
+            qualification = {key: dev_admission[key] for key in (
+                "evaluation_scope", "historical_external_exposure",
+                "physical_game_independence", "clean_held_out_claim",
+            )}
+            metric_value["admission"] = qualification
+            evaluation_info.update(qualification)
+        metrics = store.put_payload("metrics", io.BytesIO(json_bytes(metric_value)),
+                                    "application/json")
         evaluation = Manifest(
             "offline_evaluation", runtime,
             (Parent("model", model.artifact_id), Parent("model_view", view.artifact_id)),
-            (metrics,), FrozenObject.of({"schema": EVALUATION_SCHEMA, "partition": "dev",
-                                        "qualification": "engineering_only"}),
+            (metrics,), FrozenObject.of(evaluation_info),
         )
         store.publish(evaluation)
         result = Manifest(
