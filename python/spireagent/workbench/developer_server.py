@@ -950,6 +950,20 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 value = app.local_recordings.read()
                 self.respond(200, json.dumps(value, ensure_ascii=False).encode())
+            elif parsed.path == "/api/local-recordings/member-archives":
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                if parsed.query:
+                    self.respond(400, b'{"error":"invalid_local_member_archives_request"}')
+                    return
+                try:
+                    value = app.members.verified_collection_archive_catalog()
+                    self.respond(200, json.dumps(value, ensure_ascii=False).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_local_member_archives_request"}')
             elif parsed.path == "/api/local-recordings/import/status":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
