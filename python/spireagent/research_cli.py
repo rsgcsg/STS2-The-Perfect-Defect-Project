@@ -167,14 +167,15 @@ def _reserve_m0_dev(
 
 
 def _verify_m0_completion(store: ManifestArtifactStore, model: Manifest) -> None:
-    from spireagent.storage.run_reporter import ObjectStoreRunReporter
-    from stpd.workers.token_worker import _verify_completed
+    from stpd.workers.token_worker import verify_m0_model_completion
 
-    run = store.get_manifest(model.parent("run"))
-    completed = ObjectStoreRunReporter(store, store.blobs).completed(run.artifact_id)
-    if completed is None or completed.parent("model") != model.artifact_id:
-        raise BoundaryError("light_action_m0", "completed_model_required")
-    _verify_completed(store, completed, run)
+    verify_m0_model_completion(store, model)
+
+
+def _preflight_m0_completion(store: ManifestArtifactStore, model: Manifest) -> None:
+    from stpd.workers.token_worker import preflight_m0_model_completion
+
+    preflight_m0_model_completion(store, model)
 
 
 def add_token_recipe_arguments(parser: argparse.ArgumentParser) -> None:
@@ -794,8 +795,9 @@ def main() -> int:
                 if project_owner is None or args.operation is None:
                     raise BoundaryError(
                         "light_action_m0", "configured_owner_and_operation_required")
-                _verify_m0_completion(store, model)
+                _preflight_m0_completion(store, model)
                 _admit_m0_model(project_owner, store, model.artifact_id, args.operation)
+                _verify_m0_completion(store, model)
             result = export_light_action_m0_model(store, model.artifact_id, args.destination)
         elif args.command == "export":
             from stpd.policy.decision import export_model

@@ -40,7 +40,7 @@ def test_public_m0_owner_train_resume_export_and_snapshot_parity(
     monkeypatch.setattr(
         test_decision_store, "bundle3", lambda path: bundle3(path, public_bindings=True)
     )
-    config_path, store_dir, dataset_id, _owner = _synthetic_workspace(tmp_path)
+    config_path, store_dir, dataset_id, owner = _synthetic_workspace(tmp_path)
     common = ("--store", str(store_dir))
 
     prepared = _cli(
@@ -150,10 +150,27 @@ def test_public_m0_owner_train_resume_export_and_snapshot_parity(
     )
 
     if not compact:
+        from spireagent.json_boundary import BoundaryError
+        from spireagent.research_cli import _admit_m0_model, _preflight_m0_completion
+
+        preflight_reads = []
+        original_read_payload = ManifestArtifactStore.read_payload
+
+        def record_preflight_read(self, payload):
+            preflight_reads.append(payload.role)
+            yield from original_read_payload(self, payload)
+
+        monkeypatch.setattr(ManifestArtifactStore, "read_payload", record_preflight_read)
+        _preflight_m0_completion(store, model)
+        assert preflight_reads == []
+        with pytest.raises(BoundaryError, match="training_binding_mismatch"):
+            _admit_m0_model(owner, store, model_id, "d" * 32)
+        assert preflight_reads == []
+        monkeypatch.setattr(ManifestArtifactStore, "read_payload", original_read_payload)
+
         # A forged completion edge must be rejected from manifests before owner or
         # worker payloads are read during export verification.
         from spireagent.artifact_contracts import Parent
-        from spireagent.json_boundary import BoundaryError
         from spireagent.research_cli import _verify_m0_completion
         from stpd.workers.token_worker import _verify_completed
 
@@ -438,6 +455,7 @@ def test_public_manifest_and_owner_preflight_reject_before_payload_reads(tmp_pat
     assert reads == []
 
     # A run's immutable operation mismatch must be rejected before owner archive access.
+    from stpd.models.stage1a import recipe_for
     from stpd.workers.token_ranking import LightActionM0Config
     from stpd.workers.token_worker import prepare_token_run
 
@@ -473,10 +491,33 @@ def test_public_manifest_and_owner_preflight_reject_before_payload_reads(tmp_pat
         (Parent("run", run.artifact_id), Parent("training_input", original.artifact_id)),
         (checkpoint_payload,),
         FrozenObject.of({
-            "schema": "stpd/stage1a-token-light-action-m0-checkpoint-v1", "step": 1,
+            "schema": "stpd/stage1a-token-light-action-m0-checkpoint-v1",
+            "step": 1,
+            "recipe": config.recipe,
+            "graph": recipe_for(config.recipe).graph,
+            "state_codec": original_info["state_codec"],
+            "action_codec": original_info["action_codec"],
+            "input_schema": original_info["schema"],
+            "input_format": original_info["format"],
+            "source_view_schema": original_info["source_schema"],
+            "source_renderer": original_info["source_renderer"],
+            "training_binding": original_info["training_binding"],
         }),
     )
     store.publish(checkpoint)
+    forged_checkpoint = replace(
+        checkpoint,
+        parameters=FrozenObject.of({
+            **checkpoint.parameters.value(), "input_schema": "stpd/decision-model-view-v1",
+        }),
+    )
+    store.publish(forged_checkpoint)
+    reads.clear()
+    with pytest.raises(BoundaryError, match="resume_identity_mismatch"):
+        preflight_token_run(store, run.artifact_id, PRODUCER,
+                            resume=forged_checkpoint.artifact_id)
+    assert reads == []
+
     another_run = prepare_token_run(store, inputs, config, PRODUCER, replicate="other")
     reads.clear()
     with pytest.raises(BoundaryError, match="resume_identity_mismatch"):
