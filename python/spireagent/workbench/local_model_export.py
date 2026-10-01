@@ -269,8 +269,9 @@ def _verify_public_m0_export(model: Manifest, destination: Path,
                 or envelope["schema"] != PUBLIC_LIGHT_ACTION_M0_EXPORT_SCHEMA
                 or envelope["model_id"] != model.artifact_id):
             raise ValueError
-        packaged = Manifest.from_bytes(canonical_json(envelope["model"]).encode("utf-8"),
-                                       model.artifact_id)
+        packaged = Manifest.from_bytes(
+            (canonical_json(envelope["model"]) + "\n").encode("utf-8"), model.artifact_id,
+        )
         if packaged != model:
             raise ValueError
         scorer = LightActionM0DecisionScorer(destination)
