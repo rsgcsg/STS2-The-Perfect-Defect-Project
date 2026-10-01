@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 from test_artifact_store_v1 import PRODUCER, store
 
+import spireagent.workbench.local_workspace as local_workspace_module
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.storage.registry import SQLiteRegistry, sync_registry
+from spireagent.workbench import managed_local_workspace as managed
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig
 from spireagent.workbench.local_workspace import LocalWorkspace, open_registered_workspace
 from spireagent.workbench.memory_recipe import (
@@ -98,6 +100,134 @@ def test_exact_artifact_view_uses_manifest_identity_and_safe_descriptors(tmp_pat
     assert value["payloads"] == []
     assert value["registry_cached"] is False
     assert "workbench_memory_recipe" not in value
+
+
+def test_data_facts_are_bounded_metadata_and_read_only_with_duplicate_run_labels(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    registration = managed.create_managed_workspace(state_dir)
+    workspace_dir = state_dir / managed.ROOT_NAME / registration["workspace_id"]
+    artifact_store = store(workspace_dir / "store")
+    owner = registration["curation_owner"]
+    source_ids = []
+    source_archives = []
+    run_ids = []
+    evidence = []
+    for number, session in enumerate(("session-a", "session-b")):
+        content_id = ("a" if number == 0 else "b") * 64
+        source = Manifest("evidence", PRODUCER, parameters=FrozenObject.of({
+            "schema": "stpd/local-verified-bundle-v1", "content_id": content_id,
+        }))
+        artifact_store.publish(source)
+        evidence.append(source)
+        source_ids.append(source.artifact_id)
+        source_archives.append(content_id)
+        run_ids.append(f"{session}/run-0001")
+
+    original = Manifest("dataset", PRODUCER, parents=tuple(
+        Parent(f"source_{item.artifact_id}", item.artifact_id) for item in evidence
+    ), parameters=FrozenObject.of({
+        "schema": "stpd/fullrun-dataset-v1", "logical_id": "d" * 64,
+        "records": 814, "runs": 2,
+    }))
+    artifact_store.publish(original)
+    curated = Manifest("dataset", PRODUCER,
+        parents=(Parent("dataset_" + original.artifact_id, original.artifact_id),),
+        parameters=FrozenObject.of({
+            "schema": "stpd/curated-decision-dataset-v1", "logical_id": "e" * 64,
+            "purpose": "training", "records": 814, "runs": 2,
+            "split_status": "insufficient_independent_run_components",
+        }))
+    artifact_store.publish(curated)
+    model = Manifest("model", PRODUCER,
+        parents=(Parent("training_input", curated.artifact_id),),
+        parameters=FrozenObject.of({"schema": "stpd/stage1a-model-v1", "steps": 10}))
+    artifact_store.publish(model)
+    evaluation = Manifest("offline_evaluation", PRODUCER,
+        parents=(Parent("model", model.artifact_id),),
+        parameters=FrozenObject.of({
+            "schema": "stpd/stage1a-ranking-evaluation-v1", "partition": "dev",
+        }))
+    artifact_store.publish(evaluation)
+    run_result = Manifest("run_result", PRODUCER,
+        parents=(Parent("model", model.artifact_id),),
+        parameters=FrozenObject.of({"schema": "stpd/run-result-v1",
+                                    "state": "completed", "steps": 10}))
+    artifact_store.publish(run_result)
+    with owner.transaction() as db:
+        for source_id, run_id, archive in zip(
+            source_ids, run_ids, source_archives, strict=True
+        ):
+            db.execute("INSERT INTO curation_sources VALUES(?,?,1)", (source_id, archive))
+            db.execute("INSERT INTO curation_exact_source_index VALUES(?)", (source_id,))
+            db.execute("INSERT INTO curation_source_runs VALUES(?,?)", (source_id, run_id))
+
+    registry = SQLiteRegistry(workspace_dir / "registry.sqlite")
+    sync_registry(artifact_store, registry)
+    artifact_store.read_payload = lambda _payload: (_ for _ in ()).throw(
+        AssertionError("data facts must never read payload bytes")
+    )
+    registry_before = registry.path.read_bytes()
+    ledger_before = owner.path.read_bytes()
+    real_connect = local_workspace_module.sqlite3.connect
+    readonly_ledger_connections = []
+
+    def checked_connect(database, *args, **kwargs):
+        if str(database).startswith(owner.path.resolve().as_uri()):
+            assert "mode=ro" in str(database)
+            assert kwargs.get("uri") is True
+            readonly_ledger_connections.append(str(database))
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(local_workspace_module.sqlite3, "connect", checked_connect)
+    monkeypatch.setattr(
+        owner, "transaction", lambda: pytest.fail("data facts must not call owner writers")
+    )
+    workspace = LocalWorkspace(registry, artifact_store)
+    workspace.curation_owner = owner
+    facts = workspace.artifact(curated.artifact_id)["data_facts"]
+
+    assert facts["dataset"]["samples"] == {
+        "selected": 814, "excluded": None, "excluded_known": False,
+    }
+    assert facts["recording"]["bundle_count"] == 2
+    assert facts["recording"]["session_count"] == 2
+    assert facts["recording"]["qualified_run_occurrence_count"] == 2
+    assert facts["recording"]["native_starts"] == {"known": False, "value": None}
+    assert facts["recording"]["native_ends"] == {"known": False, "value": None}
+    assert facts["recording"]["physical_game_independence"] == "unresolved"
+    assert [row["artifact_id"] for row in facts["descendants"]["models"]] == [model.artifact_id]
+    assert facts["descendants"]["models"][0]["producer_completion_status"] == "completed"
+    assert [row["artifact_id"] for row in facts["descendants"]["evaluations"]] == [
+        evaluation.artifact_id
+    ]
+    assert facts["descendants"]["run_results"][0]["state"] == "completed"
+    assert facts["ledger"]["coverage"] == "incomplete"
+    assert facts["ledger"]["label"] == "历史使用记录不完整"
+    assert facts["ledger"]["uses"] == []
+    assert "never" not in facts["ledger"]["label"].lower()
+    assert facts["ledger"]["historical_manual_exposure"] == "unknown"
+    assert facts["user_declaration"]["status"] == "not_durably_registered"
+    assert facts["eligibility"]["clean_dev_test_claim"] is False
+    assert facts["eligibility"]["gold_claim"] is False
+    assert registry.path.read_bytes() == registry_before
+    assert owner.path.read_bytes() == ledger_before
+    assert readonly_ledger_connections
+
+
+def test_data_facts_report_truncation_when_manifest_inventory_is_capped(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    artifact_store, registry, dataset, _model = fixture(tmp_path)
+    monkeypatch.setattr(local_workspace_module, "DATA_FACT_MANIFEST_LIMIT", 1)
+
+    facts = LocalWorkspace(registry, artifact_store).artifact(dataset.artifact_id)["data_facts"]
+
+    assert facts["status"] == "partial"
+    assert facts["lineage"]["truncated"] is True
+    assert len(facts["lineage"]["datasets"]) <= 1
 
 
 @pytest.mark.parametrize(("reset", "v2", "expected"), [

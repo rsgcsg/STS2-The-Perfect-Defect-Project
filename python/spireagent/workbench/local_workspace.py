@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
+from pathlib import Path
 from typing import Any, cast
 
 from spireagent.artifact_contracts import KINDS, Manifest
@@ -25,10 +27,504 @@ ARTIFACT_SCHEMA = "stpd/local-workspace-artifact-v1"
 MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 50
 CATEGORIES = frozenset({"recordings", "datasets", "models", "reports", "all"})
-CATEGORY_KINDS = {"datasets": "dataset", "models": "model",
-                  "reports": "offline_evaluation"}
-RECORDING_SCHEMAS = frozenset({"stpd/local-verified-bundle-v1",
-                              "stpd/received-bundle-v1"})
+CATEGORY_KINDS = {"datasets": "dataset", "models": "model", "reports": "offline_evaluation"}
+RECORDING_SCHEMAS = frozenset({"stpd/local-verified-bundle-v1", "stpd/received-bundle-v1"})
+DATA_FACT_MANIFEST_LIMIT = 10000
+DATA_FACT_LINEAGE_LIMIT = 512
+DATA_FACT_REFERENCE_LIMIT = 500
+
+
+def _manifest_summary(
+    manifest: Manifest, *, related_completion_status: str | None = None
+) -> dict[str, Any]:
+    parameters = _parameters(manifest)
+    status = parameters.get("completion_status", parameters.get("state", parameters.get("status")))
+    if not isinstance(status, str) or status not in {
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted_unknown",
+        "running",
+    }:
+        status = "completed" if parameters.get("completed") is True else "unknown"
+    if status == "unknown" and related_completion_status == "completed":
+        status = "completed"
+    return {
+        "artifact_id": manifest.artifact_id,
+        "kind": manifest.kind,
+        "schema": parameters.get("schema") if isinstance(parameters.get("schema"), str) else None,
+        "purpose": parameters.get("purpose")
+        if isinstance(parameters.get("purpose"), str)
+        else None,
+        "parents": [
+            {"role": parent.role, "artifact_id": parent.artifact_id}
+            for parent in sorted(manifest.parents)
+        ],
+        "producer_source_revision": manifest.producer.source_revision,
+        "producer_completion_status": status,
+    }
+
+
+def _recorded_boundary_count(parameters: dict[str, Any], field: str) -> dict[str, Any]:
+    value = parameters.get(field)
+    if type(value) is int and value >= 0:
+        return {"known": True, "value": value}
+    return {"known": False, "value": None}
+
+
+def _data_facts(
+    store: ArtifactStore,
+    artifact_id: str,
+    curation_owner: Any | None,
+) -> dict[str, Any]:
+    """Project bounded manifest ancestry and read-only ledger references.
+
+    This path deliberately uses manifests and indexed run/use identities only. It
+    never calls ``read_payload`` or the LocalCurationOwner ledger writer API.
+    """
+    manifests: dict[str, Manifest] = {}
+    inventory_truncated = False
+    try:
+        identities = store.manifest_ids()
+    except (BoundaryError, OSError, ValueError, sqlite3.DatabaseError):
+        identities = ()
+        inventory_truncated = True
+    if len(identities) > DATA_FACT_MANIFEST_LIMIT:
+        identities = identities[:DATA_FACT_MANIFEST_LIMIT]
+        inventory_truncated = True
+    for identity in identities:
+        try:
+            manifests[identity] = store.get_manifest(identity)
+        except (BoundaryError, OSError, ValueError):
+            inventory_truncated = True
+
+    try:
+        selected = manifests.get(artifact_id) or store.get_manifest(artifact_id)
+        manifests[artifact_id] = selected
+    except (BoundaryError, OSError, ValueError):
+        return {
+            "schema": "stpd/local-data-facts-v1",
+            "status": "unavailable",
+            "reason": "artifact_manifest_unavailable",
+        }
+
+    children: dict[str, list[str]] = {}
+    for child_id, manifest in manifests.items():
+        for parent in manifest.parents:
+            children.setdefault(parent.artifact_id, []).append(child_id)
+
+    descendants: list[str] = []
+    pending = [artifact_id]
+    seen = set()
+    while pending:
+        current = pending.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        descendants.append(current)
+        if len(seen) >= DATA_FACT_LINEAGE_LIMIT:
+            if children.get(current):
+                inventory_truncated = True
+            break
+        pending.extend(children.get(current, ()))
+
+    lineage: dict[str, Manifest] = {}
+    pending = list(descendants)
+    while pending and len(lineage) < DATA_FACT_LINEAGE_LIMIT:
+        current = pending.pop()
+        if current in lineage:
+            continue
+        manifest = manifests.get(current)
+        if manifest is None:
+            try:
+                manifest = store.get_manifest(current)
+            except (BoundaryError, OSError, ValueError):
+                inventory_truncated = True
+                continue
+        lineage[current] = manifest
+        pending.extend(parent.artifact_id for parent in manifest.parents)
+    if pending:
+        inventory_truncated = True
+
+    data_manifests = [manifest for manifest in lineage.values() if manifest.kind == "dataset"]
+    bundles = [
+        manifest
+        for manifest in lineage.values()
+        if manifest.kind == "evidence" and _parameters(manifest).get("schema") in RECORDING_SCHEMAS
+    ]
+    allocations = [
+        manifest
+        for manifest in lineage.values()
+        if _parameters(manifest).get("schema") == "stpd/decision-allocation-v1"
+    ]
+    models = [
+        manifest
+        for identity in descendants[1:]
+        if (manifest := manifests.get(identity)) is not None and manifest.kind == "model"
+    ]
+    evaluations = [
+        manifest
+        for identity in descendants[1:]
+        if (manifest := manifests.get(identity)) is not None
+        and manifest.kind == "offline_evaluation"
+    ]
+    run_results = [
+        manifest
+        for identity in descendants[1:]
+        if (manifest := manifests.get(identity)) is not None and manifest.kind == "run_result"
+    ]
+    completed_models = {
+        parent.artifact_id
+        for result in run_results
+        if _parameters(result).get("state") == "completed"
+        for parent in result.parents
+        if parent.role == "model"
+    }
+    completed_evaluations = {
+        parent.artifact_id
+        for result in run_results
+        if _parameters(result).get("state") == "completed"
+        for parent in result.parents
+        if parent.role == "offline_evaluation"
+    }
+
+    # Prefer an explicitly curated wrapper, then a canonical source dataset.
+    dataset = next(
+        (
+            item
+            for item in data_manifests
+            if _parameters(item).get("schema") == "stpd/curated-decision-dataset-v1"
+        ),
+        next(
+            (
+                item
+                for item in data_manifests
+                if _parameters(item).get("schema")
+                in {
+                    "stpd/fullrun-dataset-v1",
+                    "stpd/decision-dataset-v1",
+                    "stpd/decision-union-v1",
+                }
+            ),
+            selected if selected.kind == "dataset" else None,
+        ),
+    )
+    dataset_parameters = _parameters(dataset) if dataset is not None else {}
+    schema_versions = [
+        {
+            "role": "curated"
+            if _parameters(item).get("schema") == "stpd/curated-decision-dataset-v1"
+            else "source",
+            "schema": _parameters(item).get("schema"),
+            "producer_source_revision": item.producer.source_revision,
+            "artifact_id": item.artifact_id,
+        }
+        for item in sorted(data_manifests, key=lambda value: value.artifact_id)
+    ]
+    selected_records = dataset_parameters.get("records")
+    selected_count = (
+        selected_records if type(selected_records) is int and selected_records >= 0 else None
+    )
+    excluded_count = None
+    exclusions = dataset_parameters.get("exclusions")
+    if type(exclusions) is int and exclusions >= 0:
+        excluded_count = exclusions
+    elif isinstance(exclusions, list):
+        excluded_count = len(exclusions)
+
+    source_ids = tuple(sorted(item.artifact_id for item in bundles))
+    known_runs: tuple[str, ...] = ()
+    source_index_complete = bool(source_ids)
+    source_index_status = "missing_or_unverified"
+    uses: list[dict[str, str]] = []
+    use_truncated = False
+    ledger_status = "not_available"
+    if curation_owner is not None:
+        path = getattr(curation_owner, "path", None)
+        owner_store = getattr(curation_owner, "store_dir", None)
+        actual_store = getattr(getattr(store, "blobs", None), "root", None)
+        if (
+            isinstance(path, Path)
+            and isinstance(owner_store, Path)
+            and actual_store is not None
+            and owner_store.resolve() == actual_store.resolve()
+            and not path.is_symlink()
+            and path.is_file()
+        ):
+            try:
+                with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+                    db.execute("PRAGMA query_only=ON")
+                    tables = {
+                        row[0]
+                        for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                    }
+                    required = {
+                        "local_curation_identity",
+                        "curation_sources",
+                        "curation_exact_source_index",
+                        "curation_source_runs",
+                        "curation_uses",
+                        "curation_source_uses",
+                    }
+                    owner_identity = getattr(curation_owner, "identity", None)
+                    identity_row = (
+                        db.execute(
+                            "SELECT workspace,ledger,store,store_path FROM local_curation_identity"
+                        ).fetchone()
+                        if "local_curation_identity" in tables
+                        else None
+                    )
+                    identity_valid = (
+                        isinstance(owner_identity, tuple)
+                        and identity_row == owner_identity
+                        and db.execute("SELECT count(*) FROM local_curation_identity").fetchone()[0]
+                        == 1
+                    )
+                    if required <= tables and identity_valid:
+                        run_rows: set[str] = set()
+                        indexed_run_sources: set[str] = set()
+                        source_rows: set[str] = set()
+                        exact_index_rows: set[str] = set()
+                        for start in range(0, len(source_ids), 400):
+                            batch = source_ids[start : start + 400]
+                            if not batch:
+                                continue
+                            marks = ",".join("?" for _ in batch)
+                            source_rows.update(
+                                row[0]
+                                for row in db.execute(
+                                    "SELECT id FROM curation_sources "
+                                    f"WHERE complete=1 AND id IN ({marks})",
+                                    batch,
+                                )
+                            )
+                            indexed = {
+                                row[0]
+                                for row in db.execute(
+                                    "SELECT source FROM curation_exact_source_index "
+                                    f"WHERE source IN ({marks})",
+                                    batch,
+                                )
+                            }
+                            exact_index_rows.update(indexed)
+                            indexed_source_runs = list(
+                                db.execute(
+                                    "SELECT source,run FROM curation_source_runs "
+                                    f"WHERE source IN ({marks})",
+                                    batch,
+                                )
+                            )
+                            run_rows.update(row[1] for row in indexed_source_runs)
+                            indexed_run_sources.update(row[0] for row in indexed_source_runs)
+                        source_index_complete = bool(source_ids) and (
+                            len(source_rows) == len(source_ids)
+                            and len(exact_index_rows) == len(source_ids)
+                            and len(indexed_run_sources) == len(source_ids)
+                        )
+                        known_runs = tuple(sorted(run_rows))
+                        source_index_status = (
+                            "complete" if source_index_complete else "stale_or_missing"
+                        )
+                        ref_ids = tuple(sorted(set(source_ids) | run_rows))
+                        for start in range(0, len(ref_ids), 400):
+                            batch = ref_ids[start : start + 400]
+                            if not batch:
+                                continue
+                            marks = ",".join("?" for _ in batch)
+                            for row in db.execute(
+                                "SELECT run,kind,reference FROM curation_uses "
+                                f"WHERE run IN ({marks}) "
+                                "ORDER BY kind,reference,run LIMIT ?",
+                                (*batch, DATA_FACT_REFERENCE_LIMIT + 1),
+                            ):
+                                uses.append(
+                                    {
+                                        "scope": "qualified_run",
+                                        "identity": row[0],
+                                        "kind": row[1],
+                                        "reference": row[2],
+                                    }
+                                )
+                                if len(uses) > DATA_FACT_REFERENCE_LIMIT:
+                                    use_truncated = True
+                                    uses = uses[:DATA_FACT_REFERENCE_LIMIT]
+                                    break
+                            if not use_truncated:
+                                for row in db.execute(
+                                    "SELECT source,kind,reference FROM curation_source_uses "
+                                    f"WHERE source IN ({marks}) "
+                                    "ORDER BY kind,reference,source LIMIT ?",
+                                    (*batch, DATA_FACT_REFERENCE_LIMIT + 1),
+                                ):
+                                    uses.append(
+                                        {
+                                            "scope": "source",
+                                            "identity": row[0],
+                                            "kind": row[1],
+                                            "reference": row[2],
+                                        }
+                                    )
+                                    if len(uses) > DATA_FACT_REFERENCE_LIMIT:
+                                        use_truncated = True
+                                        uses = uses[:DATA_FACT_REFERENCE_LIMIT]
+                                        break
+                        ledger_status = "available"
+                    else:
+                        ledger_status = "unavailable"
+            except (OSError, sqlite3.DatabaseError, ValueError):
+                ledger_status = "unavailable"
+
+    sessions = sorted({run.rpartition("/")[0] for run in known_runs if "/" in run})
+    native_starts = [
+        _recorded_boundary_count(_parameters(item), "native_starts") for item in bundles
+    ]
+    native_ends = [_recorded_boundary_count(_parameters(item), "native_ends") for item in bundles]
+    start_known = all(item["known"] for item in native_starts) and bool(native_starts)
+    end_known = all(item["known"] for item in native_ends) and bool(native_ends)
+    has_training_use = any(item["kind"] == "training" for item in uses)
+    has_evaluation_use = any(item["kind"] == "evaluation" for item in uses)
+    ledger_incomplete = (
+        ledger_status != "available"
+        or not source_index_complete
+        or (bool(models or run_results) and not has_training_use)
+        or (bool(evaluations) and not has_evaluation_use)
+    )
+    allocation_roles = []
+    for item in allocations:
+        counts = _parameters(item).get("counts")
+        if isinstance(counts, dict):
+            allocation_roles.append(
+                {
+                    "artifact_id": item.artifact_id,
+                    "purpose": _parameters(item).get("purpose"),
+                    "train_count": counts.get("train")
+                    if type(counts.get("train")) is int
+                    else None,
+                    "dev_count": counts.get("dev") if type(counts.get("dev")) is int else None,
+                    "membership_detail": "not_read_from_payload",
+                }
+            )
+
+    return {
+        "schema": "stpd/local-data-facts-v1",
+        "status": "partial" if inventory_truncated or ledger_incomplete else "available",
+        "dataset": (
+            {
+                "artifact_id": dataset.artifact_id,
+                "logical_id": dataset_parameters.get("logical_id"),
+                "schema": dataset_parameters.get("schema"),
+                "producer_source_revision": dataset.producer.source_revision,
+                "schema_versions": schema_versions,
+                "purpose": dataset_parameters.get("purpose"),
+                "samples": {
+                    "selected": selected_count,
+                    "excluded": excluded_count,
+                    "excluded_known": excluded_count is not None,
+                },
+            }
+            if dataset is not None
+            else None
+        ),
+        "recording": {
+            "bundle_count": len(bundles),
+            "session_count": len(sessions) if source_index_complete else None,
+            "qualified_run_occurrence_count": len(known_runs) if source_index_complete else None,
+            "native_starts": {
+                "known": start_known,
+                "value": sum(item["value"] for item in native_starts) if start_known else None,
+            },
+            "native_ends": {
+                "known": end_known,
+                "value": sum(item["value"] for item in native_ends) if end_known else None,
+            },
+            "physical_game_independence": "unresolved",
+        },
+        "purpose_and_allocation": {
+            "purpose": dataset_parameters.get("purpose"),
+            "allocation_roles": allocation_roles,
+        },
+        "user_declaration": {"status": "not_durably_registered", "source": None, "time": None},
+        "descendants": {
+            "models": [
+                _manifest_summary(
+                    item,
+                    related_completion_status=(
+                        "completed" if item.artifact_id in completed_models else None
+                    ),
+                )
+                for item in sorted(models, key=lambda value: value.artifact_id)[:100]
+            ],
+            "evaluations": [
+                _manifest_summary(
+                    item,
+                    related_completion_status=(
+                        "completed" if item.artifact_id in completed_evaluations else None
+                    ),
+                )
+                for item in sorted(evaluations, key=lambda value: value.artifact_id)[:100]
+            ],
+            "run_results": [
+                {
+                    "artifact_id": item.artifact_id,
+                    "state": (
+                        _parameters(item).get("state")
+                        if isinstance(_parameters(item).get("state"), str)
+                        and _parameters(item).get("state")
+                        in {"completed", "failed", "cancelled", "interrupted_unknown", "running"}
+                        else "unknown"
+                    ),
+                    "parents": [
+                        {"role": parent.role, "artifact_id": parent.artifact_id}
+                        for parent in sorted(item.parents)
+                    ],
+                }
+                for item in sorted(run_results, key=lambda value: value.artifact_id)[:100]
+            ],
+            "truncated": inventory_truncated
+            or len(models) > 100
+            or len(evaluations) > 100
+            or len(run_results) > 100,
+        },
+        "ledger": {
+            "status": ledger_status,
+            "coverage": "incomplete" if ledger_incomplete else "current_records_only",
+            "label": (
+                "历史使用记录不完整"
+                if ledger_incomplete
+                else "已记录的使用"
+                if uses
+                else "当前没有用途引用记录；不代表从未使用"
+            ),
+            "source_index_status": source_index_status,
+            "uses": uses,
+            "uses_truncated": use_truncated,
+            "historical_manual_exposure": "unknown",
+        },
+        "eligibility": {
+            "engineering_training": "authorized_training_purpose_only",
+            "diagnostic_dev": "diagnostic_only",
+            "clean_dev_test_claim": False,
+            "gold_claim": False,
+        },
+        "lineage": {
+            "artifact": _manifest_summary(selected),
+            "datasets": [
+                _manifest_summary(item)
+                for item in sorted(data_manifests, key=lambda value: value.artifact_id)[:100]
+            ],
+            "recording_bundles": [
+                _manifest_summary(item)
+                for item in sorted(bundles, key=lambda value: value.artifact_id)[:100]
+            ],
+            "qualified_run_occurrences": list(known_runs[:100]) if source_index_complete else [],
+            "sessions": sessions[:100] if source_index_complete else [],
+            "truncated": inventory_truncated
+            or len(data_manifests) > 100
+            or len(bundles) > 100
+            or len(known_runs) > 100
+            or len(sessions) > 100,
+        },
+    }
 
 
 def _payloads(manifest: Manifest) -> list[dict[str, Any]]:
@@ -53,6 +549,7 @@ class LocalWorkspace:
     def __init__(self, registry: Registry, store: ArtifactStore) -> None:
         self.registry = registry
         self.store = store
+        self.curation_owner: Any | None = None
 
     def inventory(
         self,
@@ -182,9 +679,9 @@ class LocalWorkspace:
             "registry_indexed": indexed,
             "registry_cached": self.registry.is_cached(artifact_id) if indexed else None,
         }
+        result["data_facts"] = _data_facts(self.store, artifact_id, self.curation_owner)
         parameters = manifest.parameters.value()
-        if (manifest.kind == "model"
-                and parameters.get("schema") == "stpd/experimental-m2-model-v1"):
+        if manifest.kind == "model" and parameters.get("schema") == "stpd/experimental-m2-model-v1":
             result["workbench_memory_recipe"] = recorded_memory_recipe(self.store, manifest)
         return result
 
@@ -207,7 +704,5 @@ def open_registered_workspace(
         raise
     except sqlite3.DatabaseError as error:
         raise BoundaryError("local_workspace", "registry_unavailable") from error
-    store = ManifestArtifactStore(
-        LocalBlobStore(config.store_dir, create=False, readonly=True)
-    )
+    store = ManifestArtifactStore(LocalBlobStore(config.store_dir, create=False, readonly=True))
     return LocalWorkspace(registry, store)

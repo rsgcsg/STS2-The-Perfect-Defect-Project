@@ -538,6 +538,70 @@ window.SpireProject = (() => {
     );
     return detail;
   }
+  function localDataFacts(value, artifact) {
+    if (value?.schema !== "stpd/local-data-facts-v1") return null;
+    const recording = value.recording || {};
+    const dataset = value.dataset || {};
+    const ledger = value.ledger || {};
+    const allocationRoles = value.purpose_and_allocation?.allocation_roles || [];
+    const countValue = fact => fact?.known === true && Number.isSafeInteger(fact.value)
+      ? count(fact.value) : "未知";
+    const roleSummary = allocationRoles.length
+      ? allocationRoles.map(role => `训练 ${count(role.train_count)} / 开发 ${count(role.dev_count)}`).join("；")
+      : "未记录固定分配";
+    const schemaVersions = Array.isArray(dataset.schema_versions) ? dataset.schema_versions : [];
+    const sourceVersion = schemaVersions.find(item => item.role === "source");
+    const curatedVersion = schemaVersions.find(item => item.role === "curated");
+    const descendants = value.descendants || {};
+    const runResults = Array.isArray(descendants.run_results) ? descendants.run_results : [];
+    const card = panel("资料来源与使用概况",
+      "只读取不可变清单和本机用途账本索引，不读取原始样本或模型权重。");
+    card.append(fields([
+      ["样本数（已选）", dataset.samples?.selected == null ? "未知" : count(dataset.samples.selected)],
+      ["排除数", dataset.samples?.excluded_known ? count(dataset.samples.excluded) : "未知"],
+      ["来源包 / 录制会话 / 合格运行片段",
+        `${count(recording.bundle_count)} / ${count(recording.session_count)} / ${count(recording.qualified_run_occurrence_count)}`],
+      ["原生开局 / 终局", `${countValue(recording.native_starts)} / ${countValue(recording.native_ends)}`],
+      ["是否来自不同实体对局", "未知，尚未证明独立"],
+      ["用途 / 固定分配", `${dataset.purpose || "未知用途"} · ${roleSummary}`],
+      ["原始 / 整理数据版本", `${sourceVersion?.schema || "未知"} → ${curatedVersion?.schema || dataset.schema || "未知"}`],
+      ["生产源码版本", `${sourceVersion?.producer_source_revision?.slice(0, 12) || "未知"} → ${curatedVersion?.producer_source_revision?.slice(0, 12) || dataset.producer_source_revision?.slice(0, 12) || "未知"}`],
+      ["用户授权记录", value.user_declaration?.status === "registered" ? "已持久记录" : "尚未持久登记"],
+      ["已知模型 / 评测后代", `${count(descendants.models?.length)} / ${count(descendants.evaluations?.length)}`],
+      ["生产者记录的完成训练", count(runResults.filter(item => item.state === "completed").length)],
+      ["用途账本", ledger.label || "历史使用记录不完整"],
+      ["来源索引", ledger.source_index_status === "complete" ? "已核对" : "不完整或尚未核对"],
+      ["当前清单索引", artifact?.registry_indexed === false ? "未对齐当前清单" : "已核对"],
+      ["来源关系扫描", value.descendants?.truncated || value.lineage?.truncated
+        ? "已截断，结果不完整" : "未触及扫描上限"],
+      ["人工查看或调参历史未知", "未知"],
+      ["适用范围", "仅当前授权的工程训练；开发集仅诊断用途；不作 Gold 声明"],
+    ]));
+    const related = el("div", null, "project-actions");
+    for (const item of [...(descendants.models || []), ...(descendants.evaluations || [])]) {
+      if (!hex(item?.artifact_id)) continue;
+      const kind = item.kind === "model" || (descendants.models || []).includes(item) ? "模型" : "评测";
+      related.append(link(`打开${kind} · ${item.artifact_id.slice(0, 12)} · ${item.producer_completion_status || "完成状态未知"}`,
+        route("local-workspace", item.artifact_id)));
+    }
+    if ((descendants.models || []).length || (descendants.evaluations || []).length)
+      card.append(related);
+    card.append(technical({
+      数据集: dataset,
+      来源与运行片段: value.lineage,
+      固定分配: allocationRoles,
+      已记录使用: ledger.uses || [],
+      已知模型: value.descendants?.models || [],
+      已知评测: value.descendants?.evaluations || [],
+      训练运行结果: value.descendants?.run_results || [],
+      不确定项: {
+        historical_manual_exposure: ledger.historical_manual_exposure || "unknown",
+        physical_game_independence: recording.physical_game_independence || "unresolved",
+        ledger_coverage: ledger.coverage || "incomplete",
+      },
+    }, "查看来源、历史使用引用与关联对象"));
+    return card;
+  }
   function input(form, label, name, value = "", type = "text") {
     const field = el(
       "label",
@@ -4453,6 +4517,8 @@ window.SpireProject = (() => {
         : value.kind === "evidence" && value.parameters?.schema === "stpd/local-verified-bundle-v1"
           ? "录制来源" : show(value.kind);
       box.append(panel(heading, `本机对象 · ${value.artifact_id.slice(0, 16)}`));
+      const facts = localDataFacts(value.data_facts, value);
+      if (facts) box.append(facts);
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1")
         box.append(localDatasetOverview(value));
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/managed-text-menu-observed-source-v1") {

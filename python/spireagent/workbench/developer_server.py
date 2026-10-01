@@ -488,7 +488,12 @@ class Application:
 
         if self.config.research_workspace is not None:
             return open_registered_workspace(self.config.research_workspace)
-        return self.managed_local_workspace().get("workspace")
+        managed = self.managed_local_workspace()
+        workspace = managed.get("workspace")
+        if workspace is not None:
+            # This is a read-only projection over the verified owner path.
+            workspace.curation_owner = managed.get("curation_owner")
+        return workspace
 
     def managed_local_workspace(self) -> dict[str, Any]:
         if self.config.research_workspace is not None:
