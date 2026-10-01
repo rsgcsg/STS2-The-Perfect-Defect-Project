@@ -6,13 +6,13 @@ Check PRs/writers; source, installed, Human and scientific evidence remain disti
 
 ## Accepted source and actual installation
 
-Develop anchor: `a4aa8d66145568c5fc0db8057456abfc1e5fcb8d`, normal PR137 merge,
-tree `0403b3b1b5751e91991ca216b37703055e8169a4`.
-Its exact feature head `3919b4bc` passed Linux/Windows portable CI
-`36822025473`; the merge preserves the tested tree. This adds owner-bound
-canonical M0 prepare/train/resume/export, while the earlier PR134 core supports
-scratch, frozen-Qwen and LoRA recipes. Canonical execution inputs remain an
-offline profile; this does not establish live public-Snapshot parity.
+Develop anchor: `9556d21188b2deea027192567827a339a0ce50f7`, normal PR139 merge,
+tree `d5b01593b3419c3fd92ba7bb744f424bb94880d2`.
+Its exact feature head `550c5b8d` passed local full checks and hosted Linux/Windows
+CI `36828240491`; the merge preserves that tested tree. Shared Managed sessions,
+exact local data facts, private Host provenance and the canonical light-action M2
+core are integrated as source/test evidence. Earlier PR137 retains its
+owner-bound canonical M0 prepare/train/resume/export evidence.
 
 The last verified existing Workbench installation executes `ec58ded873862ee20b6317e53e7ed6e85f2ce8cb`,
 preserving research and models. Runtime rc.15 and
@@ -28,8 +28,10 @@ package provenance; and an experimental light-action M2 sequence/training core.
 Normal merges retain feature provenance. Exact combined-head gates remain
 separate from each predecessor's local or hosted results; see the integration PR.
 
-Host rc.23, Runtime rc.17 and Evidence rc.24 remain private source/package
-candidates, not production upgrades. A bounded App canary at `08656cf5` completed
+Develop contains Host rc.23, Runtime rc.17 and Evidence rc.24 private
+candidates, not production upgrades. The next integration candidate versions
+the reviewed isolated native-window Host lifecycle as rc.24; it has no fresh
+package, installed or native execution qualification yet. A bounded App canary at `08656cf5` completed
 three model decisions, including one native card play, then released control and
 closed Host. The original export files were unchanged. The stale-action negative
 followed gameplay and does not isolate owner-only invalidation.
@@ -39,12 +41,26 @@ followed gameplay and does not isolate owner-only invalidation.
 Data detail reads metadata and the local use ledger without creating owner state.
 Missing indexes, historical exposure and physical-game independence remain
 unknown. Canonical nested operation IDs and registered-workspace ledger routing
-still have conservative display gaps; source/use admission remains independent.
-The light-action M2 core has synthetic source/test evidence only. Its canonical
-sequence projector is not a native-text input owner, export or usable live model.
-Public-Snapshot M0 and native-v1 light-action M2 consumer integration are separate
-unfinished workstreams; do not compare their metrics as a controlled same-input
-memory experiment.
+have a separate display correction under review; source/use admission remains
+independent.
+
+The next reviewed source combination adds public-Snapshot M0 input, CLI and
+Workbench training/export/registration, immutable current user declarations,
+and native-v1 light-action M2 projection and a common numerical kernel. Public M0
+uses the complete generic BoundAction catalog with public_lite/public_compact;
+Workbench execution is scratch-only, while the advanced CLI and pinned adapter
+have separately tested frozen-Qwen/LoRA routes. These are synthetic source tests,
+not real-data training or native model execution. Generic public M0 has no current
+Managed Runtime bridge. Native-v1 M2 still needs its distinct engine, worker,
+export, online scorer and product integration. Its projector/common kernel
+cannot make a usable live model by itself. Public M0 is not a same-input matched
+baseline for native-v1 M2/Reset.
+
+User declaration registration records a current statement without backdating old
+use or proving Human origin. The new reader permits SQLite coordination sidecars
+but cannot initialize owner/schema or mutate logical records. Actual statement
+registration and visible declaration projection are separate pending operations.
+[Source review and remaining gates](../evidence/STAGE1A_PUBLIC_M0_NATIVE_HOST_2026-10-01.md).
 
 ## Research and native evidence anchors
 
