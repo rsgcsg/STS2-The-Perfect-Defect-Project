@@ -13,6 +13,7 @@ from spireagent.workbench.kit_runtime import (
     PRIVATE_HOST_MANIFEST_KEY,
     PRIVATE_HOST_PACKAGE_DESTINATION,
     PRIVATE_HOST_PROFILE,
+    _private_host_archive_records,
     private_host_files,
     private_host_runtime_pin,
     stage_private_host_runtime,
@@ -45,6 +46,23 @@ def _replace_archive_member(raw: bytes, name: str, payload: bytes | None,
     return output.getvalue()
 
 
+def _append_archive_member(raw: bytes, name: str, payload: bytes) -> bytes:
+    """Keep the original tar entries and append a second regular member."""
+    source = BytesIO(raw)
+    output = BytesIO()
+    with tarfile.open(fileobj=source, mode="r:gz") as reader, tarfile.open(
+            fileobj=output, mode="w:gz") as writer:
+        for member in reader:
+            handle = reader.extractfile(member) if member.isfile() else None
+            writer.addfile(member, handle)
+        entry = tarfile.TarInfo(name)
+        entry.size = len(payload)
+        entry.mode = 0o644
+        entry.mtime = 0
+        writer.addfile(entry, BytesIO(payload))
+    return output.getvalue()
+
+
 def test_private_host_candidate_is_bound_to_selected_bom_and_bundle_bytes(tmp_path):
     profile, archive, bom = private_host_fixture(tmp_path)
     identity = private_host_runtime_pin(profile, archive, bom)
@@ -70,6 +88,38 @@ def test_private_host_candidate_is_bound_to_selected_bom_and_bundle_bytes(tmp_pa
         tmp_path / "stale-sdk", sdk_version="1.1.0-rc.1")
     with pytest.raises(BoundaryError, match="private_host_connector_bom_identity_mismatch"):
         private_host_runtime_pin(stale_profile, stale_archive, current_bom)
+
+
+def test_private_host_archive_rejects_duplicate_regular_members_with_matching_outer_hash(
+        tmp_path):
+    profile, archive, bom = private_host_fixture(tmp_path)
+    with tarfile.open(fileobj=BytesIO(archive), mode="r:gz") as source:
+        original = source.extractfile("package/package.json").read()
+
+    for duplicate in (original, original + b"\nchanged"):
+        repeated = _append_archive_member(archive, "package/package.json", duplicate)
+        value = json.loads(profile)
+        value["host_runtime"]["release_asset_sha256"] = hashlib.sha256(repeated).hexdigest()
+        with pytest.raises(BoundaryError, match="private_host_archive_unsafe_or_invalid"):
+            private_host_runtime_pin(json.dumps(value).encode(), repeated, bom)
+
+
+def test_private_host_archive_preserves_exact_posix_case_in_member_identity(tmp_path):
+    _, archive, _ = private_host_fixture(tmp_path)
+    archive = _append_archive_member(archive, "package/CaseProbe.js", b"upper")
+    archive = _append_archive_member(archive, "package/caseprobe.js", b"lower")
+    records = _private_host_archive_records(archive)
+    assert records["CaseProbe.js"][0] == b"upper"
+    assert records["caseprobe.js"][0] == b"lower"
+
+
+def test_private_host_archive_rejects_file_path_ancestor_conflicts(tmp_path):
+    profile, archive, bom = private_host_fixture(tmp_path)
+    conflict = _append_archive_member(archive, "package/package.json/child", b"child")
+    value = json.loads(profile)
+    value["host_runtime"]["release_asset_sha256"] = hashlib.sha256(conflict).hexdigest()
+    with pytest.raises(BoundaryError, match="private_host_archive_unsafe_or_invalid"):
+        private_host_runtime_pin(json.dumps(value).encode(), conflict, bom)
 
 
 def test_private_host_archive_rejects_traversal_and_symlinks(tmp_path):

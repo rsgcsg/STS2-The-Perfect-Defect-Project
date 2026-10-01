@@ -47,6 +47,13 @@ and package version from the BOM plus the SDK and Zod bundled-tree hashes. The t
 Zod, and npm shrinkwrap as a `bundled_source_candidate` closure. Packaging proves that
 this exact tarball installs and imports Host, SDK, and Zod with a fresh empty npm cache,
 explicit `--offline`, empty user/global npm config, and `--ignore-scripts`.
+
+The approved Host rc23 source tar declares the public Connector SDK rc1 release URL.
+A private kit candidate instead binds to and bundles the SDK version/source selected by
+the current BOM (currently 1.3.0-rc.5); this is a dependency change in the private
+distribution. Tests or canary evidence for the old rc1 dependency do not qualify that
+new SDK pairing. The actual derived bundle must pass fresh offline install/import checks
+and separate selected-profile/runtime validation before it can be called usable.
 This is a private kit archive format; it does not modify the Host component source,
 rewrite BOM `public_packages`, or relabel a public release.
 

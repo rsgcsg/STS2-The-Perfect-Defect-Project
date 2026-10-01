@@ -195,6 +195,7 @@ def _private_host_archive_entries(archive_raw: bytes) -> dict[str, bytes]:
 
 def _private_host_archive_records(archive_raw: bytes) -> dict[str, tuple[bytes, int]]:
     entries: dict[str, tuple[bytes, int]] = {}
+    directories: set[str] = set()
     total = 0
     count = 0
     try:
@@ -209,9 +210,20 @@ def _private_host_archive_records(archive_raw: bytes) -> dict[str, tuple[bytes, 
                 if (not name.startswith("package/") or path.is_absolute() or ".." in path.parts
                         or "\\" in name or ":" in name or normalized != name.rstrip("/")):
                     raise ValueError
+                # Package identity uses exact normalized POSIX spelling across hosts.
+                # Do not apply the target OS's normcase/casefold rules here.
+                relative = normalized[len("package/"):]
+                parts = PurePosixPath(relative).parts
+                parents = ["/".join(parts[:index]) for index in range(1, len(parts))]
                 if member.isdir():
+                    if relative in entries or any(parent in entries for parent in parents):
+                        raise ValueError
+                    directories.add(relative)
+                    directories.update(parents)
                     continue
-                if member.type not in {tarfile.REGTYPE, tarfile.AREGTYPE} or name in entries:
+                if (member.type not in {tarfile.REGTYPE, tarfile.AREGTYPE}
+                        or not relative or relative in entries or relative in directories
+                        or any(parent in entries for parent in parents)):
                     raise ValueError
                 total += member.size
                 if member.size < 0 or total > HOST_ARCHIVE_LIMIT:
@@ -222,9 +234,9 @@ def _private_host_archive_records(archive_raw: bytes) -> dict[str, tuple[bytes, 
                 raw = handle.read(member.size + 1)
                 if len(raw) != member.size:
                     raise ValueError
-                relative = name[len("package/"):]
                 mode = 0o755 if member.mode & 0o111 else 0o644
                 entries[relative] = (raw, mode)
+                directories.update(parents)
     except (OSError, tarfile.TarError, ValueError, EOFError):
         raise BoundaryError("developer_kit", "private_host_archive_unsafe_or_invalid") from None
     if not entries:
