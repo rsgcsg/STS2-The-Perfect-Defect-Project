@@ -61,6 +61,8 @@ def _recorded_report(
     contract: str = "qualified",
     metric_change: str | None = None,
     metadata_change: str | None = None,
+    evidence_change: str | None = None,
+    physical_claim: object | None = None,
 ) -> tuple[ManifestArtifactStore, str]:
     store = ManifestArtifactStore(LocalBlobStore(root))
     view = Manifest(
@@ -156,6 +158,19 @@ def _recorded_report(
                 "unit": "whole_run",
                 "runs": 1,
             }
+    if evidence_change == "historical_restrictions":
+        metrics["qualification_evidence"] = [{
+            "origin": "e" * 64,
+            "facts": {
+                "split_basis": "whole_run_and_duplicate_current_input",
+                "human_origin": "explicit_owner_attestation_not_machine_verifiable",
+                "isolation": "ordinary",
+                "sealed_test": False,
+                "semantic_overlap": True,
+                "ledger_scope": "published_model",
+                "qualified_run_ids": ["private-run-id-a", "private-run-id-b"],
+            },
+        }]
 
     parameters: dict[str, Any] = {
         "schema": TOKEN_EVALUATION_SCHEMA,
@@ -164,12 +179,25 @@ def _recorded_report(
     }
     if contract in {"legacy-admission", "qualified"}:
         parameters.update(ADMISSION)
+    if physical_claim is not None:
+        metrics["admission"]["physical_game_independence"] = physical_claim
+        parameters["physical_game_independence"] = physical_claim
     if contract == "qualified":
         parameters["native_run_independence"] = False
     if metadata_change == "independent":
         parameters["native_run_independence"] = True
     elif metadata_change == "admission_mismatch":
         parameters["physical_game_independence"] = "independent"
+    elif metadata_change == "historical_restrictions":
+        parameters.update({
+            "split_basis": "report_split_basis",
+            "human_origin": "report_human_origin",
+            "isolation": "report_isolation",
+            "sealed_test": False,
+            "semantic_overlap": False,
+            "ledger_scope": "report_ledger_scope",
+            "qualified_run_ids": ["report-private-id"],
+        })
 
     payload = store.put_bytes("metrics", json_bytes(metrics), "application/json")
     report = Manifest(
@@ -190,8 +218,10 @@ def test_legacy_three_field_token_report_remains_readable_without_independence_c
     result = summary(store, identity)
     assert result["decision_count"] == 1
     assert result["reported_run_groups"] == 1
-    assert result["dev_qualification"] == {"native_run_independence": "unknown"}
-    assert "independent_runs" not in json.dumps(result)
+    assert result["dev_qualification"]["native_run_independence"] == "unknown"
+    assert result["dev_qualification"]["reported_restrictions"][
+        "physical_game_independence"]["status"] == "unreported"
+    assert result["dev_qualification"]["physical_game_independence"] == "unresolved"
 
 
 def test_legacy_admission_report_remains_readable_as_unknown(tmp_path: Path) -> None:
@@ -199,11 +229,12 @@ def test_legacy_admission_report_remains_readable_as_unknown(tmp_path: Path) -> 
     result = summary(store, identity)
     assert result["decision_count"] == 1
     assert result["reported_run_groups"] == 1
-    assert result["dev_qualification"] == {
-        "native_run_independence": "unknown",
-        **ADMISSION,
-    }
-    assert "independent_runs" not in json.dumps(result)
+    qualification = result["dev_qualification"]
+    assert qualification["native_run_independence"] == "unknown"
+    assert qualification["evaluation_scope"] == ADMISSION["evaluation_scope"]
+    assert qualification["historical_external_exposure"] == "unknown"
+    assert qualification["physical_game_independence"]["status"] == "unverified_reported_facts"
+    assert qualification["clean_held_out_claim"] is False
 
 
 def test_qualified_public_report_and_baselines_are_read_without_source_lineage(
@@ -224,11 +255,73 @@ def test_qualified_public_report_and_baselines_are_read_without_source_lineage(
     assert result["decision_count"] == 1
     assert result["reported_run_groups"] == 1
     assert set(result["baselines"]) == {"uniform_legal", "action_only"}
-    assert result["dev_qualification"] == {
-        "native_run_independence": "unknown",
-        **ADMISSION,
+    qualification = result["dev_qualification"]
+    assert qualification["native_run_independence"] == "unknown"
+    assert qualification["evaluation_scope"] == ADMISSION["evaluation_scope"]
+    assert qualification["historical_external_exposure"] == "unknown"
+    assert qualification["physical_game_independence"]["status"] == "unverified_reported_facts"
+    assert qualification["clean_held_out_claim"] is False
+
+
+@pytest.mark.parametrize("fact,expected", [
+    (True, "unverified_reported_facts"),
+    ("proven_independent", "unverified_reported_facts"),
+    (False, False),
+    ("shared_physical_game", "shared_physical_game"),
+])
+def test_physical_independence_facts_do_not_promote_positive_claims(
+    tmp_path: Path, fact: object, expected: object,
+) -> None:
+    store, identity = _recorded_report(
+        tmp_path / "positive-physical-claim",
+        physical_claim=fact,
+    )
+    qualification = summary(store, identity)["dev_qualification"]
+    value = qualification["physical_game_independence"]
+    if expected == "unverified_reported_facts":
+        assert value["status"] == expected
+    else:
+        assert value == expected
+    status = qualification["reported_restrictions"][
+        "physical_game_independence"]["status"]
+    assert status == ("unverified_reported_facts"
+                      if expected == "unverified_reported_facts"
+                      else "reported_non_independence")
+    physical_claims = qualification["reported_restrictions"][
+        "physical_game_independence"]["claims"]
+    assert {claim["origin"] for claim in physical_claims} == {identity, "report:admission"}
+    assert {item["value"] for item in physical_claims} == {fact}
+
+
+def test_prior_evidence_and_manifest_restrictions_keep_origins_and_redact_run_ids(
+    tmp_path: Path,
+) -> None:
+    store, identity = _recorded_report(
+        tmp_path / "historical-restrictions",
+        evidence_change="historical_restrictions",
+        metadata_change="historical_restrictions",
+    )
+    qualification = summary(store, identity)["dev_qualification"]
+    split_claims = qualification["reported_restrictions"]["split_basis"]["claims"]
+    assert {claim["origin"]: claim["value"] for claim in split_claims} == {
+        identity: "report_split_basis",
+        "e" * 64: "whole_run_and_duplicate_current_input",
     }
-    assert "independent_runs" not in json.dumps(result)
+    assert {claim["origin"]: claim["value"] for claim in
+            qualification["reported_restrictions"]["semantic_overlap"]["claims"]} == {
+        identity: False, "e" * 64: True,
+    }
+    run_id_claims = qualification["reported_restrictions"]["qualified_run_ids"]["claims"]
+    assert {claim["origin"]: claim["value"] for claim in run_id_claims} == {
+        identity: {"redacted": True, "count": 1},
+        "e" * 64: {"redacted": True, "count": 2},
+    }
+    encoded = json.dumps(qualification)
+    assert "private-run-id" not in encoded
+    assert "report-private-id" not in encoded
+    assert "transition_id" not in encoded
+    assert "dev-run" not in encoded
+    assert "a" * 64 not in encoded
 
 
 @pytest.mark.parametrize(

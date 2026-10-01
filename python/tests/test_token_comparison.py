@@ -418,7 +418,12 @@ def test_qualification_facts_preserve_restrictions_without_schema_inference(tmp_
     assert facts["clean_held_out_claim"] is False
     assert facts["evaluation_scope"] == "engineering_dev_from_model_view"
     assert facts["historical_external_exposure"] == "known_prior_exposure"
-    assert facts["physical_game_independence"] == "shared_physical_game"
+    assert facts["physical_game_independence"]["status"] == "unverified_reported_facts"
+    assert {claim["origin"]: claim["value"] for claim in
+            facts["physical_game_independence"]["claims"]} == {
+        source.artifact_id: "shared_physical_game",
+        report.artifact_id: "unresolved",
+    }
     assert any(item["origin"] == source.artifact_id and item["facts"] == {
         "historical_external_exposure": "known_prior_exposure",
         "physical_game_independence": "shared_physical_game",
@@ -441,7 +446,7 @@ def test_qualification_facts_preserve_restrictions_without_schema_inference(tmp_
      "historical_external_exposure", "known_prior_exposure"),
     ({"physical_game_independence": "shared_physical_game"},
      {"physical_game_independence": "unresolved"}, None,
-     "physical_game_independence", "shared_physical_game"),
+     "physical_game_independence", "unverified"),
     ({}, {"physical_game_independence": False}, None, "physical_game_independence", False),
     ({"evaluation_scope": "restricted_source_subset"}, {}, None,
      "evaluation_scope", "restricted_source_subset"),
@@ -467,7 +472,10 @@ def test_qualification_facts_known_restrictions_override_only_unknown_defaults(
     store.publish(view)
     report = Manifest("offline_evaluation", PRODUCER, parameters=FrozenObject.of(report_facts))
     facts = token_dev_qualification(store, view, report=report, admission=admission)
-    assert facts[field] == expected
+    if expected == "unverified":
+        assert facts[field]["status"] == "unverified_reported_facts"
+    else:
+        assert facts[field] == expected
     assert facts["native_run_independence"] is False
     assert facts["clean_held_out_claim"] is False
 
@@ -494,10 +502,14 @@ def test_qualification_facts_conflicts_preserve_origins_and_survive_reprojection
     unknown = "unresolved" if field == "physical_game_independence" else "unknown"
     facts = token_dev_qualification(store, view, report=report, admission={field: unknown})
     conflict = facts[field]
-    assert conflict["status"] == "conflicting_reported_facts"
-    assert {item["origin"]: item["value"] for item in conflict["claims"]} == {
-        source.artifact_id: left, report.artifact_id: right,
-    }
+    if field == "physical_game_independence":
+        assert conflict["status"] == "unverified_reported_facts"
+    else:
+        assert conflict["status"] == "conflicting_reported_facts"
+    expected_claims = {source.artifact_id: left, report.artifact_id: right}
+    if field == "physical_game_independence":
+        expected_claims["current_dev_admission"] = unknown
+    assert {item["origin"]: item["value"] for item in conflict["claims"]} == expected_claims
     projected_report = replace(report, parameters=FrozenObject.of({field: conflict}))
     repeated = token_dev_qualification(store, view, report=projected_report, metrics={
         "admission": {field: conflict}, "qualification_evidence": facts["evidence"],

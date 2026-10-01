@@ -15,6 +15,10 @@ from stpd.fullrun.evaluation import MODEL_SCHEMA as FULLRUN_MODEL_SCHEMA
 from stpd.fullrun.features import VIEW_SCHEMA as FULLRUN_VIEW_SCHEMA
 from stpd.fullrun.public_bc import LEGACY_VIEW_SCHEMA as LEGACY_PUBLIC_BC_VIEW_SCHEMA
 from stpd.fullrun.public_bc import VIEW_SCHEMA as PUBLIC_BC_VIEW_SCHEMA
+from stpd.fullrun.token_qualification import (
+    TOKEN_ADMISSION_FACT_KEYS,
+    project_token_report_qualification,
+)
 from stpd.stage1a_recipes import RECIPES
 from stpd.workers.report_schemas import (
     MEMORY_EVALUATION_PROTOCOL as MEMORY_PROTOCOL,
@@ -43,10 +47,7 @@ LEGACY_ADMITTED_TOKEN_METRICS_FIELDS = LEGACY_TOKEN_METRICS_FIELDS | {"admission
 QUALIFIED_TOKEN_METRICS_FIELDS = LEGACY_TOKEN_METRICS_FIELDS | {
     "admission", "qualification_evidence",
 }
-TOKEN_ADMISSION_FIELDS = frozenset({
-    "evaluation_scope", "historical_external_exposure",
-    "physical_game_independence", "clean_held_out_claim",
-})
+TOKEN_ADMISSION_FIELDS = TOKEN_ADMISSION_FACT_KEYS
 # FullRun feature compilation supports these two views, even though the shared
 # view loader also serves other model families.
 FULLRUN_VIEW_SCHEMAS = frozenset({FULLRUN_VIEW_SCHEMA, DECISION_VIEW_SCHEMA})
@@ -205,30 +206,26 @@ def _token_qualification(
     """Validate report-local qualification without reopening source lineage."""
     parameters = manifest.parameters.value()
     native_independence = parameters.get("native_run_independence")
-    physical_independence = parameters.get("physical_game_independence")
     scientific_verdict = parameters.get("scientific_verdict")
-    if (native_independence is True
-            or physical_independence is True
-            or isinstance(physical_independence, str)
-            and physical_independence in {"independent", "independent_runs"}
-            or "clean_held_out_claim" in parameters
+    if ("clean_held_out_claim" in parameters
             and parameters["clean_held_out_claim"] is not False
             or scientific_verdict is not None and scientific_verdict != "not_claimed"):
         raise BoundaryError("local_evaluation", "contradictory_token_qualification")
 
     fields = frozenset(metrics)
     if fields in {LEGACY_TOKEN_METRICS_FIELDS, LEGACY_ADMITTED_TOKEN_METRICS_FIELDS}:
-        if "native_run_independence" in parameters and native_independence is not False:
-            raise BoundaryError("local_evaluation", "contradictory_token_qualification")
         has_admission = fields == LEGACY_ADMITTED_TOKEN_METRICS_FIELDS
-        admission = _token_admission(manifest, metrics["admission"]) if has_admission else None
-        return (human_input or native_independence is False or has_admission,
-                _dev_qualification(admission))
+        if has_admission:
+            _token_admission(manifest, metrics["admission"])
+        return (
+            human_input or native_independence is False or has_admission,
+            project_token_report_qualification(manifest.artifact_id, parameters, metrics),
+        )
     if fields != QUALIFIED_TOKEN_METRICS_FIELDS:
         object_fields(metrics, set(LEGACY_TOKEN_METRICS_FIELDS), "local_evaluation.metrics")
         raise BoundaryError("local_evaluation", "invalid_token_metrics_contract")
 
-    admission = _token_admission(manifest, metrics["admission"])
+    _token_admission(manifest, metrics["admission"])
     evidence = metrics["qualification_evidence"]
     if not isinstance(evidence, list):
         raise BoundaryError("local_evaluation", "invalid_token_qualification_evidence")
@@ -240,14 +237,7 @@ def _token_qualification(
             raise BoundaryError("local_evaluation", "invalid_token_qualification_evidence")
     if native_independence is not False:
         raise BoundaryError("local_evaluation", "contradictory_token_qualification")
-    return True, _dev_qualification(admission)
-
-
-def _dev_qualification(admission: dict[str, Any] | None) -> dict[str, Any]:
-    value: dict[str, Any] = {"native_run_independence": "unknown"}
-    if admission is not None:
-        value.update(admission)
-    return value
+    return True, project_token_report_qualification(manifest.artifact_id, parameters, metrics)
 
 
 def _token_admission(manifest: Any, value: object) -> dict[str, Any]:
@@ -270,11 +260,7 @@ def _token_admission(manifest: Any, value: object) -> dict[str, Any]:
                     raise BoundaryError("local_evaluation", "invalid_token_admission")
         elif not isinstance(fact, str) and type(fact) is not bool:
             raise BoundaryError("local_evaluation", "invalid_token_admission")
-    physical_independence = admission["physical_game_independence"]
-    if (physical_independence is True
-            or isinstance(physical_independence, str)
-            and physical_independence in {"independent", "independent_runs"}
-            or admission["clean_held_out_claim"] is not False
+    if (admission["clean_held_out_claim"] is not False
             or any(parameters.get(key) != admission[key]
                    for key in TOKEN_ADMISSION_FIELDS)):
         raise BoundaryError("local_evaluation", "contradictory_token_qualification")
