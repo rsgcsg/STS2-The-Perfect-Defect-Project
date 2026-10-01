@@ -27,6 +27,16 @@ from ..fullrun.light_action_inputs import (
     INPUT_FORMAT as LIGHT_ACTION_M0_INPUT_FORMAT,
 )
 from ..fullrun.light_action_inputs import (
+    PUBLIC_COMPACT_VIEW_SCHEMA,
+    PUBLIC_LITE_VIEW_SCHEMA,
+)
+from ..fullrun.light_action_inputs import (
+    PUBLIC_INPUT_FORMAT as PUBLIC_LIGHT_ACTION_M0_INPUT_FORMAT,
+)
+from ..fullrun.light_action_inputs import (
+    PUBLIC_SCHEMA as PUBLIC_LIGHT_ACTION_M0_INPUT_SCHEMA,
+)
+from ..fullrun.light_action_inputs import (
     SCHEMA as LIGHT_ACTION_M0_INPUT_SCHEMA,
 )
 from ..fullrun.light_action_inputs import (
@@ -61,6 +71,8 @@ LIGHT_ACTION_M0_MODEL_SCHEMA = "stpd/stage1a-light-action-m0-model-v1"
 LIGHT_ACTION_M0_EXPORT_SCHEMA = "stpd/stage1a-light-action-m0-export-v1"
 CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA = "stpd/stage1a-light-action-m0-canonical-model-v1"
 CANONICAL_LIGHT_ACTION_M0_EXPORT_SCHEMA = "stpd/stage1a-light-action-m0-canonical-export-v1"
+PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA = "stpd/stage1a-light-action-m0-public-model-v1"
+PUBLIC_LIGHT_ACTION_M0_EXPORT_SCHEMA = "stpd/stage1a-light-action-m0-public-export-v1"
 LIGHT_ACTION_M0_FILES = {
     "weights": "weights.safetensors",
     "state_tokenizer": "state-tokenizer.json",
@@ -123,12 +135,16 @@ def check_light_action_m0_model(
     info = model.parameters.value()
     model_schema = info.get("schema")
     canonical = model_schema == CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA
-    expected_model_schema = (CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA if canonical
-                             else LIGHT_ACTION_M0_MODEL_SCHEMA)
-    expected_input_schema = (CANONICAL_LIGHT_ACTION_M0_INPUT_SCHEMA if canonical
-                             else LIGHT_ACTION_M0_INPUT_SCHEMA)
-    expected_input_format = (CANONICAL_LIGHT_ACTION_M0_INPUT_FORMAT if canonical
-                             else LIGHT_ACTION_M0_INPUT_FORMAT)
+    public = model_schema == PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA
+    expected_model_schema = (CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA if canonical else
+                             PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA if public else
+                             LIGHT_ACTION_M0_MODEL_SCHEMA)
+    expected_input_schema = (CANONICAL_LIGHT_ACTION_M0_INPUT_SCHEMA if canonical else
+                             PUBLIC_LIGHT_ACTION_M0_INPUT_SCHEMA if public else
+                             LIGHT_ACTION_M0_INPUT_SCHEMA)
+    expected_input_format = (CANONICAL_LIGHT_ACTION_M0_INPUT_FORMAT if canonical else
+                             PUBLIC_LIGHT_ACTION_M0_INPUT_FORMAT if public else
+                             LIGHT_ACTION_M0_INPUT_FORMAT)
     if (model.kind != "model" or model_schema != expected_model_schema
             or info.get("qualification") != "engineering_only" or info.get("dtype") != "float32"
             or info.get("input_schema") != expected_input_schema
@@ -138,15 +154,19 @@ def check_light_action_m0_model(
         raise BoundaryError("token_policy", "unsupported_light_action_model")
     config = LightActionM0Config.decode(info.get("config"))
     recipe = recipe_for(config.recipe)
-    expected_view_schema = (CANONICAL_LIGHT_ACTION_M0_VIEW_SCHEMA if canonical
-                            else LIGHT_ACTION_M0_VIEW_SCHEMA)
+    expected_view_schema = (CANONICAL_LIGHT_ACTION_M0_VIEW_SCHEMA if canonical else
+                            PUBLIC_COMPACT_VIEW_SCHEMA if public and
+                            config.public_profile == "public_compact" else
+                            PUBLIC_LITE_VIEW_SCHEMA if public and
+                            config.public_profile == "public_lite" else
+                            LIGHT_ACTION_M0_VIEW_SCHEMA)
     if (info.get("recipe") != config.recipe or info.get("graph") != recipe.graph
             or info.get("steps") != config.steps
             or info.get("source_view_schema") != expected_view_schema):
         raise BoundaryError("token_policy", "light_action_model_config_mismatch")
     if info.get("config") != config_payload(config):
         raise BoundaryError("token_policy", "light_action_model_config_mismatch")
-    if canonical:
+    if canonical or public:
         binding = info.get("training_binding")
         if (not isinstance(binding, dict) or binding.get("schema")
                 != "stpd/light-action-m0-training-binding-v1"
@@ -163,20 +183,23 @@ def check_light_action_m0_model(
             raise BoundaryError("token_policy", "light_action_training_binding_mismatch")
         digest(binding["allocation_id"], "light_action_m0.allocation_id")
         digest(binding["model_view_id"], "light_action_m0.model_view_id")
-        if (info.get("input_schema") != CANONICAL_LIGHT_ACTION_M0_INPUT_SCHEMA
-                or info.get("input_format") != CANONICAL_LIGHT_ACTION_M0_INPUT_FORMAT
-                or info.get("source_view_schema") != CANONICAL_LIGHT_ACTION_M0_VIEW_SCHEMA
+        if (info.get("input_schema") != expected_input_schema
+                or info.get("input_format") != expected_input_format
+                or info.get("source_view_schema") != expected_view_schema
                 or sorted(parent.role for parent in model.parents)
                 != ["checkpoint", "model_view", "run", "training_input"]
                 or model.parent("model_view") != binding["model_view_id"]):
             raise BoundaryError("token_policy", "light_action_training_binding_mismatch")
+        if public and config.public_profile not in {"public_lite", "public_compact"}:
+            raise BoundaryError("token_policy", "public_profile_mismatch")
     elif (info.get("input_schema") != LIGHT_ACTION_M0_INPUT_SCHEMA
           or info.get("input_format") != LIGHT_ACTION_M0_INPUT_FORMAT):
         raise BoundaryError("token_policy", "light_action_model_config_mismatch")
     state_codec = info.get("state_codec")
     action_codec = info.get("action_codec")
     renderer = info.get("source_renderer")
-    expected_renderer = (info.get("source_renderer") if canonical else TEXT_MENU_IDENTITY)
+    expected_renderer = (info.get("source_renderer") if canonical else
+                         info.get("source_renderer") if public else TEXT_MENU_IDENTITY)
     if canonical:
         from ..fullrun.representation import FullRunSerializer
 
@@ -186,6 +209,14 @@ def check_light_action_m0_model(
         if serializer.identity != renderer:
             raise BoundaryError("token_policy", "light_action_renderer_mismatch")
         expected_renderer = serializer.identity
+    elif public:
+        from ..fullrun.public_inputs import COMPACT_IDENTITY, IDENTITY
+
+        expected_renderer = (COMPACT_IDENTITY if config.public_profile == "public_compact"
+                             else IDENTITY)
+        if (config.public_profile not in {"public_lite", "public_compact"}
+                or renderer != expected_renderer):
+            raise BoundaryError("token_policy", "public_renderer_mismatch")
     if renderer != expected_renderer:
         raise BoundaryError("token_policy", "light_action_renderer_mismatch")
     if (not isinstance(state_codec, dict) or not isinstance(action_codec, dict)
@@ -231,7 +262,7 @@ def check_light_action_m0_model(
                 or model.payload("state_tokenizer").size != tokenizer_pin.size_bytes
                 or state_codec.get("tokenizer_bundle_sha256") != pin.tokenizer_bundle_sha256
                 or state_codec.get("special_token_ids") != pinned_special_ids
-                or config.max_state_tokens > pin.hard_limit):
+                or (not public and config.max_state_tokens > pin.hard_limit)):
             raise BoundaryError("token_policy", "light_action_state_codec_pin_mismatch")
     if action_codec != expected_action_codec:
         raise BoundaryError("token_policy", "light_action_codec_identity_mismatch")
@@ -277,8 +308,10 @@ def export_light_action_m0_model(
     if raw["action_codec"] != LIGHT_ACTION_CODEC_BYTES:
         raise BoundaryError("token_policy", "light_action_codec_identity_mismatch")
     export_schema = (CANONICAL_LIGHT_ACTION_M0_EXPORT_SCHEMA
-                     if info["schema"] == CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA
-                     else LIGHT_ACTION_M0_EXPORT_SCHEMA)
+                     if info["schema"] == CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA else
+                     PUBLIC_LIGHT_ACTION_M0_EXPORT_SCHEMA
+                     if info["schema"] == PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA else
+                     LIGHT_ACTION_M0_EXPORT_SCHEMA)
     envelope = {"schema": export_schema, "model_id": identity,
                 "model": json.loads(model.to_bytes())}
     destination = destination.expanduser().resolve()
@@ -314,18 +347,22 @@ class LightActionM0DecisionScorer:
             "light_action_m0_export",
         )
         if value["schema"] not in {LIGHT_ACTION_M0_EXPORT_SCHEMA,
-                                    CANONICAL_LIGHT_ACTION_M0_EXPORT_SCHEMA}:
+                                    CANONICAL_LIGHT_ACTION_M0_EXPORT_SCHEMA,
+                                    PUBLIC_LIGHT_ACTION_M0_EXPORT_SCHEMA}:
             raise BoundaryError("token_policy", "unsupported_light_action_export")
         if not isinstance(value["model_id"], str):
             raise BoundaryError("token_policy", "light_action_export_identity_mismatch")
         self.artifact = Manifest.from_bytes(json_bytes(value["model"]), value["model_id"])
         self.config, self.info = check_light_action_m0_model(self.artifact)
         canonical = self.info["schema"] == CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA
-        expected_export_schema = (CANONICAL_LIGHT_ACTION_M0_EXPORT_SCHEMA if canonical
-                                  else LIGHT_ACTION_M0_EXPORT_SCHEMA)
+        public = self.info["schema"] == PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA
+        expected_export_schema = (CANONICAL_LIGHT_ACTION_M0_EXPORT_SCHEMA if canonical else
+                                  PUBLIC_LIGHT_ACTION_M0_EXPORT_SCHEMA if public else
+                                  LIGHT_ACTION_M0_EXPORT_SCHEMA)
         if value["schema"] != expected_export_schema:
             raise BoundaryError("token_policy", "light_action_export_family_mismatch")
         self.canonical_input = canonical
+        self.public_input = public
         raw: dict[str, bytes] = {}
         for role, filename in LIGHT_ACTION_M0_FILES.items():
             path = directory / filename
@@ -401,6 +438,17 @@ class LightActionM0DecisionScorer:
     def score_snapshot(self, snapshot: dict[str, Any]) -> dict[str, float]:
         if self.canonical_input:
             raise BoundaryError("token_policy", "canonical_semantic_input_required")
+        if self.public_input:
+            public_current = project_public_snapshot(
+                snapshot, compact=self.config.public_profile == "public_compact",
+            )
+            if (not public_current.actions
+                    or len({action.key for action in public_current.actions})
+                    != len(public_current.actions)):
+                raise BoundaryError("token_policy", "complete_unique_candidate_catalog_required")
+            scores = self.score_texts(public_current.state_text, public_current.action_texts)
+            return {action.key: score for action, score in
+                    zip(public_current.actions, scores, strict=True)}
         if snapshot.get("schema") != TEXT_MENU_SCHEMA:
             raise BoundaryError("token_policy", "text_menu_snapshot_required")
         current = project_text_menu_snapshot(snapshot)
