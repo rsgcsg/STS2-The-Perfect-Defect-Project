@@ -75,14 +75,15 @@ const memoryModel = (artifactId = id("a"), resetEachStep = false, slots = 1) => 
       max_chunk_input_tokens:24576, max_actions_per_step:256}},
   parents:[], payloads:[],
 });
-const publicM0Model = (artifactId = id("a"), profile = "public_lite") => ({
+const publicM0Model = (artifactId = id("a"), profile = "public_lite", backbone = "scratch") => ({
   artifact_id:artifactId, kind:"model",
   parameters:{schema:"stpd/stage1a-light-action-m0-public-model-v1",
     qualification:"engineering_only", input_schema:"stpd/stage1a-light-action-m0-public-input-v1",
     input_format:"stpd-token-light-action-m0-public-v1",
-    config:{recipe:"dsimple.light-action.m0.v1", public_profile:profile,
+    recipe:`stage1a.dsimple.light-action.m0.${backbone === "scratch" ? "s" : backbone}.v1`,
+    config:{recipe:`stage1a.dsimple.light-action.m0.${backbone === "scratch" ? "s" : backbone}.v1`, public_profile:profile,
       steps:3, device:"cpu"},
-    backbone:{kind:"scratch"}, steps:3,
+    backbone:{kind:backbone}, steps:3,
     source_renderer:profile === "public_lite"
       ? {version:"stpd-public-snapshot-lite-v1",profile:"public_lite",status:"provisional"}
       : {version:"stpd-public-snapshot-compact-v2",profile:"public_compact",status:"provisional"},
@@ -1843,6 +1844,8 @@ test("public M0 export card accepts only the exact public renderer and binding, 
     artifact => { artifact.parameters.source_renderer.version = "stpd-text-menu-current-page-v1"; },
     artifact => { artifact.parameters.training_binding.training_operation_id = "bad"; },
     artifact => { artifact.parameters.input_schema = "stpd/stage1a-light-action-m0-canonical-input-v1"; },
+    artifact => { artifact.parameters.config.recipe = "dsimple.light-action.m0.v1"; },
+    artifact => { artifact.parameters.recipe = "stage1a.dsimple.light-action.m0.pf.v1"; },
   ]) {
     const broken = publicM0Model(model);
     alter(broken);
@@ -1857,6 +1860,27 @@ test("public M0 export card accepts only the exact public renderer and binding, 
     assert.equal(walk(rejectedPage).some(element => element.dataset?.action === "start-local-model-export"), false);
     assert.equal(walk(rejectedPage).some(element => element.dataset?.action === "register-local-model"), false);
     assert.equal(rejected.calls.some(call => call.url === "/api/local-model-exports/status"), false);
+  }
+});
+
+test("public M0 PF/PL cards stay truthful without Workbench export or registration actions", async () => {
+  for (const [backbone, label] of [["pf", "PF · 冻结骨干"], ["pl", "PL · LoRA"]]) {
+    const model = id("a");
+    const artifact = publicM0Model(model, "public_lite", backbone);
+    const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1",status:"ready",curation_status:"ready"};
+        if (url === `/api/local-workspace/artifacts/${model}`) return artifact;
+        throw new Error(`unexpected route ${url}`);
+      }});
+    const page = await env.render();
+    assert.match(text(page), new RegExp(label));
+    assert.match(text(page), /暂通过研究 CLI 管理/);
+    assert.equal(walk(page).some(element => ["start-local-model-export", "register-local-model"]
+      .includes(element.dataset?.action)), false);
+    assert.equal(env.calls.some(call => call.url.includes("local-model-exports")
+      || call.url.includes("local-model-registrations")), false);
   }
 });
 

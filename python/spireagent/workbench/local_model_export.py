@@ -195,14 +195,16 @@ def _verify_export(store: Any, model: Manifest, destination: Path) -> int:
     return sum(item.size for item in model.payloads)
 
 
-def _public_m0_lineage(store: Any, model: Manifest) -> dict[str, Any]:
-    from spireagent.storage.run_reporter import ObjectStoreRunReporter
+def _public_m0_lineage(store: Any, owner: Any, model: Manifest) -> dict[str, Any]:
     from stpd.fullrun.light_action_inputs import PUBLIC_SCHEMA, public_training_binding
     from stpd.policy.token_decision import (
         PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA,
         check_light_action_m0_model,
     )
-    from stpd.workers.token_worker import _verify_completed
+    from stpd.workers.token_worker import (
+        preflight_m0_model_completion,
+        verify_m0_model_completion,
+    )
 
     try:
         config, info = check_light_action_m0_model(model)
@@ -217,6 +219,14 @@ def _public_m0_lineage(store: Any, model: Manifest) -> dict[str, Any]:
         run = store.get_manifest(run_id)
         training_input = store.get_manifest(input_id)
         binding = public_training_binding(store, input_id)
+        dataset_ids = tuple(binding.get("dataset_ids", ()))
+        training_operation_id = binding.get("training_operation_id")
+        if len(dataset_ids) != 1 or not isinstance(training_operation_id, str):
+            raise ValueError
+        preflight_completed = preflight_m0_model_completion(store, model)
+        # Re-admit this exact immutable binding against the currently configured owner
+        # before traversing completed-result payloads or verifying the export package.
+        owner.require_training_datasets(store, dataset_ids, training_operation_id)
         view = store.get_manifest(training_input.parent("model_view"))
         renderer = view.parameters.value().get("serializer")
         profile = renderer.get("profile") if isinstance(renderer, dict) else None
@@ -234,11 +244,10 @@ def _public_m0_lineage(store: Any, model: Manifest) -> dict[str, Any]:
                 or info.get("training_binding") != binding
                 or len(binding.get("dataset_ids", [])) != 1):
             raise ValueError
-        result = ObjectStoreRunReporter(store, store.blobs).completed(run_id)
-        if result is None or result.parent("model") != model.artifact_id:
+        completed = verify_m0_model_completion(store, model)
+        if completed.artifact_id != preflight_completed.artifact_id:
             raise ValueError
-        _verify_completed(store, result, run)
-        return {"run_id": run_id, "result_id": result.artifact_id,
+        return {"run_id": run_id, "result_id": completed.artifact_id,
                 "checkpoint_id": model.parent("checkpoint"), "input_id": input_id,
                 "allocation_id": binding["allocation_id"],
                 "view_id": binding["model_view_id"],
@@ -628,7 +637,9 @@ class LocalModelExport:
             if not isinstance(root, Path) or operation["store_root"] != str(root):
                 raise BoundaryError("local_model_export", "workspace_changed")
             model = workspace.store.get_manifest(identity)
-            lineage = _public_m0_lineage(workspace.store, model)
+            lineage = _public_m0_lineage(
+                workspace.store, self._memory_owner(workspace.store), model,
+            )
             destination = self.config.state_dir / EXPORT_ROOT / identity
             verified = _verify_public_m0_export(model, destination, lineage)
             receipt = {"schema": PUBLIC_M0_RECEIPT_SCHEMA,
@@ -702,6 +713,7 @@ class LocalModelExport:
             if (previous.get("schema") == SCHEMA_V3
                     and previous.get("status") == "completed"
                     and previous.get("model_id") == identity):
+                self.verified_public_m0_for_registration(identity)
                 return self._public(previous)
             if (previous["status"] == "pending" and self.thread is not None
                     and self.thread.is_alive()):
@@ -725,8 +737,9 @@ class LocalModelExport:
             memory = model.parameters.value().get("schema") == "stpd/experimental-m2-model-v1"
             public_m0 = model.parameters.value().get("schema") == \
                 "stpd/stage1a-light-action-m0-public-model-v1"
-            run_id = _memory_lineage(store, self._memory_owner(store), model) if memory else None
-            lineage = _public_m0_lineage(store, model) if public_m0 else None
+            owner = self._memory_owner(store) if memory or public_m0 else None
+            run_id = _memory_lineage(store, owner, model) if memory else None
+            lineage = _public_m0_lineage(store, owner, model) if public_m0 else None
             if not memory and not public_m0:
                 _eligible(model)
             lock_path = self.config.state_dir / LOCK_FILE
@@ -867,7 +880,7 @@ class LocalModelExport:
         try:
             operation = self._read()
             if operation.get("model_type") == "public_m0":
-                lineage = _public_m0_lineage(store, model)
+                lineage = _public_m0_lineage(store, self._memory_owner(store), model)
                 child = self._public_m0_child(operation_id, operation["training_operation_id"],
                                               model, destination,
                                               on_started=mark_started,
@@ -889,6 +902,7 @@ class LocalModelExport:
                                      "payload_sha256": receipt["payload_sha256"],
                                      "payload_sizes": receipt["payload_sizes"],
                                      "payload_bytes": receipt["payload_bytes"]})
+                return
             elif run_id is None:
                 from stpd.policy.token_decision import export_token_model
 

@@ -164,10 +164,12 @@ class LocalTrainingService:
             if "previous_completed" in value:
                 previous = value["previous_completed"]
                 legacy = set(PREVIOUS_COMPLETED_IDS)
+                legacy_without_eval = legacy - {"evaluation_id"}
                 typed = {"operation_id", "dataset_id", "result_id", "model_id", "recipe",
                          "result_type", "evaluation_status", "checkpoint_id", "input_id"}
                 if not isinstance(previous, dict) or (
-                    set(previous) != legacy and (
+                    set(previous) not in ((legacy, legacy_without_eval)
+                                          if schema == SCHEMA_V3 else (legacy,)) and (
                         schema != SCHEMA_V2
                         or set(previous) not in (typed, typed | {"evaluation_id"})
                     )

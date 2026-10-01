@@ -2914,6 +2914,13 @@ window.SpireProject = (() => {
         || parameters.input_format !== "stpd-token-light-action-m0-public-v1") return null;
     const config = parameters.config && typeof parameters.config === "object"
       && !Array.isArray(parameters.config) ? parameters.config : {};
+    const backbone = parameters.backbone && typeof parameters.backbone === "object"
+      && !Array.isArray(parameters.backbone) ? parameters.backbone.kind : null;
+    const recipes = {
+      scratch: "stage1a.dsimple.light-action.m0.s.v1",
+      pf: "stage1a.dsimple.light-action.m0.pf.v1",
+      pl: "stage1a.dsimple.light-action.m0.pl.v1",
+    };
     const renderer = parameters.source_renderer && typeof parameters.source_renderer === "object"
       && !Array.isArray(parameters.source_renderer) ? parameters.source_renderer : {};
     const profile = config.public_profile;
@@ -2933,12 +2940,18 @@ window.SpireProject = (() => {
       && binding.dataset_ids.join("\n") === [...new Set(binding.dataset_ids)].sort().join("\n")
       && hex(binding.training_operation_id, 32)
       && hex(binding.allocation_id) && hex(binding.model_view_id);
-    if (config.recipe !== "dsimple.light-action.m0.v1" || !expected
+    if (config.recipe !== recipes[backbone] || parameters.recipe !== config.recipe || !expected
         || Object.keys(renderer).length !== 3
         || renderer.version !== expected.version || renderer.profile !== expected.profile
         || renderer.status !== expected.status
-        || !exactBinding || !["scratch", "pf", "pl"].includes(parameters.backbone?.kind)) return null;
-    return {profile, backbone:parameters.backbone.kind};
+        || !exactBinding || config.device !== "cpu"
+        || !Number.isSafeInteger(parameters.steps) || parameters.steps < 1
+        || config.steps !== parameters.steps) return null;
+    return {profile, backbone};
+  }
+
+  function supportsPublicM0WorkbenchActions(value) {
+    return publicM0ModelProfile(value)?.backbone === "scratch";
   }
 
   function localModelOverview(value) {
@@ -2962,6 +2975,8 @@ window.SpireProject = (() => {
           ? count(parameters.steps) : "未知"],
         ["用途", "工程训练；不代表模型质量或实战能力"],
       ]));
+      if (variant && variant.backbone !== "scratch")
+        overview.append(el("p", "PF/PL Public M0 暂通过研究 CLI 管理；此 Workbench 尚不提供导出或登记操作。", "small muted"));
       return overview;
     }
     if (parameters.schema === "stpd/experimental-m2-model-v1") {
@@ -3046,7 +3061,7 @@ window.SpireProject = (() => {
     if (parameters.schema === "stpd/experimental-m2-model-v1")
       return memoryModelVariant(value) !== null;
     if (parameters.schema === "stpd/stage1a-light-action-m0-public-model-v1")
-      return publicM0ModelProfile(value) !== null;
+      return supportsPublicM0WorkbenchActions(value);
     const serializerKeys = ["input_profile", "profile", "source_schema", "status", "version"];
     return value?.kind === "model" && hex(value.artifact_id)
       && parameters.schema === "stpd/stage1a-model-v1"
@@ -3090,7 +3105,11 @@ window.SpireProject = (() => {
     const actionName = managed ? "register-managed-model" : "register-local-model";
     const refreshName = managed ? "refresh-managed-model-registration" : "refresh-local-model-registration";
     const memory = model.parameters?.schema === "stpd/experimental-m2-model-v1";
-    const publicM0 = publicM0ModelProfile(model) !== null;
+    const publicM0Variant = publicM0ModelProfile(model);
+    const publicM0 = publicM0Variant?.backbone === "scratch";
+    if (publicM0Variant && !publicM0) {
+      return panel("公共 M0 模型", "PF/PL Public M0 暂通过研究 CLI 管理；此 Workbench 尚不提供导出或登记操作。");
+    }
     const expectedProfile = publicM0 ? "public-snapshot-m0-v1" : memory
       ? (model.workbench_memory_recipe?.endsWith(".v2")
         ? "text-menu-m2-v2" : "text-menu-m2-v1") : "text-menu-v1";
@@ -3178,7 +3197,11 @@ window.SpireProject = (() => {
   async function localModelExportCard(ctx, model) {
     const variant = memoryModelVariant(model);
     const memory = variant !== null;
-    const publicM0 = publicM0ModelProfile(model) !== null;
+    const publicM0Variant = publicM0ModelProfile(model);
+    const publicM0 = publicM0Variant?.backbone === "scratch";
+    if (publicM0Variant && !publicM0) {
+      return panel("公共 M0 模型", "PF/PL Public M0 暂通过研究 CLI 管理；此 Workbench 尚不提供导出或登记操作。");
+    }
     const memoryName = variant?.name;
     const card = panel("导出并校验", publicM0
       ? "导出会重新核对 Public M0 的精确模型、完整动作目录和独立评分器加载；不会登记、加载或证明策略质量。"

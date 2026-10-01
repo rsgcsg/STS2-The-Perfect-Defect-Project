@@ -210,21 +210,50 @@ def test_public_m0_workbench_http_train_export_and_registration_verifier(
             "stpd/stage1a-light-action-m0-public-model-v1"
         assert model.parameters.value()["config"]["steps"] == 3
 
-        exporting = request_json("/api/local-model-exports/start",
-                                 body={"model_id": trained["model_id"]})
-        assert exporting["schema"] == "stpd/local-model-export-operation-v3"
-        assert exporting["operation"]["model_type"] == "public_m0"
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            exported = request_json("/api/local-model-exports/status")
-            if exported["operation"].get("status") in {"completed", "failed", "interrupted"}:
-                break
-            time.sleep(0.2)
+        worker_errors = []
+        old_thread_trace = threading.gettrace()
+
+        def trace_export(frame, event, arg):
+            if frame.f_code.co_name == "_run" and event == "exception":
+                worker_errors.append(arg[0])
+
+        threading.settrace(trace_export)
+        try:
+            exporting = request_json("/api/local-model-exports/start",
+                                     body={"model_id": trained["model_id"]})
+            assert exporting["schema"] == "stpd/local-model-export-operation-v3"
+            assert exporting["operation"]["model_type"] == "public_m0"
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                exported = request_json("/api/local-model-exports/status")
+                if exported["operation"].get("status") in {"completed", "failed", "interrupted"}:
+                    break
+                time.sleep(0.2)
+        finally:
+            threading.settrace(old_thread_trace)
         assert exported["operation"]["status"] == "completed", exported
+        assert UnboundLocalError not in worker_errors
         destination = app.local_model_export.verified_public_m0_for_registration(
             trained["model_id"], deadline=time.monotonic() + 10)
         assert destination.is_dir()
-        assert (destination / "model.json").is_file()
+        package = destination / "model.json"
+        assert package.is_file()
+        original_package = package.read_bytes()
+        package.write_bytes(b"{}\n")
+        with pytest.raises(BoundaryError, match="public_m0_export_verification_failed"):
+            app.local_model_export.start(trained["model_id"])
+        package.write_bytes(original_package)
+        assert app.local_model_export.start(trained["model_id"])["operation"]["status"] == \
+            "completed"
+
+        owner = configured_owner(config)
+        with owner.transaction() as db:
+            db.execute("DELETE FROM curation_source_uses WHERE reference=?",
+                       (trained["operation_id"],))
+            db.execute("DELETE FROM curation_uses WHERE reference=?",
+                       (trained["operation_id"],))
+        with pytest.raises(BoundaryError, match="public_m0_lineage_invalid"):
+            app.local_model_export.start(trained["model_id"])
     finally:
         server.shutdown()
         server.server_close()
@@ -491,7 +520,7 @@ def test_m2_rejects_unclaimed_or_unindexed_source_before_derivatives(
                           (failed["operation_id"],)).fetchone() == (0,)
 
 
-def test_m2_preparation_limit_error_is_durable_unknown_without_retry(
+def test_m2_preparation_limit_error_is_durable_failure_without_automatic_retry(
     tmp_path: Path, monkeypatch,
 ) -> None:
     config, dataset_id, _, store = _human_ready(tmp_path, monkeypatch)
@@ -507,14 +536,15 @@ def test_m2_preparation_limit_error_is_durable_unknown_without_retry(
     service = LocalTrainingService(config)
     service.start(dataset_id, recipe=MEMORY_RECIPE)
     failed = _settle(service)
-    assert failed["status"] == "interrupted_unknown", failed
+    assert failed["status"] == "failed", failed
     assert failed["error_code"] == "m2_limit_exceeded_no_truncation"
     assert len(calls) == 1 and "prepare-workbench-memory" in calls[0]
     assert set(store.manifest_ids()) == before
-    assert LocalTrainingService(config).status()["operation"]["status"] == "interrupted_unknown"
-    with pytest.raises(BoundaryError, match="previous_training_outcome_unknown"):
-        service.start(dataset_id, recipe=MEMORY_RECIPE)
-    assert len(calls) == 1
+    assert LocalTrainingService(config).status()["operation"]["status"] == "failed"
+    service.start(dataset_id, recipe=MEMORY_RECIPE)
+    retried = _settle(service)
+    assert retried["status"] == "failed", retried
+    assert len(calls) == 2, "a second child runs only after a separate explicit start"
 
 
 def test_m2_pre_spawn_failure_is_retryable_failed_without_run(
