@@ -8,11 +8,14 @@ allocation; token and pooled execution share lineage, storage, reporting and eva
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
+from typing import TYPE_CHECKING, Any, cast
 
+from spireagent.artifact_contracts import Manifest
 from spireagent.hub.curation_access import record_use
 from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
@@ -21,14 +24,20 @@ from spireagent.source import source_identity
 from spireagent.storage.config import open_store
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
+from spireagent.storage.store import ManifestArtifactStore
 from stpd.fullrun.features import compile_features
 from stpd.fullrun.representation import FullRunSerializer
 from stpd.fullrun.view_session import verified_model_views
 from stpd.workers.contracts import TrainingConfig, prepare_run, prepare_training_input
 from stpd.workers.worker import execute
 
+if TYPE_CHECKING:
+    from spireagent.workbench.local_curation import LocalCurationOwner
 
-def _configured_m0_owner(project_config: Path, store_location: str):
+
+def _configured_m0_owner(
+    project_config: Path, store_location: str,
+) -> LocalCurationOwner:
     """Resolve the existing configured owner before opening a caller-supplied store."""
     from spireagent.workbench.developer import ProjectConfig
     from spireagent.workbench.inplace_curation import configured_owner
@@ -42,12 +51,15 @@ def _configured_m0_owner(project_config: Path, store_location: str):
     return owner
 
 
-def _check_m0_store(store, owner) -> None:
+def _check_m0_store(store: ManifestArtifactStore, owner: LocalCurationOwner) -> None:
     if not isinstance(store.blobs, LocalBlobStore) or store.blobs.root != owner.store_dir.resolve():
         raise BoundaryError("light_action_m0", "store_identity_mismatch")
 
 
-def _admit_m0_binding(owner, store, binding: dict, operation_id: str) -> None:
+def _admit_m0_binding(
+    owner: LocalCurationOwner, store: ManifestArtifactStore,
+    binding: dict[str, Any], operation_id: str,
+) -> None:
     from stpd.fullrun.light_action_inputs import TRAINING_BINDING_SCHEMA
 
     operation = digest(operation_id, "light_action_m0.operation_id", length=32)
@@ -60,7 +72,10 @@ def _admit_m0_binding(owner, store, binding: dict, operation_id: str) -> None:
     )
 
 
-def _admit_m0_input(owner, store, input_id: str, operation_id: str) -> dict:
+def _admit_m0_input(
+    owner: LocalCurationOwner, store: ManifestArtifactStore,
+    input_id: str, operation_id: str,
+) -> dict[str, Any]:
     from stpd.fullrun.light_action_inputs import canonical_training_binding
 
     binding = canonical_training_binding(store, input_id)
@@ -68,7 +83,10 @@ def _admit_m0_input(owner, store, input_id: str, operation_id: str) -> dict:
     return binding
 
 
-def _admit_m0_run(owner, store, run_id: str, operation_id: str) -> dict:
+def _admit_m0_run(
+    owner: LocalCurationOwner, store: ManifestArtifactStore,
+    run_id: str, operation_id: str,
+) -> dict[str, Any]:
     run = store.get_manifest(digest(run_id, "light_action_m0.run_id"))
     if (run.kind != "run"
             or [parent.role for parent in run.parents] != ["experiment", "training_input"]):
@@ -82,7 +100,10 @@ def _admit_m0_run(owner, store, run_id: str, operation_id: str) -> dict:
     return binding
 
 
-def _admit_m0_model(owner, store, model_id: str, operation_id: str) -> dict:
+def _admit_m0_model(
+    owner: LocalCurationOwner, store: ManifestArtifactStore,
+    model_id: str, operation_id: str,
+) -> dict[str, Any]:
     from stpd.policy.token_decision import CANONICAL_LIGHT_ACTION_M0_MODEL_SCHEMA
 
     model = store.get_manifest(digest(model_id, "light_action_m0.model_id"))
@@ -98,7 +119,27 @@ def _admit_m0_model(owner, store, model_id: str, operation_id: str) -> dict:
     return binding
 
 
-def _verify_m0_completion(store, model) -> None:
+def _reserve_m0_dev(
+    owner: LocalCurationOwner, store: ManifestArtifactStore,
+    binding: dict[str, Any], operation_id: str,
+    run_id: str, input_id: str, model: Manifest, view: Manifest,
+) -> dict[str, Any]:
+    if (model.parent("run") != run_id
+            or model.parent("training_input") != input_id
+            or model.parent("model_view") != binding.get("model_view_id")
+            or view.artifact_id != binding.get("model_view_id")
+            or model.parameters.value().get("training_binding") != binding):
+        raise BoundaryError("light_action_m0", "training_binding_mismatch")
+    evaluation_operation = hashlib.sha256(
+        f"stage1a-m0-dev-v1:{model.parent('run')}:{model.artifact_id}".encode("ascii")
+    ).hexdigest()[:32]
+    return cast(dict[str, Any], owner.reserve_allocation_dev(
+        store, model.artifact_id, binding["allocation_id"], operation_id,
+        evaluation_operation,
+    ))
+
+
+def _verify_m0_completion(store: ManifestArtifactStore, model: Manifest) -> None:
     from spireagent.storage.run_reporter import ObjectStoreRunReporter
     from stpd.workers.token_worker import _verify_completed
 
@@ -195,12 +236,14 @@ def main() -> int:
     run_m0.add_argument("--operation", required=True)
     run_m0.add_argument("--resume", help="exact checkpoint ID from this run")
     run_m0.add_argument("--stop-after", type=int)
+    run_m0.add_argument("--snapshot", type=Path)
     run_tokens = commands.add_parser("run-tokens", help="execute an existing exact token run")
     run_tokens.add_argument("--run", required=True)
     run_tokens.add_argument("--project-config", type=Path)
     run_tokens.add_argument("--operation", help="canonical M0 training operation ID")
     run_tokens.add_argument("--resume", help="exact checkpoint ID from this run")
     run_tokens.add_argument("--stop-after", type=int)
+    run_tokens.add_argument("--snapshot", type=Path)
     run_memory = commands.add_parser("run-memory", help="execute an existing exact M2 episode run")
     run_memory.add_argument("--run", required=True)
     run_memory.add_argument("--resume", help="exact prior episode checkpoint ID")
@@ -470,21 +513,25 @@ def main() -> int:
             operation_id = digest(args.operation, "light_action_m0.operation_id", length=32)
             if project_owner is None:
                 raise BoundaryError("light_action_m0", "configured_local_workspace_required")
-            _admit_m0_input(project_owner, store, input_id, operation_id)
-            inputs = load_light_action_inputs(store, input_id)
+            binding = _admit_m0_input(project_owner, store, input_id, operation_id)
+            m0_inputs = load_light_action_inputs(store, input_id)
             torch.set_num_threads(2)
-            config = LightActionM0Config(
+            m0_config = LightActionM0Config(
                 recipe=args.recipe, steps=args.steps, device=args.backend,
                 max_state_tokens=args.max_state_tokens,
                 max_action_bytes=args.max_action_bytes,
             )
-            run = prepare_token_run(store, inputs, config, runtime, replicate=args.replicate)
+            run = prepare_token_run(store, m0_inputs, m0_config, runtime,
+                                    replicate=args.replicate)
             result = asdict(execute_tokens(
                 store, ObjectStoreRunReporter(store, store.blobs), run.artifact_id, runtime,
                 snapshot=args.snapshot, stop_after=args.stop_after,
+                dev_admitter=lambda model, view: _reserve_m0_dev(
+                    project_owner, store, binding, operation_id, run.artifact_id,
+                    input_id, model, view),
             ))
             result["training_input_id"] = input_id
-            result["training_binding"] = inputs.manifest.parameters.value()["training_binding"]
+            result["training_binding"] = m0_inputs.manifest.parameters.value()["training_binding"]
         elif args.command == "run-tokens":
             import torch
 
@@ -494,16 +541,25 @@ def main() -> int:
             run_id = digest(args.run, "token_run.id")
             run_manifest = store.get_manifest(run_id)
             input_manifest = store.get_manifest(run_manifest.parent("training_input"))
+            dev_admitter = None
             if input_manifest.parameters.value().get("schema") == \
                     "stpd/stage1a-light-action-m0-canonical-input-v1":
                 if project_owner is None or args.operation is None:
                     raise BoundaryError(
                         "light_action_m0", "configured_owner_and_operation_required")
-                _admit_m0_run(project_owner, store, run_id, args.operation)
+                binding = _admit_m0_run(project_owner, store, run_id, args.operation)
+                def reserve_dev(model: Manifest, view: Manifest) -> dict[str, Any]:
+                    return _reserve_m0_dev(
+                        project_owner, store, binding, args.operation, run_id,
+                        run_manifest.parent("training_input"), model, view)
+
+                dev_admitter = reserve_dev
             result = asdict(execute_tokens(
                 store, ObjectStoreRunReporter(store, store.blobs), run_id, runtime,
+                snapshot=args.snapshot,
                 resume=(digest(args.resume, "token_run.resume") if args.resume else None),
                 stop_after=args.stop_after,
+                dev_admitter=dev_admitter,
             ))
         elif args.command == "run-light-action-m0":
             import torch
@@ -512,11 +568,18 @@ def main() -> int:
 
             torch.set_num_threads(2)
             run_id = digest(args.run, "light_action_m0.run_id")
-            _admit_m0_run(project_owner, store, run_id, args.operation)
+            run_manifest = store.get_manifest(run_id)
+            if project_owner is None:
+                raise BoundaryError("light_action_m0", "configured_local_workspace_required")
+            binding = _admit_m0_run(project_owner, store, run_id, args.operation)
             result = asdict(execute_tokens(
                 store, ObjectStoreRunReporter(store, store.blobs), run_id, runtime,
+                snapshot=args.snapshot,
                 resume=(digest(args.resume, "light_action_m0.resume") if args.resume else None),
                 stop_after=args.stop_after,
+                dev_admitter=lambda model, view: _reserve_m0_dev(
+                    project_owner, store, binding, args.operation, run_id,
+                    run_manifest.parent("training_input"), model, view),
             ))
         elif args.command == "run-memory":
             import torch
@@ -647,11 +710,11 @@ def main() -> int:
                       "tokenizer_sha256": package["tokenizer"]["sha256"],
                       "tokenizer_size": package["tokenizer"]["size"]}
         elif args.command == "train":
-            config = TrainingConfig(
+            training_config = TrainingConfig(
                 seed=1701, max_steps=args.steps, epochs=5,
                 learning_rate=0.001, checkpoint_interval=16,
             )
-            training = prepare_training_input(store, args.features, runtime, config)
+            training = prepare_training_input(store, args.features, runtime, training_config)
             _, run = prepare_run(store, training.artifact_id, runtime, replicate=args.replicate)
             result = asdict(
                 execute(
