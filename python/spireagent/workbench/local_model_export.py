@@ -306,6 +306,17 @@ def _verify_public_m0_export(model: Manifest, destination: Path,
         raise BoundaryError("local_model_export", "public_m0_export_verification_failed") from error
 
 
+def _child_json_record(captured: bytes) -> dict[str, Any]:
+    """Read the final machine record; model libraries may emit stdout diagnostics."""
+    lines = [line for line in captured.decode("utf-8").splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("child_json_record_missing")
+    value = json.loads(lines[-1])
+    if not isinstance(value, dict):
+        raise ValueError("child_json_record_invalid")
+    return value
+
+
 class LocalModelExport:
     """One durable slot; only explicit POST may export or reconcile it."""
 
@@ -824,7 +835,7 @@ class LocalModelExport:
         if exit_code:
             raise BoundaryError("local_model_export", "public_m0_export_process_failed")
         try:
-            result = json.loads(captured)
+            result = _child_json_record(captured)
             from stpd.policy.token_decision import PUBLIC_LIGHT_ACTION_M0_EXPORT_SCHEMA
 
             if (not isinstance(result, dict)

@@ -78,6 +78,17 @@ def _safe_parent_failure(error: Exception, stage: str) -> dict[str, Any]:
             "owner_call": point(owner), "origin": point(origin)}
 
 
+def _child_json_record(captured: bytes) -> dict[str, Any]:
+    """Read the final machine record; libraries may emit earlier stdout diagnostics."""
+    lines = [line for line in captured.decode("utf-8").splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("child_json_record_missing")
+    value = json.loads(lines[-1])
+    if not isinstance(value, dict):
+        raise ValueError("child_json_record_invalid")
+    return value
+
+
 def _write_parent_failure(path: Path, identity: str, error: Exception) -> None:
     destination = path.parent / ("local-training-" + identity + "-parent-error.log")
     raw = "".join(traceback.format_exception(error)).encode("utf-8", "replace")
@@ -289,7 +300,7 @@ class LocalTrainingService:
         if prepare_exit:
             raise BoundaryError("local_training", "public_m0_preparation_process_failed")
         try:
-            prepared = json.loads(captured)
+            prepared = _child_json_record(captured)
             expected = {"allocation_id", "model_view_id", "training_input_id", "input_schema",
                         "backbone", "admission", "counts", "elapsed_seconds", "verification"}
             if (not isinstance(prepared, dict) or set(prepared) != expected
@@ -333,7 +344,7 @@ class LocalTrainingService:
         if train_exit:
             raise BoundaryError("local_training", "public_m0_training_process_failed")
         try:
-            trained = json.loads(trained_output)
+            trained = _child_json_record(trained_output)
             if (not isinstance(trained, dict) or trained.get("state") != "completed"
                     or trained.get("training_input_id") != input_id
                     or trained.get("training_binding") != binding):
