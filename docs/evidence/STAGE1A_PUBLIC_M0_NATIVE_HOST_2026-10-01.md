@@ -50,6 +50,37 @@ binds source/tree/digest. Independent review verified all eight other component
 identities and the Host public contract digest remain unchanged. Historical BOM
 artifact receipts are retained and do not describe the new package.
 
+## Post-gate repairs and bounded real-data execution
+
+The predecessor `be5a9c78` passed the full local macOS gate (2290 Python tests,
+five skipped). Its hosted checks exposed a Windows fake-stream cleanup race and
+a Linux score-permutation test assumption. Accepted repairs `cb3a6bf9` wait for
+actual fake-child stream close, and `b693e7d1` require exact same-layout scores
+across processes while permitting at most one finite float32 ULP per action
+across catalog permutation; action IDs, ranking and winner remain exact.
+These repairs do not by themselves establish a passing new combined head.
+
+Actual native startup rejected the installed unsealed Connector source before
+any gameplay delivery. Accepted Host repair `1302cf74` adds the explicit
+`--experimental-connector-source` exact revision option only for isolated
+native-window launches. It reuses the existing source/artifact resolver and
+preserves loaded identity, authenticated provenance, readiness and profile
+sentinel gates. Default launch authority remains sealed-only. The current rc.24
+BOM now binds this Host source and its path-scoped tree/digest; historical
+artifact receipts remain unchanged. Independent review passed 32 focused tests,
+eight negative gate probes and four CLI denial cases. Live execution of this
+repaired candidate remains a separate gate.
+
+A separate private run on `be5a9c78` registered the user's current training
+statement for the previously identified 814-row corpus, preserving historical
+unknowns and previous manifests. Owner-admitted public_compact projection used
+49 training decisions and 16 diagnostic decisions. Scratch M0 paused at update 2,
+resumed through update 10 and exported a verified package. Diagnostic NLL
+1.72122475 is effectively uniform (uniform baseline 1.72121967); this is pipeline
+evidence, not a usable-policy claim. The diagnostic data's prior exposure is
+unknown and physical-game independence unresolved. No new corpus authorization,
+clean held-out assessment or model-quality qualification follows from this run.
+
 ## Next gates and limits
 
 Run the exact combined source gates after final repairs, derive a fresh private

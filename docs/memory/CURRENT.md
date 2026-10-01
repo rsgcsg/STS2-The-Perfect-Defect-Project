@@ -49,8 +49,11 @@ Workbench training/export/registration, immutable current user declarations,
 and native-v1 light-action M2 projection and a common numerical kernel. Public M0
 uses the complete generic BoundAction catalog with public_lite/public_compact;
 Workbench execution is scratch-only, while the advanced CLI and pinned adapter
-have separately tested frozen-Qwen/LoRA routes. These are synthetic source tests,
-not real-data training or native model execution. Generic public M0 has no current
+have separately tested frozen-Qwen/LoRA routes. Source acceptance is supported by synthetic tests. A separate private run on
+`be5a9c78` used the authorized 814-row corpus to project 49 training and 16
+diagnostic decisions, complete 10 scratch updates with pause/resume and export.
+Its diagnostic probabilities remain near uniform; no model strength or native
+model execution is qualified. Generic public M0 has no current
 Managed Runtime bridge. Native-v1 M2 still needs its distinct engine, worker,
 export, online scorer and product integration. Its projector/common kernel
 cannot make a usable live model by itself. Public M0 is not a same-input matched
@@ -58,8 +61,9 @@ baseline for native-v1 M2/Reset.
 
 User declaration registration records a current statement without backdating old
 use or proving Human origin. The new reader permits SQLite coordination sidecars
-but cannot initialize owner/schema or mutate logical records. Actual statement
-registration and visible declaration projection are separate pending operations.
+but cannot initialize owner/schema or mutate logical records. The current statement
+was registered for the authorized 814-row corpus during the private run; visible
+declaration projection remains a separate source change.
 [Source review and remaining gates](../evidence/STAGE1A_PUBLIC_M0_NATIVE_HOST_2026-10-01.md).
 
 ## Research and native evidence anchors
