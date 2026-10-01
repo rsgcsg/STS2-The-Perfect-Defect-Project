@@ -13,6 +13,7 @@ import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL } from "@rsgcsg/sts2-connector-cl
 import { readGameProcessStartedAt, listGameProcesses } from "./game-processes.mjs";
 import {
   readJson,
+  resolveExperimentalConnectorCanary,
   requestHostProvenance,
   requestHostShutdown,
   shippedRuntimeLaunch,
@@ -533,9 +534,19 @@ export async function runHeadlessHost({
   sharedProfileAcknowledged = false,
   isolatedProfileId = null,
   displayMode = "headless",
+  expectedExperimentalConnectorSource = null,
   dependencies = {}
 }) {
   validateHostDisplayMode(displayMode);
+  if (expectedExperimentalConnectorSource != null) {
+    if (typeof expectedExperimentalConnectorSource !== "string"
+        || !/^[a-f0-9]{40}$/u.test(expectedExperimentalConnectorSource)) {
+      throw new Error("Experimental Connector source canaries require one exact lowercase 40-character Git revision.");
+    }
+    if (displayMode !== "native_window") {
+      throw new Error("Experimental Connector source canaries are limited to native-window Host starts.");
+    }
+  }
   if (displayMode === "native_window" && (!isolatedProfileId || sharedProfileAcknowledged)) {
     throw new Error("Native-window Host launches require --isolated-profile and reject --shared-profile.");
   }
@@ -594,6 +605,27 @@ export async function runHeadlessHost({
   if (displayMode === "native_window" && installedConnector?.status !== "verified") {
     throw new Error(`Native-window launch requires a verified installed Connector identity; got ${installedConnector?.status ?? "missing"}.`);
   }
+  const connectorCanary = expectedExperimentalConnectorSource == null
+    ? null
+    : resolveExperimentalConnectorCanary({
+      installation,
+      compatibility,
+      acknowledged: true
+    });
+  if (connectorCanary != null
+      && (connectorCanary.source_revision !== expectedExperimentalConnectorSource
+        || connectorCanary.source_revision !== installedConnector.identity?.source_revision
+        || connectorCanary.artifact_sha256 !== installedConnector.installed_sha256
+        || installedConnector.identity?.artifact_sha256 !== installedConnector.installed_sha256)) {
+    throw new Error("Experimental Connector source canary does not match the verified installed identity.");
+  }
+  const connectorAuthority = displayMode === "native_window"
+    ? {
+      profile: connectorCanary == null ? "sealed_only" : "exact_process_local_canary",
+      source_revision: installedConnector.identity?.source_revision ?? null,
+      artifact_sha256: installedConnector.installed_sha256 ?? null
+    }
+    : null;
   const sharedProfileSentinelBefore = displayMode === "native_window"
     ? snapshotSharedProfile()
     : null;
@@ -635,6 +667,7 @@ export async function runHeadlessHost({
     process_started_at: null,
     shared_profile_sentinel_before: sharedProfileSentinelBefore,
     shared_profile_integrity_status: displayMode === "native_window" ? "pending" : "not_required",
+    ...(connectorAuthority == null ? {} : { connector_authority: connectorAuthority }),
     loaded_identity: null
   };
   let stopAttemptPromise = null;
@@ -762,7 +795,8 @@ export async function runHeadlessHost({
     launch = launchRuntime(installation, {
       launchProfile,
       displayMode,
-      connectorEndpoint: endpoint
+      connectorEndpoint: endpoint,
+      connectorCanary
     });
     child = launch.child;
     child.stdout.pipe(stdoutStream);

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { finished } from "node:stream/promises";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL } from "@rsgcsg/sts2-connector-client";
@@ -20,6 +21,7 @@ import {
   stopHeadlessHost
 } from "../src/headless-host.mjs";
 import { shippedRuntimeLaunch, stopChild } from "../src/runtime-probe.mjs";
+import { SOURCE_CANARY_ENVIRONMENT_VARIABLE } from "../src/connector-endpoint.mjs";
 
 function temporaryDirectory(prefix) {
   return mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -74,17 +76,22 @@ test("fake child cleanup waits for actual pipe destination completion", async ()
   child.stderr.destroy();
 });
 
-function exactCapabilities({ hostKind = "live_ui" } = {}) {
+function exactCapabilities({
+  hostKind = "live_ui",
+  executionAvailable = true,
+  implementation = {}
+} = {}) {
   return {
     protocol_version: SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL,
-    execution_available: true,
+    execution_available: executionAvailable,
     host: {
       host_kind: hostKind,
       runtime_instance_id: "runtime-native-1",
       implementation: {
         source_revision: "a".repeat(40),
         artifact_sha256: "b".repeat(64),
-        module_version_id: "12345678-1234-1234-1234-123456789abc"
+        module_version_id: "12345678-1234-1234-1234-123456789abc",
+        ...implementation
       }
     },
     game: { modset: { status: "exact_platform_modset" } }
@@ -118,6 +125,91 @@ function isolatedProfile() {
     args: ["--force-steam=off", "--clientId=1"],
     environment
   };
+}
+
+function nativeStartFixture(prefix, { sourceRevision = "a".repeat(40) } = {}) {
+  const root = temporaryDirectory(prefix);
+  const modsDir = path.join(root, "mods");
+  mkdirSync(modsDir, { recursive: true });
+  const dll = path.join(modsDir, "STS2_PLATFORM.dll");
+  const artifact = Buffer.from("verified native Connector test artifact");
+  writeFileSync(dll, artifact);
+  const artifactSha = createHash("sha256").update(artifact).digest("hex");
+  const identity = {
+    source_revision: sourceRevision,
+    artifact_sha256: artifactSha,
+    artifact_mvid: "12345678-1234-1234-1234-123456789abc"
+  };
+  writeFileSync(path.join(modsDir, "STS2_PLATFORM.identity"), `${JSON.stringify(identity)}\n`);
+  return {
+    root,
+    localRoot: path.join(root, "host"),
+    installation: {
+      executable: "/game/Slay the Spire 2",
+      executable_cwd: "/game",
+      mods_dir: modsDir
+    },
+    identity,
+    artifactSha
+  };
+}
+
+function nativeStartDependencies(fake, capabilities, observed) {
+  observed.provenanceCalls = 0;
+  return {
+    getDiskIdentity: () => ({ exact: true }),
+    requireSupported: () => ({ status: "supported_exact" }),
+    enumerateGameProcesses: () => [],
+    readEndpoint: async () => ({ ok: false, error: "endpoint_clear" }),
+    snapshotSharedProfile: () => ({ root: "/shared", present: true, tree_sha256: "stable" }),
+    compareSnapshots: (before, after) => ({ unchanged: before.tree_sha256 === after.tree_sha256, before, after }),
+    launchRuntime: (installation, options) => {
+      observed.launchOptions = options;
+      const launch = shippedRuntimeLaunch(installation, {
+        ...options,
+        spawnProcess: (_executable, _args, spawnOptions) => {
+          observed.spawnEnvironment = spawnOptions.env;
+          return fake;
+        }
+      });
+      observed.launch = launch;
+      return launch;
+    },
+    getProcessStartedAt: () => "2026-10-01T00:00:00.000Z",
+    waitEndpoint: async () => ({ ok: true, value: capabilities }),
+    requestProvenance: async ({ expectedRuntimeInstanceId }) => {
+      observed.provenanceCalls += 1;
+      return {
+        status: "observed",
+        response: { runtime_instance_id: expectedRuntimeInstanceId }
+      };
+    },
+    waitSnapshot: async () => [{ ok: true, value: {
+      status: "interactive",
+      snapshot_id: "snapshot-native-start",
+      interaction: { interaction_id: "interaction-native-start", kind: "main_menu" },
+      bound_actions: { status: "complete", actions: [{ bound_action_id: "native-start-action" }] }
+    } }],
+    waitChildExit: async () => {
+      fake.exitCode = 0;
+      fake.emit("exit", 0, null);
+      return { code: 0, signal: null };
+    },
+    stopRuntimeChild: async (child) => {
+      child.exitCode = 1;
+      child.emit("exit", 1, null);
+      return { code: 1, signal: null };
+    },
+    installSignalHandlers: false,
+    projectIdentity: () => ({ version: "test" })
+  };
+}
+
+function nativeLifecycleRecord(fixture) {
+  const runtimeRoot = path.join(fixture.localRoot, "runtime");
+  const sessions = readdirSync(runtimeRoot).filter((name) => name.startsWith("session-"));
+  assert.equal(sessions.length, 1);
+  return JSON.parse(readFileSync(path.join(runtimeRoot, sessions[0], "lifecycle.json"), "utf8"));
 }
 
 test("Headless launch remains the default and native-window launch uses the isolated profile", () => {
@@ -494,6 +586,173 @@ test("stop authenticates shutdown before revalidated fallback and persists a cha
     assert.equal(readFileSync(path.join(sessionDirectory, "lifecycle.json"), "utf8").includes("secret-test-only"), false);
   } finally {
     rmSync(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("native start is sealed-only by default and strips ambient source canaries", async () => {
+  const fixture = nativeStartFixture("sts2-native-start-default-");
+  const fake = fakeChild(7300);
+  const observed = {};
+  const previousCanary = process.env[SOURCE_CANARY_ENVIRONMENT_VARIABLE];
+  process.env[SOURCE_CANARY_ENVIRONMENT_VARIABLE] = "c".repeat(40);
+  try {
+    const capabilities = exactCapabilities({
+      executionAvailable: false,
+      implementation: {
+        source_revision: fixture.identity.source_revision,
+        artifact_sha256: fixture.artifactSha,
+        module_version_id: fixture.identity.artifact_mvid
+      }
+    });
+    await assert.rejects(runHeadlessHost({
+      installation: fixture.installation,
+      localRoot: fixture.localRoot,
+      isolatedProfileId: "native-start-default",
+      displayMode: "native_window",
+      dependencies: nativeStartDependencies(fake, capabilities, observed)
+    }), /execution_unavailable/u);
+    assert.equal(observed.launchOptions.connectorCanary, null);
+    assert.equal(SOURCE_CANARY_ENVIRONMENT_VARIABLE in observed.spawnEnvironment, false);
+    assert.deepEqual(nativeLifecycleRecord(fixture).connector_authority, {
+      profile: "sealed_only",
+      source_revision: fixture.identity.source_revision,
+      artifact_sha256: fixture.artifactSha
+    });
+    assert.equal(observed.provenanceCalls, 0);
+  } finally {
+    if (previousCanary == null) delete process.env[SOURCE_CANARY_ENVIRONMENT_VARIABLE];
+    else process.env[SOURCE_CANARY_ENVIRONMENT_VARIABLE] = previousCanary;
+    await closeFakeChildOutput(fake);
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("native start admits and records only the exact requested installed source canary", async () => {
+  const fixture = nativeStartFixture("sts2-native-start-canary-");
+  const fake = fakeChild(7306);
+  const observed = {};
+  const previousCanary = process.env[SOURCE_CANARY_ENVIRONMENT_VARIABLE];
+  process.env[SOURCE_CANARY_ENVIRONMENT_VARIABLE] = "c".repeat(40);
+  try {
+    const capabilities = exactCapabilities({
+      implementation: {
+        source_revision: fixture.identity.source_revision,
+        artifact_sha256: fixture.artifactSha,
+        module_version_id: fixture.identity.artifact_mvid
+      }
+    });
+    const record = await runHeadlessHost({
+      installation: fixture.installation,
+      localRoot: fixture.localRoot,
+      isolatedProfileId: "native-start-canary",
+      displayMode: "native_window",
+      expectedExperimentalConnectorSource: fixture.identity.source_revision,
+      dependencies: nativeStartDependencies(fake, capabilities, observed)
+    });
+    assert.deepEqual(observed.launchOptions.connectorCanary, {
+      game_id: null,
+      source_revision: fixture.identity.source_revision,
+      artifact_sha256: fixture.artifactSha
+    });
+    assert.equal(observed.spawnEnvironment[SOURCE_CANARY_ENVIRONMENT_VARIABLE], fixture.identity.source_revision);
+    assert.deepEqual(record.connector_authority, {
+      profile: "exact_process_local_canary",
+      source_revision: fixture.identity.source_revision,
+      artifact_sha256: fixture.artifactSha
+    });
+    assert.equal(observed.launch.hostConfiguration.authority_profile, record.connector_authority.profile);
+    assert.equal(record.status, "exited");
+    assert.equal(observed.provenanceCalls, 1);
+  } finally {
+    if (previousCanary == null) delete process.env[SOURCE_CANARY_ENVIRONMENT_VARIABLE];
+    else process.env[SOURCE_CANARY_ENVIRONMENT_VARIABLE] = previousCanary;
+    await closeFakeChildOutput(fake);
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("native source opt-in rejects malformed, headless, and mismatched revisions before spawn", async () => {
+  const sourceRevision = "a".repeat(40);
+  const malformed = "A".repeat(40);
+  const noLaunch = () => assert.fail("invalid source authority must be rejected before spawn");
+  await assert.rejects(runHeadlessHost({
+    installation: {},
+    localRoot: "/unused",
+    expectedExperimentalConnectorSource: malformed,
+    dependencies: { launchRuntime: noLaunch }
+  }), /lowercase 40-character Git revision/u);
+  await assert.rejects(runHeadlessHost({
+    installation: {},
+    localRoot: "/unused",
+    expectedExperimentalConnectorSource: sourceRevision,
+    dependencies: { launchRuntime: noLaunch }
+  }), /limited to native-window/u);
+  await assert.rejects(runHeadlessHost({
+    installation: {},
+    localRoot: "/unused",
+    isolatedProfileId: "native-start-shared-rejection",
+    sharedProfileAcknowledged: true,
+    displayMode: "native_window",
+    expectedExperimentalConnectorSource: sourceRevision,
+    dependencies: { launchRuntime: noLaunch }
+  }), /reject --shared-profile/u);
+
+  const fixture = nativeStartFixture("sts2-native-start-mismatch-");
+  const fake = fakeChild(7307);
+  const observed = {};
+  try {
+    await assert.rejects(runHeadlessHost({
+      installation: fixture.installation,
+      localRoot: fixture.localRoot,
+      isolatedProfileId: "native-start-mismatch",
+      displayMode: "native_window",
+      expectedExperimentalConnectorSource: "d".repeat(40),
+      dependencies: nativeStartDependencies(fake, exactCapabilities(), observed)
+    }), /does not match the verified installed identity/u);
+    assert.equal(observed.launchOptions, undefined);
+    assert.equal(observed.provenanceCalls, 0);
+  } finally {
+    await closeFakeChildOutput(fake);
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("exact source canary does not bypass the loaded Connector identity gate", async () => {
+  const fixture = nativeStartFixture("sts2-native-start-loaded-drift-");
+  const fake = fakeChild(7308);
+  const observed = {};
+  try {
+    const capabilities = exactCapabilities({
+      implementation: {
+        source_revision: "d".repeat(40),
+        artifact_sha256: fixture.artifactSha,
+        module_version_id: fixture.identity.artifact_mvid
+      }
+    });
+    await assert.rejects(runHeadlessHost({
+      installation: fixture.installation,
+      localRoot: fixture.localRoot,
+      isolatedProfileId: "native-start-loaded-drift",
+      displayMode: "native_window",
+      expectedExperimentalConnectorSource: fixture.identity.source_revision,
+      dependencies: nativeStartDependencies(fake, capabilities, observed)
+    }), /loaded_connector_revision_mismatch/u);
+    assert.deepEqual(observed.launchOptions.connectorCanary, {
+      game_id: null,
+      source_revision: fixture.identity.source_revision,
+      artifact_sha256: fixture.artifactSha
+    });
+    const record = nativeLifecycleRecord(fixture);
+    assert.equal(record.status, "failed");
+    assert.deepEqual(record.connector_authority, {
+      profile: "exact_process_local_canary",
+      source_revision: fixture.identity.source_revision,
+      artifact_sha256: fixture.artifactSha
+    });
+    assert.equal(observed.provenanceCalls, 0);
+  } finally {
+    await closeFakeChildOutput(fake);
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 

@@ -152,6 +152,21 @@ before/after sentinel for the shared game profile. A sentinel change or failed
 measurement fails the lifecycle gate. This mode is operator canary tooling;
 it does not by itself prove Human evidence or qualification.
 
+An unsealed Connector source remains denied by default. To explicitly admit one
+verified installed source revision for a single isolated native-window launch,
+add `--experimental-connector-source REVISION` where `REVISION` is the exact
+lowercase 40-character `source_revision` in the installed Connector identity
+sidecar. The Host verifies that revision and artifact SHA against the installed
+identity before spawn, strips ambient canary values, and records the selected
+launch authority in the lifecycle record. This option does not relax the game,
+Modset, loaded source/SHA/MVID, provenance, readiness, or sentinel gates; it is
+rejected for Headless and shared-profile starts.
+
+```bash
+npm start -- --isolated-profile native-canary --display-mode native_window \
+  --experimental-connector-source REVISION
+```
+
 After it prints `"status": "ready"`, another local program can consume the
 versioned Player Environment REST/SDK contract. Inspect or stop the exact
 recorded process from another terminal:
