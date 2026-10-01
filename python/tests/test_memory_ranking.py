@@ -22,6 +22,9 @@ from stpd.workers.memory_ranking import (
 )
 
 TOKENIZER = "a" * 64
+LEGACY_M2_IMPLEMENTATION_SHA256 = (
+    "cb568657d04aa642723007a67486cad2f4d542c6944362a5ecd4642c35cdf0a4"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -363,11 +366,38 @@ def test_export_reload_replays_scores_with_exact_candidate_order_and_config(
     changed_implementation["implementation_sha256"] = "0" * 64
     with pytest.raises(BoundaryError, match="export_identity_mismatch"):
         load_memory_export(encode_checkpoint(changed_implementation), settings, TOKENIZER)
-    value = decode_checkpoint(raw)
-    name = next(iter(value["weights"]))
-    value["weights"][name].flatten()[0] += 1
+    tampered_weights_export = decode_checkpoint(raw)
+    name = next(iter(tampered_weights_export["weights"]))
+    tampered_weights_export["weights"][name].flatten()[0] += 1
     with pytest.raises(BoundaryError, match="weights_digest_mismatch"):
-        load_memory_export(encode_checkpoint(value), settings, TOKENIZER)
+        load_memory_export(encode_checkpoint(tampered_weights_export), settings, TOKENIZER)
+
+
+def test_legacy_m2_golden_export_identity_loads_and_scores():
+    """A frozen pre-M0 M2 export remains readable by its exact implementation identity."""
+    from stpd.workers.memory_ranking import _implementation_sha256
+
+    assert _implementation_sha256() == LEGACY_M2_IMPLEMENTATION_SHA256
+    settings = config(episode_count=1, dropout=0.0, max_chunk_steps=3,
+                     max_episode_input_tokens=100)
+    engine = MemoryRankingEngine(source(count=1, optional=False), settings)
+    finish(engine)
+    legacy_export = decode_checkpoint(engine.export())
+    # Use the historical identity as an independent golden, not the value emitted
+    # by the implementation under test.
+    legacy_export["implementation_sha256"] = LEGACY_M2_IMPLEMENTATION_SHA256
+    loaded = load_memory_export(encode_checkpoint(legacy_export), settings, TOKENIZER)
+    page = torch.tensor([1, 2], dtype=torch.long)
+    actions = (torch.tensor([6]), torch.tensor([7]))
+    memory = loaded.initial_memory()
+    with torch.no_grad():
+        _, memory = loaded.step(page, actions, memory, reset_before=True)
+        scores = loaded.score(memory, actions)
+    assert scores.dtype == torch.float32
+    assert torch.isfinite(scores).all()
+    torch.testing.assert_close(
+        scores, torch.tensor([-0.047799084, -0.039693777]), atol=1e-7, rtol=0,
+    )
 
 
 def test_alias_copy_internal_tamper_late_invalid_and_episode_reset():

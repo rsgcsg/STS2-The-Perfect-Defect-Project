@@ -103,13 +103,9 @@ class LocalTrainingService:
 
     @staticmethod
     def _read(path: Path, identity: tuple[str, ...]) -> dict[str, Any]:
-        if not path.exists() and not path.is_symlink():
-            if has_unresolved_replacement(path):
-                raise BoundaryError("local_training", "operation_recovery_required")
-            return {"status": "idle"}
-        if path.is_symlink() or not path.is_file():
-            raise BoundaryError("local_training", "operation_recovery_required")
         try:
+            if path.is_symlink():
+                raise ValueError
             value = json.loads(read_replaceable_bytes(path))
             schema = value.get("schema") if isinstance(value, dict) else None
             if (not isinstance(value, dict) or schema not in {SCHEMA, SCHEMA_V2}
@@ -174,6 +170,10 @@ class LocalTrainingService:
             ):
                 raise ValueError
             return value
+        except FileNotFoundError as error:
+            if path.is_symlink() or has_unresolved_replacement(path):
+                raise BoundaryError("local_training", "operation_recovery_required") from error
+            return {"status": "idle"}
         except (OSError, ValueError, KeyError, TypeError, BoundaryError) as error:
             raise BoundaryError("local_training", "operation_recovery_required") from error
 
@@ -196,6 +196,19 @@ class LocalTrainingService:
         path, lock_path = self._paths(owner)
         try:
             operation = self._read(path, owner.identity)
+            if operation["status"] == "idle":
+                # Absence during a live writer's replacement is not an idle
+                # operation. Reconcile under the existing owner lock without
+                # creating it; an unlocked pre-admission lock is still harmless.
+                try:
+                    if lock_path.is_symlink():
+                        raise BoundaryError("local_training", "operation_recovery_required")
+                    with instance_lock(lock_path, create=False):
+                        operation = self._read(path, owner.identity)
+                except FileNotFoundError:
+                    pass
+                except (OSError, BoundaryError) as error:
+                    raise BoundaryError("local_training", "operation_recovery_required") from error
         except BoundaryError as error:
             return {"schema": SCHEMA, "availability": "recovery_required",
                     "reason": error.code, "operation": {"status": "idle"}}
@@ -205,7 +218,7 @@ class LocalTrainingService:
             try:
                 if not lock_path.is_file() or lock_path.is_symlink():
                     raise BoundaryError("local_training", "operation_lock_missing")
-                with instance_lock(lock_path):
+                with instance_lock(lock_path, create=False):
                     # The supervisor may have written its terminal record and
                     # released the lock after our first read. Re-read under the
                     # lock before classifying an apparently unfinished operation.
@@ -219,8 +232,8 @@ class LocalTrainingService:
                     if operation["status"] == "pending":
                         operation = {**operation, "status": "interrupted_unknown",
                                      "error_code": "previous_training_outcome_unknown"}
-            except BoundaryError as error:
-                if error.code != "already_running":
+            except (OSError, BoundaryError) as error:
+                if not isinstance(error, BoundaryError) or error.code != "already_running":
                     operation = {**operation, "status": "interrupted_unknown",
                                  "error_code": "previous_training_outcome_unknown"}
         return {"schema": operation.get("schema", SCHEMA), "availability": "ready",
