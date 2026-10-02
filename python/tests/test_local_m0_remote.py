@@ -259,7 +259,7 @@ def test_remote_controller_restarts_by_polling_saved_handle_and_accepts_step_seg
         assert state.submits == state.prepares == 1
         operation = service.status()["operation"]
         attempt = operation["remote"]["attempts"][-1]
-        assert attempt["provider_runtime_evidence_sha256"] == hashlib.sha256(
+        assert attempt["runtime_evidence_sha256"] == hashlib.sha256(
             state.runtime_evidence.to_bytes(),
         ).hexdigest()
         assert attempt["provider_result_sha256"]
