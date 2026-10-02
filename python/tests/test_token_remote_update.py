@@ -31,6 +31,7 @@ from stpd.workers.token_remote_update import (
     execute_token_remote_update,
     finalize_token_remote_update,
     prepare_token_remote_update,
+    publish_token_remote_checkpoint,
     validate_token_remote_update,
 )
 from stpd.workers.token_worker import (
@@ -419,16 +420,78 @@ def test_remote_final_checkpoint_uses_local_dev_gate_and_idempotent_completion(
         run = prepare_token_run(
             store, inputs, target_config, producer, target_runtime=target_runtime,
         )
-        request = prepare_token_remote_update(
-            store, owner, run.artifact_id, producer, operation, target_config.steps,
-            attempt_id="a" * 32,
+        partial_request = prepare_token_remote_update(
+            store, owner, run.artifact_id, producer, operation, target_config.steps - 1,
+            attempt_id="b" * 32,
         )
 
         # Build CPU tensors, then identify the envelope as the remote CUDA checkpoint.
         # This is a packaging/validation fixture, not evidence of CUDA execution.
         engine = TokenRankingEngine(inputs, config)
-        for _ in range(config.steps):
+        for _ in range(target_config.steps - 1):
             engine.advance()
+        intermediate_checkpoint = engine.checkpoint()
+        _, expected_identity = token_training_identity(
+            inputs, target_config, partial_request.backbone_identity.value(),
+        )
+        partial_state = decode_checkpoint(intermediate_checkpoint)
+        partial_state["config"] = config_payload(target_config)
+        partial_state["data_identity"] = expected_identity
+        partial_state["rng_protocol"] = CUDA_STEP_RNG_PROTOCOL
+        partial_state["torch_version"] = target_runtime.torch_version
+        partial_state["cpu_threads"] = target_runtime.cpu_threads
+        partial_bytes = encode_checkpoint(partial_state)
+        partial_result = TokenRemoteUpdateResult(
+            partial_request.request_sha256, partial_request.attempt_id,
+            partial_request.run_id, partial_request.input_id, partial_request.producer,
+            partial_request.operation_id, partial_request.training_binding,
+            partial_request.target_device, partial_request.target_step,
+            partial_request.config, partial_request.resume_checkpoint_id, None,
+            partial_request.target_step, hashlib.sha256(partial_bytes).hexdigest(),
+            partial_bytes, partial_request.backbone_identity,
+        )
+        engine.restore(intermediate_checkpoint)
+        engine.advance()
+
+        reporter = ObjectStoreRunReporter(store, store.blobs)
+        before_partial = store.manifest_ids()
+        partial_checkpoint_id = publish_token_remote_checkpoint(
+            store, reporter, owner, partial_request, partial_result, producer, operation,
+            verify_provider_result=lambda _request, _result: True,
+        )
+        assert store.manifest_ids() != before_partial
+        assert reporter.completed(run.artifact_id) is None
+        partial_events = reporter.events(run.artifact_id)
+        assert {event.parameters.value()["kind"] for event in partial_events} == {
+            "checkpoint", "paused",
+        }
+        assert any(
+            event.parameters.value()["kind"] == "paused"
+            and event.parameters.value()["details"] == {
+                "checkpoint_id": partial_checkpoint_id,
+            }
+            for event in partial_events
+        )
+        assert not any(
+            store.get_manifest(identity).kind
+            in {"model", "offline_evaluation", "run_result"}
+            for identity in store.manifest_ids()
+        )
+
+        before_partial_finalize = store.manifest_ids()
+        with pytest.raises(BoundaryError, match="final_step_required_for_completion"):
+            finalize_token_remote_update(
+                store, reporter, owner, partial_request, partial_result, producer, operation,
+                verify_provider_result=lambda _request, _result: True,
+            )
+        assert reporter.completed(run.artifact_id) is None
+        assert store.manifest_ids() == before_partial_finalize
+
+        request = prepare_token_remote_update(
+            store, owner, run.artifact_id, producer, operation, target_config.steps,
+            resume_checkpoint_id=partial_checkpoint_id, attempt_id="a" * 32,
+        )
+        assert request.resume_checkpoint == partial_bytes
         state = decode_checkpoint(engine.checkpoint())
         _, expected_identity = token_training_identity(
             inputs, target_config, request.backbone_identity.value(),
@@ -443,7 +506,8 @@ def test_remote_final_checkpoint_uses_local_dev_gate_and_idempotent_completion(
             request.request_sha256, request.attempt_id, request.run_id,
             request.input_id, request.producer, request.operation_id,
             request.training_binding, request.target_device, request.target_step,
-            request.config, request.resume_checkpoint_id, None,
+            request.config, request.resume_checkpoint_id,
+            hashlib.sha256(request.resume_checkpoint).hexdigest(),
             request.target_step, hashlib.sha256(checkpoint_bytes).hexdigest(),
             checkpoint_bytes, request.backbone_identity,
         )
@@ -458,8 +522,15 @@ def test_remote_final_checkpoint_uses_local_dev_gate_and_idempotent_completion(
         for index, row in enumerate(inputs.rows):
             assert scorer.score_token_ids(row.state, row.actions) == engine.scores(index)
 
-        reporter = ObjectStoreRunReporter(store, store.blobs)
         common = (store, reporter, owner, request, result, producer, operation)
+        before_unverified = store.manifest_ids()
+        with pytest.raises(BoundaryError, match="provider_result_unverified"):
+            finalize_token_remote_update(
+                *common, verify_provider_result=lambda _request, _result: False,
+            )
+        assert reporter.completed(run.artifact_id) is None
+        assert store.manifest_ids() == before_unverified
+
         with pytest.raises(BoundaryError, match="dev_denied"):
             finalize_token_remote_update(
                 *common, verify_provider_result=lambda _request, _result: True,
