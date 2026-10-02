@@ -31,6 +31,7 @@ class PublicM0PolicyAdapter:
         self.scorer = LightActionM0DecisionScorer(
             Path(self.config["export_path"]),
             snapshot=Path(snapshot) if snapshot is not None else None,
+            runtime_device=self.config.get("runtime_device", "cpu"),
         )
         _, info = check_light_action_m0_model(self.scorer.artifact)
         if (

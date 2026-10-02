@@ -113,6 +113,12 @@ def _model_details(export_path: Path, model_id: str | None = None) -> tuple[Any,
     return artifact, config, {**info, "renderer": renderer}
 
 
+def _public_m0_runtime_device(value: object) -> str:
+    if not isinstance(value, str) or value not in {"cpu", "mps"}:
+        raise BoundaryError("public_m0_policy", "unsupported_runtime_device")
+    return value
+
+
 def _validate_requirements(requirements: object, support: object) -> tuple[dict, dict]:
     req = object_fields(requirements, _REQUIREMENT_KEYS, "public_m0.requirements")
     env = object_fields(req.get("environment"), _ENVIRONMENT_KEYS,
@@ -206,7 +212,7 @@ def bind_public_m0_export(
     root: Path, export_path: Path, config_path: Path, manifest_path: Path, *,
     manifest_id: str, policy: dict[str, Any], requirements: dict[str, Any],
     support: dict[str, Any], qwen_snapshot: Path | None = None,
-    binding_root: Path | None = None,
+    binding_root: Path | None = None, runtime_device: str = "cpu",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Bind one verified public M0 export to exact generic Runtime capabilities."""
     root = root.resolve()
@@ -228,6 +234,10 @@ def bind_public_m0_export(
         raise BoundaryError("public_m0_policy", "invalid_binding_destination_or_facts")
     req, sup = _validate_requirements(requirements, support)
     artifact, config, info = _model_details(export_path)
+    from .policy.token_decision import light_action_m0_runtime_config
+
+    runtime_device = _public_m0_runtime_device(runtime_device)
+    runtime_config = light_action_m0_runtime_config(config, runtime_device)
     _validate_export_payloads(export_path, artifact)
     from .fullrun.public_inputs import COMPACT_IDENTITY, IDENTITY
 
@@ -248,6 +258,7 @@ def bind_public_m0_export(
         "model_id": model_identity,
         "qwen_snapshot": str(qwen_snapshot.resolve()) if qwen_snapshot else None,
         "renderer": renderer,
+        "runtime_device": runtime_config.device,
     }
     adapter = {"id": ADAPTER_ID, "version": ADAPTER_VERSION,
                "protocol": PROTOCOL, "code_sha256": code_digest(root)}
@@ -295,8 +306,12 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
     manifest_path = _inside(binding_root,
                             manifest_path.resolve().relative_to(binding_root).as_posix())
     config, manifest = _object_file(config_path), _object_file(manifest_path)
-    object_fields(config, {"schema", "export_path", "export_manifest_sha256", "model_id",
-                           "qwen_snapshot", "renderer"}, "public_m0.config")
+    required_config_fields = {
+        "schema", "export_path", "export_manifest_sha256", "model_id",
+        "qwen_snapshot", "renderer",
+    }
+    if set(config) not in (required_config_fields, required_config_fields | {"runtime_device"}):
+        raise BoundaryError("public_m0.config", "missing_or_unknown_fields")
     if config.get("schema") != CONFIG_SCHEMA:
         raise BoundaryError("public_m0_policy", "unsupported_config")
     object_fields(manifest, {
@@ -368,6 +383,10 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
     ):
         raise BoundaryError("public_m0_policy", "export_identity_drift")
     artifact, model_config, info = _model_details(export, config.get("model_id"))
+    from .policy.token_decision import light_action_m0_runtime_config
+
+    runtime_device = _public_m0_runtime_device(config.get("runtime_device", "cpu"))
+    light_action_m0_runtime_config(model_config, runtime_device)
     if info["renderer"] != renderer:
         raise BoundaryError("public_m0_policy", "public_renderer_mismatch")
     _validate_qwen_snapshot(model_config, info, config.get("qwen_snapshot"))
@@ -385,15 +404,16 @@ def inspect(root: Path, entry: dict[str, Any], manifest: dict[str, Any],
                                    binding_root=binding_root)
         if checked != manifest or config != policy_config:
             raise BoundaryError("public_m0_policy", "metadata_changed")
-        from .policy.token_decision import check_light_action_m0_model
         artifact, _, info = _model_details(Path(config["export_path"]), config["model_id"])
-        model_config, _ = check_light_action_m0_model(artifact)
-        backend = model_config.device
-        if backend not in {"cpu", "mps"}:
-            raise BoundaryError("public_m0_policy", "unsupported_backend")
-        script = "import json,torch; print(json.dumps({'mps':torch.backends.mps.is_available()}))"
+        backend = config.get("runtime_device", "cpu")
+        script = (
+            "import json,torch; device=" + json.dumps(backend) + "; "
+            "available=(True if device=='cpu' else "
+            "torch.backends.mps.is_available() if device=='mps' else "
+            "torch.cuda.is_available()); print(json.dumps({'available':available}))"
+        )
         result = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=15)
-        if result.returncode or (backend == "mps" and not json.loads(result.stdout)["mps"]):
+        if result.returncode or not json.loads(result.stdout)["available"]:
             raise BoundaryError("public_m0_policy", "backend_unavailable")
         if artifact.artifact_id != config["model_id"] or info["renderer"] != config["renderer"]:
             raise BoundaryError("public_m0_policy", "export_identity_drift")

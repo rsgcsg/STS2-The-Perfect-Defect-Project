@@ -193,6 +193,49 @@ def test_public_adapter_is_an_explicit_trusted_pair():
     assert module.ADAPTER_ID == ADAPTER_ID
 
 
+def test_public_m0_install_runtime_device_is_independent_of_training_device(
+    tmp_path, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    import stpd.public_m0_policy_installation as installation
+
+    identity = "a" * 64
+    renderer = {"version": 1, "profile": "public_lite", "status": "ready"}
+    manifest = {"fixture": "manifest"}
+    policy_config = {
+        "model_id": identity, "export_path": str(tmp_path / "export"),
+        "renderer": renderer, "runtime_device": "cpu",
+    }
+    training_config = SimpleNamespace(device="cuda")
+    artifact = SimpleNamespace(artifact_id=identity)
+    info = {"renderer": renderer}
+    monkeypatch.setattr(installation, "validate", lambda *args, **kwargs: (
+        policy_config, manifest,
+    ))
+    monkeypatch.setattr(installation, "_model_details", lambda *args: (
+        artifact, training_config, info,
+    ))
+    monkeypatch.setattr(
+        installation.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=b'{"available":true}'),
+    )
+
+    checks = installation.inspect(
+        tmp_path, {"config": "registered/config.json", "manifest": "registered/manifest.json"},
+        manifest, policy_config,
+    )
+    assert training_config.device == "cuda"
+    assert checks["backend"] == {"status": "pass", "code": "cpu"}
+
+
+def test_public_m0_install_rejects_cuda_runtime_device():
+    import stpd.public_m0_policy_installation as installation
+
+    with pytest.raises(BoundaryError, match="unsupported_runtime_device"):
+        installation._public_m0_runtime_device("cuda")
+
+
 def test_local_registry_routes_public_m0_only_to_its_trusted_port(tmp_path):
     service = LocalModelService(ProjectConfig(tmp_path, "", "", None, combination()))
     service.private_root.mkdir(parents=True)
@@ -349,8 +392,10 @@ def test_verified_public_export_binds_and_scores_real_current_snapshot(
         binding_root=private,
     )
     assert config["model_id"] == model_id
+    assert config["runtime_device"] == "cpu"
     assert manifest["adapter"]["id"] == ADAPTER_ID
     adapter = PublicM0PolicyAdapter(config_path, manifest_path, binding_root=private)
+    assert adapter.scorer.runtime_device == "cpu"
     observation = snapshot()
     for action in observation["bound_actions"]["actions"]:
         action["label"] = "same visible label"

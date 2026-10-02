@@ -92,18 +92,24 @@ def test_seeded_cuda_step_restores_mocked_all_device_rng(monkeypatch):
     monkeypatch.setattr(torch.cuda, "manual_seed_all", seeded.append)
     monkeypatch.setattr(torch.cuda, "set_rng_state_all", lambda states: restored.extend(states))
     cpu_before = torch.get_rng_state()
-    with seeded_step(41, "cuda"):
-        assert seeded == [41]
+    base_seed = 41
+    for completed_steps in range(2):
+        with seeded_step(base_seed + completed_steps, "cuda"):
+            assert seeded[-1] == base_seed + completed_steps
     assert torch.equal(torch.get_rng_state(), cpu_before)
-    assert len(restored) == 1 and torch.equal(restored[0], original[0])
+    assert seeded == [41, 42]
+    assert len(restored) == 2 and all(torch.equal(value, original[0]) for value in restored)
 
 
-def test_cuda_checkpoint_rng_contract_can_be_checked_without_gpu(monkeypatch):
-    cuda_states = [torch.tensor([2, 7, 1], dtype=torch.uint8)]
-    restored = []
-    monkeypatch.setattr(torch.cuda, "get_rng_state_all", lambda: [state.clone()
-                                                                    for state in cuda_states])
-    monkeypatch.setattr(torch.cuda, "set_rng_state_all", lambda states: restored.extend(states))
+def test_cuda_checkpoint_restore_does_not_touch_caller_rng(monkeypatch):
+    rng_calls = []
+
+    def unexpected_cuda_rng_access(*_args, **_kwargs):
+        rng_calls.append("touched")
+        raise AssertionError("checkpoint must not read or replace caller CUDA RNG")
+
+    monkeypatch.setattr(torch.cuda, "get_rng_state_all", unexpected_cuda_rng_access)
+    monkeypatch.setattr(torch.cuda, "set_rng_state_all", unexpected_cuda_rng_access)
     monkeypatch.setattr("stpd.workers.token_ranking.restore_weights", lambda *args, **kwargs: None)
 
     class Optimizer:
@@ -127,15 +133,16 @@ def test_cuda_checkpoint_rng_contract_can_be_checked_without_gpu(monkeypatch):
         return {"synthetic": torch.ones(1)}
 
     engine._weights = synthetic_weights
+    cpu_rng_before = torch.get_rng_state()
     encoded = engine.checkpoint()
     checkpoint = decode_checkpoint(encoded)
     assert checkpoint["rng_protocol"] == "seed_plus_completed_steps_cuda_v1"
-    assert len(checkpoint["cuda_rng_states"]) == 1
-    assert torch.equal(checkpoint["cuda_rng_states"][0], cuda_states[0])
+    assert "cuda_rng_states" not in checkpoint
 
     engine.restore(encoded)
     assert engine.step == 0
-    assert len(restored) == 1 and torch.equal(restored[0], cuda_states[0])
+    assert not rng_calls
+    assert torch.equal(torch.get_rng_state(), cpu_rng_before)
 
 
 def _small_bpe() -> bytes:

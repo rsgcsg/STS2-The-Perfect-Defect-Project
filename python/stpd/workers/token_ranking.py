@@ -476,8 +476,6 @@ class TokenRankingEngine:
             "rng_protocol": CUDA_STEP_RNG_PROTOCOL if cuda else STEP_RNG_PROTOCOL,
             "cpu_threads": torch.get_num_threads(),
         }
-        if cuda:
-            state["cuda_rng_states"] = torch.cuda.get_rng_state_all()
         return encode_checkpoint(state)
 
     def restore(self, raw: bytes) -> None:
@@ -487,8 +485,6 @@ class TokenRankingEngine:
         cuda = self.config.device == "cuda"
         expected_keys = {"schema", "data_identity", "config", "torch_version", "step",
                          "model", "optimizer", "rng_protocol", "cpu_threads"}
-        if cuda:
-            expected_keys.add("cuda_rng_states")
         if (set(state) != expected_keys
                 or state["schema"] != schema
                 or state["data_identity"] != self.data_identity
@@ -500,18 +496,6 @@ class TokenRankingEngine:
                 or state["cpu_threads"] != torch.get_num_threads()
                 or type(state["step"]) is not int or not 0 <= state["step"] <= self.config.steps):
             raise BoundaryError("token_checkpoint", "resume_identity_mismatch")
-        cuda_rng_states = state.get("cuda_rng_states")
-        if cuda:
-            try:
-                expected_rng_states = torch.cuda.get_rng_state_all()
-            except Exception as error:
-                raise BoundaryError("token_checkpoint", "cuda_rng_state_unavailable") from error
-            if (not isinstance(cuda_rng_states, list)
-                    or len(cuda_rng_states) != len(expected_rng_states)
-                    or any(not isinstance(saved, Tensor) or saved.dtype != torch.uint8
-                           or saved.ndim != 1 or saved.shape != current.shape
-                           for saved, current in zip(cuda_rng_states, expected_rng_states))):
-                raise BoundaryError("token_checkpoint", "cuda_rng_state_mismatch")
         optimizer = state["optimizer"]
         if (not isinstance(optimizer, dict) or set(optimizer) != {"state", "param_groups"}
                 or optimizer["param_groups"] != self.optimizer.state_dict()["param_groups"]
@@ -535,9 +519,4 @@ class TokenRankingEngine:
                         strict_frozen_core=self.is_light_action_m0)
         self.optimizer.load_state_dict(optimizer)
         self._validate_cuda_optimizer_state()
-        if cuda:
-            try:
-                torch.cuda.set_rng_state_all(cuda_rng_states)
-            except Exception as error:
-                raise BoundaryError("token_checkpoint", "cuda_rng_state_restore_failed") from error
         self.step = state["step"]

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
 from spireagent.storage.store import ArtifactStore
 
+from ..canonical import semantic_hash
 from ..fullrun.contracts import SemanticAction, SemanticState
 from ..fullrun.decision_training import VIEW_SCHEMA as CANONICAL_LIGHT_ACTION_M0_VIEW_SCHEMA
 from ..fullrun.light_action_inputs import (
@@ -329,10 +331,72 @@ def export_light_action_m0_model(
             "payload_bytes": sum(len(value) for value in raw.values())}
 
 
-class LightActionM0DecisionScorer:
-    """Standalone M0 scorer for exact text-menu inputs and the complete ordered catalog."""
+def light_action_m0_runtime_config(
+    training_config: LightActionM0Config, runtime_device: str = "cpu",
+) -> LightActionM0Config:
+    """Select an inference device without changing the exported training identity."""
+    if not isinstance(runtime_device, str) or runtime_device not in {"cpu", "mps", "cuda"}:
+        raise BoundaryError("token_policy", "unsupported_runtime_device")
+    return replace(training_config, device=runtime_device)
 
-    def __init__(self, directory: Path, *, snapshot: Path | None = None) -> None:
+
+def _m0_runtime_backbone_matches(
+    runtime_backbone: dict[str, Any], training_backbone: object,
+    training_config: LightActionM0Config, vocab_size: int,
+) -> bool:
+    """Compare runtime-loaded weights while preserving the recorded training device."""
+    recipe = recipe_for(training_config.recipe)
+    if not isinstance(training_backbone, dict):
+        return False
+
+    def fingerprint_matches(backbone: dict[str, Any]) -> bool:
+        fingerprint = backbone.get("core_fingerprint")
+        core = {key: value for key, value in backbone.items() if key != "core_fingerprint"}
+        return isinstance(fingerprint, str) and fingerprint == semantic_hash({
+            "core": core,
+            "graph": recipe.graph,
+            "vocabulary_size": vocab_size,
+            "max_state_tokens": training_config.max_state_tokens,
+        })
+
+    if not fingerprint_matches(training_backbone) or not fingerprint_matches(runtime_backbone):
+        return False
+    if recipe.backbone == "pf":
+        if training_config.device not in {"cpu", "mps"}:
+            return False
+        training_qwen = training_backbone.get("qwen")
+        if (not isinstance(training_qwen, dict)
+                or training_qwen.get("device") != training_config.device):
+            return False
+    if runtime_backbone == training_backbone:
+        return True
+    if recipe.backbone != "pf":
+        return False
+    runtime_qwen = runtime_backbone.get("qwen")
+    if (
+        not isinstance(runtime_qwen, dict)
+        or runtime_qwen.get("device") not in {"cpu", "mps"}
+    ):
+        return False
+    normalized = dict(runtime_backbone)
+    normalized_qwen = dict(runtime_qwen)
+    normalized_qwen["device"] = training_config.device
+    normalized["qwen"] = normalized_qwen
+    core = {key: value for key, value in normalized.items() if key != "core_fingerprint"}
+    normalized["core_fingerprint"] = semantic_hash({
+        "core": core,
+        "graph": recipe.graph,
+        "vocabulary_size": vocab_size,
+        "max_state_tokens": training_config.max_state_tokens,
+    })
+    return normalized == training_backbone
+
+
+class LightActionM0DecisionScorer:
+    """Standalone M0 scorer with a runtime device independent of training provenance."""
+
+    def __init__(self, directory: Path, *, snapshot: Path | None = None,
+                 runtime_device: str = "cpu") -> None:
         from ..workers.token_ranking import (
             LoRAQwenTokenCore,
             construct_model,
@@ -385,10 +449,14 @@ class LightActionM0DecisionScorer:
             raise BoundaryError("token_policy", "light_action_state_tokenizer_mismatch")
         recipe = recipe_for(self.config.recipe)
         vocab_size = self.state_tokenizer.get_vocab_size()
+        runtime_config = light_action_m0_runtime_config(self.config, runtime_device)
+        self.runtime_device = runtime_config.device
         self.model, backbone = construct_model(
-            self.config, vocab_size, snapshot, state_codec=state_codec,
+            runtime_config, vocab_size, snapshot, state_codec=state_codec,
         )
-        if backbone != self.info["backbone"]:
+        if not _m0_runtime_backbone_matches(
+            backbone, self.info["backbone"], self.config, vocab_size,
+        ):
             raise BoundaryError("token_policy", "light_action_backbone_identity_mismatch")
         if recipe.backbone == "pl":
             assert isinstance(self.model.core, LoRAQwenTokenCore)
@@ -422,7 +490,7 @@ class LightActionM0DecisionScorer:
         action_ids = tuple(
             encode_action(action, max_bytes=self.config.max_action_bytes) for action in actions
         )
-        device = self.config.device
+        device = self.runtime_device
         with torch.no_grad():
             scores = self.model(
                 torch.tensor(state_ids, dtype=torch.long, device=device),
