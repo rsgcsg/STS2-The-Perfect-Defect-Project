@@ -249,7 +249,8 @@ def test_cpu_can_prepare_and_structurally_validate_cuda_target_checkpoint(
         )
         assert request.config.device == request.target_device == "cuda"
         assert request.target_runtime == target_runtime
-        assert TokenRemoteUpdateRequest.from_bytes(request.to_bytes()).target_runtime == target_runtime
+        decoded_request = TokenRemoteUpdateRequest.from_bytes(request.to_bytes())
+        assert decoded_request.target_runtime == target_runtime
         assert request.backbone_identity.value() == cpu_engine.backbone
         _, expected_identity = token_training_identity(
             inputs, cuda_config, request.backbone_identity.value(),

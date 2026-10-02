@@ -72,7 +72,11 @@ class TokenTargetRuntime:
     def from_run_info(cls, info: object) -> TokenTargetRuntime:
         if not isinstance(info, Mapping):
             raise BoundaryError("token_runtime", "invalid_target_runtime")
-        return cls(info.get("torch_version"), info.get("cpu_threads"))
+        torch_version = info.get("torch_version")
+        cpu_threads = info.get("cpu_threads")
+        if not isinstance(torch_version, str) or type(cpu_threads) is not int:
+            raise BoundaryError("token_runtime", "invalid_target_runtime")
+        return cls(torch_version, cpu_threads)
 
 
 def require_current_token_runtime(

@@ -45,14 +45,14 @@ from .token_ranking import (
     IndexedLightActionM0TrainRow,
     LightActionM0Config,
     LightActionM0TrainOnlyInputs,
-    TokenTargetRuntime,
     TokenRankingEngine,
+    TokenTargetRuntime,
     config_payload,
     decode_config,
     light_action_m0_scratch_backbone_identity,
+    require_current_token_runtime,
     validate_light_action_m0_inputs,
     validate_light_action_m0_scratch_checkpoint,
-    require_current_token_runtime,
 )
 from .token_worker import preflight_token_run_contract
 
