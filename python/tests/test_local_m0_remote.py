@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-def _case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def _case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, steps: int = 2):
     torch = pytest.importorskip("torch")
     pytest.importorskip("tokenizers")
     pytest.importorskip("jwt")
@@ -59,7 +59,7 @@ def _case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     torch.set_num_threads(2)
     runtime = TokenTargetRuntime.current()
     model_config = LightActionM0Config(
-        recipe="stage1a.dsimple.light-action.m0.s.v1", steps=2,
+        recipe="stage1a.dsimple.light-action.m0.s.v1", steps=steps,
         device="cuda", public_profile="public_lite",
         max_state_tokens=1024, max_action_bytes=1024,
     )
@@ -234,10 +234,10 @@ def _controller(service, state, settings=None, **kwargs):
     )
 
 
-def test_remote_controller_restarts_by_polling_saved_handle_and_accepts_step_segments(
+def test_remote_controller_restarts_by_polling_saved_handle_and_completes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    case = _case(tmp_path, monkeypatch)
+    case = _case(tmp_path, monkeypatch, steps=1)
     torch, previous_threads, service, store, _owner, _producer, run, _config, _, _ = case
     try:
         from spireagent.workbench.local_m0_remote import ModalM0Settings
@@ -256,7 +256,7 @@ def test_remote_controller_restarts_by_polling_saved_handle_and_accepts_step_seg
         recovered = _controller(service, state).reconcile(
             first["operation_id"], wait_seconds=0,
         )
-        assert recovered["status"] == "paused"
+        assert recovered["status"] == "completed"
         assert recovered["checkpoint_step"] == 1
         assert state.submits == state.prepares == 1
         operation = service.status()["operation"]
@@ -266,18 +266,44 @@ def test_remote_controller_restarts_by_polling_saved_handle_and_accepts_step_seg
         ).hexdigest()
         assert attempt["provider_result_sha256"]
 
-        completed = _controller(service, state).resume(
-            first["operation_id"], 2, wait_seconds=0,
-        )
-        assert completed["status"] == "completed"
-        assert completed["checkpoint_step"] == 2
-        assert state.submits == state.prepares == 2
-        assert completed["model_id"] and completed["evaluation_id"]
-        assert completed["remote"]["attempts"][-1]["core_finalizer_attempt_seconds"] >= 0
-        assert (store.get_manifest(completed["evaluation_id"])
+        assert recovered["model_id"] and recovered["evaluation_id"]
+        assert recovered["remote"]["attempts"][-1]["core_finalizer_attempt_seconds"] >= 0
+        assert (store.get_manifest(recovered["evaluation_id"])
                 .parameters.value()["scoring_runtime"] == {
                     "mode": "weights_only", "device": "cpu",
                 })
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_partial_step_is_paused_only_after_checkpoint_acceptance_and_resume_limit_is_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, steps=2)
+    torch, previous_threads, service, store, _owner, _producer, run, _config, _, _ = case
+    try:
+        from spireagent.json_boundary import BoundaryError
+        from spireagent.workbench.local_m0_remote import ModalM0Settings
+
+        state = _FakeModalState(store, ready=True)
+        operation = _controller(
+            service, state,
+            ModalM0Settings("test-account", "test-env", "im-test-image"),
+        ).start(run.artifact_id, 1, wait_seconds=0)
+        assert operation["status"] == "paused"
+        assert operation["checkpoint_step"] == 1
+        attempt = operation["remote"]["attempts"][-1]
+        assert attempt["validated_checkpoint_id"] == operation["checkpoint_id"]
+        assert attempt["provider_result_sha256"]
+        assert attempt["runtime_evidence_sha256"]
+        assert service.status()["operation"]["status"] == "paused"
+        with pytest.raises(BoundaryError) as rejected:
+            _controller(service, state).resume(operation["operation_id"], 2,
+                                                wait_seconds=0)
+        assert rejected.value.code == "remote_request_size_limit"
+        assert service.status()["operation"]["status"] == "paused"
+        assert state.submits == state.prepares == 1
+        assert not any(store.get_manifest(item).kind == "model" for item in store.manifest_ids())
     finally:
         torch.set_num_threads(previous_threads)
 
