@@ -304,12 +304,13 @@ def _function_response(function: FakeFunction) -> Any:
         function=api.FunctionData(
             function_name=function.function_name,
             timeout_secs=plan.function_timeout_seconds,
-            startup_timeout_secs=plan.startup_timeout_seconds,
+            startup_timeout_secs=0,
             autoscaler_settings=scaling,
             ranked_functions=[api.FunctionData.RankedFunction(
                 rank=0,
                 function=api.Function(
                     function_name=function.function_name, image_id=function.image_id,
+                    startup_timeout_secs=plan.startup_timeout_seconds,
                     resources=api.Resources(
                         milli_cpu=int(plan.cpu * 1000), memory_mb=plan.memory_mib,
                         gpu_config=api.GPUConfig(gpu_type=plan.gpu, count=1),
@@ -721,8 +722,82 @@ def _call_handle(request: FakeRequest, target: m0_modal.ModalM0Target) -> m0_mod
     )
 
 
+def test_observed_sdk155_existing_synthetic_call_metadata_contract() -> None:
+    from google.protobuf.json_format import ParseDict
+    from modal_proto import api_pb2 as api
+
+    fixture = json.loads(
+        (Path(__file__).with_name("fixtures") / "modal_m0_sdk155_observed_startup.json")
+        .read_bytes(),
+    )
+    assert fixture["observed_call_boundary"]["call_response_fixture"] is None
+    existing = fixture["observed_existing_synthetic_call"]
+    response = ParseDict(
+        existing["function_call_from_id_response"], api.FunctionCallFromIdResponse(),
+    )
+    info = ParseDict(existing["function_call_get_info_response"], api.FunctionCallGetInfoResponse())
+    assert response.num_inputs == 1
+    assert [field.name for field, _ in response.ListFields()] == existing["response_field_presence"]
+    assert [field.name for field, _ in response.metadata.ListFields()] == (
+        existing["metadata_field_presence"]
+    )
+    assert existing["info_is_repeated"] is False
+    assert info.info.function_call_id == response.function_call_id
+    assert info.info.total_inputs == 1
+    assert info.info.cancelled_inputs.total == 1
+    assert info.info.failed_inputs.total == info.info.succeeded_inputs.total == 0
+    assert existing["worker_input_or_output_read"] is False
+
+
+@pytest.mark.parametrize("definition_startup", [120, 0, 121])
+def test_observed_sdk155_resource_contract_uses_ranked_startup(
+    definition_startup: int,
+) -> None:
+    from google.protobuf.json_format import ParseDict
+    from modal_proto import api_pb2 as api
+
+    fixture = json.loads(
+        (Path(__file__).with_name("fixtures") / "modal_m0_sdk155_observed_startup.json")
+        .read_bytes(),
+    )
+    assert fixture["modal_sdk_version"] == m0_modal.MODAL_SDK_VERSION
+    assert fixture["observed_call_boundary"]["provider_call_metadata_observed"] is False
+    assert fixture["observed_call_boundary"]["call_response_fixture"] is None
+    response = ParseDict(fixture["function_get_response"], api.FunctionGetResponse())
+    layout = ParseDict(fixture["app_get_layout_response"], api.AppGetLayoutResponse())
+    assert response.function.startup_timeout_secs == 0
+    assert len(layout.app_layout.objects) == 3
+    observed = response.function.ranked_functions[0].function
+    assert observed.startup_timeout_secs == 120
+    function = FakeFunction(
+        function_id=response.function_id,
+        app_id=response.handle_metadata.app_id,
+        image_id=observed.image_id,
+    )
+    target = _target(
+        function_id=function.object_id, app_id=function.app_id, image_object_id=function.image_id,
+    )
+    sdk = FakeSDK(function)
+    observed.startup_timeout_secs = definition_startup
+    if definition_startup != 120:
+        # A plausible legacy value must not hide an invalid actual definition.
+        response.function.startup_timeout_secs = 120
+    sdk.function_response_transform = lambda value: value.CopyFrom(response)
+    sdk.layout_response_transform = lambda value: value.CopyFrom(layout)
+    provider = _provider(target, sdk=sdk)
+    spec = m0_modal.ModalM0Provider._spec_for_target(target)
+    if definition_startup == 120:
+        assert provider._function_identity(sdk.client, spec, target.app_id) == function.object_id
+    else:
+        with pytest.raises(BoundaryError, match="deployed_target_resource_mismatch"):
+            provider._function_identity(sdk.client, spec, target.app_id)
+    assert sdk.metadata_lookups == ["layout", "function"]
+    assert sdk.call_lookups == []
+    assert function.spawn_calls == []
+
+
 @pytest.mark.parametrize("field", [
-    "gpu", "gpu_count", "cpu", "memory", "timeout", "startup", "scaledown",
+    "gpu", "gpu_count", "cpu", "memory", "timeout", "startup", "startup_zero", "scaledown",
     "max_containers", "min_containers", "buffer_containers", "retries", "rank_count",
 ])
 def test_typed_resource_drift_is_rejected_before_spawn(
@@ -748,7 +823,10 @@ def test_typed_resource_drift_is_rejected_before_spawn(
         elif field == "timeout":
             response.function.timeout_secs = 901
         elif field == "startup":
-            response.function.startup_timeout_secs = 121
+            definition.startup_timeout_secs = 121
+        elif field == "startup_zero":
+            definition.startup_timeout_secs = 0
+            response.function.startup_timeout_secs = 120
         elif field == "scaledown":
             scaling.scaledown_window = 31
         elif field == "max_containers":

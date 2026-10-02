@@ -1434,6 +1434,8 @@ class ModalM0Provider:
         plan = spec.resource_plan
         resources = definition.resources
         scaling = response.function.autoscaler_settings
+        # SDK 1.5.5 leaves FunctionData's legacy startup field at zero;
+        # the actual rank-0 Function definition carries the configured timeout.
         if (
             definition.function_name != M0_MODAL_FUNCTION_NAME
             or resources.gpu_config.gpu_type != plan.gpu
@@ -1441,7 +1443,7 @@ class ModalM0Provider:
             or resources.milli_cpu != int(plan.cpu * 1000)
             or resources.memory_mb != plan.memory_mib
             or response.function.timeout_secs != plan.function_timeout_seconds
-            or response.function.startup_timeout_secs != plan.startup_timeout_seconds
+            or definition.startup_timeout_secs != plan.startup_timeout_seconds
             or scaling.scaledown_window != plan.scaledown_seconds
             or scaling.max_containers != plan.max_containers
             or scaling.min_containers != 0
