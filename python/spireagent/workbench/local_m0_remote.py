@@ -213,6 +213,12 @@ class LocalM0RemoteController:
         # reserving the operation or persisting request/spec bytes, so a slug typo
         # cannot strand a new prepare_intent in the journal.
         provider.verify_account_id(spec.account_id)
+        retry_context = self.training.remote_preflight_retry_context()
+        if retry_context is not None and (
+            spec.account_id != retry_context["canonical_account_id"]
+            or spec.environment_name != retry_context["environment_name"]
+        ):
+            raise BoundaryError("local_m0_remote", "preflight_retry_workspace_mismatch")
         reserved = self.training.reserve_remote_m0(
             dataset_id, input_profile=profile, request_bytes=request_bytes,
             target=target, target_step=target_step,
@@ -326,6 +332,10 @@ class LocalM0RemoteController:
         provider.cancel(handle)  # Ack is deliberately not a terminal outcome.
         return self._poll_and_finalize(operation_id, wait)
 
+    def retire_preflight_failure(self, operation_id: object) -> dict[str, Any]:
+        """Release only the reconciled, archived no-submit prepare failure."""
+        return self.training.retire_remote_preflight_failure(operation_id)
+
     def reconcile(
         self, operation_id: object, *, wait_seconds: object = 900,
     ) -> dict[str, Any]:
@@ -375,11 +385,28 @@ class LocalM0RemoteController:
                 )
                 if app_ref is None:
                     if resolving_unpinned_prepare:
+                        canonical_account_id = provider.verify_account_id(
+                            spec.account_id, allow_legacy_workspace_alias=True,
+                        )
+                        recovery_receipt = {
+                            "schema": "stpd/local-modal-m0-prepare-absence-receipt-v1",
+                            "observed_at_unix_ns": time.time_ns(),
+                            "attempt_id": latest["attempt_id"],
+                            "attempt_spec_sha256": _sha(evidence["attempt_spec_bytes"]),
+                            "canonical_account_id": canonical_account_id,
+                            "pinned_account_id": spec.account_id,
+                            "environment_name": spec.environment_name,
+                            "app_name": spec.app_name,
+                            "lookup_result":
+                                "complete_app_list_and_exact_history_not_found",
+                            "submit_boundary": "no_app_ref_handle_or_submit_intent",
+                        }
                         return self.training.record_remote_prepare_absent(
                             operation_id,
                             expected_attempt_spec_sha256=_sha(
                                 evidence["attempt_spec_bytes"],
                             ),
+                            recovery_receipt=recovery_receipt,
                         )
                     return cast(dict[str, Any], self.training.status()["operation"])
                 self.training.persist_remote_app_ref(operation_id, app_ref.to_bytes())
