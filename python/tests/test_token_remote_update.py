@@ -206,16 +206,20 @@ def test_cpu_can_prepare_and_structurally_validate_cuda_target_checkpoint(
         assert local_run.parameters.value()["cpu_threads"] == local_runtime.cpu_threads
         preflight_token_run(store, local_run.artifact_id, producer)
 
-        version_base = local_runtime.torch_version.split("+", maxsplit=1)[0]
-        monkeypatch.setattr(torch, "__version__", version_base + "+cpu")
+        # The Mac host is torch 2.13.0; the identified worker image is
+        # torch 2.13.0+cu130. The thread-count difference below is synthetic
+        # because the image's configured CPU thread count is not part of its
+        # supplied metadata.
+        monkeypatch.setattr(torch, "__version__", "2.13.0")
         local_runtime = TokenTargetRuntime.current()
         local_run = prepare_token_run(
             store, inputs, config, producer, replicate="local-cpu-runtime",
         )
-        assert local_run.parameters.value()["torch_version"] == version_base + "+cpu"
+        assert local_run.parameters.value()["torch_version"] == "2.13.0"
         preflight_token_run(store, local_run.artifact_id, producer)
-        target_version = version_base + "+cu128"
-        target_runtime = TokenTargetRuntime(target_version, local_runtime.cpu_threads + 1)
+        target_runtime = TokenTargetRuntime(
+            "2.13.0+cu130", local_runtime.cpu_threads + 1,
+        )
         assert target_runtime.torch_version != local_runtime.torch_version
         assert target_runtime.cpu_threads != local_runtime.cpu_threads
         cuda_config = replace(config, device="cuda")
@@ -343,17 +347,18 @@ def test_cpu_target_runtime_mismatch_is_structurally_accepted_but_not_executable
     case = _canonical_run(tmp_path, monkeypatch)
     torch, previous_threads, store, owner, operation, producer, inputs, config, _ = case
     try:
-        version_base = str(torch.__version__).split("+", maxsplit=1)[0]
-        monkeypatch.setattr(torch, "__version__", version_base + "+cpu")
+        # Match the supplied Mac and worker image Torch identities; only the
+        # image thread-count difference is synthetic test data.
+        monkeypatch.setattr(torch, "__version__", "2.13.0")
         local_runtime = TokenTargetRuntime.current()
         local_run = prepare_token_run(
             store, inputs, config, producer, replicate="cpu-local-runtime",
         )
-        assert local_run.parameters.value()["torch_version"] == version_base + "+cpu"
+        assert local_run.parameters.value()["torch_version"] == "2.13.0"
         preflight_token_run(store, local_run.artifact_id, producer)
 
         target_runtime = TokenTargetRuntime(
-            version_base + "+cu128", local_runtime.cpu_threads + 1,
+            "2.13.0+cu130", local_runtime.cpu_threads + 1,
         )
         target_run = prepare_token_run(
             store, inputs, config, producer, replicate="cpu-remote-target",
