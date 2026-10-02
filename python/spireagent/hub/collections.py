@@ -18,6 +18,7 @@ from stpd.collection_activity import ENROLLMENT_SCHEMA, validate_enrollment
 
 if TYPE_CHECKING:
     from spireagent.hub.uploads import UploadService
+    from spireagent.storage.store import ArtifactStore
 
 MAX_SELECTIONS = 100
 
@@ -204,7 +205,7 @@ class CollectionAccess:
             return self._manifest_for_shared_row(row, self.service.store)
 
     @staticmethod
-    def _manifest_for_shared_row(row: Any, store: Any) -> Manifest:
+    def _manifest_for_shared_row(row: Any, store: ArtifactStore) -> Manifest:
         """Apply the same current receipt/share checks to an already-read upload row."""
         if row is None or row["approved"] == 0 or (
             row["approved"] is None and row["status"] != "verified"

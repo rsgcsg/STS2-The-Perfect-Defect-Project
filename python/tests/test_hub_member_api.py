@@ -844,8 +844,23 @@ def test_curation_overlap_source_authorization_row_cap_is_unknown(api, monkeypat
 
 def test_curation_overlap_inventory_scan_uses_request_budget(api, monkeypatch):
     router, owner, _, member, _ = api
-    candidate, gold = indexed_overlap_pair(api)
+    candidate, gold = indexed_overlap_pair(api, shared_source=True)
     with owner.operations.transaction() as db:
+        candidate_claim = db.execute(
+            "SELECT id FROM curation_claims WHERE artifact=?", (candidate.artifact_id,)
+        ).fetchone()[0]
+        gold_claim = db.execute(
+            "SELECT id FROM curation_claims WHERE artifact=?", (gold.artifact_id,)
+        ).fetchone()[0]
+        shared_run = "synthetic-inventory-shared-run"
+        db.executemany(
+            "INSERT INTO curation_claim_runs VALUES(?,?)",
+            ((candidate_claim, shared_run), (gold_claim, shared_run)),
+        )
+        db.execute(
+            "INSERT INTO curation_source_runs VALUES(?,?)",
+            (candidate.parents[0].artifact_id, shared_run),
+        )
         # Synthetic-only expression index isolates the full inventory scan from the
         # separately tested receipt-authorization scan; production adds no index.
         db.execute(
@@ -904,9 +919,79 @@ def test_curation_overlap_inventory_scan_uses_request_budget(api, monkeypatch):
     )
 
     assert observed == {"called": True, "interrupted": True}
-    assert result["status"] == "unknown"
+    assert result["status"] == "overlap"
     assert result["reasons"] == ["owner_index_query_limit"]
+    assert result["candidate_scope"] == "owner_claim_runs"
+    assert result["findings"]["source"] == {"status": "overlap", "count": None}
+    assert result["findings"]["run"] == {"status": "overlap", "count": None}
+    assert result["findings"]["run_group"] == {
+        "status": "unknown", "related_runs": None
+    }
     assert result["coverage"]["verified_source_inventory"] == "unknown"
+    assert result["coverage"]["run_group"] == "unknown"
+
+
+def test_curation_overlap_run_group_request_budget_retains_prior_hits(api, monkeypatch):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api, shared_source=True)
+    with owner.operations.transaction() as db:
+        candidate_claim = db.execute(
+            "SELECT id FROM curation_claims WHERE artifact=?", (candidate.artifact_id,)
+        ).fetchone()[0]
+        gold_claim = db.execute(
+            "SELECT id FROM curation_claims WHERE artifact=?", (gold.artifact_id,)
+        ).fetchone()[0]
+        shared_run = "synthetic-group-shared-run"
+        db.executemany(
+            "INSERT INTO curation_claim_runs VALUES(?,?)",
+            ((candidate_claim, shared_run), (gold_claim, shared_run)),
+        )
+        db.execute(
+            "INSERT INTO curation_source_runs VALUES(?,?)",
+            (candidate.parents[0].artifact_id, shared_run),
+        )
+        db.executemany(
+            "INSERT INTO curation_fingerprints VALUES(?,?)",
+            (("synthetic-group-wide-fanout", shared_run),)
+            + tuple(
+                ("synthetic-group-wide-fanout", f"synthetic-group-run-{index}")
+                for index in range(2_000)
+            ),
+        )
+
+    original = curation_access._bounded_rows
+    observed = {"group_query": False, "request_budget_exhausted": False}
+
+    def exhaust_request_budget_in_group_query(
+        db, query, parameters=(), *, budget, vm_steps=curation_access.MAX_OVERLAP_SQLITE_VM_STEPS
+    ):
+        if "WITH RECURSIVE seeds(side,run)" in query:
+            observed["group_query"] = True
+            # Keep all authorization, source and run reads intact; exhaust only the
+            # shared route budget during the later recursive group expansion.
+            budget.max_vm_steps = budget.steps + 10_000
+            rows = original(db, query, parameters, budget=budget, vm_steps=vm_steps)
+            observed["request_budget_exhausted"] = budget.exhausted
+            return rows
+        return original(db, query, parameters, budget=budget, vm_steps=vm_steps)
+
+    monkeypatch.setattr(curation_access, "_bounded_rows", exhaust_request_budget_in_group_query)
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert observed == {"group_query": True, "request_budget_exhausted": True}
+    assert result["status"] == "overlap"
+    assert result["reasons"] == ["owner_index_query_limit"]
+    assert result["findings"]["source"] == {"status": "overlap", "count": None}
+    assert result["findings"]["run"] == {"status": "overlap", "count": None}
+    assert result["findings"]["run_group"] == {
+        "status": "unknown", "related_runs": None
+    }
+    assert result["coverage"]["run"] == "unknown"
+    assert result["coverage"]["run_group"] == "unknown"
 
 
 def test_curation_overlap_route_is_member_only_and_rejects_ambiguous_queries(api):

@@ -281,6 +281,11 @@ def overlap_metadata(
     if not project_member(principal):
         raise BoundaryError("hub", "unauthorized")
     candidate_scope = "unknown"
+    legacy_candidate = False
+    overlap_scope_authorized = False
+    observed_source_overlap = False
+    observed_run_overlap = False
+    observed_run_group_overlap = False
 
     unknown: dict[str, Any] = {
         "schema": "stpd/curation-overlap-v1",
@@ -319,6 +324,33 @@ def overlap_metadata(
         result["reasons"] = ["candidate_unavailable"]
         return result
 
+    def budget_limited_result() -> dict[str, Any]:
+        """Keep only positive facts already proved before the request budget ran out."""
+        if not overlap_scope_authorized or not (
+            observed_source_overlap or observed_run_overlap or observed_run_group_overlap
+        ):
+            return unknown_for("owner_index_query_limit")
+        result = deepcopy(unknown)
+        result["status"] = "possible_overlap" if legacy_candidate else "overlap"
+        result["candidate_scope"] = candidate_scope
+        result["reasons"] = ["owner_index_query_limit"]
+        result["coverage"]["run"] = "unknown"
+        result["findings"] = {
+            "source": {"status": "unknown", "count": None},
+            "run": {"status": "unknown", "count": None},
+            "run_group": {"status": "unknown", "related_runs": None},
+        }
+        for name, observed in (
+            ("source", observed_source_overlap),
+            ("run", observed_run_overlap),
+            ("run_group", observed_run_group_overlap),
+        ):
+            if observed:
+                result["findings"][name]["status"] = (
+                    "possible_overlap" if legacy_candidate else "overlap"
+                )
+        return result
+
     read_budget = _SqliteReadBudget(MAX_OVERLAP_REQUEST_SQLITE_VM_STEPS)
     # The member catalog is the existing discoverability gate. Do not retrieve or
     # classify an artifact until its ID is present in that authorized catalog scope.
@@ -336,7 +368,7 @@ def overlap_metadata(
         )
     except sqlite3.OperationalError:
         if read_budget.exhausted:
-            return unknown_for("owner_index_query_limit")
+            return budget_limited_result()
         return candidate_unavailable()
     except (BoundaryError, OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError):
         # Keep absent, sealed, and otherwise inaccessible candidate IDs indistinguishable.
@@ -346,7 +378,6 @@ def overlap_metadata(
 
     candidate_info = candidate.parameters.value()
     candidate_schema = candidate_info.get("schema")
-    legacy_candidate = False
     # Follow only the versioned source/dataset parent edges emitted by the owner.
     # This never opens a selection payload or infers relationships from filenames.
     node_by_id = {item.artifact_id: item for item in candidate_nodes}
@@ -454,7 +485,7 @@ def overlap_metadata(
                 budget=read_budget,
             )
             if table_rows is None:
-                return unknown_for("owner_index_query_limit")
+                return budget_limited_result()
             tables = {row[0] for row in table_rows}
             if not required <= tables:
                 return unknown_for("owner_index_unavailable")
@@ -471,11 +502,11 @@ def overlap_metadata(
                     source_upload_rows_remaining -= len(manifests)
                 except BoundaryError as error:
                     if error.stage == "sharing" and error.code == "source_upload_limit":
-                        return unknown_for("owner_index_query_limit")
+                        return budget_limited_result()
                     return candidate_unavailable()
                 except sqlite3.OperationalError:
                     if read_budget.exhausted:
-                        return unknown_for("owner_index_query_limit")
+                        return budget_limited_result()
                     return candidate_unavailable()
                 except (OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError):
                     return candidate_unavailable()
@@ -500,7 +531,7 @@ def overlap_metadata(
                 budget=read_budget,
             )
             if claim_rows is None or candidate_claims is None or target_claims is None:
-                return unknown_for("owner_index_query_limit")
+                return budget_limited_result()
             gold_claims_complete = len(claim_rows) <= MAX_OVERLAP_RUNS
             claims = sorted(claim_rows[:MAX_OVERLAP_RUNS], key=lambda row: row["id"])
             if len(target_claims) != 1:
@@ -516,6 +547,7 @@ def overlap_metadata(
                 if len(candidate_claims) != 1 or candidate_claims[0]["purpose"] != "training":
                     return unknown_for("candidate_owner_claim_missing")
                 candidate_claim_id = candidate_claims[0]["id"]
+            overlap_scope_authorized = True
 
             source_states: dict[str, bool] = {}
             for source_id in source_ids:
@@ -529,7 +561,7 @@ def overlap_metadata(
                     source_row is not None and source_row[0] == 1 and exact is not None
                 )
                 if read_budget.exhausted:
-                    return unknown_for("owner_index_query_limit")
+                    return budget_limited_result()
 
             source_ids_json = json.dumps(sorted(source_ids))
             exact_source_rows = _bounded_rows(
@@ -548,6 +580,9 @@ def overlap_metadata(
                 {row[0] for row in exact_source_rows}
                 if exact_source_rows is not None else set()
             )
+            observed_source_overlap = bool(exact_sources)
+            if read_budget.exhausted:
+                return budget_limited_result()
             source_match_complete = (
                 exact_source_rows is not None and len(exact_source_rows) <= MAX_SOURCE_INDEXES
             )
@@ -600,6 +635,10 @@ def overlap_metadata(
                 )
                 if not candidate_runs and candidate_runs_complete:
                     return unknown_for("candidate_owner_membership_missing")
+            exact_runs = candidate_runs & gold_runs
+            observed_run_overlap = bool(exact_runs)
+            if read_budget.exhausted:
+                return budget_limited_result()
             source_complete = all(source_states.values())
             all_source_rows = _bounded_rows(
                 db,
@@ -652,7 +691,6 @@ def overlap_metadata(
             for row in gold_pair_rows or []:
                 if row["claim"] in gold_claim_runs:
                     gold_claim_runs[row["claim"]].add(row["run"])
-            exact_runs = candidate_runs & gold_runs
             grouped_rows = _bounded_rows(
                 db,
                 "WITH RECURSIVE seeds(side,run) AS ("
@@ -671,7 +709,7 @@ def overlap_metadata(
                 vm_steps=MAX_RUN_GROUP_SQLITE_VM_STEPS,
             )
             if read_budget.exhausted:
-                return unknown_for("owner_index_query_limit")
+                return budget_limited_result()
             grouped = grouped_rows or []
             run_group_query_complete = (
                 grouped_rows is not None and len(grouped_rows) <= MAX_RUN_GROUP_ROWS
@@ -679,6 +717,7 @@ def overlap_metadata(
             candidate_group_runs = {row["run"] for row in grouped if row["side"] == "candidate"}
             gold_group_runs = {row["run"] for row in grouped if row["side"] == "gold"}
             group_overlap = candidate_group_runs & gold_group_runs
+            observed_run_group_overlap = bool(group_overlap)
             source_coverage_complete = (
                 source_complete and all_source_indexes_complete and not inventory_pending
                 and source_match_complete and gold_claim_sources_complete
@@ -859,7 +898,7 @@ def overlap_metadata(
         raise
     except sqlite3.OperationalError:
         if read_budget.exhausted:
-            return unknown_for("owner_index_query_limit")
+            return budget_limited_result()
         return unknown_for("owner_metadata_unavailable")
     except (OSError, sqlite3.DatabaseError, TypeError, ValueError, KeyError):
         return unknown_for("owner_metadata_unavailable")
