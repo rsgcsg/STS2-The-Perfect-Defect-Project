@@ -996,9 +996,11 @@ def finalize_token_remote_update(
     from ..policy.token_decision import LightActionM0WeightsScorer
 
     checkpoint_state = accepted.checkpoint_state
+    adapter_names = (sorted(accepted.adapter_tensor_names)
+                     if accepted.adapter_tensor_names is not None else None)
     scorer = LightActionM0WeightsScorer(
         config, inputs.manifest.parameters.value()["state_codec"], accepted.backbone,
-        sorted(accepted.adapter_tensor_names) if accepted.adapter_tensor_names is not None else None,
+        adapter_names,
         inputs.state_tokenizer, save(checkpoint_state["model"]), snapshot=snapshot,
         runtime_device="cpu",
     )
