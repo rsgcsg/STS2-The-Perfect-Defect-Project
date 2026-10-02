@@ -1545,6 +1545,7 @@ class ModalM0Provider:
             error_type
             for name in ("FunctionTimeoutError", "OutputExpiredError", "RemoteError")
             if isinstance(error_type := getattr(modal_exceptions, name, None), type)
+            and issubclass(error_type, BaseException)
         )
         cancellation_type = getattr(
             modal_exceptions, "InputCancellation", None,

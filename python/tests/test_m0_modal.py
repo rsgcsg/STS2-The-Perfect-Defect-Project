@@ -710,6 +710,29 @@ def test_real_modal_timeout_classes_distinguish_terminal_from_pending(
     assert call.get_calls == [(0.25, 0)]
 
 
+def test_poll_ignores_non_exception_modal_terminal_types(
+    parse_request: dict[bytes, FakeRequest],
+):
+    raw = b"request"
+    parse_request[raw] = _request(raw)
+    call = FakeCall("fc-call01", result=ValueError("unexpected call failure"))
+    sdk = FakeSDK(FakeFunction(), call)
+    sdk.exception = SimpleNamespace(
+        TimeoutError=FakeModalTimeout,
+        FunctionTimeoutError=str,
+        OutputExpiredError=int,
+        RemoteError=dict,
+        InputCancellation=FakeInputCancellation,
+    )
+    provider = _provider(sdk=sdk, request=parse_request[raw])
+    handle = provider.submit(raw)
+
+    with pytest.raises(BoundaryError, match="result_unavailable"):
+        provider.poll(handle, timeout_seconds=0.25)
+
+    assert call.get_calls == [(0.25, 0)]
+
+
 @pytest.mark.parametrize("timeout_error", [FakeModalTimeout(), FakeInputCancellation()])
 def test_poll_classifies_modal_timeout_and_cancellation_without_fabricating_result(
     parse_request: dict[bytes, FakeRequest],
