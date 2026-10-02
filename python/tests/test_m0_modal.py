@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import runpy
 import subprocess
@@ -286,7 +287,7 @@ class FakeSDK:
         self.app_name_lookup_response: object | None = None
 
         class AppLookupStub:
-            def AppGetByDeploymentName(
+            async def AppGetByDeploymentName(
                 _stub_self,
                 request: Any,
                 *,
@@ -360,15 +361,18 @@ class FakeAppGetByDeploymentNameResponse:
 
 @pytest.fixture
 def fake_modal_api_pb2(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    async_utils = pytest.importorskip("modal._utils.async_utils")
     api_pb2 = SimpleNamespace(
         AppGetByDeploymentNameRequest=FakeAppGetByDeploymentNameRequest,
         AppGetByDeploymentNameResponse=FakeAppGetByDeploymentNameResponse,
     )
-    import_module = m0_modal.importlib.import_module
+    import_module = importlib.import_module
 
     def import_for_provider(name: str) -> object:
         if name == "modal_proto.api_pb2":
             return api_pb2
+        if name == "modal._utils.async_utils":
+            return async_utils
         return import_module(name)
 
     monkeypatch.setattr(m0_modal.importlib, "import_module", import_for_provider)

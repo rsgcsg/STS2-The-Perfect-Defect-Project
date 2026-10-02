@@ -1264,15 +1264,23 @@ class ModalM0Provider:
         sdk = self._client()
         try:
             api_pb2 = importlib.import_module("modal_proto.api_pb2")
+            async_utils = importlib.import_module("modal._utils.async_utils")
             client = sdk.Client.from_env()
-            response = client.stub.AppGetByDeploymentName(
-                api_pb2.AppGetByDeploymentNameRequest(
-                    name=spec.app_name,
-                    environment_name=spec.environment_name,
-                ),
-                retry=None,
-                timeout=MAX_MODAL_CONTROL_SECONDS,
-            )
+            stub = client.stub
+
+            async def lookup_app_by_deployment_name() -> Any:
+                return await stub.AppGetByDeploymentName(
+                    api_pb2.AppGetByDeploymentNameRequest(
+                        name=spec.app_name,
+                        environment_name=spec.environment_name,
+                    ),
+                    retry=None,
+                    timeout=MAX_MODAL_CONTROL_SECONDS,
+                )
+
+            response = async_utils.synchronizer.create_blocking(
+                lookup_app_by_deployment_name,
+            )()
         except Exception as error:
             # Only the SDK's typed NOT_FOUND for this exact request proves absence.
             # Permission, transport, timeout, and every other RPC failure stay unknown.
