@@ -193,7 +193,7 @@ def _remote_request_identity(raw: bytes) -> dict[str, Any]:
             resume_checkpoint_id = manifest_id
         if resume_checkpoint_id is not None:
             digest(resume_checkpoint_id, "local_training.resume_checkpoint_id")
-        return value
+        return {**value, "resume_checkpoint_id": resume_checkpoint_id}
     except (BoundaryError, ValueError, TypeError, KeyError) as error:
         raise BoundaryError("local_training", "remote_request_identity_invalid") from error
 
