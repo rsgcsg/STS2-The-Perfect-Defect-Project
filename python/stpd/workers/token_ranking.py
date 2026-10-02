@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import math
 import random
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -221,6 +221,83 @@ class LightActionM0TrainOnlyInputs:
             raise BoundaryError("token_training", "invalid_train_only_m0_inputs")
 
 
+def validate_light_action_m0_inputs(
+    inputs: LoadedLightActionInputs | LightActionM0TrainOnlyInputs,
+    config: LightActionM0Config,
+) -> tuple[dict[str, Any], int]:
+    """Apply the same codec/profile/input limits to full and train-only M0 views."""
+    if not isinstance(inputs, (LoadedLightActionInputs, LightActionM0TrainOnlyInputs)):
+        raise BoundaryError("token_training", "light_action_dual_input_required")
+    info = inputs.manifest.parameters.value()
+    recipe = recipe_for(config.recipe)
+    state_codec = info.get("state_codec")
+    family = "scratch" if recipe.backbone == "s" else "pinned-qwen3"
+    expected_family = "train-only-byte-bpe" if family == "scratch" else "pinned-qwen3"
+    action_codec = info.get("action_codec")
+    input_schema = info.get("schema")
+    public = input_schema == PUBLIC_LIGHT_ACTION_INPUT_SCHEMA
+    renderer = info.get("source_renderer")
+    profile_matches = (
+        config.public_profile is not None and public and isinstance(renderer, dict)
+        and renderer.get("profile") == config.public_profile
+    ) or (config.public_profile is None and not public)
+    if (input_schema not in {
+            LIGHT_ACTION_INPUT_SCHEMA, CANONICAL_LIGHT_ACTION_INPUT_SCHEMA,
+            PUBLIC_LIGHT_ACTION_INPUT_SCHEMA,
+    }
+            or not profile_matches
+            or info.get("graph") != LIGHT_ACTION_M0_GRAPH
+            or not isinstance(state_codec, dict)
+            or state_codec.get("family") != expected_family
+            or not isinstance(action_codec, dict)
+            or action_codec.get("sha256") != SPEC_SHA256
+            or info.get("max_state_tokens") != config.max_state_tokens
+            or info.get("max_action_bytes") != config.max_action_bytes
+            or state_codec.get("max_tokens") != config.max_state_tokens):
+        raise BoundaryError("token_training", "light_action_codec_or_limit_mismatch")
+    vocab_size = state_codec.get("vocab_size")
+    if (type(vocab_size) is not int
+            or vocab_size != inputs.state_tokenizer.get_vocab_size()):
+        raise BoundaryError("token_training", "light_action_state_vocab_mismatch")
+    rows = (tuple(item.row for item in inputs.indexed_rows)
+            if isinstance(inputs, LightActionM0TrainOnlyInputs) else inputs.rows)
+    if (not rows
+            or max(len(row.state) for row in rows) > config.max_state_tokens
+            or max(len(action) - 2 for row in rows for action in row.actions)
+            > config.max_action_bytes):
+        raise BoundaryError("token_training", "light_action_input_limit_mismatch")
+    return state_codec, vocab_size
+
+
+def token_training_identity(
+    inputs: LoadedTokenInputs | LoadedLightActionInputs | LightActionM0TrainOnlyInputs,
+    config: Stage1aConfig,
+    backbone: dict[str, Any],
+) -> tuple[list[int], str]:
+    """Build the canonical update plan and checkpoint data identity without a model."""
+    if isinstance(inputs, LightActionM0TrainOnlyInputs):
+        train = [item.source_index for item in inputs.indexed_rows]
+    else:
+        train = [index for index, sample in enumerate(inputs.samples)
+                 if sample.split == "train"]
+    if not train:
+        raise BoundaryError("token_training", "empty_train")
+    plan: list[int] = []
+    for epoch in range((config.steps + len(train) - 1) // len(train)):
+        order = list(train)
+        random.Random(f"stage1a:{config.seed}:{epoch}").shuffle(order)
+        plan.extend(order)
+    plan = plan[:config.steps]
+    recipe = recipe_for(config.recipe)
+    identity_payload = {
+        "input": inputs.manifest.artifact_id, "config": config_payload(config),
+        "plan": plan, "backbone": backbone,
+    }
+    if isinstance(config, LightActionM0Config):
+        identity_payload.update({"graph": recipe.graph, "recipe": recipe.recipe_id})
+    return plan, semantic_hash(identity_payload)
+
+
 def _scoring_seed(seed: int) -> int:
     digest = hashlib.sha256(f"stage1a:{LIGHT_ACTION_M0_GRAPH}:scoring:{seed}".encode()).digest()
     return int.from_bytes(digest[:8], "big") % (2**63)
@@ -247,6 +324,43 @@ def seeded_step(seed: int, device: str) -> Iterator[None]:
             torch.cuda.set_rng_state_all(cuda)
 
 
+def _m0_scratch_shape(config: LightActionM0Config, vocab_size: int) -> ScratchShape:
+    return ScratchShape(vocab_size, 384, 2, 6, 1536, 0.1, config.max_state_tokens)
+
+
+def light_action_m0_scratch_backbone_identity(
+    config: LightActionM0Config, vocab_size: int, state_codec: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive the M0 scratch identity without constructing or placing a model."""
+    recipe = recipe_for(config.recipe)
+    if (recipe.graph != LIGHT_ACTION_M0_GRAPH or recipe.backbone != "s"
+            or type(vocab_size) is not int or vocab_size < 1):
+        raise BoundaryError("token_training", "scratch_m0_identity_required")
+    identity = {"kind": "scratch", "shape": asdict(_m0_scratch_shape(config, vocab_size))}
+    identity["state_codec"] = state_codec
+    identity["core_fingerprint"] = semantic_hash({
+        "core": identity,
+        "graph": recipe.graph,
+        "vocabulary_size": vocab_size,
+        "max_state_tokens": config.max_state_tokens,
+    })
+    return identity
+
+
+def _build_light_action_m0_scratch_model(
+    config: LightActionM0Config, vocab_size: int, state_codec: dict[str, Any],
+) -> tuple[LightActionM0Scorer, dict[str, Any]]:
+    """Build the scratch M0 shape on CPU; callers decide whether it will run."""
+    core = ScratchTokenCore(_m0_scratch_shape(config, vocab_size))
+    model = build_scorer(
+        config.recipe, core, max_action_bytes=config.max_action_bytes,
+        scoring_seed=_scoring_seed(config.seed), public_profile=config.public_profile,
+    )
+    if not isinstance(model, LightActionM0Scorer):
+        raise BoundaryError("token_training", "light_action_m0_scorer_required")
+    return model, light_action_m0_scratch_backbone_identity(config, vocab_size, state_codec)
+
+
 def construct_model(
     config: Stage1aConfig, vocab_size: int, snapshot: Path | None = None,
     *, state_codec: dict[str, Any] | None = None,
@@ -265,11 +379,11 @@ def construct_model(
             if recipe.backbone == "s":
                 if snapshot is not None:
                     raise BoundaryError("token_training", "scratch_has_no_qwen_dependency")
-                shape = ScratchShape(
-                    vocab_size, 384, 2, 6, 1536, 0.1, config.max_state_tokens,
+                model, identity = _build_light_action_m0_scratch_model(
+                    config, vocab_size, state_codec or {},
                 )
-                core = ScratchTokenCore(shape)
-                identity = {"kind": "scratch", "shape": asdict(shape)}
+                model.to(config.device)
+                return model, identity
             else:
                 if snapshot is None:
                     raise BoundaryError("token_training", "pinned_snapshot_required")
@@ -326,6 +440,61 @@ def model_weights(
                      or name in adapter_tensor_names))}
 
 
+def _validate_model_weight_state(
+    model: nn.Module,
+    weights: object,
+    *,
+    frozen: bool,
+    adapter_tensor_names: set[str] | None,
+    strict_frozen_core: bool,
+) -> Mapping[str, Tensor]:
+    expected = model_weights(model, frozen=frozen,
+                             adapter_tensor_names=adapter_tensor_names)
+    if (not isinstance(weights, Mapping) or set(weights) != set(expected)
+            or any(not isinstance(weights[name], Tensor)
+                   or weights[name].shape != expected[name].shape
+                   or weights[name].dtype != expected[name].dtype
+                   or not bool(torch.isfinite(weights[name]).all())
+                   for name in expected)):
+        raise BoundaryError("token_model", "invalid_weights")
+    if strict_frozen_core and frozen:
+        full = set(model.state_dict())
+        expected_missing = {name for name in full if name.startswith("core.")}
+        if full - set(weights) != expected_missing:
+            raise BoundaryError("token_model", "invalid_weights")
+    return cast(Mapping[str, Tensor], weights)
+
+
+def _load_validated_model_weight_state(
+    model: nn.Module,
+    weights: Mapping[str, Tensor],
+    *,
+    frozen: bool,
+    adapter_tensor_names: set[str] | None,
+    strict_frozen_core: bool,
+) -> None:
+    state = model.state_dict()
+    if adapter_tensor_names is None:
+        if strict_frozen_core and frozen:
+            missing, unexpected = model.load_state_dict(weights, strict=False)
+            expected_missing = {name for name in state if name.startswith("core.")}
+            if set(missing) != expected_missing or unexpected:
+                raise BoundaryError("token_model", "invalid_weights")
+        else:
+            model.load_state_dict(weights, strict=not frozen)
+    else:
+        expected = model_weights(model, frozen=frozen,
+                                 adapter_tensor_names=adapter_tensor_names)
+        if not adapter_tensor_names <= set(expected):
+            raise BoundaryError("token_model", "invalid_weights")
+        missing, unexpected = model.load_state_dict(weights, strict=False)
+        allowed_missing = set(state) - set(expected)
+        if (set(missing) != allowed_missing or unexpected
+                or any(not name.startswith("core.model.base_model.model.")
+                       for name in allowed_missing)):
+            raise BoundaryError("token_model", "invalid_weights")
+
+
 def restore_weights(
     model: nn.Module, raw: bytes, *, frozen: bool,
     adapter_tensor_names: set[str] | None = None,
@@ -333,33 +502,113 @@ def restore_weights(
 ) -> None:
     try:
         weights = load(raw)
-        state = model.state_dict()
-        expected = model_weights(model, frozen=frozen,
-                                 adapter_tensor_names=adapter_tensor_names)
-        if set(weights) != set(expected) or any(
-            weights[k].shape != v.shape or weights[k].dtype != v.dtype
-            or not bool(torch.isfinite(weights[k]).all()) for k, v in expected.items()
-        ):
-            raise ValueError("weights_inventory_or_values")
-        if adapter_tensor_names is None:
-            if strict_frozen_core and frozen:
-                missing, unexpected = model.load_state_dict(weights, strict=False)
-                expected_missing = {name for name in state if name.startswith("core.")}
-                if set(missing) != expected_missing or unexpected:
-                    raise ValueError("frozen_core_state_inventory")
-            else:
-                model.load_state_dict(weights, strict=not frozen)
-        else:
-            if not adapter_tensor_names <= set(expected):
-                raise ValueError("adapter_tensor_names_missing_from_weights")
-            missing, unexpected = model.load_state_dict(weights, strict=False)
-            allowed_missing = set(state) - set(expected)
-            if (set(missing) != allowed_missing or unexpected
-                    or any(not name.startswith("core.model.base_model.model.")
-                           for name in allowed_missing)):
-                raise ValueError("base_adapter_state_inventory")
+        validated = _validate_model_weight_state(
+            model, weights, frozen=frozen,
+            adapter_tensor_names=adapter_tensor_names,
+            strict_frozen_core=strict_frozen_core,
+        )
+        _load_validated_model_weight_state(
+            model, validated, frozen=frozen,
+            adapter_tensor_names=adapter_tensor_names,
+            strict_frozen_core=strict_frozen_core,
+        )
+    except BoundaryError:
+        raise
     except Exception as error:
         raise BoundaryError("token_model", "invalid_weights") from error
+
+
+def _validate_checkpoint_identity_and_optimizer(
+    raw: bytes,
+    config: Stage1aConfig,
+    data_identity: str,
+    optimizer_template: torch.optim.Optimizer,
+    parameters: list[nn.Parameter],
+    *,
+    is_light_action_m0: bool,
+) -> dict[str, Any]:
+    """Validate checkpoint identity and optimizer structure without device placement."""
+    state = decode_checkpoint(raw)
+    schema = LIGHT_ACTION_M0_CHECKPOINT_SCHEMA if is_light_action_m0 else CHECKPOINT_SCHEMA
+    cuda = config.device == "cuda"
+    expected_keys = {"schema", "data_identity", "config", "torch_version", "step",
+                     "model", "optimizer", "rng_protocol", "cpu_threads"}
+    if (set(state) != expected_keys
+            or state["schema"] != schema
+            or state["data_identity"] != data_identity
+            or state["config"] != config_payload(config)
+            or state["torch_version"] != str(torch.__version__)
+            or state["rng_protocol"] != (
+                CUDA_STEP_RNG_PROTOCOL if cuda else STEP_RNG_PROTOCOL
+            )
+            or type(state["cpu_threads"]) is not int
+            or state["cpu_threads"] != torch.get_num_threads()
+            or type(state["step"]) is not int
+            or not 0 <= state["step"] <= config.steps):
+        raise BoundaryError("token_checkpoint", "resume_identity_mismatch")
+
+    optimizer = state["optimizer"]
+    if (not isinstance(optimizer, dict) or set(optimizer) != {"state", "param_groups"}
+            or optimizer["param_groups"] != optimizer_template.state_dict()["param_groups"]
+            or not isinstance(optimizer["state"], dict)):
+        raise BoundaryError("token_checkpoint", "optimizer_config_mismatch")
+    expected_indices = set(range(len(parameters))) if state["step"] else set()
+    if set(optimizer["state"]) != expected_indices:
+        raise BoundaryError("token_checkpoint", "optimizer_state_inventory")
+    for index, values in optimizer["state"].items():
+        parameter = parameters[index]
+        if (not isinstance(values, dict)
+                or set(values) != {"step", "exp_avg", "exp_avg_sq"}
+                or not isinstance(values["step"], Tensor)
+                or values["step"].numel() != 1
+                or values["step"].dtype != parameter.dtype
+                or not bool(torch.isfinite(values["step"]).all())
+                or float(values["step"]) != state["step"]
+                or any(not isinstance(values[key], Tensor)
+                       or values[key].shape != parameter.shape
+                       or values[key].dtype != parameter.dtype
+                       or not bool(torch.isfinite(values[key]).all())
+                       for key in ("exp_avg", "exp_avg_sq"))):
+            raise BoundaryError("token_checkpoint", "optimizer_state_mismatch")
+    return state
+
+
+def validate_light_action_m0_scratch_checkpoint(
+    raw: bytes,
+    inputs: LoadedLightActionInputs | LightActionM0TrainOnlyInputs,
+    config: LightActionM0Config,
+    expected_backbone_identity: dict[str, Any],
+) -> dict[str, Any]:
+    """Check a CUDA-target scratch checkpoint's exact structure using CPU tensors only.
+
+    This validates serialized identity and tensor compatibility. It does not restore the
+    checkpoint or establish that CUDA optimizer state can be continued on this host.
+    """
+    recipe = recipe_for(config.recipe)
+    if config.device != "cuda" or recipe.backbone != "s":
+        raise BoundaryError("token_checkpoint", "cuda_scratch_m0_required")
+    state_codec, vocab_size = validate_light_action_m0_inputs(inputs, config)
+    backbone = light_action_m0_scratch_backbone_identity(
+        config, vocab_size, state_codec,
+    )
+    if backbone != expected_backbone_identity:
+        raise BoundaryError("token_checkpoint", "backbone_identity_mismatch")
+    _, data_identity = token_training_identity(inputs, config, backbone)
+    with seeded_step(config.seed, "cpu"):
+        model, _ = _build_light_action_m0_scratch_model(config, vocab_size, state_codec)
+    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    optimizer = torch.optim.AdamW(
+        parameters, lr=config.learning_rate, weight_decay=config.weight_decay,
+    )
+    state = _validate_checkpoint_identity_and_optimizer(
+        raw, config, data_identity, optimizer, parameters,
+        is_light_action_m0=True,
+    )
+    _validate_model_weight_state(
+        model, state["model"], frozen=False,
+        adapter_tensor_names=None, strict_frozen_core=True,
+    )
+    return state
 
 
 class TokenRankingEngine:
@@ -375,48 +624,8 @@ class TokenRankingEngine:
         self._samples_by_index: dict[int, ModelSample] = {}
         self._rows_by_index: dict[int, LightActionTokenRow] = {}
         if isinstance(config, LightActionM0Config):
-            if not isinstance(inputs, (LoadedLightActionInputs, LightActionM0TrainOnlyInputs)):
-                raise BoundaryError("token_training", "light_action_dual_input_required")
-            state_codec = info.get("state_codec")
-            family = "scratch" if recipe_for(config.recipe).backbone == "s" else "pinned-qwen3"
-            expected_family = ("train-only-byte-bpe" if family == "scratch"
-                               else "pinned-qwen3")
-            action_codec = info.get("action_codec")
-            input_schema = info.get("schema")
-            public = input_schema == PUBLIC_LIGHT_ACTION_INPUT_SCHEMA
-            renderer = info.get("source_renderer")
-            profile_matches = (
-                config.public_profile is not None and public and isinstance(renderer, dict)
-                and renderer.get("profile") == config.public_profile
-            ) or (config.public_profile is None and not public)
-            if (input_schema not in {
-                    LIGHT_ACTION_INPUT_SCHEMA, CANONICAL_LIGHT_ACTION_INPUT_SCHEMA,
-                    PUBLIC_LIGHT_ACTION_INPUT_SCHEMA,
-            }
-                    or not profile_matches
-                    or info.get("graph") != LIGHT_ACTION_M0_GRAPH
-                    or not isinstance(state_codec, dict)
-                    or state_codec.get("family") != expected_family
-                    or not isinstance(action_codec, dict)
-                    or action_codec.get("sha256") != SPEC_SHA256
-                    or info.get("max_state_tokens") != config.max_state_tokens
-                    or info.get("max_action_bytes") != config.max_action_bytes
-                    or state_codec.get("max_tokens") != config.max_state_tokens):
-                raise BoundaryError("token_training", "light_action_codec_or_limit_mismatch")
-            if state_codec.get("vocab_size") != inputs.state_tokenizer.get_vocab_size():
-                raise BoundaryError("token_training", "light_action_state_vocab_mismatch")
-            if isinstance(inputs, LightActionM0TrainOnlyInputs):
-                indexed = inputs.indexed_rows
-                m0_rows = tuple(item.row for item in indexed)
-            else:
-                m0_rows = inputs.rows
-            if (not m0_rows
-                    or max(len(row.state) for row in m0_rows) > config.max_state_tokens
-                    or max(len(action) - 2 for row in m0_rows for action in row.actions)
-                    > config.max_action_bytes):
-                raise BoundaryError("token_training", "light_action_input_limit_mismatch")
+            state_codec, vocab_size = validate_light_action_m0_inputs(inputs, config)
             state_codec_identity = state_codec
-            vocab_size = state_codec["vocab_size"]
         else:
             if isinstance(inputs, (LoadedLightActionInputs, LightActionM0TrainOnlyInputs)):
                 raise BoundaryError("token_training", "legacy_recipe_rejects_dual_input")
@@ -447,24 +656,9 @@ class TokenRankingEngine:
             self._rows_by_index = {
                 item.source_index: item.row for item in inputs.indexed_rows
             }
-            train = [item.source_index for item in inputs.indexed_rows]
-        else:
-            train = [i for i, sample in enumerate(inputs.samples) if sample.split == "train"]
-        if not train:
-            raise BoundaryError("token_training", "empty_train")
-        self.plan: list[int] = []
-        for epoch in range((config.steps + len(train) - 1) // len(train)):
-            order = list(train)
-            random.Random(f"stage1a:{config.seed}:{epoch}").shuffle(order)
-            self.plan.extend(order)
-        self.plan = self.plan[:config.steps]
-        identity_payload = {
-            "input": inputs.manifest.artifact_id, "config": config_payload(config),
-            "plan": self.plan, "backbone": self.backbone,
-        }
-        if self.is_light_action_m0:
-            identity_payload.update({"graph": recipe.graph, "recipe": recipe.recipe_id})
-        self.data_identity = semantic_hash(identity_payload)
+        self.plan, self.data_identity = token_training_identity(
+            inputs, config, self.backbone,
+        )
         self.step = 0
 
     def _weights(self) -> dict[str, Tensor]:
@@ -563,41 +757,11 @@ class TokenRankingEngine:
         return encode_checkpoint(state)
 
     def restore(self, raw: bytes) -> None:
-        state = decode_checkpoint(raw)
-        schema = (LIGHT_ACTION_M0_CHECKPOINT_SCHEMA if self.is_light_action_m0
-                  else CHECKPOINT_SCHEMA)
-        cuda = self.config.device == "cuda"
-        expected_keys = {"schema", "data_identity", "config", "torch_version", "step",
-                         "model", "optimizer", "rng_protocol", "cpu_threads"}
-        if (set(state) != expected_keys
-                or state["schema"] != schema
-                or state["data_identity"] != self.data_identity
-                or state["config"] != config_payload(self.config)
-                or state["torch_version"] != str(torch.__version__)
-                or state["rng_protocol"] != (
-                    CUDA_STEP_RNG_PROTOCOL if cuda else STEP_RNG_PROTOCOL
-                )
-                or state["cpu_threads"] != torch.get_num_threads()
-                or type(state["step"]) is not int or not 0 <= state["step"] <= self.config.steps):
-            raise BoundaryError("token_checkpoint", "resume_identity_mismatch")
+        state = _validate_checkpoint_identity_and_optimizer(
+            raw, self.config, self.data_identity, self.optimizer, self.parameters,
+            is_light_action_m0=self.is_light_action_m0,
+        )
         optimizer = state["optimizer"]
-        if (not isinstance(optimizer, dict) or set(optimizer) != {"state", "param_groups"}
-                or optimizer["param_groups"] != self.optimizer.state_dict()["param_groups"]
-                or not isinstance(optimizer["state"], dict)):
-            raise BoundaryError("token_checkpoint", "optimizer_config_mismatch")
-        expected_indices = set(range(len(self.parameters))) if state["step"] else set()
-        if set(optimizer["state"]) != expected_indices:
-            raise BoundaryError("token_checkpoint", "optimizer_state_inventory")
-        for index, values in optimizer["state"].items():
-            parameter = self.parameters[index]
-            if (not isinstance(values, dict) or set(values) != {"step", "exp_avg", "exp_avg_sq"}
-                    or not isinstance(values["step"], Tensor) or values["step"].numel() != 1
-                    or float(values["step"]) != state["step"]
-                    or any(not isinstance(values[k], Tensor)
-                           or values[k].shape != parameter.shape
-                           or values[k].dtype != parameter.dtype
-                           for k in ("exp_avg", "exp_avg_sq"))):
-                raise BoundaryError("token_checkpoint", "optimizer_state_mismatch")
         restore_weights(self.model, save(state["model"]), frozen=self.frozen,
                         adapter_tensor_names=self.adapter_tensor_names,
                         strict_frozen_core=self.is_light_action_m0)

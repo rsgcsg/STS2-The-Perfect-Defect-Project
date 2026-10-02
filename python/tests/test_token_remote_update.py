@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 from dataclasses import replace
 
 import pytest
@@ -12,7 +14,15 @@ from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ManifestArtifactStore
 from stpd.fullrun.light_action_inputs import load_light_action_inputs
-from stpd.workers.token_ranking import LightActionM0Config, TokenRankingEngine
+from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
+from stpd.workers.token_ranking import (
+    CUDA_STEP_RNG_PROTOCOL,
+    LightActionM0Config,
+    TokenRankingEngine,
+    config_payload,
+    token_training_identity,
+    validate_light_action_m0_scratch_checkpoint,
+)
 from stpd.workers.token_remote_update import (
     TokenRemoteUpdateRequest,
     TokenRemoteUpdateResult,
@@ -174,5 +184,107 @@ def test_remote_update_resume_uses_exact_existing_checkpoint_and_rejects_tamperi
             store.get_manifest(identity).kind in {"offline_evaluation", "model", "run_result"}
             for identity in store.manifest_ids()
         )
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_cpu_can_prepare_and_structurally_validate_cuda_target_checkpoint(
+    tmp_path, monkeypatch,
+):
+    case = _canonical_run(tmp_path, monkeypatch)
+    torch, previous_threads, store, owner, operation, producer, inputs, config, _ = case
+    try:
+        assert not torch.cuda.is_available(), "this regression requires a CPU-only host"
+        cuda_config = replace(config, device="cuda")
+        cuda_run = prepare_token_run(store, inputs, cuda_config, producer)
+
+        # This is only a synthetic typed-checkpoint fixture: CPU-generated tensors are
+        # tagged with the CUDA request identity; it is not evidence of CUDA execution.
+        cpu_engine = TokenRankingEngine(inputs, config)
+        cpu_engine.advance()
+        cpu_engine.advance()
+        state = decode_checkpoint(cpu_engine.checkpoint())
+        monkeypatch.setattr(
+            torch.cuda, "is_available",
+            lambda: pytest.fail("prepare/validate must not probe or initialize CUDA"),
+        )
+        request = prepare_token_remote_update(
+            store, owner, cuda_run.artifact_id, producer, operation, 2,
+            attempt_id="f" * 32,
+        )
+        assert request.config.device == request.target_device == "cuda"
+        assert request.backbone_identity.value() == cpu_engine.backbone
+        _, expected_identity = token_training_identity(
+            inputs, cuda_config, request.backbone_identity.value(),
+        )
+        state["config"] = config_payload(cuda_config)
+        state["data_identity"] = expected_identity
+        state["rng_protocol"] = CUDA_STEP_RNG_PROTOCOL
+        checkpoint = encode_checkpoint(state)
+
+        result = TokenRemoteUpdateResult(
+            request.request_sha256, request.attempt_id, request.run_id,
+            request.input_id, request.producer, request.operation_id,
+            request.training_binding, request.target_device, request.target_step,
+            request.config, request.resume_checkpoint_id, None,
+            request.target_step, hashlib.sha256(checkpoint).hexdigest(), checkpoint,
+            request.backbone_identity,
+        )
+        before = store.manifest_ids()
+        assert validate_token_remote_update(
+            store, owner, request, result, producer, operation,
+        ) == result
+        assert store.manifest_ids() == before
+
+        def reject_state(mutator, reason):
+            invalid = copy.deepcopy(state)
+            mutator(invalid)
+            raw = encode_checkpoint(invalid)
+            with pytest.raises(BoundaryError, match=reason):
+                validate_light_action_m0_scratch_checkpoint(
+                    raw, inputs, cuda_config, request.backbone_identity.value(),
+                )
+
+        reject_state(lambda value: value.update(config=config_payload(config)),
+                     "resume_identity_mismatch")
+        reject_state(lambda value: value.update(rng_protocol="seed_plus_completed_steps_v1"),
+                     "resume_identity_mismatch")
+        reject_state(lambda value: value.update(step=cuda_config.steps + 1),
+                     "resume_identity_mismatch")
+        reject_state(lambda value: value.update(data_identity="0" * 64),
+                     "resume_identity_mismatch")
+
+        model_name = next(name for name, tensor in state["model"].items()
+                          if tensor.numel() > 1)
+        reject_state(
+            lambda value: value["model"].__setitem__(
+                model_name, value["model"][model_name].reshape(-1)[:1],
+            ),
+            "invalid_weights",
+        )
+        reject_state(
+            lambda value: value["model"].__setitem__(
+                model_name, value["model"][model_name].to(dtype=torch.float64),
+            ),
+            "invalid_weights",
+        )
+        optimizer_index = next(iter(state["optimizer"]["state"]))
+        reject_state(
+            lambda value: value["optimizer"]["state"][optimizer_index].pop("exp_avg_sq"),
+            "optimizer_state_mismatch",
+        )
+        reject_state(
+            lambda value: value["optimizer"]["state"].pop(optimizer_index),
+            "optimizer_state_inventory",
+        )
+        reject_state(
+            lambda value: value["optimizer"]["param_groups"][0].update(lr=0.5),
+            "optimizer_config_mismatch",
+        )
+
+        nonfinite = copy.deepcopy(state)
+        nonfinite["optimizer"]["state"][optimizer_index]["exp_avg"].fill_(float("nan"))
+        with pytest.raises(BoundaryError, match="non_finite"):
+            encode_checkpoint(nonfinite)
     finally:
         torch.set_num_threads(previous_threads)
