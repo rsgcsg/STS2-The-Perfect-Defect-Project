@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-import torch
 from tokenizers import Tokenizer
 
 from spireagent.artifact_contracts import Manifest, Producer
@@ -46,14 +45,16 @@ from .token_ranking import (
     IndexedLightActionM0TrainRow,
     LightActionM0Config,
     LightActionM0TrainOnlyInputs,
+    TokenTargetRuntime,
     TokenRankingEngine,
     config_payload,
     decode_config,
     light_action_m0_scratch_backbone_identity,
     validate_light_action_m0_inputs,
     validate_light_action_m0_scratch_checkpoint,
+    require_current_token_runtime,
 )
-from .token_worker import preflight_token_run
+from .token_worker import preflight_token_run_contract
 
 REQUEST_SCHEMA = "stpd/token-remote-update-request-v1"
 RESULT_SCHEMA = "stpd/token-remote-update-result-v1"
@@ -249,6 +250,7 @@ class TokenRemoteUpdateRequest:
             raise BoundaryError("token_remote_update", "target_config_mismatch")
         run_info = self.run_manifest.parameters.value()
         input_info = self.input_manifest.parameters.value()
+        TokenTargetRuntime.from_run_info(run_info)
         binding = self.training_binding.value()
         if (self.run_manifest.kind != "run"
                 or self.run_manifest.producer != self.producer
@@ -323,6 +325,11 @@ class TokenRemoteUpdateRequest:
     @property
     def resume_checkpoint_id(self) -> str | None:
         return self.resume_manifest.artifact_id if self.resume_manifest is not None else None
+
+    @property
+    def target_runtime(self) -> TokenTargetRuntime:
+        """Runtime declaration bound by the immutable run manifest, not provider auth."""
+        return TokenTargetRuntime.from_run_info(self.run_manifest.parameters.value())
 
     def to_bytes(self) -> bytes:
         body = {
@@ -541,9 +548,10 @@ def prepare_token_remote_update(
     snapshot: Path | None = None,
 ) -> TokenRemoteUpdateRequest:
     """Create a remote request only after exact local run and owner admission checks."""
-    run, config, input_manifest, owner_bound = preflight_token_run(
+    run, config, input_manifest, owner_bound = preflight_token_run_contract(
         store, run_id, producer, resume=resume_checkpoint_id,
     )
+    target_runtime = TokenTargetRuntime.from_run_info(run.parameters.value())
     if not isinstance(config, LightActionM0Config) or not owner_bound:
         raise BoundaryError("token_remote_update", "owner_admitted_m0_input_required")
     input_info = input_manifest.parameters.value()
@@ -579,7 +587,7 @@ def prepare_token_remote_update(
         )
         if config.device == "cuda":
             resume_state = validate_light_action_m0_scratch_checkpoint(
-                resume_bytes, inputs, config, backbone_identity,
+                resume_bytes, inputs, config, backbone_identity, target_runtime,
             )
             start_step = resume_state["step"]
             if start_step != resume_manifest.parameters.value().get("step"):
@@ -623,10 +631,9 @@ def execute_token_remote_update(
     snapshot: Path | None = None,
 ) -> TokenRemoteUpdateResult:
     """Run only configured optimizer updates and return the existing typed checkpoint bytes."""
-    run_info = request.run_manifest.parameters.value()
-    if (str(torch.__version__) != run_info.get("torch_version")
-            or torch.get_num_threads() != run_info.get("cpu_threads")):
-        raise BoundaryError("token_remote_update", "producer_runtime_mismatch")
+    require_current_token_runtime(
+        request.target_runtime, "token_remote_update", "producer_runtime_mismatch",
+    )
     tokenizer = _decode_state_tokenizer(request.state_tokenizer)
     train_inputs = LightActionM0TrainOnlyInputs(
         request.input_manifest, request.train_rows, tokenizer,
@@ -672,7 +679,7 @@ def validate_token_remote_update(
     *,
     snapshot: Path | None = None,
 ) -> TokenRemoteUpdateResult:
-    """Recheck local lineage and validate the result on its configured device."""
+    """Recheck lineage and validate the checkpoint against the configured target."""
     if not isinstance(result, TokenRemoteUpdateResult):
         raise BoundaryError("token_remote_update", "typed_result_required")
     if (producer != request.producer or operation_id != request.operation_id
@@ -690,7 +697,7 @@ def validate_token_remote_update(
             or result.backbone_identity != request.backbone_identity):
         raise BoundaryError("token_remote_update", "result_request_binding_mismatch")
 
-    run, config, input_manifest, owner_bound = preflight_token_run(
+    run, config, input_manifest, owner_bound = preflight_token_run_contract(
         store, request.run_id, producer, resume=request.resume_checkpoint_id,
     )
     if (not owner_bound or not isinstance(config, LightActionM0Config)
@@ -738,6 +745,7 @@ def validate_token_remote_update(
         if config.device == "cuda":
             resume_state = validate_light_action_m0_scratch_checkpoint(
                 stored_bytes, inputs, config, request.backbone_identity.value(),
+                request.target_runtime,
             )
             if resume_state["step"] != stored_resume.parameters.value().get("step"):
                 raise BoundaryError("token_remote_update", "resume_manifest_step_mismatch")
@@ -751,6 +759,7 @@ def validate_token_remote_update(
     if config.device == "cuda":
         checkpoint_state = validate_light_action_m0_scratch_checkpoint(
             result.checkpoint, inputs, config, request.backbone_identity.value(),
+            request.target_runtime,
         )
         result_step = checkpoint_state["step"]
     else:

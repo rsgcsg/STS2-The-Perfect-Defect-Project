@@ -52,6 +52,37 @@ CUDA_STEP_RNG_PROTOCOL = "seed_plus_completed_steps_cuda_v1"
 
 
 @dataclass(frozen=True)
+class TokenTargetRuntime:
+    """Declared Torch/thread identity for a configured training target."""
+
+    torch_version: str
+    cpu_threads: int
+
+    def __post_init__(self) -> None:
+        if (type(self.torch_version) is not str or not self.torch_version
+                or len(self.torch_version) > 256
+                or type(self.cpu_threads) is not int or self.cpu_threads < 1):
+            raise BoundaryError("token_runtime", "invalid_target_runtime")
+
+    @classmethod
+    def current(cls) -> TokenTargetRuntime:
+        return cls(str(torch.__version__), torch.get_num_threads())
+
+    @classmethod
+    def from_run_info(cls, info: object) -> TokenTargetRuntime:
+        if not isinstance(info, Mapping):
+            raise BoundaryError("token_runtime", "invalid_target_runtime")
+        return cls(info.get("torch_version"), info.get("cpu_threads"))
+
+
+def require_current_token_runtime(
+    target_runtime: TokenTargetRuntime, stage: str, reason: str,
+) -> None:
+    if target_runtime != TokenTargetRuntime.current():
+        raise BoundaryError(stage, reason)
+
+
+@dataclass(frozen=True)
 class TokenConfig:
     recipe: str = "stage1a.dsimple.s.v1"
     seed: int = 1701
@@ -527,8 +558,11 @@ def _validate_checkpoint_identity_and_optimizer(
     parameters: list[nn.Parameter],
     *,
     is_light_action_m0: bool,
+    target_runtime: TokenTargetRuntime,
 ) -> dict[str, Any]:
-    """Validate checkpoint identity and optimizer structure without device placement."""
+    """Validate checkpoint identity against a declared runtime without device placement."""
+    if not isinstance(target_runtime, TokenTargetRuntime):
+        raise BoundaryError("token_checkpoint", "resume_identity_mismatch")
     state = decode_checkpoint(raw)
     schema = LIGHT_ACTION_M0_CHECKPOINT_SCHEMA if is_light_action_m0 else CHECKPOINT_SCHEMA
     cuda = config.device == "cuda"
@@ -538,12 +572,12 @@ def _validate_checkpoint_identity_and_optimizer(
             or state["schema"] != schema
             or state["data_identity"] != data_identity
             or state["config"] != config_payload(config)
-            or state["torch_version"] != str(torch.__version__)
+            or state["torch_version"] != target_runtime.torch_version
             or state["rng_protocol"] != (
                 CUDA_STEP_RNG_PROTOCOL if cuda else STEP_RNG_PROTOCOL
             )
             or type(state["cpu_threads"]) is not int
-            or state["cpu_threads"] != torch.get_num_threads()
+            or state["cpu_threads"] != target_runtime.cpu_threads
             or type(state["step"]) is not int
             or not 0 <= state["step"] <= config.steps):
         raise BoundaryError("token_checkpoint", "resume_identity_mismatch")
@@ -579,12 +613,15 @@ def validate_light_action_m0_scratch_checkpoint(
     inputs: LoadedLightActionInputs | LightActionM0TrainOnlyInputs,
     config: LightActionM0Config,
     expected_backbone_identity: dict[str, Any],
+    target_runtime: TokenTargetRuntime,
 ) -> dict[str, Any]:
-    """Check a CUDA-target scratch checkpoint's exact structure using CPU tensors only.
+    """Structurally validate a checkpoint configured for CUDA using CPU tensors only.
 
-    This validates serialized identity and tensor compatibility. It does not restore the
-    checkpoint or establish that CUDA optimizer state can be continued on this host.
+    This checks serialized identity and tensor compatibility against the declared target
+    runtime. It neither resumes the checkpoint nor proves that a CUDA executor can run it.
     """
+    if not isinstance(target_runtime, TokenTargetRuntime):
+        raise BoundaryError("token_checkpoint", "resume_identity_mismatch")
     recipe = recipe_for(config.recipe)
     if config.device != "cuda" or recipe.backbone != "s":
         raise BoundaryError("token_checkpoint", "cuda_scratch_m0_required")
@@ -604,6 +641,7 @@ def validate_light_action_m0_scratch_checkpoint(
     state = _validate_checkpoint_identity_and_optimizer(
         raw, config, data_identity, optimizer, parameters,
         is_light_action_m0=True,
+        target_runtime=target_runtime,
     )
     _validate_model_weight_state(
         model, state["model"], frozen=False,
@@ -763,6 +801,7 @@ class TokenRankingEngine:
         state = _validate_checkpoint_identity_and_optimizer(
             raw, self.config, self.data_identity, self.optimizer, self.parameters,
             is_light_action_m0=self.is_light_action_m0,
+            target_runtime=TokenTargetRuntime.current(),
         )
         optimizer = state["optimizer"]
         restore_weights(self.model, save(state["model"]), frozen=self.frozen,
