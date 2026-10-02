@@ -20,7 +20,7 @@ from typing import Any, Protocol
 from safetensors.torch import save
 from tokenizers import Tokenizer
 
-from spireagent.artifact_contracts import Manifest, Producer
+from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import (
     BoundaryError,
     FrozenObject,
