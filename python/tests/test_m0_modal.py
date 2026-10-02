@@ -145,7 +145,7 @@ def _target(**changes: object) -> m0_modal.ModalM0Target:
         "account_id": "workspace-01",
         "environment_name": "staging",
         "app_id": "ap-app01",
-        "app_version": 3,
+        "app_version": 1,
         "function_id": "fu-function01",
         "image_object_id": "im-image01",
         "producer": PRODUCER,
@@ -188,7 +188,12 @@ def _provider(
             request_sha256=request.request_sha256,
             target_runtime=TokenTargetRuntime(request.torch_version, request.cpu_threads),
         )
-    return m0_modal.ModalM0Provider(target, _target_runtime(target), sdk=sdk)
+    spec = m0_modal.ModalM0Provider._spec_for_target(target)
+    cli = FakeModalCLI(spec, workspace_id=target.account_id)
+    cli.deployed = True
+    return m0_modal.ModalM0Provider(
+        target, _target_runtime(target), sdk=sdk, command_runner=cli,
+    )
 
 
 def _attempt_spec(request: FakeRequest | None = None) -> m0_modal.M0AttemptSpec:
@@ -215,8 +220,8 @@ class FakeCall:
         input_count: int = 1,
     ) -> None:
         self.object_id = call_id
-        self._app_id = app_id
-        self._function_id = function_id
+        self.app_id = app_id
+        self.function_id = function_id
         self._input_count = input_count
         self.result = result
         self.get_calls: list[tuple[float, int]] = []
@@ -262,14 +267,18 @@ class FakeFunction:
         spawn_error: Exception | None = None,
     ) -> None:
         self.object_id = function_id
-        self._app_id = app_id
-        self._metadata = SimpleNamespace(function_name="token_remote_update", image_id=image_id)
+        self.app_id = app_id
+        self.function_name = "token_remote_update"
+        self.image_id = image_id
+        self.on_hydrate: Any = None
         self.client = object()
         self.call_id = call_id
         self.spawn_error = spawn_error
         self.spawn_calls: list[bytes] = []
 
     def hydrate(self) -> FakeFunction:
+        if self.on_hydrate is not None:
+            self.on_hydrate()
         return self
 
     def spawn(self, request_bytes: bytes) -> SimpleNamespace:
@@ -279,43 +288,135 @@ class FakeFunction:
         return SimpleNamespace(object_id=self.call_id)
 
 
+def _function_response(function: FakeFunction) -> Any:
+    from modal_proto import api_pb2 as api
+
+    plan = m0_modal.M0_PILOT_EXECUTION_PLAN
+    scaling = api.AutoscalerSettings(
+        max_containers=plan.max_containers, scaledown_window=plan.scaledown_seconds,
+    )
+    return api.FunctionGetResponse(
+        function_id=function.object_id,
+        handle_metadata=api.FunctionHandleMetadata(
+            app_id=function.app_id, function_name=function.function_name,
+            function_type=api.Function.FUNCTION_TYPE_FUNCTION,
+        ),
+        function=api.FunctionData(
+            function_name=function.function_name,
+            timeout_secs=plan.function_timeout_seconds,
+            startup_timeout_secs=plan.startup_timeout_seconds,
+            autoscaler_settings=scaling,
+            ranked_functions=[api.FunctionData.RankedFunction(
+                rank=0,
+                function=api.Function(
+                    function_name=function.function_name, image_id=function.image_id,
+                    resources=api.Resources(
+                        milli_cpu=int(plan.cpu * 1000), memory_mb=plan.memory_mib,
+                        gpu_config=api.GPUConfig(gpu_type=plan.gpu, count=1),
+                    ),
+                    retry_policy=api.FunctionRetryPolicy(retries=plan.retries),
+                ),
+            )],
+        ),
+    )
+
+
+def _layout_response(function: FakeFunction) -> Any:
+    from modal_proto import api_pb2 as api
+
+    return api.AppGetLayoutResponse(app_layout=api.AppLayout(
+        function_ids={function.function_name: function.object_id},
+        objects=[api.Object(
+            object_id=function.object_id,
+            function_handle_metadata=_function_response(function).handle_metadata,
+        )],
+    ))
+
+
 class FakeSDK:
     def __init__(self, function: FakeFunction, call: FakeCall | None = None) -> None:
         self.function = function
         self.call = call
-        self.lookups: list[tuple[str, str, int, str]] = []
+        self.lookups: list[tuple[str, str, int | None, str]] = []
         self.call_lookups: list[tuple[str, object]] = []
+        self.metadata_lookups: list[str] = []
+        self.function_response_transform: Any = None
+        self.layout_response_transform: Any = None
+        self.call_response_transform: Any = None
+        self.function_lookup_error: Exception | None = None
         self.app_name_lookup_calls: list[tuple[str, str]] = []
         self.app_name_lookup_options: list[tuple[None, float]] = []
         self.app_name_lookup_error: Exception | None = FakeModalNotFound("app not found")
         self.app_name_lookup_response: object | None = None
 
-        class AppLookupStub:
+        class MetadataStub:
             async def AppGetByDeploymentName(
-                _stub_self,
-                request: Any,
-                *,
-                retry: None,
-                timeout: float,
+                _stub_self, request: Any, *, retry: None, timeout: float,
             ) -> object:
-                self.app_name_lookup_calls.append(
-                    (request.name, request.environment_name),
-                )
+                self.app_name_lookup_calls.append((request.name, request.environment_name))
                 self.app_name_lookup_options.append((retry, timeout))
                 if self.app_name_lookup_error is not None:
                     raise self.app_name_lookup_error
                 return self.app_name_lookup_response
 
+            async def AppGetLayout(
+                _stub_self, request: Any, *, retry: None, timeout: float,
+            ) -> Any:
+                assert retry is None and timeout == m0_modal.MAX_MODAL_CONTROL_SECONDS
+                self.metadata_lookups.append("layout")
+                response = _layout_response(function)
+                if self.layout_response_transform is not None:
+                    self.layout_response_transform(response)
+                return response
+
+            async def FunctionGet(
+                _stub_self, request: Any, *, retry: None = None,
+                timeout: float = m0_modal.MAX_MODAL_CONTROL_SECONDS,
+            ) -> Any:
+                assert request.app_version == 0
+                assert retry is None and timeout == m0_modal.MAX_MODAL_CONTROL_SECONDS
+                self.metadata_lookups.append("function")
+                if self.function_lookup_error is not None:
+                    raise self.function_lookup_error
+                response = _function_response(function)
+                if self.function_response_transform is not None:
+                    self.function_response_transform(response)
+                return response
+
+            async def FunctionCallFromId(
+                _stub_self, request: Any, *, retry: None, timeout: float,
+            ) -> Any:
+                from modal_proto import api_pb2 as api
+
+                assert retry is None and timeout == m0_modal.MAX_MODAL_CONTROL_SECONDS
+                self.metadata_lookups.append("call")
+                assert self.call is not None
+                response = api.FunctionCallFromIdResponse(
+                    function_call_id=self.call.object_id, num_inputs=self.call._input_count,
+                    metadata=api.FunctionCallHandleMetadata(
+                        app_id=self.call.app_id, function_id=self.call.function_id,
+                    ),
+                )
+                if self.call_response_transform is not None:
+                    self.call_response_transform(response)
+                return response
+
+        self.client = SimpleNamespace(stub=MetadataStub())
+        function.client = self.client
+
         class ClientAPI:
             @staticmethod
             def from_env() -> SimpleNamespace:
-                return SimpleNamespace(stub=AppLookupStub())
+                return self.client
 
         class FunctionAPI:
             @staticmethod
             def from_name(
-                app_name: str, function_name: str, *, version: int, environment_name: str
+                app_name: str, function_name: str, *, environment_name: str,
+                client: object, version: int | None = None,
             ) -> FakeFunction:
+                assert client is self.client
+                assert version is None
                 self.lookups.append((app_name, function_name, version, environment_name))
                 return self.function
 
@@ -387,6 +488,7 @@ class FakeModalCLI:
         self.workspace_id = workspace_id
         self.app_list_override: object | None = None
         self.named_history_override: tuple[int, str, str] | None = None
+        self.history_override: object | None = None
         self.deploy_returncode = 0
         self.app_state = "deployed"
         self.app_tasks = "1"
@@ -437,6 +539,8 @@ class FakeModalCLI:
                     "version": "v1",
                     "tag": m0_modal.ModalM0Provider._deployment_tag(self.spec),
                 }]
+            if self.history_override is not None:
+                history = self.history_override
             return SimpleNamespace(returncode=0, stdout=json.dumps(history), stderr="")
         if args and args[0] == "deploy":
             self.deploy_calls.append(args)
@@ -488,7 +592,7 @@ def test_target_and_call_handle_round_trip_all_provider_and_source_identity(
     assert restored.target.account_id == "workspace-01"
     assert restored.target.environment_name == "staging"
     assert restored.target.app_id == "ap-app01"
-    assert restored.target.app_version == 3
+    assert restored.target.app_version == 1
     assert restored.target.function_id == "fu-function01"
     assert restored.target.image_object_id == "im-image01"
     assert restored.producer.uv_lock_sha256 == "b" * 64
@@ -498,7 +602,7 @@ def test_target_and_call_handle_round_trip_all_provider_and_source_identity(
         (
             m0_modal.M0_MODAL_APP_NAME + request.attempt_id,
             m0_modal.M0_MODAL_FUNCTION_NAME,
-            3,
+            None,
             "staging",
         )
     ]
@@ -549,6 +653,232 @@ def test_deployment_tag_preserves_full_sha256_and_passes_real_sdk_validation(
         asyncio.run(_deploy_app(modal.App(spec.app_name), tag=tag))
     client.assert_awaited_once()
 
+
+
+def test_public_hydrate_and_call_recovery_use_real_locked_sdk_and_protobuf(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import modal
+    from modal._utils.async_utils import synchronizer
+    from modal.client import _Client
+    from modal_proto import api_pb2 as api
+
+    assert importlib.metadata.version("modal") == m0_modal.MODAL_SDK_VERSION
+    spec = _attempt_spec()
+    cli = FakeModalCLI(spec)
+    cli.deployed = True
+    transport = FakeSDK(FakeFunction(), FakeCall("fc-call01"))
+    client = modal.Client("http://127.0.0.1:1", api.CLIENT_TYPE_CLIENT, None)
+    # Substitute only the wire transport: public lookup/hydration remain real SDK.
+    synchronizer._translate_in(client)._stub = transport.client.stub
+    monkeypatch.setattr(
+        _Client, "_open", AsyncMock(side_effect=AssertionError("network_forbidden")),
+    )
+    monkeypatch.setattr(modal.Client, "from_env", lambda: client)
+    public_from_name = modal.Function.from_name
+    lookup_options: list[dict[str, Any]] = []
+
+    def from_name(*args: Any, **kwargs: Any) -> Any:
+        lookup_options.append(kwargs)
+        return public_from_name(*args, **kwargs)
+
+    monkeypatch.setattr(modal.Function, "from_name", from_name)
+    provider = m0_modal.ModalM0Provider(spec=spec, sdk=modal, command_runner=cli)
+    target = provider.resolve_app(spec)
+    assert target is not None
+    function = provider._function_for(target)
+    assert isinstance(function, modal.Function)
+    assert function.object_id == target.function_id == "fu-function01"
+    assert all("version" not in options and options["client"] is client
+               for options in lookup_options)
+    assert getattr(function, "_app_id", None) is None
+    assert getattr(function, "_metadata", None) is None
+    assert "image_id" not in api.FunctionHandleMetadata.DESCRIPTOR.fields_by_name
+    assert "app_version" not in api.FunctionMapRequest.DESCRIPTOR.fields_by_name
+    assert cli.deploy_calls == []
+
+    request = _request()
+    handle = _call_handle(request, target)
+    cli.app_state = "stopped"
+    transport.function_lookup_error = AssertionError("stopped_app_lookup_forbidden")
+    before = list(transport.metadata_lookups)
+    call = provider._saved_call(handle, target)
+    assert isinstance(call, modal.FunctionCall)
+    call.hydrate()
+    assert call.object_id == handle.call_id
+    assert transport.metadata_lookups[len(before):] == ["call"]
+    assert cli.deploy_calls == []
+
+
+def _call_handle(request: FakeRequest, target: m0_modal.ModalM0Target) -> m0_modal.ModalM0Call:
+    return m0_modal.ModalM0Call(
+        target, _target_runtime(target), "fc-call01", request.request_sha256,
+        len(request.raw), request.attempt_id, request.run_id, request.input_id,
+        request.operation_id, request.producer,
+        m0_modal._request_result_identity_sha256(request), request.target_device,
+        request.target_step, request.resume_checkpoint_id,
+    )
+
+
+@pytest.mark.parametrize("field", [
+    "gpu", "gpu_count", "cpu", "memory", "timeout", "startup", "scaledown",
+    "max_containers", "min_containers", "buffer_containers", "retries", "rank_count",
+])
+def test_typed_resource_drift_is_rejected_before_spawn(
+    parse_request: dict[bytes, FakeRequest], field: str,
+):
+    request = _request()
+    parse_request[request.raw] = request
+    function = FakeFunction()
+    sdk = FakeSDK(function)
+
+    def change(response: Any) -> None:
+        definition = response.function.ranked_functions[0].function
+        resources = definition.resources
+        scaling = response.function.autoscaler_settings
+        if field == "gpu":
+            resources.gpu_config.gpu_type = "A100"
+        elif field == "gpu_count":
+            resources.gpu_config.count = 2
+        elif field == "cpu":
+            resources.milli_cpu = 4000
+        elif field == "memory":
+            resources.memory_mb = 16384
+        elif field == "timeout":
+            response.function.timeout_secs = 901
+        elif field == "startup":
+            response.function.startup_timeout_secs = 121
+        elif field == "scaledown":
+            scaling.scaledown_window = 31
+        elif field == "max_containers":
+            scaling.max_containers = 2
+        elif field == "min_containers":
+            scaling.min_containers = 1
+        elif field == "buffer_containers":
+            scaling.buffer_containers = 1
+        elif field == "retries":
+            definition.retry_policy.retries = 1
+        else:
+            response.function.ranked_functions.add().CopyFrom(response.function.ranked_functions[0])
+
+    sdk.function_response_transform = change
+    with pytest.raises(BoundaryError, match="deployed_target_resource_mismatch"):
+        _provider(sdk=sdk).submit(request.raw)
+    assert function.spawn_calls == []
+
+
+@pytest.mark.parametrize("field", ["image", "app", "function", "function_name", "tag", "version"])
+def test_identity_drift_during_public_hydrate_is_rejected_before_spawn(
+    parse_request: dict[bytes, FakeRequest], field: str,
+):
+    request = _request()
+    parse_request[request.raw] = request
+    function = FakeFunction()
+    sdk = FakeSDK(function)
+    provider = _provider(sdk=sdk)
+    cli = provider._command_runner
+
+    def change() -> None:
+        if field == "image":
+            function.image_id = "im-foreign"
+        elif field == "app":
+            function.app_id = "ap-foreign"
+        elif field == "function":
+            function.object_id = "fu-foreign"
+        elif field == "function_name":
+            function.function_name = "wrong_entry"
+        else:
+            cli.history_override = [{
+                "version": "v2" if field == "version" else "v1",
+                "tag": "foreign" if field == "tag" else provider._deployment_tag(cli.spec),
+            }]
+
+    function.on_hydrate = change
+    with pytest.raises(BoundaryError):
+        provider.submit(request.raw)
+    assert function.spawn_calls == []
+    assert cli.deploy_calls == []
+
+
+@pytest.mark.parametrize("change", [
+    "layout_function", "layout_app", "lookup_name", "missing_definition",
+])
+def test_typed_layout_and_function_views_must_agree_before_spawn(
+    parse_request: dict[bytes, FakeRequest], change: str,
+):
+    request = _request()
+    parse_request[request.raw] = request
+    function = FakeFunction()
+    sdk = FakeSDK(function)
+    if change.startswith("layout"):
+        def alter_layout(response: Any) -> None:
+            if change == "layout_function":
+                response.app_layout.function_ids[m0_modal.M0_MODAL_FUNCTION_NAME] = "fu-foreign"
+            else:
+                response.app_layout.objects[0].function_handle_metadata.app_id = "ap-foreign"
+        sdk.layout_response_transform = alter_layout
+    else:
+        def alter_function(response: Any) -> None:
+            if change == "lookup_name":
+                response.handle_metadata.function_name = "wrong_entry"
+            else:
+                response.function.ClearField("ranked_functions")
+        sdk.function_response_transform = alter_function
+    with pytest.raises(BoundaryError):
+        _provider(sdk=sdk).submit(request.raw)
+    assert function.spawn_calls == []
+
+
+def test_second_deployment_is_rejected_even_when_latest_tag_matches(
+    parse_request: dict[bytes, FakeRequest],
+):
+    request = _request()
+    parse_request[request.raw] = request
+    sdk = FakeSDK(FakeFunction())
+    provider = _provider(sdk=sdk)
+    cli = provider._command_runner
+    tag = provider._deployment_tag(cli.spec)
+    cli.history_override = [{"version": "v1", "tag": tag}, {"version": "v2", "tag": tag}]
+    with pytest.raises(BoundaryError, match="attempt_app_redeployed"):
+        provider.submit(request.raw)
+    assert sdk.lookups == [] and sdk.function.spawn_calls == []
+
+
+def test_fresh_provider_recovers_stopped_app_call_without_lookup_or_spawn(
+    parse_request: dict[bytes, FakeRequest], parse_result: dict[bytes, FakeResult],
+):
+    request = _request()
+    parse_request[request.raw] = request
+    result_bytes = b"verified-result-bytes"
+    parse_result[result_bytes] = _result(request)
+    target = _target()
+    handle = _call_handle(request, target)
+    call = FakeCall(handle.call_id, result=_frame(request, result_bytes, target))
+    sdk = FakeSDK(FakeFunction(), call)
+    sdk.function_lookup_error = AssertionError("stopped_app_lookup_forbidden")
+    provider = _provider(target, sdk=sdk)
+    cli = provider._command_runner
+    cli.app_state = "stopped"
+    cli.app_tasks = "0"
+    restored = provider.restore_handle(handle.to_bytes())
+    assert provider.poll(restored) == result_bytes
+    assert provider.cancel(restored).status == "acknowledged"
+    assert sdk.metadata_lookups == ["call", "call"]
+    assert sdk.lookups == [] and sdk.function.spawn_calls == []
+    assert cli.deploy_calls == [] and cli.app_list_calls == 0
+
+
+def test_metadata_transport_failure_never_redeploys_or_submits_existing_app():
+    spec = _attempt_spec()
+    cli = FakeModalCLI(spec)
+    cli.deployed = True
+    sdk = FakeSDK(FakeFunction())
+    sdk.function_lookup_error = RuntimeError("metadata_transport_unknown")
+    provider = m0_modal.ModalM0Provider(spec=spec, sdk=sdk, command_runner=cli)
+    for _ in range(2):
+        with pytest.raises(BoundaryError, match="deployed_target_identity_unavailable"):
+            provider.prepare_app(spec)
+    assert cli.deploy_calls == [] and sdk.function.spawn_calls == []
 
 def test_app_ref_is_durable_and_prepare_reconciles_without_redeploy():
     spec = _attempt_spec()
@@ -638,7 +968,7 @@ def test_recovery_accepts_old_slug_only_from_same_live_workspace_binding():
     recovered = provider.resolve_app(spec, allow_legacy_workspace_alias=True)
 
     assert recovered is not None and recovered.account_id == "chensunguo1210"
-    assert cli.app_list_calls == 1
+    assert cli.app_list_calls == 2
     assert cli.deploy_calls == []
 
     wrong_workspace = FakeModalCLI(
@@ -1607,6 +1937,7 @@ def test_real_train_only_request_round_trips_through_mock_modal_and_local_valida
             target,
             target_metadata,
             sdk=FakeSDK(function, call),
+            command_runner=_provider(target)._command_runner,
         )
         assert provider.token_target_runtime() == target_runtime
         handle = provider.submit(request_bytes)

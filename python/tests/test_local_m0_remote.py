@@ -378,8 +378,13 @@ def test_new_start_rejects_workspace_slug_before_creating_remote_journal(
         torch.set_num_threads(previous_threads)
 
 
+@pytest.mark.parametrize("lookup_error_code", [
+    "modal_app_list_incomplete", "deployed_target_identity_unavailable",
+    "deployed_target_identity_mismatch", "deployed_target_resource_mismatch",
+    "attempt_app_redeployed",
+])
 def test_prepare_error_with_incomplete_recovery_lookup_stays_unknown(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lookup_error_code: str,
 ) -> None:
     case = _case(tmp_path, monkeypatch, steps=1)
     torch, previous_threads, service, store, _, _, run, _, _, _ = case
@@ -390,7 +395,7 @@ def test_prepare_error_with_incomplete_recovery_lookup_stays_unknown(
         state = _FakeModalState(
             store,
             prepare_error=BoundaryError("modal_m0", "prepare_unknown"),
-            lookup_error=BoundaryError("modal_m0", "modal_app_list_incomplete"),
+            lookup_error=BoundaryError("modal_m0", lookup_error_code),
         )
         operation = _controller(
             service, state,
