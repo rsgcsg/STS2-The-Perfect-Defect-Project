@@ -41,6 +41,122 @@ from spireagent.workbench.native_workbench import (
 
 MAX_REJECTED_POST_BYTES = 64 * 1024
 REJECTED_POST_BODY_TIMEOUT_SECONDS = 1.0
+MAX_REJECTED_POST_CHUNKS = 1024
+MAX_REJECTED_POST_CHUNK_LINE_BYTES = 1024
+MAX_REJECTED_POST_TRAILER_BYTES = 8 * 1024
+
+
+def _read_rejected_post_chunk(
+    stream: Any, connection: Any, size: int, *, deadline: float,
+) -> bytes | None:
+    """Read one buffered/socket chunk using the remaining absolute deadline."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    try:
+        connection.settimeout(remaining)
+        chunk = stream.read1(size)
+    except OSError:
+        return None
+    if not chunk or time.monotonic() > deadline:
+        return None
+    return chunk
+
+
+def _discard_rejected_post_bytes(
+    stream: Any, connection: Any, size: int, *, deadline: float,
+) -> bool:
+    """Discard exactly size bytes without retaining an untrusted body."""
+    remaining = size
+    while remaining:
+        chunk = _read_rejected_post_chunk(
+            stream, connection, min(remaining, 8192), deadline=deadline,
+        )
+        if chunk is None:
+            return False
+        remaining -= len(chunk)
+    return True
+
+
+def _read_rejected_post_exact(
+    stream: Any, connection: Any, size: int, *, deadline: float,
+) -> bytes | None:
+    result = bytearray()
+    while len(result) < size:
+        chunk = _read_rejected_post_chunk(
+            stream, connection, size - len(result), deadline=deadline,
+        )
+        if chunk is None:
+            return None
+        result.extend(chunk)
+    return bytes(result)
+
+
+def _read_rejected_post_line(
+    stream: Any, connection: Any, *, maximum: int, deadline: float,
+) -> bytes | None:
+    line = bytearray()
+    while len(line) < maximum:
+        chunk = _read_rejected_post_chunk(stream, connection, 1, deadline=deadline)
+        if chunk is None:
+            return None
+        line.extend(chunk)
+        if line.endswith(b"\r\n"):
+            return bytes(line[:-2])
+        if line.endswith(b"\n"):
+            return None
+    return None
+
+
+def _discard_rejected_chunked_post(
+    stream: Any, connection: Any, *, deadline: float,
+) -> bool:
+    """Discard only bounded HTTP chunk framing and payload bytes, never decode JSON."""
+    body_bytes = 0
+    chunks = 0
+    while True:
+        line = _read_rejected_post_line(
+            stream, connection, maximum=MAX_REJECTED_POST_CHUNK_LINE_BYTES,
+            deadline=deadline,
+        )
+        if line is None:
+            return False
+        raw_size = line.split(b";", 1)[0]
+        if not raw_size or any(byte not in b"0123456789abcdefABCDEF" for byte in raw_size):
+            return False
+        try:
+            chunk_size = int(raw_size, 16)
+        except ValueError:
+            return False
+        if chunk_size == 0:
+            trailer_bytes = 0
+            while trailer_bytes <= MAX_REJECTED_POST_TRAILER_BYTES:
+                trailer = _read_rejected_post_line(
+                    stream, connection, maximum=MAX_REJECTED_POST_CHUNK_LINE_BYTES,
+                    deadline=deadline,
+                )
+                if trailer is None:
+                    return False
+                trailer_bytes += len(trailer) + 2
+                if trailer_bytes > MAX_REJECTED_POST_TRAILER_BYTES:
+                    return False
+                if not trailer:
+                    return True
+                if b":" not in trailer or trailer[:1] in {b" ", b"\t"}:
+                    return False
+            return False
+        if chunks >= MAX_REJECTED_POST_CHUNKS:
+            return False
+        if chunk_size > MAX_REJECTED_POST_BYTES - body_bytes:
+            return False
+        if not _discard_rejected_post_bytes(
+            stream, connection, chunk_size, deadline=deadline,
+        ):
+            return False
+        body_bytes += chunk_size
+        if _read_rejected_post_exact(stream, connection, 2, deadline=deadline) != b"\r\n":
+            return False
+        chunks += 1
 
 
 @contextlib.contextmanager
@@ -829,33 +945,55 @@ def create_server(app: Application) -> ThreadingHTTPServer:
             self.wfile.write(value)
 
         def reject_post(self, code: int, value: bytes) -> None:
-            """Discard a bounded framed body before closing a rejected POST."""
-            if self.headers.get("Transfer-Encoding") is not None:
+            """Drain an unprocessed, bounded POST body before returning its denial."""
+            transfer_encodings = self.headers.get_all("Transfer-Encoding") or []
+            content_lengths = self.headers.get_all("Content-Length") or []
+            if len(transfer_encodings) > 1 or len(content_lengths) > 1:
                 self.close_connection = True
                 return
-            content_length = self.headers.get("Content-Length")
-            try:
-                length = 0 if content_length is None else int(content_length)
-            except ValueError:
+            if transfer_encodings and content_lengths:
                 self.close_connection = True
                 return
-            if not 0 <= length <= MAX_REJECTED_POST_BYTES:
-                self.close_connection = True
-                return
-            if length:
-                previous_timeout = self.connection.gettimeout()
+            if transfer_encodings:
+                if transfer_encodings[0].strip().lower() != "chunked":
+                    self.close_connection = True
+                    return
+                frame = "chunked"
+                length = 0
+            elif not content_lengths:
+                frame = "content_length"
+                length = 0
+            else:
+                raw_length = content_lengths[0].strip(" \t")
+                if not raw_length or not raw_length.isascii() or not raw_length.isdecimal():
+                    self.close_connection = True
+                    return
                 try:
-                    self.connection.settimeout(REJECTED_POST_BODY_TIMEOUT_SECONDS)
-                    body = self.rfile.read(length)
-                except OSError:
+                    length = int(raw_length, 10)
+                except ValueError:
                     self.close_connection = True
                     return
-                finally:
-                    with contextlib.suppress(OSError):
-                        self.connection.settimeout(previous_timeout)
-                if len(body) != length:
+                if length > MAX_REJECTED_POST_BYTES:
                     self.close_connection = True
                     return
+                frame = "content_length"
+            deadline = time.monotonic() + REJECTED_POST_BODY_TIMEOUT_SECONDS
+            previous_timeout = self.connection.gettimeout()
+            try:
+                if frame == "chunked":
+                    complete = _discard_rejected_chunked_post(
+                        self.rfile, self.connection, deadline=deadline,
+                    )
+                else:
+                    complete = _discard_rejected_post_bytes(
+                        self.rfile, self.connection, length, deadline=deadline,
+                    )
+            finally:
+                with contextlib.suppress(OSError):
+                    self.connection.settimeout(previous_timeout)
+            if not complete:
+                self.close_connection = True
+                return
             self.close_connection = True
             self.respond(code, value)
 
@@ -1473,7 +1611,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                             raise ValueError
                         value = app.start_local_dataset_publish(body["preview_id"])
                     else:
-                        self.reject_post(404, b'{"error":"route_not_found"}')
+                        self.respond(404, b'{"error":"route_not_found"}')
                         return
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
