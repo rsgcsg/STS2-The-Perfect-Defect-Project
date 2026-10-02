@@ -725,6 +725,30 @@ def test_runtime_source_identity_fails_closed_outside_fixed_image_checkout():
         )
 
 
+def test_remote_entry_rejects_measured_checkout_lock_mismatch_before_training(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    raw = b"request"
+    request = _request(raw)
+    monkeypatch.setattr(m0_modal, "_decode_request", lambda value: request)
+    monkeypatch.setattr(
+        m0_modal,
+        "_runtime_source_identity",
+        lambda: Producer(PRODUCER.repository, PRODUCER.source_revision, "9" * 64),
+    )
+    import stpd.workers.token_remote_update as worker
+
+    calls: list[object] = []
+    monkeypatch.setattr(worker, "execute_token_remote_update", lambda got: calls.append(got))
+    with pytest.raises(BoundaryError, match="runtime_source_lock_mismatch"):
+        m0_modal.execute_m0_request_bytes(
+            raw,
+            expected_producer=PRODUCER,
+            expected_image_object_id="im-image01",
+        )
+    assert calls == []
+
+
 def test_real_train_only_request_round_trips_through_mock_modal_and_local_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
