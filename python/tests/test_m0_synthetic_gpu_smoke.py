@@ -272,7 +272,8 @@ def install_mocks(
             boundary.listed_environments += 1
             return [{"name": "existing-dev"}]
         if args[:2] == ["app", "list"]:
-            return [{"app_id": "ap-test-123", "state": app_state, "tasks": app_tasks}]
+            return [{"description": "m0-synthetic-gpu-smoke", "app_id": "ap-test-123",
+                     "state": app_state, "tasks": app_tasks}]
         if args[:2] == ["container", "list"]:
             return [] if containers is None else containers
         pytest.fail(f"unexpected Modal CLI command: {args}")
