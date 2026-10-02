@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from spireagent.artifact_contracts import Manifest, Parent, Payload, Producer
+from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes, text
 from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
 
@@ -73,22 +73,29 @@ def _model_schema(config: Stage1aConfig, input_schema: str | None = None) -> str
     return MODEL_SCHEMA
 
 
-def _checkpoint_metadata(engine: TokenRankingEngine) -> dict[str, object]:
+def _checkpoint_metadata_for(
+    config: Stage1aConfig,
+    input_manifest: Manifest,
+    step: int,
+    data_identity: str,
+    backbone: dict[str, object],
+    adapter_tensor_names: set[str] | None,
+) -> dict[str, object]:
     info: dict[str, object] = {
-        "schema": (LIGHT_ACTION_M0_CHECKPOINT_SCHEMA if engine.is_light_action_m0
+        "schema": (LIGHT_ACTION_M0_CHECKPOINT_SCHEMA if isinstance(config, LightActionM0Config)
                    else CHECKPOINT_SCHEMA),
-        "step": engine.step, "data_identity": engine.data_identity,
+        "step": step, "data_identity": data_identity,
     }
-    if engine.is_light_action_m0:
-        source = engine.inputs.manifest.parameters.value()
+    if isinstance(config, LightActionM0Config):
+        source = input_manifest.parameters.value()
         info.update({
-            "recipe": engine.config.recipe,
-            "graph": recipe_for(engine.config.recipe).graph,
+            "recipe": config.recipe,
+            "graph": recipe_for(config.recipe).graph,
             "state_codec": source["state_codec"],
             "action_codec": source["action_codec"],
-            "backbone": engine.backbone,
-            "adapter_config": engine.backbone.get("adapter_config"),
-            "adapter_tensor_names": sorted(engine.adapter_tensor_names or set()),
+            "backbone": backbone,
+            "adapter_config": backbone.get("adapter_config"),
+            "adapter_tensor_names": sorted(adapter_tensor_names or set()),
             "input_schema": source["schema"], "input_format": source["format"],
             "source_view_schema": source["source_schema"],
             "source_renderer": source["source_renderer"],
@@ -96,6 +103,13 @@ def _checkpoint_metadata(engine: TokenRankingEngine) -> dict[str, object]:
         if "training_binding" in source:
             info["training_binding"] = source["training_binding"]
     return info
+
+
+def _checkpoint_metadata(engine: TokenRankingEngine) -> dict[str, object]:
+    return _checkpoint_metadata_for(
+        engine.config, engine.inputs.manifest, engine.step, engine.data_identity,
+        engine.backbone, engine.adapter_tensor_names,
+    )
 
 
 def prepare_token_run(
@@ -406,6 +420,143 @@ def preflight_token_run(
     return result
 
 
+def _finalize_token_run(
+    store: ArtifactStore,
+    reporter: RunReporter,
+    run: Manifest,
+    inputs: LoadedTokenInputs | LoadedLightActionInputs,
+    config: Stage1aConfig,
+    runtime: Producer,
+    checkpoint_id: str,
+    started: float,
+    step: int,
+    scores: Callable[[int], tuple[float, ...]],
+    model_bytes: bytes,
+    backbone: dict[str, object],
+    adapter_tensor_names: set[str] | None,
+    event: Callable[..., None],
+    dev_admitter: Callable[[Manifest, Manifest], dict] | None,
+    *,
+    evaluation_runtime: dict[str, object] | None = None,
+) -> WorkerResult:
+    """Publish the existing M0 model/dev/completion chain for validated final weights."""
+    run_id = run.artifact_id
+    input_info = inputs.manifest.parameters.value()
+    weights = store.put_payload(
+        "weights", io.BytesIO(model_bytes), "application/vnd.safetensors",
+    )
+    view = store.get_manifest(inputs.manifest.parent("model_view"))
+    parents = (Parent("run", run_id), Parent("checkpoint", checkpoint_id),
+               Parent("training_input", inputs.manifest.artifact_id),
+               Parent("model_view", view.artifact_id))
+    if isinstance(config, LightActionM0Config):
+        if not isinstance(inputs, LoadedLightActionInputs):
+            raise BoundaryError("token_run", "light_action_inputs_required")
+        model_payloads = (weights, inputs.manifest.payload("state_tokenizer"),
+                          inputs.manifest.payload("action_codec"))
+        model_info: dict[str, object] = {
+            "schema": _model_schema(config, input_info["schema"]),
+            "config": config_payload(config), "recipe": config.recipe,
+            "graph": recipe_for(config.recipe).graph, "backbone": backbone,
+            "state_codec": input_info["state_codec"],
+            "action_codec": input_info["action_codec"],
+            "adapter_config": backbone.get("adapter_config"),
+            "adapter_tensor_names": sorted(adapter_tensor_names or set()),
+            "state_tokenizer_sha256": input_info["state_codec"]["sha256"],
+            "action_codec_sha256": input_info["action_codec"]["sha256"],
+            "weights_sha256": weights.sha256,
+            "source_view_schema": view.parameters.value().get("schema"),
+            "source_renderer": input_info["source_renderer"],
+            "input_schema": input_info["schema"], "input_format": input_info["format"],
+            "steps": step, "qualification": "engineering_only", "dtype": "float32",
+            "runtime_integration": "not_included_in_light_action_m0_slice",
+        }
+        if "training_binding" in input_info:
+            model_info["training_binding"] = input_info["training_binding"]
+        model_payloads = tuple(model_payloads)
+    else:
+        if not isinstance(inputs, LoadedTokenInputs):
+            raise BoundaryError("token_run", "token_inputs_required")
+        model_payloads = (weights, inputs.manifest.payload("tokenizer"))
+        model_info = {
+            "schema": MODEL_SCHEMA, "config": config_payload(config),
+            "graph": recipe_for(config.recipe).graph, "backbone": backbone,
+            "vocab_size": inputs.manifest.parameters.value()["vocab_size"],
+            "serializer": view.parameters.value()["serializer"],
+            "input_format": FORMAT, "steps": step,
+            "qualification": "engineering_only", "dtype": "float32",
+        }
+    model = Manifest("model", runtime, parents, model_payloads,
+                     FrozenObject.of(model_info))
+    store.publish(model)
+    admitted = input_info.get("schema") in {
+        CANONICAL_LIGHT_ACTION_INPUT_SCHEMA, PUBLIC_LIGHT_ACTION_INPUT_SCHEMA,
+    }
+    dev_admission = None
+    if admitted:
+        if dev_admitter is None:
+            raise BoundaryError("token_run", "canonical_dev_admission_required")
+        dev_admission = dev_admitter(model, view)
+        if (not isinstance(dev_admission, dict)
+                or dev_admission.get("evaluation_scope")
+                != "within_training_purpose_allocation"
+                or dev_admission.get("physical_game_independence") != "unresolved"
+                or dev_admission.get("clean_held_out_claim") is not False):
+            raise BoundaryError("token_run", "canonical_dev_admission_invalid")
+    event("evaluating", model_id=model.artifact_id)
+    qualification = token_dev_qualification(store, view, admission=dev_admission)
+    native_run_independence = qualification["native_run_independence"]
+    rows, summary = evaluate_samples(
+        inputs.samples, scores, seed=config.seed,
+        native_run_independence=native_run_independence,
+    )
+    prior = action_only_prior(inputs.samples)
+    baselines = {}
+    for name, scorer in (
+        ("uniform_legal", lambda i: (0.0,) * len(inputs.samples[i].action_keys)),
+        ("action_only", lambda i: prior(inputs.samples[i])),
+    ):
+        _, baselines[name] = evaluate_samples(
+            inputs.samples, scorer, seed=config.seed,
+            native_run_independence=native_run_independence,
+        )
+    metric_value = {"rows": rows, "summary": summary, "baselines": baselines}
+    evaluation_info: dict[str, object] = {
+        "schema": EVALUATION_SCHEMA, "partition": "dev",
+        "qualification": "engineering_only",
+        "native_run_independence": native_run_independence,
+    }
+    if evaluation_runtime is not None:
+        evaluation_info["scoring_runtime"] = evaluation_runtime
+    restrictions = {key: qualification[key] for key in (
+        "evaluation_scope", "historical_external_exposure",
+        "physical_game_independence", "clean_held_out_claim",
+    )}
+    metric_value["admission"] = restrictions
+    metric_value["qualification_evidence"] = qualification["evidence"]
+    evaluation_info.update(restrictions)
+    metrics = store.put_payload("metrics", io.BytesIO(json_bytes(metric_value)),
+                                "application/json")
+    evaluation = Manifest(
+        "offline_evaluation", runtime,
+        (Parent("model", model.artifact_id), Parent("model_view", view.artifact_id)),
+        (metrics,), FrozenObject.of(evaluation_info),
+    )
+    store.publish(evaluation)
+    result = Manifest(
+        "run_result", runtime,
+        (Parent("run", run_id), Parent("model", model.artifact_id),
+         Parent("training_input", inputs.manifest.artifact_id),
+         Parent("offline_evaluation", evaluation.artifact_id)),
+        parameters=FrozenObject.of({"schema": "stpd/run-result-v1", "state": "completed",
+                                    "steps": step,
+                                    "attempt_seconds": time.perf_counter() - started}),
+    )
+    result_id = reporter.complete(result)
+    event("completed", result_id=result_id)
+    return WorkerResult("completed", run_id, checkpoint_id, result_id)
+
+
 def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, runtime: Producer,
                    *, snapshot: Path | None = None, resume: str | None = None,
                    stop_after: int | None = None,
@@ -511,114 +662,11 @@ def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, run
                 return WorkerResult("paused", run_id, checkpoint_id=checkpoint_id)
         if checkpoint_id is None:
             checkpoint_id = checkpoint()
-        weights = store.put_payload("weights", io.BytesIO(engine.model_bytes()),
-                                     "application/vnd.safetensors")
-        view = store.get_manifest(inputs.manifest.parent("model_view"))
-        parents = (Parent("run", run_id), Parent("checkpoint", checkpoint_id),
-                   Parent("training_input", inputs.manifest.artifact_id),
-                   Parent("model_view", view.artifact_id))
-        model_payloads: tuple[Payload, ...]
-        if engine.is_light_action_m0:
-            assert isinstance(inputs, LoadedLightActionInputs)
-            input_info = inputs.manifest.parameters.value()
-            model_payloads = (weights, inputs.manifest.payload("state_tokenizer"),
-                              inputs.manifest.payload("action_codec"))
-            model_info = {
-                "schema": _model_schema(config, input_info["schema"]),
-                "config": config_payload(config), "recipe": config.recipe,
-                "graph": recipe_for(config.recipe).graph, "backbone": engine.backbone,
-                "state_codec": input_info["state_codec"],
-                "action_codec": input_info["action_codec"],
-                "adapter_config": engine.backbone.get("adapter_config"),
-                "adapter_tensor_names": sorted(engine.adapter_tensor_names or set()),
-                "state_tokenizer_sha256": input_info["state_codec"]["sha256"],
-                "action_codec_sha256": input_info["action_codec"]["sha256"],
-                "weights_sha256": weights.sha256,
-                "source_view_schema": view.parameters.value().get("schema"),
-                "source_renderer": input_info["source_renderer"],
-                "input_schema": input_info["schema"],
-                "input_format": input_info["format"], "steps": engine.step,
-                "qualification": "engineering_only", "dtype": "float32",
-                "runtime_integration": "not_included_in_light_action_m0_slice",
-            }
-            if "training_binding" in input_info:
-                model_info["training_binding"] = input_info["training_binding"]
-        else:
-            assert isinstance(inputs, LoadedTokenInputs)
-            model_payloads = (weights, inputs.manifest.payload("tokenizer"))
-            model_info = {
-                "schema": MODEL_SCHEMA, "config": config_payload(config),
-                "graph": recipe_for(config.recipe).graph, "backbone": engine.backbone,
-                "vocab_size": inputs.manifest.parameters.value()["vocab_size"],
-                "serializer": view.parameters.value()["serializer"],
-                "input_format": FORMAT, "steps": engine.step,
-                "qualification": "engineering_only", "dtype": "float32",
-            }
-        model = Manifest("model", runtime, parents, model_payloads,
-                         FrozenObject.of(model_info))
-        store.publish(model)
-        admitted = input_info.get("schema") in {
-            CANONICAL_LIGHT_ACTION_INPUT_SCHEMA, PUBLIC_LIGHT_ACTION_INPUT_SCHEMA,
-        }
-        dev_admission = None
-        if admitted:
-            if dev_admitter is None:
-                raise BoundaryError("token_run", "canonical_dev_admission_required")
-            dev_admission = dev_admitter(model, view)
-            if (not isinstance(dev_admission, dict)
-                    or dev_admission.get("evaluation_scope")
-                    != "within_training_purpose_allocation"
-                    or dev_admission.get("physical_game_independence") != "unresolved"
-                    or dev_admission.get("clean_held_out_claim") is not False):
-                raise BoundaryError("token_run", "canonical_dev_admission_invalid")
-        event("evaluating", model_id=model.artifact_id)
-        qualification = token_dev_qualification(store, view, admission=dev_admission)
-        native_run_independence = qualification["native_run_independence"]
-        rows, summary = evaluate_samples(
-            inputs.samples, engine.scores, seed=config.seed,
-            native_run_independence=native_run_independence,
+        return _finalize_token_run(
+            store, reporter, run, inputs, config, runtime, checkpoint_id, started,
+            engine.step, engine.scores, engine.model_bytes(), engine.backbone,
+            engine.adapter_tensor_names, event, dev_admitter,
         )
-        prior = action_only_prior(inputs.samples)
-        baselines = {}
-        for name, scorer in (
-            ("uniform_legal", lambda i: (0.0,) * len(inputs.samples[i].action_keys)),
-            ("action_only", lambda i: prior(inputs.samples[i])),
-        ):
-            _, baselines[name] = evaluate_samples(
-                inputs.samples, scorer, seed=config.seed,
-                native_run_independence=native_run_independence,
-            )
-        metric_value = {"rows": rows, "summary": summary, "baselines": baselines}
-        evaluation_info = {"schema": EVALUATION_SCHEMA, "partition": "dev",
-                           "qualification": "engineering_only",
-                           "native_run_independence": native_run_independence}
-        restrictions = {key: qualification[key] for key in (
-            "evaluation_scope", "historical_external_exposure",
-            "physical_game_independence", "clean_held_out_claim",
-        )}
-        metric_value["admission"] = restrictions
-        metric_value["qualification_evidence"] = qualification["evidence"]
-        evaluation_info.update(restrictions)
-        metrics = store.put_payload("metrics", io.BytesIO(json_bytes(metric_value)),
-                                    "application/json")
-        evaluation = Manifest(
-            "offline_evaluation", runtime,
-            (Parent("model", model.artifact_id), Parent("model_view", view.artifact_id)),
-            (metrics,), FrozenObject.of(evaluation_info),
-        )
-        store.publish(evaluation)
-        result = Manifest(
-            "run_result", runtime,
-            (Parent("run", run_id), Parent("model", model.artifact_id),
-             Parent("training_input", inputs.manifest.artifact_id),
-             Parent("offline_evaluation", evaluation.artifact_id)),
-            parameters=FrozenObject.of({"schema": "stpd/run-result-v1", "state": "completed",
-                                        "steps": engine.step,
-                                        "attempt_seconds": time.perf_counter() - started}),
-        )
-        result_id = reporter.complete(result)
-        event("completed", result_id=result_id)
-        return WorkerResult("completed", run_id, checkpoint_id, result_id)
     except Exception as error:
         event("failed", error_type=type(error).__name__, last_checkpoint=checkpoint_id)
         raise

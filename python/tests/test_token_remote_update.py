@@ -7,6 +7,7 @@ import hashlib
 from dataclasses import replace
 
 import pytest
+from safetensors.torch import save
 
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError
@@ -28,6 +29,7 @@ from stpd.workers.token_remote_update import (
     TokenRemoteUpdateRequest,
     TokenRemoteUpdateResult,
     execute_token_remote_update,
+    finalize_token_remote_update,
     prepare_token_remote_update,
     validate_token_remote_update,
 )
@@ -399,5 +401,103 @@ def test_cpu_target_runtime_mismatch_is_structurally_accepted_but_not_executable
         ) == result
         with pytest.raises(BoundaryError, match="producer_runtime_mismatch"):
             execute_token_remote_update(request)
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_remote_final_checkpoint_uses_local_dev_gate_and_idempotent_completion(
+    tmp_path, monkeypatch,
+):
+    case = _canonical_run(tmp_path, monkeypatch)
+    torch, previous_threads, store, owner, operation, producer, inputs, config, _ = case
+    try:
+        assert not torch.cuda.is_available(), "this regression requires a CPU-only host"
+        target_runtime = TokenTargetRuntime(
+            "synthetic-cuda-target", TokenTargetRuntime.current().cpu_threads + 1,
+        )
+        target_config = replace(config, device="cuda")
+        run = prepare_token_run(
+            store, inputs, target_config, producer, target_runtime=target_runtime,
+        )
+        request = prepare_token_remote_update(
+            store, owner, run.artifact_id, producer, operation, target_config.steps,
+            attempt_id="a" * 32,
+        )
+
+        # Build CPU tensors, then identify the envelope as the remote CUDA checkpoint.
+        # This is a packaging/validation fixture, not evidence of CUDA execution.
+        engine = TokenRankingEngine(inputs, config)
+        for _ in range(config.steps):
+            engine.advance()
+        state = decode_checkpoint(engine.checkpoint())
+        _, expected_identity = token_training_identity(
+            inputs, target_config, request.backbone_identity.value(),
+        )
+        state["config"] = config_payload(target_config)
+        state["data_identity"] = expected_identity
+        state["rng_protocol"] = CUDA_STEP_RNG_PROTOCOL
+        state["torch_version"] = target_runtime.torch_version
+        state["cpu_threads"] = target_runtime.cpu_threads
+        checkpoint_bytes = encode_checkpoint(state)
+        result = TokenRemoteUpdateResult(
+            request.request_sha256, request.attempt_id, request.run_id,
+            request.input_id, request.producer, request.operation_id,
+            request.training_binding, request.target_device, request.target_step,
+            request.config, request.resume_checkpoint_id, None,
+            request.target_step, hashlib.sha256(checkpoint_bytes).hexdigest(),
+            checkpoint_bytes, request.backbone_identity,
+        )
+
+        from stpd.policy.token_decision import LightActionM0WeightsScorer
+
+        scorer = LightActionM0WeightsScorer(
+            target_config, inputs.manifest.parameters.value()["state_codec"],
+            request.backbone_identity.value(), None, inputs.state_tokenizer,
+            save(state["model"]), runtime_device="cpu",
+        )
+        for index, row in enumerate(inputs.rows):
+            assert scorer.score_token_ids(row.state, row.actions) == engine.scores(index)
+
+        reporter = ObjectStoreRunReporter(store, store.blobs)
+        common = (store, reporter, owner, request, result, producer, operation)
+        with pytest.raises(BoundaryError, match="dev_denied"):
+            finalize_token_remote_update(
+                *common, verify_provider_result=lambda _request, _result: True,
+                dev_admitter=lambda _model, _view: (_ for _ in ()).throw(
+                    BoundaryError("test", "dev_denied")),
+            )
+        assert reporter.completed(run.artifact_id) is None
+        assert not any(
+            store.get_manifest(identity).kind in {"run_result", "offline_evaluation"}
+            for identity in store.manifest_ids()
+        )
+
+        def admit(model, _view):
+            binding = request.training_binding.value()
+            return owner.reserve_allocation_dev(
+                store, model.artifact_id, binding["allocation_id"], operation, "e" * 32,
+            )
+
+        completed = finalize_token_remote_update(
+            *common, verify_provider_result=lambda _request, _result: True,
+            dev_admitter=admit,
+        )
+        assert completed.state == "completed" and completed.result_id is not None
+        result_manifest = store.get_manifest(completed.result_id)
+        model = store.get_manifest(result_manifest.parent("model"))
+        checkpoint = store.get_manifest(model.parent("checkpoint"))
+        assert b"".join(store.read_payload(checkpoint.payload("checkpoint"))) == checkpoint_bytes
+        assert b"".join(store.read_payload(model.payload("weights"))) == save(state["model"])
+        assert (store.get_manifest(result_manifest.parent("offline_evaluation"))
+                .parameters.value()["scoring_runtime"] == {
+                    "mode": "weights_only", "device": "cpu",
+                })
+        before_retry = store.manifest_ids()
+        retried = finalize_token_remote_update(
+            *common, verify_provider_result=lambda _request, _result: True,
+            dev_admitter=admit,
+        )
+        assert retried.result_id == completed.result_id
+        assert store.manifest_ids() == before_retry
     finally:
         torch.set_num_threads(previous_threads)

@@ -9,11 +9,14 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from safetensors.torch import save
 from tokenizers import Tokenizer
 
 from spireagent.artifact_contracts import Manifest, Producer
@@ -55,7 +58,15 @@ from .token_ranking import (
     validate_light_action_m0_inputs,
     validate_light_action_m0_scratch_checkpoint,
 )
-from .token_worker import preflight_token_run_contract
+from .checkpoint_codec import decode_checkpoint
+from .token_worker import (
+    _checkpoint_metadata_for,
+    _finalize_token_run,
+    _verify_completed,
+    preflight_token_run_contract,
+)
+from .reporting import RunReporter
+from .worker import WorkerResult
 
 REQUEST_SCHEMA = "stpd/token-remote-update-request-v1"
 RESULT_SCHEMA = "stpd/token-remote-update-result-v1"
@@ -777,3 +788,131 @@ def validate_token_remote_update(
     if result_step != request.target_step:
         raise BoundaryError("token_remote_update", "checkpoint_target_step_mismatch")
     return result
+
+
+def finalize_token_remote_update(
+    store: ArtifactStore,
+    reporter: RunReporter,
+    owner: TrainingOperationAuthority,
+    request: TokenRemoteUpdateRequest,
+    result: TokenRemoteUpdateResult,
+    producer: Producer,
+    operation_id: str,
+    *,
+    verify_provider_result: Callable[
+        [TokenRemoteUpdateRequest, TokenRemoteUpdateResult], bool
+    ],
+    dev_admitter: Callable[[Manifest, Manifest], dict] | None = None,
+    snapshot: Path | None = None,
+) -> WorkerResult:
+    """Validate an update locally, then use the owner-controlled completion path.
+
+    ``verify_provider_result`` is mandatory: request/result identities are not provider
+    authentication. The callback must verify the actual provider job/image handle.
+    """
+    if not callable(verify_provider_result):
+        raise BoundaryError("token_remote_update", "provider_verifier_required")
+    if verify_provider_result(request, result) is not True:
+        raise BoundaryError("token_remote_update", "provider_result_unverified")
+    validate_token_remote_update(
+        store, owner, request, result, producer, operation_id, snapshot=snapshot,
+    )
+    if (request.target_step != request.config.steps
+            or result.checkpoint_step != request.config.steps):
+        raise BoundaryError("token_remote_update", "final_step_required_for_completion")
+
+    run, config, input_manifest, owner_bound = preflight_token_run_contract(
+        store, request.run_id, producer, resume=request.resume_checkpoint_id,
+    )
+    if (not owner_bound or run != request.run_manifest
+            or input_manifest != request.input_manifest or config != request.config
+            or not isinstance(config, LightActionM0Config)):
+        raise BoundaryError("token_remote_update", "local_run_identity_mismatch")
+    inputs = load_light_action_inputs(store, input_manifest.artifact_id)
+    if (not isinstance(inputs, LoadedLightActionInputs)
+            or inputs.manifest != request.input_manifest
+            or inputs.manifest.artifact_id != run.parent("training_input")
+            or result.run_id != run.artifact_id
+            or result.input_id != inputs.manifest.artifact_id
+            or result.config != config
+            or result.target_step != config.steps
+            or result.checkpoint_step != config.steps):
+        raise BoundaryError("token_remote_update", "finalization_input_identity_mismatch")
+
+    previous = reporter.completed(run.artifact_id)
+    if previous is not None:
+        _verify_completed(store, previous, run)
+        model = store.get_manifest(previous.parent("model"))
+        return WorkerResult(
+            "completed", run.artifact_id, checkpoint_id=model.parent("checkpoint"),
+            result_id=previous.artifact_id,
+        )
+    events = reporter.events(run.artifact_id)
+    if (request.resume_checkpoint_id is None and events
+            and any(event.parameters.value().get("attempt") != request.attempt_id
+                    for event in events)):
+        raise BoundaryError("token_remote_update", "existing_attempt_requires_explicit_resume")
+    if any(event.parameters.value().get("kind") == "completed" for event in events):
+        raise BoundaryError("token_remote_update", "completion_event_without_marker")
+
+    from ..policy.token_decision import LightActionM0WeightsScorer
+
+    checkpoint_state = decode_checkpoint(result.checkpoint)
+    if (checkpoint_state.get("step") != config.steps
+            or checkpoint_state.get("config") != config_payload(config)
+            or not isinstance(checkpoint_state.get("data_identity"), str)
+            or not isinstance(checkpoint_state.get("model"), dict)):
+        raise BoundaryError("token_remote_update", "validated_checkpoint_identity_mismatch")
+    input_info = inputs.manifest.parameters.value()
+    backbone = request.backbone_identity.value()
+    scorer = LightActionM0WeightsScorer(
+        config, input_info["state_codec"], backbone, None, inputs.state_tokenizer,
+        save(checkpoint_state["model"]), snapshot=snapshot, runtime_device="cpu",
+    )
+
+    attempt_started = time.perf_counter()
+
+    def emit(kind: str, **details: object) -> None:
+        reporter.emit(Manifest(
+            "run_event", producer, (Parent("run", run.artifact_id),),
+            parameters=FrozenObject.of({
+                "schema": "stpd/run-event-v1", "attempt": request.attempt_id,
+                "kind": kind, "step": result.checkpoint_step, "details": details,
+            }),
+        ))
+
+    checkpoint_info = _checkpoint_metadata_for(
+        config, inputs.manifest, result.checkpoint_step,
+        checkpoint_state["data_identity"], backbone, scorer.adapter_tensor_names,
+    )
+    checkpoint_payload = store.put_payload(
+        "checkpoint", io.BytesIO(result.checkpoint),
+        "application/vnd.stpd.tensor-tree",
+    )
+    checkpoint = Manifest(
+        "checkpoint", producer,
+        (Parent("run", run.artifact_id),
+         Parent("training_input", inputs.manifest.artifact_id)),
+        (checkpoint_payload,), FrozenObject.of(checkpoint_info),
+    )
+    checkpoint_id = store.publish(checkpoint)
+    emit("checkpoint", checkpoint_id=checkpoint_id, source="remote_update")
+
+    def score(index: int) -> tuple[float, ...]:
+        try:
+            row = inputs.rows[index]
+        except IndexError as error:
+            raise BoundaryError("token_remote_update", "unavailable_local_score_row") from error
+        return scorer.score_token_ids(row.state, row.actions)
+
+    try:
+        return _finalize_token_run(
+            store, reporter, run, inputs, config, producer, checkpoint_id,
+            attempt_started, result.checkpoint_step, score,
+            save(checkpoint_state["model"]), backbone, scorer.adapter_tensor_names,
+            emit, dev_admitter,
+            evaluation_runtime={"mode": "weights_only", "device": "cpu"},
+        )
+    except Exception as error:
+        emit("failed", error_type=type(error).__name__, last_checkpoint=checkpoint_id)
+        raise
