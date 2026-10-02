@@ -83,6 +83,7 @@ class _FakeModalState:
         app_found: bool = False,
         lookup_error: Exception | None = None,
         prepare_error: Exception | None = None,
+        prepare_stopped: bool = False,
     ) -> None:
         self.store = store
         self.ready = ready
@@ -91,6 +92,9 @@ class _FakeModalState:
         self.app_found = app_found
         self.lookup_error = lookup_error
         self.prepare_error = prepare_error
+        self.prepare_stopped = prepare_stopped
+        self.stop_inspections = 0
+        self.stop_proof_transform = None
         self.lookups = 0
         self.submits = 0
         self.prepares = 0
@@ -155,6 +159,24 @@ class _FakeProvider:
         )
         self.state.target = target
         return target
+
+    def inspect_prepare_stopped(self, spec, *, allow_legacy_workspace_alias=False):
+        from spireagent.json_boundary import BoundaryError
+        from stpd.cloud_jobs.m0_modal import M0PrepareStoppedProof, M0StopInspection
+
+        self.verify_account_id(
+            spec.account_id, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        )
+        self.state.stop_inspections += 1
+        if not self.state.prepare_stopped:
+            raise BoundaryError("modal_m0", "prepare_stop_unproven")
+        proof = M0PrepareStoppedProof(
+            spec, self.state.canonical_account_id, "ap-test-app", "fu-test-function",
+            M0StopInspection("ap-test-app", "stopped", 0, 0, True),
+        )
+        if self.state.stop_proof_transform is not None:
+            proof = self.state.stop_proof_transform(proof)
+        return proof
 
     def submit(self, request_bytes: bytes, app_ref):
         from stpd.cloud_jobs.m0_modal import (
@@ -883,5 +905,217 @@ def test_cancel_ack_does_not_claim_stopped_or_resumable_checkpoint(
             "active_tasks": 0, "active_containers": 0, "confirmed": True,
         }
         assert state.submits == 1
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def _real_prepare_intent(case):
+    from spireagent.workbench.local_m0_remote import ModalM0Settings
+    from stpd.workers.token_remote_update import prepare_token_remote_update
+
+    _, _, service, store, owner, producer, run, _, operation_id, dataset_id = case
+    settings = ModalM0Settings("ac-account01", "test-env", "im-test-image")
+    state = _FakeModalState(store, canonical_account_id=settings.account_id)
+    controller = _controller(service, state, settings)
+    request = prepare_token_remote_update(
+        store, owner, run.artifact_id, producer, operation_id, 1, attempt_id="e" * 32,
+    )
+    spec = controller._spec(request, settings)
+    service.reserve_remote_m0(
+        dataset_id, input_profile="public_lite", request_bytes=request.to_bytes(),
+        target=controller._target(spec, request.config.steps), target_step=1,
+    )
+    service.persist_remote_attempt_spec(operation_id, spec.to_bytes())
+    assert service.status()["operation"]["status"] == "interrupted_unknown"
+    return request, spec, settings
+
+
+def _stopped_state(store, *, canonical_account_id="ac-account01"):
+    from spireagent.json_boundary import BoundaryError
+
+    return _FakeModalState(
+        store, canonical_account_id=canonical_account_id, prepare_stopped=True,
+        lookup_error=BoundaryError("modal_m0", "deployed_target_identity_unavailable"),
+    )
+
+
+def _stopped_receipt(spec):
+    import time
+
+    from stpd.cloud_jobs.m0_modal import ModalM0Provider
+
+    return {
+        "schema": "stpd/local-modal-m0-prepare-stopped-receipt-v1",
+        "observed_at_unix_ns": time.time_ns(), "attempt_id": spec.attempt_id,
+        "attempt_spec_sha256": hashlib.sha256(spec.to_bytes()).hexdigest(),
+        "request_sha256": spec.request_sha256,
+        "canonical_account_id": spec.account_id, "pinned_account_id": spec.account_id,
+        "environment_name": spec.environment_name, "app_name": spec.app_name,
+        "app_id": "ap-test-app", "app_version": 1,
+        "deployment_tag": ModalM0Provider._deployment_tag(spec),
+        "function_id": "fu-test-function",
+        "stop_confirmation": {
+            "app_id": "ap-test-app", "app_state": "stopped", "active_tasks": 0,
+            "active_containers": 0, "confirmed": True,
+        },
+        "lookup_result": "exact_once_deployed_app_stopped",
+        "submit_boundary": "no_app_ref_handle_or_submit_intent",
+    }
+
+
+def test_stopped_before_submit_closes_and_reuses_existing_one_use_permit_without_submit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    from spireagent.json_boundary import BoundaryError
+    from stpd.workers.token_remote_update import prepare_token_remote_update
+
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, store, owner, producer, run, _, op, dataset_id = case
+    try:
+        request, spec, settings = _real_prepare_intent(case)
+        state = _stopped_state(store)
+        controller = _controller(service, state, settings)
+        closed = controller.reconcile(op, wait_seconds=0)
+        assert closed["status"] == "failed" and closed["stage"] == "remote_failed"
+        assert closed["error_code"] == "provider_app_stopped_before_submit"
+        latest = closed["remote"]["attempts"][-1]
+        receipt = latest["recovery_receipt"]
+        expected = _stopped_receipt(spec)
+        expected["observed_at_unix_ns"] = receipt["observed_at_unix_ns"]
+        assert receipt == expected
+        assert latest["phase"] == "preflight_failed" and latest["app_phase"] == "prepare_intent"
+        assert latest["provider_terminal"] is False
+        assert latest["stop_confirmation"] == receipt["stop_confirmation"]
+        evidence = service.remote_provider_evidence(op)
+        assert evidence["attempt_spec_bytes"] == spec.to_bytes()
+        assert evidence["app_ref_bytes"] is evidence["handle_bytes"] is None
+        journal, _ = service._paths(owner)
+        closed_bytes = journal.read_bytes()
+        assert controller.reconcile(op, wait_seconds=0) == closed
+        assert journal.read_bytes() == closed_bytes
+        assert state.lookups == state.stop_inspections == 1
+        assert state.prepares == state.submits == state.stops == 0
+        with pytest.raises(BoundaryError, match="remote_prepare_stop_unavailable"):
+            service.record_remote_prepare_stopped(
+                op, expected_attempt_spec_sha256=receipt["attempt_spec_sha256"],
+                recovery_receipt=receipt,
+            )
+        assert journal.read_bytes() == closed_bytes
+        retired = controller.retire_preflight_failure(op)
+        assert retired["error_code"] == "provider_app_stopped_before_submit"
+        assert store.blobs.get(retired["archive_ref"]) == closed_bytes
+        assert controller.retire_preflight_failure(op) == retired
+        context = service.remote_preflight_retry_context()
+        assert context["attempt_spec_bytes"] == spec.to_bytes()
+        assert context["request_bytes"] == request.to_bytes()
+        assert context["canonical_account_id"] == settings.account_id
+        assert not journal.exists()
+        new_request = prepare_token_remote_update(
+            store, owner, run.artifact_id, producer, op, 1, attempt_id="a" * 32,
+        )
+        new_spec = controller._spec(new_request, settings)
+        reserved = service.reserve_remote_m0(
+            dataset_id, input_profile="public_lite", request_bytes=new_request.to_bytes(),
+            target=controller._target(new_spec, 1), target_step=1,
+            attempt_spec_bytes=new_spec.to_bytes(),
+        )["operation"]
+        assert reserved["previous_remote_failure"]["archive_ref"] == retired["archive_ref"]
+        assert reserved["previous_remote_failure"]["error_code"] == retired["error_code"]
+        assert service.remote_preflight_retry_context() is None
+        assert state.prepares == state.submits == 0
+        with pytest.raises(BoundaryError):
+            controller.retire_preflight_failure(op)
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("submit_intent_at_unix_ns", 0), ("submit_intent_at_unix_ns", False),
+    ("submit_intent_at_unix_ns", 1), ("submit_intent_at_unix_ns", "intent"),
+    ("handle_ref", "present"), ("app_ref_ref", "present"),
+    ("provider_terminal", True), ("provider_terminal_observed_at_unix_ns", 1),
+    ("provider_result_ref", "present"), ("provider_result_sha256", "f" * 64),
+    ("checkpoint_candidate_sha256", "f" * 64), ("validated_checkpoint_id", "f" * 64),
+    ("resume_checkpoint_id", "f" * 64), ("runtime_evidence_ref", "present"),
+    ("local_acceptance_started_at_unix_ns", 1),
+])
+def test_owner_locked_stopped_recovery_rejects_any_submitted_or_result_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, value,
+):
+    from spireagent.json_boundary import BoundaryError
+
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, _, owner, _, _, _, op, _ = case
+    try:
+        _, spec, _ = _real_prepare_intent(case)
+        journal, _ = service._paths(owner)
+        before = journal.read_bytes()
+        current = json.loads(before)
+        current["remote"]["attempts"][-1][field] = value
+        # Inject the reread under the owner lock to exercise the transition guard
+        # even when the outer journal parser would also reject a malformed state.
+        monkeypatch.setattr(service, "_read", lambda _path, _identity: current)
+        with pytest.raises(BoundaryError, match="remote_prepare_stop_unproven"):
+            service.record_remote_prepare_stopped(
+                op, expected_attempt_spec_sha256=hashlib.sha256(spec.to_bytes()).hexdigest(),
+                recovery_receipt=_stopped_receipt(spec),
+            )
+        assert journal.read_bytes() == before
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("attempt_spec_sha256", "f" * 64), ("request_sha256", "f" * 64),
+    ("app_id", "ap-foreign"), ("app_name", "foreign"),
+    ("deployment_tag", "wrong"), ("app_version", 2),
+    ("canonical_account_id", "ac-foreign"), ("pinned_account_id", "ac-foreign"),
+    ("environment_name", "foreign"), ("function_id", "not-a-function"),
+    ("stop_confirmation", {"confirmed": False}),
+])
+def test_owner_stopped_receipt_requires_complete_same_spec_identity_and_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, value,
+):
+    from spireagent.json_boundary import BoundaryError
+
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, _, owner, _, _, _, op, _ = case
+    try:
+        _, spec, _ = _real_prepare_intent(case)
+        journal, _ = service._paths(owner)
+        before = journal.read_bytes()
+        receipt = _stopped_receipt(spec)
+        receipt[field] = value
+        with pytest.raises(BoundaryError, match="remote_prepare_stop_unproven"):
+            service.record_remote_prepare_stopped(
+                op, expected_attempt_spec_sha256=hashlib.sha256(spec.to_bytes()).hexdigest(),
+                recovery_receipt=receipt,
+            )
+        assert journal.read_bytes() == before
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_controller_rejects_foreign_stop_spec_and_keeps_unknown_without_retirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    from spireagent.json_boundary import BoundaryError
+
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, store, owner, _, _, _, op, _ = case
+    try:
+        _, _, settings = _real_prepare_intent(case)
+        state = _stopped_state(store)
+        state.stop_proof_transform = lambda proof: replace(
+            proof, spec=replace(proof.spec, request_sha256="0" * 64),
+        )
+        journal, _ = service._paths(owner)
+        before = journal.read_bytes()
+        controller = _controller(service, state, settings)
+        assert controller.reconcile(op, wait_seconds=0)["status"] == "interrupted_unknown"
+        assert journal.read_bytes() == before
+        assert state.submits == state.prepares == state.stops == 0
+        with pytest.raises(BoundaryError, match="remote_preflight_retirement_unavailable"):
+            controller.retire_preflight_failure(op)
     finally:
         torch.set_num_threads(previous_threads)

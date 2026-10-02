@@ -488,6 +488,7 @@ class FakeModalCLI:
         self.workspace_id = workspace_id
         self.app_list_override: object | None = None
         self.named_history_override: tuple[int, str, str] | None = None
+        self.container_rows: list[dict[str, Any]] = []
         self.history_override: object | None = None
         self.deploy_returncode = 0
         self.app_state = "deployed"
@@ -551,7 +552,7 @@ class FakeModalCLI:
             self.stop_calls.append(args)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if args[:2] == ["container", "list"]:
-            return SimpleNamespace(returncode=0, stdout="[]")
+            return SimpleNamespace(returncode=0, stdout=json.dumps(self.container_rows))
         raise AssertionError(f"unexpected Modal command {args!r}")
 
 
@@ -2054,3 +2055,93 @@ def test_deployment_entry_declares_fixed_image_bounded_ephemeral_worker_without_
     assert options["env"]["STPD_M0_MODAL_REQUEST_SHA256"] == "a" * 64
     assert options["env"]["STPD_M0_SOURCE_REVISION"] == PRODUCER.source_revision
     assert options["env"]["STPD_M0_UV_LOCK_SHA256"] == PRODUCER.uv_lock_sha256
+
+
+def _stopped_prepare_provider():
+    from modal_proto import api_pb2 as api
+
+    spec = replace(_attempt_spec(), account_id="ac-account01")
+    cli = FakeModalCLI(spec, workspace_id=spec.account_id)
+    cli.deployed = True
+    cli.app_state = "stopped"
+    cli.app_tasks = "0"
+    sdk = FakeSDK(FakeFunction())
+    sdk.app_name_lookup_error = None
+    sdk.app_name_lookup_response = api.AppGetByDeploymentNameResponse(
+        environment_name=spec.environment_name, previous_app_id="ap-app01",
+    )
+    provider = m0_modal.ModalM0Provider(spec=spec, sdk=sdk, command_runner=cli)
+    helpers = provider._smoke_helpers()
+    helpers["_stop_evidence"].__globals__["_modal_cli_json"] = provider._modal_json
+    provider._smoke_helpers = lambda: helpers
+    return provider, spec, cli, sdk
+
+
+def test_prepare_stopped_proof_uses_real_stop_helper_and_typed_layout_without_target():
+    provider, spec, cli, sdk = _stopped_prepare_provider()
+    proof = provider.inspect_prepare_stopped(spec)
+    assert isinstance(proof, m0_modal.M0PrepareStoppedProof)
+    assert proof.spec == spec
+    assert proof.canonical_account_id == spec.account_id
+    assert proof.app_id == "ap-app01" and proof.function_id == "fu-function01"
+    assert proof.inspection == m0_modal.M0StopInspection("ap-app01", "stopped", 0, 0, True)
+    assert provider.target is None and provider.target_runtime is None
+    assert sdk.metadata_lookups == ["layout"] and sdk.lookups == []
+    assert sdk.app_name_lookup_calls == [(spec.app_name, spec.environment_name)]
+    assert cli.deploy_calls == cli.stop_calls == sdk.function.spawn_calls == []
+    assert provider.inspect_prepare_stopped(spec) == proof
+
+
+@pytest.mark.parametrize("change", [
+    "spec", "account", "environment", "named_app", "layout_app", "layout_function",
+    "layout_name", "ambiguous_app", "tag", "redeployment", "unknown_stop",
+    "tasks", "containers", "typed_query_error", "identity_changed_after_stop",
+])
+def test_prepare_stopped_proof_rejects_incomplete_foreign_or_changed_evidence(change: str):
+    provider, spec, cli, sdk = _stopped_prepare_provider()
+    if change == "spec":
+        spec = replace(spec, request_sha256="0" * 64)
+    elif change == "account":
+        cli.workspace_id = "ac-foreign"
+    elif change == "environment":
+        sdk.app_name_lookup_response.environment_name = "foreign"
+    elif change == "named_app":
+        sdk.app_name_lookup_response.app_id = "ap-foreign"
+    elif change.startswith("layout"):
+        def alter(response: Any) -> None:
+            if change == "layout_app":
+                response.app_layout.objects[0].function_handle_metadata.app_id = "ap-foreign"
+            elif change == "layout_function":
+                response.app_layout.function_ids[m0_modal.M0_MODAL_FUNCTION_NAME] = "fu-foreign"
+            else:
+                response.app_layout.objects[0].function_handle_metadata.function_name = "foreign"
+        sdk.layout_response_transform = alter
+    elif change == "ambiguous_app":
+        cli.app_list_override = [
+            {"app_id": "ap-app01", "description": spec.app_name},
+            {"app_id": "ap-other", "description": spec.app_name},
+        ]
+    elif change in {"tag", "redeployment"}:
+        cli.history_override = [{
+            "version": "v2" if change == "redeployment" else "v1",
+            "tag": "wrong" if change == "tag" else provider._deployment_tag(spec),
+        }]
+    elif change == "unknown_stop":
+        cli.app_state = "deployed"
+    elif change == "tasks":
+        cli.app_tasks = "1"
+    elif change == "containers":
+        cli.container_rows = [{"container_id": "ta-existing"}]
+    elif change == "typed_query_error":
+        sdk.app_name_lookup_error = RuntimeError("lookup_unknown")
+    else:
+        stop = provider._smoke_helpers()["_stop_evidence"]
+        def changed_after_stop(*args: Any, **kwargs: Any) -> Any:
+            result = stop(*args, **kwargs)
+            cli.history_override = [{"version": "v2", "tag": provider._deployment_tag(spec)}]
+            return result
+        provider._smoke_helpers = lambda: {"_stop_evidence": changed_after_stop}
+    with pytest.raises(BoundaryError):
+        provider.inspect_prepare_stopped(spec)
+    assert provider.target is None and provider.target_runtime is None
+    assert cli.deploy_calls == cli.stop_calls == sdk.function.spawn_calls == []

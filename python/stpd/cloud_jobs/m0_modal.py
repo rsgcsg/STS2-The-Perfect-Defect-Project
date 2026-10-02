@@ -501,6 +501,32 @@ class M0StopInspection:
 
 
 @dataclass(frozen=True)
+class M0PrepareStoppedProof:
+    """Exact stopped App proof; it makes no unobserved image/runtime claim."""
+
+    spec: M0AttemptSpec
+    canonical_account_id: str
+    app_id: str
+    function_id: str
+    inspection: M0StopInspection
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.spec, M0AttemptSpec)
+                or not isinstance(self.canonical_account_id, str)
+                or re.fullmatch(r"ac-[A-Za-z0-9_-]+", self.canonical_account_id) is None
+                or (self.spec.account_id.startswith("ac-")
+                    and self.spec.account_id != self.canonical_account_id)
+                or not isinstance(self.app_id, str)
+                or not _MODAL_ID_RE["app"].fullmatch(self.app_id)
+                or not isinstance(self.function_id, str)
+                or not _MODAL_ID_RE["function"].fullmatch(self.function_id)
+                or not isinstance(self.inspection, M0StopInspection)
+                or self.inspection.app_id != self.app_id
+                or self.inspection.confirmed is not True):
+            raise BoundaryError("modal_m0_stop", "prepare_stop_binding_invalid")
+
+
+@dataclass(frozen=True)
 class ModalM0Call:
     """Durable provider handle plus the exact request identity needed to reconcile it."""
 
@@ -1553,6 +1579,80 @@ class ModalM0Provider:
         self.spec = spec
         self._bind_target(target)
         return target
+
+    def inspect_prepare_stopped(
+        self, spec: M0AttemptSpec, *, allow_legacy_workspace_alias: bool = False,
+    ) -> M0PrepareStoppedProof:
+        """Read a once-deployed stopped App without fabricating a runnable Target."""
+        app_id = self._deployment_identity(
+            spec, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        )
+        if app_id is None:
+            raise BoundaryError("modal_m0", "prepare_stop_unproven")
+        canonical = self.verify_account_id(
+            spec.account_id, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        )
+        try:
+            api = importlib.import_module("modal_proto.api_pb2")
+            async_utils = importlib.import_module("modal._utils.async_utils")
+            client = self._client().Client.from_env()
+
+            async def read() -> tuple[Any, Any]:
+                named = await client.stub.AppGetByDeploymentName(
+                    api.AppGetByDeploymentNameRequest(
+                        name=spec.app_name, environment_name=spec.environment_name,
+                    ),
+                    retry=None, timeout=MAX_MODAL_CONTROL_SECONDS,
+                )
+                layout = await client.stub.AppGetLayout(
+                    api.AppGetLayoutRequest(app_id=app_id),
+                    retry=None, timeout=MAX_MODAL_CONTROL_SECONDS,
+                )
+                return named, layout
+
+            named, layout = async_utils.synchronizer.create_blocking(read)()
+        except Exception:
+            raise BoundaryError("modal_m0", "prepare_stop_unproven") from None
+        if (not isinstance(named, api.AppGetByDeploymentNameResponse)
+                or named.environment_name != spec.environment_name
+                or not any(value == app_id for value in (named.app_id, named.previous_app_id))
+                or any(value and value != app_id for value in (named.app_id, named.previous_app_id))
+                or not isinstance(layout, api.AppGetLayoutResponse)):
+            raise BoundaryError("modal_m0", "prepare_stop_binding_invalid")
+        functions = dict(layout.app_layout.function_ids)
+        function_id = functions.get(M0_MODAL_FUNCTION_NAME, "")
+        objects = [obj for obj in layout.app_layout.objects if obj.object_id == function_id]
+        if (
+            not _MODAL_ID_RE["function"].fullmatch(function_id)
+            or functions != {M0_MODAL_FUNCTION_NAME: function_id}
+            or len(objects) != 1
+            or not objects[0].HasField("function_handle_metadata")
+            or objects[0].function_handle_metadata.app_id != app_id
+            or objects[0].function_handle_metadata.function_name != M0_MODAL_FUNCTION_NAME
+            or objects[0].function_handle_metadata.is_method
+            or objects[0].function_handle_metadata.function_type !=
+            api.Function.FUNCTION_TYPE_FUNCTION
+        ):
+            raise BoundaryError("modal_m0", "prepare_stop_binding_invalid")
+        try:
+            evidence = self._smoke_helpers()["_stop_evidence"](
+                app_id, spec.environment_name,
+                deadline=time.monotonic() + MAX_MODAL_CONTROL_SECONDS,
+            )
+            inspection = M0StopInspection(
+                app_id, evidence["app_state"], evidence["app_tasks"],
+                evidence["running_containers"], True,
+            )
+        except Exception:
+            raise BoundaryError("modal_m0", "prepare_stop_unproven") from None
+        if (self._deployment_identity(
+                spec, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+            ) != app_id
+                or self.verify_account_id(
+                    spec.account_id, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+                ) != canonical):
+            raise BoundaryError("modal_m0", "prepare_stop_binding_invalid")
+        return M0PrepareStoppedProof(spec, canonical, app_id, function_id, inspection)
 
     def prepare_app(self, spec: M0AttemptSpec) -> ModalM0Target:
         """Deploy a unique App once; an ambiguous outcome is reconciled, never redeployed."""
