@@ -7,6 +7,8 @@ the child finished. The OS lock spans the parent-owned child lifecycle.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import math
@@ -22,6 +24,7 @@ from contextlib import AbstractContextManager, suppress
 from pathlib import Path
 from typing import Any, cast
 
+from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes
 from spireagent.source import source_identity
 from spireagent.storage.blobs import safe_key
@@ -174,6 +177,20 @@ def _remote_request_identity(raw: bytes) -> dict[str, Any]:
         if type(value.get("target_step")) is not int or value["target_step"] < 1:
             raise ValueError
         resume_checkpoint_id = value.get("resume_checkpoint_id")
+        encoded_manifest = value.get("resume_manifest")
+        if encoded_manifest is not None:
+            if not isinstance(encoded_manifest, str):
+                raise ValueError
+            try:
+                manifest_bytes = base64.b64decode(encoded_manifest, validate=True)
+            except (ValueError, binascii.Error) as error:
+                raise ValueError from error
+            if base64.b64encode(manifest_bytes).decode("ascii") != encoded_manifest:
+                raise ValueError
+            manifest_id = Manifest.from_bytes(manifest_bytes).artifact_id
+            if resume_checkpoint_id is not None and resume_checkpoint_id != manifest_id:
+                raise ValueError
+            resume_checkpoint_id = manifest_id
         if resume_checkpoint_id is not None:
             digest(resume_checkpoint_id, "local_training.resume_checkpoint_id")
         return value
