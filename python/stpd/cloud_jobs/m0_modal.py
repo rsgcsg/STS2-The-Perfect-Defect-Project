@@ -11,6 +11,7 @@ execution seam, not TEE or recomputation evidence.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib
 import importlib.metadata
@@ -1324,6 +1325,13 @@ class ModalM0Provider:
     def _spec_sha256(spec: M0AttemptSpec) -> str:
         return hashlib.sha256(spec.to_bytes()).hexdigest()
 
+    @staticmethod
+    def _deployment_tag(spec: M0AttemptSpec) -> str:
+        # Modal 1.5.5 limits deployment tags to 50 characters. Keep all 256 bits
+        # rather than truncating the durable spec hash to fit the provider label.
+        encoded = base64.urlsafe_b64encode(hashlib.sha256(spec.to_bytes()).digest())
+        return "sha256-" + encoded.decode("ascii").rstrip("=")
+
     def _bind_target(self, target: ModalM0Target) -> ModalM0Target:
         runtime = ModalM0TargetRuntimeMetadata(
             target.target_id,
@@ -1424,7 +1432,7 @@ class ModalM0Provider:
         if not parsed:
             raise BoundaryError("modal_m0", "modal_app_version_unavailable")
         app_version, latest = max(parsed, key=lambda item: item[0])
-        if latest.get("tag") != self._spec_sha256(spec):
+        if latest.get("tag") != self._deployment_tag(spec):
             raise BoundaryError("modal_m0", "existing_app_spec_mismatch")
         self.verify_account_id(
             spec.account_id,
@@ -1509,7 +1517,7 @@ class ModalM0Provider:
         try:
             completed = runner(
                 [cli, "deploy", str(entry), "--env", spec.environment_name,
-                 "--tag", self._spec_sha256(spec)],
+                 "--tag", self._deployment_tag(spec)],
                 cwd=str(Path(__file__).resolve().parents[2]),
                 env=env,
                 capture_output=True,

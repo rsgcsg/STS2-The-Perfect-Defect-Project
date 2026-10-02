@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import hashlib
 import importlib
+import importlib.metadata
 import json
 import runpy
 import subprocess
@@ -10,6 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -431,7 +435,7 @@ class FakeModalCLI:
             if self.deployed and self.spec is not None:
                 history = [{
                     "version": "v1",
-                    "tag": m0_modal.ModalM0Provider._spec_sha256(self.spec),
+                    "tag": m0_modal.ModalM0Provider._deployment_tag(self.spec),
                 }]
             return SimpleNamespace(returncode=0, stdout=json.dumps(history), stderr="")
         if args and args[0] == "deploy":
@@ -509,6 +513,43 @@ def test_target_and_call_handle_round_trip_all_provider_and_source_identity(
         different_account.restore_handle(call.to_bytes())
 
 
+def test_hex_spec_tag_is_rejected_by_pinned_modal_sdk_before_network(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import modal
+    from modal.exception import InvalidError
+    from modal.runner import _deploy_app
+
+    assert importlib.metadata.version("modal") == m0_modal.MODAL_SDK_VERSION
+    spec = _attempt_spec()
+    client = AsyncMock(side_effect=AssertionError("network_forbidden"))
+    monkeypatch.setattr("modal.runner._Client.from_env", client)
+
+    with pytest.raises(InvalidError, match="must be 50 characters or less"):
+        asyncio.run(_deploy_app(modal.App(spec.app_name),
+                                tag=m0_modal.ModalM0Provider._spec_sha256(spec)))
+    client.assert_not_awaited()
+
+
+def test_deployment_tag_preserves_full_sha256_and_passes_real_sdk_validation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import modal
+    from modal.runner import _deploy_app
+
+    spec = _attempt_spec()
+    tag = m0_modal.ModalM0Provider._deployment_tag(spec)
+    assert len(tag) == 50
+    assert tag.startswith("sha256-")
+    assert base64.urlsafe_b64decode(tag[7:] + "=") == hashlib.sha256(spec.to_bytes()).digest()
+    client = AsyncMock(side_effect=RuntimeError("offline_client_boundary"))
+    monkeypatch.setattr("modal.runner._Client.from_env", client)
+
+    with pytest.raises(RuntimeError, match="offline_client_boundary"):
+        asyncio.run(_deploy_app(modal.App(spec.app_name), tag=tag))
+    client.assert_awaited_once()
+
+
 def test_app_ref_is_durable_and_prepare_reconciles_without_redeploy():
     spec = _attempt_spec()
     cli = FakeModalCLI(spec)
@@ -524,6 +565,7 @@ def test_app_ref_is_durable_and_prepare_reconciles_without_redeploy():
     assert app_ref.request_sha256 == spec.request_sha256
     assert app_ref.image_object_id == spec.image_object_id
     assert len(cli.deploy_calls) == 1
+    assert cli.deploy_calls[0][-2:] == ["--tag", provider._deployment_tag(spec)]
 
     restarted = m0_modal.ModalM0Provider(spec=spec, sdk=FakeSDK(FakeFunction()), command_runner=cli)
     restored = restarted.prepare_app(spec)
