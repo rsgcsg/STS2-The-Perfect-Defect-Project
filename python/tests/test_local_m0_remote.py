@@ -373,7 +373,7 @@ def test_partial_checkpoint_is_accepted_and_resumed_through_real_core(
         attempts = resumed["remote"]["attempts"]
         assert len(attempts) == 2
         assert attempts[-1]["resume_checkpoint_id"] == operation["checkpoint_id"]
-        assert attempts[-1]["validated_checkpoint_id"] is None
+        assert attempts[-1]["validated_checkpoint_id"] == resumed["checkpoint_id"]
         assert state.submits == state.prepares == 2
     finally:
         torch.set_num_threads(previous_threads)
