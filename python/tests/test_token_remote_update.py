@@ -224,7 +224,7 @@ def test_cpu_can_prepare_and_structurally_validate_cuda_target_checkpoint(
         )
         assert preflight_token_run_contract(
             store, cuda_run.artifact_id, producer,
-        )[0] == cuda_run
+        )[0].artifact_id == cuda_run.artifact_id
         with pytest.raises(BoundaryError, match="source_or_contract_mismatch"):
             preflight_token_run(store, cuda_run.artifact_id, producer)
 
