@@ -1,0 +1,139 @@
+{
+  "schema": "stpd/tests/modal-sdk155-observed-resource-contract-v1",
+  "modal_sdk_version": "1.5.5",
+  "provenance": {
+    "source_revision": "e80940521f7c7de485c77fd779df7be31ff6fba0",
+    "observed_at_utc_date": "2026-10-02",
+    "function_get_allowlist": "Actual typed FunctionGetResponse scalar observations before exact App stop",
+    "layout_presence": "Actual typed AppGetLayoutResponse after exact App stop",
+    "function_get_raw_response_retained": false,
+    "function_get_serialized_presence_recorded": false,
+    "stopped_function_lookup": [
+      {"app_version": 0, "error_type": "NotFoundError"},
+      {"app_version": 1, "error_type": "NotFoundError"}
+    ],
+    "pre_stop_observation_sha256": "c871578a1701de4c274c5adde9db8bd152a228e06732951781fae8ee77ec46d6",
+    "startup_observation_and_stop_sha256": "d6a824ab92cf4144bee087c1fde6a5db2117b8cc989299191a6386773ed69797",
+    "stopped_layout_capture_sha256": "6bd2a4ada11c2b1a2f659429848bdc3615c310cac52d6b5987eea897eecb598c",
+    "existing_synthetic_call_observation_sha256": "58293d5c66d4589b6d9db4e58d9ca8367d0ebb894765b09ea4bad91fcce95adc",
+    "redactions": "Provider IDs replaced with labeled stand-ins; URLs, schemas, source paths, and credential values omitted",
+    "reconstruction": "Allowlisted observed values reconstructed as typed protobuf messages for offline resource checks; stand-ins are not live provider identities"
+  },
+  "function_get_response": {
+    "function_id": "fu-observed",
+    "handle_metadata": {
+      "app_id": "ap-observed",
+      "function_name": "token_remote_update",
+      "function_type": 2,
+      "is_method": false
+    },
+    "function": {
+      "function_name": "token_remote_update",
+      "timeout_secs": 900,
+      "startup_timeout_secs": 0,
+      "autoscaler_settings": {
+        "scaledown_window": 30,
+        "max_containers": 1,
+        "min_containers": 0,
+        "buffer_containers": 0
+      },
+      "ranked_functions": [
+        {
+          "rank": 0,
+          "function": {
+            "function_name": "token_remote_update",
+            "image_id": "im-observed",
+            "startup_timeout_secs": 120,
+            "resources": {
+              "milli_cpu": 2000,
+              "memory_mb": 8192,
+              "gpu_config": {"gpu_type": "L4", "count": 1}
+            },
+            "retry_policy": {"retries": 0}
+          }
+        }
+      ]
+    }
+  },
+  "app_get_layout_response": {
+    "app_layout": {
+      "function_ids": {"token_remote_update": "fu-observed"},
+      "objects": [
+        {
+          "object_id": "fu-observed",
+          "function_handle_metadata": {
+            "app_id": "ap-observed",
+            "function_name": "token_remote_update",
+            "function_type": 2,
+            "is_method": false
+          }
+        },
+        {"object_id": "redacted-other-object-1"},
+        {"object_id": "redacted-other-object-2"}
+      ]
+    }
+  },
+  "observed_layout_field_presence": {
+    "response": ["app_layout"],
+    "objects": [
+      ["object_id", "function_handle_metadata"],
+      ["object_id"],
+      ["object_id"]
+    ],
+    "function_handle_metadata": [
+      "function_name",
+      "function_type",
+      "class_parameter_info",
+      "function_schema",
+      "input_plane_url",
+      "input_plane_region",
+      "supported_input_formats",
+      "supported_output_formats",
+      "app_id"
+    ],
+    "omitted_value_fields": [
+      "class_parameter_info",
+      "function_schema",
+      "input_plane_url",
+      "input_plane_region",
+      "supported_input_formats",
+      "supported_output_formats"
+    ]
+  },
+  "observed_call_boundary": {
+    "submit_intent_present": false,
+    "app_ref_present": false,
+    "handle_present": false,
+    "call_id": null,
+    "provider_call_metadata_observed": false,
+    "optimizer_steps": 0,
+    "call_response_fixture": null
+  },
+  "observed_existing_synthetic_call": {
+    "scope": "Existing builder synthetic call only; not the unsubmitted production attempt",
+    "function_call_from_id_response": {
+      "function_call_id": "fc-observed-synthetic",
+      "num_inputs": 1,
+      "metadata": {"app_id": "ap-observed-synthetic", "function_id": "fu-observed-synthetic"}
+    },
+    "response_field_presence": ["function_call_id", "num_inputs", "metadata"],
+    "metadata_field_presence": ["app_id", "function_id"],
+    "function_call_get_info_response": {
+      "info": {
+        "function_call_id": "fc-observed-synthetic",
+        "idx": 1,
+        "scheduled_at": 0,
+        "pending_inputs": {"total": 0},
+        "failed_inputs": {"total": 0},
+        "succeeded_inputs": {"total": 0},
+        "timeout_inputs": {"total": 0},
+        "cancelled_inputs": {"total": 1},
+        "total_inputs": 1
+      }
+    },
+    "info_is_repeated": false,
+    "omitted_values": ["created_at", "cancelled_inputs.latest"],
+    "worker_input_or_output_read": false,
+    "new_calls": 0
+  }
+}

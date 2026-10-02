@@ -359,11 +359,11 @@ assert 'sts2_headless' not in sys.modules
     )
 
 
-def test_v7_preserves_trained_policy_and_versions_isolated_adapter_implementation() -> None:
+def test_v8_preserves_trained_policy_and_versions_adapter_for_public_contract_closure() -> None:
     root = DEFAULT_MANIFEST.parents[1]
     current = json.loads(DEFAULT_MANIFEST.read_text())
-    old = json.loads((root / "policy-manifests/s1-policy-adapter-v6.json").read_text())
-    assert DEFAULT_MANIFEST.name == "s1-policy-adapter-v7.json"
+    old = json.loads((root / "policy-manifests/s1-policy-adapter-v7.json").read_text())
+    assert DEFAULT_MANIFEST.name == "s1-policy-adapter-v8.json"
     assert current["adapter"]["version"] != old["adapter"]["version"]
     assert current["manifest_id"] != old["manifest_id"]
     assert current["adapter"]["code_sha256"] == adapter_code_sha256()

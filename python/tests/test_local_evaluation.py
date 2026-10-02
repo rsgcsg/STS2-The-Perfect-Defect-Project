@@ -154,8 +154,39 @@ def test_token_single_summary_keeps_exact_parent_ids_and_never_returns_rows(
     assert result["decision_count"] >= 1
     assert set(result["baselines"]) == {"uniform_legal", "action_only"}
     encoded = json.dumps(result)
-    for private in ("rows", "transition_id", "run_id", "state_text", "action_texts"):
-        assert private not in encoded
+    private_row_keys = {
+        "rows", "transition_id", "run_id", "state_text", "action_texts",
+        "action_keys", "chosen_index", "target_index", "label", "labels",
+    }
+
+    def summary_keys(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                yield key
+                yield from summary_keys(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from summary_keys(child)
+
+    assert private_row_keys.isdisjoint(summary_keys(result))
+    report = store.get_manifest(identity)
+    metrics = json.loads(b"".join(original_read(report.payload("metrics"))))
+    from stpd.fullrun.features import load_model_view
+
+    model = store.get_manifest(report.parent("model"))
+    _, samples = load_model_view(store, model.parent("model_view"))
+    dev_samples = [sample for sample in samples if sample.split == "dev"]
+    assert len(dev_samples) == len(metrics["rows"]) == result["decision_count"]
+    private_values = {
+        row[field] for row in metrics["rows"] for field in ("transition_id", "run_id")
+    }
+    for sample in dev_samples:
+        private_values.update((sample.state_text, *sample.action_texts, *sample.action_keys,
+                               sample.action_keys[sample.chosen_index]))
+    assert all(value not in encoded for value in private_values if value)
+    assert result["dev_qualification"]["reported_restrictions"]["qualified_run_ids"] == {
+        "status": "unreported", "claims": [],
+    }
     copied = ManifestArtifactStore(LocalBlobStore(tmp_path / "copy"))
     assert copy_artifact(store, copied, identity) == identity
     assert not (copied.blobs.root / "run-completions").exists()

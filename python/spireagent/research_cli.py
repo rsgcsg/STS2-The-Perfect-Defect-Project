@@ -227,6 +227,8 @@ def main() -> int:
     public_view.add_argument("--allocation", required=True)
     compare = commands.add_parser("compare-tokens", help="paired completed token-run dev reports")
     compare.add_argument("--result", action="append", required=True)
+    compare.add_argument("--comparison-mode", choices=("same-view", "fixed-dev"),
+                         default="same-view")
     train = commands.add_parser("train")
     train.add_argument("--features", required=True)
     train.add_argument("--steps", type=int, default=100)
@@ -256,7 +258,7 @@ def main() -> int:
         "stage1a.dsimple.light-action.m0.pl.v1",
     ), required=True)
     m0_train.add_argument("--steps", type=int, default=10)
-    m0_train.add_argument("--backend", choices=("cpu", "mps"), default="cpu")
+    m0_train.add_argument("--backend", choices=("cpu", "mps", "cuda"), default="cpu")
     m0_train.add_argument("--snapshot", type=Path)
     m0_train.add_argument("--max-state-tokens", type=int, default=8192)
     m0_train.add_argument("--max-action-bytes", type=int, default=8192)
@@ -408,7 +410,7 @@ def main() -> int:
         if args.command == "compare-tokens":
             from stpd.fullrun.token_comparison import compare_token_results
 
-            result = compare_token_results(store, args.result)
+            result = compare_token_results(store, args.result, comparison_mode=args.comparison_mode)
         elif args.command == "prepare-light-action-m0":
             from stpd.fullrun.decision_training import AllocationSpec, publish_allocation
             from stpd.fullrun.light_action_inputs import (

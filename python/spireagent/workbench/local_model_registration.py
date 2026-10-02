@@ -36,6 +36,7 @@ from spireagent.workbench.memory_recipe import (
     memory_settings_for_recipe,
 )
 from spireagent.workbench.runtime_install import (
+    BUNDLED_LAYOUT,
     CONNECTOR_PACKAGE,
     RUNTIME_PACKAGE,
     v2_sdk_available,
@@ -86,11 +87,24 @@ def _export_memory_profile(export: Path) -> str:
             else M2_PROFILE)
 
 
+def _connector_sdk_path(node_modules: Path, pin: dict[str, Any]) -> Path:
+    """Resolve Connector from the dependency layout already checked against its pin."""
+    layout = pin.get("dependency_layout")
+    if layout == BUNDLED_LAYOUT:
+        root = node_modules / RUNTIME_PACKAGE / "node_modules"
+    elif layout is None:
+        root = node_modules
+    else:
+        raise BoundaryError("local_model_registration", "runtime_package_not_pinned")
+    return root / CONNECTOR_PACKAGE / "dist" / "index.js"
+
+
 _v2_sdk_available = v2_sdk_available
 REGISTRY = "token-policies-v1.json"
 LOCK = "token-policies-v1.lock"
 REGISTRATIONS = "model-registrations"
-REGISTRATION_SECONDS = 22.0
+# Full Public M0 export revalidation measured 22.66 s; leave time for Runtime checks and bind.
+REGISTRATION_SECONDS = 45.0
 # Source-reviewed engineering support: LiveObservationReader registrations,
 # SnapshotBuilder/providers and NativeTextMenu overrides. This is not native
 # or full-run qualification; Runtime remains the current-menu authority.
@@ -560,8 +574,7 @@ class LocalModelRegistration:
                 try:
                     node_modules = directory / "runtime" / "node_modules"
                     validate_runtime_install(node_modules, pin, self.models._connector_pin())
-                    sdk = (node_modules / RUNTIME_PACKAGE / "node_modules" /
-                           CONNECTOR_PACKAGE / "dist" / "index.js")
+                    sdk = _connector_sdk_path(node_modules, pin)
                     if environment_kind == "native" and not _v2_sdk_available(sdk):
                         return _public(identity, "unavailable",
                                        reason_code="v2_runtime_contract_unavailable",
@@ -759,8 +772,7 @@ class LocalModelRegistration:
             code = ("runtime_package_not_pinned" if profile == PUBLIC_M0_PROFILE
                     else "text_runtime_local_install_required")
             raise BoundaryError("local_model_registration", code) from error
-        sdk = (node_modules / RUNTIME_PACKAGE / "node_modules" / CONNECTOR_PACKAGE
-               / "dist" / "index.js")
+        sdk = _connector_sdk_path(node_modules, pin)
         if not managed and profile == V2_M2_PROFILE and not _v2_sdk_available(sdk):
             raise BoundaryError("local_model_registration", "v2_runtime_contract_unavailable")
         _remaining(deadline)

@@ -224,6 +224,9 @@ def test_canonical_m0_cli_reserves_before_input_and_binds_resume_export(
     summaries.extend(item["bootstrap"] for item in metrics["baselines"].values())
     assert all(item["status"] == "unknown"
                and item["unit"] == "session_scoped_run_group" for item in summaries)
+    from test_token_comparison import assert_m0_comparison_preserves_qualification
+
+    assert_m0_comparison_preserves_qualification(store, completed["result_id"])
     with owner.transaction() as db:
         evaluations = db.execute(
             "SELECT kind,reference FROM curation_uses WHERE kind='evaluation'"
