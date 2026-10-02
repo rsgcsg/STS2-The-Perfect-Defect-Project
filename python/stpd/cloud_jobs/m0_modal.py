@@ -1536,10 +1536,18 @@ class ModalM0Provider:
 
         function = self._function_for(target)
         sdk = self._client()
-        timeout_type = getattr(getattr(sdk, "exception", None), "TimeoutError", TimeoutError)
+        modal_exceptions = getattr(sdk, "exception", None)
+        timeout_type = getattr(modal_exceptions, "TimeoutError", TimeoutError)
         timeout_types = tuple({TimeoutError, timeout_type})
+        # Match the smoke call-status ordering: terminal subclasses must be handled
+        # before Modal's base TimeoutError, which also represents a pending wait.
+        terminal_types = tuple(
+            error_type
+            for name in ("FunctionTimeoutError", "OutputExpiredError", "RemoteError")
+            if isinstance(error_type := getattr(modal_exceptions, name, None), type)
+        )
         cancellation_type = getattr(
-            getattr(sdk, "exception", None), "InputCancellation", None,
+            modal_exceptions, "InputCancellation", None,
         )
         try:
             call = sdk.FunctionCall.from_id(
@@ -1554,6 +1562,8 @@ class ModalM0Provider:
             if input_count != 1 or call_identity != (target.app_id, target.function_id):
                 raise BoundaryError("modal_m0", "saved_call_identity_mismatch")
             result_bytes = call.get(timeout=float(timeout_seconds), index=0)
+        except terminal_types:
+            raise BoundaryError("modal_m0", "call_terminal_failure") from None
         except timeout_types:
             return None
         except BoundaryError:

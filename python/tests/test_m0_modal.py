@@ -676,6 +676,40 @@ def test_poll_timeout_retains_handle_and_uses_exact_saved_call(
     assert sdk.call_lookups == [(handle.call_id, function.client)]
 
 
+@pytest.mark.parametrize(
+    ("exception_name", "expected_code"),
+    [
+        ("FunctionTimeoutError", "call_terminal_failure"),
+        ("OutputExpiredError", "call_terminal_failure"),
+        ("TimeoutError", "pending"),
+    ],
+)
+def test_real_modal_timeout_classes_distinguish_terminal_from_pending(
+    parse_request: dict[bytes, FakeRequest],
+    exception_name: str,
+    expected_code: str,
+):
+    import modal
+
+    raw = b"request"
+    parse_request[raw] = _request(raw)
+    request = parse_request[raw]
+    function = FakeFunction()
+    error_type = getattr(modal.exception, exception_name)
+    call = FakeCall("fc-call01", result=error_type())
+    sdk = FakeSDK(function, call)
+    sdk.exception = modal.exception
+    provider = _provider(sdk=sdk, request=request)
+    handle = provider.submit(raw)
+
+    if expected_code == "pending":
+        assert provider.poll(handle, timeout_seconds=0.25) is None
+    else:
+        with pytest.raises(BoundaryError, match=expected_code):
+            provider.poll(handle, timeout_seconds=0.25)
+    assert call.get_calls == [(0.25, 0)]
+
+
 @pytest.mark.parametrize("timeout_error", [FakeModalTimeout(), FakeInputCancellation()])
 def test_poll_classifies_modal_timeout_and_cancellation_without_fabricating_result(
     parse_request: dict[bytes, FakeRequest],
