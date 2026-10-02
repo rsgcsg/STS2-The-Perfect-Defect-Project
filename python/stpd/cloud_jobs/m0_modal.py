@@ -1256,38 +1256,53 @@ class ModalM0Provider:
     def _confirm_named_app_absent(
         self, spec: M0AttemptSpec, *, allow_legacy_workspace_alias: bool,
     ) -> None:
-        """Use Modal's exact-name history lookup to confirm a complete absence result."""
+        """Use Modal's typed, exact deployment-name lookup to prove absence."""
         self.verify_account_id(
             spec.account_id,
             allow_legacy_workspace_alias=allow_legacy_workspace_alias,
         )
-        completed = self._run(
-            ["app", "history", spec.app_name, "--env", spec.environment_name, "--json"],
-            timeout_seconds=MAX_MODAL_CONTROL_SECONDS,
-        )
-        if completed.returncode != 0:
-            output = "\n".join(
-                item for item in (completed.stdout, getattr(completed, "stderr", None))
-                if isinstance(item, str)
-            )
-            expected = (
-                f"No App with name '{spec.app_name}' found in the "
-                f"'{spec.environment_name}' environment."
-            )
-            lines = [line.strip() for line in output.splitlines() if line.strip()]
-            if lines in ([expected], [f"Error: {expected}"]):
-                return
-            raise BoundaryError("modal_m0", "modal_app_name_lookup_unknown")
-        if not isinstance(completed.stdout, str):
-            raise BoundaryError("modal_m0", "modal_app_history_invalid")
+        sdk = self._client()
         try:
-            history_rows = json.loads(completed.stdout)
-        except (TypeError, json.JSONDecodeError):
-            raise BoundaryError("modal_m0", "modal_app_history_invalid_json") from None
-        # If the name resolves in history while the complete App list omitted it, the
-        # provider views disagree or only one view covers the historical App. Keep the
-        # operation unknown instead of treating that as absence.
-        self._complete_history_rows(history_rows)
+            api_pb2 = importlib.import_module("modal_proto.api_pb2")
+            async_utils = importlib.import_module("modal._utils.async_utils")
+            client = sdk.Client.from_env()
+            stub = client.stub
+
+            async def lookup_app_by_deployment_name() -> Any:
+                return await stub.AppGetByDeploymentName(
+                    api_pb2.AppGetByDeploymentNameRequest(
+                        name=spec.app_name,
+                        environment_name=spec.environment_name,
+                    ),
+                    retry=None,
+                    timeout=MAX_MODAL_CONTROL_SECONDS,
+                )
+
+            response = async_utils.synchronizer.create_blocking(
+                lookup_app_by_deployment_name,
+            )()
+        except Exception as error:
+            # Only the SDK's typed NOT_FOUND for this exact request proves absence.
+            # Permission, transport, timeout, and every other RPC failure stay unknown.
+            not_found_error = getattr(sdk.exception, "NotFoundError", None)
+            if isinstance(not_found_error, type) and isinstance(error, not_found_error):
+                return
+            raise BoundaryError("modal_m0", "modal_app_name_lookup_unknown") from None
+        if (not isinstance(response, api_pb2.AppGetByDeploymentNameResponse)
+                or response.environment_name != spec.environment_name):
+            raise BoundaryError("modal_m0", "modal_app_name_lookup_unknown")
+        if (not isinstance(response.app_id, str)
+                or not isinstance(response.previous_app_id, str)):
+            raise BoundaryError("modal_m0", "modal_app_name_lookup_unknown")
+        for app_id in (response.app_id, response.previous_app_id):
+            if app_id and not _MODAL_ID_RE["app"].fullmatch(app_id):
+                raise BoundaryError("modal_m0", "modal_app_name_lookup_unknown")
+        # Match Modal 1.5.5's modal.cli.app.resolve_app_identifier: a name lookup
+        # with neither current nor previous App ID raises its typed NotFoundError.
+        if not response.app_id and not response.previous_app_id:
+            return
+        # A current or recently stopped App is not absence when the complete CLI list
+        # omitted it; the provider views disagree, so keep the operation unknown.
         raise BoundaryError("modal_m0", "modal_app_lookup_incomplete")
 
     def _modal_json(self, args: list[str], *, timeout_seconds: float) -> Any:
