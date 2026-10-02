@@ -8,8 +8,6 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-import torch
-
 from spireagent.artifact_contracts import Manifest, Parent, Payload, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes, text
 from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
@@ -39,8 +37,10 @@ from .token_ranking import (
     LightActionM0Config,
     Stage1aConfig,
     TokenRankingEngine,
+    TokenTargetRuntime,
     config_payload,
     decode_config,
+    require_current_token_runtime,
 )
 from .worker import WorkerResult
 
@@ -101,7 +101,17 @@ def _checkpoint_metadata(engine: TokenRankingEngine) -> dict[str, object]:
 def prepare_token_run(
     store: ArtifactStore, inputs: LoadedTokenInputs | LoadedLightActionInputs,
     config: Stage1aConfig, producer: Producer, *, replicate: str = "stage1a",
+    target_runtime: TokenTargetRuntime | None = None,
 ) -> Manifest:
+    """Publish a run; explicit target metadata is recorded, not provider-authenticated.
+
+    Callers must source a non-default target from their already-bound image/provider.
+    Omitting it preserves the historical local runtime declaration.
+    """
+    if target_runtime is None:
+        target_runtime = TokenTargetRuntime.current()
+    elif not isinstance(target_runtime, TokenTargetRuntime):
+        raise BoundaryError("token_run", "invalid_target_runtime")
     text(replicate, "run.replicate", maximum=128)
     input_info = inputs.manifest.parameters.value()
     if isinstance(config, LightActionM0Config):
@@ -147,8 +157,8 @@ def prepare_token_run(
                           Parent("experiment", experiment.artifact_id)),
         parameters=FrozenObject.of({"schema": RUN_SCHEMA, "config": encoded_config,
                                     "replicate": replicate,
-                                    "cpu_threads": torch.get_num_threads(),
-                                    "torch_version": str(torch.__version__),
+                                    "cpu_threads": target_runtime.cpu_threads,
+                                    "torch_version": target_runtime.torch_version,
                                     **({"training_binding": training_binding}
                                        if training_binding is not None else {})}),
     )
@@ -310,17 +320,19 @@ def verify_m0_model_completion(store: ManifestArtifactStore, model: Manifest) ->
     return completed
 
 
-def preflight_token_run(
+def preflight_token_run_contract(
     store: ArtifactStore, run_id: str, runtime: Producer, *, resume: str | None = None,
 ) -> tuple[Manifest, Stage1aConfig, Manifest, bool]:
-    """Check run, input binding, experiment and checkpoint identity from manifests only."""
+    """Check run contract and lineage without comparing against the executing runtime."""
     run = store.get_manifest(run_id)
     info = run.parameters.value()
     if (run.kind != "run" or run.producer != runtime or info.get("schema") != RUN_SCHEMA
-            or info.get("torch_version") != str(torch.__version__)
-            or info.get("cpu_threads") != torch.get_num_threads()
             or sorted(p.role for p in run.parents) != ["experiment", "training_input"]):
         raise BoundaryError("token_run", "source_or_contract_mismatch")
+    try:
+        TokenTargetRuntime.from_run_info(info)
+    except BoundaryError as error:
+        raise BoundaryError("token_run", "source_or_contract_mismatch") from error
     config = decode_config(info["config"])
     input_manifest = store.get_manifest(run.parent("training_input"))
     input_info = input_manifest.parameters.value()
@@ -379,6 +391,19 @@ def preflight_token_run(
                 or not 0 <= resume_info["step"] <= config.steps):
             raise BoundaryError("token_run", "resume_identity_mismatch")
     return run, config, input_manifest, admitted_m0
+
+
+def preflight_token_run(
+    store: ArtifactStore, run_id: str, runtime: Producer, *, resume: str | None = None,
+) -> tuple[Manifest, Stage1aConfig, Manifest, bool]:
+    """Preflight lineage and require the current executor to match the declared runtime."""
+    result = preflight_token_run_contract(store, run_id, runtime, resume=resume)
+    run = result[0]
+    target_runtime = TokenTargetRuntime.from_run_info(run.parameters.value())
+    require_current_token_runtime(
+        target_runtime, "token_run", "source_or_contract_mismatch",
+    )
+    return result
 
 
 def execute_tokens(store: ArtifactStore, reporter: RunReporter, run_id: str, runtime: Producer,

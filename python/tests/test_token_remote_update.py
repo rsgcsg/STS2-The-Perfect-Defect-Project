@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 from dataclasses import replace
 
 import pytest
@@ -12,7 +14,16 @@ from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ManifestArtifactStore
 from stpd.fullrun.light_action_inputs import load_light_action_inputs
-from stpd.workers.token_ranking import LightActionM0Config, TokenRankingEngine
+from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
+from stpd.workers.token_ranking import (
+    CUDA_STEP_RNG_PROTOCOL,
+    LightActionM0Config,
+    TokenRankingEngine,
+    TokenTargetRuntime,
+    config_payload,
+    token_training_identity,
+    validate_light_action_m0_scratch_checkpoint,
+)
 from stpd.workers.token_remote_update import (
     TokenRemoteUpdateRequest,
     TokenRemoteUpdateResult,
@@ -20,7 +31,12 @@ from stpd.workers.token_remote_update import (
     prepare_token_remote_update,
     validate_token_remote_update,
 )
-from stpd.workers.token_worker import execute_tokens, prepare_token_run
+from stpd.workers.token_worker import (
+    execute_tokens,
+    preflight_token_run,
+    preflight_token_run_contract,
+    prepare_token_run,
+)
 
 
 def _canonical_run(tmp_path, monkeypatch):
@@ -174,5 +190,214 @@ def test_remote_update_resume_uses_exact_existing_checkpoint_and_rejects_tamperi
             store.get_manifest(identity).kind in {"offline_evaluation", "model", "run_result"}
             for identity in store.manifest_ids()
         )
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_cpu_can_prepare_and_structurally_validate_cuda_target_checkpoint(
+    tmp_path, monkeypatch,
+):
+    case = _canonical_run(tmp_path, monkeypatch)
+    torch, previous_threads, store, owner, operation, producer, inputs, config, local_run = case
+    try:
+        assert not torch.cuda.is_available(), "this regression requires a CPU-only host"
+        local_runtime = TokenTargetRuntime.current()
+        assert local_run.parameters.value()["torch_version"] == local_runtime.torch_version
+        assert local_run.parameters.value()["cpu_threads"] == local_runtime.cpu_threads
+        preflight_token_run(store, local_run.artifact_id, producer)
+
+        # The Mac host is torch 2.13.0; the identified worker image is
+        # torch 2.13.0+cu130. The thread-count difference below is synthetic
+        # because the image's configured CPU thread count is not part of its
+        # supplied metadata.
+        monkeypatch.setattr(torch, "__version__", "2.13.0")
+        local_runtime = TokenTargetRuntime.current()
+        local_run = prepare_token_run(
+            store, inputs, config, producer, replicate="local-cpu-runtime",
+        )
+        assert local_run.parameters.value()["torch_version"] == "2.13.0"
+        preflight_token_run(store, local_run.artifact_id, producer)
+        target_runtime = TokenTargetRuntime(
+            "2.13.0+cu130", local_runtime.cpu_threads + 1,
+        )
+        assert target_runtime.torch_version != local_runtime.torch_version
+        assert target_runtime.cpu_threads != local_runtime.cpu_threads
+        cuda_config = replace(config, device="cuda")
+        cuda_run = prepare_token_run(
+            store, inputs, cuda_config, producer, target_runtime=target_runtime,
+        )
+        assert preflight_token_run_contract(
+            store, cuda_run.artifact_id, producer,
+        )[0].artifact_id == cuda_run.artifact_id
+        with pytest.raises(BoundaryError, match="source_or_contract_mismatch"):
+            preflight_token_run(store, cuda_run.artifact_id, producer)
+
+        # This is only a synthetic typed-checkpoint fixture: CPU-generated tensors are
+        # tagged with the CUDA request identity; it is not evidence of CUDA execution.
+        cpu_engine = TokenRankingEngine(inputs, config)
+        cpu_engine.advance()
+        cpu_engine.advance()
+        state = decode_checkpoint(cpu_engine.checkpoint())
+        mismatched_resume = copy.deepcopy(state)
+        mismatched_resume["torch_version"] = target_runtime.torch_version
+        mismatched_resume["cpu_threads"] = target_runtime.cpu_threads
+        with pytest.raises(BoundaryError, match="resume_identity_mismatch"):
+            TokenRankingEngine(inputs, config).restore(encode_checkpoint(mismatched_resume))
+        monkeypatch.setattr(
+            torch.cuda, "is_available",
+            lambda: pytest.fail("prepare/validate must not probe or initialize CUDA"),
+        )
+        request = prepare_token_remote_update(
+            store, owner, cuda_run.artifact_id, producer, operation, 2,
+            attempt_id="f" * 32,
+        )
+        assert request.config.device == request.target_device == "cuda"
+        assert request.target_runtime == target_runtime
+        decoded_request = TokenRemoteUpdateRequest.from_bytes(request.to_bytes())
+        assert decoded_request.target_runtime == target_runtime
+        assert request.backbone_identity.value() == cpu_engine.backbone
+        _, expected_identity = token_training_identity(
+            inputs, cuda_config, request.backbone_identity.value(),
+        )
+        state["config"] = config_payload(cuda_config)
+        state["data_identity"] = expected_identity
+        state["rng_protocol"] = CUDA_STEP_RNG_PROTOCOL
+        state["torch_version"] = target_runtime.torch_version
+        state["cpu_threads"] = target_runtime.cpu_threads
+        checkpoint = encode_checkpoint(state)
+
+        result = TokenRemoteUpdateResult(
+            request.request_sha256, request.attempt_id, request.run_id,
+            request.input_id, request.producer, request.operation_id,
+            request.training_binding, request.target_device, request.target_step,
+            request.config, request.resume_checkpoint_id, None,
+            request.target_step, hashlib.sha256(checkpoint).hexdigest(), checkpoint,
+            request.backbone_identity,
+        )
+        before = store.manifest_ids()
+        assert validate_token_remote_update(
+            store, owner, request, result, producer, operation,
+        ) == result
+        assert store.manifest_ids() == before
+        with pytest.raises(BoundaryError, match="producer_runtime_mismatch"):
+            execute_token_remote_update(request)
+
+        def reject_state(mutator, reason):
+            invalid = copy.deepcopy(state)
+            mutator(invalid)
+            raw = encode_checkpoint(invalid)
+            with pytest.raises(BoundaryError, match=reason):
+                validate_light_action_m0_scratch_checkpoint(
+                    raw, inputs, cuda_config, request.backbone_identity.value(),
+                    request.target_runtime,
+                )
+
+        reject_state(lambda value: value.update(config=config_payload(config)),
+                     "resume_identity_mismatch")
+        reject_state(lambda value: value.update(rng_protocol="seed_plus_completed_steps_v1"),
+                     "resume_identity_mismatch")
+        reject_state(lambda value: value.update(step=cuda_config.steps + 1),
+                     "resume_identity_mismatch")
+        reject_state(lambda value: value.update(data_identity="0" * 64),
+                     "resume_identity_mismatch")
+        reject_state(lambda value: value.update(torch_version=local_runtime.torch_version),
+                     "resume_identity_mismatch")
+        reject_state(lambda value: value.update(cpu_threads=local_runtime.cpu_threads),
+                     "resume_identity_mismatch")
+
+        model_name = next(name for name, tensor in state["model"].items()
+                          if tensor.numel() > 1)
+        reject_state(
+            lambda value: value["model"].__setitem__(
+                model_name, value["model"][model_name].reshape(-1)[:1],
+            ),
+            "invalid_weights",
+        )
+        reject_state(
+            lambda value: value["model"].__setitem__(
+                model_name, value["model"][model_name].to(dtype=torch.float64),
+            ),
+            "invalid_weights",
+        )
+        optimizer_index = next(iter(state["optimizer"]["state"]))
+        reject_state(
+            lambda value: value["optimizer"]["state"][optimizer_index].pop("exp_avg_sq"),
+            "optimizer_state_mismatch",
+        )
+        reject_state(
+            lambda value: value["optimizer"]["state"].pop(optimizer_index),
+            "optimizer_state_inventory",
+        )
+        reject_state(
+            lambda value: value["optimizer"]["param_groups"][0].update(lr=0.5),
+            "optimizer_config_mismatch",
+        )
+
+        nonfinite = copy.deepcopy(state)
+        nonfinite["optimizer"]["state"][optimizer_index]["exp_avg"].fill_(float("nan"))
+        with pytest.raises(BoundaryError, match="non_finite"):
+            encode_checkpoint(nonfinite)
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_cpu_target_runtime_mismatch_is_structurally_accepted_but_not_executable(
+    tmp_path, monkeypatch,
+):
+    case = _canonical_run(tmp_path, monkeypatch)
+    torch, previous_threads, store, owner, operation, producer, inputs, config, _ = case
+    try:
+        # Match the supplied Mac and worker image Torch identities; only the
+        # image thread-count difference is synthetic test data.
+        monkeypatch.setattr(torch, "__version__", "2.13.0")
+        local_runtime = TokenTargetRuntime.current()
+        local_run = prepare_token_run(
+            store, inputs, config, producer, replicate="cpu-local-runtime",
+        )
+        assert local_run.parameters.value()["torch_version"] == "2.13.0"
+        preflight_token_run(store, local_run.artifact_id, producer)
+
+        target_runtime = TokenTargetRuntime(
+            "2.13.0+cu130", local_runtime.cpu_threads + 1,
+        )
+        target_run = prepare_token_run(
+            store, inputs, config, producer, replicate="cpu-remote-target",
+            target_runtime=target_runtime,
+        )
+        assert preflight_token_run_contract(
+            store, target_run.artifact_id, producer,
+        )[0].artifact_id == target_run.artifact_id
+        with pytest.raises(BoundaryError, match="source_or_contract_mismatch"):
+            preflight_token_run(store, target_run.artifact_id, producer)
+
+        request = prepare_token_remote_update(
+            store, owner, target_run.artifact_id, producer, operation, 2,
+            attempt_id="9" * 32,
+        )
+        assert request.config.device == request.target_device == "cpu"
+        assert request.target_runtime == target_runtime
+        engine = TokenRankingEngine(inputs, config)
+        engine.advance()
+        engine.advance()
+        state = decode_checkpoint(engine.checkpoint())
+        state["torch_version"] = target_runtime.torch_version
+        state["cpu_threads"] = target_runtime.cpu_threads
+        checkpoint = encode_checkpoint(state)
+
+        with pytest.raises(BoundaryError, match="resume_identity_mismatch"):
+            TokenRankingEngine(inputs, config).restore(checkpoint)
+        result = TokenRemoteUpdateResult(
+            request.request_sha256, request.attempt_id, request.run_id,
+            request.input_id, request.producer, request.operation_id,
+            request.training_binding, request.target_device, request.target_step,
+            request.config, request.resume_checkpoint_id, None,
+            request.target_step, hashlib.sha256(checkpoint).hexdigest(), checkpoint,
+            request.backbone_identity,
+        )
+        assert validate_token_remote_update(
+            store, owner, request, result, producer, operation,
+        ) == result
+        with pytest.raises(BoundaryError, match="producer_runtime_mismatch"):
+            execute_token_remote_update(request)
     finally:
         torch.set_num_threads(previous_threads)
