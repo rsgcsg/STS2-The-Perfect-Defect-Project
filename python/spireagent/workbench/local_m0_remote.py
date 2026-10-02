@@ -25,6 +25,7 @@ from stpd.cloud_jobs.m0_modal import (
     M0_PILOT_EXECUTION_PLAN,
     M0AttemptSpec,
     M0ExecutionPlan,
+    M0PrepareStoppedProof,
     M0StopInspection,
     ModalM0Call,
     ModalM0Provider,
@@ -391,9 +392,45 @@ class LocalM0RemoteController:
                     return cast(dict[str, Any], self.training.status()["operation"])
                 self.training.persist_remote_app_ref(operation_id, app_ref.to_bytes())
             except BoundaryError:
+                if resolving_unpinned_prepare:
+                    return self._recover_stopped_prepare(operation_id, spec, provider)
                 return cast(dict[str, Any], self.training.status()["operation"])
             return self._stop_unknown_app(operation_id, wait_seconds=wait)
         return self._poll_and_finalize(operation_id, wait)
+
+    def _recover_stopped_prepare(
+        self, operation_id: str, spec: M0AttemptSpec, provider: Any,
+    ) -> dict[str, Any]:
+        # In this single-owner protocol the submit-intent timestamp is durable
+        # before any spawn. A stopped App is not App absence or a submitted-call result.
+        try:
+            proof = provider.inspect_prepare_stopped(spec, allow_legacy_workspace_alias=True)
+            if not isinstance(proof, M0PrepareStoppedProof) or proof.spec != spec:
+                raise BoundaryError("local_m0_remote", "prepare_stop_binding_invalid")
+            receipt = {
+                "schema": "stpd/local-modal-m0-prepare-stopped-receipt-v1",
+                "observed_at_unix_ns": time.time_ns(),
+                "attempt_id": spec.attempt_id,
+                "attempt_spec_sha256": _sha(spec.to_bytes()),
+                "request_sha256": spec.request_sha256,
+                "canonical_account_id": proof.canonical_account_id,
+                "pinned_account_id": spec.account_id,
+                "environment_name": spec.environment_name,
+                "app_name": spec.app_name,
+                "app_id": proof.app_id,
+                "app_version": 1,
+                "deployment_tag": ModalM0Provider._deployment_tag(spec),
+                "function_id": proof.function_id,
+                "stop_confirmation": _stop_inspection(proof.inspection),
+                "lookup_result": "exact_once_deployed_app_stopped",
+                "submit_boundary": "no_app_ref_handle_or_submit_intent",
+            }
+            return self.training.record_remote_prepare_stopped(
+                operation_id, expected_attempt_spec_sha256=_sha(spec.to_bytes()),
+                recovery_receipt=receipt,
+            )
+        except BoundaryError:
+            return cast(dict[str, Any], self.training.status()["operation"])
 
     def _stop_unknown_app(self, operation_id: str, *, wait_seconds: float) -> dict[str, Any]:
         current, _ = self._saved(operation_id)

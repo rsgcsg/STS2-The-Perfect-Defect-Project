@@ -93,6 +93,120 @@ REMOTE_MAX_STARTUP_TIMEOUT_SECONDS = 120
 REMOTE_MAX_TOTAL_STEPS = 100_000
 
 
+_REMOTE_PREPARE_RECOVERY_ERRORS = frozenset({
+    "provider_app_absent_before_submit", "provider_app_stopped_before_submit",
+})
+
+
+def _unsubmitted_prepare_boundary(current: dict[str, Any], attempt: dict[str, Any]) -> bool:
+    """This program persists submit intent before any spawn; do not infer admin history."""
+    no_call_fields = (
+        "app_ref_ref", "app_ref_sha256", "handle_ref", "handle_sha256",
+        "submit_intent_at_unix_ns", "provider_terminal_observed_at_unix_ns",
+        "provider_result_ref", "provider_result_sha256", "checkpoint_candidate_sha256",
+        "validated_checkpoint_id", "resume_checkpoint_id", "resume_of_attempt_id",
+        "runtime_evidence_ref", "runtime_evidence_sha256", "local_acceptance_started_at_unix_ns",
+        "local_acceptance_completed_at_unix_ns", "core_finalizer_attempt_seconds",
+    )
+    return (
+        len(current["remote"]["attempts"]) == 1
+        and attempt["app_phase"] == "prepare_intent"
+        and attempt["attempt_spec_ref"] is not None
+        and attempt["attempt_spec_sha256"] is not None
+        and attempt["provider_terminal"] is False
+        and attempt["start_step"] == 0
+        and all(attempt.get(field) is None for field in no_call_fields)
+        and all(current.get(field) is None for field in (
+            "checkpoint_id", "result_id", "model_id", "evaluation_id", "completed_at_unix_ns",
+        ))
+        and type(current.get("checkpoint_step", 0)) is int
+        and current.get("checkpoint_step", 0) == 0
+    )
+
+
+def _validate_prepare_recovery_receipt(receipt: Any, attempt: dict[str, Any]) -> None:
+    common = {
+        "schema", "observed_at_unix_ns", "attempt_id", "attempt_spec_sha256",
+        "canonical_account_id", "pinned_account_id", "environment_name",
+        "app_name", "lookup_result", "submit_boundary",
+    }
+    stopped = isinstance(receipt, dict) and receipt.get("schema") == (
+        "stpd/local-modal-m0-prepare-stopped-receipt-v1"
+    )
+    fields = common | ({
+        "request_sha256", "app_id", "app_version", "deployment_tag", "function_id",
+        "stop_confirmation",
+    } if stopped else set())
+    if (not isinstance(receipt, dict) or set(receipt) != fields
+            or receipt.get("schema") not in {
+                "stpd/local-modal-m0-prepare-absence-receipt-v1",
+                "stpd/local-modal-m0-prepare-stopped-receipt-v1",
+            }
+            or type(receipt.get("observed_at_unix_ns")) is not int
+            or receipt["observed_at_unix_ns"] < 1
+            or receipt.get("attempt_id") != attempt["attempt_id"]
+            or receipt.get("attempt_spec_sha256") != attempt["attempt_spec_sha256"]
+            or not isinstance(receipt.get("canonical_account_id"), str)
+            or not receipt["canonical_account_id"].startswith("ac-")
+            or any(not isinstance(receipt.get(field), str) or not receipt[field]
+                   for field in ("pinned_account_id", "environment_name", "app_name"))
+            or receipt.get("submit_boundary") != "no_app_ref_handle_or_submit_intent"):
+        raise ValueError("remote prepare recovery receipt invalid")
+    if not stopped:
+        if receipt["lookup_result"] != "complete_app_list_and_exact_history_not_found":
+            raise ValueError("remote prepare absence receipt invalid")
+        return
+    digest(attempt["attempt_spec_sha256"], "local_training.attempt_spec_sha256")
+    expected_tag = "sha256-" + base64.urlsafe_b64encode(
+        bytes.fromhex(attempt["attempt_spec_sha256"]),
+    ).decode("ascii").rstrip("=")
+    stop = receipt["stop_confirmation"]
+    if (
+        receipt["request_sha256"] != attempt["request_sha256"]
+        or receipt["app_name"] != "stpd-m0-update-" + attempt["attempt_id"]
+        or not isinstance(receipt["app_id"], str)
+        or re.fullmatch(r"ap-[A-Za-z0-9_-]+", receipt["app_id"]) is None
+        or not isinstance(receipt["function_id"], str)
+        or re.fullmatch(r"fu-[A-Za-z0-9_-]+", receipt["function_id"]) is None
+        or type(receipt["app_version"]) is not int or receipt["app_version"] != 1
+        or receipt["deployment_tag"] != expected_tag
+        or receipt["lookup_result"] != "exact_once_deployed_app_stopped"
+        or not isinstance(stop, dict)
+        or set(stop) != {"app_id", "app_state", "active_tasks", "active_containers", "confirmed"}
+        or stop["app_id"] != receipt["app_id"] or stop["app_state"] != "stopped"
+        or type(stop["active_tasks"]) is not int or stop["active_tasks"] != 0
+        or type(stop["active_containers"]) is not int or stop["active_containers"] != 0
+        or stop["confirmed"] is not True
+    ):
+        raise ValueError("remote prepare stopped receipt invalid")
+
+
+def _validate_prepare_stopped_binding(
+    receipt: dict[str, Any], spec: Any, request: Any, current: dict[str, Any],
+) -> None:
+    binding = request.training_binding.value()
+    if (
+        receipt["attempt_spec_sha256"] != hashlib.sha256(spec.to_bytes()).hexdigest()
+        or receipt["attempt_id"] != spec.attempt_id or spec.attempt_id != request.attempt_id
+        or receipt["request_sha256"] != spec.request_sha256
+        or spec.request_sha256 != request.request_sha256
+        or spec.producer != request.producer or spec.target_runtime != request.target_runtime
+        or receipt["pinned_account_id"] != spec.account_id
+        or (spec.account_id.startswith("ac-")
+            and receipt["canonical_account_id"] != spec.account_id)
+        or receipt["environment_name"] != spec.environment_name
+        or receipt["app_name"] != spec.app_name
+        or request.operation_id != current["operation_id"]
+        or request.target_device != "cuda" or request.config.device != "cuda"
+        or request.resume_checkpoint_id is not None
+        or binding.get("training_operation_id") != current["operation_id"]
+        or binding.get("dataset_ids") != [current["dataset_id"]]
+        or current["remote"]["target"] !=
+        _remote_target_for_attempt_spec(spec, request.config.steps)
+    ):
+        raise ValueError("remote prepare stopped binding invalid")
+
+
 def _remote_control_key(kind: str, sha256: str) -> str:
     if kind not in {"attempt-spec", "app-ref", "call-handle", "runtime-evidence"}:
         raise ValueError("remote control kind invalid")
@@ -426,31 +540,16 @@ def _validate_remote_operation(value: dict[str, Any]) -> None:
             raise ValueError("remote stop confirmation invalid")
         receipt = attempt["recovery_receipt"]
         if receipt is not None:
-            receipt_fields = {
-                "schema", "observed_at_unix_ns", "attempt_id", "attempt_spec_sha256",
-                "canonical_account_id", "pinned_account_id", "environment_name",
-                "app_name", "lookup_result", "submit_boundary",
-            }
-            if (not isinstance(receipt, dict) or set(receipt) != receipt_fields
-                    or receipt.get("schema") !=
-                    "stpd/local-modal-m0-prepare-absence-receipt-v1"
-                    or type(receipt.get("observed_at_unix_ns")) is not int
-                    or receipt["observed_at_unix_ns"] < 1
-                    or receipt.get("attempt_id") != attempt_id
-                    or receipt.get("attempt_spec_sha256") != attempt["attempt_spec_sha256"]
-                    or not isinstance(receipt.get("canonical_account_id"), str)
-                    or not receipt["canonical_account_id"].startswith("ac-")
-                    or not isinstance(receipt.get("pinned_account_id"), str)
-                    or not receipt["pinned_account_id"]
-                    or not isinstance(receipt.get("environment_name"), str)
-                    or not receipt["environment_name"]
-                    or not isinstance(receipt.get("app_name"), str)
-                    or not receipt["app_name"]
-                    or receipt.get("lookup_result") !=
-                    "complete_app_list_and_exact_history_not_found"
-                    or receipt.get("submit_boundary") !=
-                    "no_app_ref_handle_or_submit_intent"):
-                raise ValueError("remote prepare absence receipt invalid")
+            _validate_prepare_recovery_receipt(receipt, attempt)
+            if receipt["schema"] == "stpd/local-modal-m0-prepare-stopped-receipt-v1" and (
+                not _unsubmitted_prepare_boundary(value, attempt)
+                or attempt["phase"] != "preflight_failed"
+                or attempt["terminal_state"] != "failed"
+                or attempt["provider_error_code"] != "provider_app_stopped_before_submit"
+                or value.get("error_code") != "provider_app_stopped_before_submit"
+                or attempt["stop_confirmation"] != receipt["stop_confirmation"]
+            ):
+                raise ValueError("remote stopped prepare cannot imply submitted work")
         if attempt["phase"] == "submit_intent":
             if (attempt["handle_ref"] is not None or attempt["provider_terminal"]
                     or attempt["terminal_state"] is not None):
@@ -534,8 +633,7 @@ def _validate_remote_operation(value: dict[str, Any]) -> None:
                 or previous_remote.get("schema") !=
                 "stpd/local-training-remote-preflight-retry-archive-v1"
                 or previous_remote.get("operation_id") != value.get("operation_id")
-                or previous_remote.get("error_code") !=
-                "provider_app_absent_before_submit"
+                or previous_remote.get("error_code") not in _REMOTE_PREPARE_RECOVERY_ERRORS
                 or not isinstance(archive_ref, str)
                 or not isinstance(archive_sha256, str)
                 or safe_key(archive_ref) != REMOTE_OPERATION_HISTORY_PREFIX + archive_sha256):
@@ -1149,7 +1247,7 @@ class LocalTrainingService:
                     or archived.get("_owner") != list(owner.identity)
                     or archived.get("status") != "failed"
                     or archived.get("stage") != "remote_failed"
-                    or archived.get("error_code") != "provider_app_absent_before_submit"):
+                    or archived.get("error_code") not in _REMOTE_PREPARE_RECOVERY_ERRORS):
                 raise ValueError
             _validate_remote_operation(archived)
             latest = archived["remote"]["attempts"][-1]
@@ -1191,6 +1289,8 @@ class LocalTrainingService:
                     or archived["remote"]["target"] !=
                     _remote_target_for_attempt_spec(old_spec, old_request.config.steps)):
                 raise ValueError
+            if archived["error_code"] == "provider_app_stopped_before_submit":
+                _validate_prepare_stopped_binding(receipt, old_spec, old_request, archived)
             return {
                 "permit": permit,
                 "archived_operation": archived,
@@ -1271,7 +1371,7 @@ class LocalTrainingService:
                     or current.get("operation_id") != operation_id
                     or current.get("status") != "failed"
                     or current.get("stage") != "remote_failed"
-                    or current.get("error_code") != "provider_app_absent_before_submit"
+                    or current.get("error_code") not in _REMOTE_PREPARE_RECOVERY_ERRORS
                     or latest.get("phase") != "preflight_failed"
                     or latest.get("app_phase") != "prepare_intent"
                     or latest.get("app_ref_ref") is not None
@@ -1312,6 +1412,13 @@ class LocalTrainingService:
                     or (receipt["canonical_account_id"] != spec.account_id
                         and receipt["pinned_account_id"] != spec.account_id)):
                 raise BoundaryError("local_training", "remote_preflight_retirement_invalid")
+            if current["error_code"] == "provider_app_stopped_before_submit":
+                try:
+                    _validate_prepare_stopped_binding(receipt, spec, request, current)
+                except (ValueError, KeyError, TypeError, BoundaryError):
+                    raise BoundaryError(
+                        "local_training", "remote_preflight_retirement_invalid",
+                    ) from None
             archive_bytes = read_replaceable_bytes(path)
             archive_ref, archive_sha256 = _persist_remote_operation_history(
                 store, archive_bytes,
@@ -1922,6 +2029,82 @@ class LocalTrainingService:
                 raise BoundaryError(
                     "local_training", "remote_prepare_absence_invalid",
                 ) from error
+            write_replaceable_json(path, updated)
+            return self._public(updated)
+
+    def record_remote_prepare_stopped(
+        self, operation_id: object, *, expected_attempt_spec_sha256: str,
+        recovery_receipt: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Close only this program's stopped prepare before its durable submit intent.
+
+        The provider proves exact App stop; the owner rechecks no submitted/result/
+        checkpoint evidence under its existing lock. This is not App absence and
+        does not prove that unrelated administrators never invoked a function.
+        """
+        operation_id = digest(operation_id, "local_training.operation_id", length=32)
+        expected_sha = digest(expected_attempt_spec_sha256, "local_training.attempt_spec_sha256")
+        if not isinstance(recovery_receipt, dict):
+            raise BoundaryError("local_training", "remote_prepare_stop_unproven")
+        receipt = json.loads(json_bytes(recovery_receipt))
+        owner, store, _ = self._selected()
+        path, lock_path = self._paths(owner)
+        self._require_remote_lock(lock_path)
+        with instance_lock(lock_path, create=False):
+            current = self._read(path, owner.identity)
+            if (current.get("schema") != SCHEMA_V4
+                    or current.get("operation_id") != operation_id
+                    or current.get("status") != "interrupted_unknown"
+                    or current.get("stage") != "remote_unknown"):
+                raise BoundaryError("local_training", "remote_prepare_stop_unavailable")
+            latest = current["remote"]["attempts"][-1]
+            if (latest["phase"] != "submit_intent"
+                    or latest["terminal_state"] is not None
+                    or latest["stop_confirmation"] is not None
+                    or latest["recovery_receipt"] is not None
+                    or not _unsubmitted_prepare_boundary(current, latest)):
+                raise BoundaryError("local_training", "remote_prepare_stop_unproven")
+            spec_bytes, app_ref_bytes, handle_bytes = _remote_provider_bytes(store, latest)
+            if (spec_bytes is None or app_ref_bytes is not None or handle_bytes is not None
+                    or hashlib.sha256(spec_bytes).hexdigest() != expected_sha):
+                raise BoundaryError("local_training", "remote_prepare_spec_changed")
+            request_bytes = _read_remote_blob(
+                store, latest["request_ref"], latest["request_sha256"],
+                object_prefix=REMOTE_REQUEST_PREFIX, chunk_prefix=REMOTE_REQUEST_CHUNK_PREFIX,
+                maximum=REMOTE_MAX_REQUEST_BYTES, label="remote_request",
+            )
+            from stpd.cloud_jobs.m0_modal import M0AttemptSpec
+            from stpd.workers.token_remote_update import TokenRemoteUpdateRequest
+
+            try:
+                _validate_prepare_recovery_receipt(receipt, latest)
+                if (receipt["schema"] != "stpd/local-modal-m0-prepare-stopped-receipt-v1"
+                        or receipt["observed_at_unix_ns"] < current["created_at_unix_ns"]):
+                    raise ValueError
+                spec = M0AttemptSpec.from_bytes(spec_bytes)
+                request = TokenRemoteUpdateRequest.from_bytes(request_bytes)
+                _validate_prepare_stopped_binding(receipt, spec, request, current)
+            except (ValueError, KeyError, TypeError, BoundaryError):
+                raise BoundaryError("local_training", "remote_prepare_stop_unproven") from None
+            attempts = list(current["remote"]["attempts"])
+            attempts[-1] = {
+                **latest, "phase": "preflight_failed", "terminal_state": "failed",
+                "provider_error_code": "provider_app_stopped_before_submit",
+                "stop_confirmation": dict(receipt["stop_confirmation"]),
+                "recovery_receipt": receipt,
+            }
+            stopped_at = max(time.time_ns(), current["created_at_unix_ns"])
+            updated = {
+                **current, "status": "failed", "stage": "remote_failed",
+                "error_code": "provider_app_stopped_before_submit",
+                "stopped_at_unix_ns": stopped_at,
+                "total_wall_seconds": (stopped_at - current["created_at_unix_ns"]) / 1_000_000_000,
+                "remote": {**current["remote"], "attempts": attempts},
+            }
+            try:
+                _validate_remote_operation(updated)
+            except (ValueError, KeyError, TypeError, BoundaryError):
+                raise BoundaryError("local_training", "remote_prepare_stop_invalid") from None
             write_replaceable_json(path, updated)
             return self._public(updated)
 

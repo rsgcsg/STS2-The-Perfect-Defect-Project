@@ -501,6 +501,32 @@ class M0StopInspection:
 
 
 @dataclass(frozen=True)
+class M0PrepareStoppedProof:
+    """Exact stopped App proof; it makes no unobserved image/runtime claim."""
+
+    spec: M0AttemptSpec
+    canonical_account_id: str
+    app_id: str
+    function_id: str
+    inspection: M0StopInspection
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.spec, M0AttemptSpec)
+                or not isinstance(self.canonical_account_id, str)
+                or re.fullmatch(r"ac-[A-Za-z0-9_-]+", self.canonical_account_id) is None
+                or (self.spec.account_id.startswith("ac-")
+                    and self.spec.account_id != self.canonical_account_id)
+                or not isinstance(self.app_id, str)
+                or not _MODAL_ID_RE["app"].fullmatch(self.app_id)
+                or not isinstance(self.function_id, str)
+                or not _MODAL_ID_RE["function"].fullmatch(self.function_id)
+                or not isinstance(self.inspection, M0StopInspection)
+                or self.inspection.app_id != self.app_id
+                or self.inspection.confirmed is not True):
+            raise BoundaryError("modal_m0_stop", "prepare_stop_binding_invalid")
+
+
+@dataclass(frozen=True)
 class ModalM0Call:
     """Durable provider handle plus the exact request identity needed to reconcile it."""
 
@@ -1346,34 +1372,121 @@ class ModalM0Provider:
         self.target_runtime = runtime
         return target
 
-    def _function_for(self, target: ModalM0Target) -> Any:
-        sdk = self._client()
+    @staticmethod
+    def _spec_for_target(target: ModalM0Target) -> M0AttemptSpec:
+        return M0AttemptSpec(
+            target.attempt_id, target.request_sha256, target.account_id,
+            target.environment_name, target.image_object_id, target.producer,
+            target.target_runtime, target.resource_plan,
+        )
+
+    def _function_identity(self, client: Any, spec: M0AttemptSpec, app_id: str) -> str:
+        """Read authoritative protobuf identity/resources, never sync facade attributes."""
         try:
-            function = sdk.Function.from_name(
-                target.app_name,
-                target.function_name,
-                version=target.app_version,
-                environment_name=target.environment_name,
+            api = importlib.import_module("modal_proto.api_pb2")
+            async_utils = importlib.import_module("modal._utils.async_utils")
+
+            async def read() -> tuple[Any, Any]:
+                layout = await client.stub.AppGetLayout(
+                    api.AppGetLayoutRequest(app_id=app_id),
+                    retry=None, timeout=MAX_MODAL_CONTROL_SECONDS,
+                )
+                function = await client.stub.FunctionGet(
+                    api.FunctionGetRequest(
+                        app_name=spec.app_name, object_tag=M0_MODAL_FUNCTION_NAME,
+                        environment_name=spec.environment_name, app_version=0,
+                    ),
+                    retry=None, timeout=MAX_MODAL_CONTROL_SECONDS,
+                )
+                return layout, function
+
+            layout, response = async_utils.synchronizer.create_blocking(read)()
+        except Exception:
+            raise BoundaryError("modal_m0", "deployed_target_identity_unavailable") from None
+        if (not isinstance(layout, api.AppGetLayoutResponse)
+                or not isinstance(response, api.FunctionGetResponse)):
+            raise BoundaryError("modal_m0", "deployed_target_identity_unavailable")
+        function_id = response.function_id
+        if not isinstance(function_id, str):
+            raise BoundaryError("modal_m0", "deployed_target_identity_mismatch")
+        objects = [obj for obj in layout.app_layout.objects if obj.object_id == function_id]
+        metadata = response.handle_metadata
+        if (
+            not _MODAL_ID_RE["function"].fullmatch(function_id)
+            or dict(layout.app_layout.function_ids) != {M0_MODAL_FUNCTION_NAME: function_id}
+            or len(objects) != 1
+            or not objects[0].HasField("function_handle_metadata")
+            or metadata.app_id != app_id
+            or metadata.function_name != M0_MODAL_FUNCTION_NAME
+            or metadata.is_method
+            or metadata.function_type != api.Function.FUNCTION_TYPE_FUNCTION
+            or objects[0].function_handle_metadata.app_id != app_id
+            or objects[0].function_handle_metadata.function_name != M0_MODAL_FUNCTION_NAME
+            or response.function.function_name != M0_MODAL_FUNCTION_NAME
+        ):
+            raise BoundaryError("modal_m0", "deployed_target_identity_mismatch")
+        ranked = response.function.ranked_functions
+        if len(ranked) != 1 or ranked[0].rank != 0:
+            raise BoundaryError("modal_m0", "deployed_target_resource_mismatch")
+        definition = ranked[0].function
+        if definition.image_id != spec.image_object_id:
+            raise BoundaryError("modal_m0", "deployed_target_identity_mismatch")
+        plan = spec.resource_plan
+        resources = definition.resources
+        scaling = response.function.autoscaler_settings
+        # SDK 1.5.5 leaves FunctionData's legacy startup field at zero;
+        # the actual rank-0 Function definition carries the configured timeout.
+        if (
+            definition.function_name != M0_MODAL_FUNCTION_NAME
+            or resources.gpu_config.gpu_type != plan.gpu
+            or resources.gpu_config.count != 1
+            or resources.milli_cpu != int(plan.cpu * 1000)
+            or resources.memory_mb != plan.memory_mib
+            or response.function.timeout_secs != plan.function_timeout_seconds
+            or definition.startup_timeout_secs != plan.startup_timeout_seconds
+            or scaling.scaledown_window != plan.scaledown_seconds
+            or scaling.max_containers != plan.max_containers
+            or scaling.min_containers != 0
+            or scaling.buffer_containers != 0
+            or definition.retry_policy.retries != plan.retries
+        ):
+            raise BoundaryError("modal_m0", "deployed_target_resource_mismatch")
+        return function_id
+
+    def _bound_function(
+        self, spec: M0AttemptSpec, app_id: str, *, allow_legacy_workspace_alias: bool,
+    ) -> Any:
+        # This is a single-owner, one-deployment attempt App, not server-side
+        # atomic version pinning. A second deployment is rejected, never followed.
+        try:
+            client = self._client().Client.from_env()
+            before = self._function_identity(client, spec, app_id)
+            function = self._client().Function.from_name(
+                spec.app_name, M0_MODAL_FUNCTION_NAME,
+                environment_name=spec.environment_name, client=client,
             )
             function.hydrate()
-            metadata = getattr(function, "_metadata", None)
-            actual = (
-                function.object_id,
-                getattr(function, "_app_id", None),
-                getattr(metadata, "function_name", None),
-                getattr(metadata, "image_id", None),
-            )
+            after = self._function_identity(client, spec, app_id)
         except BoundaryError:
             raise
         except Exception:
-            raise BoundaryError("modal_m0", "target_unavailable") from None
-        expected = (
-            target.function_id,
-            target.app_id,
-            target.function_name,
-            target.image_object_id,
-        )
-        if actual != expected:
+            raise BoundaryError("modal_m0", "deployed_target_identity_unavailable") from None
+        if function.object_id != before or after != before:
+            raise BoundaryError("modal_m0", "deployed_target_identity_mismatch")
+        if self._deployment_identity(
+            spec, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        ) != app_id:
+            raise BoundaryError("modal_m0", "deployed_target_identity_mismatch")
+        return function
+
+    def _function_for(self, target: ModalM0Target) -> Any:
+        if target.app_version != 1:
+            raise BoundaryError("modal_m0", "attempt_app_redeployed")
+        spec = self._spec_for_target(target)
+        if self._deployment_identity(spec, allow_legacy_workspace_alias=True) != target.app_id:
+            raise BoundaryError("modal_m0", "deployed_target_identity_mismatch")
+        function = self._bound_function(spec, target.app_id, allow_legacy_workspace_alias=True)
+        if function.object_id != target.function_id:
             raise BoundaryError("modal_m0", "deployed_target_identity_mismatch")
         return function
 
@@ -1387,9 +1500,9 @@ class ModalM0Provider:
             raise BoundaryError("modal_m0", "foreign_target")
         return target
 
-    def resolve_app(
+    def _deployment_identity(
         self, spec: M0AttemptSpec, *, allow_legacy_workspace_alias: bool = False,
-    ) -> ModalM0Target | None:
+    ) -> str | None:
         """Read-only reconciliation by the already journaled unique attempt name."""
         if not isinstance(spec, M0AttemptSpec):
             raise BoundaryError("modal_m0", "typed_attempt_spec_required")
@@ -1431,43 +1544,36 @@ class ModalM0Provider:
         parsed = self._complete_history_rows(histories)
         if not parsed:
             raise BoundaryError("modal_m0", "modal_app_version_unavailable")
-        app_version, latest = max(parsed, key=lambda item: item[0])
+        if len(parsed) != 1 or parsed[0][0] != 1:
+            raise BoundaryError("modal_m0", "attempt_app_redeployed")
+        _, latest = parsed[0]
         if latest.get("tag") != self._deployment_tag(spec):
             raise BoundaryError("modal_m0", "existing_app_spec_mismatch")
         self.verify_account_id(
             spec.account_id,
             allow_legacy_workspace_alias=allow_legacy_workspace_alias,
         )
-        try:
-            function = self._client().Function.from_name(
-                spec.app_name,
-                M0_MODAL_FUNCTION_NAME,
-                version=app_version,
-                environment_name=spec.environment_name,
-            )
-            function.hydrate()
-            metadata = getattr(function, "_metadata", None)
-            function_id = function.object_id
-            actual_app_id = getattr(function, "_app_id", None)
-            function_name = getattr(metadata, "function_name", None)
-            image_id = getattr(metadata, "image_id", None)
-        except Exception:
-            raise BoundaryError("modal_m0", "deployed_target_identity_unavailable") from None
-        if (
-            actual_app_id != app_id
-            or function_name != M0_MODAL_FUNCTION_NAME
-            or image_id != spec.image_object_id
-            or not isinstance(function_id, str)
-            or not _MODAL_ID_RE["function"].fullmatch(function_id)
-        ):
-            raise BoundaryError("modal_m0", "deployed_target_identity_mismatch")
+        return app_id
+
+    def resolve_app(
+        self, spec: M0AttemptSpec, *, allow_legacy_workspace_alias: bool = False,
+    ) -> ModalM0Target | None:
+        """Recover only the unique, once-deployed App for the journaled attempt."""
+        app_id = self._deployment_identity(
+            spec, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        )
+        if app_id is None:
+            return None
+        function = self._bound_function(
+            spec, app_id, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        )
         target = ModalM0Target(
             spec.account_id,
             spec.environment_name,
             app_id,
-            app_version,
-            function_id,
-            image_id,
+            1,
+            function.object_id,
+            spec.image_object_id,
             spec.producer,
             spec.attempt_id,
             spec.request_sha256,
@@ -1477,6 +1583,80 @@ class ModalM0Provider:
         self.spec = spec
         self._bind_target(target)
         return target
+
+    def inspect_prepare_stopped(
+        self, spec: M0AttemptSpec, *, allow_legacy_workspace_alias: bool = False,
+    ) -> M0PrepareStoppedProof:
+        """Read a once-deployed stopped App without fabricating a runnable Target."""
+        app_id = self._deployment_identity(
+            spec, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        )
+        if app_id is None:
+            raise BoundaryError("modal_m0", "prepare_stop_unproven")
+        canonical = self.verify_account_id(
+            spec.account_id, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        )
+        try:
+            api = importlib.import_module("modal_proto.api_pb2")
+            async_utils = importlib.import_module("modal._utils.async_utils")
+            client = self._client().Client.from_env()
+
+            async def read() -> tuple[Any, Any]:
+                named = await client.stub.AppGetByDeploymentName(
+                    api.AppGetByDeploymentNameRequest(
+                        name=spec.app_name, environment_name=spec.environment_name,
+                    ),
+                    retry=None, timeout=MAX_MODAL_CONTROL_SECONDS,
+                )
+                layout = await client.stub.AppGetLayout(
+                    api.AppGetLayoutRequest(app_id=app_id),
+                    retry=None, timeout=MAX_MODAL_CONTROL_SECONDS,
+                )
+                return named, layout
+
+            named, layout = async_utils.synchronizer.create_blocking(read)()
+        except Exception:
+            raise BoundaryError("modal_m0", "prepare_stop_unproven") from None
+        if (not isinstance(named, api.AppGetByDeploymentNameResponse)
+                or named.environment_name != spec.environment_name
+                or not any(value == app_id for value in (named.app_id, named.previous_app_id))
+                or any(value and value != app_id for value in (named.app_id, named.previous_app_id))
+                or not isinstance(layout, api.AppGetLayoutResponse)):
+            raise BoundaryError("modal_m0", "prepare_stop_binding_invalid")
+        functions = dict(layout.app_layout.function_ids)
+        function_id = functions.get(M0_MODAL_FUNCTION_NAME, "")
+        objects = [obj for obj in layout.app_layout.objects if obj.object_id == function_id]
+        if (
+            not _MODAL_ID_RE["function"].fullmatch(function_id)
+            or functions != {M0_MODAL_FUNCTION_NAME: function_id}
+            or len(objects) != 1
+            or not objects[0].HasField("function_handle_metadata")
+            or objects[0].function_handle_metadata.app_id != app_id
+            or objects[0].function_handle_metadata.function_name != M0_MODAL_FUNCTION_NAME
+            or objects[0].function_handle_metadata.is_method
+            or objects[0].function_handle_metadata.function_type !=
+            api.Function.FUNCTION_TYPE_FUNCTION
+        ):
+            raise BoundaryError("modal_m0", "prepare_stop_binding_invalid")
+        try:
+            evidence = self._smoke_helpers()["_stop_evidence"](
+                app_id, spec.environment_name,
+                deadline=time.monotonic() + MAX_MODAL_CONTROL_SECONDS,
+            )
+            inspection = M0StopInspection(
+                app_id, evidence["app_state"], evidence["app_tasks"],
+                evidence["running_containers"], True,
+            )
+        except Exception:
+            raise BoundaryError("modal_m0", "prepare_stop_unproven") from None
+        if (self._deployment_identity(
+                spec, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+            ) != app_id
+                or self.verify_account_id(
+                    spec.account_id, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+                ) != canonical):
+            raise BoundaryError("modal_m0", "prepare_stop_binding_invalid")
+        return M0PrepareStoppedProof(spec, canonical, app_id, function_id, inspection)
 
     def prepare_app(self, spec: M0AttemptSpec) -> ModalM0Target:
         """Deploy a unique App once; an ambiguous outcome is reconciled, never redeployed."""
@@ -1652,7 +1832,6 @@ class ModalM0Provider:
         ):
             raise BoundaryError("modal_m0", "poll_timeout_limit")
 
-        function = self._function_for(target)
         sdk = self._client()
         modal_exceptions = getattr(sdk, "exception", None)
         timeout_type = getattr(modal_exceptions, "TimeoutError", TimeoutError)
@@ -1669,17 +1848,7 @@ class ModalM0Provider:
             modal_exceptions, "InputCancellation", None,
         )
         try:
-            call = sdk.FunctionCall.from_id(
-                handle.call_id,
-                client=function.client,
-            )
-            input_count = call.num_inputs()
-            call_identity = (
-                getattr(call, "_app_id", None),
-                getattr(call, "_function_id", None),
-            )
-            if input_count != 1 or call_identity != (target.app_id, target.function_id):
-                raise BoundaryError("modal_m0", "saved_call_identity_mismatch")
+            call = self._saved_call(handle, target)
             result_bytes = call.get(timeout=float(timeout_seconds), index=0)
         except terminal_types:
             raise BoundaryError("modal_m0", "call_terminal_failure") from None
@@ -1702,16 +1871,31 @@ class ModalM0Provider:
         return result_bytes
 
     def _saved_call(self, handle: ModalM0Call, target: ModalM0Target) -> Any:
-        function = self._function_for(target)
+        # A saved call remains recoverable after its App is stopped. Do not look
+        # up the deployed function or spawn anything on this recovery path.
+        self.verify_account_id(target.account_id, allow_legacy_workspace_alias=True)
         try:
-            call = self._client().FunctionCall.from_id(handle.call_id, client=function.client)
-            identity = (
-                getattr(call, "_app_id", None),
-                getattr(call, "_function_id", None),
-            )
-            if call.num_inputs() != 1 or identity != (target.app_id, target.function_id):
+            api = importlib.import_module("modal_proto.api_pb2")
+            async_utils = importlib.import_module("modal._utils.async_utils")
+            client = self._client().Client.from_env()
+
+            async def read() -> Any:
+                return await client.stub.FunctionCallFromId(
+                    api.FunctionCallFromIdRequest(function_call_id=handle.call_id),
+                    retry=None, timeout=MAX_MODAL_CONTROL_SECONDS,
+                )
+
+            response = async_utils.synchronizer.create_blocking(read)()
+            if not isinstance(response, api.FunctionCallFromIdResponse):
+                raise BoundaryError("modal_m0", "saved_call_unavailable")
+            if (
+                response.function_call_id != handle.call_id
+                or response.num_inputs != 1
+                or response.metadata.app_id != target.app_id
+                or response.metadata.function_id != target.function_id
+            ):
                 raise BoundaryError("modal_m0", "saved_call_identity_mismatch")
-            return call
+            return self._client().FunctionCall.from_id(handle.call_id, client=client)
         except BoundaryError:
             raise
         except Exception:
