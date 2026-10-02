@@ -1407,6 +1407,8 @@ class ModalM0Provider:
                 or not isinstance(response, api.FunctionGetResponse)):
             raise BoundaryError("modal_m0", "deployed_target_identity_unavailable")
         function_id = response.function_id
+        if not isinstance(function_id, str):
+            raise BoundaryError("modal_m0", "deployed_target_identity_mismatch")
         objects = [obj for obj in layout.app_layout.objects if obj.object_id == function_id]
         metadata = response.handle_metadata
         if (
