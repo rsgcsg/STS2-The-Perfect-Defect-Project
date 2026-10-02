@@ -14,15 +14,20 @@ from __future__ import annotations
 import hashlib
 import importlib
 import importlib.metadata
+import json
 import math
+import os
 import platform
 import re
+import runpy
 import struct
+import subprocess
 import sys
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes, object_fields
@@ -31,9 +36,13 @@ from spireagent.source import REPOSITORY, source_identity
 from ..canonical import semantic_hash
 
 MODAL_SDK_VERSION = "1.5.5"
-CALL_SCHEMA = "stpd/modal-m0-call-v2"
-M0_MODAL_APP_NAME = "stpd-token-remote-update-m0"
+CALL_SCHEMA = "stpd/modal-m0-call-v3"
+APP_REF_SCHEMA = "stpd/modal-m0-app-ref-v1"
+ATTEMPT_SPEC_SCHEMA = "stpd/modal-m0-attempt-spec-v1"
+M0_MODAL_APP_NAME = "stpd-m0-update-"
 M0_MODAL_FUNCTION_NAME = "token_remote_update"
+MAX_MODAL_COMMAND_SECONDS = 120
+MAX_MODAL_CONTROL_SECONDS = 5
 
 # Leave headroom over the current few-MiB request and ~70-MiB checkpoint result.
 # Modal stores function payloads over 2 MiB in object storage automatically; these
@@ -66,9 +75,145 @@ def _runtime_version(value: object, field: str) -> str:
     return value
 
 
+def _token_target_runtime(value: object) -> Any:
+    from ..workers.token_ranking import TokenTargetRuntime
+
+    if not isinstance(value, TokenTargetRuntime):
+        raise BoundaryError("modal_m0", "typed_target_runtime_required")
+    return value
+
+
+@dataclass(frozen=True)
+class M0ExecutionPlan:
+    """Fixed, explicitly bounded first-pilot Modal function resource plan."""
+
+    gpu: str = "L4"
+    cpu: float = 2.0
+    memory_mib: int = 8192
+    function_timeout_seconds: int = 900
+    startup_timeout_seconds: int = 120
+    scaledown_seconds: int = 30
+    max_containers: int = 1
+    retries: int = 0
+
+    def __post_init__(self) -> None:
+        if json_bytes(self.to_dict()) != json_bytes(_M0_EXECUTION_PLAN_VALUES):
+            raise BoundaryError("modal_m0_plan", "unsupported_execution_plan")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "gpu": self.gpu,
+            "cpu": self.cpu,
+            "memory_mib": self.memory_mib,
+            "function_timeout_seconds": self.function_timeout_seconds,
+            "startup_timeout_seconds": self.startup_timeout_seconds,
+            "scaledown_seconds": self.scaledown_seconds,
+            "max_containers": self.max_containers,
+            "retries": self.retries,
+        }
+
+    @property
+    def plan_sha256(self) -> str:
+        return hashlib.sha256(json_bytes(self.to_dict())).hexdigest()
+
+    @classmethod
+    def from_dict(cls, value: object) -> M0ExecutionPlan:
+        return cls(**object_fields(value, set(_M0_EXECUTION_PLAN_VALUES), "modal_m0_plan"))
+
+
+_M0_EXECUTION_PLAN_VALUES = {
+    "gpu": "L4",
+    "cpu": 2.0,
+    "memory_mib": 8192,
+    "function_timeout_seconds": 900,
+    "startup_timeout_seconds": 120,
+    "scaledown_seconds": 30,
+    "max_containers": 1,
+    "retries": 0,
+}
+M0_PILOT_EXECUTION_PLAN = M0ExecutionPlan()
+
+
+@dataclass(frozen=True)
+class M0AttemptSpec:
+    """Durable pre-deploy identity; persist these bytes before calling prepare_app."""
+
+    attempt_id: str
+    request_sha256: str
+    account_id: str
+    environment_name: str
+    image_object_id: str
+    producer: Producer
+    target_runtime: Any
+    resource_plan: M0ExecutionPlan = M0_PILOT_EXECUTION_PLAN
+
+    def __post_init__(self) -> None:
+        digest(self.attempt_id, "modal_m0_attempt.attempt_id", length=32)
+        digest(self.request_sha256, "modal_m0_attempt.request_sha256")
+        _identifier(self.account_id, "account_id")
+        _identifier(self.environment_name, "environment_name")
+        if not isinstance(self.producer, Producer):
+            raise BoundaryError("modal_m0_attempt", "untyped_producer")
+        if not isinstance(self.image_object_id, str) or not _MODAL_ID_RE["image"].fullmatch(
+            self.image_object_id
+        ):
+            raise BoundaryError("modal_m0_attempt", "invalid_image_object_id")
+        _token_target_runtime(self.target_runtime)
+        if not isinstance(self.resource_plan, M0ExecutionPlan):
+            raise BoundaryError("modal_m0_attempt", "typed_execution_plan_required")
+
+    @property
+    def app_name(self) -> str:
+        return f"{M0_MODAL_APP_NAME}{self.attempt_id}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": ATTEMPT_SPEC_SCHEMA,
+            "attempt_id": self.attempt_id,
+            "request_sha256": self.request_sha256,
+            "account_id": self.account_id,
+            "environment_name": self.environment_name,
+            "image_object_id": self.image_object_id,
+            "producer": self.producer.to_dict(),
+            "target_runtime": {
+                "torch_version": self.target_runtime.torch_version,
+                "cpu_threads": self.target_runtime.cpu_threads,
+            },
+            "resource_plan": self.resource_plan.to_dict(),
+            "app_name": self.app_name,
+        }
+
+    def to_bytes(self) -> bytes:
+        return json_bytes(self.to_dict())
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> M0AttemptSpec:
+        if not isinstance(raw, bytes) or not 1 <= len(raw) <= 128 * 1024:
+            raise BoundaryError("modal_m0_attempt", "spec_size_limit")
+        obj = dict(object_fields(decode_json(raw), {
+            "schema", "attempt_id", "request_sha256", "account_id", "environment_name",
+            "image_object_id", "producer", "target_runtime", "resource_plan", "app_name",
+        }, "modal_m0_attempt"))
+        if raw != json_bytes(obj) or obj.pop("schema") != ATTEMPT_SPEC_SCHEMA:
+            raise BoundaryError("modal_m0_attempt", "unsupported_or_noncanonical_spec")
+        target_runtime = dict(object_fields(
+            obj.pop("target_runtime"), {"torch_version", "cpu_threads"}, "modal_m0_attempt_runtime",
+        ))
+        from ..workers.token_ranking import TokenTargetRuntime
+
+        obj["target_runtime"] = TokenTargetRuntime(**target_runtime)
+        obj["producer"] = Producer.decode(obj["producer"])
+        obj["resource_plan"] = M0ExecutionPlan.from_dict(obj["resource_plan"])
+        app_name = obj.pop("app_name")
+        spec = cls(**obj)
+        if app_name != spec.app_name:
+            raise BoundaryError("modal_m0_attempt", "app_name_attempt_mismatch")
+        return spec
+
+
 @dataclass(frozen=True)
 class ModalM0Target:
-    """One immutable deployed function contract, never a generic Modal target."""
+    """Serialized exact Modal App/function binding for a single update attempt."""
 
     account_id: str
     environment_name: str
@@ -77,12 +222,18 @@ class ModalM0Target:
     function_id: str
     image_object_id: str
     producer: Producer
-    app_name: str = M0_MODAL_APP_NAME
+    attempt_id: str
+    request_sha256: str
+    target_runtime: Any
+    resource_plan: M0ExecutionPlan = M0_PILOT_EXECUTION_PLAN
     function_name: str = M0_MODAL_FUNCTION_NAME
 
     def __post_init__(self) -> None:
         _identifier(self.account_id, "account_id")
         _identifier(self.environment_name, "environment_name")
+        digest(self.attempt_id, "modal_m0_target.attempt_id", length=32)
+        digest(self.request_sha256, "modal_m0_target.request_sha256")
+        _token_target_runtime(self.target_runtime)
         if not isinstance(self.producer, Producer):
             raise BoundaryError("modal_m0_target", "untyped_producer")
         for value, kind in (
@@ -94,8 +245,14 @@ class ModalM0Target:
                 raise BoundaryError("modal_m0_target", f"invalid_{kind}_object_id")
         if type(self.app_version) is not int or self.app_version < 1:
             raise BoundaryError("modal_m0_target", "invalid_app_version")
-        if self.app_name != M0_MODAL_APP_NAME or self.function_name != M0_MODAL_FUNCTION_NAME:
+        if not isinstance(self.resource_plan, M0ExecutionPlan):
+            raise BoundaryError("modal_m0_target", "typed_execution_plan_required")
+        if self.function_name != M0_MODAL_FUNCTION_NAME:
             raise BoundaryError("modal_m0_target", "wrong_deployed_entry")
+
+    @property
+    def app_name(self) -> str:
+        return f"{M0_MODAL_APP_NAME}{self.attempt_id}"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,9 +263,44 @@ class ModalM0Target:
             "function_id": self.function_id,
             "image_object_id": self.image_object_id,
             "producer": self.producer.to_dict(),
+            "attempt_id": self.attempt_id,
+            "request_sha256": self.request_sha256,
+            "target_runtime": {
+                "torch_version": self.target_runtime.torch_version,
+                "cpu_threads": self.target_runtime.cpu_threads,
+            },
+            "resource_plan": self.resource_plan.to_dict(),
             "app_name": self.app_name,
             "function_name": self.function_name,
         }
+
+    def to_bytes(self) -> bytes:
+        return json_bytes({"schema": APP_REF_SCHEMA, **self.to_dict()})
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> ModalM0Target:
+        if not isinstance(raw, bytes) or not 1 <= len(raw) <= 128 * 1024:
+            raise BoundaryError("modal_m0_app_ref", "handle_size_limit")
+        obj = dict(object_fields(decode_json(raw), {
+            "schema", "account_id", "environment_name", "app_id", "app_version",
+            "function_id", "image_object_id", "producer", "attempt_id", "request_sha256",
+            "target_runtime", "resource_plan", "app_name", "function_name",
+        }, "modal_m0_app_ref"))
+        if raw != json_bytes(obj) or obj.pop("schema") != APP_REF_SCHEMA:
+            raise BoundaryError("modal_m0_app_ref", "unsupported_or_noncanonical_handle")
+        app_name = obj.pop("app_name")
+        runtime_value = dict(object_fields(
+            obj.pop("target_runtime"), {"torch_version", "cpu_threads"}, "modal_m0_app_ref_runtime",
+        ))
+        from ..workers.token_ranking import TokenTargetRuntime
+
+        obj["target_runtime"] = TokenTargetRuntime(**runtime_value)
+        obj["producer"] = Producer.decode(obj["producer"])
+        obj["resource_plan"] = M0ExecutionPlan.from_dict(obj["resource_plan"])
+        target = cls(**obj)
+        if app_name != target.app_name:
+            raise BoundaryError("modal_m0_app_ref", "app_name_attempt_mismatch")
+        return target
 
     @property
     def target_id(self) -> str:
@@ -127,6 +319,10 @@ class ModalM0Target:
                     "function_id",
                     "image_object_id",
                     "producer",
+                    "attempt_id",
+                    "request_sha256",
+                    "target_runtime",
+                    "resource_plan",
                     "app_name",
                     "function_name",
                 },
@@ -134,7 +330,35 @@ class ModalM0Target:
             )
         )
         obj["producer"] = Producer.decode(obj["producer"])
-        return cls(**obj)
+        runtime_value = dict(object_fields(
+            obj["target_runtime"], {"torch_version", "cpu_threads"}, "modal_m0_target_runtime",
+        ))
+        from ..workers.token_ranking import TokenTargetRuntime
+
+        obj["target_runtime"] = TokenTargetRuntime(**runtime_value)
+        obj["resource_plan"] = M0ExecutionPlan.from_dict(obj["resource_plan"])
+        app_name = obj.pop("app_name")
+        target = cls(**obj)
+        if app_name != target.app_name:
+            raise BoundaryError("modal_m0_target", "app_name_attempt_mismatch")
+        return target
+
+
+M0AppRef = ModalM0Target
+
+
+def _target_matches_spec(target: ModalM0Target, spec: M0AttemptSpec) -> bool:
+    return (
+        target.account_id == spec.account_id
+        and target.environment_name == spec.environment_name
+        and target.attempt_id == spec.attempt_id
+        and target.request_sha256 == spec.request_sha256
+        and target.producer == spec.producer
+        and target.image_object_id == spec.image_object_id
+        and target.target_runtime == spec.target_runtime
+        and target.resource_plan == spec.resource_plan
+        and target.app_name == spec.app_name
+    )
 
 
 @dataclass(frozen=True)
@@ -165,6 +389,8 @@ class ModalM0TargetRuntimeMetadata:
             or self.target_id != target.target_id
             or self.producer != target.producer
             or self.image_object_id != target.image_object_id
+            or self.torch_version != target.target_runtime.torch_version
+            or self.cpu_threads != target.target_runtime.cpu_threads
         ):
             raise BoundaryError("modal_m0_target_runtime", "target_source_binding_mismatch")
 
@@ -236,6 +462,45 @@ class ModalM0TargetRuntimeMetadata:
 
 
 @dataclass(frozen=True)
+class M0CancelAck:
+    """Provider accepted cancellation; this is never evidence that the App stopped."""
+
+    app_id: str
+    call_id: str
+    acknowledged: bool
+    status: Literal["acknowledged", "unknown"]
+
+
+@dataclass(frozen=True)
+class M0StopAck:
+    """Provider accepted App stop; stop completion requires inspect_stop."""
+
+    app_id: str
+    acknowledged: bool
+    status: Literal["acknowledged", "unknown"]
+
+
+@dataclass(frozen=True)
+class M0StopInspection:
+    app_id: str
+    app_state: Literal["stopped", "not_stopped", "unknown"]
+    active_tasks: int | None
+    active_containers: int | None
+    confirmed: bool
+
+    def __post_init__(self) -> None:
+        if self.confirmed and (
+            self.app_state != "stopped"
+            or self.active_tasks != 0
+            or self.active_containers != 0
+        ):
+            raise BoundaryError("modal_m0_stop", "invalid_stop_confirmation")
+        for value in (self.active_tasks, self.active_containers):
+            if value is not None and (type(value) is not int or value < 0):
+                raise BoundaryError("modal_m0_stop", "invalid_active_count")
+
+
+@dataclass(frozen=True)
 class ModalM0Call:
     """Durable provider handle plus the exact request identity needed to reconcile it."""
 
@@ -262,6 +527,11 @@ class ModalM0Call:
         ):
             raise BoundaryError("modal_m0_call", "untyped_identity")
         self.target_runtime.bind(self.target)
+        if (
+            self.attempt_id != self.target.attempt_id
+            or self.request_sha256 != self.target.request_sha256
+        ):
+            raise BoundaryError("modal_m0_call", "app_ref_request_identity_mismatch")
         if not isinstance(self.call_id, str) or not _MODAL_ID_RE["call"].fullmatch(self.call_id):
             raise BoundaryError("modal_m0_call", "invalid_call_id")
         digest(self.request_sha256, "modal_m0_call.request_sha256")
@@ -803,15 +1073,32 @@ def _runtime_source_identity() -> Producer:
 
 def _worker_main() -> int:
     """Read a single request from stdin and emit only the bounded response frame."""
-    import os
-
     try:
         image_id = os.environ.get("STPD_M0_MODAL_IMAGE_ID", "")
+        attempt_id = os.environ.get("STPD_M0_MODAL_ATTEMPT_ID", "")
+        request_sha256 = os.environ.get("STPD_M0_MODAL_REQUEST_SHA256", "")
         revision = os.environ.get("STPD_M0_SOURCE_REVISION", "")
         lock_sha256 = os.environ.get("STPD_M0_UV_LOCK_SHA256", "")
+        torch_version = os.environ.get("STPD_M0_TORCH_VERSION", "")
+        cpu_threads = int(os.environ.get("STPD_M0_CPU_THREADS", "0"))
+        plan_sha256 = os.environ.get("STPD_M0_MODAL_PLAN_SHA256", "")
+        digest(attempt_id, "modal_m0.attempt_id", length=32)
+        digest(request_sha256, "modal_m0.request_sha256")
         digest(revision, "modal_m0.source_revision", length=40)
         digest(lock_sha256, "modal_m0.uv_lock_sha256")
+        if (
+            plan_sha256 != M0_PILOT_EXECUTION_PLAN.plan_sha256
+            or not 1 <= cpu_threads <= 256
+        ):
+            raise BoundaryError("modal_m0", "resource_plan_mismatch")
         request_bytes = sys.stdin.buffer.read(MAX_M0_REQUEST_BYTES + 1)
+        request = _decode_request(request_bytes)
+        if (
+            hashlib.sha256(request_bytes).hexdigest() != request_sha256
+            or request.attempt_id != attempt_id
+            or _request_runtime(request) != (torch_version, cpu_threads)
+        ):
+            raise BoundaryError("modal_m0", "app_ref_request_identity_mismatch")
         response = execute_m0_request_bytes(
             request_bytes,
             expected_producer=Producer(REPOSITORY, revision, lock_sha256),
@@ -830,27 +1117,41 @@ if __name__ == "__main__":
 
 
 class ModalM0Provider:
-    """Submit and poll one version-pinned M0 function without retry or scheduler state."""
+    """Prepare, reconcile, submit, and stop one immutable per-attempt Modal App."""
 
     def __init__(
         self,
-        target: ModalM0Target,
-        target_runtime: ModalM0TargetRuntimeMetadata,
+        target: ModalM0Target | None = None,
+        target_runtime: ModalM0TargetRuntimeMetadata | None = None,
         *,
+        spec: M0AttemptSpec | None = None,
         sdk: Any = None,
+        command_runner: Any = None,
     ) -> None:
-        if not isinstance(target, ModalM0Target):
-            raise BoundaryError("modal_m0", "typed_target_required")
-        if not isinstance(target_runtime, ModalM0TargetRuntimeMetadata):
-            raise BoundaryError("modal_m0", "typed_target_runtime_required")
-        target_runtime.bind(target)
+        if target is not None:
+            if not isinstance(target, ModalM0Target):
+                raise BoundaryError("modal_m0", "typed_target_required")
+            if not isinstance(target_runtime, ModalM0TargetRuntimeMetadata):
+                raise BoundaryError("modal_m0", "typed_target_runtime_required")
+            target_runtime.bind(target)
+        elif target_runtime is not None:
+            raise BoundaryError("modal_m0", "target_required_for_runtime_metadata")
+        if spec is not None and not isinstance(spec, M0AttemptSpec):
+            raise BoundaryError("modal_m0", "typed_attempt_spec_required")
+        if target is not None and spec is not None and not _target_matches_spec(target, spec):
+            raise BoundaryError("modal_m0", "target_attempt_spec_mismatch")
         self.target = target
         self.target_runtime = target_runtime
+        self.spec = spec
         self._sdk = sdk
+        self._command_runner = command_runner
         self._runtime_evidence: dict[str, ModalM0RuntimeEvidence] = {}
+        self._prepare_started = False
 
     def token_target_runtime(self) -> Any:
         """Return the value to pass to ``prepare_token_run(target_runtime=...)``."""
+        if self.target is None or self.target_runtime is None:
+            raise BoundaryError("modal_m0", "app_not_prepared")
         return self.target_runtime.token_target_runtime(self.target)
 
     def _client(self) -> Any:
@@ -865,34 +1166,84 @@ class ModalM0Provider:
                 raise BoundaryError("modal_m0", "install_locked_cloud_extra") from error
         return self._sdk
 
-    def restore_handle(self, raw: bytes) -> ModalM0Call:
-        handle = ModalM0Call.from_bytes(raw)
-        if handle.target != self.target or handle.target_runtime != self.target_runtime:
-            raise BoundaryError("modal_m0", "foreign_target")
-        return handle
+    @staticmethod
+    def _smoke_helpers() -> dict[str, Any]:
+        smoke = (
+            Path(__file__).resolve().parents[2]
+            / "deploy"
+            / "cloud-worker"
+            / "m0_synthetic_gpu_smoke.py"
+        )
+        try:
+            return runpy.run_path(str(smoke), run_name="_stpd_m0_lifecycle_helpers")
+        except Exception:
+            raise BoundaryError("modal_m0", "lifecycle_helper_unavailable") from None
 
-    def get_runtime_evidence(self, handle: ModalM0Call) -> ModalM0RuntimeEvidence:
-        """Read verified evidence cached by poll; persist its bytes beside the handle."""
-        if (
-            not isinstance(handle, ModalM0Call)
-            or handle.target != self.target
-            or handle.target_runtime != self.target_runtime
-        ):
-            raise BoundaryError("modal_m0", "foreign_target")
-        evidence = self._runtime_evidence.get(handle.call_id)
-        if evidence is None:
-            raise BoundaryError("modal_m0", "runtime_evidence_unavailable")
-        evidence.bind(handle)
-        return evidence
+    def _run(self, args: list[str], *, timeout_seconds: float, text: bool = True) -> Any:
+        cli = str(Path(sys.executable).with_name("modal"))
+        runner = self._command_runner or subprocess.run
+        try:
+            return runner(
+                [cli, *args], capture_output=True, text=text, check=False,
+                timeout=timeout_seconds,
+            )
+        except Exception:
+            raise BoundaryError("modal_m0", "modal_command_unknown") from None
 
-    def _function(self) -> Any:
+    def _current_account_id(self) -> str:
+        completed = self._run(["token", "info"], timeout_seconds=MAX_MODAL_CONTROL_SECONDS)
+        if completed.returncode != 0 or not isinstance(completed.stdout, str):
+            raise BoundaryError("modal_m0", "modal_account_unavailable")
+        match = re.search(
+            r"^Workspace: .*\(([A-Za-z0-9][A-Za-z0-9._-]{0,127})\)\s*$",
+            completed.stdout,
+            re.M,
+        )
+        if match is None:
+            raise BoundaryError("modal_m0", "modal_account_identity_unavailable")
+        return match.group(1)
+
+    def _modal_json(self, args: list[str], *, timeout_seconds: float) -> Any:
+        if self._command_runner is None:
+            helper = self._smoke_helpers()["_modal_cli_json"]
+            try:
+                return helper(args, timeout_seconds=timeout_seconds)
+            except Exception:
+                raise BoundaryError("modal_m0", "modal_lifecycle_query_unknown") from None
+        completed = self._run(args, timeout_seconds=timeout_seconds)
+        if completed.returncode != 0 or not isinstance(completed.stdout, str):
+            raise BoundaryError("modal_m0", "modal_lifecycle_query_unknown")
+        try:
+            return json.loads(completed.stdout)
+        except (TypeError, json.JSONDecodeError):
+            raise BoundaryError("modal_m0", "modal_lifecycle_query_invalid_json") from None
+
+    @staticmethod
+    def _spec_sha256(spec: M0AttemptSpec) -> str:
+        return hashlib.sha256(spec.to_bytes()).hexdigest()
+
+    def _bind_target(self, target: ModalM0Target) -> ModalM0Target:
+        runtime = ModalM0TargetRuntimeMetadata(
+            target.target_id,
+            target.producer,
+            target.image_object_id,
+            target.target_runtime.torch_version,
+            target.target_runtime.cpu_threads,
+        )
+        if self.target is not None and self.target != target:
+            raise BoundaryError("modal_m0", "foreign_target")
+        self.target = target
+        self.target_runtime = runtime
+        return target
+
+    def _function_for(self, target: ModalM0Target) -> Any:
         sdk = self._client()
         try:
             function = sdk.Function.from_name(
-                self.target.app_name,
-                self.target.function_name,
-                version=self.target.app_version,
-                environment_name=self.target.environment_name,
+                target.app_name,
+                target.function_name,
+                version=target.app_version,
+                environment_name=target.environment_name,
             )
             function.hydrate()
             metadata = getattr(function, "_metadata", None)
@@ -907,17 +1258,209 @@ class ModalM0Provider:
         except Exception:
             raise BoundaryError("modal_m0", "target_unavailable") from None
         expected = (
-            self.target.function_id,
-            self.target.app_id,
-            self.target.function_name,
-            self.target.image_object_id,
+            target.function_id,
+            target.app_id,
+            target.function_name,
+            target.image_object_id,
         )
         if actual != expected:
             raise BoundaryError("modal_m0", "deployed_target_identity_mismatch")
         return function
 
-    def submit(self, request_bytes: bytes) -> ModalM0Call:
+    def _active_target(self, app_ref: ModalM0Target | None = None) -> ModalM0Target:
+        target = app_ref if app_ref is not None else self.target
+        if not isinstance(target, ModalM0Target):
+            raise BoundaryError("modal_m0", "typed_app_ref_required")
+        if self.spec is not None and not _target_matches_spec(target, self.spec):
+            raise BoundaryError("modal_m0", "foreign_target")
+        if self.target is not None and target != self.target:
+            raise BoundaryError("modal_m0", "foreign_target")
+        return target
+
+    def resolve_app(self, spec: M0AttemptSpec) -> ModalM0Target | None:
+        """Read-only reconciliation by the already journaled unique attempt name."""
+        if not isinstance(spec, M0AttemptSpec):
+            raise BoundaryError("modal_m0", "typed_attempt_spec_required")
+        if self.spec is not None and self.spec != spec:
+            raise BoundaryError("modal_m0", "foreign_attempt_spec")
+        if self._current_account_id() != spec.account_id:
+            raise BoundaryError("modal_m0", "modal_account_mismatch")
+        app_rows = self._modal_json(
+            ["app", "list", "--env", spec.environment_name],
+            timeout_seconds=MAX_MODAL_CONTROL_SECONDS,
+        )
+        if not isinstance(app_rows, list):
+            raise BoundaryError("modal_m0", "modal_app_list_invalid")
+        matches = [
+            row for row in app_rows
+            if isinstance(row, dict) and row.get("description") == spec.app_name
+        ]
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise BoundaryError("modal_m0", "modal_app_name_ambiguous")
+        app_id = matches[0].get("app_id")
+        if not isinstance(app_id, str) or not _MODAL_ID_RE["app"].fullmatch(app_id):
+            raise BoundaryError("modal_m0", "modal_app_id_unavailable")
+        histories = self._modal_json(
+            ["app", "history", app_id, "--env", spec.environment_name],
+            timeout_seconds=MAX_MODAL_CONTROL_SECONDS,
+        )
+        if not isinstance(histories, list) or not histories:
+            raise BoundaryError("modal_m0", "modal_app_history_unavailable")
+        parsed: list[tuple[int, dict[str, Any]]] = []
+        for row in histories:
+            if not isinstance(row, dict):
+                continue
+            match = re.fullmatch(r"v([1-9][0-9]*)", str(row.get("version", "")))
+            if match:
+                parsed.append((int(match.group(1)), row))
+        if not parsed:
+            raise BoundaryError("modal_m0", "modal_app_version_unavailable")
+        app_version, latest = max(parsed, key=lambda item: item[0])
+        if latest.get("tag") != self._spec_sha256(spec):
+            raise BoundaryError("modal_m0", "existing_app_spec_mismatch")
+        try:
+            function = self._client().Function.from_name(
+                spec.app_name,
+                M0_MODAL_FUNCTION_NAME,
+                version=app_version,
+                environment_name=spec.environment_name,
+            )
+            function.hydrate()
+            metadata = getattr(function, "_metadata", None)
+            function_id = function.object_id
+            actual_app_id = getattr(function, "_app_id", None)
+            function_name = getattr(metadata, "function_name", None)
+            image_id = getattr(metadata, "image_id", None)
+        except Exception:
+            raise BoundaryError("modal_m0", "deployed_target_identity_unavailable") from None
+        if (
+            actual_app_id != app_id
+            or function_name != M0_MODAL_FUNCTION_NAME
+            or image_id != spec.image_object_id
+            or not isinstance(function_id, str)
+            or not _MODAL_ID_RE["function"].fullmatch(function_id)
+        ):
+            raise BoundaryError("modal_m0", "deployed_target_identity_mismatch")
+        target = ModalM0Target(
+            spec.account_id,
+            spec.environment_name,
+            app_id,
+            app_version,
+            function_id,
+            image_id,
+            spec.producer,
+            spec.attempt_id,
+            spec.request_sha256,
+            spec.target_runtime,
+            spec.resource_plan,
+        )
+        self.spec = spec
+        self._bind_target(target)
+        return target
+
+    def prepare_app(self, spec: M0AttemptSpec) -> ModalM0Target:
+        """Deploy a unique App once; an ambiguous outcome is reconciled, never redeployed."""
+        if not isinstance(spec, M0AttemptSpec):
+            raise BoundaryError("modal_m0", "typed_attempt_spec_required")
+        if self.spec is not None and self.spec != spec:
+            raise BoundaryError("modal_m0", "foreign_attempt_spec")
+        existing = self.resolve_app(spec)
+        if existing is not None:
+            return existing
+        if self._prepare_started:
+            raise BoundaryError(
+                "modal_m0", "prepare_unknown",
+                "reconcile the same journaled app name; do not prepare again",
+            )
+        self._prepare_started = True
+        entry = (
+            Path(__file__).resolve().parents[2]
+            / "deploy"
+            / "cloud-worker"
+            / "m0_update_modal.py"
+        )
+        env = dict(os.environ)
+        env.update({
+            "STPD_M0_MODAL_APP_NAME": spec.app_name,
+            "STPD_M0_MODAL_ATTEMPT_ID": spec.attempt_id,
+            "STPD_M0_MODAL_REQUEST_SHA256": spec.request_sha256,
+            "STPD_M0_MODAL_SPEC_SHA256": self._spec_sha256(spec),
+            "STPD_M0_MODAL_PLAN_SHA256": spec.resource_plan.plan_sha256,
+            "STPD_M0_MODAL_IMAGE_ID": spec.image_object_id,
+            "STPD_M0_SOURCE_REVISION": spec.producer.source_revision,
+            "STPD_M0_UV_LOCK_SHA256": spec.producer.uv_lock_sha256,
+            "STPD_M0_TORCH_VERSION": spec.target_runtime.torch_version,
+            "STPD_M0_CPU_THREADS": str(spec.target_runtime.cpu_threads),
+        })
+        cli = str(Path(sys.executable).with_name("modal"))
+        runner = self._command_runner or subprocess.run
+        try:
+            completed = runner(
+                [cli, "deploy", str(entry), "--env", spec.environment_name,
+                 "--tag", self._spec_sha256(spec)],
+                cwd=str(Path(__file__).resolve().parents[2]),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=MAX_MODAL_COMMAND_SECONDS,
+            )
+        except Exception:
+            completed = None
+        if completed is not None and completed.returncode == 0:
+            self.spec = spec
+        # A nonzero exit or local timeout may occur after Modal accepted a deploy.
+        # Resolve only by this exact persisted name and deployment tag; never resubmit.
+        try:
+            resolved = self.resolve_app(spec)
+        except BoundaryError as error:
+            if completed is None or completed.returncode != 0:
+                raise BoundaryError(
+                    "modal_m0", "prepare_unknown",
+                    "reconcile the same journaled app name; do not prepare again",
+                ) from error
+            raise
+        if resolved is None:
+            raise BoundaryError(
+                "modal_m0", "prepare_unknown",
+                "reconcile the same journaled app name; do not prepare again",
+            )
+        return resolved
+
+    def restore_handle(
+        self, raw: bytes, app_ref: ModalM0Target | None = None,
+    ) -> ModalM0Call:
+        handle = ModalM0Call.from_bytes(raw)
+        target = self._active_target(app_ref or handle.target)
+        if handle.target != target:
+            raise BoundaryError("modal_m0", "foreign_target")
+        return handle
+
+    def get_runtime_evidence(self, handle: ModalM0Call) -> ModalM0RuntimeEvidence:
+        """Read verified evidence cached by poll; persist its bytes beside the handle."""
+        target = self._active_target(handle.target if isinstance(handle, ModalM0Call) else None)
+        if not isinstance(handle, ModalM0Call) or handle.target != target:
+            raise BoundaryError("modal_m0", "foreign_target")
+        evidence = self._runtime_evidence.get(handle.call_id)
+        if evidence is None:
+            raise BoundaryError("modal_m0", "runtime_evidence_unavailable")
+        evidence.bind(handle)
+        return evidence
+
+    def submit(
+        self, request_bytes: bytes, app_ref: ModalM0Target | None = None,
+    ) -> ModalM0Call:
         """Submit once. An error from ``spawn`` becomes unknown; callers must not repeat it."""
+        target = self._active_target(app_ref)
+        target_runtime = self.target_runtime
+        if target_runtime is None:
+            target_runtime = ModalM0TargetRuntimeMetadata(
+                target.target_id, target.producer, target.image_object_id,
+                target.target_runtime.torch_version, target.target_runtime.cpu_threads,
+            )
+            self._bind_target(target)
         if (
             not isinstance(request_bytes, bytes)
             or not 1 <= len(request_bytes) <= MAX_M0_REQUEST_BYTES
@@ -926,15 +1469,20 @@ class ModalM0Provider:
         request = _decode_request(request_bytes)
         if request.to_bytes() != request_bytes:
             raise BoundaryError("modal_m0", "noncanonical_request")
-        if request.producer != self.target.producer or request.target_device != "cuda":
+        if (
+            request.attempt_id != target.attempt_id
+            or request.request_sha256 != target.request_sha256
+        ):
+            raise BoundaryError("modal_m0", "app_ref_request_identity_mismatch")
+        if request.producer != target.producer or request.target_device != "cuda":
             raise BoundaryError("modal_m0", "request_source_or_cuda_mismatch")
         if _request_runtime(request) != (
-            self.target_runtime.torch_version,
-            self.target_runtime.cpu_threads,
+            target_runtime.torch_version,
+            target_runtime.cpu_threads,
         ):
             raise BoundaryError("modal_m0", "request_target_runtime_mismatch")
 
-        function = self._function()
+        function = self._function_for(target)
         try:
             remote_call = function.spawn(request_bytes)
             call_id = remote_call.object_id
@@ -947,8 +1495,8 @@ class ModalM0Provider:
                 "reconcile this persisted attempt; do not submit it again",
             ) from None
         return ModalM0Call(
-            self.target,
-            self.target_runtime,
+            target,
+            target_runtime,
             call_id,
             request.request_sha256,
             len(request_bytes),
@@ -970,10 +1518,12 @@ class ModalM0Provider:
         timeout_seconds: float = 0.0,
     ) -> bytes | None:
         """Poll the saved call. Timeout returns None; success returns typed result bytes."""
+        if not isinstance(handle, ModalM0Call):
+            raise BoundaryError("modal_m0", "foreign_target")
+        target = self._active_target(handle.target)
         if (
-            not isinstance(handle, ModalM0Call)
-            or handle.target != self.target
-            or handle.target_runtime != self.target_runtime
+            handle.target != target
+            or handle.target_runtime.target_id != target.target_id
         ):
             raise BoundaryError("modal_m0", "foreign_target")
         if (
@@ -984,9 +1534,15 @@ class ModalM0Provider:
         ):
             raise BoundaryError("modal_m0", "poll_timeout_limit")
 
-        function = self._function()
+        function = self._function_for(target)
+        sdk = self._client()
+        timeout_type = getattr(getattr(sdk, "exception", None), "TimeoutError", TimeoutError)
+        timeout_types = tuple({TimeoutError, timeout_type})
+        cancellation_type = getattr(
+            getattr(sdk, "exception", None), "InputCancellation", None,
+        )
         try:
-            call = self._client().FunctionCall.from_id(
+            call = sdk.FunctionCall.from_id(
                 handle.call_id,
                 client=function.client,
             )
@@ -995,14 +1551,18 @@ class ModalM0Provider:
                 getattr(call, "_app_id", None),
                 getattr(call, "_function_id", None),
             )
-            if input_count != 1 or call_identity != (self.target.app_id, self.target.function_id):
+            if input_count != 1 or call_identity != (target.app_id, target.function_id):
                 raise BoundaryError("modal_m0", "saved_call_identity_mismatch")
             result_bytes = call.get(timeout=float(timeout_seconds), index=0)
-        except TimeoutError:
+        except timeout_types:
             return None
         except BoundaryError:
             raise
-        except Exception:
+        except BaseException as error:
+            if cancellation_type is not None and isinstance(error, cancellation_type):
+                raise BoundaryError("modal_m0", "call_cancelled") from None
+            if not isinstance(error, Exception):
+                raise
             raise BoundaryError("modal_m0", "result_unavailable") from None
 
         result_bytes, runtime_evidence = _decode_worker_response(result_bytes, handle)
@@ -1011,3 +1571,96 @@ class ModalM0Provider:
             raise BoundaryError("modal_m0", "result_handle_identity_mismatch")
         self._runtime_evidence[handle.call_id] = runtime_evidence
         return result_bytes
+
+    def _saved_call(self, handle: ModalM0Call, target: ModalM0Target) -> Any:
+        function = self._function_for(target)
+        try:
+            call = self._client().FunctionCall.from_id(handle.call_id, client=function.client)
+            identity = (
+                getattr(call, "_app_id", None),
+                getattr(call, "_function_id", None),
+            )
+            if call.num_inputs() != 1 or identity != (target.app_id, target.function_id):
+                raise BoundaryError("modal_m0", "saved_call_identity_mismatch")
+            return call
+        except BoundaryError:
+            raise
+        except Exception:
+            raise BoundaryError("modal_m0", "saved_call_unavailable") from None
+
+    def cancel(self, handle: ModalM0Call) -> M0CancelAck:
+        """Request cancellation of this saved call; inspect the App separately for stop."""
+        if not isinstance(handle, ModalM0Call):
+            raise BoundaryError("modal_m0", "typed_call_handle_required")
+        target = self._active_target(handle.target)
+        if handle.target != target:
+            raise BoundaryError("modal_m0", "foreign_target")
+        try:
+            call = self._saved_call(handle, target)
+            call.cancel(terminate_containers=True)
+        except Exception:
+            return M0CancelAck(target.app_id, handle.call_id, False, "unknown")
+        return M0CancelAck(target.app_id, handle.call_id, True, "acknowledged")
+
+    def stop_app(self, app_ref: ModalM0Target) -> M0StopAck:
+        """Ask Modal to stop this exact per-attempt App; acknowledgement is not proof."""
+        target = self._active_target(app_ref)
+        try:
+            if self._current_account_id() != target.account_id:
+                return M0StopAck(target.app_id, False, "unknown")
+            completed = self._run(
+                ["app", "stop", target.app_id, "--yes", "--env", target.environment_name],
+                timeout_seconds=MAX_MODAL_CONTROL_SECONDS,
+            )
+        except BoundaryError:
+            return M0StopAck(target.app_id, False, "unknown")
+        if completed.returncode != 0:
+            return M0StopAck(target.app_id, False, "unknown")
+        return M0StopAck(target.app_id, True, "acknowledged")
+
+    def inspect_stop(self, app_ref: ModalM0Target) -> M0StopInspection:
+        """Confirm provider App state, zero tasks, and no containers using smoke tooling."""
+        target = self._active_target(app_ref)
+        unknown = M0StopInspection(target.app_id, "unknown", None, None, False)
+        try:
+            if self._current_account_id() != target.account_id:
+                return unknown
+            rows = self._modal_json(
+                ["app", "list", "--env", target.environment_name],
+                timeout_seconds=MAX_MODAL_CONTROL_SECONDS,
+            )
+        except BoundaryError:
+            return unknown
+        if not isinstance(rows, list):
+            return unknown
+        matching = [
+            row for row in rows
+            if isinstance(row, dict) and row.get("app_id") == target.app_id
+        ]
+        if len(matching) != 1:
+            return unknown
+        row = matching[0]
+        raw_tasks = row.get("tasks")
+        tasks = (
+            int(raw_tasks)
+            if isinstance(raw_tasks, (str, int)) and str(raw_tasks).isdigit()
+            else None
+        )
+        state = str(row.get("state", "")).lower()
+        if state != "stopped" or tasks != 0:
+            return M0StopInspection(target.app_id, "not_stopped", tasks, None, False)
+        try:
+            helpers = self._smoke_helpers()
+            evidence = helpers["_stop_evidence"](
+                target.app_id,
+                target.environment_name,
+                deadline=time.monotonic() + MAX_MODAL_COMMAND_SECONDS,
+            )
+        except Exception:
+            return M0StopInspection(target.app_id, "unknown", tasks, None, False)
+        if evidence == {"app_state": "stopped", "app_tasks": 0, "running_containers": 0}:
+            return M0StopInspection(target.app_id, "stopped", 0, 0, True)
+        return M0StopInspection(target.app_id, "unknown", tasks, None, False)
+
+
+M0CallHandle = ModalM0Call

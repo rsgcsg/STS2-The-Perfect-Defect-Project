@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import runpy
+import subprocess
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -12,7 +14,7 @@ import pytest
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject
 from stpd.cloud_jobs import m0_modal
-from stpd.workers.token_ranking import LightActionM0Config
+from stpd.workers.token_ranking import LightActionM0Config, TokenTargetRuntime
 
 PRODUCER = Producer("rsgcsg/STS2-The-Perfect-Defect-Project", "a" * 40, "b" * 64)
 CONFIG = LightActionM0Config(device="cuda")
@@ -89,7 +91,7 @@ class FakeResult:
     config: object = CONFIG
 
 
-def _request(raw: bytes = b"request-bytes", **changes: object) -> FakeRequest:
+def _request(raw: bytes = b"request", **changes: object) -> FakeRequest:
     return FakeRequest(raw=raw, **changes)
 
 
@@ -141,6 +143,9 @@ def _target(**changes: object) -> m0_modal.ModalM0Target:
         "function_id": "fu-function01",
         "image_object_id": "im-image01",
         "producer": PRODUCER,
+        "attempt_id": "c" * 32,
+        "request_sha256": hashlib.sha256(b"request").hexdigest(),
+        "target_runtime": TokenTargetRuntime(OBSERVED["torch_version"], OBSERVED["cpu_threads"]),
     }
     values.update(changes)
     return m0_modal.ModalM0Target(**values)
@@ -154,8 +159,8 @@ def _target_runtime(
         "target_id": target.target_id,
         "producer": target.producer.to_dict(),
         "image_object_id": target.image_object_id,
-        "torch_version": OBSERVED["torch_version"],
-        "cpu_threads": OBSERVED["cpu_threads"],
+        "torch_version": target.target_runtime.torch_version,
+        "cpu_threads": target.target_runtime.cpu_threads,
     }
     values.update(changes)
     return m0_modal.ModalM0TargetRuntimeMetadata.from_provider_metadata(
@@ -168,9 +173,29 @@ def _provider(
     target: m0_modal.ModalM0Target | None = None,
     *,
     sdk: object = None,
+    request: FakeRequest | None = None,
 ) -> m0_modal.ModalM0Provider:
-    target = target or _target()
+    if target is None:
+        request = request or _request()
+        target = _target(
+            attempt_id=request.attempt_id,
+            request_sha256=request.request_sha256,
+            target_runtime=TokenTargetRuntime(request.torch_version, request.cpu_threads),
+        )
     return m0_modal.ModalM0Provider(target, _target_runtime(target), sdk=sdk)
+
+
+def _attempt_spec(request: FakeRequest | None = None) -> m0_modal.M0AttemptSpec:
+    request = request or _request()
+    return m0_modal.M0AttemptSpec(
+        attempt_id=request.attempt_id,
+        request_sha256=request.request_sha256,
+        account_id="workspace-01",
+        environment_name="staging",
+        image_object_id="im-image01",
+        producer=request.producer,
+        target_runtime=TokenTargetRuntime(request.torch_version, request.cpu_threads),
+    )
 
 
 class FakeCall:
@@ -190,6 +215,8 @@ class FakeCall:
         self.result = result
         self.get_calls: list[tuple[float, int]] = []
         self.client: object | None = None
+        self.cancel_calls: list[bool] = []
+        self.cancel_error: Exception | None = None
 
     def num_inputs(self) -> int:
         return self._input_count
@@ -199,6 +226,11 @@ class FakeCall:
         if isinstance(self.result, BaseException):
             raise self.result
         return self.result
+
+    def cancel(self, *, terminate_containers: bool = False) -> None:
+        self.cancel_calls.append(terminate_containers)
+        if self.cancel_error is not None:
+            raise self.cancel_error
 
 
 class FakeFunction:
@@ -253,6 +285,67 @@ class FakeSDK:
 
         self.Function = FunctionAPI
         self.FunctionCall = FunctionCallAPI
+        self.exception = SimpleNamespace(
+            TimeoutError=FakeModalTimeout,
+            InputCancellation=FakeInputCancellation,
+        )
+
+
+class FakeModalTimeout(Exception):
+    pass
+
+
+class FakeInputCancellation(BaseException):
+    pass
+
+
+class FakeModalCLI:
+    def __init__(self, spec: m0_modal.M0AttemptSpec | None = None) -> None:
+        self.spec = spec
+        self.deployed = False
+        self.deploy_calls: list[list[str]] = []
+        self.stop_calls: list[list[str]] = []
+        self.deploy_returncode = 0
+        self.app_state = "deployed"
+        self.app_tasks = "1"
+
+    def __call__(self, command: list[str], **kwargs: object) -> SimpleNamespace:
+        args = command[1:]
+        if args[:2] == ["token", "info"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="Workspace: test (workspace-01)\n",
+                stderr="",
+            )
+        if args[:2] == ["app", "list"]:
+            rows = []
+            if self.deployed and self.spec is not None:
+                rows = [{
+                    "app_id": "ap-app01",
+                    "description": self.spec.app_name,
+                    "state": self.app_state,
+                    "tasks": self.app_tasks,
+                }]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
+        if args[:2] == ["app", "history"]:
+            history = []
+            if self.deployed and self.spec is not None:
+                history = [{
+                    "version": "v1",
+                    "tag": m0_modal.ModalM0Provider._spec_sha256(self.spec),
+                }]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(history))
+        if args and args[0] == "deploy":
+            self.deploy_calls.append(args)
+            if self.deploy_returncode == 0:
+                self.deployed = True
+            return SimpleNamespace(returncode=self.deploy_returncode, stdout="", stderr="")
+        if args[:2] == ["app", "stop"]:
+            self.stop_calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if args[:2] == ["container", "list"]:
+            return SimpleNamespace(returncode=0, stdout="[]")
+        raise AssertionError(f"unexpected Modal command {args!r}")
 
 
 @pytest.fixture
@@ -285,7 +378,7 @@ def test_target_and_call_handle_round_trip_all_provider_and_source_identity(
     request = _request(raw, resume_checkpoint_id="1" * 64)
     parse_request[raw] = request
     sdk = FakeSDK(FakeFunction())
-    call = _provider(target, sdk=sdk).submit(raw)
+    call = _provider(target, sdk=sdk).submit(raw, target)
 
     restored = m0_modal.ModalM0Call.from_bytes(call.to_bytes())
     assert restored == call
@@ -300,21 +393,161 @@ def test_target_and_call_handle_round_trip_all_provider_and_source_identity(
     assert restored.resume_checkpoint_id == "1" * 64
     assert sdk.lookups == [
         (
-            m0_modal.M0_MODAL_APP_NAME,
+            m0_modal.M0_MODAL_APP_NAME + request.attempt_id,
             m0_modal.M0_MODAL_FUNCTION_NAME,
             3,
             "staging",
         )
     ]
     assert sdk.function.spawn_calls == [raw]
-
+    foreign_target = _target(account_id="workspace-02")
     different_account = m0_modal.ModalM0Provider(
-        _target(account_id="workspace-02"),
-        _target_runtime(_target(account_id="workspace-02")),
+        foreign_target,
+        _target_runtime(foreign_target),
         sdk=FakeSDK(FakeFunction()),
     )
     with pytest.raises(BoundaryError, match="foreign_target"):
         different_account.restore_handle(call.to_bytes())
+
+
+def test_app_ref_is_durable_and_prepare_reconciles_without_redeploy():
+    spec = _attempt_spec()
+    cli = FakeModalCLI(spec)
+    provider = m0_modal.ModalM0Provider(spec=spec, sdk=FakeSDK(FakeFunction()), command_runner=cli)
+
+    app_ref = provider.prepare_app(spec)
+    assert app_ref == provider.resolve_app(spec)
+    assert app_ref == m0_modal.M0AppRef.from_bytes(app_ref.to_bytes())
+    assert app_ref.account_id == spec.account_id
+    assert app_ref.environment_name == spec.environment_name
+    assert app_ref.app_name == spec.app_name
+    assert app_ref.attempt_id == spec.attempt_id
+    assert app_ref.request_sha256 == spec.request_sha256
+    assert app_ref.image_object_id == spec.image_object_id
+    assert len(cli.deploy_calls) == 1
+
+    restarted = m0_modal.ModalM0Provider(spec=spec, sdk=FakeSDK(FakeFunction()), command_runner=cli)
+    restored = restarted.prepare_app(spec)
+    assert restored == app_ref
+    assert cli.deploy_calls == [cli.deploy_calls[0]]
+
+
+def test_unknown_prepare_is_never_redeployed_and_matching_late_app_is_recovered():
+    spec = _attempt_spec()
+
+    class LostDeployReply(FakeModalCLI):
+        def __call__(self, command: list[str], **kwargs: object) -> SimpleNamespace:
+            if command[1:2] == ["deploy"]:
+                self.deploy_calls.append(command[1:])
+                self.deployed = True
+                raise subprocess.TimeoutExpired(command, 120)
+            return super().__call__(command, **kwargs)
+
+    cli = LostDeployReply(spec)
+    provider = m0_modal.ModalM0Provider(spec=spec, sdk=FakeSDK(FakeFunction()), command_runner=cli)
+    app_ref = provider.prepare_app(spec)
+    assert app_ref.app_id == "ap-app01"
+    assert len(cli.deploy_calls) == 1
+
+
+def test_unknown_prepare_without_visible_app_requires_read_only_reconciliation():
+    spec = _attempt_spec()
+    cli = FakeModalCLI(spec)
+    cli.deploy_returncode = 1
+    provider = m0_modal.ModalM0Provider(spec=spec, sdk=FakeSDK(FakeFunction()), command_runner=cli)
+
+    with pytest.raises(BoundaryError, match="prepare_unknown"):
+        provider.prepare_app(spec)
+    assert len(cli.deploy_calls) == 1
+    with pytest.raises(BoundaryError, match="prepare_unknown"):
+        provider.prepare_app(spec)
+    assert len(cli.deploy_calls) == 1
+    assert provider.resolve_app(spec) is None
+    assert len(cli.deploy_calls) == 1
+
+
+def test_existing_attempt_with_different_spec_tag_is_rejected_without_deploy():
+    spec = _attempt_spec()
+    cli = FakeModalCLI(spec)
+    cli.deployed = True
+    provider = m0_modal.ModalM0Provider(sdk=FakeSDK(FakeFunction()), command_runner=cli)
+    bad_spec = replace(spec, request_sha256="9" * 64)
+
+    with pytest.raises(BoundaryError, match="existing_app_spec_mismatch"):
+        provider.prepare_app(bad_spec)
+    assert cli.deploy_calls == []
+
+
+def test_cancel_stop_ack_and_confirmed_zero_container_inspection_are_distinct():
+    request = _request()
+    target = _target()
+    call = FakeCall("fc-call01")
+    cli = FakeModalCLI(_attempt_spec(request))
+    cli.deployed = True
+    provider = _provider(target, sdk=FakeSDK(FakeFunction(), call))
+    provider._command_runner = cli
+    handle = m0_modal.ModalM0Call(
+        target,
+        _target_runtime(target),
+        "fc-call01",
+        request.request_sha256,
+        len(request.raw),
+        request.attempt_id,
+        request.run_id,
+        request.input_id,
+        request.operation_id,
+        request.producer,
+        m0_modal._request_result_identity_sha256(request),
+        request.target_device,
+        request.target_step,
+        request.resume_checkpoint_id,
+    )
+
+    cancel_ack = provider.cancel(handle)
+    assert cancel_ack.status == "acknowledged"
+    assert call.cancel_calls == [True]
+    assert provider.inspect_stop(target).confirmed is False
+
+    stop_ack = provider.stop_app(target)
+    assert stop_ack.status == "acknowledged"
+    assert stop_ack.app_id == target.app_id
+    assert cli.stop_calls == [["app", "stop", target.app_id, "--yes", "--env", "staging"]]
+    cli.app_state = "stopped"
+    cli.app_tasks = "0"
+    provider._smoke_helpers = lambda: {
+        "_stop_evidence": lambda app_id, environment, *, deadline: {
+            "app_state": "stopped", "app_tasks": 0, "running_containers": 0,
+        }
+    }
+    inspection = provider.inspect_stop(target)
+    assert inspection == m0_modal.M0StopInspection(target.app_id, "stopped", 0, 0, True)
+
+
+def test_cancel_error_is_unknown_and_foreign_saved_call_cannot_be_cancelled():
+    target = _target()
+    call = FakeCall("fc-call01", app_id="ap-foreign")
+    provider = _provider(target, sdk=FakeSDK(FakeFunction(), call))
+    request = _request()
+    handle = m0_modal.ModalM0Call(
+        target,
+        _target_runtime(target),
+        "fc-call01",
+        request.request_sha256,
+        len(request.raw),
+        request.attempt_id,
+        request.run_id,
+        request.input_id,
+        request.operation_id,
+        request.producer,
+        m0_modal._request_result_identity_sha256(request),
+        request.target_device,
+        request.target_step,
+        request.resume_checkpoint_id,
+    )
+
+    ack = provider.cancel(handle)
+    assert ack.status == "unknown" and ack.acknowledged is False
+    assert call.cancel_calls == []
 
 
 def test_fake_target_metadata_binds_runtime_to_account_image_and_source_lock():
@@ -347,7 +580,7 @@ def test_submit_unknown_is_reported_once_without_internal_retry(
     raw = b"ambiguous"
     parse_request[raw] = _request(raw)
     function = FakeFunction(spawn_error=RuntimeError("do not expose provider details"))
-    provider = _provider(sdk=FakeSDK(function))
+    provider = _provider(sdk=FakeSDK(function), request=parse_request[raw])
 
     with pytest.raises(BoundaryError, match="submission_unknown") as error:
         provider.submit(raw)
@@ -396,6 +629,19 @@ def test_request_source_or_device_mismatch_fails_before_sdk_lookup(
     assert sdk.lookups == []
 
 
+def test_request_from_another_prepared_attempt_is_rejected_before_submission(
+    parse_request: dict[bytes, FakeRequest],
+):
+    raw = b"request"
+    parse_request[raw] = _request(raw, attempt_id="9" * 32)
+    function = FakeFunction()
+    provider = _provider(sdk=FakeSDK(function))
+
+    with pytest.raises(BoundaryError, match="app_ref_request_identity_mismatch"):
+        provider.submit(raw)
+    assert function.spawn_calls == []
+
+
 @pytest.mark.parametrize(
     "runtime_change",
     [{"torch_version": "2.8.0+cu129"}, {"cpu_threads": 8}],
@@ -430,6 +676,26 @@ def test_poll_timeout_retains_handle_and_uses_exact_saved_call(
     assert sdk.call_lookups == [(handle.call_id, function.client)]
 
 
+@pytest.mark.parametrize("timeout_error", [FakeModalTimeout(), FakeInputCancellation()])
+def test_poll_classifies_modal_timeout_and_cancellation_without_fabricating_result(
+    parse_request: dict[bytes, FakeRequest],
+    timeout_error: BaseException,
+):
+    raw = b"request"
+    parse_request[raw] = _request(raw)
+    call = FakeCall("fc-call01", result=timeout_error)
+    provider = _provider(sdk=FakeSDK(FakeFunction(), call))
+    handle = provider.submit(raw)
+
+    if isinstance(timeout_error, FakeModalTimeout):
+        assert provider.poll(handle, timeout_seconds=0.25) is None
+    else:
+        with pytest.raises(BoundaryError, match="call_cancelled"):
+            provider.poll(handle, timeout_seconds=0.25)
+    with pytest.raises(BoundaryError, match="runtime_evidence_unavailable"):
+        provider.get_runtime_evidence(handle)
+
+
 def test_poll_accepts_bytes_only_after_call_and_result_identity_checks(
     parse_request: dict[bytes, FakeRequest],
     parse_result: dict[bytes, FakeResult],
@@ -441,9 +707,13 @@ def test_poll_accepts_bytes_only_after_call_and_result_identity_checks(
     parse_result[result_bytes] = _result(request)
     function = FakeFunction()
     call = FakeCall("fc-call01")
-    provider = _provider(sdk=FakeSDK(function, call))
+    provider = _provider(sdk=FakeSDK(function, call), request=request)
     handle = provider.submit(raw)
-    target = _target()
+    target = _target(
+        attempt_id=request.attempt_id,
+        request_sha256=request.request_sha256,
+        target_runtime=TokenTargetRuntime(request.torch_version, request.cpu_threads),
+    )
     call.result = _frame(request, result_bytes, target)
 
     assert provider.poll(handle) == result_bytes
@@ -552,7 +822,7 @@ def test_modal_object_storage_payloads_over_two_mib_are_passed_with_explicit_app
     parse_result[result_bytes] = _result(request)
     function = FakeFunction()
     call = FakeCall("fc-call01")
-    provider = _provider(sdk=FakeSDK(function, call))
+    provider = _provider(sdk=FakeSDK(function, call), request=request)
 
     handle = provider.submit(raw)
     call.result = _frame(request, result_bytes, provider.target)
@@ -831,7 +1101,12 @@ def test_real_train_only_request_round_trips_through_mock_modal_and_local_valida
             request.backbone_identity,
         )
         result_bytes = result.to_bytes()
-        target = _target(producer=producer)
+        target = _target(
+            producer=producer,
+            attempt_id=request.attempt_id,
+            request_sha256=request.request_sha256,
+            target_runtime=target_runtime,
+        )
         target_metadata = m0_modal.ModalM0TargetRuntimeMetadata.from_provider_metadata(
             {
                 "target_id": target.target_id,
@@ -903,9 +1178,16 @@ def test_deployment_entry_declares_fixed_image_bounded_ephemeral_worker_without_
     fake_modal.App = FakeApp
     fake_modal.Image = FakeImage
     monkeypatch.setitem(sys.modules, "modal", fake_modal)
+    monkeypatch.setenv("STPD_M0_MODAL_APP_NAME", m0_modal.M0_MODAL_APP_NAME + "c" * 32)
+    monkeypatch.setenv("STPD_M0_MODAL_ATTEMPT_ID", "c" * 32)
+    monkeypatch.setenv("STPD_M0_MODAL_REQUEST_SHA256", "a" * 64)
+    monkeypatch.setenv("STPD_M0_MODAL_SPEC_SHA256", "b" * 64)
+    monkeypatch.setenv("STPD_M0_MODAL_PLAN_SHA256", m0_modal.M0_PILOT_EXECUTION_PLAN.plan_sha256)
     monkeypatch.setenv("STPD_M0_MODAL_IMAGE_ID", "im-image01")
     monkeypatch.setenv("STPD_M0_SOURCE_REVISION", PRODUCER.source_revision)
     monkeypatch.setenv("STPD_M0_UV_LOCK_SHA256", PRODUCER.uv_lock_sha256)
+    monkeypatch.setenv("STPD_M0_TORCH_VERSION", OBSERVED["torch_version"])
+    monkeypatch.setenv("STPD_M0_CPU_THREADS", str(OBSERVED["cpu_threads"]))
 
     def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
         subprocess_calls.append((command, kwargs))
@@ -918,7 +1200,7 @@ def test_deployment_entry_declares_fixed_image_bounded_ephemeral_worker_without_
 
     assert namespace["app"] is namespace["_APP"]
     assert callable(namespace["token_remote_update"])
-    assert configured["app_name"] == m0_modal.M0_MODAL_APP_NAME
+    assert configured["app_name"] == m0_modal.M0_MODAL_APP_NAME + "c" * 32
     assert configured["image_id"] == "im-image01"
     assert configured["name"] == m0_modal.M0_MODAL_FUNCTION_NAME
     assert configured["gpu"] == "L4"
@@ -935,8 +1217,8 @@ def test_deployment_entry_declares_fixed_image_bounded_ephemeral_worker_without_
     assert configured["serialized"] is True
     assert configured["include_source"] is False
     assert "secrets" not in configured and "volumes" not in configured
-    assert configured["env"]["OMP_NUM_THREADS"] == "2"
-    assert configured["env"]["MKL_NUM_THREADS"] == "2"
+    assert configured["env"]["OMP_NUM_THREADS"] == str(OBSERVED["cpu_threads"])
+    assert configured["env"]["MKL_NUM_THREADS"] == str(OBSERVED["cpu_threads"])
     assert namespace["token_remote_update"](b"request") == b"bounded-worker-frame"
     assert len(subprocess_calls) == 1
     command, options = subprocess_calls[0]
@@ -951,5 +1233,7 @@ def test_deployment_entry_declares_fixed_image_bounded_ephemeral_worker_without_
     assert "PYTHONPATH" not in options["env"]
     assert "PYTHONHOME" not in options["env"]
     assert options["env"]["STPD_M0_MODAL_IMAGE_ID"] == "im-image01"
+    assert options["env"]["STPD_M0_MODAL_ATTEMPT_ID"] == "c" * 32
+    assert options["env"]["STPD_M0_MODAL_REQUEST_SHA256"] == "a" * 64
     assert options["env"]["STPD_M0_SOURCE_REVISION"] == PRODUCER.source_revision
     assert options["env"]["STPD_M0_UV_LOCK_SHA256"] == PRODUCER.uv_lock_sha256
