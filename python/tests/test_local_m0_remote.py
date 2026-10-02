@@ -36,10 +36,11 @@ def _case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from spireagent import research_cli
 
     monkeypatch.setattr(research_cli, "source_identity", lambda _root: producer)
-    store = ManifestArtifactStore(LocalBlobStore(config.local_research.store_dir,
+    assert config.research_workspace is not None
+    store = ManifestArtifactStore(LocalBlobStore(config.research_workspace.store_dir,
                                                   create=False))
     argv = [
-        "research-cli", "--store", str(config.local_research.store_dir),
+        "research-cli", "--store", str(config.research_workspace.store_dir),
         "prepare-light-action-m0", "--project-config", str(config_path),
         "--dataset", dataset_id, "--operation", operation_id,
         "--backbone", "s", "--input-profile", "public_lite",
