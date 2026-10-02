@@ -36,6 +36,7 @@ from spireagent.workbench.memory_recipe import (
     memory_settings_for_recipe,
 )
 from spireagent.workbench.runtime_install import (
+    BUNDLED_LAYOUT,
     CONNECTOR_PACKAGE,
     RUNTIME_PACKAGE,
     v2_sdk_available,
@@ -86,13 +87,16 @@ def _export_memory_profile(export: Path) -> str:
             else M2_PROFILE)
 
 
-def _connector_sdk_path(node_modules: Path) -> Path:
-    """Resolve the exact pinned Connector SDK in flat or nested npm layouts."""
-    flat = node_modules / CONNECTOR_PACKAGE / "dist" / "index.js"
-    if flat.is_file():
-        return flat
-    return (node_modules / RUNTIME_PACKAGE / "node_modules" / CONNECTOR_PACKAGE
-            / "dist" / "index.js")
+def _connector_sdk_path(node_modules: Path, pin: dict[str, Any]) -> Path:
+    """Resolve Connector from the dependency layout already checked against its pin."""
+    layout = pin.get("dependency_layout")
+    if layout == BUNDLED_LAYOUT:
+        root = node_modules / RUNTIME_PACKAGE / "node_modules"
+    elif layout is None:
+        root = node_modules
+    else:
+        raise BoundaryError("local_model_registration", "runtime_package_not_pinned")
+    return root / CONNECTOR_PACKAGE / "dist" / "index.js"
 
 
 _v2_sdk_available = v2_sdk_available
@@ -570,7 +574,7 @@ class LocalModelRegistration:
                 try:
                     node_modules = directory / "runtime" / "node_modules"
                     validate_runtime_install(node_modules, pin, self.models._connector_pin())
-                    sdk = _connector_sdk_path(node_modules)
+                    sdk = _connector_sdk_path(node_modules, pin)
                     if environment_kind == "native" and not _v2_sdk_available(sdk):
                         return _public(identity, "unavailable",
                                        reason_code="v2_runtime_contract_unavailable",
@@ -768,7 +772,7 @@ class LocalModelRegistration:
             code = ("runtime_package_not_pinned" if profile == PUBLIC_M0_PROFILE
                     else "text_runtime_local_install_required")
             raise BoundaryError("local_model_registration", code) from error
-        sdk = _connector_sdk_path(node_modules)
+        sdk = _connector_sdk_path(node_modules, pin)
         if not managed and profile == V2_M2_PROFILE and not _v2_sdk_available(sdk):
             raise BoundaryError("local_model_registration", "v2_runtime_contract_unavailable")
         _remaining(deadline)

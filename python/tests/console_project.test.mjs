@@ -188,7 +188,11 @@ function setup({
     URL,
     URLSearchParams,
     Date,
-    AbortSignal: {timeout: timeoutMs => ({timeoutMs})},
+    AbortSignal: {timeout: timeoutMs => {
+      const signal = AbortSignal.timeout(timeoutMs);
+      Object.defineProperty(signal, "timeoutMs", {value:timeoutMs});
+      return signal;
+    }},
     window: {
       confirm: (message) => {
         confirms.push(message);

@@ -98,19 +98,25 @@ def _caps() -> dict:
                                 "loaded_mod_ids": []}}}
 
 
-def test_connector_sdk_path_supports_flat_and_nested_npm_installations(tmp_path: Path) -> None:
-    flat_root = tmp_path / "flat" / "node_modules"
-    flat_sdk = flat_root / registration_module.CONNECTOR_PACKAGE / "dist" / "index.js"
-    flat_sdk.parent.mkdir(parents=True)
-    flat_sdk.write_text("// connector SDK\n")
-    assert registration_module._connector_sdk_path(flat_root) == flat_sdk
-
-    nested_root = tmp_path / "nested" / "node_modules"
-    nested_sdk = (nested_root / registration_module.RUNTIME_PACKAGE / "node_modules"
+def test_connector_sdk_path_follows_pinned_layout_when_both_paths_exist(
+        tmp_path: Path) -> None:
+    node_modules = tmp_path / "node_modules"
+    flat_sdk = node_modules / registration_module.CONNECTOR_PACKAGE / "dist" / "index.js"
+    nested_sdk = (node_modules / registration_module.RUNTIME_PACKAGE / "node_modules"
                   / registration_module.CONNECTOR_PACKAGE / "dist" / "index.js")
+    flat_sdk.parent.mkdir(parents=True)
     nested_sdk.parent.mkdir(parents=True)
-    nested_sdk.write_text("// connector SDK\n")
-    assert registration_module._connector_sdk_path(nested_root) == nested_sdk
+    flat_sdk.write_text("// flat connector SDK\n")
+    nested_sdk.write_text("// nested connector SDK\n")
+
+    assert registration_module._connector_sdk_path(
+        node_modules, {"dependency_layout": None},
+    ) == flat_sdk
+    assert registration_module._connector_sdk_path(
+        node_modules, {"dependency_layout": registration_module.BUNDLED_LAYOUT},
+    ) == nested_sdk
+    with pytest.raises(BoundaryError, match="runtime_package_not_pinned"):
+        registration_module._connector_sdk_path(node_modules, {"dependency_layout": "unknown"})
 
 
 def test_v2_capabilities_require_exact_profile_schemas_and_selection_verbs() -> None:
