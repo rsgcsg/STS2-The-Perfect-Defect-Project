@@ -208,6 +208,11 @@ class LocalM0RemoteController:
             raise BoundaryError("local_m0_remote", "request_size_limit")
         spec = self._spec(request, self.settings)
         target = self._target(spec, config.steps)
+        provider = self.provider_factory(spec=spec)
+        # `--modal-account` is a canonical provider workspace ID. Check it before
+        # reserving the operation or persisting request/spec bytes, so a slug typo
+        # cannot strand a new prepare_intent in the journal.
+        provider.verify_account_id(spec.account_id)
         reserved = self.training.reserve_remote_m0(
             dataset_id, input_profile=profile, request_bytes=request_bytes,
             target=target, target_step=target_step,
@@ -216,7 +221,6 @@ class LocalM0RemoteController:
         if reserved.get("status") == "completed":
             return cast(dict[str, Any], reserved)
         self.training.persist_remote_attempt_spec(operation_id, spec.to_bytes())
-        provider = self.provider_factory(spec=spec)
         try:
             app_ref = provider.prepare_app(spec)
             app_ref_bytes = app_ref.to_bytes()
@@ -261,8 +265,14 @@ class LocalM0RemoteController:
         owner, store, _ = self._context()
         _, old_request = self._saved(operation_id)
         old = TokenRemoteUpdateRequest.from_bytes(old_request)
+        identity_provider = self.provider_factory(spec=previous_spec)
+        # Old v4 records could pin the workspace display slug. Accept it only when
+        # token-info binds that exact slug to its canonical current workspace ID.
+        canonical_account_id = identity_provider.verify_account_id(
+            previous_spec.account_id, allow_legacy_workspace_alias=True,
+        )
         settings = ModalM0Settings(
-            previous_spec.account_id, previous_spec.environment_name,
+            canonical_account_id, previous_spec.environment_name,
             previous_spec.image_object_id,
         )
         request = prepare_token_remote_update(
@@ -273,11 +283,12 @@ class LocalM0RemoteController:
         if not isinstance(config, LightActionM0Config):
             raise BoundaryError("local_m0_remote", "m0_config_required")
         spec = self._spec(request, settings, previous_spec.resource_plan)
+        provider = self.provider_factory(spec=spec)
+        provider.verify_account_id(spec.account_id)
         self.training.resume_remote_m0(
             operation_id, request_bytes=request.to_bytes(), target_step=target_step,
         )
         self.training.persist_remote_attempt_spec(operation_id, spec.to_bytes())
-        provider = self.provider_factory(spec=spec)
         try:
             app_ref = provider.prepare_app(spec)
             self.training.persist_remote_app_ref(operation_id, app_ref.to_bytes())
@@ -321,6 +332,15 @@ class LocalM0RemoteController:
         """Poll a saved handle or stop a known App when submit returned no handle."""
         operation_id = digest(operation_id, "local_m0_remote.operation_id", length=32)
         wait = _bounded_wait(wait_seconds)
+        snapshot = self.training.status().get("operation", {})
+        snapshot_attempts = snapshot.get("remote", {}).get("attempts", [])
+        if (snapshot.get("operation_id") == operation_id
+                and snapshot.get("status") == "pending"
+                and snapshot.get("stage") == "remote_submit_intent"
+                and snapshot_attempts):
+            # status() keeps a live prepare/submit process pending while its local
+            # operation lock is held. Do not race it with App lookup or stop.
+            return cast(dict[str, Any], snapshot)
         current, _ = self._saved(operation_id)
         stage = current.get("stage")
         if current.get("status") in {"completed", "paused", "cancelled", "failed"}:
@@ -340,15 +360,27 @@ class LocalM0RemoteController:
                 return self._stop_unknown_app(operation_id, wait_seconds=wait)
             spec = M0AttemptSpec.from_bytes(evidence["attempt_spec_bytes"])
             provider = self.provider_factory(spec=spec)
+            latest = current["remote"]["attempts"][-1]
+            resolving_unpinned_prepare = (
+                latest["app_phase"] == "prepare_intent"
+                and latest["app_ref_ref"] is None
+                and latest["submit_intent_at_unix_ns"] is None
+            )
             try:
                 # Resolve only the deterministic already-journaled App name. Never deploy
                 # or submit from a restarted controller.
-                app_ref = provider.resolve_app(spec)
+                app_ref = provider.resolve_app(
+                    spec,
+                    allow_legacy_workspace_alias=resolving_unpinned_prepare,
+                )
                 if app_ref is None:
-                    self.training.record_remote_observation(
-                        operation_id, state="unknown", provider_terminal=False,
-                        error_code="provider_outcome_unknown",
-                    )
+                    if resolving_unpinned_prepare:
+                        return self.training.record_remote_prepare_absent(
+                            operation_id,
+                            expected_attempt_spec_sha256=_sha(
+                                evidence["attempt_spec_bytes"],
+                            ),
+                        )
                     return cast(dict[str, Any], self.training.status()["operation"])
                 self.training.persist_remote_app_ref(operation_id, app_ref.to_bytes())
             except BoundaryError:
@@ -370,8 +402,10 @@ class LocalM0RemoteController:
         spec = M0AttemptSpec.from_bytes(evidence["attempt_spec_bytes"])
         app_ref = ModalM0Target.from_bytes(evidence["app_ref_bytes"])
         provider = self.provider_factory(spec=spec)
-        provider.stop_app(app_ref)
-        inspection = provider.inspect_stop(app_ref)
+        provider.stop_app(app_ref, allow_legacy_workspace_alias=True)
+        inspection = provider.inspect_stop(
+            app_ref, allow_legacy_workspace_alias=True,
+        )
         if inspection.confirmed:
             self.training.record_remote_unknown_app_stopped(
                 operation_id, _stop_inspection(inspection),

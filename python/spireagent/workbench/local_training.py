@@ -1416,6 +1416,74 @@ class LocalTrainingService:
             write_replaceable_json(path, updated)
             return self._public(updated)
 
+    def record_remote_prepare_absent(
+        self, operation_id: object, *, expected_attempt_spec_sha256: str,
+    ) -> dict[str, Any]:
+        """Close an interrupted prepare after complete current exact-name lookup is absent.
+
+        The controller must make this transition only after a complete, successful
+        lookup in the workspace bound to the immutable attempt spec. This method
+        rechecks the exact spec digest and the journal's no-AppRef/no-submit boundary.
+        It records a bounded current lookup result, not a claim that the App never existed.
+        """
+        operation_id = digest(operation_id, "local_training.operation_id", length=32)
+        expected_attempt_spec_sha256 = digest(
+            expected_attempt_spec_sha256,
+            "local_training.expected_attempt_spec_sha256",
+        )
+        owner, store, _ = self._selected()
+        path, lock_path = self._paths(owner)
+        self._require_remote_lock(lock_path)
+        with instance_lock(lock_path, create=False):
+            current = self._read(path, owner.identity)
+            if (current.get("schema") != SCHEMA_V4
+                    or current.get("operation_id") != operation_id
+                    or current.get("status") != "interrupted_unknown"
+                    or current.get("stage") != "remote_unknown"):
+                raise BoundaryError("local_training", "remote_prepare_absence_unavailable")
+            latest = current["remote"]["attempts"][-1]
+            if (latest["phase"] != "submit_intent"
+                    or latest["app_phase"] != "prepare_intent"
+                    or latest["attempt_spec_ref"] is None
+                    or latest["app_ref_ref"] is not None
+                    or latest["handle_ref"] is not None
+                    or latest["submit_intent_at_unix_ns"] is not None
+                    or latest["provider_terminal"]):
+                raise BoundaryError("local_training", "remote_prepare_absence_unproven")
+            spec_bytes, app_ref_bytes, handle_bytes = _remote_provider_bytes(store, latest)
+            if (spec_bytes is None or app_ref_bytes is not None or handle_bytes is not None
+                    or hashlib.sha256(spec_bytes).hexdigest()
+                    != expected_attempt_spec_sha256):
+                raise BoundaryError("local_training", "remote_prepare_spec_changed")
+            attempts = list(current["remote"]["attempts"])
+            attempts[-1] = {
+                **latest,
+                "phase": "preflight_failed",
+                "terminal_state": "failed",
+                "provider_error_code": "provider_app_absent_before_submit",
+            }
+            stopped_at = max(time.time_ns(), current["created_at_unix_ns"])
+            updated = {
+                **current,
+                "status": "failed",
+                "stage": "remote_failed",
+                "error_code": "provider_app_absent_before_submit",
+                "stopped_at_unix_ns": stopped_at,
+                "total_wall_seconds": max(
+                    0.0,
+                    (stopped_at - current["created_at_unix_ns"]) / 1_000_000_000,
+                ),
+                "remote": {**current["remote"], "attempts": attempts},
+            }
+            try:
+                _validate_remote_operation(updated)
+            except (ValueError, KeyError, TypeError, BoundaryError) as error:
+                raise BoundaryError(
+                    "local_training", "remote_prepare_absence_invalid",
+                ) from error
+            write_replaceable_json(path, updated)
+            return self._public(updated)
+
     def record_remote_observation(
         self, operation_id: object, *, state: str, provider_terminal: bool,
         handle_bytes: bytes | None = None,
