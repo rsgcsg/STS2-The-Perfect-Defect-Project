@@ -160,6 +160,37 @@ def _validate_remote_target(target: object) -> None:
         raise ValueError("remote target limit invalid")
 
 
+def _remote_target_for_attempt_spec(spec: object, max_total_steps: int) -> dict[str, Any]:
+    """Recompute the persisted target from its typed, pinned provider attempt spec."""
+    from stpd.cloud_jobs.m0_modal import M0AttemptSpec
+
+    if not isinstance(spec, M0AttemptSpec):
+        raise BoundaryError("local_training", "remote_attempt_spec_required")
+    identity = {
+        "account_id": spec.account_id,
+        "environment_name": spec.environment_name,
+        "image_object_id": spec.image_object_id,
+        "producer": spec.producer.to_dict(),
+        "target_runtime": {
+            "torch_version": spec.target_runtime.torch_version,
+            "cpu_threads": spec.target_runtime.cpu_threads,
+        },
+        "resource_plan": spec.resource_plan.to_dict(),
+    }
+    source_sha256 = hashlib.sha256(json_bytes(spec.producer.to_dict())).hexdigest()
+    target = {
+        "target_id": hashlib.sha256(json_bytes(identity)).hexdigest(),
+        "app_id": spec.app_name,
+        "deployment_source_sha256": source_sha256,
+        "gpu": spec.resource_plan.gpu,
+        "timeout_seconds": spec.resource_plan.function_timeout_seconds,
+        "startup_timeout_seconds": spec.resource_plan.startup_timeout_seconds,
+        "max_total_steps": max_total_steps,
+    }
+    _validate_remote_target(target)
+    return target
+
+
 def _validate_remote_error_code(error_code: object) -> None:
     if (not isinstance(error_code, str)
             or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_code) is None):
@@ -1153,11 +1184,15 @@ class LocalTrainingService:
                     or old_request.request_sha256 != latest["request_sha256"]
                     or old_spec.attempt_id != latest["attempt_id"]
                     or old_spec.request_sha256 != latest["request_sha256"]
+                    or old_spec.producer != old_request.producer
+                    or old_spec.target_runtime != old_request.target_runtime
                     or old_spec.app_name != receipt["app_name"]
                     or old_spec.environment_name != permit["environment_name"]
                     or old_spec.account_id not in {
                         receipt["canonical_account_id"], receipt["pinned_account_id"],
-                    }):
+                    }
+                    or archived["remote"]["target"] !=
+                    _remote_target_for_attempt_spec(old_spec, old_request.config.steps)):
                 raise ValueError
             return {
                 "permit": permit,
@@ -1305,7 +1340,8 @@ class LocalTrainingService:
     def reserve_remote_m0(self, dataset_id: object, *, input_profile: object,
                           request_bytes: bytes, target: dict[str, Any],
                           target_step: object,
-                          after_completed_operation_id: object | None = None) -> dict[str, Any]:
+                          after_completed_operation_id: object | None = None,
+                          attempt_spec_bytes: bytes | None = None) -> dict[str, Any]:
         """Persist exact M0 request/target/attempt before any provider call is allowed."""
         if (not isinstance(input_profile, str)
                 or input_profile not in {"public_lite", "public_compact"}):
@@ -1357,13 +1393,29 @@ class LocalTrainingService:
                 elif previous.get("status") != "idle":
                     raise BoundaryError("local_training", "remote_retry_state_conflict")
                 if retry_context is not None:
+                    if not isinstance(attempt_spec_bytes, bytes):
+                        raise BoundaryError(
+                            "local_training", "remote_preflight_retry_spec_required",
+                        )
+                    from stpd.cloud_jobs.m0_modal import M0AttemptSpec
                     from stpd.workers.token_remote_update import TokenRemoteUpdateRequest
 
                     old_request = retry_context["request"]
+                    old_spec = retry_context["spec"]
                     new_request = TokenRemoteUpdateRequest.from_bytes(request_bytes)
+                    new_spec = M0AttemptSpec.from_bytes(attempt_spec_bytes)
                     old_binding = old_request.training_binding.value()
                     new_binding = new_request.training_binding.value()
                     old_target = retry_context["archived_operation"]["remote"]["target"]
+                    if (new_spec.account_id != retry_context["permit"]["canonical_account_id"]
+                            or new_spec.environment_name
+                            != retry_context["permit"]["environment_name"]):
+                        raise BoundaryError(
+                            "local_training", "remote_preflight_retry_workspace_mismatch",
+                        )
+                    expected_target = _remote_target_for_attempt_spec(
+                        new_spec, new_request.config.steps,
+                    )
                     if (previous.get("status") != "idle"
                             or operation_id != old_request.operation_id
                             or operation_id != retry_context["archived_operation"]["operation_id"]
@@ -1372,12 +1424,20 @@ class LocalTrainingService:
                             or input_profile != retry_context["archived_operation"]["input_profile"]
                             or request_identity["target_step"] != old_request.target_step
                             or new_request.operation_id != old_request.operation_id
+                            or new_request.attempt_id != attempt_id
+                            or new_request.input_id != old_request.input_id
+                            or new_spec.attempt_id != attempt_id
+                            or new_spec.request_sha256 != hashlib.sha256(request_bytes).hexdigest()
+                            or new_spec.producer != new_request.producer
+                            or new_spec.target_runtime != new_request.target_runtime
+                            or new_spec.app_name == old_spec.app_name
+                            or target != expected_target
                             or new_binding != old_binding
                             or new_request.config != old_request.config
                             or new_request.resume_checkpoint_id is not None
                             or new_binding.get("training_operation_id") != operation_id
                             or new_binding.get("dataset_ids") != [dataset_id]
-                            or any(target[key] != old_target[key] for key in (
+                            or any(expected_target[key] != old_target[key] for key in (
                                 "gpu", "timeout_seconds", "startup_timeout_seconds",
                                 "max_total_steps",
                             ))):

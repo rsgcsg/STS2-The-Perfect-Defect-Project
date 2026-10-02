@@ -489,18 +489,29 @@ def test_old_slug_absence_can_be_retired_and_restarted_under_same_training_autho
     from spireagent import source as source_module
     from spireagent.artifact_contracts import Producer
 
-    synthetic_producer = Producer(
+    old_producer = Producer(
         "rsgcsg/STS2-The-Perfect-Defect-Project", "a" * 40, "b" * 64,
     )
-    monkeypatch.setattr(source_module, "source_identity", lambda _root: synthetic_producer)
+    new_producer = Producer(
+        "rsgcsg/STS2-The-Perfect-Defect-Project", "c" * 40, "d" * 64,
+    )
+    monkeypatch.setattr(source_module, "source_identity", lambda _root: old_producer)
     case = _case(tmp_path, monkeypatch, steps=1)
     (torch, previous_threads, service, store, owner, producer, run,
-     _, operation_id, dataset_id) = case
+     model_config, operation_id, dataset_id) = case
     try:
         from spireagent.json_boundary import BoundaryError
+        from spireagent.workbench import local_m0_remote as remote_module
         from spireagent.workbench.local_m0_remote import ModalM0Settings
         from spireagent.workbench.local_training import OPERATION_FILE
+        from stpd.fullrun.light_action_inputs import load_light_action_inputs
+        from stpd.workers.token_ranking import TokenTargetRuntime
         from stpd.workers.token_remote_update import prepare_token_remote_update
+        from stpd.workers.token_worker import prepare_token_run
+
+        # The controller imported source_identity by value. Pin that alias to the
+        # new runtime producer so preflight reaches the retry workspace gate.
+        monkeypatch.setattr(remote_module, "source_identity", lambda _root: new_producer)
 
         old_attempt_id = "e" * 32
         old_request = prepare_token_remote_update(
@@ -558,24 +569,90 @@ def test_old_slug_absence_can_be_retired_and_restarted_under_same_training_autho
                 store, owner, run.artifact_id, producer, "f" * 32, 1,
                 attempt_id="a" * 32,
             )
+
+        new_settings = ModalM0Settings(
+            "ac-BRJL3wJjpxPVWozQkvp9xf", "test-env", "im-recovery-image",
+        )
+        # The old run remains bound to its old producer; the new controller must
+        # refuse to reinterpret it under the new source identity.
+        with pytest.raises(BoundaryError, match="source_or_contract_mismatch"):
+            _controller(service, state, new_settings).start(
+                run.artifact_id, 1, wait_seconds=0,
+            )
+        assert state.prepares == state.submits == 0
+
+        # Re-prepare a fresh run through the existing production API, preserving
+        # the exact admitted input, config/seed, and target runtime.
+        inputs = load_light_action_inputs(store, old_request.input_id)
+        fresh_run = prepare_token_run(
+            store, inputs, model_config, new_producer,
+            replicate="preflight-retry-" + operation_id,
+            target_runtime=TokenTargetRuntime.from_run_info(run.parameters.value()),
+        )
+        assert fresh_run.artifact_id != run.artifact_id
+        assert fresh_run.parent("training_input") == old_request.input_id
+        assert fresh_run.producer == new_producer != run.producer
+        assert fresh_run.parameters.value()["config"] == run.parameters.value()["config"]
+
         wrong_workspace = _FakeModalState(
             store, canonical_account_id="ac-foreign", workspace_name="other-workspace",
         )
         with pytest.raises(BoundaryError, match="preflight_retry_workspace_mismatch"):
             _controller(
                 service, wrong_workspace,
-                ModalM0Settings("ac-foreign", "test-env", "im-test-image"),
-            ).start(run.artifact_id, 1, wait_seconds=0)
+                ModalM0Settings("ac-foreign", "test-env", "im-recovery-image"),
+            ).start(fresh_run.artifact_id, 1, wait_seconds=0)
         assert wrong_workspace.prepares == wrong_workspace.submits == 0
         assert service.status()["operation"]["status"] == "idle"
 
+        # Reproduce the race where the advisory pre-lock read misses a permit
+        # published immediately before the reservation lock is acquired.
+        raced_workspace = _FakeModalState(
+            store, canonical_account_id="ac-foreign", workspace_name="other-workspace",
+        )
+        with monkeypatch.context() as race_patch:
+            race_patch.setattr(service, "remote_preflight_retry_context", lambda: None)
+            with pytest.raises(BoundaryError, match="remote_preflight_retry_workspace_mismatch"):
+                _controller(
+                    service, raced_workspace,
+                    ModalM0Settings("ac-foreign", "test-env", "im-recovery-image"),
+                ).start(fresh_run.artifact_id, 1, wait_seconds=0)
+        assert raced_workspace.prepares == raced_workspace.submits == 0
+        assert service.status()["operation"]["status"] == "idle"
+        assert service.remote_preflight_retry_context() is not None
+
+        # A caller cannot pair a typed new producer spec with stale or forged
+        # target_id/app_id/source hashes. Each attempt leaves the permit intact.
+        candidate_request = prepare_token_remote_update(
+            store, owner, fresh_run.artifact_id, new_producer, operation_id, 1,
+            attempt_id="a" * 32,
+        )
+        candidate_spec = _controller(service, state, new_settings)._spec(
+            candidate_request, new_settings,
+        )
+        candidate_target = _controller(service, state, new_settings)._target(
+            candidate_spec, model_config.steps,
+        )
+        assert candidate_spec.app_name != old_spec.app_name
+        for field, wrong_value in (
+            ("target_id", "f" * 64),
+            ("app_id", candidate_spec.app_name + "-stale"),
+            ("deployment_source_sha256", "e" * 64),
+        ):
+            forged_target = dict(candidate_target)
+            forged_target[field] = wrong_value
+            with pytest.raises(BoundaryError, match="remote_preflight_retry_binding_mismatch"):
+                service.reserve_remote_m0(
+                    dataset_id, input_profile="public_lite",
+                    request_bytes=candidate_request.to_bytes(), target=forged_target,
+                    target_step=1, attempt_spec_bytes=candidate_spec.to_bytes(),
+                )
+            assert service.status()["operation"]["status"] == "idle"
+
         state.prepare_error = None
-        restarted = _controller(
-            service, state,
-            ModalM0Settings(
-                "ac-BRJL3wJjpxPVWozQkvp9xf", "test-env", "im-test-image",
-            ),
-        ).start(run.artifact_id, 1, wait_seconds=0)
+        restarted = _controller(service, state, new_settings).start(
+            fresh_run.artifact_id, 1, wait_seconds=0,
+        )
         assert restarted["status"] == "completed"
         assert restarted["operation_id"] == operation_id
         assert restarted["previous_remote_failure"]["archive_ref"] == retired["archive_ref"]
@@ -583,6 +660,18 @@ def test_old_slug_absence_can_be_retired_and_restarted_under_same_training_autho
             "archive_sha256"
         ]
         assert restarted["remote"]["attempts"][-1]["attempt_id"] != old_attempt_id
+        assert state.request is not None
+        assert state.request.run_id == fresh_run.artifact_id != run.artifact_id
+        assert state.request.input_id == old_request.input_id
+        assert state.request.producer == new_producer
+        assert state.request.config == model_config
+        assert state.request.resume_checkpoint_id is None
+        recovered_target = restarted["remote"]["target"]
+        assert recovered_target["target_id"] != old_target["target_id"]
+        assert recovered_target["app_id"] != old_target["app_id"]
+        assert (recovered_target["deployment_source_sha256"]
+                != old_target["deployment_source_sha256"])
+        assert state.target.image_object_id == "im-recovery-image"
         assert state.lookups == 1
         assert state.prepares == state.submits == 1
         assert state.stops <= 1

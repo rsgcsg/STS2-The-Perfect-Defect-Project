@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from spireagent.json_boundary import BoundaryError, digest, json_bytes
+from spireagent.json_boundary import BoundaryError, digest
 from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ROOT
@@ -19,6 +19,7 @@ from spireagent.workbench.local_training import (
     REMOTE_MAX_TOTAL_STEPS,
     LocalTrainingService,
     _read_remote_blob,
+    _remote_target_for_attempt_spec,
 )
 from stpd.cloud_jobs.m0_modal import (
     M0_PILOT_EXECUTION_PLAN,
@@ -142,29 +143,7 @@ class LocalM0RemoteController:
 
     @staticmethod
     def _target(spec: M0AttemptSpec, max_steps: int) -> dict[str, Any]:
-        identity = {
-            "account_id": spec.account_id,
-            "environment_name": spec.environment_name,
-            "image_object_id": spec.image_object_id,
-            "producer": spec.producer.to_dict(),
-            "target_runtime": {
-                "torch_version": spec.target_runtime.torch_version,
-                "cpu_threads": spec.target_runtime.cpu_threads,
-            },
-            "resource_plan": spec.resource_plan.to_dict(),
-        }
-        source_sha = _sha(json_bytes(spec.producer.to_dict()))
-        return {
-            "target_id": _sha(json_bytes(identity)),
-            # This is the deterministic per-attempt App name; app_ref stores its
-            # exact provider-assigned app_id before submit.
-            "app_id": spec.app_name,
-            "deployment_source_sha256": source_sha,
-            "gpu": spec.resource_plan.gpu,
-            "timeout_seconds": spec.resource_plan.function_timeout_seconds,
-            "startup_timeout_seconds": spec.resource_plan.startup_timeout_seconds,
-            "max_total_steps": max_steps,
-        }
+        return _remote_target_for_attempt_spec(spec, max_steps)
 
     @staticmethod
     def _spec(
@@ -222,6 +201,7 @@ class LocalM0RemoteController:
         reserved = self.training.reserve_remote_m0(
             dataset_id, input_profile=profile, request_bytes=request_bytes,
             target=target, target_step=target_step,
+            attempt_spec_bytes=spec.to_bytes(),
             after_completed_operation_id=after_completed_operation_id,
         )["operation"]
         if reserved.get("status") == "completed":
