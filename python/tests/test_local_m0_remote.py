@@ -45,6 +45,7 @@ def _case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "--dataset", dataset_id, "--operation", operation_id,
         "--backbone", "s", "--input-profile", "public_lite",
         "--train-limit", "8", "--dev-limit", "4",
+        "--max-state-tokens", "64", "--max-action-bytes", "64",
     ]
     stdout = io.StringIO()
     from spireagent.research_cli import main
@@ -60,6 +61,7 @@ def _case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     model_config = LightActionM0Config(
         recipe="stage1a.dsimple.light-action.m0.s.v1", steps=2,
         device="cuda", public_profile="public_lite",
+        max_state_tokens=64, max_action_bytes=64,
     )
     run = prepare_token_run(store, inputs, model_config, producer,
                             target_runtime=runtime)
