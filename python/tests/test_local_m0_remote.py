@@ -154,7 +154,7 @@ class _FakeProvider:
         from stpd.workers.token_remote_update import TokenRemoteUpdateResult
         from stpd.workers.token_ranking import STEP_RNG_PROTOCOL
 
-        tokenizer = Tokenizer.from_bytes(request.state_tokenizer)
+        tokenizer = Tokenizer.from_str(request.state_tokenizer.decode("utf-8"))
         train_inputs = LightActionM0TrainOnlyInputs(
             request.input_manifest, request.train_rows, tokenizer,
         )
