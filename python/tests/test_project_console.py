@@ -373,17 +373,10 @@ def test_rejected_chunked_post_closes_without_running_action(tmp_path, monkeypat
     thread.start()
     body = b'{"dataset_id":"' + b"a" * 64 + b'"}'
     chunked_body = f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n0\r\n\r\n"
-    origin = f"http://127.0.0.1:{server.server_port}"
-    headers = (
-        f"Cookie: {app.account.cookie_name}={app.account.cookie}\r\n"
-        f"Origin: {origin}\r\n"
-        f"X-CSRF-Token: {app.account.csrf}\r\n"
-        "Content-Type: application/json\r\n"
-        "Transfer-Encoding: chunked\r\n"
-    ).encode("ascii")
     try:
         response = _raw_post_response(
-            server.server_port, headers, chunked_body, path="/api/local-training/start",
+            server.server_port, b"Transfer-Encoding: chunked\r\n", chunked_body,
+            path="/api/local-training/start",
         )
         assert response == b""
         assert calls == []
