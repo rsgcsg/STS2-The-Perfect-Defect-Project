@@ -371,6 +371,7 @@ def construct_model(
         raise BoundaryError("token_training", "mps_unavailable_no_fallback")
     recipe = recipe_for(config.recipe)
     core: TokenCore
+    model: BTokenScorer | DSimpleTokenScorer | LightActionM0Scorer
     identity: dict[str, Any]
     with seeded_step(config.seed, config.device):
         if isinstance(config, LightActionM0Config):
@@ -624,6 +625,8 @@ class TokenRankingEngine:
         self._samples_by_index: dict[int, ModelSample] = {}
         self._rows_by_index: dict[int, LightActionTokenRow] = {}
         if isinstance(config, LightActionM0Config):
+            if not isinstance(inputs, (LoadedLightActionInputs, LightActionM0TrainOnlyInputs)):
+                raise BoundaryError("token_training", "light_action_dual_input_required")
             state_codec, vocab_size = validate_light_action_m0_inputs(inputs, config)
             state_codec_identity = state_codec
         else:
