@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+
 def _case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, steps: int = 2):
     torch = pytest.importorskip("torch")
     pytest.importorskip("tokenizers")
@@ -142,19 +143,18 @@ class _FakeProvider:
 
     def _make_result(self, request):
         import torch
-
         from tokenizers import Tokenizer
 
         from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
         from stpd.workers.token_ranking import (
             CUDA_STEP_RNG_PROTOCOL,
+            STEP_RNG_PROTOCOL,
             LightActionM0TrainOnlyInputs,
             TokenRankingEngine,
             config_payload,
             token_training_identity,
         )
         from stpd.workers.token_remote_update import TokenRemoteUpdateResult
-        from stpd.workers.token_ranking import STEP_RNG_PROTOCOL
 
         tokenizer = Tokenizer.from_str(request.state_tokenizer.decode("utf-8"))
         train_inputs = LightActionM0TrainOnlyInputs(

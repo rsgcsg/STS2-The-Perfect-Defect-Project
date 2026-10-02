@@ -20,7 +20,7 @@ import traceback
 import uuid
 from contextlib import AbstractContextManager, suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes
 from spireagent.source import source_identity
@@ -98,7 +98,7 @@ def _persist_remote_control(
     """Persist exact bounded provider identity bytes before the next side effect."""
     if not isinstance(raw, bytes) or not 1 <= len(raw) <= REMOTE_MAX_CONTROL_BYTES:
         raise BoundaryError("local_training", "remote_control_size_limit")
-    blobs = getattr(store, "blobs", None)
+    blobs: Any = getattr(store, "blobs", None)
     if not callable(getattr(blobs, "put_if_absent", None)) or not callable(
         getattr(blobs, "get", None)
     ):
@@ -117,7 +117,7 @@ def _persist_remote_control(
 def _read_remote_control(
     store: ManifestArtifactStore, key: str, sha256: str, *, kind: str,
 ) -> bytes:
-    blobs = getattr(store, "blobs", None)
+    blobs: Any = getattr(store, "blobs", None)
     if not callable(getattr(blobs, "get", None)):
         raise BoundaryError("local_training", "remote_control_blob_store_unavailable")
     if safe_key(key) != _remote_control_key(kind, sha256):
@@ -465,7 +465,7 @@ def _persist_remote_blob(store: ManifestArtifactStore, raw: bytes, *,
         raise BoundaryError("local_training", label + "_must_be_bytes")
     if not raw or len(raw) > maximum:
         raise BoundaryError("local_training", label + "_size_limit")
-    blobs = getattr(store, "blobs", None)
+    blobs: Any = getattr(store, "blobs", None)
     if not callable(getattr(blobs, "put_if_absent", None)) or not callable(
         getattr(blobs, "get", None)
     ):
@@ -499,7 +499,7 @@ def _persist_remote_blob(store: ManifestArtifactStore, raw: bytes, *,
 def _read_remote_blob(store: ManifestArtifactStore, object_ref: str, sha256: str, *,
                       object_prefix: str, chunk_prefix: str,
                       maximum: int, label: str) -> bytes:
-    blobs = getattr(store, "blobs", None)
+    blobs: Any = getattr(store, "blobs", None)
     if not callable(getattr(blobs, "get", None)):
         raise BoundaryError("local_training", label + "_blob_store_unavailable")
     if safe_key(object_ref) != object_prefix + sha256:
@@ -693,8 +693,10 @@ class LocalTrainingService:
                 for key in IDS:
                     if key in value:
                         digest(value[key], "local_training." + key)
-                completed_ids = ("input_id", "run_id", "checkpoint_id", "result_id",
-                                 "model_id", "evaluation_id")
+                completed_ids: tuple[str, ...] = (
+                    "input_id", "run_id", "checkpoint_id", "result_id", "model_id",
+                    "evaluation_id",
+                )
                 if value["status"] == "completed" and not all(
                     value.get(key) for key in completed_ids
                 ):
@@ -920,7 +922,7 @@ class LocalTrainingService:
         except (ValueError, KeyError, TypeError, BoundaryError) as error:
             raise BoundaryError("local_training", "remote_operation_transition_invalid") from error
         write_replaceable_json(path, updated)
-        return updated
+        return cast(dict[str, Any], updated)
 
     @staticmethod
     def _new_remote_attempt(*, attempt_id: str, request_sha256: str, request_ref: str,
@@ -1114,6 +1116,8 @@ class LocalTrainingService:
                     or latest.get("app_ref_ref") is not None):
                 raise BoundaryError("local_training", "remote_app_ref_not_ready")
             spec_bytes, _, _ = _remote_provider_bytes(store, latest)
+            if spec_bytes is None:
+                raise BoundaryError("local_training", "remote_attempt_spec_unavailable")
             spec = _decode_remote_provider_object(spec_bytes, label="remote_attempt_spec")
             app_ref = _decode_remote_provider_object(app_ref_bytes, label="remote_app_ref")
             if (set(app_ref) != {"schema", "account_id", "environment_name", "app_id",
@@ -1555,6 +1559,8 @@ class LocalTrainingService:
             if latest["phase"] != "stopping" or not latest["provider_terminal"]:
                 raise BoundaryError("local_training", "provider_terminal_required")
             _, app_ref_bytes, _ = _remote_provider_bytes(store, latest)
+            if app_ref_bytes is None:
+                raise BoundaryError("local_training", "remote_app_ref_unavailable")
             app_ref = _decode_remote_provider_object(app_ref_bytes, label="remote_app_ref")
             if (not isinstance(inspection, dict)
                     or set(inspection) != {"app_id", "app_state", "active_tasks",
@@ -1613,6 +1619,8 @@ class LocalTrainingService:
             if latest["provider_terminal"] or latest["app_ref_ref"] is None:
                 raise BoundaryError("local_training", "remote_unknown_stop_unavailable")
             _, app_ref_bytes, _ = _remote_provider_bytes(store, latest)
+            if app_ref_bytes is None:
+                raise BoundaryError("local_training", "remote_app_ref_unavailable")
             app_ref = _decode_remote_provider_object(app_ref_bytes, label="remote_app_ref")
             if (not isinstance(inspection, dict)
                     or set(inspection) != {"app_id", "app_state", "active_tasks",

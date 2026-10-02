@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, cast
 
 from spireagent.json_boundary import BoundaryError, digest, json_bytes
 from spireagent.source import source_identity
@@ -20,15 +21,16 @@ from spireagent.workbench.local_training import (
     _read_remote_blob,
 )
 from stpd.cloud_jobs.m0_modal import (
+    M0_PILOT_EXECUTION_PLAN,
     M0AttemptSpec,
     M0ExecutionPlan,
-    M0_PILOT_EXECUTION_PLAN,
     M0StopInspection,
     ModalM0Call,
     ModalM0Provider,
     ModalM0RuntimeEvidence,
     ModalM0Target,
 )
+from stpd.workers.token_ranking import LightActionM0Config, decode_config
 from stpd.workers.token_remote_update import (
     TokenRemoteUpdateRequest,
     TokenRemoteUpdateResult,
@@ -36,7 +38,6 @@ from stpd.workers.token_remote_update import (
     prepare_token_remote_update,
     publish_token_remote_checkpoint,
 )
-from stpd.workers.token_ranking import LightActionM0Config, decode_config
 
 
 @dataclass(frozen=True)
@@ -213,7 +214,7 @@ class LocalM0RemoteController:
             after_completed_operation_id=after_completed_operation_id,
         )["operation"]
         if reserved.get("status") == "completed":
-            return reserved
+            return cast(dict[str, Any], reserved)
         self.training.persist_remote_attempt_spec(operation_id, spec.to_bytes())
         provider = self.provider_factory(spec=spec)
         try:
@@ -323,12 +324,12 @@ class LocalM0RemoteController:
         current, _ = self._saved(operation_id)
         stage = current.get("stage")
         if current.get("status") in {"completed", "paused", "cancelled", "failed"}:
-            return self.training.status()["operation"]
+            return cast(dict[str, Any], self.training.status()["operation"])
         if stage == "remote_acceptance":
             return self._finalize_saved(operation_id)
         evidence = self.training.remote_provider_evidence(operation_id)
         if evidence["attempt_spec_bytes"] is None:
-            return self.training.status()["operation"]
+            return cast(dict[str, Any], self.training.status()["operation"])
         if evidence["handle_bytes"] is None:
             if evidence["app_ref_bytes"] is not None:
                 return self._stop_unknown_app(operation_id, wait_seconds=wait)
@@ -343,17 +344,17 @@ class LocalM0RemoteController:
                         operation_id, state="unknown", provider_terminal=False,
                         error_code="provider_outcome_unknown",
                     )
-                    return self.training.status()["operation"]
+                    return cast(dict[str, Any], self.training.status()["operation"])
                 self.training.persist_remote_app_ref(operation_id, app_ref.to_bytes())
             except BoundaryError:
-                return self.training.status()["operation"]
+                return cast(dict[str, Any], self.training.status()["operation"])
             return self._stop_unknown_app(operation_id, wait_seconds=wait)
         return self._poll_and_finalize(operation_id, wait)
 
     def _stop_unknown_app(self, operation_id: str, *, wait_seconds: float) -> dict[str, Any]:
         evidence = self.training.remote_provider_evidence(operation_id)
         if evidence["attempt_spec_bytes"] is None or evidence["app_ref_bytes"] is None:
-            return self.training.status()["operation"]
+            return cast(dict[str, Any], self.training.status()["operation"])
         spec = M0AttemptSpec.from_bytes(evidence["attempt_spec_bytes"])
         app_ref = ModalM0Target.from_bytes(evidence["app_ref_bytes"])
         provider = self.provider_factory(spec=spec)
@@ -363,7 +364,7 @@ class LocalM0RemoteController:
             self.training.record_remote_unknown_app_stopped(
                 operation_id, _stop_inspection(inspection),
             )
-        return self.training.status()["operation"]
+        return cast(dict[str, Any], self.training.status()["operation"])
 
     def _poll_and_finalize(
         self, operation_id: str, wait_seconds: float,
@@ -376,7 +377,7 @@ class LocalM0RemoteController:
         if latest["phase"] == "terminal":
             if latest["terminal_state"] in {"paused", "completed"}:
                 return self._finalize_saved(operation_id)
-            return self.training.status()["operation"]
+            return cast(dict[str, Any], self.training.status()["operation"])
         if (evidence["attempt_spec_bytes"] is None or evidence["app_ref_bytes"] is None
                 or evidence["handle_bytes"] is None):
             return self._stop_unknown_app(operation_id, wait_seconds=wait_seconds)
@@ -440,18 +441,18 @@ class LocalM0RemoteController:
     def _stop_and_finalize(self, operation_id: str) -> dict[str, Any]:
         evidence = self.training.remote_provider_evidence(operation_id)
         if evidence["attempt_spec_bytes"] is None or evidence["app_ref_bytes"] is None:
-            return self.training.status()["operation"]
+                return cast(dict[str, Any], self.training.status()["operation"])
         spec = M0AttemptSpec.from_bytes(evidence["attempt_spec_bytes"])
         app_ref = ModalM0Target.from_bytes(evidence["app_ref_bytes"])
         provider = self.provider_factory(spec=spec)
         provider.stop_app(app_ref)
         inspection = provider.inspect_stop(app_ref)
         if not inspection.confirmed:
-            return self.training.status()["operation"]
+            return cast(dict[str, Any], self.training.status()["operation"])
         self.training.record_remote_stop_confirmation(
             operation_id, _stop_inspection(inspection),
         )
-        operation = self.training.status()["operation"]
+        operation = cast(dict[str, Any], self.training.status()["operation"])
         if operation.get("stage") == "remote_acceptance":
             return self._finalize_saved(operation_id)
         return operation
@@ -538,10 +539,10 @@ class LocalM0RemoteController:
                 evaluation_id = hashlib.sha256(
                     f"stage1a-m0-dev-v1:{request.run_id}:{model.artifact_id}".encode("ascii"),
                 ).hexdigest()[:32]
-                return owner.reserve_allocation_dev(
+                return cast(dict[str, Any], owner.reserve_allocation_dev(
                     store, model.artifact_id, binding["allocation_id"],
                     request.operation_id, evaluation_id,
-                )
+                ))
 
             finalizer_started = time.perf_counter()
             completed = finalize_token_remote_update(
@@ -556,4 +557,4 @@ class LocalM0RemoteController:
                 result_id=completed.result_id,
                 core_finalizer_attempt_seconds=finalizer_seconds,
             )
-        return self.training.status()["operation"]
+        return cast(dict[str, Any], self.training.status()["operation"])
