@@ -188,7 +188,11 @@ function setup({
     URL,
     URLSearchParams,
     Date,
-    AbortSignal,
+    AbortSignal: {timeout: timeoutMs => {
+      const signal = AbortSignal.timeout(timeoutMs);
+      Object.defineProperty(signal, "timeoutMs", {value:timeoutMs});
+      return signal;
+    }},
     window: {
       confirm: (message) => {
         confirms.push(message);
@@ -2202,6 +2206,9 @@ test(`confirmed-interaction v${version} ${reset ? "Reset" : "M2"}-K${slots} expo
     ["/api/local-model-exports/start", {model_id:modelId}, "export-csrf"],
     ["/api/local-model-registrations/register", {model_id:modelId}, "registration-csrf"],
   ]);
+  assert.equal(writes[0].options.signal.timeoutMs, 25000);
+  assert.equal(writes[1].options.signal.timeoutMs, 25000);
+  assert.equal(writes[2].options.signal.timeoutMs, 60000);
   assert.equal(writes.length, 3);
 });
 

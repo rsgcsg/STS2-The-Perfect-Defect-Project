@@ -338,7 +338,7 @@ window.SpireProject = (() => {
         : "服务暂时不可用，请刷新状态。")
     );
   };
-  async function request(ctx, path, body, localCsrfToken) {
+  async function request(ctx, path, body, localCsrfToken, requestTimeoutMs) {
     if (!live(ctx)) throw new Error("context_changed");
     const mutation = body !== undefined;
     if (mutation && modelWatch?.ctx === ctx) stopModelWatch();
@@ -357,7 +357,8 @@ window.SpireProject = (() => {
         credentials: "same-origin",
         cache: "no-store",
         redirect: "error",
-        signal: AbortSignal.timeout(mutation ? 25000 : 15000),
+        signal: AbortSignal.timeout(Number.isFinite(requestTimeoutMs)
+          ? requestTimeoutMs : mutation ? 25000 : 15000),
         headers: mutation
           ? {
               "Content-Type": "application/json",
@@ -3225,7 +3226,11 @@ window.SpireProject = (() => {
     const registerAction = (label) => command(ctx, actionName, label, async () => {
       if (!live(ctx) || !supportsLocalModelExport(model)) return;
       try {
-        const result = await request(ctx, "/api/local-model-registrations/register", {model_id:model.artifact_id, ...(managed ? {environment_kind:"managed"} : {})}, csrf);
+        const result = await request(
+          ctx, "/api/local-model-registrations/register",
+          {model_id:model.artifact_id, ...(managed ? {environment_kind:"managed"} : {})},
+          csrf, 60000,
+        );
         if (result.schema !== "stpd/local-model-registration-v1"
             || (result.environment_kind || "native") !== environmentKind
             || result.model_id !== model.artifact_id || result.status !== "registered"
