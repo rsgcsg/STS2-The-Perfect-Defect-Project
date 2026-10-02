@@ -883,6 +883,9 @@ class TokenRankingEngine:
             is_light_action_m0=self.is_light_action_m0,
             target_runtime=target_runtime,
         )
+        step = state["step"]
+        if type(step) is not int:
+            raise BoundaryError("token_checkpoint", "resume_identity_mismatch")
         try:
             validated = _validate_model_weight_state(
                 self.model, state["model"], frozen=self.frozen,
@@ -899,4 +902,4 @@ class TokenRankingEngine:
         except Exception as error:
             raise BoundaryError("token_model", "invalid_weights") from error
         self.model.eval()
-        return state["step"]
+        return step
