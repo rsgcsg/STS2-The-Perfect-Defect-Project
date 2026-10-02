@@ -40,6 +40,7 @@ from ..fullrun.light_action_inputs import (
 )
 from ..fullrun.token_inputs import MAX_PAYLOAD, input_texts
 from ..light_action_codec import SPEC_BYTES, SPEC_SHA256, encode_action
+from ..models.stage1a import recipe_for
 from .checkpoint_codec import MAX_BYTES as MAX_CHECKPOINT_BYTES
 from .token_ranking import (
     IndexedLightActionM0TrainRow,
@@ -565,7 +566,8 @@ def prepare_token_remote_update(
     if not isinstance(inputs, LoadedLightActionInputs):
         raise BoundaryError("token_remote_update", "light_action_inputs_required")
     engine: TokenRankingEngine | None = None
-    if config.device == "cuda":
+    scratch_backbone = recipe_for(config.recipe).backbone == "s"
+    if scratch_backbone:
         state_codec, vocab_size = validate_light_action_m0_inputs(inputs, config)
         backbone_identity = light_action_m0_scratch_backbone_identity(
             config, vocab_size, state_codec,
@@ -585,17 +587,18 @@ def prepare_token_remote_update(
         _validate_resume_manifest(
             resume_manifest, resume_bytes, run, input_manifest, producer,
         )
-        if config.device == "cuda":
+        if scratch_backbone:
             resume_state = validate_light_action_m0_scratch_checkpoint(
                 resume_bytes, inputs, config, backbone_identity, target_runtime,
             )
-            start_step = resume_state["step"]
-            if start_step != resume_manifest.parameters.value().get("step"):
-                raise BoundaryError("token_remote_update", "resume_manifest_step_mismatch")
         else:
             assert engine is not None
-            engine.restore(resume_bytes)
-            start_step = engine.step
+            resume_state = engine.validate_checkpoint_structure(
+                resume_bytes, target_runtime,
+            )
+        start_step = resume_state["step"]
+        if start_step != resume_manifest.parameters.value().get("step"):
+            raise BoundaryError("token_remote_update", "resume_manifest_step_mismatch")
     if type(target_step) is not int or not start_step < target_step <= config.steps:
         raise BoundaryError("token_remote_update", "invalid_update_target_step")
 
@@ -726,7 +729,8 @@ def validate_token_remote_update(
         raise BoundaryError("token_remote_update", "request_training_projection_mismatch")
 
     engine: TokenRankingEngine | None = None
-    if config.device == "cuda":
+    scratch_backbone = recipe_for(config.recipe).backbone == "s"
+    if scratch_backbone:
         state_codec, vocab_size = validate_light_action_m0_inputs(inputs, config)
         backbone_identity = light_action_m0_scratch_backbone_identity(
             config, vocab_size, state_codec,
@@ -742,21 +746,23 @@ def validate_token_remote_update(
         stored_bytes = b"".join(store.read_payload(stored_resume.payload("checkpoint")))
         if stored_resume != request.resume_manifest or stored_bytes != request.resume_checkpoint:
             raise BoundaryError("token_remote_update", "local_resume_checkpoint_mismatch")
-        if config.device == "cuda":
+        if scratch_backbone:
             resume_state = validate_light_action_m0_scratch_checkpoint(
                 stored_bytes, inputs, config, request.backbone_identity.value(),
                 request.target_runtime,
             )
-            if resume_state["step"] != stored_resume.parameters.value().get("step"):
-                raise BoundaryError("token_remote_update", "resume_manifest_step_mismatch")
         else:
             assert engine is not None
-            engine.restore(stored_bytes)
+            resume_state = engine.validate_checkpoint_structure(
+                stored_bytes, request.target_runtime,
+            )
+        if resume_state["step"] != stored_resume.parameters.value().get("step"):
+            raise BoundaryError("token_remote_update", "resume_manifest_step_mismatch")
         if (result.resume_checkpoint_sha256 != hashlib.sha256(stored_bytes).hexdigest()):
             raise BoundaryError("token_remote_update", "result_resume_identity_mismatch")
     elif result.resume_checkpoint_sha256 is not None:
         raise BoundaryError("token_remote_update", "unexpected_resume_identity")
-    if config.device == "cuda":
+    if scratch_backbone:
         checkpoint_state = validate_light_action_m0_scratch_checkpoint(
             result.checkpoint, inputs, config, request.backbone_identity.value(),
             request.target_runtime,
@@ -764,8 +770,10 @@ def validate_token_remote_update(
         result_step = checkpoint_state["step"]
     else:
         assert engine is not None
-        engine.restore(result.checkpoint)
-        result_step = engine.step
+        checkpoint_state = engine.validate_checkpoint_structure(
+            result.checkpoint, request.target_runtime,
+        )
+        result_step = checkpoint_state["step"]
     if result_step != request.target_step:
         raise BoundaryError("token_remote_update", "checkpoint_target_step_mismatch")
     return result

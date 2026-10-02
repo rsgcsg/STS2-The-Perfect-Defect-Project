@@ -619,16 +619,17 @@ def validate_light_action_m0_scratch_checkpoint(
     expected_backbone_identity: dict[str, Any],
     target_runtime: TokenTargetRuntime,
 ) -> dict[str, Any]:
-    """Structurally validate a checkpoint configured for CUDA using CPU tensors only.
+    """Structurally validate an M0 scratch checkpoint using a CPU shape model.
 
     This checks serialized identity and tensor compatibility against the declared target
-    runtime. It neither resumes the checkpoint nor proves that a CUDA executor can run it.
+    runtime and configured device. It does not resume the checkpoint or prove target-device
+    execution.
     """
     if not isinstance(target_runtime, TokenTargetRuntime):
         raise BoundaryError("token_checkpoint", "resume_identity_mismatch")
     recipe = recipe_for(config.recipe)
-    if config.device != "cuda" or recipe.backbone != "s":
-        raise BoundaryError("token_checkpoint", "cuda_scratch_m0_required")
+    if recipe.backbone != "s":
+        raise BoundaryError("token_checkpoint", "scratch_m0_required")
     state_codec, vocab_size = validate_light_action_m0_inputs(inputs, config)
     backbone = light_action_m0_scratch_backbone_identity(
         config, vocab_size, state_codec,
@@ -800,6 +801,27 @@ class TokenRankingEngine:
             "cpu_threads": torch.get_num_threads(),
         }
         return encode_checkpoint(state)
+
+    def validate_checkpoint_structure(
+        self, raw: bytes, target_runtime: TokenTargetRuntime,
+    ) -> dict[str, Any]:
+        """Validate checkpoint identity, optimizer, and weights without restoring them."""
+        state = _validate_checkpoint_identity_and_optimizer(
+            raw, self.config, self.data_identity, self.optimizer, self.parameters,
+            is_light_action_m0=self.is_light_action_m0,
+            target_runtime=target_runtime,
+        )
+        try:
+            _validate_model_weight_state(
+                self.model, state["model"], frozen=self.frozen,
+                adapter_tensor_names=self.adapter_tensor_names,
+                strict_frozen_core=self.is_light_action_m0,
+            )
+        except BoundaryError:
+            raise
+        except Exception as error:
+            raise BoundaryError("token_model", "invalid_weights") from error
+        return state
 
     def restore(self, raw: bytes) -> None:
         state = _validate_checkpoint_identity_and_optimizer(
