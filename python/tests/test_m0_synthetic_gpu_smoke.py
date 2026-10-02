@@ -24,6 +24,7 @@ spec.loader.exec_module(smoke)
 SHA40 = "a" * 40
 SHA64 = "b" * 64
 IMAGE = "registry.example/project/candidate@sha256:" + "c" * 64
+MODAL_IMAGE_ID = "im-candidate-123"
 
 
 def make_plan() -> smoke.SmokePlan:
@@ -34,6 +35,18 @@ def make_plan() -> smoke.SmokePlan:
         uv_lock_sha256=SHA64,
         harness_sha256=SHA64,
         run_id="d" * 32,
+    )
+
+
+def make_modal_image_plan() -> smoke.SmokePlan:
+    return smoke.build_plan(
+        image=MODAL_IMAGE_ID,
+        image_kind=smoke.MODAL_IMAGE_KIND,
+        environment="existing-dev",
+        source_revision=SHA40,
+        uv_lock_sha256=SHA64,
+        harness_sha256=SHA64,
+        run_id="e" * 32,
     )
 
 
@@ -49,6 +62,10 @@ def valid_receipt(plan: smoke.SmokePlan) -> dict[str, Any]:
         "uv_lock_sha256": plan.uv_lock_sha256,
         "harness_sha256": plan.harness_sha256,
         "image": plan.image,
+        "image_kind": plan.image_kind,
+        "runtime_modal_image_id": (
+            plan.image if plan.image_kind == smoke.MODAL_IMAGE_KIND else "im-runtime-123"
+        ),
         "gpu": "L4",
         "device": "cuda",
         "device_index": 0,
@@ -137,10 +154,15 @@ class FakeModalBoundary:
         self.call = FakeCall(result, pending=pending)
         self.spawn_error = spawn_error
         self.listed_environments = 0
+        self.registry_image_refs: list[str] = []
+        self.modal_image_ids: list[str] = []
         self.apps: list[FakeApp] = []
         self.modal = SimpleNamespace(
             Environment=SimpleNamespace(objects=SimpleNamespace(list=self._list_envs)),
-            Image=SimpleNamespace(from_registry=self._from_registry),
+            Image=SimpleNamespace(
+                from_registry=self._from_registry,
+                from_id=self._from_id,
+            ),
             App=self._make_app,
             exception=SimpleNamespace(
                 RemoteError=FakeRemoteError,
@@ -154,9 +176,13 @@ class FakeModalBoundary:
         self.listed_environments += 1
         return [SimpleNamespace(name="existing-dev")]
 
-    @staticmethod
-    def _from_registry(reference: str) -> object:
+    def _from_registry(self, reference: str) -> object:
         assert reference == IMAGE
+        self.registry_image_refs.append(reference)
+        return object()
+
+    def _from_id(self, image_id: str) -> object:
+        self.modal_image_ids.append(image_id)
         return object()
 
     def _make_app(self, name: str) -> FakeApp:
@@ -265,6 +291,8 @@ def test_complete_receipt_validation_rejects_the_old_minimal_receipt():
         ("uv_lock_sha256", "9" * 64, "uv_lock_sha256_mismatch"),
         ("harness_sha256", "9" * 64, "harness_sha256_mismatch"),
         ("image", "mutable:latest", "image_mismatch"),
+        ("image_kind", smoke.MODAL_IMAGE_KIND, "image_kind_mismatch"),
+        ("runtime_modal_image_id", "not-an-image-id", "runtime_modal_image_id_invalid"),
         ("device_name", "NVIDIA A10", "actual_l4_device_required"),
         ("first_loss", float("nan"), "first_loss_must_be_finite_number"),
         ("resume_matches_continuous", False, "resume_matches_continuous_must_be_true"),
@@ -307,6 +335,8 @@ def test_execute_spawns_once_with_hard_limits_and_confirms_ephemeral_stop(monkey
     assert plan.function_call_wall_seconds == 60
     assert plan.outer_wall_seconds == 120
     assert boundary.listed_environments == 1
+    assert boundary.registry_image_refs == [IMAGE]
+    assert boundary.modal_image_ids == []
     assert len(boundary.apps) == 1
     app = boundary.apps[0]
     assert app.name == plan.app_name
@@ -436,6 +466,83 @@ def test_build_plan_requires_immutable_image_digest():
             harness_sha256=SHA64,
             run_id="e" * 32,
         )
+
+
+def test_build_plan_accepts_modal_image_id_as_a_distinct_kind():
+    plan = make_modal_image_plan()
+
+    assert plan.image == MODAL_IMAGE_ID
+    assert plan.image_kind == smoke.MODAL_IMAGE_KIND
+    with pytest.raises(smoke.PlanError, match="modal_image_id_required"):
+        smoke.build_plan(
+            image=IMAGE,
+            image_kind=smoke.MODAL_IMAGE_KIND,
+            environment="existing-dev",
+            source_revision=SHA40,
+            uv_lock_sha256=SHA64,
+            harness_sha256=SHA64,
+            run_id="f" * 32,
+        )
+    with pytest.raises(smoke.PlanError, match="unsupported_image_kind"):
+        smoke.build_plan(
+            image=IMAGE,
+            image_kind="unknown",
+            environment="existing-dev",
+            source_revision=SHA40,
+            uv_lock_sha256=SHA64,
+            harness_sha256=SHA64,
+            run_id="f" * 32,
+        )
+
+
+def test_runtime_modal_image_id_is_checked_and_receipt_bound():
+    plan = make_modal_image_plan()
+
+    assert smoke._validate_runtime_modal_image_id(
+        plan, {"MODAL_IMAGE_ID": MODAL_IMAGE_ID},
+    ) == MODAL_IMAGE_ID
+    with pytest.raises(smoke.PlanError, match="runtime_modal_image_id_mismatch"):
+        smoke._validate_runtime_modal_image_id(
+            plan, {"MODAL_IMAGE_ID": "im-other-123"},
+        )
+
+    receipt = valid_receipt(plan)
+    assert smoke.validate_receipt(receipt, plan)["runtime_modal_image_id"] == MODAL_IMAGE_ID
+    receipt["runtime_modal_image_id"] = "im-other-123"
+    with pytest.raises(smoke.PlanError, match="runtime_modal_image_id_mismatch"):
+        smoke.validate_receipt(receipt, plan)
+
+
+def test_execute_reuses_modal_image_id_without_touching_registry_path(monkeypatch):
+    plan = make_modal_image_plan()
+    boundary = install_mocks(monkeypatch, plan)
+
+    receipt = smoke.execute(plan)
+
+    assert boundary.modal_image_ids == [MODAL_IMAGE_ID]
+    assert boundary.registry_image_refs == []
+    assert boundary.apps[0].payload == smoke.asdict(plan)
+    assert receipt["image_kind"] == smoke.MODAL_IMAGE_KIND
+    assert receipt["runtime_modal_image_id"] == MODAL_IMAGE_ID
+
+
+def test_cli_image_inputs_are_explicit_and_mutually_exclusive():
+    common = [
+        "--environment", "existing-dev",
+        "--source-revision", SHA40,
+        "--uv-lock-sha256", SHA64,
+    ]
+    oci_args = smoke._parser().parse_args([*common, "--image", IMAGE])
+    modal_args = smoke._parser().parse_args([*common, "--modal-image-id", MODAL_IMAGE_ID])
+
+    assert oci_args.image == IMAGE
+    assert oci_args.modal_image_id is None
+    assert modal_args.image is None
+    assert modal_args.modal_image_id == MODAL_IMAGE_ID
+    with pytest.raises(SystemExit):
+        smoke._parser().parse_args([
+            *common, "--image", IMAGE, "--modal-image-id", MODAL_IMAGE_ID,
+        ])
 
 
 def test_sdk_timeout_error_is_classified_as_pending_not_builtin_timeout():

@@ -23,6 +23,9 @@ from typing import Any
 
 REPOSITORY = "rsgcsg/STS2-The-Perfect-Defect-Project"
 IMAGE_RE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+MODAL_IMAGE_ID_RE = re.compile(r"^im-[A-Za-z0-9_-]+$")
+OCI_IMAGE_KIND = "oci_registry_digest"
+MODAL_IMAGE_KIND = "modal_image_id"
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA64_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_FUNCTION_SECONDS = 30
@@ -45,7 +48,7 @@ MODAL_CPU_USD_PER_CORE_SECOND = 0.0000131
 MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000222
 MODAL_MAX_REGION_MULTIPLIER = 1.75
 MODAL_PRICING_AS_OF = "2026-10-02"
-SMOKE_RECEIPT_SCHEMA = "spireagent/m0-synthetic-cuda-smoke-receipt-v1"
+SMOKE_RECEIPT_SCHEMA = "spireagent/m0-synthetic-cuda-smoke-receipt-v2"
 EXECUTION_OUTCOME_SCHEMA = "spireagent/m0-synthetic-cuda-smoke-execution-v1"
 MODAL_CALL_STATUS_PROBE_SCRIPT = """
 import json
@@ -79,6 +82,7 @@ class SmokePlan:
     app_name: str
     environment: str
     image: str
+    image_kind: str
     repository: str
     source_revision: str
     uv_lock_sha256: str
@@ -103,6 +107,7 @@ class SmokePlan:
 def build_plan(
     *,
     image: str,
+    image_kind: str = OCI_IMAGE_KIND,
     environment: str,
     source_revision: str,
     uv_lock_sha256: str,
@@ -110,8 +115,14 @@ def build_plan(
     run_id: str | None = None,
 ) -> SmokePlan:
     """Validate all identity pins and return the fixed single-GPU plan."""
-    if not isinstance(image, str) or not IMAGE_RE.fullmatch(image):
-        raise PlanError("image_must_be_immutable_registry_digest")
+    if image_kind == OCI_IMAGE_KIND:
+        if not isinstance(image, str) or not IMAGE_RE.fullmatch(image):
+            raise PlanError("image_must_be_immutable_registry_digest")
+    elif image_kind == MODAL_IMAGE_KIND:
+        if not isinstance(image, str) or not MODAL_IMAGE_ID_RE.fullmatch(image):
+            raise PlanError("modal_image_id_required")
+    else:
+        raise PlanError("unsupported_image_kind")
     if not isinstance(environment, str) or not environment.strip() or any(
         character.isspace() for character in environment
     ):
@@ -130,6 +141,7 @@ def build_plan(
         app_name=f"m0-synthetic-cuda-{chosen_id[:12]}",
         environment=environment,
         image=image,
+        image_kind=image_kind,
         repository=REPOSITORY,
         source_revision=source_revision,
         uv_lock_sha256=uv_lock_sha256,
@@ -341,6 +353,7 @@ def run_engine_smoke(plan_data: dict[str, str]) -> dict[str, Any]:
         "uv_lock_sha256": plan.uv_lock_sha256,
         "harness_sha256": plan.harness_sha256,
         "image": plan.image,
+        "image_kind": plan.image_kind,
         "gpu": plan.gpu,
         "device": device.type,
         "device_index": device.index,
@@ -383,13 +396,26 @@ def _run_pinned_image_smoke(payload: dict[str, str]) -> dict[str, Any]:
     producer = source_identity(python_root)
     plan = SmokePlan(**payload)
     actual_harness_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    actual_modal_image_id = _validate_runtime_modal_image_id(plan, os.environ)
     if (producer.repository != plan.repository
             or producer.source_revision != plan.source_revision
             or producer.uv_lock_sha256 != plan.uv_lock_sha256
             or actual_harness_sha256 != plan.harness_sha256
             or os.environ.get("STPD_IMAGE_PROFILE") != "worker"):
         raise PlanError("pinned_worker_image_identity_mismatch")
-    return run_engine_smoke(payload)
+    receipt = run_engine_smoke(payload)
+    receipt["runtime_modal_image_id"] = actual_modal_image_id
+    return receipt
+
+
+def _validate_runtime_modal_image_id(plan: SmokePlan, environ: Any) -> str:
+    """Bind the receipt to Modal's reserved runtime image id."""
+    actual_image_id = environ.get("MODAL_IMAGE_ID")
+    if not isinstance(actual_image_id, str) or not MODAL_IMAGE_ID_RE.fullmatch(actual_image_id):
+        raise PlanError("runtime_modal_image_id_missing_or_invalid")
+    if plan.image_kind == MODAL_IMAGE_KIND and actual_image_id != plan.image:
+        raise PlanError("runtime_modal_image_id_mismatch")
+    return actual_image_id
 
 
 def _run_worker_payload() -> int:
@@ -485,6 +511,7 @@ def validate_receipt(receipt: object, plan: SmokePlan) -> dict[str, Any]:
         "uv_lock_sha256": plan.uv_lock_sha256,
         "harness_sha256": plan.harness_sha256,
         "image": plan.image,
+        "image_kind": plan.image_kind,
         "gpu": "L4",
         "device": "cuda",
         "device_index": 0,
@@ -495,6 +522,14 @@ def validate_receipt(receipt: object, plan: SmokePlan) -> dict[str, Any]:
     for field, expected in expected_pins.items():
         if type(receipt.get(field)) is not type(expected) or receipt.get(field) != expected:
             raise PlanError(f"smoke_receipt_{field}_mismatch")
+
+    runtime_modal_image_id = receipt.get("runtime_modal_image_id")
+    if (not isinstance(runtime_modal_image_id, str)
+            or not MODAL_IMAGE_ID_RE.fullmatch(runtime_modal_image_id)):
+        raise PlanError("smoke_receipt_runtime_modal_image_id_invalid")
+    if (plan.image_kind == MODAL_IMAGE_KIND
+            and runtime_modal_image_id != plan.image):
+        raise PlanError("smoke_receipt_runtime_modal_image_id_mismatch")
 
     device_name = receipt.get("device_name")
     if not isinstance(device_name, str) or "l4" not in device_name.lower():
@@ -783,7 +818,11 @@ def execute(plan: SmokePlan) -> dict[str, Any]:
     outer_deadline = started + plan.outer_wall_seconds
     _preflight_environment(plan.environment)
     app = modal.App(plan.app_name)
-    image = modal.Image.from_registry(plan.image)
+    image = (
+        modal.Image.from_id(plan.image)
+        if plan.image_kind == MODAL_IMAGE_KIND
+        else modal.Image.from_registry(plan.image)
+    )
 
     @app.function(
         image=image,
@@ -1014,7 +1053,13 @@ def execute(plan: SmokePlan) -> dict[str, Any]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--image", required=True, help="immutable registry image@sha256 digest")
+    image_group = parser.add_mutually_exclusive_group(required=True)
+    image_group.add_argument(
+        "--image", help="immutable registry image@sha256 digest (OCI path)",
+    )
+    image_group.add_argument(
+        "--modal-image-id", help="existing Modal image object ID (im-...)",
+    )
     parser.add_argument(
         "--environment", required=True, help="name of an existing Modal environment",
     )
@@ -1058,8 +1103,15 @@ def main(argv: list[str] | None = None) -> int:
     harness_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     try:
         _verify_local_pins(args.source_revision, args.uv_lock_sha256)
+        if args.modal_image_id is not None:
+            image = args.modal_image_id
+            image_kind = MODAL_IMAGE_KIND
+        else:
+            image = args.image
+            image_kind = OCI_IMAGE_KIND
         plan = build_plan(
-            image=args.image,
+            image=image,
+            image_kind=image_kind,
             environment=args.environment,
             source_revision=args.source_revision,
             uv_lock_sha256=args.uv_lock_sha256,
