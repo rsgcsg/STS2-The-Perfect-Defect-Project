@@ -8,6 +8,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -279,6 +280,31 @@ class FakeSDK:
         self.call = call
         self.lookups: list[tuple[str, str, int, str]] = []
         self.call_lookups: list[tuple[str, object]] = []
+        self.app_name_lookup_calls: list[tuple[str, str]] = []
+        self.app_name_lookup_options: list[tuple[None, float]] = []
+        self.app_name_lookup_error: Exception | None = FakeModalNotFound("app not found")
+        self.app_name_lookup_response: object | None = None
+
+        class AppLookupStub:
+            def AppGetByDeploymentName(
+                _stub_self,
+                request: Any,
+                *,
+                retry: None,
+                timeout: float,
+            ) -> object:
+                self.app_name_lookup_calls.append(
+                    (request.name, request.environment_name),
+                )
+                self.app_name_lookup_options.append((retry, timeout))
+                if self.app_name_lookup_error is not None:
+                    raise self.app_name_lookup_error
+                return self.app_name_lookup_response
+
+        class ClientAPI:
+            @staticmethod
+            def from_env() -> SimpleNamespace:
+                return SimpleNamespace(stub=AppLookupStub())
 
         class FunctionAPI:
             @staticmethod
@@ -297,10 +323,56 @@ class FakeSDK:
 
         self.Function = FunctionAPI
         self.FunctionCall = FunctionCallAPI
+        self.Client = ClientAPI
         self.exception = SimpleNamespace(
             TimeoutError=FakeModalTimeout,
             InputCancellation=FakeInputCancellation,
+            NotFoundError=FakeModalNotFound,
         )
+
+
+class FakeModalNotFound(Exception):
+    pass
+
+
+class FakeModalPermissionDenied(Exception):
+    pass
+
+
+class FakeAppGetByDeploymentNameRequest:
+    def __init__(self, *, name: str, environment_name: str) -> None:
+        self.name = name
+        self.environment_name = environment_name
+
+
+class FakeAppGetByDeploymentNameResponse:
+    def __init__(
+        self,
+        *,
+        app_id: str = "",
+        previous_app_id: str = "",
+        environment_name: str = "",
+    ) -> None:
+        self.app_id = app_id
+        self.previous_app_id = previous_app_id
+        self.environment_name = environment_name
+
+
+@pytest.fixture
+def fake_modal_api_pb2(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    api_pb2 = SimpleNamespace(
+        AppGetByDeploymentNameRequest=FakeAppGetByDeploymentNameRequest,
+        AppGetByDeploymentNameResponse=FakeAppGetByDeploymentNameResponse,
+    )
+    import_module = m0_modal.importlib.import_module
+
+    def import_for_provider(name: str) -> object:
+        if name == "modal_proto.api_pb2":
+            return api_pb2
+        return import_module(name)
+
+    monkeypatch.setattr(m0_modal.importlib, "import_module", import_for_provider)
+    return api_pb2
 
 
 class FakeModalTimeout(Exception):
@@ -495,7 +567,9 @@ def test_unknown_prepare_is_never_redeployed_and_matching_late_app_is_recovered(
     assert len(cli.deploy_calls) == 1
 
 
-def test_unknown_prepare_without_visible_app_requires_read_only_reconciliation():
+def test_unknown_prepare_without_visible_app_requires_read_only_reconciliation(
+    fake_modal_api_pb2: SimpleNamespace,
+):
     spec = _attempt_spec()
     cli = FakeModalCLI(spec)
     cli.deploy_returncode = 1
@@ -567,36 +641,130 @@ def test_recovery_accepts_old_slug_only_from_same_live_workspace_binding():
     assert changed_account.app_list_calls == changed_account.named_history_calls == 0
 
 
-def test_absence_requires_complete_app_list_and_exact_name_history_not_found():
+def test_absence_uses_typed_exact_lookup_instead_of_rich_cli_diagnostic(
+    fake_modal_api_pb2: SimpleNamespace,
+):
     spec = _attempt_spec()
     cli = FakeModalCLI(spec)
+    # This wraps the reported no-App sentence as Modal's CLI does. Reconciliation
+    # must use the typed RPC and must not parse this presentation text.
+    cli.named_history_override = (
+        1,
+        "",
+        "╭─ Error ─────────────────────────────────────────╮\n"
+        f"│ No App with name '{spec.app_name}' found in the '│\n"
+        f"│ {spec.environment_name}' environment.             │\n"
+        "╰─────────────────────────────────────────────────╯",
+    )
+    sdk = FakeSDK(FakeFunction())
     provider = m0_modal.ModalM0Provider(
-        spec=spec, sdk=FakeSDK(FakeFunction()), command_runner=cli,
+        spec=spec, sdk=sdk, command_runner=cli,
     )
 
     assert provider.resolve_app(spec) is None
-    assert cli.app_list_calls == cli.named_history_calls == 1
+    assert cli.app_list_calls == 1
+    assert cli.named_history_calls == 0
+    assert sdk.app_name_lookup_calls == [(spec.app_name, spec.environment_name)]
+    assert sdk.app_name_lookup_options == [(None, m0_modal.MAX_MODAL_CONTROL_SECONDS)]
 
     cli.app_list_override = [{"app_id": "ap-app01"}]
     with pytest.raises(BoundaryError, match="modal_app_list_incomplete"):
         provider.resolve_app(spec)
-    assert cli.named_history_calls == 1
 
-    cli.app_list_override = []
-    cli.named_history_override = (0, "[]", "")
+
+@pytest.mark.parametrize("app_id_field", ["app_id", "previous_app_id"])
+def test_named_lookup_current_or_recently_stopped_app_stays_unknown(
+    fake_modal_api_pb2: SimpleNamespace,
+    app_id_field: str,
+):
+    spec = _attempt_spec()
+    cli = FakeModalCLI(spec)
+    sdk = FakeSDK(FakeFunction())
+    sdk.app_name_lookup_error = None
+    sdk.app_name_lookup_response = fake_modal_api_pb2.AppGetByDeploymentNameResponse(
+        environment_name=spec.environment_name,
+        **{app_id_field: "ap-app01"},
+    )
+    provider = m0_modal.ModalM0Provider(
+        spec=spec, sdk=sdk, command_runner=cli,
+    )
+
     with pytest.raises(BoundaryError, match="modal_app_lookup_incomplete"):
         provider.resolve_app(spec)
+    assert sdk.app_name_lookup_calls == [(spec.app_name, spec.environment_name)]
+    assert cli.named_history_calls == 0
 
-    cli.named_history_override = (1, "", "permission denied")
-    with pytest.raises(BoundaryError, match="modal_app_name_lookup_unknown"):
-        provider.resolve_app(spec)
 
-    cli.named_history_override = (
-        1, "", f"No App with name '{spec.app_name}' found in the "
-        f"'{spec.environment_name}' environment.\npermission denied",
+def test_named_lookup_empty_success_reply_stays_unknown(
+    fake_modal_api_pb2: SimpleNamespace,
+):
+    spec = _attempt_spec()
+    cli = FakeModalCLI(spec)
+    sdk = FakeSDK(FakeFunction())
+    sdk.app_name_lookup_error = None
+    sdk.app_name_lookup_response = fake_modal_api_pb2.AppGetByDeploymentNameResponse(
+        environment_name=spec.environment_name,
     )
+    provider = m0_modal.ModalM0Provider(
+        spec=spec, sdk=sdk, command_runner=cli,
+    )
+
+    with pytest.raises(BoundaryError, match="modal_app_lookup_incomplete"):
+        provider.resolve_app(spec)
+    assert sdk.app_name_lookup_calls == [(spec.app_name, spec.environment_name)]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        FakeAppGetByDeploymentNameResponse(environment_name="other-environment"),
+        FakeAppGetByDeploymentNameResponse(
+            environment_name="staging", app_id="malformed-app-id",
+        ),
+    ],
+)
+def test_named_lookup_mismatched_environment_or_app_identity_stays_unknown(
+    fake_modal_api_pb2: SimpleNamespace,
+    response: FakeAppGetByDeploymentNameResponse,
+):
+    spec = _attempt_spec()
+    cli = FakeModalCLI(spec)
+    sdk = FakeSDK(FakeFunction())
+    sdk.app_name_lookup_error = None
+    sdk.app_name_lookup_response = response
+    provider = m0_modal.ModalM0Provider(
+        spec=spec, sdk=sdk, command_runner=cli,
+    )
+
     with pytest.raises(BoundaryError, match="modal_app_name_lookup_unknown"):
         provider.resolve_app(spec)
+    assert sdk.app_name_lookup_calls == [(spec.app_name, spec.environment_name)]
+
+
+@pytest.mark.parametrize(
+    "error_type",
+    [FakeModalPermissionDenied, RuntimeError],
+)
+def test_named_lookup_non_not_found_errors_stay_unknown(
+    fake_modal_api_pb2: SimpleNamespace,
+    error_type: type[Exception],
+):
+    spec = _attempt_spec()
+    cli = FakeModalCLI(spec)
+    sdk = FakeSDK(FakeFunction())
+    # Even a generic error containing the exact no-App sentence is not evidence.
+    sdk.app_name_lookup_error = error_type(
+        f"No App with name '{spec.app_name}' found in the "
+        f"'{spec.environment_name}' environment."
+    )
+    provider = m0_modal.ModalM0Provider(
+        spec=spec, sdk=sdk, command_runner=cli,
+    )
+
+    with pytest.raises(BoundaryError, match="modal_app_name_lookup_unknown"):
+        provider.resolve_app(spec)
+    assert sdk.app_name_lookup_calls == [(spec.app_name, spec.environment_name)]
+    assert cli.named_history_calls == 0
 
 
 def test_stop_confirmation_rejects_incomplete_provider_app_rows():
