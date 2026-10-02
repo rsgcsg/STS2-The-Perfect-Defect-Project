@@ -392,17 +392,81 @@ def _m0_runtime_backbone_matches(
     return normalized == training_backbone
 
 
+class LightActionM0WeightsScorer:
+    """CPU/inference-only scorer for weights whose checkpoint was validated elsewhere."""
+
+    def __init__(
+        self,
+        config: LightActionM0Config,
+        state_codec: dict[str, Any],
+        training_backbone: dict[str, Any],
+        adapter_tensor_names: list[str] | None,
+        state_tokenizer: Tokenizer,
+        weights: bytes,
+        *,
+        snapshot: Path | None = None,
+        runtime_device: str = "cpu",
+    ) -> None:
+        from ..workers.token_ranking import LoRAQwenTokenCore, construct_model, restore_weights
+
+        recipe = recipe_for(config.recipe)
+        self.config = config
+        runtime_config = light_action_m0_runtime_config(config, runtime_device)
+        self.runtime_device = runtime_config.device
+        self.model, runtime_backbone = construct_model(
+            runtime_config, state_tokenizer.get_vocab_size(), snapshot,
+            state_codec=state_codec,
+        )
+        if not _m0_runtime_backbone_matches(
+            runtime_backbone, training_backbone, config, state_tokenizer.get_vocab_size(),
+        ):
+            raise BoundaryError("token_policy", "light_action_backbone_identity_mismatch")
+        if recipe.backbone == "pl":
+            assert isinstance(self.model.core, LoRAQwenTokenCore)
+            expected_names = sorted(
+                f"core.model.{name}" for name in self.model.core.adapter_tensor_names
+            )
+            if (adapter_tensor_names is not None and adapter_tensor_names != expected_names
+                    or training_backbone.get("adapter_config")
+                    != self.model.core.adapter_config):
+                raise BoundaryError("token_policy", "light_action_adapter_identity_mismatch")
+            adapter_names = set(expected_names)
+        else:
+            if adapter_tensor_names:
+                raise BoundaryError("token_policy", "light_action_adapter_identity_mismatch")
+            adapter_names = None
+        self.adapter_tensor_names = adapter_names
+        restore_weights(
+            self.model, weights, frozen=recipe.backbone == "pf",
+            adapter_tensor_names=adapter_names, strict_frozen_core=True,
+        )
+        self.state_tokenizer = state_tokenizer
+        self.model.eval()
+
+    def score_token_ids(
+        self, state_ids: tuple[int, ...], actions: tuple[tuple[int, ...], ...],
+    ) -> tuple[float, ...]:
+        if (not state_ids or not actions
+                or any(type(token) is not int or token < 0 for token in state_ids)
+                or any(not action or any(type(token) is not int or token < 0 for token in action)
+                       for action in actions)):
+            raise BoundaryError("token_policy", "invalid_light_action_request")
+        with torch.no_grad():
+            scores = self.model(
+                torch.tensor(state_ids, dtype=torch.long, device=self.runtime_device),
+                tuple(torch.tensor(action, dtype=torch.long, device=self.runtime_device)
+                      for action in actions),
+            )
+        if scores.shape != (len(actions),) or not bool(torch.isfinite(scores).all()):
+            raise BoundaryError("token_policy", "invalid_light_action_scores")
+        return tuple(float(score) for score in scores.detach().cpu().tolist())
+
+
 class LightActionM0DecisionScorer:
     """Standalone M0 scorer with a runtime device independent of training provenance."""
 
     def __init__(self, directory: Path, *, snapshot: Path | None = None,
                  runtime_device: str = "cpu") -> None:
-        from ..workers.token_ranking import (
-            LoRAQwenTokenCore,
-            construct_model,
-            restore_weights,
-        )
-
         envelope_path = directory / "model.json"
         if envelope_path.stat().st_size > 1024**2:
             raise BoundaryError("token_policy", "manifest_size_limit")
@@ -447,33 +511,13 @@ class LightActionM0DecisionScorer:
         if (self.state_tokenizer.truncation is not None or self.state_tokenizer.padding is not None
                 or self.state_tokenizer.get_vocab_size() != state_codec["vocab_size"]):
             raise BoundaryError("token_policy", "light_action_state_tokenizer_mismatch")
-        recipe = recipe_for(self.config.recipe)
-        vocab_size = self.state_tokenizer.get_vocab_size()
-        runtime_config = light_action_m0_runtime_config(self.config, runtime_device)
-        self.runtime_device = runtime_config.device
-        self.model, backbone = construct_model(
-            runtime_config, vocab_size, snapshot, state_codec=state_codec,
+        self._weights_scorer = LightActionM0WeightsScorer(
+            self.config, state_codec, self.info["backbone"],
+            self.info["adapter_tensor_names"], self.state_tokenizer, raw["weights"],
+            snapshot=snapshot, runtime_device=runtime_device,
         )
-        if not _m0_runtime_backbone_matches(
-            backbone, self.info["backbone"], self.config, vocab_size,
-        ):
-            raise BoundaryError("token_policy", "light_action_backbone_identity_mismatch")
-        if recipe.backbone == "pl":
-            assert isinstance(self.model.core, LoRAQwenTokenCore)
-            expected_names = sorted(
-                f"core.model.{name}" for name in self.model.core.adapter_tensor_names
-            )
-            if (self.info["adapter_tensor_names"] != expected_names
-                    or self.info["adapter_config"] != self.model.core.adapter_config):
-                raise BoundaryError("token_policy", "light_action_adapter_identity_mismatch")
-            adapter_names = set(expected_names)
-        else:
-            adapter_names = None
-        restore_weights(
-            self.model, raw["weights"], frozen=recipe.backbone == "pf",
-            adapter_tensor_names=adapter_names, strict_frozen_core=True,
-        )
-        self.model.eval()
+        self.model = self._weights_scorer.model
+        self.runtime_device = self._weights_scorer.runtime_device
 
     def score_texts(self, state: str, actions: tuple[str, ...]) -> tuple[float, ...]:
         from ..fullrun.token_inputs import input_texts
@@ -490,18 +534,7 @@ class LightActionM0DecisionScorer:
         action_ids = tuple(
             encode_action(action, max_bytes=self.config.max_action_bytes) for action in actions
         )
-        device = self.runtime_device
-        with torch.no_grad():
-            scores = self.model(
-                torch.tensor(state_ids, dtype=torch.long, device=device),
-                tuple(
-                    torch.tensor(action, dtype=torch.long, device=device)
-                    for action in action_ids
-                ),
-            )
-        if scores.shape != (len(actions),) or not bool(torch.isfinite(scores).all()):
-            raise BoundaryError("token_policy", "invalid_light_action_scores")
-        return tuple(float(score) for score in scores.detach().cpu().tolist())
+        return self._weights_scorer.score_token_ids(state_ids, action_ids)
 
     def score_snapshot(self, snapshot: dict[str, Any]) -> dict[str, float]:
         if self.canonical_input:
