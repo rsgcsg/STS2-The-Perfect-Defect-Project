@@ -285,6 +285,15 @@ def main() -> int:
     run_tokens.add_argument("--checkpoint-interval", type=int, default=1,
                             help="save every N updates; pauses and final update always save")
     run_tokens.add_argument("--snapshot", type=Path)
+    diagnose_checkpoint_parser = commands.add_parser(
+        "diagnose-checkpoint",
+        help="owner-admitted private dev diagnostic for one paused public-compact M0 checkpoint",
+    )
+    diagnose_checkpoint_parser.add_argument("--project-config", required=True, type=Path)
+    diagnose_checkpoint_parser.add_argument("--checkpoint", required=True)
+    diagnose_checkpoint_parser.add_argument("--evaluation-input", required=True)
+    diagnose_checkpoint_parser.add_argument("--operation", required=True,
+                                            help="exact M0 training operation bound to the run")
     run_memory = commands.add_parser("run-memory", help="execute an existing exact M2 episode run")
     run_memory.add_argument("--run", required=True)
     run_memory.add_argument("--resume", help="exact prior episode checkpoint ID")
@@ -395,6 +404,7 @@ def main() -> int:
     project_path = getattr(args, "project_config", None)
     owner_required = args.command in {
         "prepare-light-action-m0", "train-light-action-m0", "run-light-action-m0",
+        "diagnose-checkpoint",
     }
     if owner_required and project_path is None:
         raise BoundaryError("light_action_m0", "configured_local_workspace_required")
@@ -625,6 +635,19 @@ def main() -> int:
                 checkpoint_interval=args.checkpoint_interval,
                 dev_admitter=dev_admitter,
             ))
+        elif args.command == "diagnose-checkpoint":
+            import torch
+
+            from stpd.workers.token_diagnostic import diagnose_checkpoint
+
+            if project_owner is None:
+                raise BoundaryError("light_action_m0", "configured_local_workspace_required")
+            torch.set_num_threads(2)
+            diagnostic = diagnose_checkpoint(
+                store, project_owner, args.checkpoint, args.evaluation_input,
+                args.operation, runtime,
+            )
+            result = diagnostic.summary
         elif args.command == "run-light-action-m0":
             import torch
 
