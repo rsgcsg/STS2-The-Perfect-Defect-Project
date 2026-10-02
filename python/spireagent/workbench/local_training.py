@@ -31,6 +31,7 @@ from spireagent.storage.blobs import safe_key
 from spireagent.storage.replaceable_file import (
     has_unresolved_replacement,
     read_replaceable_bytes,
+    sync_directory,
     write_replaceable_json,
 )
 from spireagent.storage.store import ManifestArtifactStore
@@ -1104,11 +1105,7 @@ class LocalTrainingService:
         if path.is_symlink():
             raise BoundaryError("local_training", "remote_retry_state_unsafe")
         path.unlink(missing_ok=True)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        sync_directory(path.parent)
 
     def _load_remote_retry_permit(
         self, owner: LocalCurationOwner, store: ManifestArtifactStore,

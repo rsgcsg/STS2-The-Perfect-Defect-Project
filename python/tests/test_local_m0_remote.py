@@ -72,6 +72,44 @@ def _case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, steps: int = 2):
             operation_id, dataset_id)
 
 
+def test_private_directory_sync_is_a_noop_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from spireagent.storage import replaceable_file
+
+    monkeypatch.setattr(replaceable_file, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(
+        replaceable_file,
+        "os",
+        SimpleNamespace(open=lambda *_args: pytest.fail("Windows must not open a directory")),
+    )
+    replaceable_file.sync_directory(Path("unused"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="directory fsync is POSIX-specific")
+def test_private_file_removal_syncs_parent_directory_on_posix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    from spireagent.storage import replaceable_file
+    from spireagent.workbench.local_training import LocalTrainingService
+
+    path = tmp_path / "retry-state.json"
+    path.write_text("private", encoding="utf-8")
+    observed: list[int] = []
+    original_fsync = os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        observed.append(descriptor)
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(replaceable_file.os, "fsync", record_fsync)
+    LocalTrainingService._remove_private_file(path)
+    assert not path.exists()
+    assert len(observed) == 1
+
+
 class _FakeModalState:
     def __init__(
         self,

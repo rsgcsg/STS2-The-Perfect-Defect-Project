@@ -39,6 +39,9 @@ from spireagent.workbench.native_workbench import (
     start_workbench_registration,
 )
 
+MAX_REJECTED_POST_BYTES = 64 * 1024
+REJECTED_POST_BODY_TIMEOUT_SECONDS = 1.0
+
 
 @contextlib.contextmanager
 def instance_lock(path: Path, *, create: bool = True) -> Iterator[None]:
@@ -825,6 +828,37 @@ def create_server(app: Application) -> ThreadingHTTPServer:
             self.end_headers()
             self.wfile.write(value)
 
+        def reject_post(self, code: int, value: bytes) -> None:
+            """Discard a bounded framed body before closing a rejected POST."""
+            if self.headers.get("Transfer-Encoding") is not None:
+                self.close_connection = True
+                return
+            content_length = self.headers.get("Content-Length")
+            try:
+                length = 0 if content_length is None else int(content_length)
+            except ValueError:
+                self.close_connection = True
+                return
+            if not 0 <= length <= MAX_REJECTED_POST_BYTES:
+                self.close_connection = True
+                return
+            if length:
+                previous_timeout = self.connection.gettimeout()
+                try:
+                    self.connection.settimeout(REJECTED_POST_BODY_TIMEOUT_SECONDS)
+                    body = self.rfile.read(length)
+                except OSError:
+                    self.close_connection = True
+                    return
+                finally:
+                    with contextlib.suppress(OSError):
+                        self.connection.settimeout(previous_timeout)
+                if len(body) != length:
+                    self.close_connection = True
+                    return
+            self.close_connection = True
+            self.respond(code, value)
+
         def do_GET(self) -> None:
             if not self.local_host():
                 self.respond(403, b"{}")
@@ -1253,7 +1287,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
         def do_POST(self) -> None:
             if self.path.startswith("/api/local-environment/"):
                 if not self.browser_write():
-                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    self.reject_post(403, b'{"error":"browser_action_denied"}')
                     return
                 try:
                     body = self.json_body(maximum=512)
@@ -1349,10 +1383,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 return
             if self.path.startswith("/api/local-workspace/curation/"):
                 if not self.browser_write():
-                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    self.reject_post(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path != "/api/local-workspace/curation/prepare":
-                    self.respond(404, b'{"error":"route_not_found"}')
+                    self.reject_post(404, b'{"error":"route_not_found"}')
                     return
                 try:
                     body = self.json_body(maximum=64)
@@ -1367,10 +1401,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 return
             if self.path.startswith("/api/local-recordings/preview"):
                 if not self.browser_write():
-                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    self.reject_post(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path != "/api/local-recordings/preview":
-                    self.respond(404, b'{"error":"route_not_found"}')
+                    self.reject_post(404, b'{"error":"route_not_found"}')
                     return
                 try:
                     body = self.json_body(maximum=128)
@@ -1385,7 +1419,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 return
             if self.path.startswith("/api/local-recordings/import"):
                 if not self.browser_write():
-                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    self.reject_post(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path == "/api/local-recordings/import-member-archive":
                     try:
@@ -1402,7 +1436,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         self.respond(400, b'{"error":"invalid_local_import_request"}')
                     return
                 if self.path != "/api/local-recordings/import":
-                    self.respond(404, b'{"error":"route_not_found"}')
+                    self.reject_post(404, b'{"error":"route_not_found"}')
                     return
                 try:
                     body = self.json_body(maximum=256)
@@ -1419,7 +1453,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 return
             if self.path.startswith("/api/local-datasets/"):
                 if not self.browser_write():
-                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    self.reject_post(403, b'{"error":"browser_action_denied"}')
                     return
                 try:
                     maximum = 32768 if self.path == "/api/local-datasets/human-preview" else 256
@@ -1439,7 +1473,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                             raise ValueError
                         value = app.start_local_dataset_publish(body["preview_id"])
                     else:
-                        self.respond(404, b'{"error":"route_not_found"}')
+                        self.reject_post(404, b'{"error":"route_not_found"}')
                         return
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
@@ -1449,10 +1483,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 return
             if self.path.startswith("/api/local-training/"):
                 if not self.browser_write():
-                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    self.reject_post(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path != "/api/local-training/start":
-                    self.respond(404, b'{"error":"route_not_found"}')
+                    self.reject_post(404, b'{"error":"route_not_found"}')
                     return
                 try:
                     body = self.json_body(maximum=256)
@@ -1476,10 +1510,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 return
             if self.path.startswith("/api/local-memory-evaluations/"):
                 if not self.browser_write():
-                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    self.reject_post(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path != "/api/local-memory-evaluations/start":
-                    self.respond(404, b'{"error":"route_not_found"}')
+                    self.reject_post(404, b'{"error":"route_not_found"}')
                     return
                 try:
                     body = self.json_body(maximum=256)
@@ -1499,10 +1533,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 return
             if self.path.startswith("/api/local-model-exports/"):
                 if not self.browser_write():
-                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    self.reject_post(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path != "/api/local-model-exports/start":
-                    self.respond(404, b'{"error":"route_not_found"}')
+                    self.reject_post(404, b'{"error":"route_not_found"}')
                     return
                 try:
                     body = self.json_body(maximum=128)
@@ -1517,10 +1551,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 return
             if self.path.startswith("/api/local-model-registrations/"):
                 if not self.browser_write():
-                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    self.reject_post(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path != "/api/local-model-registrations/register":
-                    self.respond(404, b'{"error":"route_not_found"}')
+                    self.reject_post(404, b'{"error":"route_not_found"}')
                     return
                 try:
                     body = self.json_body(maximum=128)
@@ -1536,10 +1570,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 return
             if self.path.startswith("/api/local-workspace/managed/"):
                 if not self.browser_write():
-                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    self.reject_post(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path != "/api/local-workspace/managed/create":
-                    self.respond(404, b'{"error":"route_not_found"}')
+                    self.reject_post(404, b'{"error":"route_not_found"}')
                     return
                 try:
                     body = self.json_body(maximum=64)
@@ -1557,7 +1591,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 if not self.browser_write() and not (
                     self.path.startswith("/api/local-models/") and self.control_client()
                 ):
-                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    self.reject_post(403, b'{"error":"browser_action_denied"}')
                     return
                 try:
                     body = self.json_body()
@@ -1606,7 +1640,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         self.headers.get("X-CSRF-Token", ""), app.account.csrf
                     )
                 ):
-                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    self.reject_post(403, b'{"error":"browser_action_denied"}')
                     return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -1648,7 +1682,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.headers.get("Authorization", ""), "Bearer " + app.control_token
                 )
             ):
-                self.respond(403, b"{}")
+                self.reject_post(403, b"{}")
                 return
             self.respond(200, b'{"status":"stopping"}')
             threading.Thread(target=self.server.shutdown, daemon=True).start()
