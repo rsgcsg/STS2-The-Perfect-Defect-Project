@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from spireagent.artifact_contracts import Manifest, Parent, Producer
+from spireagent.artifact_contracts import Manifest, Parent, Payload, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes, text
 from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
 
@@ -449,6 +449,7 @@ def _finalize_token_run(
     parents = (Parent("run", run_id), Parent("checkpoint", checkpoint_id),
                Parent("training_input", inputs.manifest.artifact_id),
                Parent("model_view", view.artifact_id))
+    model_payloads: tuple[Payload, ...]
     if isinstance(config, LightActionM0Config):
         if not isinstance(inputs, LoadedLightActionInputs):
             raise BoundaryError("token_run", "light_action_inputs_required")

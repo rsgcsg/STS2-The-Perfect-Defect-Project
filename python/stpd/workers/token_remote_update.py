@@ -45,7 +45,8 @@ from ..fullrun.light_action_inputs import (
 from ..fullrun.token_inputs import MAX_PAYLOAD, input_texts
 from ..light_action_codec import SPEC_BYTES, SPEC_SHA256, encode_action
 from ..models.stage1a import recipe_for
-from .checkpoint_codec import MAX_BYTES as MAX_CHECKPOINT_BYTES
+from .checkpoint_codec import MAX_BYTES as MAX_CHECKPOINT_BYTES, decode_checkpoint
+from .reporting import RunReporter
 from .token_ranking import (
     IndexedLightActionM0TrainRow,
     LightActionM0Config,
@@ -59,14 +60,12 @@ from .token_ranking import (
     validate_light_action_m0_inputs,
     validate_light_action_m0_scratch_checkpoint,
 )
-from .checkpoint_codec import decode_checkpoint
 from .token_worker import (
     _checkpoint_metadata_for,
     _finalize_token_run,
     _verify_completed,
     preflight_token_run_contract,
 )
-from .reporting import RunReporter
 from .worker import WorkerResult
 
 REQUEST_SCHEMA = "stpd/token-remote-update-request-v1"
