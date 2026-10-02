@@ -472,6 +472,12 @@ def test_remote_final_checkpoint_uses_local_dev_gate_and_idempotent_completion(
             }
             for event in partial_events
         )
+        before_partial_retry = store.manifest_ids()
+        assert publish_token_remote_checkpoint(
+            store, reporter, owner, partial_request, partial_result, producer, operation,
+            verify_provider_result=lambda _request, _result: True,
+        ) == partial_checkpoint_id
+        assert store.manifest_ids() == before_partial_retry
         assert not any(
             store.get_manifest(identity).kind
             in {"model", "offline_evaluation", "run_result"}
