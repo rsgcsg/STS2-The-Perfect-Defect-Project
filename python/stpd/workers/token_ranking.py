@@ -16,14 +16,18 @@ from typing import Any, cast
 
 import torch
 from safetensors.torch import load, save
+from tokenizers import Tokenizer
 from torch import Tensor, nn
 
+from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import BoundaryError, object_fields
 
 from ..canonical import semantic_hash
+from ..fullrun.features import ModelSample
 from ..fullrun.light_action_inputs import CANONICAL_SCHEMA as CANONICAL_LIGHT_ACTION_INPUT_SCHEMA
 from ..fullrun.light_action_inputs import PUBLIC_SCHEMA as PUBLIC_LIGHT_ACTION_INPUT_SCHEMA
 from ..fullrun.light_action_inputs import SCHEMA as LIGHT_ACTION_INPUT_SCHEMA
+from ..fullrun.light_action_inputs import LightActionTokenRow
 from ..fullrun.light_action_inputs import LoadedLightActionInputs
 from ..fullrun.token_inputs import LoadedTokenInputs
 from ..light_action_codec import SPEC_SHA256
@@ -169,6 +173,55 @@ def decode_config(value: object) -> Stage1aConfig:
     return TokenConfig.decode(value)
 
 
+@dataclass(frozen=True)
+class IndexedLightActionM0TrainRow:
+    """One train row linked to its original full-input index."""
+
+    source_index: int
+    sample: ModelSample
+    row: LightActionTokenRow
+
+    def __post_init__(self) -> None:
+        if (type(self.source_index) is not int or self.source_index < 0
+                or not isinstance(self.sample, ModelSample)
+                or not isinstance(self.row, LightActionTokenRow)
+                or self.sample.split != "train"
+                or not self.sample.action_texts
+                or len(self.sample.action_texts) != len(self.sample.action_keys)
+                or len(set(self.sample.action_keys)) != len(self.sample.action_keys)
+                or not 0 <= self.sample.chosen_index < len(self.sample.action_keys)
+                or self.row.action_ids != self.sample.action_keys
+                or len(self.row.actions) != len(self.sample.action_keys)):
+            raise BoundaryError("token_training", "invalid_indexed_m0_train_row")
+
+
+@dataclass(frozen=True)
+class LightActionM0TrainOnlyInputs:
+    """Update-core view over indexed train rows; it is not a full-input admission result."""
+
+    manifest: Manifest
+    indexed_rows: tuple[IndexedLightActionM0TrainRow, ...]
+    state_tokenizer: Tokenizer
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.manifest, Manifest)
+                or not isinstance(self.indexed_rows, tuple)
+                or not self.indexed_rows
+                or any(not isinstance(item, IndexedLightActionM0TrainRow)
+                       for item in self.indexed_rows)
+                or not isinstance(self.state_tokenizer, Tokenizer)):
+            raise BoundaryError("token_training", "invalid_train_only_m0_inputs")
+        info = self.manifest.parameters.value()
+        indices = tuple(item.source_index for item in self.indexed_rows)
+        if (self.manifest.kind != "training_input"
+                or info.get("schema") not in {
+                    CANONICAL_LIGHT_ACTION_INPUT_SCHEMA, PUBLIC_LIGHT_ACTION_INPUT_SCHEMA,
+                }
+                or tuple(parent.role for parent in self.manifest.parents) != ("model_view",)
+                or indices != tuple(sorted(set(indices)))):
+            raise BoundaryError("token_training", "invalid_train_only_m0_inputs")
+
+
 def _scoring_seed(seed: int) -> int:
     digest = hashlib.sha256(f"stage1a:{LIGHT_ACTION_M0_GRAPH}:scoring:{seed}".encode()).digest()
     return int.from_bytes(digest[:8], "big") % (2**63)
@@ -311,7 +364,8 @@ def restore_weights(
 
 
 class TokenRankingEngine:
-    def __init__(self, inputs: LoadedTokenInputs | LoadedLightActionInputs, config: Stage1aConfig,
+    def __init__(self, inputs: LoadedTokenInputs | LoadedLightActionInputs |
+                 LightActionM0TrainOnlyInputs, config: Stage1aConfig,
                  *, snapshot: Path | None = None) -> None:
         self.inputs, self.config = inputs, config
         recipe = recipe_for(config.recipe)
@@ -319,8 +373,10 @@ class TokenRankingEngine:
         info = inputs.manifest.parameters.value()
         self.is_light_action_m0 = isinstance(config, LightActionM0Config)
         self.adapter_tensor_names: set[str] | None = None
+        self._samples_by_index: dict[int, ModelSample] = {}
+        self._rows_by_index: dict[int, LightActionTokenRow] = {}
         if isinstance(config, LightActionM0Config):
-            if not isinstance(inputs, LoadedLightActionInputs):
+            if not isinstance(inputs, (LoadedLightActionInputs, LightActionM0TrainOnlyInputs)):
                 raise BoundaryError("token_training", "light_action_dual_input_required")
             state_codec = info.get("state_codec")
             family = "scratch" if recipe_for(config.recipe).backbone == "s" else "pinned-qwen3"
@@ -350,14 +406,20 @@ class TokenRankingEngine:
                 raise BoundaryError("token_training", "light_action_codec_or_limit_mismatch")
             if state_codec.get("vocab_size") != inputs.state_tokenizer.get_vocab_size():
                 raise BoundaryError("token_training", "light_action_state_vocab_mismatch")
-            if (max(len(row.state) for row in inputs.rows) > config.max_state_tokens
-                    or max(len(action) - 2 for row in inputs.rows for action in row.actions)
+            if isinstance(inputs, LightActionM0TrainOnlyInputs):
+                indexed = inputs.indexed_rows
+                m0_rows = tuple(item.row for item in indexed)
+            else:
+                m0_rows = inputs.rows
+            if (not m0_rows
+                    or max(len(row.state) for row in m0_rows) > config.max_state_tokens
+                    or max(len(action) - 2 for row in m0_rows for action in row.actions)
                     > config.max_action_bytes):
                 raise BoundaryError("token_training", "light_action_input_limit_mismatch")
             state_codec_identity = state_codec
             vocab_size = state_codec["vocab_size"]
         else:
-            if isinstance(inputs, LoadedLightActionInputs):
+            if isinstance(inputs, (LoadedLightActionInputs, LightActionM0TrainOnlyInputs)):
                 raise BoundaryError("token_training", "legacy_recipe_rejects_dual_input")
             state_codec_identity = None
             vocab_size = info["vocab_size"]
@@ -379,7 +441,16 @@ class TokenRankingEngine:
         self.parameters = [p for p in self.model.parameters() if p.requires_grad]
         self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate,
                                           weight_decay=config.weight_decay)
-        train = [i for i, sample in enumerate(inputs.samples) if sample.split == "train"]
+        if isinstance(inputs, LightActionM0TrainOnlyInputs):
+            self._samples_by_index = {
+                item.source_index: item.sample for item in inputs.indexed_rows
+            }
+            self._rows_by_index = {
+                item.source_index: item.row for item in inputs.indexed_rows
+            }
+            train = [item.source_index for item in inputs.indexed_rows]
+        else:
+            train = [i for i, sample in enumerate(inputs.samples) if sample.split == "train"]
         if not train:
             raise BoundaryError("token_training", "empty_train")
         self.plan: list[int] = []
@@ -416,7 +487,13 @@ class TokenRankingEngine:
                     raise BoundaryError("token_training", "cuda_optimizer_moment_device_mismatch")
 
     def _scores(self, index: int) -> Tensor:
-        row = self.inputs.rows[index]
+        if isinstance(self.inputs, LightActionM0TrainOnlyInputs):
+            try:
+                row = self._rows_by_index[index]
+            except KeyError as error:
+                raise BoundaryError("token_training", "unavailable_training_row") from error
+        else:
+            row = self.inputs.rows[index]
         state = torch.tensor(row.state, dtype=torch.long, device=self.config.device)
         actions = tuple(torch.tensor(a, dtype=torch.long, device=self.config.device)
                         for a in row.actions)
@@ -432,7 +509,14 @@ class TokenRankingEngine:
         seed = (self.config.seed + self.step) % (2**63)
         with seeded_step(seed, self.config.device):
             scores = self._scores(index)
-            loss = listwise_rank_loss(scores, self.inputs.samples[index].chosen_index)
+            if isinstance(self.inputs, LightActionM0TrainOnlyInputs):
+                try:
+                    chosen_index = self._samples_by_index[index].chosen_index
+                except KeyError as error:
+                    raise BoundaryError("token_training", "unavailable_training_sample") from error
+            else:
+                chosen_index = self.inputs.samples[index].chosen_index
+            loss = listwise_rank_loss(scores, chosen_index)
             if not bool(torch.isfinite(loss)):
                 raise BoundaryError("token_training", "non_finite_loss")
             loss.backward()
