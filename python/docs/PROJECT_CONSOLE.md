@@ -192,8 +192,12 @@ run/result/checkpoint and package bytes. Registration checks that receipt, curre
 training-use admission and immutable store pins without replaying the training
 engine in the Web process. An older completed export without a receipt remains
 readable but needs the explicit “重新核验导出” action before registration.
-Registration uses one 22-second deadline and checks it before writing the roster;
-timeout never automatically retries or activates a model. The user checks current
+Registration allows up to 300 seconds for local source/use admission and complete
+export verification, then starts a separate 45-second budget for Runtime/Connector
+checks, policy binding and the roster write. These are cooperative deadlines checked
+between synchronous steps, not hard process-kill limits. Expired verification never
+reaches the Runtime checks; the registration budget is checked before writing the roster.
+Timeout never automatically retries or activates a model. The user checks current
 status before explicitly retrying an unregistered model. It adds a selection to
 the existing local roster without starting a live policy or taking game control.
 The private `text-menu-m2-v1` Runtime
