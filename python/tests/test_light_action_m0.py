@@ -121,6 +121,8 @@ def test_cuda_checkpoint_restore_does_not_touch_caller_rng(monkeypatch):
 
     engine = object.__new__(TokenRankingEngine)
     engine.config = LightActionM0Config(device="cuda", steps=1)
+    engine.score_device = engine.config.device
+    engine.read_only_diagnostic = False
     engine.is_light_action_m0 = True
     engine.data_identity = "synthetic-identity"
     engine.step = 0
