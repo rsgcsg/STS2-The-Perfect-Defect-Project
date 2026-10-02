@@ -9,11 +9,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import signal
 import subprocess
 import sys
+import time
 import uuid
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -25,13 +28,36 @@ SHA64_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_FUNCTION_SECONDS = 30
 MAX_STARTUP_SECONDS = 30
 MAX_SCALEDOWN_SECONDS = 30
-MAX_BILLABLE_SECONDS = (
+MAX_FUNCTION_CALL_WALL_SECONDS = MAX_FUNCTION_SECONDS + MAX_STARTUP_SECONDS
+MAX_CLEANUP_SECONDS = 20
+MAX_CLEANUP_COMMAND_SECONDS = 5
+MAX_OUTER_WALL_SECONDS = (
+    MAX_FUNCTION_CALL_WALL_SECONDS + MAX_CLEANUP_SECONDS + 40
+)
+ESTIMATED_FUNCTION_UPPER_SECONDS = (
     MAX_FUNCTION_SECONDS + MAX_STARTUP_SECONDS + MAX_SCALEDOWN_SECONDS
 )
+LOSS_COMPARISON_REL_TOL = 1e-6
+LOSS_COMPARISON_ABS_TOL = 1e-7
+MODAL_L4_USD_PER_SECOND = 0.000222
+MODAL_CPU_USD_PER_CORE_SECOND = 0.0000131
+MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000222
+MODAL_MAX_REGION_MULTIPLIER = 1.75
+MODAL_PRICING_AS_OF = "2026-10-02"
+SMOKE_RECEIPT_SCHEMA = "spireagent/m0-synthetic-cuda-smoke-receipt-v1"
+EXECUTION_OUTCOME_SCHEMA = "spireagent/m0-synthetic-cuda-smoke-execution-v1"
 
 
 class PlanError(ValueError):
     """The requested smoke cannot be proven to stay inside its fixed scope."""
+
+
+class SmokeExecutionError(RuntimeError):
+    """A one-shot execution failed, including whether Modal stop was confirmed."""
+
+    def __init__(self, reason: str, outcome: dict[str, Any]) -> None:
+        super().__init__(reason)
+        self.outcome = outcome
 
 
 @dataclass(frozen=True)
@@ -53,7 +79,9 @@ class SmokePlan:
     timeout_seconds: int = MAX_FUNCTION_SECONDS
     startup_timeout_seconds: int = MAX_STARTUP_SECONDS
     scaledown_window_seconds: int = MAX_SCALEDOWN_SECONDS
-    max_billable_seconds: int = MAX_BILLABLE_SECONDS
+    estimated_function_upper_seconds: int = ESTIMATED_FUNCTION_UPPER_SECONDS
+    function_call_wall_seconds: int = MAX_FUNCTION_CALL_WALL_SECONDS
+    outer_wall_seconds: int = MAX_OUTER_WALL_SECONDS
     secrets: tuple[str, ...] = ()
     volumes: tuple[str, ...] = ()
     input_scope: str = "synthetic-only"
@@ -175,7 +203,7 @@ def _synthetic_inputs(source_revision: str, uv_lock_sha256: str) -> Any:
 
 
 def run_engine_smoke(plan_data: dict[str, str]) -> dict[str, Any]:
-    """Run one optimizer step, resume from its checkpoint, and hash candidate weights."""
+    """Run two steps, compare resumed and continuous training, and hash the export."""
     import torch
 
     from stpd.workers.token_ranking import LightActionM0Config, TokenRankingEngine
@@ -205,12 +233,29 @@ def run_engine_smoke(plan_data: dict[str, str]) -> dict[str, Any]:
     if not torch.isfinite(torch.tensor(resumed_loss)) or resumed.step != 2:
         raise RuntimeError("checkpoint_resume_non_finite_or_incomplete")
 
+    continuous = TokenRankingEngine(inputs, config)
+    continuous.advance()
+    continuous_loss = continuous.advance()
+    if not torch.isfinite(torch.tensor(continuous_loss)) or continuous.step != 2:
+        raise RuntimeError("continuous_training_non_finite_or_incomplete")
+    resume_loss_abs_error = abs(resumed_loss - continuous_loss)
+    resume_matches_continuous = math.isclose(
+        resumed_loss,
+        continuous_loss,
+        rel_tol=LOSS_COMPARISON_REL_TOL,
+        abs_tol=LOSS_COMPARISON_ABS_TOL,
+    )
+    if not resume_matches_continuous:
+        raise RuntimeError("checkpoint_resume_continuous_training_mismatch")
+
     weights = resumed.model_bytes()
+    if not weights:
+        raise RuntimeError("empty_candidate_export")
     state = torch.cuda.get_device_properties(0)
     if "L4" not in state.name:
         raise RuntimeError("requested_gpu_identity_mismatch")
     return {
-        "schema": "spireagent/m0-synthetic-cuda-smoke-receipt-v1",
+        "schema": SMOKE_RECEIPT_SCHEMA,
         "run_id": plan.run_id,
         "environment": plan.environment,
         "input_scope": "synthetic-only",
@@ -227,13 +272,23 @@ def run_engine_smoke(plan_data: dict[str, str]) -> dict[str, Any]:
         "torch_version": str(torch.__version__),
         "cuda_runtime_version": torch.version.cuda,
         "completed_steps": resumed.step,
+        "resume_checkpoint_step": 1,
+        "continuous_steps": continuous.step,
         "first_loss": first_loss,
         "first_loss_finite": True,
         "resumed_loss": resumed_loss,
         "resumed_loss_finite": True,
+        "continuous_loss": continuous_loss,
+        "continuous_loss_finite": True,
+        "resume_loss_abs_error": resume_loss_abs_error,
+        "resume_matches_continuous": resume_matches_continuous,
+        "loss_comparison_tolerance": {
+            "rel_tol": LOSS_COMPARISON_REL_TOL,
+            "abs_tol": LOSS_COMPARISON_ABS_TOL,
+        },
         "checkpoint_sha256": hashlib.sha256(checkpoint).hexdigest(),
-        "weights_sha256": hashlib.sha256(weights).hexdigest(),
-        "weights_bytes": len(weights),
+        "export_sha256": hashlib.sha256(weights).hexdigest(),
+        "export_bytes": len(weights),
     }
 
 
@@ -293,6 +348,33 @@ def _preflight_environment(modal: Any, environment_name: str) -> None:
         raise PlanError("named_existing_modal_environment_not_found")
 
 
+def _with_wall_deadline(seconds: float, callback: Any) -> Any:
+    """Interrupt a synchronous Modal client call while reserving cleanup time."""
+    if seconds <= 0 or not hasattr(signal, "setitimer"):
+        raise TimeoutError("bounded_modal_call_deadline_unavailable")
+    previous_delay, previous_interval = signal.getitimer(signal.ITIMER_REAL)
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    started = time.monotonic()
+    effective_seconds = min(seconds, previous_delay) if previous_delay > 0 else seconds
+
+    def deadline(_signum: int, _frame: Any) -> None:
+        raise TimeoutError("bounded_modal_call_deadline_exceeded")
+
+    try:
+        signal.signal(signal.SIGALRM, deadline)
+        # Repeat while a context manager is unwinding after its first deadline.
+        signal.setitimer(signal.ITIMER_REAL, effective_seconds, 0.5)
+        return callback()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_delay > 0:
+            remaining = previous_delay - (time.monotonic() - started)
+            if remaining <= 0:
+                raise TimeoutError("bounded_modal_call_deadline_exceeded")
+            signal.setitimer(signal.ITIMER_REAL, remaining, previous_interval)
+
+
 def _require_cuda_configuration() -> None:
     """Reject the current CPU/MPS-only engine before making any cloud call."""
     python_root = Path(__file__).resolve().parents[2]
@@ -311,14 +393,237 @@ def _require_cuda_configuration() -> None:
         raise PlanError("candidate_m0_engine_does_not_accept_cuda")
 
 
+def _finite_number(value: object) -> bool:
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _valid_sha256(value: object) -> bool:
+    return isinstance(value, str) and SHA64_RE.fullmatch(value) is not None
+
+
+def validate_receipt(receipt: object, plan: SmokePlan) -> dict[str, Any]:
+    """Reject incomplete, malformed, or unpinned worker receipts at the caller."""
+    if not isinstance(receipt, dict):
+        raise PlanError("invalid_smoke_receipt_object")
+    expected_pins = {
+        "schema": SMOKE_RECEIPT_SCHEMA,
+        "run_id": plan.run_id,
+        "environment": plan.environment,
+        "input_scope": "synthetic-only",
+        "repository": plan.repository,
+        "source_revision": plan.source_revision,
+        "uv_lock_sha256": plan.uv_lock_sha256,
+        "harness_sha256": plan.harness_sha256,
+        "image": plan.image,
+        "gpu": "L4",
+        "device": "cuda",
+        "device_index": 0,
+        "completed_steps": 2,
+        "resume_checkpoint_step": 1,
+        "continuous_steps": 2,
+    }
+    for field, expected in expected_pins.items():
+        if type(receipt.get(field)) is not type(expected) or receipt.get(field) != expected:
+            raise PlanError(f"smoke_receipt_{field}_mismatch")
+
+    device_name = receipt.get("device_name")
+    if not isinstance(device_name, str) or "l4" not in device_name.lower():
+        raise PlanError("smoke_receipt_actual_l4_device_required")
+    for field in ("synthetic_input_artifact_id",):
+        value = receipt.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise PlanError(f"smoke_receipt_{field}_required")
+    for field in ("torch_version", "cuda_runtime_version"):
+        value = receipt.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise PlanError(f"smoke_receipt_{field}_required")
+
+    for field in ("first_loss_finite", "resumed_loss_finite", "continuous_loss_finite",
+                  "resume_matches_continuous"):
+        if type(receipt.get(field)) is not bool or receipt[field] is not True:
+            raise PlanError(f"smoke_receipt_{field}_must_be_true")
+    for field in ("first_loss", "resumed_loss", "continuous_loss", "resume_loss_abs_error"):
+        if not _finite_number(receipt.get(field)):
+            raise PlanError(f"smoke_receipt_{field}_must_be_finite_number")
+    if receipt["resume_loss_abs_error"] < 0:
+        raise PlanError("smoke_receipt_resume_loss_abs_error_must_be_nonnegative")
+
+    tolerance = receipt.get("loss_comparison_tolerance")
+    expected_tolerance = {
+        "rel_tol": LOSS_COMPARISON_REL_TOL,
+        "abs_tol": LOSS_COMPARISON_ABS_TOL,
+    }
+    if (not isinstance(tolerance, dict)
+            or set(tolerance) != set(expected_tolerance)
+            or any(type(tolerance[key]) not in (int, float)
+                   or tolerance[key] != expected_tolerance[key]
+                   for key in expected_tolerance)):
+        raise PlanError("smoke_receipt_loss_comparison_tolerance_mismatch")
+    observed_error = abs(receipt["resumed_loss"] - receipt["continuous_loss"])
+    if not math.isclose(
+        receipt["resume_loss_abs_error"], observed_error, rel_tol=0, abs_tol=1e-12,
+    ) or not math.isclose(
+        receipt["resumed_loss"], receipt["continuous_loss"],
+        rel_tol=LOSS_COMPARISON_REL_TOL,
+        abs_tol=LOSS_COMPARISON_ABS_TOL,
+    ):
+        raise PlanError("smoke_receipt_resume_continuous_comparison_failed")
+
+    for field in ("checkpoint_sha256", "export_sha256"):
+        if not _valid_sha256(receipt.get(field)):
+            raise PlanError(f"smoke_receipt_{field}_invalid")
+    export_bytes = receipt.get("export_bytes")
+    if type(export_bytes) is not int or export_bytes <= 0:
+        raise PlanError("smoke_receipt_export_bytes_must_be_positive")
+    worker_seconds = receipt.get("worker_function_seconds")
+    if not _finite_number(worker_seconds) or worker_seconds < 0:
+        raise PlanError("smoke_receipt_worker_function_seconds_invalid")
+    return receipt
+
+
+def _billing_estimate(plan: SmokePlan) -> dict[str, Any]:
+    memory_gib = plan.memory_mb / 1024
+    per_second = (
+        MODAL_L4_USD_PER_SECOND
+        + plan.cpu * MODAL_CPU_USD_PER_CORE_SECOND
+        + memory_gib * MODAL_MEMORY_USD_PER_GIB_SECOND
+    )
+    base_usd = per_second * plan.estimated_function_upper_seconds
+    return {
+        "pricing_as_of": MODAL_PRICING_AS_OF,
+        "currency": "USD",
+        "estimated_function_upper_seconds": plan.estimated_function_upper_seconds,
+        "base_region_estimate_usd": round(base_usd, 8),
+        "max_region_multiplier": MODAL_MAX_REGION_MULTIPLIER,
+        "max_region_estimate_usd": round(base_usd * MODAL_MAX_REGION_MULTIPLIER, 8),
+        "status": "estimate_only_not_provider_usage",
+        "assumption": "one L4 container; startup + function timeout + scaledown window",
+        "image_build_usd": None,
+        "image_build_status": "separate_not_included_in_function_estimate",
+    }
+
+
+def _modal_cli_json(args: list[str], *, timeout_seconds: int) -> Any:
+    cli = Path(sys.executable).with_name("modal")
+    if not cli.is_file():
+        raise PlanError("modal_cli_required_for_stop_confirmation")
+    try:
+        completed = subprocess.run(
+            [str(cli), *args, "--json"], capture_output=True, text=True,
+            check=False, timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise PlanError("modal_stop_confirmation_query_failed") from error
+    if completed.returncode != 0:
+        raise PlanError("modal_stop_confirmation_query_failed")
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise PlanError("modal_stop_confirmation_invalid_json") from error
+
+
+def _terminal_call_status(call: Any, modal: Any, submission_attempted: bool) -> str:
+    if not submission_attempted:
+        return "not_submitted"
+    if call is None:
+        return "unknown"
+    try:
+        call.get(timeout=0)
+    except TimeoutError:
+        return "pending"
+    except modal.exception.RemoteError:
+        return "failed_terminal"
+    except Exception:
+        return "unknown"
+    return "completed"
+
+
+def _stop_evidence(
+    app_id: str, environment: str, *, deadline: float,
+) -> dict[str, Any]:
+    def command_timeout() -> int:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise PlanError("modal_stop_confirmation_deadline_exceeded")
+        return max(1, min(MAX_CLEANUP_COMMAND_SECONDS, math.ceil(remaining)))
+
+    app_rows = _modal_cli_json(
+        ["app", "list", "--env", environment],
+        timeout_seconds=command_timeout(),
+    )
+    if not isinstance(app_rows, list):
+        raise PlanError("modal_app_list_json_array_required")
+    matching = [row for row in app_rows if isinstance(row, dict) and row.get("app_id") == app_id]
+    if len(matching) != 1:
+        raise PlanError("modal_app_lifecycle_not_found_or_ambiguous")
+    app = matching[0]
+    if app.get("state") != "stopped" or app.get("tasks") != "0":
+        raise PlanError("modal_app_not_stopped_with_zero_tasks")
+
+    container_rows = _modal_cli_json(
+        ["container", "list", "--app-id", app_id, "--env", environment],
+        timeout_seconds=command_timeout(),
+    )
+    if not isinstance(container_rows, list):
+        raise PlanError("modal_container_list_json_array_required")
+    if container_rows:
+        raise PlanError("modal_containers_still_running")
+    return {"app_state": "stopped", "app_tasks": 0, "running_containers": 0}
+
+
+def _execution_error(
+    reason: str,
+    *,
+    plan: SmokePlan,
+    app_id: str | None,
+    function_call_id: str | None,
+    call_terminal: str,
+    stop_confirmation: str,
+    call_wall_seconds: float,
+    cancel_error: str | None,
+) -> SmokeExecutionError:
+    call_state_confirmed = call_terminal in {
+        "completed", "failed_terminal", "not_submitted",
+    }
+    outcome = {
+        "schema": EXECUTION_OUTCOME_SCHEMA,
+        "status": (
+            "failed"
+            if stop_confirmation == "confirmed" and call_state_confirmed
+            else "unknown"
+        ),
+        "reason": reason,
+        "run_id": plan.run_id,
+        "app_name": plan.app_name,
+        "app_id": app_id,
+        "function_call_id": function_call_id,
+        "call_terminal": call_terminal,
+        "stop_confirmation": stop_confirmation,
+        "cancel_error": cancel_error,
+        "call_wall_seconds": round(call_wall_seconds, 3),
+        "estimated_function_cost": _billing_estimate(plan),
+        "actual_provider_usage": "unknown_not_returned_by_function_call",
+    }
+    return SmokeExecutionError(reason, outcome)
+
+
+def _cancel_call(call: Any, *, timeout_seconds: float) -> None:
+    _with_wall_deadline(
+        timeout_seconds,
+        lambda: call.cancel(terminate_containers=True),
+    )
+
+
 def execute(plan: SmokePlan) -> dict[str, Any]:
-    """Submit exactly one bounded synthetic function to an existing environment."""
+    """Submit one Modal FunctionCall and require provider stop evidence before return."""
     _require_cuda_configuration()
     try:
         import modal
     except ImportError as error:
         raise PlanError("modal_sdk_unavailable") from error
 
+    started = time.monotonic()
+    outer_deadline = started + plan.outer_wall_seconds
     _preflight_environment(modal, plan.environment)
     app = modal.App(plan.app_name)
     image = modal.Image.from_registry(plan.image)
@@ -326,8 +631,8 @@ def execute(plan: SmokePlan) -> dict[str, Any]:
     @app.function(
         image=image,
         gpu="L4",
-        cpu=2.0,
-        memory=4096,
+        cpu=(2.0, 2.0),
+        memory=(4096, 4096),
         min_containers=0,
         max_containers=1,
         retries=0,
@@ -350,6 +655,7 @@ def execute(plan: SmokePlan) -> dict[str, Any]:
         ]
         environment = dict(os.environ)
         environment["PYTHONPATH"] = "/opt/stpd/python"
+        worker_started = time.monotonic()
         try:
             completed = subprocess.run(
                 command,
@@ -371,18 +677,158 @@ def execute(plan: SmokePlan) -> dict[str, Any]:
             raise RuntimeError("synthetic_image_worker_invalid_receipt") from error
         if not isinstance(receipt, dict):
             raise RuntimeError("synthetic_image_worker_invalid_receipt")
+        receipt["worker_function_seconds"] = round(time.monotonic() - worker_started, 6)
         return receipt
 
     payload = asdict(plan)
-    # App.run is transient and does not deploy a persistent application. No secrets,
-    # volumes, or network filesystem are attached to the function.
-    with app.run(environment_name=plan.environment):
-        receipt = _worker.remote(payload)
-    if (receipt.get("schema") != "spireagent/m0-synthetic-cuda-smoke-receipt-v1"
-            or receipt.get("run_id") != plan.run_id
-            or receipt.get("input_scope") != "synthetic-only"):
-        raise RuntimeError("invalid_smoke_receipt")
-    return receipt
+    app_id: str | None = None
+    call: Any | None = None
+    function_call_id: str | None = None
+    worker_receipt: object | None = None
+    call_error: str | None = None
+    cancel_error: str | None = None
+    call_started: float | None = None
+    call_wall_seconds = 0.0
+    submission_attempted = False
+    cancellation_attempted = False
+    call_terminal = "unknown"
+
+    def cancel_pending_call() -> None:
+        nonlocal cancellation_attempted, cancel_error
+        if (not submission_attempted or call is None
+                or call_terminal not in {"unknown", "pending"}
+                or cancellation_attempted):
+            return
+        cancellation_attempted = True
+        try:
+            cancel_timeout = min(
+                MAX_CLEANUP_COMMAND_SECONDS,
+                max(0.1, outer_deadline - time.monotonic()),
+            )
+            _cancel_call(call, timeout_seconds=cancel_timeout)
+        except Exception as error:
+            cancel_error = f"modal_function_call_cancel_{type(error).__name__}"
+
+    def run_ephemeral_app() -> None:
+        nonlocal app_id, call, function_call_id, worker_receipt, call_error
+        nonlocal call_started, call_wall_seconds, submission_attempted, call_terminal
+        with app.run(environment_name=plan.environment):
+            app_id = getattr(app, "app_id", None)
+            if not isinstance(app_id, str) or not app_id:
+                call_error = "modal_app_id_unavailable_before_submit"
+                return
+            remaining = outer_deadline - time.monotonic() - MAX_CLEANUP_SECONDS
+            allowed_wait = min(plan.function_call_wall_seconds, remaining)
+            if allowed_wait <= 0:
+                call_error = "outer_wall_deadline_before_submit"
+                return
+
+            call_started = time.monotonic()
+            submission_attempted = True
+            try:
+                call = _worker.spawn(payload)
+                function_call_id = getattr(call, "object_id", None)
+                if not isinstance(function_call_id, str) or not function_call_id:
+                    call_error = "modal_function_call_id_unavailable"
+                else:
+                    remaining = min(
+                        allowed_wait,
+                        outer_deadline - time.monotonic() - MAX_CLEANUP_SECONDS,
+                    )
+                    if remaining <= 0:
+                        call_error = "outer_wall_deadline_after_submit"
+                        call_terminal = "pending"
+                    else:
+                        worker_receipt = call.get(timeout=remaining)
+                        call_terminal = "completed"
+            except modal.exception.RemoteError:
+                call_error = "modal_function_call_remote_failure"
+                call_terminal = "failed_terminal"
+            except TimeoutError as error:
+                outer_deadline_fired = str(error) == "bounded_modal_call_deadline_exceeded"
+                call_error = (
+                    "modal_outer_wall_deadline"
+                    if outer_deadline_fired
+                    else "modal_function_call_wall_deadline"
+                )
+                call_terminal = "pending" if call is not None else "unknown"
+                if not outer_deadline_fired:
+                    cancel_pending_call()
+            except Exception as error:
+                call_error = f"modal_function_call_{type(error).__name__}"
+                call_terminal = "unknown"
+                cancel_pending_call()
+            finally:
+                call_wall_seconds = time.monotonic() - call_started
+
+    # App.run creates an ephemeral App. Exiting it is Modal's stop path. Bound
+    # startup, the call, and context teardown while keeping cleanup time available.
+    try:
+        run_budget = outer_deadline - time.monotonic() - MAX_CLEANUP_SECONDS
+        _with_wall_deadline(run_budget, run_ephemeral_app)
+    except Exception as error:
+        if call_error is None:
+            call_error = f"modal_ephemeral_app_{type(error).__name__}"
+        if submission_attempted and call is not None and call_terminal == "unknown":
+            call_terminal = "pending"
+
+    cancel_pending_call()
+
+    if call_error is None:
+        try:
+            worker_receipt = validate_receipt(worker_receipt, plan)
+        except PlanError as error:
+            call_error = str(error)
+
+    cleanup_deadline = min(outer_deadline, time.monotonic() + MAX_CLEANUP_SECONDS)
+    stop_evidence: dict[str, Any] | None = None
+    while time.monotonic() < cleanup_deadline:
+        if call_terminal in {"unknown", "pending"}:
+            observed_terminal = _terminal_call_status(call, modal, submission_attempted)
+            if observed_terminal != "unknown":
+                call_terminal = observed_terminal
+        if stop_evidence is None and app_id:
+            with suppress(PlanError):
+                stop_evidence = _stop_evidence(
+                    app_id, plan.environment, deadline=cleanup_deadline,
+                )
+        if (call_terminal in {"completed", "failed_terminal", "not_submitted"}
+                and stop_evidence is not None):
+            break
+        remaining = cleanup_deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.25, remaining))
+
+    stop_confirmation = "confirmed" if stop_evidence is not None else "unknown"
+    if call_error is not None or call_terminal != "completed" or stop_confirmation != "confirmed":
+        reason = call_error or cancel_error or "modal_terminal_or_zero_container_unconfirmed"
+        raise _execution_error(
+            reason,
+            plan=plan,
+            app_id=app_id,
+            function_call_id=function_call_id,
+            call_terminal=call_terminal,
+            stop_confirmation=stop_confirmation,
+            call_wall_seconds=call_wall_seconds,
+            cancel_error=cancel_error,
+        )
+
+    result = dict(worker_receipt)
+    result["execution"] = {
+        "schema": EXECUTION_OUTCOME_SCHEMA,
+        "status": "completed",
+        "app_name": plan.app_name,
+        "app_id": app_id,
+        "function_call_id": function_call_id,
+        "call_terminal": call_terminal,
+        "stop_confirmation": stop_confirmation,
+        **(stop_evidence or {}),
+        "call_wall_seconds": round(call_wall_seconds, 3),
+        "worker_function_seconds": worker_receipt["worker_function_seconds"],
+        "estimated_function_cost": _billing_estimate(plan),
+        "actual_provider_usage": "unknown_not_returned_by_function_call",
+    }
+    return result
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -442,6 +888,8 @@ def main(argv: list[str] | None = None) -> int:
                   else {"mode": "dry-run", "plan": asdict(plan)})
     except PlanError as error:
         raise SystemExit(f"M0 synthetic CUDA smoke blocked: {error}") from error
+    except SmokeExecutionError as error:
+        raise SystemExit(json.dumps(error.outcome, sort_keys=True)) from error
     print(json.dumps(result, sort_keys=True, indent=2))
     return 0
 
