@@ -44,6 +44,8 @@ from .checkpoint_codec import decode_checkpoint, encode_checkpoint
 CHECKPOINT_SCHEMA = "stpd/stage1a-checkpoint-v1"
 LIGHT_ACTION_M0_CHECKPOINT_SCHEMA = "stpd/stage1a-light-action-m0-checkpoint-v1"
 LIGHT_ACTION_M0_CONFIG_SCHEMA = "stpd/stage1a-light-action-m0-config-v1"
+STEP_RNG_PROTOCOL = "seed_plus_completed_steps_v1"
+CUDA_STEP_RNG_PROTOCOL = "seed_plus_completed_steps_cuda_v1"
 
 
 @dataclass(frozen=True)
@@ -120,8 +122,10 @@ class LightActionM0Config:
         if (type(self.seed) is not int or not 0 <= self.seed < 2**63
                 or type(self.steps) is not int or not 1 <= self.steps <= 100000):
             raise BoundaryError("token_training", "invalid_seed_or_steps")
-        if self.device not in {"cpu", "mps"}:
+        if self.device not in {"cpu", "mps", "cuda"}:
             raise BoundaryError("token_training", "local_device_required")
+        if self.device == "cuda" and recipe.backbone != "s":
+            raise BoundaryError("token_training", "cuda_scratch_m0_only")
         for name in ("learning_rate", "weight_decay", "gradient_clip"):
             value = getattr(self, name)
             if type(value) not in {int, float} or not math.isfinite(value) or value < 0:
@@ -175,21 +179,28 @@ def seeded_step(seed: int, device: str) -> Iterator[None]:
     """Step-local RNG reproduces dropout on resume without changing another caller's RNG."""
     cpu = torch.get_rng_state()
     mps = torch.mps.get_rng_state() if device == "mps" else None
-    torch.random.default_generator.manual_seed(seed)
-    if device == "mps":
-        torch.mps.manual_seed(seed)
+    cuda = torch.cuda.get_rng_state_all() if device == "cuda" else None
     try:
+        torch.random.default_generator.manual_seed(seed)
+        if device == "mps":
+            torch.mps.manual_seed(seed)
+        elif device == "cuda":
+            torch.cuda.manual_seed_all(seed)
         yield
     finally:
         torch.set_rng_state(cpu)
         if mps is not None:
             torch.mps.set_rng_state(mps)
+        if cuda is not None:
+            torch.cuda.set_rng_state_all(cuda)
 
 
 def construct_model(
     config: Stage1aConfig, vocab_size: int, snapshot: Path | None = None,
     *, state_codec: dict[str, Any] | None = None,
 ) -> tuple[BTokenScorer | DSimpleTokenScorer | LightActionM0Scorer, dict[str, Any]]:
+    if config.device == "cuda" and not torch.cuda.is_available():
+        raise BoundaryError("token_training", "cuda_unavailable_no_fallback")
     if config.device == "mps" and not torch.backends.mps.is_available():
         raise BoundaryError("token_training", "mps_unavailable_no_fallback")
     recipe = recipe_for(config.recipe)
@@ -390,6 +401,20 @@ class TokenRankingEngine:
         return model_weights(self.model, frozen=self.frozen,
                              adapter_tensor_names=self.adapter_tensor_names)
 
+    def _validate_cuda_optimizer_state(self) -> None:
+        if self.config.device != "cuda":
+            return
+        if any(parameter.device.type != "cuda" for parameter in self.parameters):
+            raise BoundaryError("token_training", "cuda_model_device_mismatch")
+        for parameter in self.parameters:
+            values = self.optimizer.state.get(parameter, {})
+            for name in ("exp_avg", "exp_avg_sq"):
+                value = values.get(name)
+                if value is not None and (
+                    not isinstance(value, Tensor) or value.device != parameter.device
+                ):
+                    raise BoundaryError("token_training", "cuda_optimizer_moment_device_mismatch")
+
     def _scores(self, index: int) -> Tensor:
         row = self.inputs.rows[index]
         state = torch.tensor(row.state, dtype=torch.long, device=self.config.device)
@@ -421,6 +446,7 @@ class TokenRankingEngine:
                   for parameter in self.model.core.model.parameters()):
             raise BoundaryError("token_training", "lora_base_gradient")
         self.optimizer.step()
+        self._validate_cuda_optimizer_state()
         if any(not bool(torch.isfinite(p).all()) for p in self.parameters):
             raise BoundaryError("token_training", "non_finite_parameter")
         self.step += 1
@@ -438,31 +464,54 @@ class TokenRankingEngine:
         return save(self._weights())
 
     def checkpoint(self) -> bytes:
-        return encode_checkpoint({
+        cuda = self.config.device == "cuda"
+        self._validate_cuda_optimizer_state()
+        state = {
             "schema": (LIGHT_ACTION_M0_CHECKPOINT_SCHEMA if self.is_light_action_m0
                        else CHECKPOINT_SCHEMA),
             "data_identity": self.data_identity,
             "config": config_payload(self.config), "torch_version": str(torch.__version__),
             "step": self.step, "model": self._weights(),
             "optimizer": self.optimizer.state_dict(),
-            "rng_protocol": "seed_plus_completed_steps_v1",
+            "rng_protocol": CUDA_STEP_RNG_PROTOCOL if cuda else STEP_RNG_PROTOCOL,
             "cpu_threads": torch.get_num_threads(),
-        })
+        }
+        if cuda:
+            state["cuda_rng_states"] = torch.cuda.get_rng_state_all()
+        return encode_checkpoint(state)
 
     def restore(self, raw: bytes) -> None:
         state = decode_checkpoint(raw)
         schema = (LIGHT_ACTION_M0_CHECKPOINT_SCHEMA if self.is_light_action_m0
                   else CHECKPOINT_SCHEMA)
-        if (set(state) != {"schema", "data_identity", "config", "torch_version", "step",
-                           "model", "optimizer", "rng_protocol", "cpu_threads"}
+        cuda = self.config.device == "cuda"
+        expected_keys = {"schema", "data_identity", "config", "torch_version", "step",
+                         "model", "optimizer", "rng_protocol", "cpu_threads"}
+        if cuda:
+            expected_keys.add("cuda_rng_states")
+        if (set(state) != expected_keys
                 or state["schema"] != schema
                 or state["data_identity"] != self.data_identity
                 or state["config"] != config_payload(self.config)
                 or state["torch_version"] != str(torch.__version__)
-                or state["rng_protocol"] != "seed_plus_completed_steps_v1"
+                or state["rng_protocol"] != (
+                    CUDA_STEP_RNG_PROTOCOL if cuda else STEP_RNG_PROTOCOL
+                )
                 or state["cpu_threads"] != torch.get_num_threads()
                 or type(state["step"]) is not int or not 0 <= state["step"] <= self.config.steps):
             raise BoundaryError("token_checkpoint", "resume_identity_mismatch")
+        cuda_rng_states = state.get("cuda_rng_states")
+        if cuda:
+            try:
+                expected_rng_states = torch.cuda.get_rng_state_all()
+            except Exception as error:
+                raise BoundaryError("token_checkpoint", "cuda_rng_state_unavailable") from error
+            if (not isinstance(cuda_rng_states, list)
+                    or len(cuda_rng_states) != len(expected_rng_states)
+                    or any(not isinstance(saved, Tensor) or saved.dtype != torch.uint8
+                           or saved.ndim != 1 or saved.shape != current.shape
+                           for saved, current in zip(cuda_rng_states, expected_rng_states))):
+                raise BoundaryError("token_checkpoint", "cuda_rng_state_mismatch")
         optimizer = state["optimizer"]
         if (not isinstance(optimizer, dict) or set(optimizer) != {"state", "param_groups"}
                 or optimizer["param_groups"] != self.optimizer.state_dict()["param_groups"]
@@ -485,4 +534,10 @@ class TokenRankingEngine:
                         adapter_tensor_names=self.adapter_tensor_names,
                         strict_frozen_core=self.is_light_action_m0)
         self.optimizer.load_state_dict(optimizer)
+        self._validate_cuda_optimizer_state()
+        if cuda:
+            try:
+                torch.cuda.set_rng_state_all(cuda_rng_states)
+            except Exception as error:
+                raise BoundaryError("token_checkpoint", "cuda_rng_state_restore_failed") from error
         self.step = state["step"]

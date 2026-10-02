@@ -258,7 +258,7 @@ def main() -> int:
         "stage1a.dsimple.light-action.m0.pl.v1",
     ), required=True)
     m0_train.add_argument("--steps", type=int, default=10)
-    m0_train.add_argument("--backend", choices=("cpu", "mps"), default="cpu")
+    m0_train.add_argument("--backend", choices=("cpu", "mps", "cuda"), default="cpu")
     m0_train.add_argument("--snapshot", type=Path)
     m0_train.add_argument("--max-state-tokens", type=int, default=8192)
     m0_train.add_argument("--max-action-bytes", type=int, default=8192)

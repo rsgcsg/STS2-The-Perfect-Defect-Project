@@ -38,13 +38,17 @@ from stpd.models.token_core import ScratchShape, ScratchTokenCore
 from stpd.qwen.portable_backend import PortableQwenBackend
 from stpd.qwen.readout_backend import FrozenQwenTokenCore, LoRAQwenTokenCore
 from stpd.stage1a_recipes import LIGHT_ACTION_M0_GRAPH, RECIPES, recipe_for
+from stpd.workers.checkpoint_codec import decode_checkpoint
 from stpd.workers.token_ranking import (
     CHECKPOINT_SCHEMA,
     LIGHT_ACTION_M0_CHECKPOINT_SCHEMA,
     LightActionM0Config,
     TokenRankingEngine,
+    config_payload,
+    construct_model,
     model_weights,
     restore_weights,
+    seeded_step,
 )
 from stpd.workers.token_worker import (
     LIGHT_ACTION_M0_MODEL_SCHEMA,
@@ -61,6 +65,77 @@ def _inputs(tmp_path):
     view = publish_text_menu_bc_view(archive, source.artifact_id, PRODUCER)
     item = publish_light_action_inputs(archive, view.artifact_id, "s", PRODUCER)
     return archive, view, load_light_action_inputs(archive, item.artifact_id)
+
+
+def test_m0_cuda_config_has_separate_identity_and_rejects_qwen():
+    cpu = LightActionM0Config(steps=1)
+    cuda = replace(cpu, device="cuda")
+    assert config_payload(cuda) != config_payload(cpu)
+    with pytest.raises(BoundaryError, match="cuda_scratch_m0_only"):
+        LightActionM0Config(
+            recipe="stage1a.dsimple.light-action.m0.pf.v1", device="cuda",
+        )
+
+
+def test_m0_cuda_is_explicitly_unavailable_without_fallback(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(BoundaryError, match="cuda_unavailable_no_fallback"):
+        construct_model(LightActionM0Config(device="cuda"), vocab_size=258)
+
+
+def test_seeded_cuda_step_restores_mocked_all_device_rng(monkeypatch):
+    original = [torch.tensor([3, 5, 8], dtype=torch.uint8)]
+    seeded = []
+    restored = []
+    monkeypatch.setattr(torch.cuda, "get_rng_state_all", lambda: [value.clone()
+                                                                    for value in original])
+    monkeypatch.setattr(torch.cuda, "manual_seed_all", seeded.append)
+    monkeypatch.setattr(torch.cuda, "set_rng_state_all", lambda states: restored.extend(states))
+    cpu_before = torch.get_rng_state()
+    with seeded_step(41, "cuda"):
+        assert seeded == [41]
+    assert torch.equal(torch.get_rng_state(), cpu_before)
+    assert len(restored) == 1 and torch.equal(restored[0], original[0])
+
+
+def test_cuda_checkpoint_rng_contract_can_be_checked_without_gpu(monkeypatch):
+    cuda_states = [torch.tensor([2, 7, 1], dtype=torch.uint8)]
+    restored = []
+    monkeypatch.setattr(torch.cuda, "get_rng_state_all", lambda: [state.clone()
+                                                                    for state in cuda_states])
+    monkeypatch.setattr(torch.cuda, "set_rng_state_all", lambda states: restored.extend(states))
+    monkeypatch.setattr("stpd.workers.token_ranking.restore_weights", lambda *args, **kwargs: None)
+
+    class Optimizer:
+        def state_dict(self):
+            return {"state": {}, "param_groups": []}
+
+        def load_state_dict(self, _state):
+            return None
+
+    engine = object.__new__(TokenRankingEngine)
+    engine.config = LightActionM0Config(device="cuda", steps=1)
+    engine.is_light_action_m0 = True
+    engine.data_identity = "synthetic-identity"
+    engine.step = 0
+    engine.model = object()
+    engine.frozen = False
+    engine.adapter_tensor_names = None
+    engine.parameters = []
+    engine.optimizer = Optimizer()
+    def synthetic_weights():
+        return {"synthetic": torch.ones(1)}
+
+    engine._weights = synthetic_weights
+    encoded = engine.checkpoint()
+    checkpoint = decode_checkpoint(encoded)
+    assert checkpoint["rng_protocol"] == "seed_plus_completed_steps_cuda_v1"
+    assert len(checkpoint["cuda_rng_states"]) == 1
+    assert torch.equal(checkpoint["cuda_rng_states"][0], cuda_states[0])
+
+    engine.restore(encoded)
+    assert engine.step == 0
+    assert len(restored) == 1 and torch.equal(restored[0], cuda_states[0])
 
 
 def _small_bpe() -> bytes:
