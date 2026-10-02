@@ -33,11 +33,13 @@ def config(tmp_path, *, delivery=True, hub=True):
     )
 
 
-def _raw_post_response(port: int, headers: bytes, body: bytes = b"") -> bytes:
+def _raw_post_response(
+    port: int, headers: bytes, body: bytes = b"", *, path: str = "/api/console/collections",
+) -> bytes:
     with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
         client.settimeout(2)
         request = (
-            f"POST /api/console/collections HTTP/1.1\r\n"
+            f"POST {path} HTTP/1.1\r\n"
             f"Host: 127.0.0.1:{port}\r\n"
         ).encode("ascii") + headers + b"\r\n" + body
         client.sendall(request)
@@ -360,14 +362,36 @@ def test_http_shell_and_assets_do_not_query_owners_or_accept_browser_mutations(
         app.close()
 
 
-def test_rejected_post_chunked_body_is_drained_before_forbidden_response(tmp_path):
-    with _test_server(tmp_path) as server:
+def test_rejected_chunked_post_closes_without_running_action(tmp_path, monkeypatch):
+    app = Application(config(tmp_path, delivery=False, hub=False))
+    calls = []
+    monkeypatch.setattr(
+        app, "start_local_training", lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    body = b'{"dataset_id":"' + b"a" * 64 + b'"}'
+    chunked_body = f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n0\r\n\r\n"
+    origin = f"http://127.0.0.1:{server.server_port}"
+    headers = (
+        f"Cookie: {app.account.cookie_name}={app.account.cookie}\r\n"
+        f"Origin: {origin}\r\n"
+        f"X-CSRF-Token: {app.account.csrf}\r\n"
+        "Content-Type: application/json\r\n"
+        "Transfer-Encoding: chunked\r\n"
+    ).encode("ascii")
+    try:
         response = _raw_post_response(
-            server.server_port,
-            b"Transfer-Encoding: chunked\r\n",
-            b"2\r\n{}\r\n0\r\n\r\n",
+            server.server_port, headers, chunked_body, path="/api/local-training/start",
         )
-        assert response.split(b"\r\n", 1)[0].endswith(b" 403 Forbidden")
+        assert response == b""
+        assert calls == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+        app.close()
 
 
 def test_rejected_post_closes_ambiguous_and_out_of_bound_framing(tmp_path):
@@ -380,8 +404,6 @@ def test_rejected_post_closes_ambiguous_and_out_of_bound_framing(tmp_path):
         (b"Transfer-Encoding: gzip\r\n", b""),
         (b"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n", b""),
         (b"Transfer-Encoding: chunked\r\nContent-Length: 0\r\n", b""),
-        (b"Transfer-Encoding: chunked\r\n", b"Z\r\n"),
-        (b"Transfer-Encoding: chunked\r\n", b"10001\r\n"),
     )
     with _test_server(tmp_path) as server:
         for headers, body in invalid_framing:
@@ -392,17 +414,6 @@ def test_rejected_post_incomplete_content_length_closes_after_deadline(tmp_path)
     with _test_server(tmp_path) as server:
         started = time.monotonic()
         response = _raw_post_response(server.server_port, b"Content-Length: 2\r\n", b"{")
-        elapsed = time.monotonic() - started
-        assert response == b""
-        assert 0.75 <= elapsed < 2
-
-
-def test_rejected_post_incomplete_chunked_body_closes_after_deadline(tmp_path):
-    with _test_server(tmp_path) as server:
-        started = time.monotonic()
-        response = _raw_post_response(
-            server.server_port, b"Transfer-Encoding: chunked\r\n", b"2\r\n{",
-        )
         elapsed = time.monotonic() - started
         assert response == b""
         assert 0.75 <= elapsed < 2
