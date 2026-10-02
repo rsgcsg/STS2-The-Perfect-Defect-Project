@@ -73,9 +73,25 @@ def _case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, steps: int = 2):
 
 
 class _FakeModalState:
-    def __init__(self, store, ready: bool = True) -> None:
+    def __init__(
+        self,
+        store,
+        ready: bool = True,
+        *,
+        canonical_account_id: str | None = None,
+        workspace_name: str | None = None,
+        app_found: bool = False,
+        lookup_error: Exception | None = None,
+        prepare_error: Exception | None = None,
+    ) -> None:
         self.store = store
         self.ready = ready
+        self.canonical_account_id = canonical_account_id
+        self.workspace_name = workspace_name
+        self.app_found = app_found
+        self.lookup_error = lookup_error
+        self.prepare_error = prepare_error
+        self.lookups = 0
         self.submits = 0
         self.prepares = 0
         self.cancels = 0
@@ -91,11 +107,46 @@ class _FakeProvider:
     def __init__(self, state: _FakeModalState, spec) -> None:
         self.state, self.spec = state, spec
 
+    def verify_account_id(self, account_id, *, allow_legacy_workspace_alias=False):
+        from spireagent.json_boundary import BoundaryError
+
+        if self.state.canonical_account_id is None:
+            self.state.canonical_account_id = self.spec.account_id
+        if account_id == self.state.canonical_account_id:
+            return self.state.canonical_account_id
+        if (allow_legacy_workspace_alias
+                and account_id == self.state.workspace_name):
+            return self.state.canonical_account_id
+        raise BoundaryError("modal_m0", "modal_account_mismatch")
+
     def prepare_app(self, spec):
         from stpd.cloud_jobs.m0_modal import ModalM0Target
 
         assert spec == self.spec
         self.state.prepares += 1
+        if self.state.prepare_error is not None:
+            raise self.state.prepare_error
+        target = ModalM0Target(
+            spec.account_id, spec.environment_name, "ap-test-app", 1,
+            "fu-test-function", spec.image_object_id, spec.producer,
+            spec.attempt_id, spec.request_sha256, spec.target_runtime,
+            spec.resource_plan,
+        )
+        self.state.target = target
+        return target
+
+    def resolve_app(self, spec, *, allow_legacy_workspace_alias=False):
+        from stpd.cloud_jobs.m0_modal import ModalM0Target
+
+        self.verify_account_id(
+            spec.account_id,
+            allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        )
+        self.state.lookups += 1
+        if self.state.lookup_error is not None:
+            raise self.state.lookup_error
+        if not self.state.app_found:
+            return None
         target = ModalM0Target(
             spec.account_id, spec.environment_name, "ap-test-app", 1,
             "fu-test-function", spec.image_object_id, spec.producer,
@@ -213,11 +264,11 @@ class _FakeProvider:
         self.state.cancels += 1
         return type("Ack", (), {"acknowledged": True, "status": "acknowledged"})()
 
-    def stop_app(self, app_ref):
+    def stop_app(self, app_ref, *, allow_legacy_workspace_alias=False):
         self.state.stops += 1
         return type("Ack", (), {"acknowledged": True, "status": "acknowledged"})()
 
-    def inspect_stop(self, app_ref):
+    def inspect_stop(self, app_ref, *, allow_legacy_workspace_alias=False):
         from stpd.cloud_jobs.m0_modal import M0StopInspection
 
         return M0StopInspection(app_ref.app_id, "stopped", 0, 0, True)
@@ -232,6 +283,37 @@ def _controller(service, state, settings=None, **kwargs):
         sleep=lambda _seconds: None,
         **kwargs,
     )
+
+
+def _prepare_intent_operation(service, dataset_id: str, *, account_id: str):
+    from test_local_training import _remote_m0_request, _remote_m0_target
+
+    from spireagent.artifact_contracts import Producer
+    from stpd.cloud_jobs.m0_modal import M0AttemptSpec
+    from stpd.workers.token_ranking import TokenTargetRuntime
+
+    operation_id = "d" * 32
+    attempt_id = "e" * 32
+    request_bytes = _remote_m0_request(operation_id, attempt_id, 1)
+    operation = service.reserve_remote_m0(
+        dataset_id,
+        input_profile="public_lite",
+        request_bytes=request_bytes,
+        target=_remote_m0_target(),
+        target_step=1,
+    )["operation"]
+    attempt = operation["remote"]["attempts"][-1]
+    spec = M0AttemptSpec(
+        attempt["attempt_id"], attempt["request_sha256"], account_id,
+        "test-env", "im-test-image",
+        Producer("rsgcsg/STS2-The-Perfect-Defect-Project", "a" * 40, "b" * 64),
+        TokenTargetRuntime("2.8.0", 2),
+    )
+    service.persist_remote_attempt_spec(operation["operation_id"], spec.to_bytes())
+    # Simulate process loss after prepare_intent was durable.
+    interrupted = service.status()["operation"]
+    assert interrupted["status"] == "interrupted_unknown"
+    return interrupted, spec.to_bytes()
 
 
 def test_reconcile_stops_durable_app_ref_when_submit_handle_was_lost(
@@ -267,6 +349,399 @@ def test_reconcile_stops_durable_app_ref_when_submit_handle_was_lost(
         assert evidence["handle_bytes"] is None
         assert state.stops == 1
         assert state.submits == state.prepares == 0
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_new_start_rejects_workspace_slug_before_creating_remote_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, store, _, _, run, _, _, _ = case
+    try:
+        from spireagent.json_boundary import BoundaryError
+        from spireagent.workbench.local_m0_remote import ModalM0Settings
+
+        state = _FakeModalState(
+            store, canonical_account_id="ac-BRJL3wJjpxPVWozQkvp9xf",
+            workspace_name="chensunguo1210",
+        )
+        with pytest.raises(BoundaryError, match="modal_account_mismatch"):
+            _controller(
+                service, state,
+                ModalM0Settings("chensunguo1210", "test-env", "im-test-image"),
+            ).start(run.artifact_id, 1, wait_seconds=0)
+
+        assert service.status()["operation"]["status"] == "idle"
+        assert state.prepares == state.submits == state.lookups == 0
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_prepare_error_with_incomplete_recovery_lookup_stays_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, store, _, _, run, _, _, _ = case
+    try:
+        from spireagent.json_boundary import BoundaryError
+        from spireagent.workbench.local_m0_remote import ModalM0Settings
+
+        state = _FakeModalState(
+            store,
+            prepare_error=BoundaryError("modal_m0", "prepare_unknown"),
+            lookup_error=BoundaryError("modal_m0", "modal_app_list_incomplete"),
+        )
+        operation = _controller(
+            service, state,
+            ModalM0Settings("test-account", "test-env", "im-test-image"),
+        ).start(run.artifact_id, 1, wait_seconds=0)
+
+        assert operation["status"] == "interrupted_unknown"
+        assert operation["stage"] == "remote_unknown"
+        evidence = service.remote_provider_evidence(operation["operation_id"])
+        assert evidence["attempt_spec_bytes"] is not None
+        assert evidence["app_ref_bytes"] is None
+        assert evidence["handle_bytes"] is None
+        assert state.prepares == 1
+        assert state.submits == state.stops == 0
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_old_slug_prepare_intent_binds_same_workspace_and_stops_exact_app_without_submit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, store, _, _, _, _, _, dataset_id = case
+    try:
+        from spireagent.json_boundary import BoundaryError
+        from stpd.cloud_jobs.m0_modal import M0AttemptSpec
+
+        operation, spec_bytes = _prepare_intent_operation(
+            service, dataset_id, account_id="chensunguo1210",
+        )
+        state = _FakeModalState(
+            store, canonical_account_id="ac-BRJL3wJjpxPVWozQkvp9xf",
+            workspace_name="chensunguo1210", app_found=True,
+        )
+
+        recovered = _controller(service, state).reconcile(
+            operation["operation_id"], wait_seconds=0,
+        )
+
+        assert recovered["status"] == "interrupted_unknown"
+        assert recovered["stage"] == "remote_unknown"
+        evidence = service.remote_provider_evidence(operation["operation_id"])
+        assert evidence["attempt_spec_bytes"] == spec_bytes
+        assert evidence["app_ref_bytes"] is not None
+        assert evidence["handle_bytes"] is None
+        saved_spec = M0AttemptSpec.from_bytes(spec_bytes)
+        expected_app_name = "stpd-m0-update-" + operation["remote"]["attempts"][-1]["attempt_id"]
+        assert saved_spec.app_name == expected_app_name
+        assert recovered["remote"]["attempts"][-1]["stop_confirmation"]["confirmed"] is True
+        assert state.lookups == state.stops == 1
+        assert state.prepares == state.submits == 0
+        with pytest.raises(BoundaryError, match="remote_preflight_retirement_unavailable"):
+            _controller(service, state).retire_preflight_failure(
+                operation["operation_id"],
+            )
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_old_prepare_intent_absence_closes_only_after_complete_lookup_and_no_submit_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, store, _, _, _, _, _, dataset_id = case
+    try:
+        operation, spec_bytes = _prepare_intent_operation(
+            service, dataset_id, account_id="chensunguo1210",
+        )
+        state = _FakeModalState(
+            store, canonical_account_id="ac-BRJL3wJjpxPVWozQkvp9xf",
+            workspace_name="chensunguo1210", app_found=False,
+        )
+
+        recovered = _controller(service, state).reconcile(
+            operation["operation_id"], wait_seconds=0,
+        )
+
+        attempt = recovered["remote"]["attempts"][-1]
+        assert recovered["status"] == "failed"
+        assert recovered["error_code"] == "provider_app_absent_before_submit"
+        assert attempt["phase"] == "preflight_failed"
+        assert attempt["app_phase"] == "prepare_intent"
+        assert attempt["submit_intent_at_unix_ns"] is None
+        evidence = service.remote_provider_evidence(operation["operation_id"])
+        assert evidence["attempt_spec_bytes"] == spec_bytes
+        assert evidence["app_ref_bytes"] is evidence["handle_bytes"] is None
+        assert state.lookups == 1
+        assert state.prepares == state.submits == state.stops == 0
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_old_slug_absence_can_be_retired_and_restarted_under_same_training_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from spireagent import source as source_module
+    from spireagent.artifact_contracts import Producer
+
+    old_producer = Producer(
+        "rsgcsg/STS2-The-Perfect-Defect-Project", "a" * 40, "b" * 64,
+    )
+    new_producer = Producer(
+        "rsgcsg/STS2-The-Perfect-Defect-Project", "c" * 40, "d" * 64,
+    )
+    monkeypatch.setattr(source_module, "source_identity", lambda _root: old_producer)
+    case = _case(tmp_path, monkeypatch, steps=1)
+    (torch, previous_threads, service, store, owner, producer, run,
+     model_config, operation_id, dataset_id) = case
+    try:
+        from spireagent.json_boundary import BoundaryError
+        from spireagent.workbench import local_m0_remote as remote_module
+        from spireagent.workbench.local_m0_remote import ModalM0Settings
+        from spireagent.workbench.local_training import OPERATION_FILE
+        from stpd.fullrun.light_action_inputs import load_light_action_inputs
+        from stpd.workers.token_ranking import TokenTargetRuntime
+        from stpd.workers.token_remote_update import prepare_token_remote_update
+        from stpd.workers.token_worker import prepare_token_run
+
+        # The controller imported source_identity by value. Pin that alias to the
+        # new runtime producer so preflight reaches the retry workspace gate.
+        monkeypatch.setattr(remote_module, "source_identity", lambda _root: new_producer)
+
+        old_attempt_id = "e" * 32
+        old_request = prepare_token_remote_update(
+            store, owner, run.artifact_id, producer, operation_id, 1,
+            attempt_id=old_attempt_id,
+        )
+        old_settings = ModalM0Settings("chensunguo1210", "test-env", "im-test-image")
+        old_controller = _controller(service, _FakeModalState(store), old_settings)
+        old_spec = old_controller._spec(old_request, old_settings)
+        old_target = old_controller._target(old_spec, 1)
+        reserved = service.reserve_remote_m0(
+            dataset_id, input_profile="public_lite",
+            request_bytes=old_request.to_bytes(), target=old_target, target_step=1,
+        )["operation"]
+        service.persist_remote_attempt_spec(operation_id, old_spec.to_bytes())
+        assert service.status()["operation"]["status"] == "interrupted_unknown"
+
+        state = _FakeModalState(
+            store, canonical_account_id="ac-BRJL3wJjpxPVWozQkvp9xf",
+            workspace_name="chensunguo1210", app_found=False,
+        )
+        controller = _controller(service, state)
+        closed = controller.reconcile(operation_id, wait_seconds=0)
+        assert closed["status"] == "failed"
+        assert closed["error_code"] == "provider_app_absent_before_submit"
+        assert closed["remote"]["attempts"][-1]["recovery_receipt"] == {
+            "schema": "stpd/local-modal-m0-prepare-absence-receipt-v1",
+            "observed_at_unix_ns": closed["remote"]["attempts"][-1]["recovery_receipt"][
+                "observed_at_unix_ns"],
+            "attempt_id": old_attempt_id,
+            "attempt_spec_sha256": hashlib.sha256(old_spec.to_bytes()).hexdigest(),
+            "canonical_account_id": "ac-BRJL3wJjpxPVWozQkvp9xf",
+            "pinned_account_id": "chensunguo1210",
+            "environment_name": "test-env",
+            "app_name": old_spec.app_name,
+            "lookup_result": "complete_app_list_and_exact_history_not_found",
+            "submit_boundary": "no_app_ref_handle_or_submit_intent",
+        }
+        journal_path = owner.path.parent / OPERATION_FILE
+        original_journal = journal_path.read_bytes()
+        evidence = service.remote_provider_evidence(operation_id)
+        assert evidence["attempt_spec_bytes"] == old_spec.to_bytes()
+        assert evidence["app_ref_bytes"] is evidence["handle_bytes"] is None
+
+        retired = controller.retire_preflight_failure(operation_id)
+        assert retired["status"] == "retired_for_preflight_retry"
+        assert retired["error_code"] == "provider_app_absent_before_submit"
+        assert not journal_path.exists()
+        assert store.blobs.get(retired["archive_ref"]) == original_journal
+        assert service.status()["operation"]["status"] == "idle"
+
+        # A new owner operation or workspace cannot consume this one-use retry permit.
+        with pytest.raises(BoundaryError):
+            prepare_token_remote_update(
+                store, owner, run.artifact_id, producer, "f" * 32, 1,
+                attempt_id="a" * 32,
+            )
+
+        new_settings = ModalM0Settings(
+            "ac-BRJL3wJjpxPVWozQkvp9xf", "test-env", "im-recovery-image",
+        )
+        # The old run remains bound to its old producer; the new controller must
+        # refuse to reinterpret it under the new source identity.
+        with pytest.raises(BoundaryError, match="source_or_contract_mismatch"):
+            _controller(service, state, new_settings).start(
+                run.artifact_id, 1, wait_seconds=0,
+            )
+        assert state.prepares == state.submits == 0
+
+        # Re-prepare a fresh run through the existing production API, preserving
+        # the exact admitted input, config/seed, and target runtime.
+        inputs = load_light_action_inputs(store, old_request.input_id)
+        fresh_run = prepare_token_run(
+            store, inputs, model_config, new_producer,
+            replicate="preflight-retry-" + operation_id,
+            target_runtime=TokenTargetRuntime.from_run_info(run.parameters.value()),
+        )
+        assert fresh_run.artifact_id != run.artifact_id
+        assert fresh_run.parent("training_input") == old_request.input_id
+        assert fresh_run.producer == new_producer != run.producer
+        assert fresh_run.parameters.value()["config"] == run.parameters.value()["config"]
+
+        wrong_workspace = _FakeModalState(
+            store, canonical_account_id="ac-foreign", workspace_name="other-workspace",
+        )
+        with pytest.raises(BoundaryError, match="preflight_retry_workspace_mismatch"):
+            _controller(
+                service, wrong_workspace,
+                ModalM0Settings("ac-foreign", "test-env", "im-recovery-image"),
+            ).start(fresh_run.artifact_id, 1, wait_seconds=0)
+        assert wrong_workspace.prepares == wrong_workspace.submits == 0
+        assert service.status()["operation"]["status"] == "idle"
+
+        # Reproduce the race where the advisory pre-lock read misses a permit
+        # published immediately before the reservation lock is acquired.
+        raced_workspace = _FakeModalState(
+            store, canonical_account_id="ac-foreign", workspace_name="other-workspace",
+        )
+        with monkeypatch.context() as race_patch:
+            race_patch.setattr(service, "remote_preflight_retry_context", lambda: None)
+            with pytest.raises(BoundaryError, match="remote_preflight_retry_workspace_mismatch"):
+                _controller(
+                    service, raced_workspace,
+                    ModalM0Settings("ac-foreign", "test-env", "im-recovery-image"),
+                ).start(fresh_run.artifact_id, 1, wait_seconds=0)
+        assert raced_workspace.prepares == raced_workspace.submits == 0
+        assert service.status()["operation"]["status"] == "idle"
+        assert service.remote_preflight_retry_context() is not None
+
+        # A caller cannot pair a typed new producer spec with stale or forged
+        # target_id/app_id/source hashes. Each attempt leaves the permit intact.
+        candidate_request = prepare_token_remote_update(
+            store, owner, fresh_run.artifact_id, new_producer, operation_id, 1,
+            attempt_id="a" * 32,
+        )
+        candidate_spec = _controller(service, state, new_settings)._spec(
+            candidate_request, new_settings,
+        )
+        candidate_target = _controller(service, state, new_settings)._target(
+            candidate_spec, model_config.steps,
+        )
+        assert candidate_spec.app_name != old_spec.app_name
+        for field, wrong_value in (
+            ("target_id", "f" * 64),
+            ("app_id", candidate_spec.app_name + "-stale"),
+            ("deployment_source_sha256", "e" * 64),
+        ):
+            forged_target = dict(candidate_target)
+            forged_target[field] = wrong_value
+            with pytest.raises(BoundaryError, match="remote_preflight_retry_binding_mismatch"):
+                service.reserve_remote_m0(
+                    dataset_id, input_profile="public_lite",
+                    request_bytes=candidate_request.to_bytes(), target=forged_target,
+                    target_step=1, attempt_spec_bytes=candidate_spec.to_bytes(),
+                )
+            assert service.status()["operation"]["status"] == "idle"
+
+        state.prepare_error = None
+        restarted = _controller(service, state, new_settings).start(
+            fresh_run.artifact_id, 1, wait_seconds=0,
+        )
+        assert restarted["status"] == "completed"
+        assert restarted["operation_id"] == operation_id
+        assert restarted["previous_remote_failure"]["archive_ref"] == retired["archive_ref"]
+        assert restarted["previous_remote_failure"]["archive_sha256"] == retired[
+            "archive_sha256"
+        ]
+        assert restarted["remote"]["attempts"][-1]["attempt_id"] != old_attempt_id
+        assert state.request is not None
+        assert state.request.run_id == fresh_run.artifact_id != run.artifact_id
+        assert state.request.input_id == old_request.input_id
+        assert state.request.producer == new_producer
+        assert state.request.config == model_config
+        assert state.request.resume_checkpoint_id is None
+        recovered_target = restarted["remote"]["target"]
+        assert recovered_target["target_id"] != old_target["target_id"]
+        assert recovered_target["app_id"] != old_target["app_id"]
+        assert (recovered_target["deployment_source_sha256"]
+                != old_target["deployment_source_sha256"])
+        assert state.target.image_object_id == "im-recovery-image"
+        assert state.lookups == 1
+        assert state.prepares == state.submits == 1
+        assert state.stops <= 1
+        archived = json.loads(store.blobs.get(retired["archive_ref"]))
+        assert archived["error_code"] == "provider_app_absent_before_submit"
+        assert archived["remote"]["attempts"][-1]["attempt_spec_sha256"] == hashlib.sha256(
+            old_spec.to_bytes(),
+        ).hexdigest()
+        assert archived["remote"]["attempts"][-1]["attempt_id"] == old_attempt_id
+        assert reserved["remote"]["attempts"][-1]["attempt_id"] == old_attempt_id
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_wrong_account_keeps_old_prepare_intent_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, store, _, _, _, _, _, dataset_id = case
+    try:
+        wrong_operation, _ = _prepare_intent_operation(
+            service, dataset_id, account_id="chensunguo1210",
+        )
+        from spireagent.json_boundary import BoundaryError
+
+        wrong_account = _FakeModalState(
+            store, canonical_account_id="ac-foreign", workspace_name="other-workspace",
+        )
+        refused = _controller(service, wrong_account).reconcile(
+            wrong_operation["operation_id"], wait_seconds=0,
+        )
+        assert refused["status"] == "interrupted_unknown"
+        assert wrong_account.lookups == wrong_account.stops == wrong_account.submits == 0
+        with pytest.raises(BoundaryError, match="remote_preflight_retirement_unavailable"):
+            _controller(service, wrong_account).retire_preflight_failure(
+                wrong_operation["operation_id"],
+            )
+
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_incomplete_lookup_keeps_old_prepare_intent_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, store, _, _, _, _, _, dataset_id = case
+    try:
+        from spireagent.json_boundary import BoundaryError
+
+        operation, _ = _prepare_intent_operation(
+            service, dataset_id, account_id="chensunguo1210",
+        )
+        incomplete = _FakeModalState(
+            store,
+            canonical_account_id="ac-BRJL3wJjpxPVWozQkvp9xf",
+            workspace_name="chensunguo1210",
+            lookup_error=BoundaryError("modal_m0", "modal_app_list_incomplete"),
+        )
+        left_unknown = _controller(service, incomplete).reconcile(
+            operation["operation_id"], wait_seconds=0,
+        )
+        assert left_unknown["status"] == "interrupted_unknown"
+        assert left_unknown["stage"] == "remote_unknown"
+        assert incomplete.lookups == 1
+        assert incomplete.stops == incomplete.submits == 0
+        with pytest.raises(BoundaryError, match="remote_preflight_retirement_unavailable"):
+            _controller(service, incomplete).retire_preflight_failure(
+                operation["operation_id"],
+            )
     finally:
         torch.set_num_threads(previous_threads)
 

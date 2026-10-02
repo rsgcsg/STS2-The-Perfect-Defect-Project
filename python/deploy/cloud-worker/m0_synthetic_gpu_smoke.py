@@ -765,6 +765,14 @@ def _stop_evidence(
     )
     if not isinstance(app_rows, list):
         raise PlanError("modal_app_list_json_array_required")
+    if any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("description"), str)
+        or not isinstance(row.get("app_id"), str)
+        or re.fullmatch(r"ap-[A-Za-z0-9_-]+", row["app_id"]) is None
+        for row in app_rows
+    ):
+        raise PlanError("modal_app_list_incomplete")
     matching = [row for row in app_rows if isinstance(row, dict) and row.get("app_id") == app_id]
     if len(matching) != 1:
         raise PlanError("modal_app_lifecycle_not_found_or_ambiguous")

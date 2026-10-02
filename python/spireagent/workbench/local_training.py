@@ -56,6 +56,7 @@ DEFAULT_RECIPE = "stage1a.dsimple.s.v1"
 PUBLIC_M0_RECIPE = "stage1a.dsimple.light-action.m0.s.v1"
 MEMORY_RECIPE = M2_K1_RECIPE  # Preserve the existing recipe constant for callers.
 OPERATION_FILE = "local-training-operation.json"
+REMOTE_RETRY_PERMIT_FILE = "local-training-remote-retry-permit.json"
 LOCK_FILE = ".local-training.lock"
 PARENT_FAILURE_LOG_BYTES = 64 * 1024
 IDS = ("allocation_id", "view_id", "input_id", "run_id", "checkpoint_id",
@@ -81,6 +82,7 @@ REMOTE_REQUEST_SCHEMA = "stpd/token-remote-update-request-v1"
 REMOTE_RESULT_PREFIX = "local-training/remote-results/"
 REMOTE_RESULT_CHUNK_PREFIX = "local-training/remote-result-chunks/"
 REMOTE_CONTROL_PREFIX = "local-training/remote-control/"
+REMOTE_OPERATION_HISTORY_PREFIX = "local-training/remote-operation-history/"
 REMOTE_CHUNK_BYTES = 8 * 1024 * 1024
 REMOTE_MAX_REQUEST_BYTES = MAX_M0_REQUEST_BYTES
 REMOTE_MAX_RESULT_BYTES = 128 * 1024 * 1024
@@ -158,6 +160,37 @@ def _validate_remote_target(target: object) -> None:
         raise ValueError("remote target limit invalid")
 
 
+def _remote_target_for_attempt_spec(spec: object, max_total_steps: int) -> dict[str, Any]:
+    """Recompute the persisted target from its typed, pinned provider attempt spec."""
+    from stpd.cloud_jobs.m0_modal import M0AttemptSpec
+
+    if not isinstance(spec, M0AttemptSpec):
+        raise BoundaryError("local_training", "remote_attempt_spec_required")
+    identity = {
+        "account_id": spec.account_id,
+        "environment_name": spec.environment_name,
+        "image_object_id": spec.image_object_id,
+        "producer": spec.producer.to_dict(),
+        "target_runtime": {
+            "torch_version": spec.target_runtime.torch_version,
+            "cpu_threads": spec.target_runtime.cpu_threads,
+        },
+        "resource_plan": spec.resource_plan.to_dict(),
+    }
+    source_sha256 = hashlib.sha256(json_bytes(spec.producer.to_dict())).hexdigest()
+    target = {
+        "target_id": hashlib.sha256(json_bytes(identity)).hexdigest(),
+        "app_id": spec.app_name,
+        "deployment_source_sha256": source_sha256,
+        "gpu": spec.resource_plan.gpu,
+        "timeout_seconds": spec.resource_plan.function_timeout_seconds,
+        "startup_timeout_seconds": spec.resource_plan.startup_timeout_seconds,
+        "max_total_steps": max_total_steps,
+    }
+    _validate_remote_target(target)
+    return target
+
+
 def _validate_remote_error_code(error_code: object) -> None:
     if (not isinstance(error_code, str)
             or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_code) is None):
@@ -196,6 +229,30 @@ def _remote_request_identity(raw: bytes) -> dict[str, Any]:
         return {**value, "resume_checkpoint_id": resume_checkpoint_id}
     except (BoundaryError, ValueError, TypeError, KeyError) as error:
         raise BoundaryError("local_training", "remote_request_identity_invalid") from error
+
+
+def _persist_remote_operation_history(
+    store: ManifestArtifactStore, raw: bytes,
+) -> tuple[str, str]:
+    """Keep an exact retired M0 operation snapshot in the existing owner blob store."""
+    if not isinstance(raw, bytes) or not raw:
+        raise BoundaryError("local_training", "remote_operation_history_invalid")
+    sha256 = hashlib.sha256(raw).hexdigest()
+    reference = REMOTE_OPERATION_HISTORY_PREFIX + sha256
+    blobs: Any = getattr(store, "blobs", None)
+    if not callable(getattr(blobs, "put_if_absent", None)) or not callable(
+        getattr(blobs, "get", None)
+    ):
+        raise BoundaryError("local_training", "remote_operation_history_unavailable")
+    try:
+        blobs.put_if_absent(reference, raw)
+        if blobs.get(reference) != raw:
+            raise ValueError("remote operation history mismatch")
+    except Exception as error:
+        raise BoundaryError(
+            "local_training", "remote_operation_history_persistence_failed",
+        ) from error
+    return reference, sha256
 
 
 def _validate_remote_operation(value: dict[str, Any]) -> None:
@@ -245,7 +302,8 @@ def _validate_remote_operation(value: dict[str, Any]) -> None:
                       "core_finalizer_attempt_seconds",
                       "phase", "provider_terminal", "terminal_state",
                       "checkpoint_candidate_sha256", "validated_checkpoint_id",
-                      "provider_result_sha256", "provider_result_ref"}
+                      "provider_result_sha256", "provider_result_ref",
+                      "recovery_receipt"}
     if not isinstance(attempts, list) or not attempts:
         raise ValueError("remote attempts invalid")
     seen: set[str] = set()
@@ -253,13 +311,17 @@ def _validate_remote_operation(value: dict[str, Any]) -> None:
     expected_checkpoint_step = 0
     for index, attempt in enumerate(attempts):
         legacy_attempt_fields = attempt_fields - {
-            "runtime_evidence_sha256", "runtime_evidence_ref",
+            "runtime_evidence_sha256", "runtime_evidence_ref", "recovery_receipt",
         }
         if isinstance(attempt, dict) and set(attempt) == legacy_attempt_fields:
             # Older v4 journals remain readable; new controllers write the added
             # evidence reference only after an observed remote result.
             attempt["runtime_evidence_sha256"] = None
             attempt["runtime_evidence_ref"] = None
+            attempt["recovery_receipt"] = None
+        elif isinstance(attempt, dict) and set(attempt) == attempt_fields - {"recovery_receipt"}:
+            # v4 journals written after runtime evidence was introduced remain readable.
+            attempt["recovery_receipt"] = None
         if not isinstance(attempt, dict) or set(attempt) != attempt_fields:
             raise ValueError("remote attempt fields invalid")
         attempt_id = digest(attempt["attempt_id"], "local_training.attempt_id", length=32)
@@ -361,6 +423,33 @@ def _validate_remote_operation(value: dict[str, Any]) -> None:
                      or stop_confirmation["active_containers"] != 0
                      or stop_confirmation["confirmed"] is not True)):
             raise ValueError("remote stop confirmation invalid")
+        receipt = attempt["recovery_receipt"]
+        if receipt is not None:
+            receipt_fields = {
+                "schema", "observed_at_unix_ns", "attempt_id", "attempt_spec_sha256",
+                "canonical_account_id", "pinned_account_id", "environment_name",
+                "app_name", "lookup_result", "submit_boundary",
+            }
+            if (not isinstance(receipt, dict) or set(receipt) != receipt_fields
+                    or receipt.get("schema") !=
+                    "stpd/local-modal-m0-prepare-absence-receipt-v1"
+                    or type(receipt.get("observed_at_unix_ns")) is not int
+                    or receipt["observed_at_unix_ns"] < 1
+                    or receipt.get("attempt_id") != attempt_id
+                    or receipt.get("attempt_spec_sha256") != attempt["attempt_spec_sha256"]
+                    or not isinstance(receipt.get("canonical_account_id"), str)
+                    or not receipt["canonical_account_id"].startswith("ac-")
+                    or not isinstance(receipt.get("pinned_account_id"), str)
+                    or not receipt["pinned_account_id"]
+                    or not isinstance(receipt.get("environment_name"), str)
+                    or not receipt["environment_name"]
+                    or not isinstance(receipt.get("app_name"), str)
+                    or not receipt["app_name"]
+                    or receipt.get("lookup_result") !=
+                    "complete_app_list_and_exact_history_not_found"
+                    or receipt.get("submit_boundary") !=
+                    "no_app_ref_handle_or_submit_intent"):
+                raise ValueError("remote prepare absence receipt invalid")
         if attempt["phase"] == "submit_intent":
             if (attempt["handle_ref"] is not None or attempt["provider_terminal"]
                     or attempt["terminal_state"] is not None):
@@ -430,6 +519,30 @@ def _validate_remote_operation(value: dict[str, Any]) -> None:
         raise ValueError("remote operation checkpoint lineage mismatch")
 
     latest = attempts[-1]
+    if "previous_remote_failure" in value:
+        previous_remote = value["previous_remote_failure"]
+        if not isinstance(previous_remote, dict):
+            raise ValueError("remote preflight archive pointer invalid")
+        archive_ref = previous_remote.get("archive_ref")
+        archive_sha256 = previous_remote.get("archive_sha256")
+        receipt_sha256 = previous_remote.get("recovery_receipt_sha256")
+        if (set(previous_remote) != {
+                    "schema", "operation_id", "archive_ref", "archive_sha256",
+                    "error_code", "recovery_receipt_sha256",
+                }
+                or previous_remote.get("schema") !=
+                "stpd/local-training-remote-preflight-retry-archive-v1"
+                or previous_remote.get("operation_id") != value.get("operation_id")
+                or previous_remote.get("error_code") !=
+                "provider_app_absent_before_submit"
+                or not isinstance(archive_ref, str)
+                or not isinstance(archive_sha256, str)
+                or safe_key(archive_ref) != REMOTE_OPERATION_HISTORY_PREFIX + archive_sha256):
+            raise ValueError("remote preflight archive pointer invalid")
+        digest(archive_sha256,
+               "local_training.remote_history_sha256")
+        digest(receipt_sha256,
+               "local_training.remote_receipt_sha256")
     status = value["status"]
     stage = value["stage"]
     expected = {
@@ -808,7 +921,8 @@ class LocalTrainingService:
     def _public(value: dict[str, Any]) -> dict[str, Any]:
         keys = {"status", "stage", "operation_id", "dataset_id", "error_code",
                 "recipe", "result_type", "evaluation_status", "schema",
-                "input_profile", "previous_completed", "checkpoint_step", *IDS}
+                "input_profile", "previous_completed", "previous_remote_failure",
+                "checkpoint_step", *IDS}
         result = {key: item for key, item in value.items() if key in keys}
         if value.get("schema") == SCHEMA_V4:
             remote = value["remote"]
@@ -978,12 +1092,256 @@ class LocalTrainingService:
             "validated_checkpoint_id": None,
             "provider_result_sha256": None,
             "provider_result_ref": None,
+            "recovery_receipt": None,
         }
+
+    @staticmethod
+    def _retry_permit_path(owner: LocalCurationOwner) -> Path:
+        return owner.path.parent / REMOTE_RETRY_PERMIT_FILE
+
+    @staticmethod
+    def _remove_private_file(path: Path) -> None:
+        if path.is_symlink():
+            raise BoundaryError("local_training", "remote_retry_state_unsafe")
+        path.unlink(missing_ok=True)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    def _load_remote_retry_permit(
+        self, owner: LocalCurationOwner, store: ManifestArtifactStore,
+    ) -> dict[str, Any] | None:
+        path = self._retry_permit_path(owner)
+        if not path.exists() and not path.is_symlink():
+            if has_unresolved_replacement(path):
+                raise BoundaryError("local_training", "remote_retry_state_recovery_required")
+            return None
+        try:
+            if path.is_symlink() or not path.is_file() or has_unresolved_replacement(path):
+                raise ValueError
+            permit = json.loads(read_replaceable_bytes(path))
+            if not isinstance(permit, dict):
+                raise ValueError
+            archive_ref = permit.get("archive_ref")
+            raw_archive_sha256 = permit.get("archive_sha256")
+            fields = {"schema", "_owner", "archive_ref", "archive_sha256",
+                      "canonical_account_id", "environment_name"}
+            if (set(permit) != fields
+                    or permit.get("schema") !=
+                    "stpd/local-training-remote-preflight-retry-permit-v1"
+                    or permit.get("_owner") != list(owner.identity)
+                    or not isinstance(archive_ref, str)
+                    or not isinstance(raw_archive_sha256, str)
+                    or safe_key(archive_ref) !=
+                    REMOTE_OPERATION_HISTORY_PREFIX + raw_archive_sha256
+                    or not isinstance(permit.get("canonical_account_id"), str)
+                    or not permit["canonical_account_id"].startswith("ac-")
+                    or not isinstance(permit.get("environment_name"), str)
+                    or not permit["environment_name"]):
+                raise ValueError
+            archive_sha256 = digest(
+                raw_archive_sha256, "local_training.remote_history_sha256",
+            )
+            raw = store.blobs.get(archive_ref)
+            if not isinstance(raw, bytes) or hashlib.sha256(raw).hexdigest() != archive_sha256:
+                raise ValueError
+            archived = json.loads(raw)
+            if (not isinstance(archived, dict) or archived.get("schema") != SCHEMA_V4
+                    or archived.get("_owner") != list(owner.identity)
+                    or archived.get("status") != "failed"
+                    or archived.get("stage") != "remote_failed"
+                    or archived.get("error_code") != "provider_app_absent_before_submit"):
+                raise ValueError
+            _validate_remote_operation(archived)
+            latest = archived["remote"]["attempts"][-1]
+            receipt = latest.get("recovery_receipt")
+            if (latest["phase"] != "preflight_failed"
+                    or latest["app_phase"] != "prepare_intent"
+                    or latest["app_ref_ref"] is not None or latest["handle_ref"] is not None
+                    or latest["submit_intent_at_unix_ns"] is not None
+                    or latest["provider_terminal"] or not isinstance(receipt, dict)
+                    or receipt["canonical_account_id"] != permit["canonical_account_id"]
+                    or receipt["environment_name"] != permit["environment_name"]):
+                raise ValueError
+            request_bytes = _read_remote_blob(
+                store, latest["request_ref"], latest["request_sha256"],
+                object_prefix=REMOTE_REQUEST_PREFIX,
+                chunk_prefix=REMOTE_REQUEST_CHUNK_PREFIX,
+                maximum=REMOTE_MAX_REQUEST_BYTES, label="remote_request",
+            )
+            spec_bytes, app_ref_bytes, handle_bytes = _remote_provider_bytes(store, latest)
+            if spec_bytes is None or app_ref_bytes is not None or handle_bytes is not None:
+                raise ValueError
+            from stpd.cloud_jobs.m0_modal import M0AttemptSpec
+            from stpd.workers.token_remote_update import TokenRemoteUpdateRequest
+
+            old_request = TokenRemoteUpdateRequest.from_bytes(request_bytes)
+            old_spec = M0AttemptSpec.from_bytes(spec_bytes)
+            if (old_request.operation_id != archived["operation_id"]
+                    or old_request.attempt_id != latest["attempt_id"]
+                    or old_request.request_sha256 != latest["request_sha256"]
+                    or old_spec.attempt_id != latest["attempt_id"]
+                    or old_spec.request_sha256 != latest["request_sha256"]
+                    or old_spec.producer != old_request.producer
+                    or old_spec.target_runtime != old_request.target_runtime
+                    or old_spec.app_name != receipt["app_name"]
+                    or old_spec.environment_name != permit["environment_name"]
+                    or old_spec.account_id not in {
+                        receipt["canonical_account_id"], receipt["pinned_account_id"],
+                    }
+                    or archived["remote"]["target"] !=
+                    _remote_target_for_attempt_spec(old_spec, old_request.config.steps)):
+                raise ValueError
+            return {
+                "permit": permit,
+                "archived_operation": archived,
+                "archive_bytes": raw,
+                "request_bytes": request_bytes,
+                "attempt_spec_bytes": spec_bytes,
+                "request": old_request,
+                "spec": old_spec,
+                "pointer": {
+                    "schema": "stpd/local-training-remote-preflight-retry-archive-v1",
+                    "operation_id": archived["operation_id"],
+                    "archive_ref": permit["archive_ref"],
+                    "archive_sha256": archive_sha256,
+                    "error_code": archived["error_code"],
+                    "recovery_receipt_sha256": hashlib.sha256(
+                        json_bytes(receipt),
+                    ).hexdigest(),
+                },
+            }
+        except BoundaryError:
+            raise
+        except Exception as error:
+            raise BoundaryError(
+                "local_training", "remote_retry_state_recovery_required",
+            ) from error
+
+    def remote_preflight_retry_context(self) -> dict[str, Any] | None:
+        """Read the exact old workspace binding before the controller starts a retry."""
+        owner, store, _ = self._selected()
+        permit_path = self._retry_permit_path(owner)
+        if not permit_path.exists() and not permit_path.is_symlink():
+            if has_unresolved_replacement(permit_path):
+                raise BoundaryError("local_training", "remote_retry_state_recovery_required")
+            return None
+        _path, lock_path = self._paths(owner)
+        self._require_remote_lock(lock_path)
+        with instance_lock(lock_path, create=False):
+            context = self._load_remote_retry_permit(owner, store)
+            if context is None:
+                return None
+            return {
+                "archive_ref": context["permit"]["archive_ref"],
+                "archive_sha256": context["permit"]["archive_sha256"],
+                "canonical_account_id": context["permit"]["canonical_account_id"],
+                "environment_name": context["permit"]["environment_name"],
+                "attempt_spec_bytes": context["attempt_spec_bytes"],
+                "request_bytes": context["request_bytes"],
+                "target": context["archived_operation"]["remote"]["target"],
+            }
+
+    def retire_remote_preflight_failure(self, operation_id: object) -> dict[str, Any]:
+        """Archive and release only a fully reconciled, no-submit prepare failure."""
+        operation_id = digest(operation_id, "local_training.operation_id", length=32)
+        owner, store, _ = self._selected()
+        path, lock_path = self._paths(owner)
+        self._require_remote_lock(lock_path)
+        with instance_lock(lock_path, create=False):
+            context = self._load_remote_retry_permit(owner, store)
+            if context is not None:
+                archived = context["archived_operation"]
+                if archived.get("operation_id") != operation_id:
+                    raise BoundaryError("local_training", "remote_retry_operation_mismatch")
+                if path.exists():
+                    if (path.is_symlink()
+                            or read_replaceable_bytes(path) != context["archive_bytes"]):
+                        raise BoundaryError("local_training", "remote_retry_state_conflict")
+                    self._remove_private_file(path)
+                return {
+                    "status": "retired_for_preflight_retry",
+                    "operation_id": operation_id,
+                    "archive_ref": context["permit"]["archive_ref"],
+                    "archive_sha256": context["permit"]["archive_sha256"],
+                    "error_code": archived["error_code"],
+                }
+            current = self._read(path, owner.identity)
+            latest = current.get("remote", {}).get("attempts", [{}])[-1]
+            if (current.get("schema") != SCHEMA_V4
+                    or current.get("operation_id") != operation_id
+                    or current.get("status") != "failed"
+                    or current.get("stage") != "remote_failed"
+                    or current.get("error_code") != "provider_app_absent_before_submit"
+                    or latest.get("phase") != "preflight_failed"
+                    or latest.get("app_phase") != "prepare_intent"
+                    or latest.get("app_ref_ref") is not None
+                    or latest.get("handle_ref") is not None
+                    or latest.get("submit_intent_at_unix_ns") is not None
+                    or latest.get("provider_terminal")):
+                raise BoundaryError("local_training", "remote_preflight_retirement_unavailable")
+            receipt = latest.get("recovery_receipt")
+            if not isinstance(receipt, dict):
+                raise BoundaryError("local_training", "remote_prepare_absence_unproven")
+            request_bytes = _read_remote_blob(
+                store, latest["request_ref"], latest["request_sha256"],
+                object_prefix=REMOTE_REQUEST_PREFIX,
+                chunk_prefix=REMOTE_REQUEST_CHUNK_PREFIX,
+                maximum=REMOTE_MAX_REQUEST_BYTES, label="remote_request",
+            )
+            spec_bytes, app_ref_bytes, handle_bytes = _remote_provider_bytes(store, latest)
+            if (spec_bytes is None or app_ref_bytes is not None or handle_bytes is not None):
+                raise BoundaryError("local_training", "remote_prepare_absence_unproven")
+            from stpd.cloud_jobs.m0_modal import M0AttemptSpec
+            from stpd.workers.token_remote_update import TokenRemoteUpdateRequest
+
+            request = TokenRemoteUpdateRequest.from_bytes(request_bytes)
+            spec = M0AttemptSpec.from_bytes(spec_bytes)
+            binding = request.training_binding.value()
+            if (request.operation_id != operation_id
+                    or request.attempt_id != latest["attempt_id"]
+                    or request.request_sha256 != latest["request_sha256"]
+                    or spec.attempt_id != latest["attempt_id"]
+                    or spec.request_sha256 != latest["request_sha256"]
+                    or binding.get("training_operation_id") != operation_id
+                    or binding.get("dataset_ids") != [current["dataset_id"]]
+                    or request.resume_checkpoint_id is not None
+                    or receipt["attempt_spec_sha256"] != latest["attempt_spec_sha256"]
+                    or receipt["attempt_id"] != latest["attempt_id"]
+                    or receipt["app_name"] != spec.app_name
+                    or receipt["environment_name"] != spec.environment_name
+                    or (receipt["canonical_account_id"] != spec.account_id
+                        and receipt["pinned_account_id"] != spec.account_id)):
+                raise BoundaryError("local_training", "remote_preflight_retirement_invalid")
+            archive_bytes = read_replaceable_bytes(path)
+            archive_ref, archive_sha256 = _persist_remote_operation_history(
+                store, archive_bytes,
+            )
+            permit = {
+                "schema": "stpd/local-training-remote-preflight-retry-permit-v1",
+                "_owner": list(owner.identity),
+                "archive_ref": archive_ref,
+                "archive_sha256": archive_sha256,
+                "canonical_account_id": receipt["canonical_account_id"],
+                "environment_name": receipt["environment_name"],
+            }
+            write_replaceable_json(self._retry_permit_path(owner), permit)
+            self._remove_private_file(path)
+            return {
+                "status": "retired_for_preflight_retry",
+                "operation_id": operation_id,
+                "archive_ref": archive_ref,
+                "archive_sha256": archive_sha256,
+                "error_code": current["error_code"],
+            }
 
     def reserve_remote_m0(self, dataset_id: object, *, input_profile: object,
                           request_bytes: bytes, target: dict[str, Any],
                           target_step: object,
-                          after_completed_operation_id: object | None = None) -> dict[str, Any]:
+                          after_completed_operation_id: object | None = None,
+                          attempt_spec_bytes: bytes | None = None) -> dict[str, Any]:
         """Persist exact M0 request/target/attempt before any provider call is allowed."""
         if (not isinstance(input_profile, str)
                 or input_profile not in {"public_lite", "public_compact"}):
@@ -1017,6 +1375,83 @@ class LocalTrainingService:
             raise BoundaryError("local_training", "operation_recovery_required")
         with instance_lock(lock_path):
             previous = self._read(path, owner.identity)
+            retry_context = self._load_remote_retry_permit(owner, store)
+            if retry_context is not None:
+                pointer = retry_context["pointer"]
+                if (previous.get("status") == "failed"
+                        and previous.get("operation_id")
+                        == retry_context["archived_operation"].get("operation_id")):
+                    if read_replaceable_bytes(path) != retry_context["archive_bytes"]:
+                        raise BoundaryError("local_training", "remote_retry_state_conflict")
+                    self._remove_private_file(path)
+                    previous = {"status": "idle"}
+                elif previous.get("previous_remote_failure") == pointer:
+                    # A crash after publishing the replacement journal but before
+                    # deleting the one-use permit is safely completed here.
+                    self._remove_private_file(self._retry_permit_path(owner))
+                    retry_context = None
+                elif previous.get("status") != "idle":
+                    raise BoundaryError("local_training", "remote_retry_state_conflict")
+                if retry_context is not None:
+                    if not isinstance(attempt_spec_bytes, bytes):
+                        raise BoundaryError(
+                            "local_training", "remote_preflight_retry_spec_required",
+                        )
+                    from stpd.cloud_jobs.m0_modal import M0AttemptSpec
+                    from stpd.workers.token_remote_update import TokenRemoteUpdateRequest
+
+                    old_request = retry_context["request"]
+                    old_spec = retry_context["spec"]
+                    new_request = TokenRemoteUpdateRequest.from_bytes(request_bytes)
+                    new_spec = M0AttemptSpec.from_bytes(attempt_spec_bytes)
+                    old_binding = old_request.training_binding.value()
+                    new_binding = new_request.training_binding.value()
+                    old_target = retry_context["archived_operation"]["remote"]["target"]
+                    if (new_spec.account_id != retry_context["permit"]["canonical_account_id"]
+                            or new_spec.environment_name
+                            != retry_context["permit"]["environment_name"]):
+                        raise BoundaryError(
+                            "local_training", "remote_preflight_retry_workspace_mismatch",
+                        )
+                    expected_target = _remote_target_for_attempt_spec(
+                        new_spec, new_request.config.steps,
+                    )
+                    if (previous.get("status") != "idle"
+                            or operation_id != old_request.operation_id
+                            or operation_id != retry_context["archived_operation"]["operation_id"]
+                            or attempt_id == old_request.attempt_id
+                            or dataset_id != retry_context["archived_operation"]["dataset_id"]
+                            or input_profile != retry_context["archived_operation"]["input_profile"]
+                            or request_identity["target_step"] != old_request.target_step
+                            or new_request.operation_id != old_request.operation_id
+                            or new_request.attempt_id != attempt_id
+                            or new_request.input_id != old_request.input_id
+                            or new_spec.attempt_id != attempt_id
+                            or new_spec.request_sha256 != hashlib.sha256(request_bytes).hexdigest()
+                            or new_spec.producer != new_request.producer
+                            or new_spec.target_runtime != new_request.target_runtime
+                            or new_spec.app_name == old_spec.app_name
+                            or target != expected_target
+                            or new_binding != old_binding
+                            or new_request.config != old_request.config
+                            or new_request.resume_checkpoint_id is not None
+                            or new_binding.get("training_operation_id") != operation_id
+                            or new_binding.get("dataset_ids") != [dataset_id]
+                            or any(expected_target[key] != old_target[key] for key in (
+                                "gpu", "timeout_seconds", "startup_timeout_seconds",
+                                "max_total_steps",
+                            ))):
+                        raise BoundaryError(
+                            "local_training", "remote_preflight_retry_binding_mismatch",
+                        )
+                    try:
+                        owner.require_training_datasets(
+                            store, tuple(new_binding["dataset_ids"]), operation_id,
+                        )
+                    except (BoundaryError, KeyError, TypeError) as error:
+                        raise BoundaryError(
+                            "local_training", "remote_preflight_retry_owner_required",
+                        ) from error
             if previous["status"] in {"pending", "cancelling", "interrupted_unknown",
                                       "paused", "cancelled"}:
                 raise BoundaryError("local_training", "previous_training_outcome_unknown")
@@ -1056,6 +1491,8 @@ class LocalTrainingService:
                 "evaluation_status": "pending",
                 "remote": {"target": dict(target), "attempts": [attempt]},
             }
+            if retry_context is not None:
+                operation["previous_remote_failure"] = retry_context["pointer"]
             if previous["status"] == "completed":
                 operation["previous_completed"] = {
                     key: previous[key] for key in PREVIOUS_COMPLETED_IDS if key in previous
@@ -1065,6 +1502,9 @@ class LocalTrainingService:
             except (ValueError, KeyError, TypeError, BoundaryError) as error:
                 raise BoundaryError("local_training", "remote_operation_invalid") from error
             write_replaceable_json(path, operation)
+            if retry_context is not None:
+                with suppress(OSError):
+                    self._remove_private_file(self._retry_permit_path(owner))
             return {"schema": SCHEMA_V4, "availability": "ready",
                     "operation": self._public(operation)}
 
@@ -1413,6 +1853,78 @@ class LocalTrainingService:
                 _validate_remote_operation(updated)
             except (ValueError, KeyError, TypeError, BoundaryError) as error:
                 raise BoundaryError("local_training", "remote_preflight_failure_invalid") from error
+            write_replaceable_json(path, updated)
+            return self._public(updated)
+
+    def record_remote_prepare_absent(
+        self, operation_id: object, *, expected_attempt_spec_sha256: str,
+        recovery_receipt: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Close an interrupted prepare after complete current exact-name lookup is absent.
+
+        The controller must make this transition only after a complete, successful
+        lookup in the workspace bound to the immutable attempt spec. This method
+        rechecks the exact spec digest and the journal's no-AppRef/no-submit boundary.
+        It records a bounded current lookup result, not a claim that the App never existed.
+        """
+        operation_id = digest(operation_id, "local_training.operation_id", length=32)
+        expected_attempt_spec_sha256 = digest(
+            expected_attempt_spec_sha256,
+            "local_training.expected_attempt_spec_sha256",
+        )
+        if not isinstance(recovery_receipt, dict):
+            raise BoundaryError("local_training", "remote_prepare_absence_unproven")
+        owner, store, _ = self._selected()
+        path, lock_path = self._paths(owner)
+        self._require_remote_lock(lock_path)
+        with instance_lock(lock_path, create=False):
+            current = self._read(path, owner.identity)
+            if (current.get("schema") != SCHEMA_V4
+                    or current.get("operation_id") != operation_id
+                    or current.get("status") != "interrupted_unknown"
+                    or current.get("stage") != "remote_unknown"):
+                raise BoundaryError("local_training", "remote_prepare_absence_unavailable")
+            latest = current["remote"]["attempts"][-1]
+            if (latest["phase"] != "submit_intent"
+                    or latest["app_phase"] != "prepare_intent"
+                    or latest["attempt_spec_ref"] is None
+                    or latest["app_ref_ref"] is not None
+                    or latest["handle_ref"] is not None
+                    or latest["submit_intent_at_unix_ns"] is not None
+                    or latest["provider_terminal"]):
+                raise BoundaryError("local_training", "remote_prepare_absence_unproven")
+            spec_bytes, app_ref_bytes, handle_bytes = _remote_provider_bytes(store, latest)
+            if (spec_bytes is None or app_ref_bytes is not None or handle_bytes is not None
+                    or hashlib.sha256(spec_bytes).hexdigest()
+                    != expected_attempt_spec_sha256):
+                raise BoundaryError("local_training", "remote_prepare_spec_changed")
+            attempts = list(current["remote"]["attempts"])
+            attempts[-1] = {
+                **latest,
+                "phase": "preflight_failed",
+                "terminal_state": "failed",
+                "provider_error_code": "provider_app_absent_before_submit",
+                "recovery_receipt": dict(recovery_receipt),
+            }
+            stopped_at = max(time.time_ns(), current["created_at_unix_ns"])
+            updated = {
+                **current,
+                "status": "failed",
+                "stage": "remote_failed",
+                "error_code": "provider_app_absent_before_submit",
+                "stopped_at_unix_ns": stopped_at,
+                "total_wall_seconds": max(
+                    0.0,
+                    (stopped_at - current["created_at_unix_ns"]) / 1_000_000_000,
+                ),
+                "remote": {**current["remote"], "attempts": attempts},
+            }
+            try:
+                _validate_remote_operation(updated)
+            except (ValueError, KeyError, TypeError, BoundaryError) as error:
+                raise BoundaryError(
+                    "local_training", "remote_prepare_absence_invalid",
+                ) from error
             write_replaceable_json(path, updated)
             return self._public(updated)
 
@@ -1914,6 +2426,10 @@ class LocalTrainingService:
             raise
         try:
             previous = self._read(path, owner.identity)
+            if self._load_remote_retry_permit(owner, store) is not None:
+                raise BoundaryError(
+                    "local_training", "remote_preflight_retry_start_required",
+                )
             if previous["status"] in {"pending", "cancelling", "interrupted_unknown"}:
                 raise BoundaryError("local_training", "previous_training_outcome_unknown")
             if previous.get("schema") == SCHEMA_V4 and previous["status"] in {

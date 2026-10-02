@@ -312,11 +312,23 @@ class FakeInputCancellation(BaseException):
 
 
 class FakeModalCLI:
-    def __init__(self, spec: m0_modal.M0AttemptSpec | None = None) -> None:
+    def __init__(
+        self,
+        spec: m0_modal.M0AttemptSpec | None = None,
+        *,
+        workspace_name: str = "test",
+        workspace_id: str = "workspace-01",
+    ) -> None:
         self.spec = spec
         self.deployed = False
         self.deploy_calls: list[list[str]] = []
         self.stop_calls: list[list[str]] = []
+        self.app_list_calls = 0
+        self.named_history_calls = 0
+        self.workspace_name = workspace_name
+        self.workspace_id = workspace_id
+        self.app_list_override: object | None = None
+        self.named_history_override: tuple[int, str, str] | None = None
         self.deploy_returncode = 0
         self.app_state = "deployed"
         self.app_tasks = "1"
@@ -326,10 +338,17 @@ class FakeModalCLI:
         if args[:2] == ["token", "info"]:
             return SimpleNamespace(
                 returncode=0,
-                stdout="Workspace: test (workspace-01)\n",
+                stdout=f"Workspace: {self.workspace_name} ({self.workspace_id})\n",
                 stderr="",
             )
         if args[:2] == ["app", "list"]:
+            self.app_list_calls += 1
+            if self.app_list_override is not None:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(self.app_list_override),
+                    stderr="",
+                )
             rows = []
             if self.deployed and self.spec is not None:
                 rows = [{
@@ -340,13 +359,27 @@ class FakeModalCLI:
                 }]
             return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
         if args[:2] == ["app", "history"]:
+            identifier = args[2]
+            if self.spec is not None and identifier == self.spec.app_name:
+                self.named_history_calls += 1
+                if self.named_history_override is not None:
+                    code, stdout, stderr = self.named_history_override
+                    return SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
+                if not self.deployed:
+                    return SimpleNamespace(
+                        returncode=1, stdout="",
+                        stderr=(
+                            f"No App with name '{self.spec.app_name}' found in the "
+                            f"'{self.spec.environment_name}' environment."
+                        ),
+                    )
             history = []
             if self.deployed and self.spec is not None:
                 history = [{
                     "version": "v1",
                     "tag": m0_modal.ModalM0Provider._spec_sha256(self.spec),
                 }]
-            return SimpleNamespace(returncode=0, stdout=json.dumps(history))
+            return SimpleNamespace(returncode=0, stdout=json.dumps(history), stderr="")
         if args and args[0] == "deploy":
             self.deploy_calls.append(args)
             if self.deploy_returncode == 0:
@@ -476,6 +509,107 @@ def test_unknown_prepare_without_visible_app_requires_read_only_reconciliation()
     assert len(cli.deploy_calls) == 1
     assert provider.resolve_app(spec) is None
     assert len(cli.deploy_calls) == 1
+
+
+def test_new_prepare_requires_canonical_workspace_id_even_when_slug_is_live_bound():
+    spec = replace(_attempt_spec(), account_id="chensunguo1210")
+    cli = FakeModalCLI(
+        spec, workspace_name="chensunguo1210", workspace_id="ac-BRJL3wJjpxPVWozQkvp9xf",
+    )
+    provider = m0_modal.ModalM0Provider(
+        spec=spec, sdk=FakeSDK(FakeFunction()), command_runner=cli,
+    )
+
+    with pytest.raises(BoundaryError, match="modal_account_mismatch"):
+        provider.prepare_app(spec)
+
+    assert cli.app_list_calls == cli.named_history_calls == 0
+    assert cli.deploy_calls == []
+
+
+def test_recovery_accepts_old_slug_only_from_same_live_workspace_binding():
+    spec = replace(_attempt_spec(), account_id="chensunguo1210")
+    cli = FakeModalCLI(
+        spec, workspace_name="chensunguo1210", workspace_id="ac-BRJL3wJjpxPVWozQkvp9xf",
+    )
+    cli.deployed = True
+    provider = m0_modal.ModalM0Provider(
+        spec=spec, sdk=FakeSDK(FakeFunction()), command_runner=cli,
+    )
+
+    recovered = provider.resolve_app(spec, allow_legacy_workspace_alias=True)
+
+    assert recovered is not None and recovered.account_id == "chensunguo1210"
+    assert cli.app_list_calls == 1
+    assert cli.deploy_calls == []
+
+    wrong_workspace = FakeModalCLI(
+        spec, workspace_name="other-workspace", workspace_id="ac-foreign",
+    )
+    wrong = m0_modal.ModalM0Provider(
+        spec=spec, sdk=FakeSDK(FakeFunction()), command_runner=wrong_workspace,
+    )
+    with pytest.raises(BoundaryError, match="modal_account_mismatch"):
+        wrong.resolve_app(spec, allow_legacy_workspace_alias=True)
+    assert wrong_workspace.app_list_calls == wrong_workspace.named_history_calls == 0
+
+    canonical_spec = replace(spec, account_id="ac-original")
+    changed_account = FakeModalCLI(
+        canonical_spec, workspace_name="ac-original", workspace_id="ac-current",
+    )
+    canonical_provider = m0_modal.ModalM0Provider(
+        spec=canonical_spec, sdk=FakeSDK(FakeFunction()), command_runner=changed_account,
+    )
+    with pytest.raises(BoundaryError, match="modal_account_mismatch"):
+        canonical_provider.resolve_app(
+            canonical_spec, allow_legacy_workspace_alias=True,
+        )
+    assert changed_account.app_list_calls == changed_account.named_history_calls == 0
+
+
+def test_absence_requires_complete_app_list_and_exact_name_history_not_found():
+    spec = _attempt_spec()
+    cli = FakeModalCLI(spec)
+    provider = m0_modal.ModalM0Provider(
+        spec=spec, sdk=FakeSDK(FakeFunction()), command_runner=cli,
+    )
+
+    assert provider.resolve_app(spec) is None
+    assert cli.app_list_calls == cli.named_history_calls == 1
+
+    cli.app_list_override = [{"app_id": "ap-app01"}]
+    with pytest.raises(BoundaryError, match="modal_app_list_incomplete"):
+        provider.resolve_app(spec)
+    assert cli.named_history_calls == 1
+
+    cli.app_list_override = []
+    cli.named_history_override = (0, "[]", "")
+    with pytest.raises(BoundaryError, match="modal_app_lookup_incomplete"):
+        provider.resolve_app(spec)
+
+    cli.named_history_override = (1, "", "permission denied")
+    with pytest.raises(BoundaryError, match="modal_app_name_lookup_unknown"):
+        provider.resolve_app(spec)
+
+    cli.named_history_override = (
+        1, "", f"No App with name '{spec.app_name}' found in the "
+        f"'{spec.environment_name}' environment.\npermission denied",
+    )
+    with pytest.raises(BoundaryError, match="modal_app_name_lookup_unknown"):
+        provider.resolve_app(spec)
+
+
+def test_stop_confirmation_rejects_incomplete_provider_app_rows():
+    smoke = Path(__file__).parents[1] / "deploy" / "cloud-worker" / "m0_synthetic_gpu_smoke.py"
+    namespace = runpy.run_path(str(smoke))
+    namespace["_stop_evidence"].__globals__["_modal_cli_json"] = (
+        lambda _args, **_kwargs: [{"app_id": "ap-app01"}]
+    )
+
+    with pytest.raises(namespace["PlanError"], match="modal_app_list_incomplete"):
+        namespace["_stop_evidence"](
+            "ap-app01", "staging", deadline=m0_modal.time.monotonic() + 10,
+        )
 
 
 def test_existing_attempt_with_different_spec_tag_is_rejected_without_deploy():

@@ -155,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--input-profile", choices=("text-menu-v1", "text-menu-v2"),
                         help="explicit Managed text-menu profile in the private Host setup")
     parser.add_argument("--remote-action", choices=("start", "resume", "reconcile",
-                                                       "cancel", "status"))
+                                                       "cancel", "retire", "status"))
     parser.add_argument("--run-id", help="owner-admitted CUDA M0 run for remote start")
     parser.add_argument("--operation-id", help="journaled remote M0 operation")
     parser.add_argument("--target-step", type=int,
@@ -250,6 +250,8 @@ def main(argv: list[str] | None = None) -> int:
                     if args.remote_action == "cancel":
                         result = controller.cancel(args.operation_id,
                                                    wait_seconds=args.wait_seconds)
+                    elif args.remote_action == "retire":
+                        result = controller.retire_preflight_failure(args.operation_id)
                     else:
                         result = controller.reconcile(args.operation_id,
                                                       wait_seconds=args.wait_seconds)

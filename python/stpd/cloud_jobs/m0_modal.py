@@ -1189,18 +1189,106 @@ class ModalM0Provider:
         except Exception:
             raise BoundaryError("modal_m0", "modal_command_unknown") from None
 
-    def _current_account_id(self) -> str:
+    def _current_workspace(self) -> tuple[str, str]:
+        """Return the CLI's live display name and canonical workspace ID."""
         completed = self._run(["token", "info"], timeout_seconds=MAX_MODAL_CONTROL_SECONDS)
         if completed.returncode != 0 or not isinstance(completed.stdout, str):
             raise BoundaryError("modal_m0", "modal_account_unavailable")
-        match = re.search(
-            r"^Workspace: .*\(([A-Za-z0-9][A-Za-z0-9._-]{0,127})\)\s*$",
+        matches = re.findall(
+            r"^Workspace: (.+?)\s+\(([A-Za-z0-9][A-Za-z0-9._-]{0,127})\)\s*$",
             completed.stdout,
             re.M,
         )
-        if match is None:
+        if len(matches) != 1 or not matches[0][0].strip():
             raise BoundaryError("modal_m0", "modal_account_identity_unavailable")
-        return match.group(1)
+        workspace_name, canonical_id = matches[0]
+        return workspace_name.strip(), canonical_id
+
+    def _current_account_id(self) -> str:
+        return self._current_workspace()[1]
+
+    def verify_account_id(
+        self, account_id: str, *, allow_legacy_workspace_alias: bool = False,
+    ) -> str:
+        """Verify a pinned ID, optionally accepting its live-bound historical slug.
+
+        New operations call this in strict mode before writing their journal. Recovery
+        may opt into the alias only when the provider's own token-info response binds
+        that exact old value to the current canonical workspace ID.
+        """
+        workspace_name, canonical_id = self._current_workspace()
+        if account_id == canonical_id:
+            return canonical_id
+        is_canonical_account_id = account_id.startswith("ac-")
+        if (allow_legacy_workspace_alias and not is_canonical_account_id
+                and account_id == workspace_name):
+            return canonical_id
+        raise BoundaryError("modal_m0", "modal_account_mismatch")
+
+    @staticmethod
+    def _complete_app_rows(rows: Any) -> list[dict[str, Any]]:
+        if not isinstance(rows, list):
+            raise BoundaryError("modal_m0", "modal_app_list_invalid")
+        complete: list[dict[str, Any]] = []
+        for row in rows:
+            if (not isinstance(row, dict)
+                    or not isinstance(row.get("description"), str)
+                    or not isinstance(row.get("app_id"), str)
+                    or not _MODAL_ID_RE["app"].fullmatch(row["app_id"])):
+                raise BoundaryError("modal_m0", "modal_app_list_incomplete")
+            complete.append(row)
+        return complete
+
+    @staticmethod
+    def _complete_history_rows(rows: Any) -> list[tuple[int, dict[str, Any]]]:
+        if not isinstance(rows, list):
+            raise BoundaryError("modal_m0", "modal_app_history_invalid")
+        parsed: list[tuple[int, dict[str, Any]]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise BoundaryError("modal_m0", "modal_app_history_incomplete")
+            match = re.fullmatch(r"v([1-9][0-9]*)", str(row.get("version", "")))
+            if match is None or not isinstance(row.get("tag"), str):
+                raise BoundaryError("modal_m0", "modal_app_history_incomplete")
+            parsed.append((int(match.group(1)), row))
+        return parsed
+
+    def _confirm_named_app_absent(
+        self, spec: M0AttemptSpec, *, allow_legacy_workspace_alias: bool,
+    ) -> None:
+        """Use Modal's exact-name history lookup to confirm a complete absence result."""
+        self.verify_account_id(
+            spec.account_id,
+            allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        )
+        completed = self._run(
+            ["app", "history", spec.app_name, "--env", spec.environment_name, "--json"],
+            timeout_seconds=MAX_MODAL_CONTROL_SECONDS,
+        )
+        if completed.returncode != 0:
+            output = "\n".join(
+                item for item in (completed.stdout, getattr(completed, "stderr", None))
+                if isinstance(item, str)
+            )
+            expected = (
+                f"No App with name '{spec.app_name}' found in the "
+                f"'{spec.environment_name}' environment."
+            )
+            lines = [line.strip() for line in output.splitlines() if line.strip()]
+            if lines in ([expected], [f"Error: {expected}"]):
+                return
+            raise BoundaryError("modal_m0", "modal_app_name_lookup_unknown")
+        if not isinstance(completed.stdout, str):
+            raise BoundaryError("modal_m0", "modal_app_history_invalid")
+        try:
+            history_rows = json.loads(completed.stdout)
+        except (TypeError, json.JSONDecodeError):
+            raise BoundaryError("modal_m0", "modal_app_history_invalid_json") from None
+        # If the name resolves in history while the complete App list omitted it, the
+        # provider views disagree or only one view covers the historical App. Keep the
+        # operation unknown instead of treating that as absence.
+        self._complete_history_rows(history_rows)
+        raise BoundaryError("modal_m0", "modal_app_lookup_incomplete")
 
     def _modal_json(self, args: list[str], *, timeout_seconds: float) -> Any:
         if self._command_runner is None:
@@ -1276,49 +1364,57 @@ class ModalM0Provider:
             raise BoundaryError("modal_m0", "foreign_target")
         return target
 
-    def resolve_app(self, spec: M0AttemptSpec) -> ModalM0Target | None:
+    def resolve_app(
+        self, spec: M0AttemptSpec, *, allow_legacy_workspace_alias: bool = False,
+    ) -> ModalM0Target | None:
         """Read-only reconciliation by the already journaled unique attempt name."""
         if not isinstance(spec, M0AttemptSpec):
             raise BoundaryError("modal_m0", "typed_attempt_spec_required")
         if self.spec is not None and self.spec != spec:
             raise BoundaryError("modal_m0", "foreign_attempt_spec")
-        if self._current_account_id() != spec.account_id:
-            raise BoundaryError("modal_m0", "modal_account_mismatch")
+        self.verify_account_id(
+            spec.account_id,
+            allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        )
         app_rows = self._modal_json(
             ["app", "list", "--env", spec.environment_name],
             timeout_seconds=MAX_MODAL_CONTROL_SECONDS,
         )
-        if not isinstance(app_rows, list):
-            raise BoundaryError("modal_m0", "modal_app_list_invalid")
+        app_rows = self._complete_app_rows(app_rows)
         matches = [
             row for row in app_rows
             if isinstance(row, dict) and row.get("description") == spec.app_name
         ]
         if not matches:
+            self._confirm_named_app_absent(
+                spec, allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+            )
             return None
         if len(matches) != 1:
             raise BoundaryError("modal_m0", "modal_app_name_ambiguous")
         app_id = matches[0].get("app_id")
         if not isinstance(app_id, str) or not _MODAL_ID_RE["app"].fullmatch(app_id):
             raise BoundaryError("modal_m0", "modal_app_id_unavailable")
+        self.verify_account_id(
+            spec.account_id,
+            allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        )
         histories = self._modal_json(
             ["app", "history", app_id, "--env", spec.environment_name],
             timeout_seconds=MAX_MODAL_CONTROL_SECONDS,
         )
         if not isinstance(histories, list) or not histories:
             raise BoundaryError("modal_m0", "modal_app_history_unavailable")
-        parsed: list[tuple[int, dict[str, Any]]] = []
-        for row in histories:
-            if not isinstance(row, dict):
-                continue
-            match = re.fullmatch(r"v([1-9][0-9]*)", str(row.get("version", "")))
-            if match:
-                parsed.append((int(match.group(1)), row))
+        parsed = self._complete_history_rows(histories)
         if not parsed:
             raise BoundaryError("modal_m0", "modal_app_version_unavailable")
         app_version, latest = max(parsed, key=lambda item: item[0])
         if latest.get("tag") != self._spec_sha256(spec):
             raise BoundaryError("modal_m0", "existing_app_spec_mismatch")
+        self.verify_account_id(
+            spec.account_id,
+            allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+        )
         try:
             function = self._client().Function.from_name(
                 spec.app_name,
@@ -1612,12 +1708,16 @@ class ModalM0Provider:
             return M0CancelAck(target.app_id, handle.call_id, False, "unknown")
         return M0CancelAck(target.app_id, handle.call_id, True, "acknowledged")
 
-    def stop_app(self, app_ref: ModalM0Target) -> M0StopAck:
+    def stop_app(
+        self, app_ref: ModalM0Target, *, allow_legacy_workspace_alias: bool = False,
+    ) -> M0StopAck:
         """Ask Modal to stop this exact per-attempt App; acknowledgement is not proof."""
         target = self._active_target(app_ref)
         try:
-            if self._current_account_id() != target.account_id:
-                return M0StopAck(target.app_id, False, "unknown")
+            self.verify_account_id(
+                target.account_id,
+                allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+            )
             completed = self._run(
                 ["app", "stop", target.app_id, "--yes", "--env", target.environment_name],
                 timeout_seconds=MAX_MODAL_CONTROL_SECONDS,
@@ -1628,20 +1728,26 @@ class ModalM0Provider:
             return M0StopAck(target.app_id, False, "unknown")
         return M0StopAck(target.app_id, True, "acknowledged")
 
-    def inspect_stop(self, app_ref: ModalM0Target) -> M0StopInspection:
+    def inspect_stop(
+        self, app_ref: ModalM0Target, *, allow_legacy_workspace_alias: bool = False,
+    ) -> M0StopInspection:
         """Confirm provider App state, zero tasks, and no containers using smoke tooling."""
         target = self._active_target(app_ref)
         unknown = M0StopInspection(target.app_id, "unknown", None, None, False)
         try:
-            if self._current_account_id() != target.account_id:
-                return unknown
+            self.verify_account_id(
+                target.account_id,
+                allow_legacy_workspace_alias=allow_legacy_workspace_alias,
+            )
             rows = self._modal_json(
                 ["app", "list", "--env", target.environment_name],
                 timeout_seconds=MAX_MODAL_CONTROL_SECONDS,
             )
         except BoundaryError:
             return unknown
-        if not isinstance(rows, list):
+        try:
+            rows = self._complete_app_rows(rows)
+        except BoundaryError:
             return unknown
         matching = [
             row for row in rows
