@@ -8,6 +8,7 @@ import io
 import json
 import sqlite3
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from platform_bundle3_fixture import bundle3, load, seal, write
@@ -22,6 +23,7 @@ from spireagent.hub.campaigns import create_campaign_tables
 from spireagent.hub.collections import CollectionAccess
 from spireagent.hub.console_auth import ConsolePrincipal
 from spireagent.hub.curation import CurationLedger
+from spireagent.hub.dataset_curation import DatasetCuration
 from spireagent.hub.exports import REQUEST_SCHEMA
 from spireagent.hub.identity import IdentityService
 from spireagent.hub.member_api import MemberApi, grant_collection_sharing
@@ -491,6 +493,119 @@ def test_curation_overlap_legacy_source_superset_needs_no_claim_or_payload_reads
     assert b"synthetic-only-gold-selection-payload" not in serialized.encode()
 
 
+def test_curation_overlap_legacy_training_claim_is_source_vouched(api, monkeypatch):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api, candidate_schema="legacy")
+    ledger = CurationLedger(owner.operations)
+    ledger.claim("synthetic-legacy-training-claim", "training", ("synthetic-training-run",))
+    ledger.bind("synthetic-legacy-training-claim", candidate.artifact_id)
+    monkeypatch.setattr(
+        owner.store,
+        "read_payload",
+        lambda *_args, **_kwargs: pytest.fail("overlap metadata must not read payloads"),
+    )
+
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["status"] == "no_indexed_overlap"
+    assert result["candidate_scope"] == "source_superset"
+    assert result["coverage"]["candidate_source"] == "complete"
+    assert result["coverage"]["run"] == "complete"
+    assert result["coverage"]["run_group"] == "complete"
+    assert result["findings"]["run"] == {"status": "none", "count": 0}
+
+
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("multiple", "legacy_candidate_claim_conflict"),
+        ("nontraining", "legacy_candidate_claim_conflict"),
+        ("misbound", "legacy_candidate_claim_conflict"),
+        ("unbacked_run", "candidate_claim_source_mismatch"),
+        ("empty_runs", "candidate_owner_membership_missing"),
+    ],
+)
+def test_curation_overlap_legacy_claim_conflicts_remain_unknown(api, case, reason):
+    router, owner, _, member, _ = api
+    candidate, gold = indexed_overlap_pair(api, candidate_schema="legacy")
+    ledger = CurationLedger(owner.operations)
+    if case == "multiple":
+        for claim_id in ("legacy-training-one", "legacy-training-two"):
+            ledger.claim(claim_id, "training", ("synthetic-training-run",))
+            ledger.bind(claim_id, candidate.artifact_id)
+    elif case == "nontraining":
+        ledger.claim("legacy-test-claim", "test", ("synthetic-training-run",))
+        ledger.bind("legacy-test-claim", candidate.artifact_id)
+    elif case == "misbound":
+        ledger.claim(candidate.artifact_id, "training", ("synthetic-training-run",))
+        ledger.bind(candidate.artifact_id, "f" * 64)
+    elif case == "unbacked_run":
+        ledger.claim("legacy-unbacked-claim", "training", ("unindexed-run",))
+        ledger.bind("legacy-unbacked-claim", candidate.artifact_id)
+    else:
+        with owner.operations.transaction() as db:
+            db.execute(
+                "INSERT INTO curation_claims VALUES(?,?,?,?)",
+                ("legacy-empty-claim", "training", candidate.artifact_id, 0.0),
+            )
+
+    result = router.read(
+        "curation-overlap",
+        f"candidate={candidate.artifact_id}&gold={gold.artifact_id}",
+        member,
+    )
+
+    assert result["status"] == "unknown"
+    assert reason in result["reasons"]
+
+
+def test_curation_overlap_legacy_historical_default_registers_training_claim(
+    api, monkeypatch
+):
+    _, owner, _, _, _ = api
+    source = Manifest(
+        "evidence", owner.producer,
+        parameters=FrozenObject.of({
+            "schema": "stpd/received-bundle-v1", "disposition": "verified",
+        }),
+    )
+    owner.store.publish(source)
+    candidate = Manifest(
+        "dataset", owner.producer,
+        parents=(Parent("source_" + source.artifact_id, source.artifact_id),),
+        parameters=FrozenObject.of({"schema": DECISION_DATASET_SCHEMA}),
+    )
+    owner.store.publish(candidate)
+    curation = DatasetCuration(owner, object())
+    monkeypatch.setattr(
+        curation,
+        "load",
+        lambda _manifest: SimpleNamespace(run_ids={"historical-training-run"}),
+    )
+
+    curation._prepare_gold(lambda *_args: None)
+
+    with owner.operations.transaction() as db:
+        claim = db.execute(
+            "SELECT id,purpose,artifact FROM curation_claims WHERE artifact=?",
+            (candidate.artifact_id,),
+        ).fetchone()
+        claim_runs = {
+            row[0]
+            for row in db.execute(
+                "SELECT run FROM curation_claim_runs WHERE claim=?", (candidate.artifact_id,)
+            )
+        }
+    assert claim["id"] == candidate.artifact_id
+    assert claim["purpose"] == "training"
+    assert claim["artifact"] == candidate.artifact_id
+    assert claim_runs == {"historical-training-run"}
+
+
 def test_curation_overlap_legacy_source_superset_reports_possible_overlap(api):
     router, owner, _, member, _ = api
     candidate, gold = indexed_overlap_pair(api, shared_source=True, candidate_schema="legacy")
@@ -513,6 +628,9 @@ def test_curation_overlap_missing_legacy_source_index_stays_unknown(api):
     router, owner, _, member, _ = api
     candidate, gold = indexed_overlap_pair(api, candidate_schema="legacy")
     candidate_source = candidate.parents[0].artifact_id
+    ledger = CurationLedger(owner.operations)
+    ledger.claim("synthetic-legacy-training-claim", "training", ("synthetic-training-run",))
+    ledger.bind("synthetic-legacy-training-claim", candidate.artifact_id)
     with owner.operations.transaction() as db:
         db.execute("DELETE FROM curation_exact_source_index WHERE source=?", (candidate_source,))
 
@@ -526,6 +644,7 @@ def test_curation_overlap_missing_legacy_source_index_stays_unknown(api):
     assert result["candidate_scope"] == "source_superset"
     assert result["findings"]["run"] == {"status": "unknown", "count": None}
     assert result["coverage"]["run_group"] == "incomplete"
+    assert "source_index_incomplete" in result["reasons"]
 
 
 def test_curation_overlap_hides_missing_or_unauthorized_catalog_candidates(api, monkeypatch):

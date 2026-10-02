@@ -519,8 +519,9 @@ def overlap_metadata(
             )
             candidate_claims = _bounded_rows(
                 db,
-                "SELECT id,purpose,artifact FROM curation_claims WHERE artifact=? LIMIT 2",
-                (candidate_id,),
+                "SELECT id,purpose,artifact FROM curation_claims "
+                "WHERE artifact=? OR id=? LIMIT 3",
+                (candidate_id, candidate_id),
                 budget=read_budget,
             )
             target_claims = _bounded_rows(
@@ -539,12 +540,26 @@ def overlap_metadata(
 
             candidate_claim_id: str | None = None
             if legacy_candidate:
-                # A legacy selection has no owner claim. Do not invent one: its full
-                # source closure will supply a conservative run superset below.
+                # Legacy selections may have a training claim from the owner's
+                # historical reconciliation path. Accept only one exact training
+                # claim; the full source closure still supplies the conservative
+                # overlap scope below.
                 if candidate_claims:
-                    return unknown_for("legacy_candidate_claim_conflict")
+                    claim = candidate_claims[0]
+                    if (
+                        len(candidate_claims) != 1
+                        or claim["artifact"] != candidate_id
+                        or claim["purpose"] != "training"
+                        or candidate_info.get("purpose", "training") != "training"
+                    ):
+                        return unknown_for("legacy_candidate_claim_conflict")
+                    candidate_claim_id = claim["id"]
             else:
-                if len(candidate_claims) != 1 or candidate_claims[0]["purpose"] != "training":
+                if (
+                    len(candidate_claims) != 1
+                    or candidate_claims[0]["artifact"] != candidate_id
+                    or candidate_claims[0]["purpose"] != "training"
+                ):
                     return unknown_for("candidate_owner_claim_missing")
                 candidate_claim_id = candidate_claims[0]["id"]
             overlap_scope_authorized = True
@@ -564,6 +579,38 @@ def overlap_metadata(
                     return budget_limited_result()
 
             source_ids_json = json.dumps(sorted(source_ids))
+            candidate_claim_sources_complete = True
+            candidate_claim_source_mismatch = False
+            if candidate_claim_id is not None:
+                candidate_claim_run_rows = _bounded_rows(
+                    db,
+                    "SELECT run FROM curation_claim_runs WHERE claim=? LIMIT ?",
+                    (candidate_claim_id, MAX_OVERLAP_RUNS + 1),
+                    budget=read_budget,
+                )
+                if candidate_claim_run_rows is None:
+                    return budget_limited_result()
+                if not candidate_claim_run_rows:
+                    return unknown_for("candidate_owner_membership_missing")
+                if len(candidate_claim_run_rows) > MAX_OVERLAP_RUNS:
+                    candidate_claim_sources_complete = False
+                else:
+                    candidate_claim_source_rows = _bounded_rows(
+                        db,
+                        "SELECT r.run FROM curation_claim_runs r WHERE r.claim=? "
+                        "AND NOT EXISTS (SELECT 1 FROM json_each(?) x "
+                        "JOIN curation_source_runs s ON s.source=CAST(x.value AS TEXT) "
+                        "AND s.run=r.run) LIMIT 1",
+                        (candidate_claim_id, source_ids_json),
+                        budget=read_budget,
+                    )
+                    if candidate_claim_source_rows is None:
+                        return budget_limited_result()
+                    candidate_claim_sources_complete = not candidate_claim_source_rows
+                    candidate_claim_source_mismatch = bool(candidate_claim_source_rows)
+                    if candidate_claim_source_mismatch:
+                        return unknown_for("candidate_claim_source_mismatch")
+
             exact_source_rows = _bounded_rows(
                 db,
                 "WITH candidate_sources(source) AS ("
@@ -669,22 +716,6 @@ def overlap_metadata(
             gold_claim_sources_complete = gold_source_rows is not None and not gold_source_rows
             gold_claim_source_mismatch = bool(gold_source_rows)
 
-            candidate_claim_source_rows: list[sqlite3.Row] | None = []
-            if not legacy_candidate:
-                candidate_claim_source_rows = _bounded_rows(
-                    db,
-                    "SELECT r.run FROM curation_claim_runs r WHERE r.claim=? "
-                    "AND NOT EXISTS (SELECT 1 FROM json_each(?) x "
-                    "JOIN curation_source_runs s ON s.source=CAST(x.value AS TEXT) "
-                    "AND s.run=r.run) LIMIT 1",
-                    (candidate_claim_id, source_ids_json),
-                    budget=read_budget,
-                )
-            candidate_claim_sources_complete = (
-                candidate_claim_source_rows is not None
-                and not candidate_claim_source_rows
-            )
-            candidate_claim_source_mismatch = bool(candidate_claim_source_rows)
             gold_claim_runs: dict[str, set[str]] = {
                 claim["id"]: set() for claim in claims
             }
