@@ -1038,6 +1038,9 @@ def test_stopped_before_submit_closes_and_reuses_existing_one_use_permit_without
     ("checkpoint_candidate_sha256", "f" * 64), ("validated_checkpoint_id", "f" * 64),
     ("resume_checkpoint_id", "f" * 64), ("runtime_evidence_ref", "present"),
     ("local_acceptance_started_at_unix_ns", 1),
+    ("operation.checkpoint_id", "f" * 64), ("operation.checkpoint_step", 1),
+    ("operation.result_id", "f" * 64), ("operation.model_id", "f" * 64),
+    ("operation.evaluation_id", "f" * 64), ("operation.completed_at_unix_ns", 1),
 ])
 def test_owner_locked_stopped_recovery_rejects_any_submitted_or_result_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, value,
@@ -1051,7 +1054,10 @@ def test_owner_locked_stopped_recovery_rejects_any_submitted_or_result_evidence(
         journal, _ = service._paths(owner)
         before = journal.read_bytes()
         current = json.loads(before)
-        current["remote"]["attempts"][-1][field] = value
+        if field.startswith("operation."):
+            current[field.removeprefix("operation.")] = value
+        else:
+            current["remote"]["attempts"][-1][field] = value
         # Inject the reread under the owner lock to exercise the transition guard
         # even when the outer journal parser would also reject a malformed state.
         monkeypatch.setattr(service, "_read", lambda _path, _identity: current)
@@ -1117,5 +1123,49 @@ def test_controller_rejects_foreign_stop_spec_and_keeps_unknown_without_retireme
         assert state.submits == state.prepares == state.stops == 0
         with pytest.raises(BoundaryError, match="remote_preflight_retirement_unavailable"):
             controller.retire_preflight_failure(op)
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_submitted_call_failure_cannot_use_stopped_prepare_recovery_or_retry_permit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    from spireagent.json_boundary import BoundaryError
+    from spireagent.workbench.local_m0_remote import ModalM0Settings
+    from stpd.cloud_jobs.m0_modal import M0AttemptSpec
+
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, store, owner, _, run, _, _, _ = case
+    try:
+        state = _FakeModalState(store, ready=False)
+        controller = _controller(
+            service, state, ModalM0Settings("ac-account01", "test-env", "im-test-image"),
+        )
+        unknown = controller.start(run.artifact_id, 1, wait_seconds=0)
+        op = unknown["operation_id"]
+        assert state.submits == 1 and unknown["status"] == "interrupted_unknown"
+        evidence = service.remote_provider_evidence(op)
+        spec = M0AttemptSpec.from_bytes(evidence["attempt_spec_bytes"])
+        journal, _ = service._paths(owner)
+        before = journal.read_bytes()
+        with pytest.raises(BoundaryError, match="remote_prepare_stop_unproven"):
+            service.record_remote_prepare_stopped(
+                op, expected_attempt_spec_sha256=hashlib.sha256(spec.to_bytes()).hexdigest(),
+                recovery_receipt=_stopped_receipt(spec),
+            )
+        assert journal.read_bytes() == before
+        service.record_remote_observation(
+            op, state="failed", provider_terminal=True, error_code="call_terminal_failure",
+        )
+        failed = service.record_remote_stop_confirmation(op, {
+            "app_id": "ap-test-app", "app_state": "stopped", "active_tasks": 0,
+            "active_containers": 0, "confirmed": True,
+        })
+        assert failed["status"] == "failed"
+        failed_bytes = journal.read_bytes()
+        with pytest.raises(BoundaryError, match="remote_preflight_retirement_unavailable"):
+            controller.retire_preflight_failure(op)
+        assert journal.read_bytes() == failed_bytes
+        assert service.remote_preflight_retry_context() is None
     finally:
         torch.set_num_threads(previous_threads)
