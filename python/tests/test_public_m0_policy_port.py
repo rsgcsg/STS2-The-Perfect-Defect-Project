@@ -112,23 +112,32 @@ def test_generic_capabilities_reject_mismatched_identity_or_scope(change):
 
 
 class FakeScorer:
+    def __init__(self, *, compact=False):
+        self.compact = compact
+
     def score_snapshot(self, value):
-        public = project_public_snapshot(value)
+        public = project_public_snapshot(value, compact=self.compact)
         return {action.key: float(index) for index, action in enumerate(public.actions)}
 
 
-def pair():
+def pair(*, observed=None, profile="public_lite"):
+    renderer_version = (
+        "stpd-public-snapshot-compact-v2" if profile == "public_compact" else "public-v1"
+    )
     manifest = {
         "manifest_id": "selection-m0",
         "adapter": {"id": ADAPTER_ID},
-        "representation": {"id": "public_lite", "version": "public-v1",
+        "representation": {"id": profile, "version": renderer_version,
                            "input_schema": "sts2.player-environment/snapshot-1"},
-        "support": {"interaction_kinds": ["combat_turn"],
+        "support": {"interaction_kinds": [
+                        (observed or snapshot())["interaction"]["kind"]],
                     "action_verbs": sorted(GENERIC_ACTION_VERBS)},
     }
     adapter = object.__new__(PublicM0PolicyAdapter)
-    adapter.manifest, adapter.scorer, adapter.closed = manifest, FakeScorer(), False
-    observed = snapshot()
+    adapter.manifest, adapter.scorer, adapter.closed = (
+        manifest, FakeScorer(compact=profile == "public_compact"), False,
+    )
+    observed = copy.deepcopy(observed) if observed is not None else snapshot()
     for action in observed["bound_actions"]["actions"]:
         action["label"] = "same visible label"
     keys = [action["bound_action_id"] for action in observed["bound_actions"]["actions"]]
@@ -141,8 +150,105 @@ def pair():
     return adapter, request
 
 
+def synthetic_noncombat_snapshot(kind):
+    """Build a public-only generic scene; no game or Human evidence is used."""
+    value = snapshot()
+    value["persistent"] = None
+    value["interaction"]["kind"] = kind
+    value["interaction"]["content_schema"] = f"sts2.player-environment/{kind}-1"
+    value["interaction"]["content"] = {
+        "surface": {"kind": kind, "choice_count": 2},
+        "context": {"kind": kind},
+    }
+    role_by_kind = {
+        "character_select": "character",
+        "map_navigation": "map_node",
+        "event_option": "event_option",
+        "shop_inventory": "shop_item",
+        "rest_site": "rest_option",
+        "treasure_room": "treasure",
+        "reward_claim": "reward",
+    }
+    role = role_by_kind[kind]
+    value["referents"] = [
+        {"referent_id": f"choice-{suffix}", "role": role, "kind": "entity",
+         "state": {"visible": True}, "properties": {"label": f"Option {suffix.upper()}"}}
+        for suffix in ("a", "b")
+    ]
+    value["bound_actions"]["actions"] = [
+        {"bound_action_id": "candidate-select", "verb": "select",
+         "interaction_id": "interaction-1", "subject_referent_id": "choice-a",
+         "arguments": [], "label": "Option A"},
+        {"bound_action_id": "candidate-cancel", "verb": "cancel",
+         "interaction_id": "interaction-1", "subject_referent_id": None,
+         "arguments": [], "label": "Cancel"},
+    ]
+    value["bound_actions"]["materialized_count"] = 2
+    value["bound_actions"]["total_count"] = 2
+    return value
+
+
+def assert_persistent_object_prechange_bytes(value):
+    expected = {
+        False: (
+            "[STPD_STATE version=stpd-public-snapshot-lite-v1 profile=public_lite]\n"
+            '{"DECISION":{"content":{"context":{"is_play_phase":true,"kind":"combat",'
+            '"turn_owner":"player"}},"surface":"combat_turn"},"READS":[],"RUN":'
+            '{"character":"DEFECT"},"VISIBLE_ENTITIES":[{"properties":{"cost":"1",'
+            '"definition_id":"DEFEND_DEFECT","description":"Gain 5 Block."},"role":'
+            '"hand_card","state":{"visible":true}}]}\n[/STPD_STATE]',
+            (
+                "[STPD_ACTION version=stpd-public-snapshot-lite-v1]\n"
+                '{"arguments":{},"kind":"play","subject":{"cost":"1","definition_id":'
+                '"DEFEND_DEFECT","description":"Gain 5 Block.","role":"hand_card",'
+                '"state":{"visible":true}}}\n[/STPD_ACTION]',
+                "[STPD_ACTION version=stpd-public-snapshot-lite-v1]\n"
+                '{"arguments":{},"kind":"end_turn","subject":{}}\n[/STPD_ACTION]',
+            ),
+        ),
+        True: (
+            "[STPD_STATE version=stpd-public-snapshot-compact-v2 profile=public_compact]\n"
+            '{"FACTS":{},"STATE":{"DECISION":{"content":{"context":{"is_play_phase":'
+            'true,"kind":"combat","turn_owner":"player"}},"surface":"combat_turn"},'
+            '"READS":[],"RUN":{"character":"DEFECT"},"VISIBLE_ENTITIES":[{"properties":'
+            '{"cost":"1","definition_id":"DEFEND_DEFECT","description":"Gain 5 Block."},'
+            '"role":"hand_card","state":{"visible":true}}]}}\n[/STPD_STATE]',
+            (
+                "[STPD_ACTION version=stpd-public-snapshot-compact-v2]\n"
+                '{"arguments":{},"kind":"play","subject":{"cost":"1","definition_id":'
+                '"DEFEND_DEFECT","description":"Gain 5 Block.","role":"hand_card",'
+                '"state":{"visible":true}}}\n[/STPD_ACTION]',
+                "[STPD_ACTION version=stpd-public-snapshot-compact-v2]\n"
+                '{"arguments":{},"kind":"end_turn","subject":{}}\n[/STPD_ACTION]',
+            ),
+        ),
+    }
+
+    for compact, (state_text, action_texts) in expected.items():
+        public = project_public_snapshot(value, compact=compact)
+        assert public.state_text == state_text
+        assert public.action_texts == action_texts
+
+
+@pytest.mark.parametrize(("persistent", "missing", "error"), [
+    ({"content": None}, False, "persistent"),
+    ({"content": []}, False, "persistent"),
+    ("invalid", False, "persistent"),
+    (None, True, "malformed_snapshot"),
+])
+def test_malformed_or_missing_persistent_state_is_rejected(persistent, missing, error):
+    value = snapshot()
+    if missing:
+        del value["persistent"]
+    else:
+        value["persistent"] = persistent
+    with pytest.raises(BoundaryError, match=error):
+        project_public_snapshot(value)
+
+
 def test_full_ordered_catalog_scores_protocol_and_close():
     adapter, request = pair()
+    assert_persistent_object_prechange_bytes(snapshot())
     result = adapter.decide(request)
     keys = [action["bound_action_id"] for action in
             request["bundle"]["observation"]["bound_actions"]["actions"]]
@@ -158,6 +264,22 @@ def test_full_ordered_catalog_scores_protocol_and_close():
     assert decision["request_id"] == "r1" and decision["output"] == result
     with pytest.raises(BoundaryError, match="adapter_closed"):
         adapter.decide(request)
+
+
+@pytest.mark.parametrize("kind", [
+    "character_select", "map_navigation", "event_option", "shop_inventory",
+    "rest_site", "treasure_room", "reward_claim",
+])
+def test_public_compact_m0_scores_complete_nullable_persistent_noncombat_catalog(kind):
+    observed = synthetic_noncombat_snapshot(kind)
+    adapter, request = pair(observed=observed, profile="public_compact")
+
+    result = adapter.decide(request)
+
+    assert result == {"candidate_digest": request["candidate_digest"],
+                      "scores": [0.0, 1.0], "selected_index": 1}
+    assert request["candidate_count"] == len(result["scores"]) == 2
+    assert '"RUN":{}' in project_public_snapshot(observed, compact=True).state_text
 
 
 @pytest.mark.parametrize("change", [
