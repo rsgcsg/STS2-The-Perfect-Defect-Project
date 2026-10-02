@@ -340,33 +340,11 @@ class FakeModalPermissionDenied(Exception):
     pass
 
 
-class FakeAppGetByDeploymentNameRequest:
-    def __init__(self, *, name: str, environment_name: str) -> None:
-        self.name = name
-        self.environment_name = environment_name
-
-
-class FakeAppGetByDeploymentNameResponse:
-    def __init__(
-        self,
-        *,
-        app_id: str = "",
-        previous_app_id: str = "",
-        environment_name: str = "",
-    ) -> None:
-        self.app_id = app_id
-        self.previous_app_id = previous_app_id
-        self.environment_name = environment_name
-
-
 @pytest.fixture
-def fake_modal_api_pb2(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+def modal_api_pb2_fixture(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     async_utils = pytest.importorskip("modal._utils.async_utils")
-    api_pb2 = SimpleNamespace(
-        AppGetByDeploymentNameRequest=FakeAppGetByDeploymentNameRequest,
-        AppGetByDeploymentNameResponse=FakeAppGetByDeploymentNameResponse,
-    )
     import_module = importlib.import_module
+    api_pb2 = import_module("modal_proto.api_pb2")
 
     def import_for_provider(name: str) -> object:
         if name == "modal_proto.api_pb2":
@@ -572,7 +550,7 @@ def test_unknown_prepare_is_never_redeployed_and_matching_late_app_is_recovered(
 
 
 def test_unknown_prepare_without_visible_app_requires_read_only_reconciliation(
-    fake_modal_api_pb2: SimpleNamespace,
+    modal_api_pb2_fixture: ModuleType,
 ):
     spec = _attempt_spec()
     cli = FakeModalCLI(spec)
@@ -645,8 +623,8 @@ def test_recovery_accepts_old_slug_only_from_same_live_workspace_binding():
     assert changed_account.app_list_calls == changed_account.named_history_calls == 0
 
 
-def test_absence_uses_typed_exact_lookup_instead_of_rich_cli_diagnostic(
-    fake_modal_api_pb2: SimpleNamespace,
+def test_absence_uses_sdk_empty_id_contract_instead_of_rich_cli_diagnostic(
+    modal_api_pb2_fixture: ModuleType,
 ):
     spec = _attempt_spec()
     cli = FakeModalCLI(spec)
@@ -661,6 +639,10 @@ def test_absence_uses_typed_exact_lookup_instead_of_rich_cli_diagnostic(
         "╰─────────────────────────────────────────────────╯",
     )
     sdk = FakeSDK(FakeFunction())
+    sdk.app_name_lookup_error = None
+    sdk.app_name_lookup_response = modal_api_pb2_fixture.AppGetByDeploymentNameResponse(
+        environment_name=spec.environment_name,
+    )
     provider = m0_modal.ModalM0Provider(
         spec=spec, sdk=sdk, command_runner=cli,
     )
@@ -676,18 +658,17 @@ def test_absence_uses_typed_exact_lookup_instead_of_rich_cli_diagnostic(
         provider.resolve_app(spec)
 
 
-@pytest.mark.parametrize("app_id_field", ["app_id", "previous_app_id"])
 def test_named_lookup_current_or_recently_stopped_app_stays_unknown(
-    fake_modal_api_pb2: SimpleNamespace,
-    app_id_field: str,
+    modal_api_pb2_fixture: ModuleType,
 ):
     spec = _attempt_spec()
     cli = FakeModalCLI(spec)
     sdk = FakeSDK(FakeFunction())
     sdk.app_name_lookup_error = None
-    sdk.app_name_lookup_response = fake_modal_api_pb2.AppGetByDeploymentNameResponse(
+    sdk.app_name_lookup_response = modal_api_pb2_fixture.AppGetByDeploymentNameResponse(
         environment_name=spec.environment_name,
-        **{app_id_field: "ap-app01"},
+        app_id="ap-current01",
+        previous_app_id="ap-previous01",
     )
     provider = m0_modal.ModalM0Provider(
         spec=spec, sdk=sdk, command_runner=cli,
@@ -699,50 +680,33 @@ def test_named_lookup_current_or_recently_stopped_app_stays_unknown(
     assert cli.named_history_calls == 0
 
 
-def test_named_lookup_empty_success_reply_stays_unknown(
-    fake_modal_api_pb2: SimpleNamespace,
+def test_named_lookup_wrong_type_environment_or_app_id_stays_unknown(
+    modal_api_pb2_fixture: ModuleType,
 ):
     spec = _attempt_spec()
     cli = FakeModalCLI(spec)
     sdk = FakeSDK(FakeFunction())
     sdk.app_name_lookup_error = None
-    sdk.app_name_lookup_response = fake_modal_api_pb2.AppGetByDeploymentNameResponse(
-        environment_name=spec.environment_name,
-    )
-    provider = m0_modal.ModalM0Provider(
-        spec=spec, sdk=sdk, command_runner=cli,
-    )
-
-    with pytest.raises(BoundaryError, match="modal_app_lookup_incomplete"):
-        provider.resolve_app(spec)
-    assert sdk.app_name_lookup_calls == [(spec.app_name, spec.environment_name)]
-
-
-@pytest.mark.parametrize(
-    "response",
-    [
-        FakeAppGetByDeploymentNameResponse(environment_name="other-environment"),
-        FakeAppGetByDeploymentNameResponse(
-            environment_name="staging", app_id="malformed-app-id",
+    invalid_responses = (
+        object(),
+        modal_api_pb2_fixture.AppGetByDeploymentNameResponse(
+            environment_name="other-environment",
         ),
-    ],
-)
-def test_named_lookup_mismatched_environment_or_app_identity_stays_unknown(
-    fake_modal_api_pb2: SimpleNamespace,
-    response: FakeAppGetByDeploymentNameResponse,
-):
-    spec = _attempt_spec()
-    cli = FakeModalCLI(spec)
-    sdk = FakeSDK(FakeFunction())
-    sdk.app_name_lookup_error = None
-    sdk.app_name_lookup_response = response
-    provider = m0_modal.ModalM0Provider(
-        spec=spec, sdk=sdk, command_runner=cli,
+        modal_api_pb2_fixture.AppGetByDeploymentNameResponse(
+            environment_name=spec.environment_name,
+            app_id="malformed-app-id",
+        ),
     )
-
-    with pytest.raises(BoundaryError, match="modal_app_name_lookup_unknown"):
-        provider.resolve_app(spec)
-    assert sdk.app_name_lookup_calls == [(spec.app_name, spec.environment_name)]
+    for response in invalid_responses:
+        sdk.app_name_lookup_response = response
+        provider = m0_modal.ModalM0Provider(
+            spec=spec, sdk=sdk, command_runner=cli,
+        )
+        with pytest.raises(BoundaryError, match="modal_app_name_lookup_unknown"):
+            provider.resolve_app(spec)
+    assert sdk.app_name_lookup_calls == [
+        (spec.app_name, spec.environment_name),
+    ] * len(invalid_responses)
 
 
 @pytest.mark.parametrize(
@@ -750,7 +714,7 @@ def test_named_lookup_mismatched_environment_or_app_identity_stays_unknown(
     [FakeModalPermissionDenied, RuntimeError],
 )
 def test_named_lookup_non_not_found_errors_stay_unknown(
-    fake_modal_api_pb2: SimpleNamespace,
+    modal_api_pb2_fixture: ModuleType,
     error_type: type[Exception],
 ):
     spec = _attempt_spec()

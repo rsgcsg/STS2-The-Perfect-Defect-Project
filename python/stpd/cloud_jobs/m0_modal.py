@@ -1291,11 +1291,18 @@ class ModalM0Provider:
         if (not isinstance(response, api_pb2.AppGetByDeploymentNameResponse)
                 or response.environment_name != spec.environment_name):
             raise BoundaryError("modal_m0", "modal_app_name_lookup_unknown")
+        if (not isinstance(response.app_id, str)
+                or not isinstance(response.previous_app_id, str)):
+            raise BoundaryError("modal_m0", "modal_app_name_lookup_unknown")
         for app_id in (response.app_id, response.previous_app_id):
             if app_id and not _MODAL_ID_RE["app"].fullmatch(app_id):
                 raise BoundaryError("modal_m0", "modal_app_name_lookup_unknown")
-        # A current or recently stopped deployment is not absence. An empty success
-        # reply is also ambiguous; only typed NOT_FOUND above closes the lookup.
+        # Match Modal 1.5.5's modal.cli.app.resolve_app_identifier: a name lookup
+        # with neither current nor previous App ID raises its typed NotFoundError.
+        if not response.app_id and not response.previous_app_id:
+            return
+        # A current or recently stopped App is not absence when the complete CLI list
+        # omitted it; the provider views disagree, so keep the operation unknown.
         raise BoundaryError("modal_m0", "modal_app_lookup_incomplete")
 
     def _modal_json(self, args: list[str], *, timeout_seconds: float) -> Any:
