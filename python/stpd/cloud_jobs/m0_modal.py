@@ -44,10 +44,9 @@ M0_MODAL_FUNCTION_NAME = "token_remote_update"
 MAX_MODAL_COMMAND_SECONDS = 120
 MAX_MODAL_CONTROL_SECONDS = 5
 
-# Leave headroom over the current few-MiB request and ~70-MiB checkpoint result.
-# Modal stores function payloads over 2 MiB in object storage automatically; these
-# application bounds do not claim a provider-wide maximum.
-MAX_M0_REQUEST_BYTES = 64 * 1024 * 1024
+# A resumed request base64-embeds its checkpoint; leave headroom over the current
+# ~81-MiB checkpoint result. Modal object-stores payloads over 2 MiB automatically.
+MAX_M0_REQUEST_BYTES = 256 * 1024 * 1024
 MAX_M0_RESULT_BYTES = 128 * 1024 * 1024
 MAX_POLL_TIMEOUT_SECONDS = 60.0
 _FRAME_MAGIC = b"STPD-M0-MODAL-RESULT\x00"
