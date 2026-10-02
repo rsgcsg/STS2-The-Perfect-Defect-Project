@@ -14,6 +14,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from contextlib import suppress
@@ -444,9 +445,28 @@ def _preflight_environment(environment_name: str) -> None:
         raise PlanError("named_existing_modal_environment_not_found")
 
 
+def _wall_deadline_supported() -> bool:
+    """Return whether this thread can enforce the launcher’s signal deadline."""
+    return (
+        threading.current_thread() is threading.main_thread()
+        and callable(getattr(signal, "signal", None))
+        and callable(getattr(signal, "getsignal", None))
+        and callable(getattr(signal, "getitimer", None))
+        and callable(getattr(signal, "setitimer", None))
+        and hasattr(signal, "SIGALRM")
+        and hasattr(signal, "ITIMER_REAL")
+    )
+
+
+def _require_wall_deadline_support() -> None:
+    """Fail before the Modal SDK when the host cannot bound synchronous calls."""
+    if not _wall_deadline_supported():
+        raise PlanError("bounded_modal_call_deadline_unavailable")
+
+
 def _with_wall_deadline(seconds: float, callback: Any) -> Any:
     """Interrupt a synchronous Modal client call while reserving cleanup time."""
-    if seconds <= 0 or not hasattr(signal, "setitimer"):
+    if seconds <= 0 or not _wall_deadline_supported():
         raise TimeoutError("bounded_modal_call_deadline_unavailable")
     previous_delay, previous_interval = signal.getitimer(signal.ITIMER_REAL)
     previous_handler = signal.getsignal(signal.SIGALRM)
@@ -807,7 +827,12 @@ def _cancel_call(call: Any, *, timeout_seconds: float) -> None:
 
 
 def execute(plan: SmokePlan) -> dict[str, Any]:
-    """Submit one Modal FunctionCall and require provider stop evidence before return."""
+    """Run the developer smoke with bounded POSIX main-thread Modal calls.
+
+    The host launcher requires ``signal.setitimer``; worker runtime platform
+    support does not make this synchronous launcher portable to every host OS.
+    """
+    _require_wall_deadline_support()
     _require_cuda_configuration()
     try:
         import modal

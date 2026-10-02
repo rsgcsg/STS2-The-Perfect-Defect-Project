@@ -121,16 +121,25 @@ class FakeOutputExpiredError(FakeModalTimeoutError):
 
 
 class FakeCall:
-    def __init__(self, result: object, *, pending: bool = False) -> None:
+    def __init__(
+        self,
+        result: object,
+        *,
+        pending: bool = False,
+        wall_deadline: bool = False,
+    ) -> None:
         self.object_id = "fc-test-123"
         self.result = result
         self.pending = pending
+        self.wall_deadline = wall_deadline
         self.slow_poll = False
         self.get_timeouts: list[float] = []
         self.cancel_options: list[dict[str, bool]] = []
 
     def get(self, *, timeout: float) -> object:
         self.get_timeouts.append(timeout)
+        if self.wall_deadline and timeout > 0:
+            raise TimeoutError("bounded_modal_call_deadline_exceeded")
         if self.pending:
             if timeout == 0 and self.slow_poll:
                 smoke.time.sleep(5)
@@ -149,9 +158,10 @@ class FakeModalBoundary:
         result: object,
         *,
         pending: bool = False,
+        wall_deadline: bool = False,
         spawn_error: Exception | None = None,
     ) -> None:
-        self.call = FakeCall(result, pending=pending)
+        self.call = FakeCall(result, pending=pending, wall_deadline=wall_deadline)
         self.spawn_error = spawn_error
         self.listed_environments = 0
         self.registry_image_refs: list[str] = []
@@ -235,6 +245,7 @@ def install_mocks(
     *,
     receipt: object | None = None,
     pending: bool = False,
+    wall_deadline: bool = False,
     spawn_error: Exception | None = None,
     app_state: str = "stopped",
     app_tasks: str = "0",
@@ -243,9 +254,16 @@ def install_mocks(
     boundary = FakeModalBoundary(
         valid_receipt(plan) if receipt is None else receipt,
         pending=pending,
+        wall_deadline=wall_deadline,
         spawn_error=spawn_error,
     )
     monkeypatch.setattr(smoke, "_require_cuda_configuration", lambda: None)
+    # Execute the mocked lifecycle without OS timers; deadline behavior is injected
+    # at FakeCall.get() so these state-machine tests run on Windows as well.
+    monkeypatch.setattr(smoke, "_require_wall_deadline_support", lambda: None)
+    monkeypatch.setattr(
+        smoke, "_with_wall_deadline", lambda _seconds, callback: callback(),
+    )
     monkeypatch.setitem(sys.modules, "modal", boundary.modal)
 
     def cli_json(args: list[str], *, timeout_seconds: float) -> object:
@@ -268,6 +286,46 @@ def install_mocks(
         ),
     )
     return boundary
+
+
+def test_with_wall_deadline_interrupts_callback_on_posix():
+    if not smoke._wall_deadline_supported():
+        pytest.skip("the real signal deadline requires POSIX main-thread timers")
+
+    started = smoke.time.monotonic()
+    with pytest.raises(TimeoutError, match="bounded_modal_call_deadline_exceeded"):
+        smoke._with_wall_deadline(0.02, lambda: smoke.time.sleep(0.2))
+    assert smoke.time.monotonic() - started < 1.0
+
+
+def test_with_wall_deadline_rejects_missing_timer_without_calling_callback(monkeypatch):
+    monkeypatch.delattr(smoke.signal, "setitimer", raising=False)
+    called = False
+
+    def callback() -> None:
+        nonlocal called
+        called = True
+
+    with pytest.raises(TimeoutError, match="bounded_modal_call_deadline_unavailable"):
+        smoke._with_wall_deadline(1, callback)
+    assert called is False
+
+
+def test_execute_rejects_missing_timer_before_cuda_or_modal_access(monkeypatch):
+    monkeypatch.delattr(smoke.signal, "setitimer", raising=False)
+    monkeypatch.setattr(
+        smoke,
+        "_require_cuda_configuration",
+        lambda: pytest.fail("deadline capability must be checked before CUDA setup"),
+    )
+    monkeypatch.setattr(
+        smoke,
+        "_modal_cli_json",
+        lambda *_args, **_kwargs: pytest.fail("deadline capability must be checked before Modal"),
+    )
+
+    with pytest.raises(smoke.PlanError, match="bounded_modal_call_deadline_unavailable"):
+        smoke.execute(make_plan())
 
 
 def test_complete_receipt_validation_rejects_the_old_minimal_receipt():
@@ -385,6 +443,21 @@ def test_execute_cancels_timed_out_call_once_and_never_claims_completion(monkeyp
     assert error.value.outcome["stop_confirmation"] == "confirmed"
     assert error.value.outcome["status"] == "failed"
     assert error.value.outcome["reason"] == "modal_function_call_wall_deadline"
+
+
+def test_execute_cancels_after_simulated_wall_deadline_and_confirms_stop(monkeypatch):
+    plan = make_plan()
+    boundary = install_mocks(monkeypatch, plan, pending=True, wall_deadline=True)
+    monkeypatch.setattr(smoke, "MAX_CLEANUP_SECONDS", 0.01)
+
+    with pytest.raises(smoke.SmokeExecutionError) as error:
+        smoke.execute(plan)
+
+    assert boundary.call.cancel_options == [{"terminate_containers": True}]
+    assert error.value.outcome["reason"] == "modal_outer_wall_deadline"
+    assert error.value.outcome["call_terminal"] == "terminal_after_app_stop"
+    assert error.value.outcome["stop_confirmation"] == "confirmed"
+    assert error.value.outcome["status"] == "failed"
 
 
 def test_ambiguous_spawn_failure_stays_unknown_even_if_app_is_stopped(monkeypatch):
