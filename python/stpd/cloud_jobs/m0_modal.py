@@ -18,12 +18,15 @@ import math
 import platform
 import re
 import struct
+import sys
 from dataclasses import dataclass, replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes, object_fields
+from spireagent.source import REPOSITORY, source_identity
 
 from ..canonical import semantic_hash
 
@@ -225,12 +228,7 @@ class ModalM0TargetRuntimeMetadata:
     def token_target_runtime(self, target: ModalM0Target) -> Any:
         """Create the core run-preparation runtime only after exact target binding."""
         self.bind(target)
-        try:
-            from ..workers.token_ranking import TokenTargetRuntime
-        except ImportError:
-            raise BoundaryError(
-                "modal_m0_target_runtime", "core_target_runtime_unavailable"
-            ) from None
+        from ..workers.token_ranking import TokenTargetRuntime
         return TokenTargetRuntime(
             torch_version=self.torch_version,
             cpu_threads=self.cpu_threads,
@@ -424,7 +422,6 @@ class ModalM0RuntimeEvidence:
             or self.producer != handle.target.producer
             or self.torch_version != handle.target_runtime.torch_version
             or self.cpu_threads != handle.target_runtime.cpu_threads
-            or "a10" not in self.gpu_name.casefold()
         ):
             raise BoundaryError("modal_m0_runtime_evidence", "saved_handle_identity_mismatch")
 
@@ -614,7 +611,6 @@ def _observe_worker_runtime() -> SimpleNamespace:
     if (
         not cuda_version
         or not cuda_available
-        or "a10" not in gpu_name.casefold()
         or type(cpu_threads) is not int
         or not 1 <= cpu_threads <= 256
     ):
@@ -746,6 +742,16 @@ def execute_m0_request_bytes(
     ):
         raise BoundaryError("modal_m0", "invalid_deployed_image_object_id")
 
+    # Resolve identity from the package actually imported in the image's checkout.
+    # The deployment wrapper deliberately excludes local source mounts and invokes
+    # this module with the fixed image's venv, so these facts are measured remotely.
+    try:
+        actual_producer = _runtime_source_identity()
+    except Exception:
+        raise BoundaryError("modal_m0", "runtime_source_identity_unavailable") from None
+    if actual_producer != expected_producer:
+        raise BoundaryError("modal_m0", "runtime_source_lock_mismatch")
+
     request = _decode_request(request_bytes)
     if request.producer != expected_producer or request.target_device != "cuda":
         raise BoundaryError("modal_m0", "deployed_source_or_cuda_mismatch")
@@ -785,6 +791,42 @@ def _result_matches_request(result: Any, request: Any) -> bool:
         and result.resume_checkpoint_id == request.resume_checkpoint_id
         and _result_identity_sha256(result) == _request_result_identity_sha256(request)
     )
+
+
+def _runtime_source_identity() -> Producer:
+    """Return source identity only when imported from the pinned image checkout."""
+    root = Path(__file__).resolve().parents[2]
+    if root != Path("/opt/stpd/python").resolve():
+        raise BoundaryError("modal_m0", "fixed_image_checkout_required")
+    return source_identity(root)
+
+
+def _worker_main() -> int:
+    """Read a single request from stdin and emit only the bounded response frame."""
+    import os
+
+    try:
+        image_id = os.environ.get("STPD_M0_MODAL_IMAGE_ID", "")
+        revision = os.environ.get("STPD_M0_SOURCE_REVISION", "")
+        lock_sha256 = os.environ.get("STPD_M0_UV_LOCK_SHA256", "")
+        digest(revision, "modal_m0.source_revision", length=40)
+        digest(lock_sha256, "modal_m0.uv_lock_sha256")
+        request_bytes = sys.stdin.buffer.read(MAX_M0_REQUEST_BYTES + 1)
+        response = execute_m0_request_bytes(
+            request_bytes,
+            expected_producer=Producer(REPOSITORY, revision, lock_sha256),
+            expected_image_object_id=image_id,
+        )
+        sys.stdout.buffer.write(response)
+        sys.stdout.buffer.flush()
+    except Exception:
+        # Avoid forwarding SDK, path, credential, or request details to Modal logs.
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_worker_main())
 
 
 class ModalM0Provider:

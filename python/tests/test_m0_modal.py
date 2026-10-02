@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import runpy
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -12,7 +12,6 @@ import pytest
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject
 from stpd.cloud_jobs import m0_modal
-from stpd.workers import token_ranking
 from stpd.workers.token_ranking import LightActionM0Config
 
 PRODUCER = Producer("rsgcsg/STS2-The-Perfect-Defect-Project", "a" * 40, "b" * 64)
@@ -22,7 +21,7 @@ OBSERVED = {
     "python_version": "3.11.9",
     "cuda_version": "12.8",
     "cuda_available": True,
-    "gpu_name": "NVIDIA A10",
+    "gpu_name": "NVIDIA L4",
     "cpu_threads": 4,
 }
 
@@ -318,9 +317,7 @@ def test_target_and_call_handle_round_trip_all_provider_and_source_identity(
         different_account.restore_handle(call.to_bytes())
 
 
-def test_fake_target_metadata_binds_runtime_to_account_image_and_source_lock(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_fake_target_metadata_binds_runtime_to_account_image_and_source_lock():
     target = _target()
     metadata = _target_runtime(target)
 
@@ -338,15 +335,10 @@ def test_fake_target_metadata_binds_runtime_to_account_image_and_source_lock(
             target=target,
         )
 
-    class FakeTargetRuntime:
-        def __init__(self, *, torch_version: str, cpu_threads: int) -> None:
-            self.torch_version = torch_version
-            self.cpu_threads = cpu_threads
+    from stpd.workers.token_ranking import TokenTargetRuntime
 
-    monkeypatch.setattr(token_ranking, "TokenTargetRuntime", FakeTargetRuntime, raising=False)
     runtime = metadata.token_target_runtime(target)
-    assert runtime.torch_version == OBSERVED["torch_version"]
-    assert runtime.cpu_threads == OBSERVED["cpu_threads"]
+    assert runtime == TokenTargetRuntime(OBSERVED["torch_version"], OBSERVED["cpu_threads"])
 
 
 def test_submit_unknown_is_reported_once_without_internal_retry(
@@ -464,7 +456,7 @@ def test_poll_accepts_bytes_only_after_call_and_result_identity_checks(
     assert evidence.python_version == OBSERVED["python_version"]
     assert evidence.cuda_version == OBSERVED["cuda_version"]
     assert evidence.cuda_available is True
-    assert evidence.gpu_name == "NVIDIA A10"
+    assert evidence.gpu_name == "NVIDIA L4"
     assert evidence.cpu_threads == OBSERVED["cpu_threads"]
     assert m0_modal.ModalM0RuntimeEvidence.from_bytes(evidence.to_bytes()) == evidence
 
@@ -619,6 +611,7 @@ def test_remote_entry_validates_source_and_calls_only_existing_update_executor(
         "_decode_request",
         lambda value: request if value == raw else None,
     )
+    monkeypatch.setattr(m0_modal, "_runtime_source_identity", lambda: PRODUCER)
     monkeypatch.setattr(m0_modal, "_result_matches_request", lambda got, expected: got is result)
     import stpd.workers.token_remote_update as worker
 
@@ -639,7 +632,7 @@ def test_remote_entry_validates_source_and_calls_only_existing_update_executor(
     assert frame.endswith(result_bytes)
     assert calls == [request]
 
-    with pytest.raises(BoundaryError, match="deployed_source_or_cuda_mismatch"):
+    with pytest.raises(BoundaryError, match="runtime_source_lock_mismatch"):
         m0_modal.execute_m0_request_bytes(
             raw,
             expected_producer=Producer("other/repository", "9" * 40, "8" * 64),
@@ -654,6 +647,7 @@ def test_remote_entry_fails_closed_before_training_when_runtime_is_unavailable(
     raw = b"request"
     request = _request(raw)
     monkeypatch.setattr(m0_modal, "_decode_request", lambda value: request)
+    monkeypatch.setattr(m0_modal, "_runtime_source_identity", lambda: PRODUCER)
     monkeypatch.setattr(
         m0_modal,
         "_observe_worker_runtime",
@@ -684,6 +678,7 @@ def test_remote_entry_rejects_runtime_metadata_mismatch_before_training(
     raw = b"request"
     request = _request(raw)
     monkeypatch.setattr(m0_modal, "_decode_request", lambda value: request)
+    monkeypatch.setattr(m0_modal, "_runtime_source_identity", lambda: PRODUCER)
     monkeypatch.setattr(
         m0_modal,
         "_observe_worker_runtime",
@@ -703,11 +698,164 @@ def test_remote_entry_rejects_runtime_metadata_mismatch_before_training(
     assert calls == []
 
 
+def test_remote_entry_accepts_cuda_runtime_without_a10_model_assumption(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake_torch = SimpleNamespace(
+        __version__=OBSERVED["torch_version"],
+        version=SimpleNamespace(cuda=OBSERVED["cuda_version"]),
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            get_device_name=lambda index: "NVIDIA H100",
+        ),
+        get_num_threads=lambda: OBSERVED["cpu_threads"],
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    observed = m0_modal._observe_worker_runtime()
+    assert observed.cuda_available is True
+    assert observed.gpu_name == "NVIDIA H100"
+
+
+def test_runtime_source_identity_fails_closed_outside_fixed_image_checkout():
+    with pytest.raises(BoundaryError, match="runtime_source_identity_unavailable"):
+        m0_modal.execute_m0_request_bytes(
+            b"request",
+            expected_producer=PRODUCER,
+            expected_image_object_id="im-image01",
+        )
+
+
+def test_real_train_only_request_round_trips_through_mock_modal_and_local_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from test_token_remote_update import _canonical_run
+
+    from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
+    from stpd.workers.token_ranking import (
+        CUDA_STEP_RNG_PROTOCOL,
+        TokenRankingEngine,
+        TokenTargetRuntime,
+        config_payload,
+        token_training_identity,
+    )
+    from stpd.workers.token_remote_update import (
+        TokenRemoteUpdateRequest,
+        TokenRemoteUpdateResult,
+        prepare_token_remote_update,
+        validate_token_remote_update,
+    )
+    from stpd.workers.token_worker import prepare_token_run
+
+    case = _canonical_run(tmp_path, monkeypatch)
+    torch, previous_threads, store, owner, operation, producer, inputs, config, _ = case
+    try:
+        target_runtime = TokenTargetRuntime.current()
+        cuda_config = replace(config, device="cuda")
+        run = prepare_token_run(
+            store,
+            inputs,
+            cuda_config,
+            producer,
+            replicate="modal-provider-integration",
+            target_runtime=target_runtime,
+        )
+        request = prepare_token_remote_update(
+            store,
+            owner,
+            run.artifact_id,
+            producer,
+            operation,
+            2,
+            attempt_id="a" * 32,
+        )
+        request_bytes = request.to_bytes()
+        decoded_request = TokenRemoteUpdateRequest.from_bytes(request_bytes)
+        assert decoded_request == request
+
+        # Synthetic CPU tensors are tagged with the CUDA request identity solely for
+        # structural validation. They are not evidence of remote CUDA execution.
+        engine = TokenRankingEngine(inputs, config)
+        engine.advance()
+        engine.advance()
+        state = decode_checkpoint(engine.checkpoint())
+        _, expected_identity = token_training_identity(
+            inputs, cuda_config, request.backbone_identity.value(),
+        )
+        state["config"] = config_payload(cuda_config)
+        state["data_identity"] = expected_identity
+        state["rng_protocol"] = CUDA_STEP_RNG_PROTOCOL
+        state["torch_version"] = target_runtime.torch_version
+        state["cpu_threads"] = target_runtime.cpu_threads
+        checkpoint = encode_checkpoint(state)
+        result = TokenRemoteUpdateResult(
+            request.request_sha256,
+            request.attempt_id,
+            request.run_id,
+            request.input_id,
+            request.producer,
+            request.operation_id,
+            request.training_binding,
+            request.target_device,
+            request.target_step,
+            request.config,
+            request.resume_checkpoint_id,
+            None,
+            request.target_step,
+            hashlib.sha256(checkpoint).hexdigest(),
+            checkpoint,
+            request.backbone_identity,
+        )
+        result_bytes = result.to_bytes()
+        target = _target(producer=producer)
+        target_metadata = m0_modal.ModalM0TargetRuntimeMetadata.from_provider_metadata(
+            {
+                "target_id": target.target_id,
+                "producer": producer.to_dict(),
+                "image_object_id": target.image_object_id,
+                "torch_version": target_runtime.torch_version,
+                "cpu_threads": target_runtime.cpu_threads,
+            },
+            target=target,
+        )
+        function = FakeFunction()
+        call = FakeCall("fc-call01")
+        provider = m0_modal.ModalM0Provider(
+            target,
+            target_metadata,
+            sdk=FakeSDK(function, call),
+        )
+        assert provider.token_target_runtime() == target_runtime
+        handle = provider.submit(request_bytes)
+        assert function.spawn_calls == [request_bytes]
+        call.result = m0_modal._encode_worker_response(
+            decoded_request,
+            result_bytes,
+            expected_image_object_id=target.image_object_id,
+            runtime=_runtime_observation(
+                torch_version=target_runtime.torch_version,
+                cpu_threads=target_runtime.cpu_threads,
+                gpu_name="NVIDIA L4",
+            ),
+        )
+        before = store.manifest_ids()
+        returned_bytes = provider.poll(handle)
+        assert returned_bytes == result_bytes
+        returned_result = TokenRemoteUpdateResult.from_bytes(returned_bytes)
+        assert validate_token_remote_update(
+            store, owner, request, returned_result, producer, operation,
+        ) == returned_result
+        assert store.manifest_ids() == before
+        assert provider.get_runtime_evidence(handle).gpu_name == "NVIDIA L4"
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
 def test_deployment_entry_declares_fixed_image_bounded_ephemeral_worker_without_running_it(
     monkeypatch: pytest.MonkeyPatch,
 ):
     configured: dict[str, object] = {}
-    executions: list[object] = []
+    subprocess_calls: list[tuple[list[str], dict[str, object]]] = []
 
     class FakeApp:
         def __init__(self, name: str) -> None:
@@ -734,11 +882,12 @@ def test_deployment_entry_declares_fixed_image_bounded_ephemeral_worker_without_
     monkeypatch.setenv("STPD_M0_MODAL_IMAGE_ID", "im-image01")
     monkeypatch.setenv("STPD_M0_SOURCE_REVISION", PRODUCER.source_revision)
     monkeypatch.setenv("STPD_M0_UV_LOCK_SHA256", PRODUCER.uv_lock_sha256)
-    monkeypatch.setattr(
-        m0_modal,
-        "execute_m0_request_bytes",
-        lambda *args, **kwargs: executions.append(args),
-    )
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        subprocess_calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout=b"bounded-worker-frame", stderr=b"")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
 
     entry = Path(__file__).parents[1] / "deploy" / "cloud-worker" / "m0_update_modal.py"
     namespace = runpy.run_path(str(entry))
@@ -748,19 +897,35 @@ def test_deployment_entry_declares_fixed_image_bounded_ephemeral_worker_without_
     assert configured["app_name"] == m0_modal.M0_MODAL_APP_NAME
     assert configured["image_id"] == "im-image01"
     assert configured["name"] == m0_modal.M0_MODAL_FUNCTION_NAME
-    assert configured["gpu"] == "A10"
-    assert configured["cpu"] == 4.0
-    assert configured["memory"] == 32_768
-    assert configured["ephemeral_disk"] == 20_480
-    assert configured["timeout"] == 3_600
-    assert configured["startup_timeout"] == 1_200
+    assert configured["gpu"] == "L4"
+    assert configured["cpu"] == 2.0
+    assert configured["memory"] == 8_192
+    assert configured["timeout"] == 900
+    assert configured["startup_timeout"] == 120
     assert configured["max_containers"] == 1
     assert configured["max_inputs"] == 1
     assert configured["retries"] == 0
     assert configured["min_containers"] == 0
-    assert configured["scaledown_window"] == 60
+    assert configured["scaledown_window"] == 30
     assert configured["single_use_containers"] is True
+    assert configured["serialized"] is True
+    assert configured["include_source"] is False
     assert "secrets" not in configured and "volumes" not in configured
-    assert configured["env"]["OMP_NUM_THREADS"] == "4"
-    assert configured["env"]["MKL_NUM_THREADS"] == "4"
-    assert executions == []
+    assert configured["env"]["OMP_NUM_THREADS"] == "2"
+    assert configured["env"]["MKL_NUM_THREADS"] == "2"
+    assert namespace["token_remote_update"](b"request") == b"bounded-worker-frame"
+    assert len(subprocess_calls) == 1
+    command, options = subprocess_calls[0]
+    assert command == [
+        "/opt/stpd/python/.venv/bin/python",
+        "-m",
+        "stpd.cloud_jobs.m0_modal",
+    ]
+    assert options["cwd"] == "/opt/stpd/python"
+    assert options["input"] == b"request"
+    assert options["timeout"] == 900
+    assert "PYTHONPATH" not in options["env"]
+    assert "PYTHONHOME" not in options["env"]
+    assert options["env"]["STPD_M0_MODAL_IMAGE_ID"] == "im-image01"
+    assert options["env"]["STPD_M0_SOURCE_REVISION"] == PRODUCER.source_revision
+    assert options["env"]["STPD_M0_UV_LOCK_SHA256"] == PRODUCER.uv_lock_sha256
