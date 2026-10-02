@@ -1586,7 +1586,7 @@ def _remote_stop_confirmation(app_id: str) -> dict:
             "active_containers": 0, "confirmed": True}
 
 
-def test_remote_m0_reservation_is_durable_and_restart_becomes_unknown(
+def test_remote_m0_reservation_is_durable_and_restart_keeps_saved_handle_pollable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, dataset_id, _, store = _ready(tmp_path, monkeypatch)
@@ -1626,10 +1626,12 @@ def test_remote_m0_reservation_is_durable_and_restart_becomes_unknown(
         handle_bytes=handle_bytes,
     )
     restarted = LocalTrainingService(config).status()["operation"]
-    assert restarted["status"] == "interrupted_unknown"
-    assert restarted["error_code"] == "previous_training_outcome_unknown"
+    assert restarted["status"] == "pending"
+    assert restarted["stage"] == "remote_running"
+    assert "error_code" not in restarted
     persisted = json.loads(path.read_bytes())
-    assert persisted["status"] == "interrupted_unknown"
+    assert persisted["status"] == "pending"
+    assert persisted["stage"] == "remote_running"
     _, saved_app_ref, saved_handle = training_module._remote_provider_bytes(
         store, persisted["remote"]["attempts"][0],
     )
