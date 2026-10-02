@@ -43,6 +43,7 @@ from spireagent.workbench.memory_recipe import (
     recipe_for_memory_config,
 )
 from spireagent.workbench.research_process import private_child as _private_child
+from stpd.cloud_jobs.m0_modal import MAX_M0_REQUEST_BYTES
 
 SCHEMA = "stpd/local-training-operation-v1"
 SCHEMA_V2 = "stpd/local-training-operation-v2"
@@ -78,7 +79,7 @@ REMOTE_RESULT_PREFIX = "local-training/remote-results/"
 REMOTE_RESULT_CHUNK_PREFIX = "local-training/remote-result-chunks/"
 REMOTE_CONTROL_PREFIX = "local-training/remote-control/"
 REMOTE_CHUNK_BYTES = 8 * 1024 * 1024
-REMOTE_MAX_REQUEST_BYTES = 64 * 1024 * 1024
+REMOTE_MAX_REQUEST_BYTES = MAX_M0_REQUEST_BYTES
 REMOTE_MAX_RESULT_BYTES = 128 * 1024 * 1024
 REMOTE_MAX_CONTROL_BYTES = 128 * 1024
 REMOTE_MAX_TIMEOUT_SECONDS = 900
@@ -1374,7 +1375,8 @@ class LocalTrainingService:
         with instance_lock(lock_path, create=False):
             current = self._read(path, owner.identity)
             if (current.get("schema") != SCHEMA_V4 or current.get("operation_id") != operation_id
-                    or current.get("status") != "pending"):
+                    or current.get("status") not in {"pending", "interrupted_unknown"}
+                    or current.get("stage") not in {"remote_submit_intent", "remote_unknown"}):
                 raise BoundaryError("local_training", "remote_preflight_unavailable")
             latest = current["remote"]["attempts"][-1]
             if (latest["phase"] != "submit_intent" or latest["handle_ref"] is not None

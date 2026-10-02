@@ -234,6 +234,74 @@ def _controller(service, state, settings=None, **kwargs):
     )
 
 
+def test_reconcile_stops_durable_app_ref_when_submit_handle_was_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, store, _, _, _, _, _, dataset_id = case
+    try:
+        from test_local_training import (
+            _pin_remote_m0_provider_identity,
+            _remote_m0_request,
+            _remote_m0_target,
+        )
+
+        operation = service.reserve_remote_m0(
+            dataset_id, input_profile="public_lite",
+            request_bytes=_remote_m0_request("6" * 32, "7" * 32, 1),
+            target=_remote_m0_target(), target_step=1,
+        )["operation"]
+        app_ref_bytes, _, _ = _pin_remote_m0_provider_identity(service, operation)
+        state = _FakeModalState(store)
+
+        recovered = _controller(service, state).reconcile(
+            operation["operation_id"], wait_seconds=0,
+        )
+
+        assert recovered["status"] == "interrupted_unknown"
+        assert recovered["stage"] == "remote_unknown"
+        attempt = recovered["remote"]["attempts"][-1]
+        assert attempt["stop_confirmation"]["confirmed"] is True
+        evidence = service.remote_provider_evidence(operation["operation_id"])
+        assert evidence["app_ref_bytes"] == app_ref_bytes
+        assert evidence["handle_bytes"] is None
+        assert state.stops == 1
+        assert state.submits == state.prepares == 0
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_reconcile_closes_reservation_crash_before_attempt_spec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, steps=1)
+    torch, previous_threads, service, store, _, _, _, _, _, dataset_id = case
+    try:
+        from test_local_training import _remote_m0_request, _remote_m0_target
+
+        operation = service.reserve_remote_m0(
+            dataset_id, input_profile="public_lite",
+            request_bytes=_remote_m0_request("8" * 32, "9" * 32, 1),
+            target=_remote_m0_target(), target_step=1,
+        )["operation"]
+        assert operation["remote"]["attempts"][-1]["app_phase"] == "not_prepared"
+        # Status recovery may already have classified the orphaned reservation as unknown.
+        assert service.status()["operation"]["status"] == "interrupted_unknown"
+        state = _FakeModalState(store)
+
+        recovered = _controller(service, state).reconcile(
+            operation["operation_id"], wait_seconds=0,
+        )
+
+        assert recovered["status"] == "failed"
+        assert recovered["stage"] == "remote_failed"
+        assert recovered["error_code"] == "interrupted_before_provider_prepare"
+        assert recovered["remote"]["attempts"][-1]["phase"] == "preflight_failed"
+        assert state.stops == state.submits == state.prepares == 0
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
 def test_remote_controller_restarts_by_polling_saved_handle_and_completes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -276,13 +344,12 @@ def test_remote_controller_restarts_by_polling_saved_handle_and_completes(
         torch.set_num_threads(previous_threads)
 
 
-def test_partial_step_is_paused_only_after_checkpoint_acceptance_and_resume_limit_is_explicit(
+def test_partial_checkpoint_is_accepted_and_resumed_through_real_core(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     case = _case(tmp_path, monkeypatch, steps=2)
     torch, previous_threads, service, store, _owner, _producer, run, _config, _, _ = case
     try:
-        from spireagent.json_boundary import BoundaryError
         from spireagent.workbench.local_m0_remote import ModalM0Settings
 
         state = _FakeModalState(store, ready=True)
@@ -297,13 +364,17 @@ def test_partial_step_is_paused_only_after_checkpoint_acceptance_and_resume_limi
         assert attempt["provider_result_sha256"]
         assert attempt["runtime_evidence_sha256"]
         assert service.status()["operation"]["status"] == "paused"
-        with pytest.raises(BoundaryError) as rejected:
-            _controller(service, state).resume(operation["operation_id"], 2,
-                                                wait_seconds=0)
-        assert rejected.value.code == "remote_request_size_limit"
-        assert service.status()["operation"]["status"] == "paused"
-        assert state.submits == state.prepares == 1
-        assert not any(store.get_manifest(item).kind == "model" for item in store.manifest_ids())
+        resumed = _controller(service, state).resume(
+            operation["operation_id"], 2, wait_seconds=0,
+        )
+        assert resumed["status"] == "completed"
+        assert resumed["checkpoint_step"] == 2
+        assert resumed["model_id"] and resumed["evaluation_id"]
+        attempts = resumed["remote"]["attempts"]
+        assert len(attempts) == 2
+        assert attempts[-1]["resume_checkpoint_id"] == operation["checkpoint_id"]
+        assert attempts[-1]["validated_checkpoint_id"] is None
+        assert state.submits == state.prepares == 2
     finally:
         torch.set_num_threads(previous_threads)
 

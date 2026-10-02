@@ -329,6 +329,11 @@ class LocalM0RemoteController:
             return self._finalize_saved(operation_id)
         evidence = self.training.remote_provider_evidence(operation_id)
         if evidence["attempt_spec_bytes"] is None:
+            latest = current["remote"]["attempts"][-1]
+            if latest["app_phase"] == "not_prepared":
+                return self.training.record_remote_preflight_failure(
+                    operation_id, error_code="interrupted_before_provider_prepare",
+                )
             return cast(dict[str, Any], self.training.status()["operation"])
         if evidence["handle_bytes"] is None:
             if evidence["app_ref_bytes"] is not None:
@@ -352,6 +357,13 @@ class LocalM0RemoteController:
         return self._poll_and_finalize(operation_id, wait)
 
     def _stop_unknown_app(self, operation_id: str, *, wait_seconds: float) -> dict[str, Any]:
+        current, _ = self._saved(operation_id)
+        if (current.get("status") != "interrupted_unknown"
+                or current.get("stage") != "remote_unknown"):
+            self.training.record_remote_observation(
+                operation_id, state="unknown", provider_terminal=False,
+                error_code="provider_outcome_unknown",
+            )
         evidence = self.training.remote_provider_evidence(operation_id)
         if evidence["attempt_spec_bytes"] is None or evidence["app_ref_bytes"] is None:
             return cast(dict[str, Any], self.training.status()["operation"])
