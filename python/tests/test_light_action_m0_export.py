@@ -259,7 +259,7 @@ def test_m0_qwen_backbone_exports_and_scores_from_pinned_tiny_fixture(
 
     def backend_factory(_snapshot, *, device):
         assert device == "cpu"
-        return _tiny_backend(inputs.state_tokenizer.get_vocab_size())
+        return _tiny_backend(inputs.state_tokenizer.get_vocab_size(), device=device)
 
     monkeypatch.setattr("stpd.workers.token_ranking.PortableQwenBackend", backend_factory)
     monkeypatch.setattr("stpd.qwen.readout_backend.validate_engineering_identity", lambda _id: None)

@@ -472,7 +472,7 @@ def test_worker_resumed_checkpoint_write_failure_keeps_resume_id_without_retry(
     assert reporter.completed(run.artifact_id) is None
 
 
-def _tiny_backend(vocab_size: int, *, seed: int = 521):
+def _tiny_backend(vocab_size: int, *, seed: int = 521, device: str = "cpu"):
     from transformers import Qwen3Config, Qwen3Model
 
     with torch.random.fork_rng(devices=[]):
@@ -487,6 +487,7 @@ def _tiny_backend(vocab_size: int, *, seed: int = 521):
     backend.hidden_size = 24
     backend.identity = SimpleNamespace(
         model_id="Qwen/Qwen3-0.6B-Base", model_revision="d" * 40,
+        device=device,
         weights_sha256="a" * 64, config_sha256="b" * 64,
         tokenizer_revision="d" * 40, tokenizer_sha256="c" * 64,
     )
@@ -521,7 +522,7 @@ def test_tiny_qwen3_lora_is_trainable_frozen_base_and_checkpointable(tmp_path, m
 
     def backend_factory(snapshot, *, device):
         assert device == "cpu"
-        return _tiny_backend(vocab_size)
+        return _tiny_backend(vocab_size, device=device)
 
     monkeypatch.setattr("stpd.workers.token_ranking.PortableQwenBackend", backend_factory)
     monkeypatch.setattr("stpd.qwen.readout_backend.validate_engineering_identity", lambda _id: None)
