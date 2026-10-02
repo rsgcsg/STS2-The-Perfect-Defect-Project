@@ -14,10 +14,10 @@ import subprocess
 
 import modal
 
+from stpd.cloud_jobs.m0_modal import MAX_M0_REQUEST_BYTES, MAX_M0_RESULT_BYTES
+
 M0_MODAL_APP_PREFIX = "stpd-m0-update-"
 M0_MODAL_FUNCTION_NAME = "token_remote_update"
-MAX_M0_REQUEST_BYTES = 64 * 1024 * 1024
-MAX_M0_RESULT_BYTES = 128 * 1024 * 1024
 MAX_RESULT_FRAME_OVERHEAD_BYTES = 16 * 1024 + 64
 WORKER_TIMEOUT_SECONDS = 900
 

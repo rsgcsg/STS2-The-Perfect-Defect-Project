@@ -11,7 +11,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from spireagent.artifact_contracts import Producer
+from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject
 from stpd.cloud_jobs import m0_modal
 from stpd.workers.token_ranking import LightActionM0Config, TokenTargetRuntime
@@ -231,6 +231,18 @@ class FakeCall:
         self.cancel_calls.append(terminate_containers)
         if self.cancel_error is not None:
             raise self.cancel_error
+
+
+class SizedBytes(bytes):
+    """Small byte content with a virtual wire length for boundary tests."""
+
+    def __new__(cls, value: bytes, reported_length: int):
+        result = super().__new__(cls, value)
+        result.reported_length = reported_length
+        return result
+
+    def __len__(self) -> int:
+        return self.reported_length
 
 
 class FakeFunction:
@@ -864,8 +876,111 @@ def test_modal_object_storage_payloads_over_two_mib_are_passed_with_explicit_app
     assert handle.request_size_bytes == len(raw)
     assert provider.poll(handle) == result_bytes
     assert provider.get_runtime_evidence(handle).result_size_bytes == len(result_bytes)
-    assert m0_modal.MAX_M0_REQUEST_BYTES == 64 * 1024 * 1024
+    assert m0_modal.MAX_M0_REQUEST_BYTES == 256 * 1024 * 1024
     assert m0_modal.MAX_M0_RESULT_BYTES == 128 * 1024 * 1024
+
+
+def test_real_core_resume_request_passes_256_mib_provider_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from test_token_remote_update import _canonical_run
+
+    from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
+    from stpd.workers.token_ranking import (
+        CUDA_STEP_RNG_PROTOCOL,
+        TokenRankingEngine,
+        TokenTargetRuntime,
+        config_payload,
+        token_training_identity,
+    )
+    from stpd.workers.token_remote_update import prepare_token_remote_update
+    from stpd.workers.token_worker import _checkpoint_metadata, prepare_token_run
+
+    case = _canonical_run(tmp_path, monkeypatch)
+    torch, previous_threads, store, owner, operation, producer, inputs, config, _ = case
+    try:
+        target_runtime = TokenTargetRuntime.current()
+        cuda_config = replace(config, device="cuda")
+        cuda_run = prepare_token_run(
+            store,
+            inputs,
+            cuda_config,
+            producer,
+            replicate="modal-resume-preflight",
+            target_runtime=target_runtime,
+        )
+        partial_request = prepare_token_remote_update(
+            store, owner, cuda_run.artifact_id, producer, operation, 2,
+            attempt_id="9" * 32,
+        )
+
+        # Advance the same scratch M0 model on CPU, then bind the checkpoint to
+        # the declared CUDA target as in the existing no-CUDA integration path.
+        cpu_engine = TokenRankingEngine(inputs, config)
+        cpu_engine.advance()
+        state = decode_checkpoint(cpu_engine.checkpoint())
+        _, expected_identity = token_training_identity(
+            inputs, cuda_config, partial_request.backbone_identity.value(),
+        )
+        state["config"] = config_payload(cuda_config)
+        state["data_identity"] = expected_identity
+        state["rng_protocol"] = CUDA_STEP_RNG_PROTOCOL
+        state["torch_version"] = target_runtime.torch_version
+        state["cpu_threads"] = target_runtime.cpu_threads
+        checkpoint_bytes = encode_checkpoint(state)
+        input_manifest = store.get_manifest(cuda_run.parent("training_input"))
+        checkpoint_info = _checkpoint_metadata(cpu_engine)
+        checkpoint_info["data_identity"] = expected_identity
+        checkpoint_info["step"] = state["step"]
+        checkpoint = Manifest(
+            "checkpoint",
+            producer,
+            (
+                Parent("run", cuda_run.artifact_id),
+                Parent("training_input", input_manifest.artifact_id),
+            ),
+            (
+                store.put_bytes(
+                    "checkpoint", checkpoint_bytes, "application/vnd.stpd.tensor-tree",
+                ),
+            ),
+            FrozenObject.of(checkpoint_info),
+        )
+        store.publish(checkpoint)
+
+        request = prepare_token_remote_update(
+            store,
+            owner,
+            cuda_run.artifact_id,
+            producer,
+            operation,
+            3,
+            resume_checkpoint_id=checkpoint.artifact_id,
+            attempt_id="a" * 32,
+        )
+        assert request.resume_checkpoint is not None
+        raw = request.to_bytes()
+        # Model the larger base64 wire envelope of the 81-MiB checkpoint case
+        # without allocating a second 100+ MiB JSON request in this CPU test.
+        wire = SizedBytes(raw, 120 * 1024 * 1024)
+        target = _target(
+            producer=producer,
+            attempt_id=request.attempt_id,
+            request_sha256=request.request_sha256,
+            target_runtime=target_runtime,
+        )
+        function = FakeFunction()
+        provider = _provider(target, sdk=FakeSDK(function))
+
+        handle = provider.submit(wire, target)
+
+        assert handle.resume_checkpoint_id == checkpoint.artifact_id
+        assert handle.request_size_bytes == 120 * 1024 * 1024
+        assert function.spawn_calls == [wire]
+        assert m0_modal.MAX_M0_REQUEST_BYTES == 256 * 1024 * 1024
+    finally:
+        torch.set_num_threads(previous_threads)
 
 
 def test_serialized_request_and_result_bounds_fail_closed_without_retry(
@@ -876,7 +991,7 @@ def test_serialized_request_and_result_bounds_fail_closed_without_retry(
     function = FakeFunction()
     provider = _provider(target, sdk=FakeSDK(function))
     with pytest.raises(BoundaryError, match="request_size_limit"):
-        provider.submit(b"r" * (m0_modal.MAX_M0_REQUEST_BYTES + 1))
+        provider.submit(SizedBytes(b"r", m0_modal.MAX_M0_REQUEST_BYTES + 1))
     assert function.spawn_calls == []
 
     raw = b"request"
@@ -1234,6 +1349,8 @@ def test_deployment_entry_declares_fixed_image_bounded_ephemeral_worker_without_
 
     assert namespace["app"] is namespace["_APP"]
     assert callable(namespace["token_remote_update"])
+    assert namespace["MAX_M0_REQUEST_BYTES"] == m0_modal.MAX_M0_REQUEST_BYTES
+    assert namespace["MAX_M0_RESULT_BYTES"] == m0_modal.MAX_M0_RESULT_BYTES
     assert configured["app_name"] == m0_modal.M0_MODAL_APP_NAME + "c" * 32
     assert configured["image_id"] == "im-image01"
     assert configured["name"] == m0_modal.M0_MODAL_FUNCTION_NAME
