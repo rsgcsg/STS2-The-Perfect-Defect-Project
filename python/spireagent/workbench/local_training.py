@@ -83,10 +83,11 @@ REMOTE_MAX_RESULT_BYTES = 128 * 1024 * 1024
 REMOTE_MAX_CONTROL_BYTES = 128 * 1024
 REMOTE_MAX_TIMEOUT_SECONDS = 900
 REMOTE_MAX_STARTUP_TIMEOUT_SECONDS = 120
+REMOTE_MAX_TOTAL_STEPS = 100_000
 
 
 def _remote_control_key(kind: str, sha256: str) -> str:
-    if kind not in {"attempt-spec", "app-ref", "call-handle"}:
+    if kind not in {"attempt-spec", "app-ref", "call-handle", "runtime-evidence"}:
         raise ValueError("remote control kind invalid")
     return REMOTE_CONTROL_PREFIX + kind + "/" + sha256
 
@@ -149,7 +150,7 @@ def _validate_remote_target(target: object) -> None:
             or not 1 <= target["startup_timeout_seconds"]
             <= REMOTE_MAX_STARTUP_TIMEOUT_SECONDS
             or type(target["max_total_steps"]) is not int
-            or target["max_total_steps"] < 1):
+            or not 1 <= target["max_total_steps"] <= REMOTE_MAX_TOTAL_STEPS):
         raise ValueError("remote target limit invalid")
 
 
@@ -217,7 +218,8 @@ def _validate_remote_operation(value: dict[str, Any]) -> None:
     attempt_fields = {"attempt_id", "request_sha256", "request_ref", "start_step",
                       "target_step", "resume_checkpoint_id", "resume_of_attempt_id",
                       "attempt_spec_sha256", "attempt_spec_ref", "app_ref_sha256",
-                      "app_ref_ref", "handle_sha256", "handle_ref", "app_phase",
+                      "app_ref_ref", "handle_sha256", "handle_ref",
+                      "runtime_evidence_sha256", "runtime_evidence_ref", "app_phase",
                       "stop_confirmation", "provider_error_code",
                       "submit_intent_at_unix_ns", "provider_terminal_observed_at_unix_ns",
                       "local_acceptance_started_at_unix_ns",
@@ -232,6 +234,14 @@ def _validate_remote_operation(value: dict[str, Any]) -> None:
     expected_checkpoint_id: str | None = None
     expected_checkpoint_step = 0
     for index, attempt in enumerate(attempts):
+        legacy_attempt_fields = attempt_fields - {
+            "runtime_evidence_sha256", "runtime_evidence_ref",
+        }
+        if isinstance(attempt, dict) and set(attempt) == legacy_attempt_fields:
+            # Older v4 journals remain readable; new controllers write the added
+            # evidence reference only after an observed remote result.
+            attempt["runtime_evidence_sha256"] = None
+            attempt["runtime_evidence_ref"] = None
         if not isinstance(attempt, dict) or set(attempt) != attempt_fields:
             raise ValueError("remote attempt fields invalid")
         attempt_id = digest(attempt["attempt_id"], "local_training.attempt_id", length=32)
@@ -240,7 +250,8 @@ def _validate_remote_operation(value: dict[str, Any]) -> None:
         if request_ref != REMOTE_REQUEST_PREFIX + attempt["request_sha256"]:
             raise ValueError("remote request reference invalid")
         for stem, kind in (("attempt_spec", "attempt-spec"),
-                           ("app_ref", "app-ref"), ("handle", "call-handle")):
+                           ("app_ref", "app-ref"), ("handle", "call-handle"),
+                           ("runtime_evidence", "runtime-evidence")):
             sha_field = stem + "_sha256"
             ref_field = stem + "_ref"
             if (attempt[sha_field] is None) != (attempt[ref_field] is None):
@@ -577,6 +588,14 @@ def _remote_provider_bytes(
     return values[0], values[1], values[2]
 
 
+def _remote_runtime_evidence_bytes(
+    store: ManifestArtifactStore, attempt: dict[str, Any],
+) -> bytes | None:
+    ref, sha256 = attempt["runtime_evidence_ref"], attempt["runtime_evidence_sha256"]
+    return (None if ref is None else
+            _read_remote_control(store, ref, sha256, kind="runtime-evidence"))
+
+
 def _decode_remote_provider_object(raw: bytes, *, label: str) -> dict[str, Any]:
     try:
         value = json.loads(raw)
@@ -832,9 +851,18 @@ class LocalTrainingService:
         except BoundaryError as error:
             return {"schema": SCHEMA, "availability": "recovery_required",
                     "reason": error.code, "operation": {"status": "idle"}}
+        attempt = (operation.get("remote", {}).get("attempts", [{}])[-1]
+                   if operation.get("schema") == SCHEMA_V4 else {})
+        durable_remote_recovery = (
+            operation.get("schema") == SCHEMA_V4
+            and attempt.get("handle_ref") is not None
+            and operation.get("stage") in {
+                "remote_running", "remote_cancelling", "remote_stopping",
+                "remote_acceptance",
+            }
+        )
         if (operation["status"] in {"pending", "cancelling"}
-                and not (operation.get("schema") == SCHEMA_V4
-                         and operation.get("stage") == "remote_acceptance")):
+                and not durable_remote_recovery):
             # A lock held by this or another profile proves the supervising parent
             # is alive. A missing lock means an unknown child outcome, not failure.
             try:
@@ -914,6 +942,8 @@ class LocalTrainingService:
             "app_ref_ref": None,
             "handle_sha256": None,
             "handle_ref": None,
+            "runtime_evidence_sha256": None,
+            "runtime_evidence_ref": None,
             "stop_confirmation": None,
             "provider_error_code": None,
             "submit_intent_at_unix_ns": None,
@@ -1129,7 +1159,10 @@ class LocalTrainingService:
                 store, current["remote"]["attempts"][-1],
             )
             return {"attempt_spec_bytes": spec_bytes, "app_ref_bytes": app_ref_bytes,
-                    "handle_bytes": handle_bytes}
+                    "handle_bytes": handle_bytes,
+                    "runtime_evidence_bytes": _remote_runtime_evidence_bytes(
+                        store, current["remote"]["attempts"][-1],
+                    )}
 
     def resume_remote_m0(self, operation_id: object, *, request_bytes: bytes,
                          target_step: object) -> dict[str, Any]:
@@ -1214,11 +1247,14 @@ class LocalTrainingService:
                 "attempt": {key: latest[key] for key in (
                     "attempt_id", "request_sha256", "start_step", "target_step",
                     "resume_checkpoint_id", "resume_of_attempt_id",
-                    "provider_result_sha256", "terminal_state",
+                    "provider_result_sha256", "runtime_evidence_sha256", "terminal_state",
                 )},
                 "attempt_spec_bytes": spec_bytes,
                 "app_ref_bytes": app_ref_bytes,
                 "provider_handle_bytes": handle_bytes,
+                "provider_runtime_evidence_bytes": _remote_runtime_evidence_bytes(
+                    store, latest,
+                ),
                 "request_bytes": request_bytes,
                 "result_bytes": result_bytes,
             }
@@ -1362,6 +1398,7 @@ class LocalTrainingService:
         handle_bytes: bytes | None = None,
         checkpoint_candidate_sha256: str | None = None,
         provider_result_bytes: bytes | None = None,
+        runtime_evidence_bytes: bytes | None = None,
         error_code: str | None = None,
     ) -> dict[str, Any]:
         """Persist the provider observation before separate stop verification."""
@@ -1458,19 +1495,28 @@ class LocalTrainingService:
                 provider_result_ref, provider_result_sha256 = _persist_remote_result(
                     store, provider_result_bytes,
                 )
+            runtime_evidence_ref = latest["runtime_evidence_ref"]
+            runtime_evidence_sha256 = latest["runtime_evidence_sha256"]
+            if runtime_evidence_bytes is not None:
+                runtime_evidence_ref, runtime_evidence_sha256 = _persist_remote_control(
+                    store, runtime_evidence_bytes, kind="runtime-evidence",
+                )
             updated_attempt = {**latest, "phase": phase,
                                "app_phase": app_phase,
                                "provider_terminal": provider_terminal,
                                "terminal_state": terminal_state,
                                "provider_result_ref": provider_result_ref,
                                "provider_result_sha256": provider_result_sha256,
+                               "runtime_evidence_ref": runtime_evidence_ref,
+                               "runtime_evidence_sha256": runtime_evidence_sha256,
                                "handle_ref": handle_ref,
                                "handle_sha256": handle_sha256,
                                "provider_terminal_observed_at_unix_ns": (
                                    time.time_ns() if provider_terminal
                                    else latest["provider_terminal_observed_at_unix_ns"]
                                ),
-                               "stop_confirmation": latest["stop_confirmation"],
+                               "stop_confirmation": (None if provider_terminal else
+                                                     latest["stop_confirmation"]),
                                "provider_error_code": (error_code if state == "failed"
                                                        else latest["provider_error_code"])}
             if checkpoint_candidate_sha256 is not None:
@@ -1545,6 +1591,45 @@ class LocalTrainingService:
                 _validate_remote_operation(updated)
             except (ValueError, KeyError, TypeError, BoundaryError) as error:
                 raise BoundaryError("local_training", "remote_stop_confirmation_invalid") from error
+            write_replaceable_json(path, updated)
+            return self._public(updated)
+
+    def record_remote_unknown_app_stopped(
+        self, operation_id: object, inspection: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Record App stop proof while preserving an ambiguous submitted-call outcome."""
+        operation_id = digest(operation_id, "local_training.operation_id", length=32)
+        owner, store, _ = self._selected()
+        path, lock_path = self._paths(owner)
+        self._require_remote_lock(lock_path)
+        with instance_lock(lock_path, create=False):
+            current = self._read(path, owner.identity)
+            if (current.get("schema") != SCHEMA_V4
+                    or current.get("operation_id") != operation_id
+                    or current.get("status") != "interrupted_unknown"
+                    or current.get("stage") != "remote_unknown"):
+                raise BoundaryError("local_training", "remote_unknown_stop_unavailable")
+            latest = current["remote"]["attempts"][-1]
+            if latest["provider_terminal"] or latest["app_ref_ref"] is None:
+                raise BoundaryError("local_training", "remote_unknown_stop_unavailable")
+            _, app_ref_bytes, _ = _remote_provider_bytes(store, latest)
+            app_ref = _decode_remote_provider_object(app_ref_bytes, label="remote_app_ref")
+            if (not isinstance(inspection, dict)
+                    or set(inspection) != {"app_id", "app_state", "active_tasks",
+                                           "active_containers", "confirmed"}
+                    or inspection.get("app_id") != app_ref.get("app_id")
+                    or inspection.get("app_state") != "stopped"
+                    or inspection.get("active_tasks") != 0
+                    or inspection.get("active_containers") != 0
+                    or inspection.get("confirmed") is not True):
+                raise BoundaryError("local_training", "provider_stop_confirmation_invalid")
+            attempts = list(current["remote"]["attempts"])
+            attempts[-1] = {**latest, "stop_confirmation": dict(inspection)}
+            updated = {**current, "remote": {**current["remote"], "attempts": attempts}}
+            try:
+                _validate_remote_operation(updated)
+            except (ValueError, KeyError, TypeError, BoundaryError) as error:
+                raise BoundaryError("local_training", "remote_unknown_stop_invalid") from error
             write_replaceable_json(path, updated)
             return self._public(updated)
 
