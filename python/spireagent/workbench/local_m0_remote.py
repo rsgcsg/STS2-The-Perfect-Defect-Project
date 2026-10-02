@@ -543,15 +543,17 @@ class LocalM0RemoteController:
                     request.operation_id, evaluation_id,
                 )
 
+            finalizer_started = time.perf_counter()
             completed = finalize_token_remote_update(
                 store, reporter, owner, request, result, request.producer,
                 request.operation_id,
                 verify_provider_result=verify_provider_result,
                 dev_admitter=admit_dev,
             )
+            finalizer_seconds = max(0.0, time.perf_counter() - finalizer_started)
             self.training.accept_remote_candidate(
                 operation_id, input_id=request.input_id, run_id=request.run_id,
                 result_id=completed.result_id,
-                core_finalizer_attempt_seconds=completed.attempt_seconds,
+                core_finalizer_attempt_seconds=finalizer_seconds,
             )
         return self.training.status()["operation"]
