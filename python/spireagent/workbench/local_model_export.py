@@ -623,7 +623,7 @@ class LocalModelExport:
         identity = digest(model_id, "local_model_export.model_id")
         with self.lock:
             if deadline is not None and monotonic() >= deadline:
-                raise BoundaryError("local_model_export", "registration_timeout")
+                raise BoundaryError("local_model_registration", "registration_timeout")
             operation = self._read()
             if (operation.get("schema") != SCHEMA_V3
                     or operation.get("status") != "completed"
@@ -652,9 +652,10 @@ class LocalModelExport:
                        "payload_sha256": verified["payload_sha256"],
                        "payload_sizes": verified["payload_sizes"],
                        "payload_bytes": verified["payload_bytes"]}
-            if (receipt != operation.get("verified_receipt")
-                    or deadline is not None and monotonic() >= deadline):
+            if receipt != operation.get("verified_receipt"):
                 raise BoundaryError("local_model_export", "verified_export_required")
+            if deadline is not None and monotonic() >= deadline:
+                raise BoundaryError("local_model_registration", "registration_timeout")
             return destination
 
     def verified_memory_recipe_for_registration(self, model_id: object, *,

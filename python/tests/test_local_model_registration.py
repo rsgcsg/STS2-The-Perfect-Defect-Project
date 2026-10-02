@@ -22,6 +22,7 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.package_identity import PackageIdentityError
 from spireagent.storage.registry import SQLiteRegistry, sync_registry
 from spireagent.storage.store import copy_artifact
+from spireagent.workbench import local_model_export as export_module
 from spireagent.workbench import local_model_registration as registration_module
 from spireagent.workbench.developer import ROOT, LocalResearchWorkspaceConfig, atomic_json
 from spireagent.workbench.developer_server import Application, configuration_id, create_server
@@ -95,6 +96,21 @@ def _caps() -> dict:
             "game": {"version": "test-game", "commit": "test-commit",
                      "modset": {"status": "exact", "fingerprint": "test-modset",
                                 "loaded_mod_ids": []}}}
+
+
+def test_connector_sdk_path_supports_flat_and_nested_npm_installations(tmp_path: Path) -> None:
+    flat_root = tmp_path / "flat" / "node_modules"
+    flat_sdk = flat_root / registration_module.CONNECTOR_PACKAGE / "dist" / "index.js"
+    flat_sdk.parent.mkdir(parents=True)
+    flat_sdk.write_text("// connector SDK\n")
+    assert registration_module._connector_sdk_path(flat_root) == flat_sdk
+
+    nested_root = tmp_path / "nested" / "node_modules"
+    nested_sdk = (nested_root / registration_module.RUNTIME_PACKAGE / "node_modules"
+                  / registration_module.CONNECTOR_PACKAGE / "dist" / "index.js")
+    nested_sdk.parent.mkdir(parents=True)
+    nested_sdk.write_text("// connector SDK\n")
+    assert registration_module._connector_sdk_path(nested_root) == nested_sdk
 
 
 def test_v2_capabilities_require_exact_profile_schemas_and_selection_verbs() -> None:
@@ -221,13 +237,13 @@ def test_registration_budget_prevents_append_after_expensive_binding(
     binder = registration_module.bind_text_menu_export
 
     def slow_capabilities(_sdk, *, deadline):
-        assert deadline == 22.0
-        clock[0] += 11.0
+        assert deadline == registration_module.REGISTRATION_SECONDS
+        clock[0] += registration_module.REGISTRATION_SECONDS - 10.0
         return _caps()
 
     def slow_binding(*args, **kwargs):
         result = binder(*args, **kwargs)
-        clock[0] += 12.0
+        clock[0] += 11.0
         return result
 
     monkeypatch.setattr(service, "_capabilities", slow_capabilities)
@@ -236,6 +252,82 @@ def test_registration_budget_prevents_append_after_expensive_binding(
         service.register(model_id)
     assert not (service.models.private_root / REGISTRY).exists()
     assert list((service.models.private_root / "model-registrations").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("receipt_matches", "verification_seconds", "expected_stage", "expected_code"),
+    [
+        (True, 44.9, "ok", "ok"),
+        (False, 0.0, "local_model_export", "verified_export_required"),
+        (True, 45.0, "local_model_registration", "registration_timeout"),
+    ],
+)
+def test_public_m0_export_verification_distinguishes_deadline_from_receipt_failure(
+        tmp_path: Path, monkeypatch, receipt_matches: bool, verification_seconds: float,
+        expected_stage: str, expected_code: str) -> None:
+    model_id = "a" * 64
+    store_root = tmp_path / "store"
+    state_dir = tmp_path / "state"
+    model = SimpleNamespace(artifact_id=model_id)
+    store = SimpleNamespace(blobs=SimpleNamespace(root=store_root),
+                            get_manifest=lambda _identity: model)
+    workspace = SimpleNamespace(store=store)
+    verified = {
+        "export_schema": "synthetic-export-schema",
+        "model_schema": "synthetic-model-schema",
+        "package_sha256": "b" * 64,
+        "package_size": 1,
+        "payload_sha256": "c" * 64,
+        "payload_sizes": {},
+        "payload_bytes": 0,
+    }
+    lineage = {"result_id": "d" * 64}
+    receipt = {
+        "schema": export_module.PUBLIC_M0_RECEIPT_SCHEMA,
+        "model_id": model_id,
+        "export_schema": verified["export_schema"],
+        "model_schema": verified["model_schema"],
+        **lineage,
+        "package_sha256": verified["package_sha256"],
+        "package_size": verified["package_size"],
+        "payload_sha256": verified["payload_sha256"],
+        "payload_sizes": verified["payload_sizes"],
+        "payload_bytes": verified["payload_bytes"],
+    }
+    if not receipt_matches:
+        receipt["package_sha256"] = "e" * 64
+    exporter = SimpleNamespace(
+        lock=threading.RLock(),
+        config=SimpleNamespace(state_dir=state_dir),
+        _read=lambda: {
+            "schema": export_module.SCHEMA_V3,
+            "status": "completed",
+            "model_id": model_id,
+            "model_type": "public_m0",
+            "profile": "public-snapshot-m0-v1",
+            "verified_receipt": receipt,
+            "store_root": str(store_root),
+        },
+        _workspace=lambda: workspace,
+        _memory_owner=lambda _store: object(),
+    )
+    clock = [0.0]
+    monkeypatch.setattr(export_module, "_public_m0_lineage", lambda *_args: lineage)
+    def verify(*_args):
+        clock[0] += verification_seconds
+        return verified
+    monkeypatch.setattr(export_module, "_verify_public_m0_export", verify)
+    monkeypatch.setattr(export_module, "monotonic", lambda: clock[0])
+
+    try:
+        result = LocalModelExport.verified_public_m0_for_registration(
+            exporter, model_id, deadline=45.0,
+        )
+    except BoundaryError as error:
+        assert (error.stage, error.code) == (expected_stage, expected_code)
+    else:
+        assert (expected_stage, expected_code) == ("ok", "ok")
+        assert result == state_dir / export_module.EXPORT_ROOT / model_id
 
 
 def test_node_checks_consume_one_registration_deadline(registration, monkeypatch) -> None:
