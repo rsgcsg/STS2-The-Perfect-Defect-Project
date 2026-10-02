@@ -7,6 +7,7 @@ evaluates dev, creates a model-quality claim, or treats request identity as prov
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import uuid
 from dataclasses import dataclass
@@ -74,7 +75,7 @@ def _b64decode(value: object, stage: str) -> bytes:
         raise BoundaryError(stage, "invalid_base64_payload")
     try:
         raw = base64.b64decode(value, validate=True)
-    except (ValueError, base64.binascii.Error) as error:
+    except (ValueError, binascii.Error) as error:
         raise BoundaryError(stage, "invalid_base64_payload") from error
     if _b64encode(raw) != value:
         raise BoundaryError(stage, "noncanonical_base64_payload")

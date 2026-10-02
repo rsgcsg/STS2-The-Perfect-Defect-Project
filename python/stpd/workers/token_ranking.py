@@ -27,9 +27,8 @@ from ..fullrun.features import ModelSample
 from ..fullrun.light_action_inputs import CANONICAL_SCHEMA as CANONICAL_LIGHT_ACTION_INPUT_SCHEMA
 from ..fullrun.light_action_inputs import PUBLIC_SCHEMA as PUBLIC_LIGHT_ACTION_INPUT_SCHEMA
 from ..fullrun.light_action_inputs import SCHEMA as LIGHT_ACTION_INPUT_SCHEMA
-from ..fullrun.light_action_inputs import LightActionTokenRow
-from ..fullrun.light_action_inputs import LoadedLightActionInputs
-from ..fullrun.token_inputs import LoadedTokenInputs
+from ..fullrun.light_action_inputs import LightActionTokenRow, LoadedLightActionInputs
+from ..fullrun.token_inputs import LoadedTokenInputs, TokenRow
 from ..light_action_codec import SPEC_SHA256
 from ..models.losses import listwise_rank_loss
 from ..models.stage1a import (
@@ -487,6 +486,7 @@ class TokenRankingEngine:
                     raise BoundaryError("token_training", "cuda_optimizer_moment_device_mismatch")
 
     def _scores(self, index: int) -> Tensor:
+        row: LightActionTokenRow | TokenRow
         if isinstance(self.inputs, LightActionM0TrainOnlyInputs):
             try:
                 row = self._rows_by_index[index]
