@@ -6,6 +6,7 @@ import json
 import threading
 from email.message import Message
 from http.cookiejar import CookieJar
+from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
@@ -105,21 +106,36 @@ def test_member_archive_import_http_requires_exact_authenticated_id_request(
     monkeypatch.setattr("spireagent.workbench.developer_server.ThreadingHTTPServer", ServerProbe)
     server = create_server(app)
 
+    class ConnectionProbe:
+        def __init__(self) -> None:
+            self.timeout = None
+
+        def gettimeout(self):
+            return self.timeout
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
     def post(body: dict, *, headers: dict | None = None) -> tuple[int, dict]:
+        payload = json.dumps(body).encode("utf-8")
         handler = object.__new__(server.handler_class)
         handler.path = "/api/local-recordings/import-member-archive"
         handler.server = server
+        handler.connection = ConnectionProbe()
+        handler.rfile = BytesIO(payload)
+        handler.close_connection = False
         handler.headers = Message()
         authorization = {
             "Host": "127.0.0.1:8765",
             "Cookie": f"{app.account.cookie_name}={app.account.cookie}",
             "Origin": "http://127.0.0.1:8765",
             "X-CSRF-Token": app.account.csrf,
+            "Content-Type": "application/json",
+            "Content-Length": str(len(payload)),
         }
         authorization.update(headers or {})
         for name, value in authorization.items():
             handler.headers[name] = value
-        handler.json_body = lambda maximum: body
         response = []
         handler.respond = lambda status, payload: response.append((status, payload))
         handler.do_POST()
