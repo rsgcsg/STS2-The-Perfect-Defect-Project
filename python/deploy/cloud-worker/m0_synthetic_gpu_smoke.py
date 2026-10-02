@@ -39,6 +39,7 @@ ESTIMATED_FUNCTION_UPPER_SECONDS = (
 )
 LOSS_COMPARISON_REL_TOL = 1e-6
 LOSS_COMPARISON_ABS_TOL = 1e-7
+WEIGHT_COMPARISON_ABS_TOL = 1e-6
 MODAL_L4_USD_PER_SECOND = 0.000222
 MODAL_CPU_USD_PER_CORE_SECOND = 0.0000131
 MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000222
@@ -46,6 +47,18 @@ MODAL_MAX_REGION_MULTIPLIER = 1.75
 MODAL_PRICING_AS_OF = "2026-10-02"
 SMOKE_RECEIPT_SCHEMA = "spireagent/m0-synthetic-cuda-smoke-receipt-v1"
 EXECUTION_OUTCOME_SCHEMA = "spireagent/m0-synthetic-cuda-smoke-execution-v1"
+MODAL_CALL_STATUS_PROBE_SCRIPT = """
+import json
+import runpy
+import sys
+
+import modal
+
+namespace = runpy.run_path(sys.argv[1], run_name="_m0_modal_status_probe")
+call = modal.FunctionCall.from_id(sys.argv[2])
+state = namespace["_call_status_from_call"](call, modal)
+print(json.dumps({"status": state}))
+"""
 
 
 class PlanError(ValueError):
@@ -202,6 +215,63 @@ def _synthetic_inputs(source_revision: str, uv_lock_sha256: str) -> Any:
     return LoadedLightActionInputs(manifest, samples, rows, tokenizer)
 
 
+def _compare_model_state_tensors(
+    torch: Any,
+    resumed_state: dict[str, Any],
+    continuous_state: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare full final tensor inventories and values for resumed/continuous runs."""
+    if not isinstance(resumed_state, dict) or not isinstance(continuous_state, dict):
+        raise RuntimeError("checkpoint_resume_model_state_invalid")
+    if not resumed_state or set(resumed_state) != set(continuous_state):
+        raise RuntimeError("checkpoint_resume_continuous_weight_keys_mismatch")
+
+    inventory: list[dict[str, Any]] = []
+    element_count = 0
+    max_abs_difference = 0.0
+    for key in sorted(resumed_state):
+        resumed_tensor = resumed_state[key]
+        continuous_tensor = continuous_state[key]
+        if (resumed_tensor.shape != continuous_tensor.shape
+                or resumed_tensor.dtype != continuous_tensor.dtype):
+            raise RuntimeError("checkpoint_resume_continuous_weight_shape_or_dtype_mismatch")
+        if (not bool(torch.isfinite(resumed_tensor).all())
+                or not bool(torch.isfinite(continuous_tensor).all())):
+            raise RuntimeError("checkpoint_resume_continuous_non_finite_weight")
+        count = int(resumed_tensor.numel())
+        element_count += count
+        inventory.append({
+            "key": key,
+            "shape": list(resumed_tensor.shape),
+            "dtype": str(resumed_tensor.dtype),
+        })
+        if count:
+            difference = torch.abs(
+                resumed_tensor.detach().to(dtype=torch.float64)
+                - continuous_tensor.detach().to(dtype=torch.float64)
+            )
+            max_abs_difference = max(max_abs_difference, float(difference.max().item()))
+
+    if element_count <= 0:
+        raise RuntimeError("checkpoint_resume_empty_model_state")
+    inventory_sha256 = hashlib.sha256(
+        json.dumps(inventory, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        "resumed_weight_inventory_sha256": inventory_sha256,
+        "continuous_weight_inventory_sha256": inventory_sha256,
+        "resumed_weight_tensor_count": len(inventory),
+        "continuous_weight_tensor_count": len(inventory),
+        "resumed_weight_element_count": element_count,
+        "continuous_weight_element_count": element_count,
+        "weight_max_abs_difference": max_abs_difference,
+        "weight_comparison_tolerance": {"abs_tol": WEIGHT_COMPARISON_ABS_TOL},
+        "resume_weights_match_continuous": (
+            max_abs_difference <= WEIGHT_COMPARISON_ABS_TOL
+        ),
+    }
+
+
 def run_engine_smoke(plan_data: dict[str, str]) -> dict[str, Any]:
     """Run two steps, compare resumed and continuous training, and hash the export."""
     import torch
@@ -239,14 +309,20 @@ def run_engine_smoke(plan_data: dict[str, str]) -> dict[str, Any]:
     if not torch.isfinite(torch.tensor(continuous_loss)) or continuous.step != 2:
         raise RuntimeError("continuous_training_non_finite_or_incomplete")
     resume_loss_abs_error = abs(resumed_loss - continuous_loss)
-    resume_matches_continuous = math.isclose(
+    resume_loss_matches_continuous = math.isclose(
         resumed_loss,
         continuous_loss,
         rel_tol=LOSS_COMPARISON_REL_TOL,
         abs_tol=LOSS_COMPARISON_ABS_TOL,
     )
-    if not resume_matches_continuous:
+    if not resume_loss_matches_continuous:
         raise RuntimeError("checkpoint_resume_continuous_training_mismatch")
+
+    weight_comparison = _compare_model_state_tensors(
+        torch, resumed.model.state_dict(), continuous.model.state_dict(),
+    )
+    if not weight_comparison["resume_weights_match_continuous"]:
+        raise RuntimeError("checkpoint_resume_continuous_weights_mismatch")
 
     weights = resumed.model_bytes()
     if not weights:
@@ -281,7 +357,11 @@ def run_engine_smoke(plan_data: dict[str, str]) -> dict[str, Any]:
         "continuous_loss": continuous_loss,
         "continuous_loss_finite": True,
         "resume_loss_abs_error": resume_loss_abs_error,
-        "resume_matches_continuous": resume_matches_continuous,
+        "resume_loss_matches_continuous": resume_loss_matches_continuous,
+        "resume_matches_continuous": (
+            resume_loss_matches_continuous
+            and weight_comparison["resume_weights_match_continuous"]
+        ),
         "loss_comparison_tolerance": {
             "rel_tol": LOSS_COMPARISON_REL_TOL,
             "abs_tol": LOSS_COMPARISON_ABS_TOL,
@@ -289,6 +369,7 @@ def run_engine_smoke(plan_data: dict[str, str]) -> dict[str, Any]:
         "checkpoint_sha256": hashlib.sha256(checkpoint).hexdigest(),
         "export_sha256": hashlib.sha256(weights).hexdigest(),
         "export_bytes": len(weights),
+        **weight_comparison,
     }
 
 
@@ -325,26 +406,15 @@ def _run_worker_payload() -> int:
     return 0
 
 
-def _preflight_environment(modal: Any, environment_name: str) -> None:
-    """Read existing environments only; never create an environment or credential."""
-    if not hasattr(signal, "setitimer"):
-        raise PlanError("bounded_read_only_preflight_unavailable")
-    previous_delay, previous_interval = signal.getitimer(signal.ITIMER_REAL)
-    if previous_delay > 0 or previous_interval > 0:
-        raise PlanError("cannot_bound_preflight_while_process_timer_active")
-    previous_handler = signal.getsignal(signal.SIGALRM)
-
-    def deadline(_signum: int, _frame: Any) -> None:
-        raise PlanError("modal_environment_list_timeout_30s")
-
-    try:
-        signal.signal(signal.SIGALRM, deadline)
-        signal.setitimer(signal.ITIMER_REAL, 30)
-        environments = modal.Environment.objects.list()
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous_handler)
-    if not any(environment.name == environment_name for environment in environments):
+def _preflight_environment(environment_name: str) -> None:
+    """List names through a timed CLI subprocess; never create credentials/envs."""
+    environments = _modal_cli_json(["environment", "list"], timeout_seconds=30)
+    if not isinstance(environments, list):
+        raise PlanError("modal_environment_list_json_array_required")
+    if not any(
+        isinstance(environment, dict) and environment.get("name") == environment_name
+        for environment in environments
+    ):
         raise PlanError("named_existing_modal_environment_not_found")
 
 
@@ -438,8 +508,14 @@ def validate_receipt(receipt: object, plan: SmokePlan) -> dict[str, Any]:
         if not isinstance(value, str) or not value.strip():
             raise PlanError(f"smoke_receipt_{field}_required")
 
-    for field in ("first_loss_finite", "resumed_loss_finite", "continuous_loss_finite",
-                  "resume_matches_continuous"):
+    for field in (
+        "first_loss_finite",
+        "resumed_loss_finite",
+        "continuous_loss_finite",
+        "resume_loss_matches_continuous",
+        "resume_weights_match_continuous",
+        "resume_matches_continuous",
+    ):
         if type(receipt.get(field)) is not bool or receipt[field] is not True:
             raise PlanError(f"smoke_receipt_{field}_must_be_true")
     for field in ("first_loss", "resumed_loss", "continuous_loss", "resume_loss_abs_error"):
@@ -468,6 +544,38 @@ def validate_receipt(receipt: object, plan: SmokePlan) -> dict[str, Any]:
         abs_tol=LOSS_COMPARISON_ABS_TOL,
     ):
         raise PlanError("smoke_receipt_resume_continuous_comparison_failed")
+
+    inventory_hashes = (
+        receipt.get("resumed_weight_inventory_sha256"),
+        receipt.get("continuous_weight_inventory_sha256"),
+    )
+    if (not all(_valid_sha256(value) for value in inventory_hashes)
+            or inventory_hashes[0] != inventory_hashes[1]):
+        raise PlanError("smoke_receipt_weight_inventory_mismatch")
+    for field in (
+        "resumed_weight_tensor_count",
+        "continuous_weight_tensor_count",
+        "resumed_weight_element_count",
+        "continuous_weight_element_count",
+    ):
+        if type(receipt.get(field)) is not int or receipt[field] <= 0:
+            raise PlanError(f"smoke_receipt_{field}_must_be_positive")
+    if (receipt["resumed_weight_tensor_count"]
+            != receipt["continuous_weight_tensor_count"]
+            or receipt["resumed_weight_element_count"]
+            != receipt["continuous_weight_element_count"]):
+        raise PlanError("smoke_receipt_weight_count_mismatch")
+    max_weight_difference = receipt.get("weight_max_abs_difference")
+    if not _finite_number(max_weight_difference) or max_weight_difference < 0:
+        raise PlanError("smoke_receipt_weight_max_abs_difference_invalid")
+    weight_tolerance = receipt.get("weight_comparison_tolerance")
+    expected_weight_tolerance = {"abs_tol": WEIGHT_COMPARISON_ABS_TOL}
+    if (not isinstance(weight_tolerance, dict)
+            or set(weight_tolerance) != set(expected_weight_tolerance)
+            or type(weight_tolerance.get("abs_tol")) not in (int, float)
+            or weight_tolerance["abs_tol"] != WEIGHT_COMPARISON_ABS_TOL
+            or max_weight_difference > WEIGHT_COMPARISON_ABS_TOL):
+        raise PlanError("smoke_receipt_weight_comparison_tolerance_mismatch")
 
     for field in ("checkpoint_sha256", "export_sha256"):
         if not _valid_sha256(receipt.get(field)):
@@ -503,7 +611,7 @@ def _billing_estimate(plan: SmokePlan) -> dict[str, Any]:
     }
 
 
-def _modal_cli_json(args: list[str], *, timeout_seconds: int) -> Any:
+def _modal_cli_json(args: list[str], *, timeout_seconds: float) -> Any:
     cli = Path(sys.executable).with_name("modal")
     if not cli.is_file():
         raise PlanError("modal_cli_required_for_stop_confirmation")
@@ -522,30 +630,79 @@ def _modal_cli_json(args: list[str], *, timeout_seconds: int) -> Any:
         raise PlanError("modal_stop_confirmation_invalid_json") from error
 
 
-def _terminal_call_status(call: Any, modal: Any, submission_attempted: bool) -> str:
-    if not submission_attempted:
-        return "not_submitted"
-    if call is None:
-        return "unknown"
+def _call_status_from_call(call: Any, modal: Any) -> str:
+    """Classify a completed SDK poll; this runs only in the killable probe process."""
     try:
         call.get(timeout=0)
-    except TimeoutError:
-        return "pending"
+    except modal.exception.FunctionTimeoutError:
+        return "failed_terminal"
+    except modal.exception.OutputExpiredError:
+        return "failed_terminal"
     except modal.exception.RemoteError:
         return "failed_terminal"
+    except modal.exception.TimeoutError:
+        return "pending"
     except Exception:
         return "unknown"
     return "completed"
 
 
+def _probe_call_status(function_call_id: str, *, timeout_seconds: float) -> str:
+    """Probe by ID in a killable child so SDK retries cannot outlive cleanup."""
+    if timeout_seconds <= 0:
+        return "unknown"
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                MODAL_CALL_STATUS_PROBE_SCRIPT,
+                str(Path(__file__).resolve()),
+                function_call_id,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        # subprocess.run kills and reaps the child when this deadline expires.
+        return "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    if completed.returncode != 0:
+        return "unknown"
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return "unknown"
+    status = result.get("status") if isinstance(result, dict) else None
+    if status not in {"unknown", "pending", "failed_terminal", "completed"}:
+        return "unknown"
+    return status
+
+
+def _terminal_call_status(
+    function_call_id: str | None,
+    submission_attempted: bool,
+    *,
+    timeout_seconds: float,
+) -> str:
+    if not submission_attempted:
+        return "not_submitted"
+    if not isinstance(function_call_id, str) or not function_call_id:
+        return "unknown"
+    return _probe_call_status(function_call_id, timeout_seconds=timeout_seconds)
+
+
 def _stop_evidence(
     app_id: str, environment: str, *, deadline: float,
 ) -> dict[str, Any]:
-    def command_timeout() -> int:
+    def command_timeout() -> float:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise PlanError("modal_stop_confirmation_deadline_exceeded")
-        return max(1, min(MAX_CLEANUP_COMMAND_SECONDS, math.ceil(remaining)))
+        return min(float(MAX_CLEANUP_COMMAND_SECONDS), remaining)
 
     app_rows = _modal_cli_json(
         ["app", "list", "--env", environment],
@@ -583,7 +740,7 @@ def _execution_error(
     cancel_error: str | None,
 ) -> SmokeExecutionError:
     call_state_confirmed = call_terminal in {
-        "completed", "failed_terminal", "not_submitted",
+        "completed", "failed_terminal", "not_submitted", "terminal_after_app_stop",
     }
     outcome = {
         "schema": EXECUTION_OUTCOME_SCHEMA,
@@ -624,7 +781,7 @@ def execute(plan: SmokePlan) -> dict[str, Any]:
 
     started = time.monotonic()
     outer_deadline = started + plan.outer_wall_seconds
-    _preflight_environment(modal, plan.environment)
+    _preflight_environment(plan.environment)
     app = modal.App(plan.app_name)
     image = modal.Image.from_registry(plan.image)
 
@@ -741,9 +898,19 @@ def execute(plan: SmokePlan) -> dict[str, Any]:
                     else:
                         worker_receipt = call.get(timeout=remaining)
                         call_terminal = "completed"
+            except modal.exception.FunctionTimeoutError:
+                call_error = "modal_function_execution_timeout"
+                call_terminal = "failed_terminal"
+            except modal.exception.OutputExpiredError:
+                call_error = "modal_function_output_expired"
+                call_terminal = "failed_terminal"
             except modal.exception.RemoteError:
                 call_error = "modal_function_call_remote_failure"
                 call_terminal = "failed_terminal"
+            except modal.exception.TimeoutError:
+                call_error = "modal_function_call_wall_deadline"
+                call_terminal = "pending" if call is not None else "unknown"
+                cancel_pending_call()
             except TimeoutError as error:
                 outer_deadline_fired = str(error) == "bounded_modal_call_deadline_exceeded"
                 call_error = (
@@ -782,18 +949,32 @@ def execute(plan: SmokePlan) -> dict[str, Any]:
 
     cleanup_deadline = min(outer_deadline, time.monotonic() + MAX_CLEANUP_SECONDS)
     stop_evidence: dict[str, Any] | None = None
+    if not submission_attempted:
+        call_terminal = "not_submitted"
+    elif call_terminal in {"unknown", "pending"}:
+        remaining = cleanup_deadline - time.monotonic()
+        if remaining > 0:
+            call_terminal = _terminal_call_status(
+                function_call_id,
+                submission_attempted,
+                timeout_seconds=min(float(MAX_CLEANUP_COMMAND_SECONDS), remaining),
+            )
     while time.monotonic() < cleanup_deadline:
-        if call_terminal in {"unknown", "pending"}:
-            observed_terminal = _terminal_call_status(call, modal, submission_attempted)
-            if observed_terminal != "unknown":
-                call_terminal = observed_terminal
+        if time.monotonic() >= cleanup_deadline:
+            break
         if stop_evidence is None and app_id:
             with suppress(PlanError):
                 stop_evidence = _stop_evidence(
                     app_id, plan.environment, deadline=cleanup_deadline,
                 )
-        if (call_terminal in {"completed", "failed_terminal", "not_submitted"}
+        if (stop_evidence is not None and call is not None and call_terminal == "pending"):
+            call_terminal = "terminal_after_app_stop"
+        if (call_terminal in {
+                "completed", "failed_terminal", "not_submitted", "terminal_after_app_stop",
+            }
                 and stop_evidence is not None):
+            break
+        if stop_evidence is not None and call is None and submission_attempted:
             break
         remaining = cleanup_deadline - time.monotonic()
         if remaining > 0:

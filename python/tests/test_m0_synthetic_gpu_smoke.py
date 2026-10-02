@@ -65,7 +65,17 @@ def valid_receipt(plan: smoke.SmokePlan) -> dict[str, Any]:
         "continuous_loss": 0.5,
         "continuous_loss_finite": True,
         "resume_loss_abs_error": 0.0,
+        "resume_loss_matches_continuous": True,
         "resume_matches_continuous": True,
+        "resumed_weight_inventory_sha256": "2" * 64,
+        "continuous_weight_inventory_sha256": "2" * 64,
+        "resumed_weight_tensor_count": 2,
+        "continuous_weight_tensor_count": 2,
+        "resumed_weight_element_count": 5,
+        "continuous_weight_element_count": 5,
+        "weight_max_abs_difference": 0.0,
+        "weight_comparison_tolerance": {"abs_tol": smoke.WEIGHT_COMPARISON_ABS_TOL},
+        "resume_weights_match_continuous": True,
         "loss_comparison_tolerance": {
             "rel_tol": smoke.LOSS_COMPARISON_REL_TOL,
             "abs_tol": smoke.LOSS_COMPARISON_ABS_TOL,
@@ -81,18 +91,33 @@ class FakeRemoteError(Exception):
     pass
 
 
+class FakeModalTimeoutError(Exception):
+    pass
+
+
+class FakeFunctionTimeoutError(FakeModalTimeoutError):
+    pass
+
+
+class FakeOutputExpiredError(FakeModalTimeoutError):
+    pass
+
+
 class FakeCall:
     def __init__(self, result: object, *, pending: bool = False) -> None:
         self.object_id = "fc-test-123"
         self.result = result
         self.pending = pending
+        self.slow_poll = False
         self.get_timeouts: list[float] = []
         self.cancel_options: list[dict[str, bool]] = []
 
     def get(self, *, timeout: float) -> object:
         self.get_timeouts.append(timeout)
         if self.pending:
-            raise TimeoutError("still running")
+            if timeout == 0 and self.slow_poll:
+                smoke.time.sleep(5)
+            raise FakeModalTimeoutError("still running")
         if timeout == 0:
             return self.result
         return self.result
@@ -117,7 +142,12 @@ class FakeModalBoundary:
             Environment=SimpleNamespace(objects=SimpleNamespace(list=self._list_envs)),
             Image=SimpleNamespace(from_registry=self._from_registry),
             App=self._make_app,
-            exception=SimpleNamespace(RemoteError=FakeRemoteError),
+            exception=SimpleNamespace(
+                RemoteError=FakeRemoteError,
+                TimeoutError=FakeModalTimeoutError,
+                FunctionTimeoutError=FakeFunctionTimeoutError,
+                OutputExpiredError=FakeOutputExpiredError,
+            ),
         )
 
     def _list_envs(self) -> list[SimpleNamespace]:
@@ -192,8 +222,11 @@ def install_mocks(
     monkeypatch.setattr(smoke, "_require_cuda_configuration", lambda: None)
     monkeypatch.setitem(sys.modules, "modal", boundary.modal)
 
-    def cli_json(args: list[str], *, timeout_seconds: int) -> object:
-        assert 0 < timeout_seconds <= smoke.MAX_CLEANUP_COMMAND_SECONDS
+    def cli_json(args: list[str], *, timeout_seconds: float) -> object:
+        assert 0 < timeout_seconds <= max(30, smoke.MAX_CLEANUP_COMMAND_SECONDS)
+        if args[:2] == ["environment", "list"]:
+            boundary.listed_environments += 1
+            return [{"name": "existing-dev"}]
         if args[:2] == ["app", "list"]:
             return [{"app_id": "ap-test-123", "state": app_state, "tasks": app_tasks}]
         if args[:2] == ["container", "list"]:
@@ -201,6 +234,13 @@ def install_mocks(
         pytest.fail(f"unexpected Modal CLI command: {args}")
 
     monkeypatch.setattr(smoke, "_modal_cli_json", cli_json)
+    monkeypatch.setattr(
+        smoke,
+        "_probe_call_status",
+        lambda _call_id, *, timeout_seconds: smoke._call_status_from_call(
+            boundary.call, boundary.modal,
+        ),
+    )
     return boundary
 
 
@@ -228,7 +268,15 @@ def test_complete_receipt_validation_rejects_the_old_minimal_receipt():
         ("device_name", "NVIDIA A10", "actual_l4_device_required"),
         ("first_loss", float("nan"), "first_loss_must_be_finite_number"),
         ("resume_matches_continuous", False, "resume_matches_continuous_must_be_true"),
+        ("resume_weights_match_continuous", False,
+         "resume_weights_match_continuous_must_be_true"),
         ("resume_loss_abs_error", 1.0, "resume_continuous_comparison_failed"),
+        ("continuous_weight_inventory_sha256", "3" * 64,
+         "smoke_receipt_weight_inventory_mismatch"),
+        ("continuous_weight_tensor_count", 3, "smoke_receipt_weight_count_mismatch"),
+        ("continuous_weight_element_count", 6, "smoke_receipt_weight_count_mismatch"),
+        ("weight_max_abs_difference", 2e-6,
+         "smoke_receipt_weight_comparison_tolerance_mismatch"),
         ("checkpoint_sha256", "not-a-hash", "checkpoint_sha256_invalid"),
         ("export_bytes", 0, "export_bytes_must_be_positive"),
         ("worker_function_seconds", float("inf"), "worker_function_seconds_invalid"),
@@ -303,9 +351,9 @@ def test_execute_cancels_timed_out_call_once_and_never_claims_completion(monkeyp
         smoke.execute(plan)
 
     assert boundary.call.cancel_options == [{"terminate_containers": True}]
-    assert error.value.outcome["call_terminal"] == "pending"
+    assert error.value.outcome["call_terminal"] == "terminal_after_app_stop"
     assert error.value.outcome["stop_confirmation"] == "confirmed"
-    assert error.value.outcome["status"] == "unknown"
+    assert error.value.outcome["status"] == "failed"
     assert error.value.outcome["reason"] == "modal_function_call_wall_deadline"
 
 
@@ -318,6 +366,21 @@ def test_ambiguous_spawn_failure_stays_unknown_even_if_app_is_stopped(monkeypatc
         smoke.execute(plan)
 
     assert boundary.call.cancel_options == []
+    assert error.value.outcome["call_terminal"] == "unknown"
+    assert error.value.outcome["stop_confirmation"] == "confirmed"
+    assert error.value.outcome["status"] == "unknown"
+
+
+def test_unreadable_terminal_probe_remains_unknown_after_app_stop(monkeypatch):
+    plan = make_plan()
+    boundary = install_mocks(monkeypatch, plan, pending=True)
+    monkeypatch.setattr(smoke, "MAX_CLEANUP_SECONDS", 0.01)
+    monkeypatch.setattr(smoke, "_probe_call_status", lambda *_args, **_kwargs: "unknown")
+
+    with pytest.raises(smoke.SmokeExecutionError) as error:
+        smoke.execute(plan)
+
+    assert boundary.call.cancel_options == [{"terminate_containers": True}]
     assert error.value.outcome["call_terminal"] == "unknown"
     assert error.value.outcome["stop_confirmation"] == "confirmed"
     assert error.value.outcome["status"] == "unknown"
@@ -358,16 +421,9 @@ def test_running_app_or_container_blocks_stop_confirmation(monkeypatch):
 
 
 def test_missing_environment_is_rejected_before_app_creation(monkeypatch):
-    class MissingEnvironmentManager:
-        @staticmethod
-        def list() -> list[object]:
-            return []
-
-    modal = SimpleNamespace(
-        Environment=SimpleNamespace(objects=MissingEnvironmentManager()),
-    )
+    monkeypatch.setattr(smoke, "_modal_cli_json", lambda _args, **_kwargs: [])
     with pytest.raises(smoke.PlanError, match="existing_modal_environment_not_found"):
-        smoke._preflight_environment(modal, "existing-dev")
+        smoke._preflight_environment("existing-dev")
 
 
 def test_build_plan_requires_immutable_image_digest():
@@ -379,4 +435,59 @@ def test_build_plan_requires_immutable_image_digest():
             uv_lock_sha256=SHA64,
             harness_sha256=SHA64,
             run_id="e" * 32,
+        )
+
+
+def test_sdk_timeout_error_is_classified_as_pending_not_builtin_timeout():
+    plan = make_plan()
+    boundary = FakeModalBoundary(valid_receipt(plan), pending=True)
+
+    assert not issubclass(FakeModalTimeoutError, TimeoutError)
+    assert smoke._call_status_from_call(boundary.call, boundary.modal) == "pending"
+
+
+def test_status_probe_kills_slow_sdk_process_at_its_deadline(monkeypatch):
+    monkeypatch.setattr(smoke, "MODAL_CALL_STATUS_PROBE_SCRIPT", "import time; time.sleep(5)")
+    started = smoke.time.monotonic()
+
+    status = smoke._terminal_call_status(
+        "fc-test-123", True, timeout_seconds=0.05,
+    )
+
+    assert status == "unknown"
+    assert smoke.time.monotonic() - started < 1.0
+
+
+def test_model_comparison_checks_final_cpu_tensor_inventory_and_values():
+    torch = pytest.importorskip("torch")
+    resumed = {
+        "head.weight": torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+        "head.bias": torch.tensor([0.25]),
+    }
+    continuous = {
+        "head.weight": torch.tensor([[1.0, 2.0], [3.0, 4.0 + 5e-7]]),
+        "head.bias": torch.tensor([0.25]),
+    }
+
+    result = smoke._compare_model_state_tensors(torch, resumed, continuous)
+    assert result["resume_weights_match_continuous"] is True
+    assert result["resumed_weight_inventory_sha256"] == result[
+        "continuous_weight_inventory_sha256"
+    ]
+    assert result["resumed_weight_tensor_count"] == 2
+    assert result["continuous_weight_tensor_count"] == 2
+    assert result["resumed_weight_element_count"] == 5
+    assert result["continuous_weight_element_count"] == 5
+    assert result["weight_max_abs_difference"] <= smoke.WEIGHT_COMPARISON_ABS_TOL
+
+    excessive = {**continuous, "head.bias": torch.tensor([0.25 + 2e-6])}
+    mismatch = smoke._compare_model_state_tensors(torch, resumed, excessive)
+    assert mismatch["resume_weights_match_continuous"] is False
+    assert mismatch["weight_max_abs_difference"] > smoke.WEIGHT_COMPARISON_ABS_TOL
+
+    with pytest.raises(RuntimeError, match="weight_keys_mismatch"):
+        smoke._compare_model_state_tensors(torch, resumed, {"other.weight": resumed["head.weight"]})
+    with pytest.raises(RuntimeError, match="weight_shape_or_dtype_mismatch"):
+        smoke._compare_model_state_tensors(
+            torch, resumed, {**continuous, "head.weight": torch.zeros((5,))},
         )
