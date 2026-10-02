@@ -139,7 +139,9 @@ def diagnose_checkpoint(
     evaluation_operation_id = hashlib.sha256(
         f"{SCHEMA}:{checkpoint_id}:{evaluation_input_id}".encode("ascii")
     ).hexdigest()[:32]
-    admission = owner.reserve_checkpoint_allocation_dev(
+    # Admit the current training-purpose inputs before reading/projecting dev rows;
+    # this preflight deliberately records no evaluation use.
+    admission = owner.check_checkpoint_allocation_dev(
         store, checkpoint_id, evaluation_input_id, training_operation_id,
         evaluation_operation_id,
     )
@@ -184,6 +186,19 @@ def diagnose_checkpoint(
     restored_step = engine.restore_for_diagnostic(checkpoint_bytes, target_runtime)
     if restored_step != step:
         raise BoundaryError("token_diagnostic", "checkpoint_step_mismatch")
+    # Recheck current purpose/use claims only after codec, overlap, tensors, optimizer,
+    # and outer/inner step validation have all succeeded.
+    admission = owner.reserve_checkpoint_allocation_dev(
+        store, checkpoint_id, evaluation_input_id, training_operation_id,
+        evaluation_operation_id,
+    )
+    if (admission.get("checkpoint_id") != checkpoint_id
+            or admission.get("run_id") != run_id
+            or admission.get("training_input_id") != training_input_id
+            or admission.get("evaluation_input_id") != evaluation_input_id
+            or admission.get("physical_game_independence") != "unresolved"
+            or admission.get("clean_held_out_claim") is not False):
+        raise BoundaryError("token_diagnostic", "owner_reservation_identity_mismatch")
 
     def scores(index: int) -> tuple[float, ...]:
         return engine.scores_for_row(bound.evaluation_rows[index])

@@ -1065,13 +1065,14 @@ class LocalCurationOwner:
             )
         return self._training_use_summary(bindings, operation_id)
 
-    def _reserve_allocation_dev_use(
+    def _allocation_dev_use(
         self, store: ManifestArtifactStore, *, allocation_id: str,
         training_operation_id: str, evaluation_operation_id: str,
+        record_use: bool,
         comparison_allocation_id: str | None = None,
         comparison_training_operation_id: str | None = None,
     ) -> dict:
-        """Record one allocation's dev use after checking its training-purpose source.
+        """Check one allocation's dev admission and optionally record its use.
 
         ``comparison_allocation_id`` lets checkpoint diagnostics compare an older,
         separately authorized engineering allocation against the checkpoint's train
@@ -1080,6 +1081,8 @@ class LocalCurationOwner:
         from stpd.fullrun.decision_spool import SpoolSelection
         from stpd.fullrun.decision_training import load_allocation
 
+        if type(record_use) is not bool:
+            raise BoundaryError("local_curation", "evaluation_use_mode_invalid")
         digest(evaluation_operation_id, "local_curation.evaluation_operation", length=32)
         digest(training_operation_id, "local_curation.training_operation", length=32)
         selected_allocation = digest(allocation_id, "local_curation.dev_allocation")
@@ -1133,12 +1136,15 @@ class LocalCurationOwner:
                 if any(purpose in {"test", "gold"} for purpose, _ in
                        self.ledger._claims(db, related_dev).values()):
                     raise BoundaryError("local_curation", "sealed_dev_source_forbidden")
-                db.executemany("INSERT OR IGNORE INTO curation_uses VALUES(?,?,?,?)",
-                               ((run, "evaluation", evaluation_operation_id, time.time())
-                                for run in sorted(related_dev)))
-                db.executemany("INSERT OR IGNORE INTO curation_source_uses VALUES(?,?,?)",
-                               ((source, "evaluation", evaluation_operation_id)
-                                for source in sorted(dev_sources)))
+                if record_use:
+                    db.executemany("INSERT OR IGNORE INTO curation_uses VALUES(?,?,?,?)",
+                                   ((run, "evaluation", evaluation_operation_id, time.time())
+                                    for run in sorted(related_dev)))
+                    db.executemany(
+                        "INSERT OR IGNORE INTO curation_source_uses VALUES(?,?,?)",
+                        ((source, "evaluation", evaluation_operation_id)
+                         for source in sorted(dev_sources)),
+                    )
 
             return {
                 "allocation_id": selected_allocation,
@@ -1169,16 +1175,47 @@ class LocalCurationOwner:
                 if isinstance(dataset.records, SpoolSelection):
                     dataset.records.owner.close()
 
+    def check_checkpoint_allocation_dev(
+        self, store: ManifestArtifactStore, checkpoint_id: str,
+        evaluation_input_id: str, training_operation_id: str,
+        evaluation_operation_id: str,
+    ) -> dict:
+        """Read-only owner preflight for a paused-checkpoint dev diagnostic.
+
+        This verifies current training-purpose authorization and allocation lineage but
+        does not write evaluation-use rows. The caller owns proof that the checkpoint is
+        still the latest paused checkpoint for its run.
+        """
+        return self._checkpoint_allocation_dev_use(
+            store, checkpoint_id, evaluation_input_id, training_operation_id,
+            evaluation_operation_id, record_use=False,
+        )
+
     def reserve_checkpoint_allocation_dev(
         self, store: ManifestArtifactStore, checkpoint_id: str,
         evaluation_input_id: str, training_operation_id: str,
         evaluation_operation_id: str,
     ) -> dict:
-        """Reserve dev use for a real paused public-compact M0 checkpoint.
+        """Recheck owner admission and record one checkpoint diagnostic dev use.
 
-        The checkpoint, run, training input, evaluation input, and both immutable
-        allocation bindings are verified before the existing ledger records use.
-        No model or completion artifact is required or created here.
+        The caller owns proof that the checkpoint is still the latest paused checkpoint
+        for its run; this method verifies lineage and current use authorization.
+        """
+        return self._checkpoint_allocation_dev_use(
+            store, checkpoint_id, evaluation_input_id, training_operation_id,
+            evaluation_operation_id, record_use=True,
+        )
+
+    def _checkpoint_allocation_dev_use(
+        self, store: ManifestArtifactStore, checkpoint_id: str,
+        evaluation_input_id: str, training_operation_id: str,
+        evaluation_operation_id: str, *, record_use: bool,
+    ) -> dict:
+        """Check checkpoint lineage and optionally record its dev use.
+
+        The caller owns paused/latest run-event validation. Both the read-only preflight
+        and the final reservation verify the checkpoint, run, input and allocation
+        bindings; only the latter records use. No model or completion artifact is made.
         """
         from stpd.fullrun.light_action_inputs import (
             PUBLIC_COMPACT_VIEW_SCHEMA,
@@ -1272,10 +1309,11 @@ class LocalCurationOwner:
                 or training_binding["model_view_id"]
                 != training_input.parent("model_view")):
             raise BoundaryError("local_curation", "checkpoint_evaluation_view_mismatch")
-        result = self._reserve_allocation_dev_use(
+        result = self._allocation_dev_use(
             store, allocation_id=evaluation_binding["allocation_id"],
             training_operation_id=evaluation_binding["training_operation_id"],
             evaluation_operation_id=evaluation_operation,
+            record_use=record_use,
             comparison_allocation_id=training_binding["allocation_id"],
             comparison_training_operation_id=operation,
         )
@@ -1322,10 +1360,11 @@ class LocalCurationOwner:
             pending.extend(store.get_manifest(parent.artifact_id) for parent in item.parents)
         if allocation_id not in seen:
             raise BoundaryError("local_curation", "model_allocation_mismatch")
-        result = self._reserve_allocation_dev_use(
+        result = self._allocation_dev_use(
             store, allocation_id=allocation_id,
             training_operation_id=training_operation_id,
             evaluation_operation_id=evaluation_operation_id,
+            record_use=True,
         )
         return {
             "model_id": model_id, "allocation_id": allocation_id,

@@ -240,7 +240,120 @@ def test_paused_compact_checkpoint_diagnostic_is_private_and_separately_bound(
         torch.set_num_threads(previous_threads)
 
 
-def test_cuda_target_checkpoint_has_cpu_readonly_restore_path(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    (("malformed_payload", "unsupported_format_or_size"),
+     ("outer_inner_step_mismatch", "checkpoint_step_mismatch")),
+)
+def test_invalid_checkpoint_does_not_reserve_evaluation_use(
+    tmp_path, monkeypatch, failure, reason,
+):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("tokenizers")
+    pytest.importorskip("jwt")
+    from test_light_action_m0_canonical_cli import _cli, _synthetic_workspace
+
+    from spireagent.artifact_contracts import Manifest, Parent
+    from spireagent.json_boundary import FrozenObject
+    from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
+    from stpd.workers.token_diagnostic import diagnose_checkpoint
+    from stpd.workers.token_ranking import TokenRankingEngine
+
+    _enable_public_fixture(monkeypatch)
+    previous_threads = torch.get_num_threads()
+    torch.set_num_threads(2)
+    try:
+        config_path, store_dir, dataset_id, owner = _synthetic_workspace(tmp_path)
+        common = ("--store", str(store_dir))
+        operation = "c" * 32
+        prepared = _prepared_compact_input(
+            monkeypatch, common, config_path, dataset_id, operation, train_limit=8,
+        )
+        paused = _cli(
+            monkeypatch, *common, "train-light-action-m0",
+            "--project-config", str(config_path),
+            "--inputs", prepared["training_input_id"], "--operation", operation,
+            "--recipe", "stage1a.dsimple.light-action.m0.s.v1", "--steps", "2",
+            "--stop-after", "1", "--max-state-tokens", "8193",
+            "--max-action-bytes", "8193",
+        )
+        store = ManifestArtifactStore(LocalBlobStore(store_dir, create=False))
+        checkpoint = store.get_manifest(paused["checkpoint_id"])
+        run = store.get_manifest(paused["run_id"])
+        synthetic_run = replace(
+            run, parameters=FrozenObject.of({
+                **run.parameters.value(), "synthetic_case": failure,
+            }),
+        )
+        store.publish(synthetic_run)
+        reporter = ObjectStoreRunReporter(store, store.blobs)
+        if failure == "malformed_payload":
+            raw = b"not-a-tensor-tree"
+        else:
+            state = decode_checkpoint(
+                b"".join(store.read_payload(checkpoint.payload("checkpoint")))
+            )
+            state["step"] = 0
+            state["optimizer"]["state"] = {}
+            raw = encode_checkpoint(state)
+        forged = replace(
+            checkpoint,
+            parents=(Parent("run", synthetic_run.artifact_id),
+                     Parent("training_input", prepared["training_input_id"])),
+            payloads=(store.put_payload(
+                "checkpoint", io.BytesIO(raw), "application/vnd.stpd.tensor-tree",
+            ),),
+        )
+        store.publish(forged)
+        for kind in ("checkpoint", "paused"):
+            reporter.emit(Manifest(
+                "run_event", checkpoint.producer,
+                (Parent("run", synthetic_run.artifact_id),),
+                parameters=FrozenObject.of({
+                    "schema": "stpd/run-event-v1", "attempt": "e" * 32,
+                    "kind": kind, "step": 1,
+                    "details": {"checkpoint_id": forged.artifact_id},
+                }),
+            ))
+        before_manifests = set(store.manifest_ids())
+        with owner.transaction() as db:
+            before_runs = db.execute(
+                "SELECT run,kind,reference FROM curation_uses "
+                "WHERE kind='evaluation' ORDER BY run,reference"
+            ).fetchall()
+            before_sources = db.execute(
+                "SELECT source,kind,reference FROM curation_source_uses "
+                "WHERE kind='evaluation' ORDER BY source,reference"
+            ).fetchall()
+
+        def must_not_score(*_args, **_kwargs):
+            pytest.fail("invalid checkpoints must fail before scoring")
+
+        monkeypatch.setattr(TokenRankingEngine, "scores_for_row", must_not_score)
+        with pytest.raises(BoundaryError, match=reason):
+            diagnose_checkpoint(
+                store, owner, forged.artifact_id, prepared["training_input_id"],
+                operation, EVALUATION_PRODUCER,
+            )
+
+        with owner.transaction() as db:
+            after_runs = db.execute(
+                "SELECT run,kind,reference FROM curation_uses "
+                "WHERE kind='evaluation' ORDER BY run,reference"
+            ).fetchall()
+            after_sources = db.execute(
+                "SELECT source,kind,reference FROM curation_source_uses "
+                "WHERE kind='evaluation' ORDER BY source,reference"
+            ).fetchall()
+        assert after_runs == before_runs
+        assert after_sources == before_sources
+        assert set(store.manifest_ids()) == before_manifests
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def test_synthetic_cuda_target_checkpoint_has_cpu_readonly_restore_path(tmp_path, monkeypatch):
+    """A CPU-authored tensor tree with CUDA target identity; no CUDA device is used."""
     torch = pytest.importorskip("torch")
     pytest.importorskip("tokenizers")
     pytest.importorskip("jwt")
