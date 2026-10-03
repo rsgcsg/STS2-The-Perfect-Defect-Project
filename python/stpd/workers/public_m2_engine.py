@@ -39,6 +39,23 @@ PUBLIC_M2_EXPORT_SCHEMA = "stpd/public-m2-engine-weights-v1"
 _EXPORT_EPOCHS = frozenset({1, 3, 5})
 
 
+def _checked_device(value: str, *, require_available: bool) -> torch.device:
+    if type(value) is not str or type(require_available) is not bool:
+        raise BoundaryError("public_m2_engine", "invalid_device")
+    try:
+        device = torch.device(value)
+    except (ValueError, TypeError, RuntimeError) as error:
+        raise BoundaryError("public_m2_engine", "invalid_device") from error
+    if (device.type not in {"cpu", "cuda"}
+            or device.type == "cpu" and device.index is not None
+            or device.type == "cuda" and device.index is None):
+        raise BoundaryError("public_m2_engine", "invalid_device")
+    if (require_available and device.type == "cuda"
+            and (not torch.cuda.is_available() or device.index >= torch.cuda.device_count())):
+        raise BoundaryError("public_m2_engine", "unavailable_device")
+    return device
+
+
 @dataclass(frozen=True)
 class PublicM2EngineChain:
     chain_id: str
@@ -77,7 +94,7 @@ class PublicM2EngineConfig:
     prior_action_profile: str = PUBLIC_M2_PRIOR_ACTION_PROFILE
     feedback_profile: str = PUBLIC_M2_FEEDBACK_PROFILE
 
-    def validate(self) -> None:
+    def validate(self, *, require_device_available: bool = True) -> None:
         digests = (self.source_digest, self.state_tokenizer_sha256, self.action_codec_sha256)
         if (
             any(type(digest) is not str or len(digest) != 64
@@ -102,19 +119,13 @@ class PublicM2EngineConfig:
             or type(self.epochs) is not int or not 1 <= self.epochs <= 5
             or type(self.window_steps) is not int or not 1 <= self.window_steps <= 8
             or type(self.max_window_tokens) is not int or not 1 <= self.max_window_tokens <= 65_536
-            or type(self.device) is not str
         ):
             raise BoundaryError("public_m2_engine", "invalid_config")
         try:
             self.shape.validate()
-            device = torch.device(self.device)
         except (ValueError, TypeError, RuntimeError) as error:
-            raise BoundaryError("public_m2_engine", "invalid_device_or_shape") from error
-        if device.type not in {"cpu", "cuda"} or (device.type == "cuda" and (
-            device.index is None or not torch.cuda.is_available()
-            or device.index >= torch.cuda.device_count()
-        )) or (device.type == "cpu" and device.index is not None):
-            raise BoundaryError("public_m2_engine", "unavailable_device")
+            raise BoundaryError("public_m2_engine", "invalid_shape") from error
+        _checked_device(self.device, require_available=require_device_available)
         if any(type(value) not in {float, int} or not math.isfinite(value)
                for value in (self.learning_rate, self.weight_decay, self.gradient_clip)):
             raise BoundaryError("public_m2_engine", "invalid_optimizer_config")
@@ -183,7 +194,8 @@ def _chain_values(chains: tuple[PublicM2EngineChain, ...]) -> list[dict[str, Any
             for chain in chains]
 
 
-def _construct(config: PublicM2EngineConfig) -> LightActionM2Scorer:
+def _construct(config: PublicM2EngineConfig, *, device: torch.device | None = None
+               ) -> LightActionM2Scorer:
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(config.seed)
         core = ScratchTokenCore(config.shape)
@@ -191,7 +203,7 @@ def _construct(config: PublicM2EngineConfig) -> LightActionM2Scorer:
         core, max_action_bytes=config.max_action_bytes,
         initialization_seed=config.seed, slots=config.slots,
         reset_each_step=config.reset_each_step,
-    ).to(torch.device(config.device))
+    ).to(torch.device(config.device) if device is None else device)
 
 
 class PublicM2Engine:
@@ -538,6 +550,8 @@ class PublicM2Engine:
                 if (not isinstance(state, dict) or set(state) != {"step", "exp_avg", "exp_avg_sq"}
                         or any(not isinstance(state[key], Tensor) for key in state)
                         or state["step"].ndim != 0
+                        or state["step"].dtype != torch.float32
+                        or state["step"].device.type != "cpu"
                         or float(state["step"]) != expected_updates
                         or any(state[key].shape != parameter.shape
                                or state[key].dtype != parameter.dtype
@@ -594,10 +608,11 @@ class PublicM2Engine:
 
 def load_public_m2_weights(
     raw: bytes, config: PublicM2EngineConfig, *, input_digest: str,
-    completed_epochs: int,
+    completed_epochs: int, inference_device: str = "cpu",
 ) -> LightActionM2Scorer:
-    """Load an exact public M2 epoch export for evaluation or packaging."""
-    config.validate()
+    """Load exact training weights onto an independently selected inference device."""
+    config.validate(require_device_available=False)
+    target_device = _checked_device(inference_device, require_available=True)
     try:
         value = decode_checkpoint(raw)
         if (
@@ -622,7 +637,7 @@ def load_public_m2_weights(
             or any(char not in "0123456789abcdef" for char in value["checkpoint_digest"])
         ):
             raise BoundaryError("public_m2_export", "identity_mismatch")
-        model = _construct(config)
+        model = _construct(config, device=target_device)
         expected = model.state_dict()
         weights = value["weights"]
         if (
