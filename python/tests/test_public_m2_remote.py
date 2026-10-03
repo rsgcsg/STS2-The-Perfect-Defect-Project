@@ -198,8 +198,22 @@ def test_terminal_completion_is_selected_only_in_local_reporter(tmp_path):
         assert reporter.completed(run.artifact_id) is None
         outcome = accept_public_m2_remote_result(
             store, reporter, request, result, request_sha256=sha,
-            expected_runtime=engine.runtime, select_completion=(attempt == 9),
+            expected_runtime=engine.runtime,
         )
         prior = outcome.checkpoint_id
     assert outcome.state == "completed"
+    assert reporter.completed(run.artifact_id) is None
+    recovery = build_public_m2_remote_request(
+        store, reporter, run.artifact_id, producer, attempt_id="b" * 32,
+        expected_runtime=engine.runtime, resume=prior, max_windows=0,
+    )
+    recovery_sha = hashlib.sha256(recovery).hexdigest()
+    recovery_result = execute_public_m2_remote_request(
+        recovery, request_sha256=recovery_sha,
+    )
+    outcome = accept_public_m2_remote_result(
+        store, reporter, recovery, recovery_result,
+        request_sha256=recovery_sha, expected_runtime=engine.runtime,
+        select_completion=True,
+    )
     assert reporter.completed(run.artifact_id).artifact_id == outcome.result_id
