@@ -30,35 +30,44 @@ def _step(position: int, *, target: str = "b") -> LightActionM2TrainingStep:
     )
 
 
-def _config(*, epochs: int = 1, source_digest: str = "a" * 64) -> PublicM2EngineConfig:
+def _config(*, epochs: int = 1, source_digest: str = "a" * 64,
+            slots: int = 8, reset_each_step: bool = False) -> PublicM2EngineConfig:
     return PublicM2EngineConfig(
         source_digest=source_digest, state_tokenizer_sha256="b" * 64,
         shape=ScratchShape(vocab_size=258, width=12, layers=1, heads=2,
                            feedforward=24, dropout=0.1, max_tokens=16),
         max_action_bytes=8, max_actions_per_step=2, max_chain_steps=16,
         max_total_steps=32, max_total_input_tokens=512, epochs=epochs,
+        slots=slots, reset_each_step=reset_each_step,
     )
 
 
 def _engine(*, epochs: int = 1, train_steps: int = 9,
-            source_digest: str = "a" * 64) -> PublicM2Engine:
+            source_digest: str = "a" * 64, slots: int = 8,
+            reset_each_step: bool = False) -> PublicM2Engine:
     return PublicM2Engine(
         (PublicM2EngineChain("train", tuple(_step(i) for i in range(train_steps))),),
         (PublicM2EngineChain("dev", (_step(0), _step(1, target="a"))),),
-        _config(epochs=epochs, source_digest=source_digest),
+        _config(epochs=epochs, source_digest=source_digest, slots=slots,
+                reset_each_step=reset_each_step),
     )
 
 
-def test_mid_chain_resume_matches_uninterrupted_and_dev_is_read_only() -> None:
+@pytest.mark.parametrize(("slots", "reset_each_step"), (
+    (8, False), (1, False), (8, True), (1, True),
+))
+def test_mid_chain_resume_matches_uninterrupted_and_dev_is_read_only(
+    slots: int, reset_each_step: bool,
+) -> None:
     torch.set_num_threads(1)
-    original = _engine()
+    original = _engine(slots=slots, reset_each_step=reset_each_step)
     first = original.advance_window()
     assert (first.label_count, first.optimizer_updates, first.window_cursor) == (8, 1, 8)
     raw = original.checkpoint()
     metric = original.evaluate_dev()
     assert metric.label_count == 2 and 0 <= metric.top1_accuracy <= 1
     assert original.checkpoint() == raw
-    resumed = _engine()
+    resumed = _engine(slots=slots, reset_each_step=reset_each_step)
     resumed.restore(raw)
     assert resumed.window_cursor == 8
     original.advance_window()
@@ -76,6 +85,10 @@ def test_mid_chain_resume_matches_uninterrupted_and_dev_is_read_only() -> None:
         input_digest=original.input_digest, completed_epochs=1,
     )
     assert not loaded.training
+
+
+def test_public_m2_learning_rate_default_matches_six_arm_plan() -> None:
+    assert _config().learning_rate == 3e-4
 
 
 def test_five_epoch_exports_are_bound_to_same_incomplete_run() -> None:

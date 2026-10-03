@@ -81,7 +81,7 @@ class PublicM2EngineConfig:
     slots: int = 8
     reset_each_step: bool = False
     seed: int = 1701
-    learning_rate: float = 0.001
+    learning_rate: float = 3e-4
     weight_decay: float = 0.0
     gradient_clip: float = 1.0
     epochs: int = 5
