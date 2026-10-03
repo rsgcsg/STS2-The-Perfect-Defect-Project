@@ -56,6 +56,17 @@ class LoadedLightActionInputs:
     state_tokenizer: Tokenizer
 
 
+@dataclass(frozen=True)
+class LoadedCheckpointDiagnosticInputs:
+    """Verified M0 training codec plus separately bound engineering dev samples."""
+
+    training: LoadedLightActionInputs
+    evaluation_input: Manifest
+    evaluation_view: Manifest
+    evaluation_samples: tuple[ModelSample, ...]
+    evaluation_rows: tuple[LightActionTokenRow, ...]
+
+
 def fit_state_bpe(samples: tuple[ModelSample, ...], *, vocab_size: int = 8192) -> bytes:
     """Fit state text only on train rows; actions use the independent byte codec."""
     if type(vocab_size) is not int or not 256 <= vocab_size <= 8192:
@@ -267,6 +278,7 @@ def _compile(
     max_state_tokens: int, max_action_bytes: int,
     source_schema: str = TEXT_MENU_VIEW_SCHEMA,
     source_renderer: dict[str, Any] | None = None,
+    verify_train_only_fit: bool = True,
 ) -> tuple[Tokenizer, tuple[LightActionTokenRow, ...], dict[str, Any]]:
     public = source_schema in {PUBLIC_LITE_VIEW_SCHEMA, PUBLIC_COMPACT_VIEW_SCHEMA}
     cap = 1_000_000 if public else 8192
@@ -282,7 +294,7 @@ def _compile(
         if (digest != expected.sha256 or len(raw) != expected.size_bytes
             or (not public and max_state_tokens > pin.hard_limit)):
             raise BoundaryError("light_action_inputs", "qwen_state_tokenizer_pin_mismatch")
-    elif raw != fit_state_bpe(samples):
+    elif verify_train_only_fit and raw != fit_state_bpe(samples):
         raise BoundaryError("light_action_inputs", "state_bpe_must_fit_train_only")
     try:
         tokenizer = Tokenizer.from_str(raw.decode("utf-8"))
@@ -470,3 +482,68 @@ def load_light_action_inputs(store: ArtifactStore, identity: str) -> LoadedLight
             or b"".join(store.read_payload(manifest.payload("rows"))) != encoded_rows):
         raise BoundaryError("light_action_inputs", "source_projection_mismatch")
     return LoadedLightActionInputs(manifest, samples, rows, tokenizer)
+
+
+def load_checkpoint_diagnostic_inputs(
+    store: ArtifactStore, training_input_id: str, evaluation_input_id: str,
+) -> LoadedCheckpointDiagnosticInputs:
+    """Load a verified public-compact checkpoint codec and project another dev view.
+
+    The training input is verified by the normal loader, including its train-only codec
+    identity. A distinct evaluation view is encoded using those persisted codec bytes and
+    never fits or changes a codec from evaluation samples.
+    """
+    from .public_inputs import COMPACT_IDENTITY
+
+    training = load_light_action_inputs(store, training_input_id)
+    training_info = training.manifest.parameters.value()
+    training_view = store.get_manifest(training.manifest.parent("model_view"))
+    if (training_info.get("schema") != PUBLIC_SCHEMA
+            or training_view.parameters.value().get("schema") != PUBLIC_COMPACT_VIEW_SCHEMA
+            or training_view.parameters.value().get("serializer") != COMPACT_IDENTITY
+            or training_info.get("source_renderer") != COMPACT_IDENTITY):
+        raise BoundaryError("light_action_inputs", "public_compact_m0_required")
+
+    evaluation_input = store.get_manifest(evaluation_input_id)
+    evaluation_binding = public_training_binding(store, evaluation_input_id)
+    evaluation_view, evaluation_samples, evaluation_renderer = _source_view(
+        store, evaluation_input.parent("model_view"))
+    if (evaluation_input.kind != "training_input"
+            or evaluation_input.parameters.value().get("schema") != PUBLIC_SCHEMA
+            or evaluation_binding["model_view_id"] != evaluation_view.artifact_id
+            or evaluation_view.parameters.value().get("schema") != PUBLIC_COMPACT_VIEW_SCHEMA
+            or evaluation_renderer != COMPACT_IDENTITY
+            or evaluation_renderer != training_info["source_renderer"]):
+        raise BoundaryError("light_action_inputs", "matching_public_compact_dev_view_required")
+
+    if evaluation_view.artifact_id == training_view.artifact_id:
+        return LoadedCheckpointDiagnosticInputs(
+            training, evaluation_input, evaluation_view, training.samples, training.rows,
+        )
+
+    state_codec = training_info.get("state_codec")
+    if not isinstance(state_codec, dict):
+        raise BoundaryError("light_action_inputs", "state_codec_identity_mismatch")
+    family_name = state_codec.get("family")
+    if family_name == "train-only-byte-bpe":
+        family: Literal["s", "qwen3"] = "s"
+    elif family_name == "pinned-qwen3":
+        family = "qwen3"
+    else:
+        raise BoundaryError("light_action_inputs", "state_codec_identity_mismatch")
+    raw = b"".join(store.read_payload(training.manifest.payload("state_tokenizer")))
+    max_state_tokens = training_info.get("max_state_tokens")
+    max_action_bytes = training_info.get("max_action_bytes")
+    if type(max_state_tokens) is not int or type(max_action_bytes) is not int:
+        raise BoundaryError("light_action_inputs", "invalid_independent_length_limits")
+    _, evaluation_rows, _ = _compile(
+        evaluation_samples, raw, family,
+        max_state_tokens=max_state_tokens,
+        max_action_bytes=max_action_bytes,
+        source_schema=evaluation_view.parameters.value()["schema"],
+        source_renderer=evaluation_renderer,
+        verify_train_only_fit=False,
+    )
+    return LoadedCheckpointDiagnosticInputs(
+        training, evaluation_input, evaluation_view, evaluation_samples, evaluation_rows,
+    )

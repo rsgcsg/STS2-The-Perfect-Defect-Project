@@ -480,6 +480,7 @@ class LocalM0RemoteController:
         terminal_state: str | None = None
         result_bytes: bytes | None = None
         runtime_bytes: bytes | None = None
+        parsed_result: TokenRemoteUpdateResult | None = None
         error_code: str | None = None
         while True:
             try:
@@ -496,9 +497,11 @@ class LocalM0RemoteController:
                 break
             if result_bytes is not None:
                 runtime_bytes = provider.get_runtime_evidence(handle).to_bytes()
-                parsed = TokenRemoteUpdateResult.from_bytes(result_bytes)
+                parsed_result = TokenRemoteUpdateResult.from_bytes(result_bytes)
                 terminal_state = (
-                    "completed" if parsed.checkpoint_step == parsed.config.steps else "paused"
+                    "completed"
+                    if parsed_result.checkpoint_step == parsed_result.config.steps
+                    else "paused"
                 )
                 break
             remaining = deadline - self._monotonic()
@@ -517,8 +520,8 @@ class LocalM0RemoteController:
 
         candidate_sha = None
         if result_bytes is not None:
-            parsed = TokenRemoteUpdateResult.from_bytes(result_bytes)
-            candidate_sha = parsed.checkpoint_sha256
+            assert parsed_result is not None
+            candidate_sha = parsed_result.checkpoint_sha256
         self.training.record_remote_observation(
             operation_id, state=terminal_state, provider_terminal=True,
             checkpoint_candidate_sha256=candidate_sha,

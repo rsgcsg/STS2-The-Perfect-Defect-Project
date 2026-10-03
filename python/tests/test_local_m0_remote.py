@@ -9,6 +9,7 @@ import json
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -343,6 +344,142 @@ def _controller(service, state, settings=None, **kwargs):
         sleep=lambda _seconds: None,
         **kwargs,
     )
+
+
+def _synthetic_poll_controller(
+    monkeypatch: pytest.MonkeyPatch, result_bytes: bytes,
+) -> tuple[Any, Any, str, bytes]:
+    from types import SimpleNamespace
+
+    from spireagent.workbench import local_m0_remote as remote
+
+    operation_id = "f" * 32
+    spec, app_ref, handle = object(), object(), object()
+    runtime_bytes = b"synthetic-runtime-evidence"
+
+    class Training:
+        def __init__(self) -> None:
+            self.observations: list[dict[str, Any]] = []
+
+        def remote_provider_evidence(self, _operation_id: str) -> dict[str, bytes]:
+            return {
+                "attempt_spec_bytes": b"synthetic-spec",
+                "app_ref_bytes": b"synthetic-app-ref",
+                "handle_bytes": b"synthetic-handle",
+            }
+
+        def record_remote_observation(self, _operation_id: str, **fields: Any) -> None:
+            self.observations.append(fields)
+
+    class Provider:
+        def restore_handle(self, raw: bytes, restored_app_ref: object) -> object:
+            assert raw == b"synthetic-handle"
+            assert restored_app_ref is app_ref
+            return handle
+
+        def poll(self, polled_handle: object, *, timeout_seconds: float = 0) -> bytes:
+            assert polled_handle is handle
+            assert timeout_seconds == 0
+            return result_bytes
+
+        def get_runtime_evidence(self, evidence_handle: object) -> Any:
+            assert evidence_handle is handle
+            return SimpleNamespace(to_bytes=lambda: runtime_bytes)
+
+    monkeypatch.setattr(
+        remote.M0AttemptSpec, "from_bytes", staticmethod(lambda _raw: spec),
+    )
+    monkeypatch.setattr(
+        remote.ModalM0Target, "from_bytes", staticmethod(lambda _raw: app_ref),
+    )
+    training, provider = Training(), Provider()
+    controller = remote.LocalM0RemoteController(
+        training,
+        provider_factory=lambda *, spec: provider,
+        monotonic=lambda: 0,
+    )
+    controller._saved = lambda _operation_id: (
+        {"remote": {"attempts": [{"phase": "submitted"}]}}, b"saved-request",
+    )
+    controller._stop_and_finalize = lambda _operation_id: {"stage": "synthetic-finalized"}
+    return controller, training, operation_id, runtime_bytes
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_step", "steps", "expected_state"),
+    [(3, 3, "completed"), (1, 3, "paused")],
+)
+def test_remote_poll_parses_result_once_and_records_original_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint_step: int,
+    steps: int,
+    expected_state: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from stpd.workers.token_remote_update import TokenRemoteUpdateResult
+
+    result_bytes = b"synthetic-provider-result"
+    checkpoint_sha = "a" * 64
+    parsed = SimpleNamespace(
+        checkpoint_step=checkpoint_step,
+        config=SimpleNamespace(steps=steps),
+        checkpoint_sha256=checkpoint_sha,
+    )
+    parse_calls = []
+
+    def parse_result(raw: bytes) -> Any:
+        parse_calls.append(raw)
+        return parsed
+
+    monkeypatch.setattr(
+        TokenRemoteUpdateResult, "from_bytes", staticmethod(parse_result),
+    )
+    controller, training, operation_id, runtime_bytes = _synthetic_poll_controller(
+        monkeypatch, result_bytes,
+    )
+
+    assert controller._poll_and_finalize(operation_id, 0) == {
+        "stage": "synthetic-finalized",
+    }
+
+    assert parse_calls == [result_bytes]
+    assert training.observations == [{
+        "state": expected_state,
+        "provider_terminal": True,
+        "checkpoint_candidate_sha256": checkpoint_sha,
+        "provider_result_bytes": result_bytes,
+        "runtime_evidence_bytes": runtime_bytes,
+        "error_code": None,
+    }]
+    assert training.observations[0]["provider_result_bytes"] is result_bytes
+
+
+def test_remote_poll_preserves_result_parse_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from spireagent.json_boundary import BoundaryError
+    from stpd.workers.token_remote_update import TokenRemoteUpdateResult
+
+    result_bytes = b"synthetic-invalid-provider-result"
+    parse_error = BoundaryError("token_remote_update", "invalid_result_contract")
+    parse_calls = []
+
+    def parse_result(raw: bytes) -> Any:
+        parse_calls.append(raw)
+        raise parse_error
+
+    monkeypatch.setattr(
+        TokenRemoteUpdateResult, "from_bytes", staticmethod(parse_result),
+    )
+    controller, training, operation_id, _runtime_bytes = _synthetic_poll_controller(
+        monkeypatch, result_bytes,
+    )
+
+    with pytest.raises(BoundaryError) as raised:
+        controller._poll_and_finalize(operation_id, 0)
+
+    assert raised.value is parse_error
+    assert parse_calls == [result_bytes]
+    assert training.observations == []
 
 
 def _prepare_intent_operation(service, dataset_id: str, *, account_id: str):

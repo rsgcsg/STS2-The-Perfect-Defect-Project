@@ -13,6 +13,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from sts2_platform_evidence.human_session_bundle_v3 import HumanSessionBundleV3
 
@@ -1064,6 +1065,275 @@ class LocalCurationOwner:
             )
         return self._training_use_summary(bindings, operation_id)
 
+    def _allocation_dev_use(
+        self, store: ManifestArtifactStore, *, allocation_id: str,
+        training_operation_id: str, evaluation_operation_id: str,
+        record_use: bool,
+        comparison_allocation_id: str | None = None,
+        comparison_training_operation_id: str | None = None,
+    ) -> dict:
+        """Check one allocation's dev admission and optionally record its use.
+
+        ``comparison_allocation_id`` lets checkpoint diagnostics compare an older,
+        separately authorized engineering allocation against the checkpoint's train
+        allocation. It does not admit a different dataset purpose or split.
+        """
+        from stpd.fullrun.decision_spool import SpoolSelection
+        from stpd.fullrun.decision_training import load_allocation
+
+        if type(record_use) is not bool:
+            raise BoundaryError("local_curation", "evaluation_use_mode_invalid")
+        digest(evaluation_operation_id, "local_curation.evaluation_operation", length=32)
+        digest(training_operation_id, "local_curation.training_operation", length=32)
+        selected_allocation = digest(allocation_id, "local_curation.dev_allocation")
+        compare_allocation = digest(
+            comparison_allocation_id or allocation_id,
+            "local_curation.training_allocation",
+        )
+        loaded: dict[str, tuple[Manifest, Any, dict]] = {}
+        try:
+            for identity in {selected_allocation, compare_allocation}:
+                loaded[identity] = load_allocation(store, identity)
+            evaluation_manifest, evaluation_dataset, evaluation_allocation = loaded[
+                selected_allocation
+            ]
+            training_manifest, training_dataset, training_allocation = loaded[
+                compare_allocation
+            ]
+            evaluation_dataset_id = evaluation_manifest.parent("dataset")
+            training_dataset_id = training_manifest.parent("dataset")
+            evaluation_admission = self.require_training_datasets(
+                store, (evaluation_dataset_id,), training_operation_id)
+            if compare_allocation == selected_allocation:
+                training_admission = evaluation_admission
+            else:
+                training_admission = self.require_training_datasets(
+                    store, (training_dataset_id,),
+                    comparison_training_operation_id or training_operation_id)
+
+            dev_members = [member for member in evaluation_allocation["members"]
+                           if member["split"] == "dev"]
+            train_members = [member for member in training_allocation["members"]
+                             if member["split"] == "train"]
+            dev_runs = {member["run_id"] for member in dev_members}
+            train_runs = {member["run_id"] for member in train_members}
+            dev_archives = {member["source_archive_sha256"] for member in dev_members}
+            train_archives = {member["source_archive_sha256"] for member in train_members}
+            dev_transitions = {member["transition_id"] for member in dev_members}
+            train_transitions = {member["transition_id"] for member in train_members}
+            sources = evaluation_admission["datasets"][0]["sources"]
+            source_archives = {source["archive_sha256"] for source in sources}
+            if not dev_archives <= source_archives:
+                raise BoundaryError("local_curation", "allocation_source_mismatch")
+            dev_sources = {source["artifact_id"] for source in sources
+                           if source["archive_sha256"] in dev_archives}
+            if not dev_runs or not dev_sources:
+                raise BoundaryError("local_curation", "empty_dev_allocation")
+
+            with self.transaction() as db:
+                related_dev = self.ledger._groups(db, dev_runs)
+                related_train = self.ledger._groups(db, train_runs)
+                if any(purpose in {"test", "gold"} for purpose, _ in
+                       self.ledger._claims(db, related_dev).values()):
+                    raise BoundaryError("local_curation", "sealed_dev_source_forbidden")
+                if record_use:
+                    db.executemany("INSERT OR IGNORE INTO curation_uses VALUES(?,?,?,?)",
+                                   ((run, "evaluation", evaluation_operation_id, time.time())
+                                    for run in sorted(related_dev)))
+                    db.executemany(
+                        "INSERT OR IGNORE INTO curation_source_uses VALUES(?,?,?)",
+                        ((source, "evaluation", evaluation_operation_id)
+                         for source in sorted(dev_sources)),
+                    )
+
+            return {
+                "allocation_id": selected_allocation,
+                "training_allocation_id": compare_allocation,
+                "training_operation_id": training_operation_id,
+                "evaluation_operation_id": evaluation_operation_id,
+                "qualified_run_ids": sorted(dev_runs),
+                "semantic_overlap": bool(related_dev & related_train),
+                "identity_overlap": {
+                    "transition_ids": len(dev_transitions & train_transitions),
+                    "run_ids": len(dev_runs & train_runs),
+                    "run_groups": len(related_dev & related_train),
+                    "source_archives": len(dev_archives & train_archives),
+                },
+                "evaluation_scope": (
+                    "within_training_purpose_allocation"
+                    if compare_allocation == selected_allocation
+                    else "cross_training_purpose_allocation_engineering_regression"
+                ),
+                "historical_external_exposure": "unknown",
+                "physical_game_independence": "unresolved",
+                "clean_held_out_claim": False,
+                "ledger_scope": evaluation_admission["ledger_scope"],
+                "training_ledger_scope": training_admission["ledger_scope"],
+            }
+        finally:
+            for _, dataset, _ in loaded.values():
+                if isinstance(dataset.records, SpoolSelection):
+                    dataset.records.owner.close()
+
+    def check_checkpoint_allocation_dev(
+        self, store: ManifestArtifactStore, checkpoint_id: str,
+        evaluation_input_id: str, training_operation_id: str,
+        evaluation_operation_id: str,
+    ) -> dict:
+        """Read-only owner preflight for a paused-checkpoint dev diagnostic.
+
+        This verifies current training-purpose authorization and allocation lineage but
+        does not write evaluation-use rows. The caller owns proof that the checkpoint is
+        still the latest paused checkpoint for its run.
+        """
+        return self._checkpoint_allocation_dev_use(
+            store, checkpoint_id, evaluation_input_id, training_operation_id,
+            evaluation_operation_id, record_use=False,
+        )
+
+    def reserve_checkpoint_allocation_dev(
+        self, store: ManifestArtifactStore, checkpoint_id: str,
+        evaluation_input_id: str, training_operation_id: str,
+        evaluation_operation_id: str,
+    ) -> dict:
+        """Recheck owner admission and record one checkpoint diagnostic dev use.
+
+        The caller owns proof that the checkpoint is still the latest paused checkpoint
+        for its run; this method verifies lineage and current use authorization.
+        """
+        return self._checkpoint_allocation_dev_use(
+            store, checkpoint_id, evaluation_input_id, training_operation_id,
+            evaluation_operation_id, record_use=True,
+        )
+
+    def _checkpoint_allocation_dev_use(
+        self, store: ManifestArtifactStore, checkpoint_id: str,
+        evaluation_input_id: str, training_operation_id: str,
+        evaluation_operation_id: str, *, record_use: bool,
+    ) -> dict:
+        """Check checkpoint lineage and optionally record its dev use.
+
+        The caller owns paused/latest run-event validation. Both the read-only preflight
+        and the final reservation verify the checkpoint, run, input and allocation
+        bindings; only the latter records use. No model or completion artifact is made.
+        """
+        from stpd.fullrun.light_action_inputs import (
+            PUBLIC_COMPACT_VIEW_SCHEMA,
+            PUBLIC_INPUT_FORMAT,
+            PUBLIC_SCHEMA,
+            public_training_binding,
+        )
+        from stpd.fullrun.public_inputs import COMPACT_IDENTITY
+        from stpd.workers.token_ranking import LIGHT_ACTION_M0_CHECKPOINT_SCHEMA
+        from stpd.workers.token_worker import RUN_SCHEMA
+
+        checkpoint = store.get_manifest(digest(
+            checkpoint_id, "local_curation.checkpoint_diagnostic_checkpoint"))
+        checkpoint_info = checkpoint.parameters.value()
+        if (checkpoint.kind != "checkpoint"
+                or checkpoint_info.get("schema") != LIGHT_ACTION_M0_CHECKPOINT_SCHEMA
+                or sorted(parent.role for parent in checkpoint.parents)
+                != ["run", "training_input"]
+                or [payload.role for payload in checkpoint.payloads] != ["checkpoint"]):
+            raise BoundaryError("local_curation", "checkpoint_training_lineage_mismatch")
+        run = store.get_manifest(checkpoint.parent("run"))
+        training_input_id = checkpoint.parent("training_input")
+        training_input = store.get_manifest(training_input_id)
+        evaluation_input = store.get_manifest(digest(
+            evaluation_input_id, "local_curation.checkpoint_diagnostic_input"))
+        run_info = run.parameters.value()
+        train_info = training_input.parameters.value()
+        evaluation_info = evaluation_input.parameters.value()
+        if (run.kind != "run" or run.parameters.value().get("schema") != RUN_SCHEMA
+                or sorted(parent.role for parent in run.parents)
+                != ["experiment", "training_input"]
+                or run.parent("training_input") != training_input_id
+                or checkpoint.parent("run") != run.artifact_id
+                or checkpoint.producer != run.producer
+                or checkpoint.producer != store.get_manifest(run.parent("experiment")).producer
+                or evaluation_input.kind != "training_input"
+                or evaluation_info.get("schema") != PUBLIC_SCHEMA
+                or evaluation_info.get("format") != PUBLIC_INPUT_FORMAT):
+            raise BoundaryError("local_curation", "checkpoint_training_lineage_mismatch")
+        experiment = store.get_manifest(run.parent("experiment"))
+        if (experiment.kind != "experiment"
+                or experiment.parameters.value().get("schema") != "stpd/experiment-v1"
+                or experiment.parent("training_input") != training_input_id
+                or experiment.parameters.value().get("config") != run_info.get("config")
+                or experiment.parameters.value().get("training_binding")
+                != run_info.get("training_binding")):
+            raise BoundaryError("local_curation", "checkpoint_training_lineage_mismatch")
+        if (training_input.kind != "training_input"
+                or train_info.get("schema") != PUBLIC_SCHEMA
+                or train_info.get("format") != PUBLIC_INPUT_FORMAT):
+            raise BoundaryError("local_curation", "public_m0_training_input_required")
+        training_binding = public_training_binding(store, training_input_id)
+        evaluation_binding = public_training_binding(store, evaluation_input.artifact_id)
+        operation = digest(training_operation_id,
+                           "local_curation.checkpoint_training_operation", length=32)
+        if (operation != training_binding["training_operation_id"]
+                or run_info.get("training_binding") != training_binding
+                or experiment.parameters.value().get("training_binding") != training_binding
+                or checkpoint_info.get("training_binding") != training_binding
+                or not isinstance(run_info.get("config"), dict)
+                or run_info["config"].get("schema")
+                != "stpd/stage1a-light-action-m0-config-v1"
+                or run_info["config"].get("public_profile") != "public_compact"
+                or checkpoint_info.get("recipe") != run_info["config"].get("recipe")
+                or checkpoint_info.get("input_schema") != train_info.get("schema")
+                or checkpoint_info.get("input_format") != train_info.get("format")
+                or checkpoint_info.get("source_view_schema") != train_info.get("source_schema")
+                or checkpoint_info.get("source_renderer") != train_info.get("source_renderer")
+                or type(checkpoint_info.get("step")) is not int
+                or not 0 <= checkpoint_info["step"] <= run_info["config"].get("steps", -1)):
+            raise BoundaryError("local_curation", "checkpoint_training_binding_mismatch")
+        evaluation_operation = digest(
+            evaluation_operation_id, "local_curation.evaluation_operation", length=32)
+        # Both input bindings must already have their own current training-purpose
+        # claim and operation use. Evaluation does not create or relabel training use.
+        self.require_training_datasets(
+            store, tuple(training_binding["dataset_ids"]), operation)
+        self.require_training_datasets(
+            store, tuple(evaluation_binding["dataset_ids"]),
+            evaluation_binding["training_operation_id"],
+        )
+        training_view = store.get_manifest(training_input.parent("model_view"))
+        view = store.get_manifest(evaluation_input.parent("model_view"))
+        if (training_view.parameters.value().get("schema") != PUBLIC_COMPACT_VIEW_SCHEMA
+                or training_view.parameters.value().get("serializer") != COMPACT_IDENTITY
+                or view.parameters.value().get("schema") != PUBLIC_COMPACT_VIEW_SCHEMA
+                or view.parameters.value().get("serializer") != COMPACT_IDENTITY
+                or view.parameters.value().get("schema") != evaluation_info.get("source_schema")
+                or view.parameters.value().get("serializer")
+                != evaluation_info.get("source_renderer")
+                or training_binding["model_view_id"]
+                != training_input.parent("model_view")):
+            raise BoundaryError("local_curation", "checkpoint_evaluation_view_mismatch")
+        result = self._allocation_dev_use(
+            store, allocation_id=evaluation_binding["allocation_id"],
+            training_operation_id=evaluation_binding["training_operation_id"],
+            evaluation_operation_id=evaluation_operation,
+            record_use=record_use,
+            comparison_allocation_id=training_binding["allocation_id"],
+            comparison_training_operation_id=operation,
+        )
+        result.update({
+            "checkpoint_id": checkpoint.artifact_id,
+            "run_id": run.artifact_id,
+            "training_input_id": training_input_id,
+            "evaluation_input_id": evaluation_input.artifact_id,
+            "training_operation_id": operation,
+            "evaluation_training_operation_id": evaluation_binding["training_operation_id"],
+            "evaluation_operation_id": evaluation_operation,
+            "evaluation_view_id": evaluation_input.parent("model_view"),
+            "evaluation_scope": (
+                "within_training_purpose_allocation"
+                if training_binding["allocation_id"] == evaluation_binding["allocation_id"]
+                else "cross_training_purpose_allocation_engineering_regression"
+            ),
+        })
+        return result
+
     def reserve_allocation_dev(self, store: ManifestArtifactStore, model_id: str,
                                allocation_id: str, training_operation_id: str,
                                evaluation_operation_id: str) -> dict:
@@ -1073,10 +1343,7 @@ class LocalCurationOwner:
         the existing ledger alone cannot establish that dataset/operation relationship.
         """
         from stpd.fullrun.dataset_policy import training_sources
-        from stpd.fullrun.decision_spool import SpoolSelection
-        from stpd.fullrun.decision_training import load_allocation
 
-        digest(evaluation_operation_id, "local_curation.evaluation_operation", length=32)
         model = store.get_manifest(digest(model_id, "local_curation.evaluation_model"))
         if model.kind != "model":
             raise BoundaryError("local_curation", "model_training_lineage_mismatch")
@@ -1093,45 +1360,24 @@ class LocalCurationOwner:
             pending.extend(store.get_manifest(parent.artifact_id) for parent in item.parents)
         if allocation_id not in seen:
             raise BoundaryError("local_curation", "model_allocation_mismatch")
-        manifest, dataset, allocation = load_allocation(store, allocation_id)
-        try:
-            admission = self.require_training_datasets(
-                store, (manifest.parent("dataset"),), training_operation_id)
-            dev_members = [member for member in allocation["members"] if member["split"] == "dev"]
-            runs = {member["run_id"] for member in dev_members}
-            archives = {member["source_archive_sha256"] for member in dev_members}
-            sources = admission["datasets"][0]["sources"]
-            if not archives <= {source["archive_sha256"] for source in sources}:
-                raise BoundaryError("local_curation", "allocation_source_mismatch")
-            dev_sources = {source["artifact_id"] for source in sources
-                           if source["archive_sha256"] in archives}
-            train_runs = {member["run_id"] for member in allocation["members"]
-                          if member["split"] == "train"}
-            if not runs:
-                raise BoundaryError("local_curation", "empty_dev_allocation")
-            with self.transaction() as db:
-                related = self.ledger._groups(db, runs)
-                if any(purpose in {"test", "gold"} for purpose, _ in
-                       self.ledger._claims(db, related).values()):
-                    raise BoundaryError("local_curation", "sealed_dev_source_forbidden")
-                overlap = bool(related & self.ledger._groups(db, train_runs))
-                db.executemany("INSERT OR IGNORE INTO curation_uses VALUES(?,?,?,?)",
-                               ((run, "evaluation", evaluation_operation_id, time.time())
-                                for run in sorted(related)))
-                db.executemany("INSERT OR IGNORE INTO curation_source_uses VALUES(?,?,?)",
-                               ((source, "evaluation", evaluation_operation_id)
-                                for source in sorted(dev_sources)))
-            return {"model_id": model_id, "allocation_id": allocation_id,
-                    "training_operation_id": training_operation_id,
-                    "evaluation_operation_id": evaluation_operation_id,
-                    "qualified_run_ids": sorted(runs), "semantic_overlap": overlap,
-                    "evaluation_scope": "within_training_purpose_allocation",
-                    "historical_external_exposure": "unknown",
-                    "physical_game_independence": "unresolved", "clean_held_out_claim": False,
-                    "ledger_scope": admission["ledger_scope"]}
-        finally:
-            if isinstance(dataset.records, SpoolSelection):
-                dataset.records.owner.close()
+        result = self._allocation_dev_use(
+            store, allocation_id=allocation_id,
+            training_operation_id=training_operation_id,
+            evaluation_operation_id=evaluation_operation_id,
+            record_use=True,
+        )
+        return {
+            "model_id": model_id, "allocation_id": allocation_id,
+            "training_operation_id": training_operation_id,
+            "evaluation_operation_id": evaluation_operation_id,
+            "qualified_run_ids": result["qualified_run_ids"],
+            "semantic_overlap": result["semantic_overlap"],
+            "evaluation_scope": "within_training_purpose_allocation",
+            "historical_external_exposure": "unknown",
+            "physical_game_independence": "unresolved",
+            "clean_held_out_claim": False,
+            "ledger_scope": result["ledger_scope"],
+        }
 
     def reserve_memory_dev(self, store: ManifestArtifactStore, train_source_id: str,
                            dev_source_id: str, model_operation_id: str,

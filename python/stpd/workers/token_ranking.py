@@ -10,7 +10,7 @@ import math
 import random
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -658,8 +658,14 @@ def validate_light_action_m0_scratch_checkpoint(
 class TokenRankingEngine:
     def __init__(self, inputs: LoadedTokenInputs | LoadedLightActionInputs |
                  LightActionM0TrainOnlyInputs, config: Stage1aConfig,
-                 *, snapshot: Path | None = None) -> None:
+                 *, snapshot: Path | None = None,
+                 score_device: str | None = None) -> None:
         self.inputs, self.config = inputs, config
+        self.score_device = config.device if score_device is None else score_device
+        self.read_only_diagnostic = score_device is not None
+        if (self.score_device not in {"cpu", "mps", "cuda"}
+                or (score_device is not None and score_device != "cpu")):
+            raise BoundaryError("token_training", "diagnostic_cpu_device_required")
         recipe = recipe_for(config.recipe)
         self.frozen = recipe.backbone == "pf"
         info = inputs.manifest.parameters.value()
@@ -683,8 +689,10 @@ class TokenRankingEngine:
             raise BoundaryError("token_training", "input_backbone_mismatch")
         if isinstance(config, TokenConfig) and info["joint_lengths"]["max"] > config.max_tokens:
             raise BoundaryError("token_training", "increase_configured_token_budget")
+        model_config = (replace(config, device=self.score_device)
+                        if config.device != self.score_device else config)
         self.model, self.backbone = construct_model(
-            config, vocab_size, snapshot, state_codec=state_codec_identity,
+            model_config, vocab_size, snapshot, state_codec=state_codec_identity,
         )
         if isinstance(self.model, LightActionM0Scorer) and isinstance(
             self.model.core, LoRAQwenTokenCore,
@@ -734,12 +742,17 @@ class TokenRankingEngine:
                 raise BoundaryError("token_training", "unavailable_training_row") from error
         else:
             row = self.inputs.rows[index]
-        state = torch.tensor(row.state, dtype=torch.long, device=self.config.device)
-        actions = tuple(torch.tensor(a, dtype=torch.long, device=self.config.device)
+        return self._score_row(row)
+
+    def _score_row(self, row: LightActionTokenRow | TokenRow) -> Tensor:
+        state = torch.tensor(row.state, dtype=torch.long, device=self.score_device)
+        actions = tuple(torch.tensor(a, dtype=torch.long, device=self.score_device)
                         for a in row.actions)
         return cast(Tensor, self.model(state, actions))
 
     def advance(self) -> float:
+        if self.read_only_diagnostic or self.score_device != self.config.device:
+            raise BoundaryError("token_training", "diagnostic_engine_is_read_only")
         if self.step >= self.config.steps:
             raise BoundaryError("token_training", "exhausted")
         self.model.train()
@@ -784,10 +797,25 @@ class TokenRankingEngine:
             raise BoundaryError("token_model", "non_finite_scores")
         return tuple(float(v) for v in values.cpu().tolist())
 
+    def scores_for_row(self, row: LightActionTokenRow) -> tuple[float, ...]:
+        """Score an already-compiled complete candidate row without changing inputs."""
+        if not isinstance(row, LightActionTokenRow):
+            raise BoundaryError("token_model", "light_action_row_required")
+        self.model.eval()
+        with torch.no_grad():
+            values = self._score_row(row)
+        if not bool(torch.isfinite(values).all()):
+            raise BoundaryError("token_model", "non_finite_scores")
+        return tuple(float(value) for value in values.cpu().tolist())
+
     def model_bytes(self) -> bytes:
+        if self.read_only_diagnostic or self.score_device != self.config.device:
+            raise BoundaryError("token_training", "diagnostic_engine_is_read_only")
         return save(self._weights())
 
     def checkpoint(self) -> bytes:
+        if self.read_only_diagnostic or self.score_device != self.config.device:
+            raise BoundaryError("token_training", "diagnostic_engine_is_read_only")
         cuda = self.config.device == "cuda"
         self._validate_cuda_optimizer_state()
         state = {
@@ -824,6 +852,8 @@ class TokenRankingEngine:
         return state
 
     def restore(self, raw: bytes) -> None:
+        if self.read_only_diagnostic or self.score_device != self.config.device:
+            raise BoundaryError("token_training", "diagnostic_engine_is_read_only")
         state = _validate_checkpoint_identity_and_optimizer(
             raw, self.config, self.data_identity, self.optimizer, self.parameters,
             is_light_action_m0=self.is_light_action_m0,
@@ -836,3 +866,40 @@ class TokenRankingEngine:
         self.optimizer.load_state_dict(optimizer)
         self._validate_cuda_optimizer_state()
         self.step = state["step"]
+
+    def restore_for_diagnostic(
+        self, raw: bytes, target_runtime: TokenTargetRuntime,
+    ) -> int:
+        """Validate and load checkpoint weights for read-only scoring only.
+
+        The optimizer state is validated against the configured training contract but is
+        never loaded. No training step or RNG state is restored, and the returned step is
+        informational; this engine cannot be resumed or checkpointed.
+        """
+        if not self.read_only_diagnostic or self.score_device != "cpu":
+            raise BoundaryError("token_checkpoint", "diagnostic_cpu_device_required")
+        state = _validate_checkpoint_identity_and_optimizer(
+            raw, self.config, self.data_identity, self.optimizer, self.parameters,
+            is_light_action_m0=self.is_light_action_m0,
+            target_runtime=target_runtime,
+        )
+        step = state["step"]
+        if type(step) is not int:
+            raise BoundaryError("token_checkpoint", "resume_identity_mismatch")
+        try:
+            validated = _validate_model_weight_state(
+                self.model, state["model"], frozen=self.frozen,
+                adapter_tensor_names=self.adapter_tensor_names,
+                strict_frozen_core=self.is_light_action_m0,
+            )
+            _load_validated_model_weight_state(
+                self.model, validated, frozen=self.frozen,
+                adapter_tensor_names=self.adapter_tensor_names,
+                strict_frozen_core=self.is_light_action_m0,
+            )
+        except BoundaryError:
+            raise
+        except Exception as error:
+            raise BoundaryError("token_model", "invalid_weights") from error
+        self.model.eval()
+        return step
