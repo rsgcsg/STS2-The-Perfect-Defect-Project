@@ -2256,7 +2256,9 @@ def test_compressed_worker_stdin_binds_logical_hash_before_execution(
     logical = b"request"
     framed = encode_m0_request(logical, compress=True)
     request = _request(logical)
-    monkeypatch.setattr(m0_modal, "_decode_request", lambda raw: request if raw == logical else None)
+    monkeypatch.setattr(
+        m0_modal, "_decode_request", lambda raw: request if raw == logical else None,
+    )
     observed = []
     monkeypatch.setattr(
         m0_modal, "execute_m0_request_bytes",
