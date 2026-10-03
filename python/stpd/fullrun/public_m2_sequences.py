@@ -47,11 +47,14 @@ class PublicM2EvidenceRow:
     proof_ref: str
     # A verifier-derived recording segment changes at pause/reload/gap boundaries.
     recording_segment_id: str
+    # Copied from the verified public-view row, not recomputed from an arbitrary
+    # caller replacement after verification. Binds full text, action order and label.
+    public_sample_sha256: str
 
     def validate(self) -> None:
         for name in ("transition_id", "source_archive_sha256", "pre_frame_sha256",
                      "successor_frame_sha256", "commit_ref", "proof_ref",
-                     "recording_segment_id"):
+                     "recording_segment_id", "public_sample_sha256"):
             digest(getattr(self, name), "public_m2." + name)
         if (not self.session_id or not self.native_run_id
                 or not isinstance(self.session_id, str) or not isinstance(self.native_run_id, str)
@@ -163,7 +166,8 @@ def project_public_m2_chains(
         sample = by_id.get(row.transition_id)
         occurrence = (row.session_id, row.native_run_id, row.action_sequence)
         if (row.transition_id in seen or occurrence in occurrences or sample is None
-                or sample.run_id != row.run_id):
+                or sample.run_id != row.run_id
+                or semantic_hash(sample.to_dict()) != row.public_sample_sha256):
             raise BoundaryError("public_m2_sequence", "source_sample_binding_mismatch")
         seen.add(row.transition_id)
         occurrences.add(occurrence)

@@ -20,12 +20,6 @@ def fixture(count=3, *, run="one", split="train"):
     rows, samples = [], []
     for i in range(count):
         identity = semantic_hash([run, i])
-        rows.append(PublicM2EvidenceRow(
-            identity, semantic_hash(["archive", run]), "session", run, i + 1,
-            semantic_hash(["frame", run, i]), semantic_hash(["frame", run, i + 1]),
-            semantic_hash(["commit", run, i]), semantic_hash(["proof", run, i]),
-            semantic_hash(["recording-segment", run]),
-        ))
         samples.append(ModelSample(
             identity, "session/" + run, split, "fixture", "fixture",
             f'[STPD_STATE version={COMPACT_VERSION} profile=public_compact]\n'
@@ -33,6 +27,12 @@ def fixture(count=3, *, run="one", split="train"):
             tuple(f'[STPD_ACTION version={COMPACT_VERSION}]\n'
                   + f'{{"verb":"{verb}"}}\n[/STPD_ACTION]' for verb in ("select", "cancel")),
             ("b", "a"), i % 2,
+        ))
+        rows.append(PublicM2EvidenceRow(
+            identity, semantic_hash(["archive", run]), "session", run, i + 1,
+            semantic_hash(["frame", run, i]), semantic_hash(["frame", run, i + 1]),
+            semantic_hash(["commit", run, i]), semantic_hash(["proof", run, i]),
+            semantic_hash(["recording-segment", run]), semantic_hash(samples[-1].to_dict()),
         ))
     return tuple(samples), tuple(rows)
 
@@ -101,7 +101,9 @@ def test_fixed_train_codec_and_dev_text_does_not_change_fit():
     first = compile_public_m2_input(chains, train, **common)
     modified = tuple(replace(sample, state_text=sample.state_text.replace(
         "same page", "秘密字符新状态")) for sample in dev_samples)
-    changed = project_public_m2_chains(train_samples + modified, train_rows + dev_rows)
+    verified_changed_rows = tuple(replace(row, public_sample_sha256=semantic_hash(sample.to_dict()))
+                                  for row, sample in zip(dev_rows, modified, strict=True))
+    changed = project_public_m2_chains(train_samples + modified, train_rows + verified_changed_rows)
     second = compile_public_m2_input(
         changed, train, state_tokenizer=first.state_tokenizer, **common)
     assert first.state_tokenizer == second.state_tokenizer
@@ -121,3 +123,17 @@ def test_rebound_chain_and_truncation_are_rejected():
         compile_public_m2_input((replace(chains[0], chain_id="e" * 64),), chains, **common)
     with pytest.raises(BoundaryError, match="state_limit_no_truncation"):
         compile_public_m2_input(chains, chains, **{**common, "max_state_tokens": 1})
+
+
+@pytest.mark.parametrize("alteration", ["state", "actions", "label"])
+def test_verified_public_row_digest_rejects_text_order_or_label_substitution(alteration):
+    samples, rows = fixture(3)
+    original = samples[0]
+    if alteration == "state":
+        altered = replace(original, state_text=original.state_text.replace("same page", "hidden"))
+    elif alteration == "actions":
+        altered = replace(original, action_texts=tuple(reversed(original.action_texts)))
+    else:
+        altered = replace(original, chosen_index=1)
+    with pytest.raises(BoundaryError, match="source_sample_binding"):
+        project_public_m2_chains((altered, *samples[1:]), rows)
