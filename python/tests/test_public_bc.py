@@ -15,6 +15,7 @@ from test_stage1a_training import tiny_config
 
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.storage.blobs import StoreError
+from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ManifestArtifactStore
 from stpd.fullrun.decision_training import AllocationSpec, publish_allocation
@@ -134,8 +135,10 @@ def test_publication_and_input_load_share_one_verified_projection_in_same_sessio
         assert (session.misses, session.hits) == (1, 2)
 
 
-@pytest.mark.parametrize("session_store", ["none", "different_object_same_blobs"])
-def test_publication_does_not_seed_without_the_exact_active_store_session(
+@pytest.mark.parametrize("session_store", [
+    "none", "different_physical_store", "same_physical_store_wrapper",
+])
+def test_publication_seeds_only_the_same_physical_active_store_session(
     tmp_path, monkeypatch, session_store,
 ):
     from stpd.fullrun import public_bc
@@ -152,8 +155,11 @@ def test_publication_does_not_seed_without_the_exact_active_store_session(
     monkeypatch.setattr(public_bc, "project_allocation", counted)
     if session_store == "none":
         context = nullcontext(None)
-    else:
+    elif session_store == "same_physical_store_wrapper":
         other_store = ManifestArtifactStore(owner.store.blobs)
+        context = verified_model_views(other_store)
+    else:
+        other_store = ManifestArtifactStore(LocalBlobStore(tmp_path / "other-store"))
         context = verified_model_views(other_store)
     with context as session:
         view = publish_public_bc_view(owner.store, allocation.artifact_id, owner.producer)
@@ -164,10 +170,12 @@ def test_publication_does_not_seed_without_the_exact_active_store_session(
             payload.role: payload for payload in view.payloads
         }
         assert len(loaded[1]) == 3
-        assert calls == 2
+        assert calls == (1 if session_store == "same_physical_store_wrapper" else 2)
     if session is not None:
         assert session.identity is None and session.value is None
-        assert (session.misses, session.hits) == (0, 0)
+        assert (session.misses, session.hits) == (
+            (1, 1) if session_store == "same_physical_store_wrapper" else (0, 0)
+        )
 
 
 @pytest.mark.parametrize("damage", ["view_payload", "source_archive", "missing_allocation"])
