@@ -160,8 +160,8 @@ def test_d6_prepared_manifest_and_initial_event_wire_golden(tmp_path):
             "e4c5275c1a67fc8dcb5456f29df4145b7efee6faa1c158faa0342bba57f6e944",
         ),
         "run": (
-            "cb8868134ff51344cd561339fac1532c191706baae5720dc15c6bc36189339ef",
-            "37c79e29a472907a7c4b2b8f264ce0f6c48958566e609872d8ee71e18c8a04ff",
+            "a825fc8589c0ddd35a5bd9b695a9099daebe7ae9d410c8b84b94d91ebbf4a3c9",
+            "8a35f0b71ac390a016f7e47c919d8d88a0f92358c66431528c186afd36f09b62",
         ),
     }
     actual = {
@@ -178,12 +178,12 @@ def test_d6_prepared_manifest_and_initial_event_wire_golden(tmp_path):
         )
     expected_events = {
         "loading": (
-            "ddc3abee2026a07b6ad4373c33931ff29077a7d728aa31000218a25b6d207ff9",
-            "0f0f4080de6fa2e89ce17854b1a3f010c4003bbf8a3524c03984e315542f2a90",
+            "323d1b037ffcd95d64e78ffd324aa51a065d5baa716d2c6ffca8c73f59cc6bab",
+            "0b4290f304e78dab1d20b68c5017c07101cdd7626478c5ce4a1563c44d44beee",
         ),
         "started": (
-            "97a126578475deb78804236ec16fb94b5d162083714de06789574ec94dfab03a",
-            "4d0b1e54e37b1eefbd3410551c6821e36e44e397b11811a55b5c0ca0860596b0",
+            "f923b626e63e1a4dd293abd0315de54a107fdd2363cbdfedc00a617bd7c43a54",
+            "3c23b6fcda576c7a160fd6c93a5dce15bbf78b3ad081cab94cddae5b65343453",
         ),
     }
     events = {

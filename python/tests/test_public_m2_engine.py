@@ -96,6 +96,27 @@ def test_public_m2_learning_rate_default_matches_six_arm_plan() -> None:
     assert _config().learning_rate == 3e-4
 
 
+def test_four_decision_windows_resume_byte_exact_and_extended_limit() -> None:
+    torch.set_num_threads(1)
+    config = replace(_config(), window_steps=4, max_window_tokens=98_304)
+    config.validate()
+    with pytest.raises(BoundaryError, match="invalid_config"):
+        replace(config, max_window_tokens=98_305).validate()
+    train = (PublicM2EngineChain("train", tuple(_step(i) for i in range(9))),)
+    dev = (PublicM2EngineChain("dev", (_step(0),)),)
+    original = PublicM2Engine(train, dev, config)
+    first = original.advance_window()
+    assert (first.label_count, first.window_cursor) == (4, 4)
+    checkpoint = original.checkpoint()
+    resumed = PublicM2Engine(train, dev, config)
+    resumed.restore(checkpoint)
+    while not original.finished:
+        original.advance_window()
+        resumed.advance_window()
+    assert original.optimizer_updates == resumed.optimizer_updates == 3
+    assert original.checkpoint() == resumed.checkpoint()
+
+
 def test_cpu_preflight_validates_checkpoint_and_export_structure() -> None:
     torch.set_num_threads(1)
     engine = _engine()

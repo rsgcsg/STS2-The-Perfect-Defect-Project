@@ -118,7 +118,7 @@ class PublicM2EngineConfig:
             or type(self.seed) is not int or not 0 <= self.seed < 2**63
             or type(self.epochs) is not int or not 1 <= self.epochs <= 5
             or type(self.window_steps) is not int or not 1 <= self.window_steps <= 8
-            or type(self.max_window_tokens) is not int or not 1 <= self.max_window_tokens <= 65_536
+            or type(self.max_window_tokens) is not int or not 1 <= self.max_window_tokens <= 98_304
         ):
             raise BoundaryError("public_m2_engine", "invalid_config")
         try:
