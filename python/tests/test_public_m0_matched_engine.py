@@ -15,6 +15,7 @@ from stpd.fullrun.public_m2_sequences import (
     compile_public_m2_input,
     project_public_m2_chains,
 )
+from stpd.models.losses import listwise_rank_loss
 from stpd.models.token_core import ScratchShape
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.public_m0_matched_engine import (
@@ -72,6 +73,7 @@ def test_mid_chain_resume_matches_uninterrupted_and_dev_is_read_only() -> None:
     assert original.checkpoint() == resumed.checkpoint()
     exported = decode_checkpoint(original.export_weights())
     assert exported["completed_epochs"] == 1 and exported["run_complete"] is True
+    assert exported["shape_profile"] == "synthetic_override"
     assert exported["checkpoint_digest"] == hashlib.sha256(original.checkpoint()).hexdigest()
     loaded = load_public_m0_matched_weights(
         original.export_weights(), source, config, completed_epochs=1,
@@ -92,6 +94,22 @@ def test_same_five_epoch_run_exports_incomplete_intermediates() -> None:
     assert [item["optimizer_updates"] for item in exports] == [1, 3, 5]
     assert [item["run_complete"] for item in exports] == [False, False, True]
     assert all(item["source_digest"] == source.identity for item in exports)
+
+
+def test_window_update_is_mean_of_complete_decision_losses() -> None:
+    torch.set_num_threads(1)
+    source = _source(2, 1)
+    config = _config(source, window_steps=2)
+    assert config.shape_override is not None
+    config = replace(config, shape_override=replace(config.shape_override, dropout=0.0))
+    engine = PublicM0MatchedEngine(source, config)
+    with torch.no_grad():
+        losses = [float(listwise_rank_loss(
+            engine._scores(step), step.action_ids.index(step.target_action_id),
+        )) for step in engine.train_chains[0].steps]
+    result = engine.advance_window()
+    assert result.loss_mean == pytest.approx(sum(losses) / 2, rel=1e-6)
+    assert (result.label_count, result.optimizer_updates) == (2, 1)
 
 
 def test_invalid_optimizer_step_rejected_after_recomputed_digest_and_poison() -> None:
@@ -130,6 +148,8 @@ def test_production_shape_reuses_existing_m0_constructor() -> None:
     assert (engine.model.core.shape.width, engine.model.core.shape.layers,
             engine.model.core.shape.heads, engine.model.core.shape.feedforward,
             engine.model.core.shape.dropout) == (384, 2, 6, 1536, 0.1)
+    engine.advance_window()
+    assert decode_checkpoint(engine.export_weights())["shape_profile"] == "standard_384"
 
 
 def test_cuda_tagged_export_metadata_loads_on_cpu_contract_only() -> None:
