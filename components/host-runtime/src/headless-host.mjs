@@ -10,18 +10,27 @@ import {
 import path from "node:path";
 import { finished } from "node:stream/promises";
 import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL } from "@rsgcsg/sts2-connector-client";
+import { readGameProcessStartedAt, listGameProcesses } from "./game-processes.mjs";
 import {
   readJson,
+  resolveExperimentalConnectorCanary,
+  requestHostProvenance,
   requestHostShutdown,
   shippedRuntimeLaunch,
   snapshotIsInteractive,
   stopChild,
   waitForEndpoint,
-  waitForInteractiveSnapshot
+  waitForInteractiveSnapshot,
+  validateHostDisplayMode
 } from "./runtime-probe.mjs";
-import { readDiskIdentity } from "./game-installation.mjs";
+import { readDiskIdentity, readInstalledConnectorIdentity } from "./game-installation.mjs";
 import { requireSupportedRuntime } from "./compatibility.mjs";
 import { readProjectIdentity } from "./project-identity.mjs";
+import {
+  compareFilesystemSnapshots,
+  sharedGameUserDataRoot,
+  snapshotFilesystemTree
+} from "./filesystem-sentinel.mjs";
 import { publicProfileDescriptor, resolveLaunchProfile } from "./profile-isolation.mjs";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:15526";
@@ -40,46 +49,180 @@ export function readHostRecord(file) {
   return JSON.parse(readFileSync(file, "utf8"));
 }
 
-export function processCommand(pid, platform = process.platform) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+export function processCommandResult(pid, platform = process.platform, { spawnProcess = spawnSync } = {}) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return { status: "absent", command: null };
   if (platform === "win32") {
     const script = [
-      `$p = Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\" -ErrorAction SilentlyContinue`,
-      "if ($null -ne $p) { $p.CommandLine }"
-    ].join("; ");
-    const result = spawnSync(
+      "$ErrorActionPreference = 'Stop'",
+      "try {",
+      `  $p = Get-CimInstance -ClassName Win32_Process -Filter \"ProcessId = ${pid}\" -ErrorAction Stop`,
+      "  if ($null -eq $p) { [Console]::Out.WriteLine('HOST_STATUS=ABSENT'); exit 0 }",
+      "  if ([string]::IsNullOrWhiteSpace($p.CommandLine)) { [Console]::Out.WriteLine('HOST_STATUS=UNKNOWN'); exit 0 }",
+      "  [Console]::Out.WriteLine('HOST_STATUS=OBSERVED')",
+      "  [Console]::Out.WriteLine($p.CommandLine)",
+      "} catch {",
+      "  [Console]::Error.WriteLine($_.Exception.Message)",
+      "  exit 2",
+      "}"
+    ].join("\n");
+    const result = spawnProcess(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
       { encoding: "utf8", windowsHide: true }
     );
-    return result.status === 0 ? result.stdout.trim() || null : null;
+    if (!result || result.error || result.status !== 0 || result.stderr?.trim()) {
+      return { status: "unknown", command: null };
+    }
+    const lines = (result.stdout ?? "").trimEnd().split(/\r?\n/u);
+    if (lines.length === 1 && lines[0] === "HOST_STATUS=ABSENT") {
+      return { status: "absent", command: null };
+    }
+    if (lines.length === 1 && lines[0] === "HOST_STATUS=UNKNOWN") {
+      return { status: "unknown", command: null };
+    }
+    if (lines.length !== 2 || lines[0] !== "HOST_STATUS=OBSERVED" || !lines[1].trim()) {
+      return { status: "unknown", command: null };
+    }
+    return { status: "observed", command: lines[1] };
   }
-  const result = spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+  const result = spawnProcess("ps", ["-p", String(pid), "-o", "command="], {
     encoding: "utf8"
   });
-  return result.status === 0 ? result.stdout.trim() || null : null;
+  if (result.error) return { status: "unknown", command: null };
+  const command = result.stdout.trim();
+  if (result.status === 0 && command) return { status: "observed", command };
+  try {
+    process.kill(pid, 0);
+    return { status: "unknown", command: null };
+  } catch (error) {
+    if (error?.code === "ESRCH") return { status: "absent", command: null };
+  }
+  return { status: "unknown", command: null };
+}
+
+export function processCommand(pid, platform = process.platform) {
+  const result = processCommandResult(pid, platform);
+  return result.status === "observed" ? result.command : null;
 }
 
 export function commandOwnsHeadlessRuntime(command, executable) {
-  if (typeof command !== "string" || typeof executable !== "string") return false;
-  const normalizedCommand = command.replaceAll("/", "\\").toLowerCase();
-  const normalizedExecutable = executable.replaceAll("/", "\\").toLowerCase();
-  return normalizedCommand.includes(normalizedExecutable)
-    && /(?:^|\s)--headless(?:\s|$)/iu.test(command);
+  return commandOwnsRuntime(command, executable, ["--headless", "--verbose"], "win32");
+}
+
+function tokenizeCommandLine(command) {
+  const tokens = [];
+  let token = "";
+  let quote = null;
+  for (const character of command) {
+    if (quote != null) {
+      if (character === quote) quote = null;
+      else token += character;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (/\s/u.test(character)) {
+      if (token) tokens.push(token);
+      token = "";
+    } else {
+      token += character;
+    }
+  }
+  if (quote != null) return null;
+  if (token) tokens.push(token);
+  return tokens;
+}
+
+function normalizedExecutable(file, platform = process.platform) {
+  const normalized = file.replaceAll("\\", "/").replace(/\/$/u, "");
+  return platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+export function commandOwnsRuntime(command, executable, expectedArgs, platform = process.platform) {
+  if (typeof command !== "string" || typeof executable !== "string"
+      || !Array.isArray(expectedArgs) || expectedArgs.some((arg) => typeof arg !== "string")) {
+    return false;
+  }
+  const raw = command.trimStart();
+  let actualExecutable;
+  let remaining;
+  const quote = raw[0] === '"' || raw[0] === "'" ? raw[0] : null;
+  if (quote != null) {
+    const end = raw.indexOf(quote, 1);
+    if (end < 0) return false;
+    actualExecutable = raw.slice(1, end);
+    remaining = raw.slice(end + 1).trimStart();
+  } else {
+    const expected = normalizedExecutable(executable, platform);
+    const normalizedRaw = normalizedExecutable(raw, platform);
+    if (!normalizedRaw.startsWith(expected)) return false;
+    const boundary = raw[expected.length];
+    if (boundary != null && !/\s/u.test(boundary)) return false;
+    actualExecutable = raw.slice(0, expected.length);
+    remaining = raw.slice(expected.length).trimStart();
+  }
+  const actualArgs = tokenizeCommandLine(remaining);
+  return normalizedExecutable(actualExecutable, platform) === normalizedExecutable(executable, platform)
+    && actualArgs != null
+    && actualArgs.join("\u0000") === expectedArgs.join("\u0000");
+}
+
+export function recordedDisplayMode(record) {
+  const mode = record?.display_mode ?? "headless";
+  try {
+    return validateHostDisplayMode(mode);
+  } catch {
+    return null;
+  }
+}
+
+export function evaluateHostCapabilities(
+  capabilities,
+  displayMode = "headless",
+  expectedProtocol = SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL,
+  installedConnector = null
+) {
+  const errors = [];
+  const expectedHostKind = displayMode === "native_window" ? "live_ui" : "headless";
+  if (capabilities?.protocol_version !== expectedProtocol) errors.push("protocol_mismatch");
+  if (capabilities?.host?.host_kind !== expectedHostKind) errors.push("host_kind_mismatch");
+  if (!["exact_player_environment_only", "exact_platform_modset"]
+    .includes(capabilities?.game?.modset?.status)) {
+    errors.push("unsupported_modset");
+  }
+  if (capabilities?.execution_available !== true) errors.push("execution_unavailable");
+  if (displayMode === "native_window") {
+    if (typeof capabilities?.host?.runtime_instance_id !== "string"
+        || capabilities.host.runtime_instance_id.length < 1) errors.push("runtime_instance_id_missing");
+    if (installedConnector?.status !== "verified") {
+      errors.push("installed_connector_identity_unverified");
+    } else {
+      const implementation = capabilities?.host?.implementation;
+      const expectedMvid = installedConnector.identity?.artifact_mvid;
+      if (typeof expectedMvid !== "string" || expectedMvid.length < 1) {
+        errors.push("installed_connector_mvid_missing");
+      }
+      if (implementation?.artifact_sha256 !== installedConnector.installed_sha256) {
+        errors.push("loaded_connector_sha_mismatch");
+      }
+      if (typeof implementation?.module_version_id !== "string"
+          || implementation.module_version_id !== expectedMvid) {
+        errors.push("loaded_connector_mvid_mismatch");
+      }
+      if (implementation?.source_revision !== installedConnector.identity?.source_revision) {
+        errors.push("loaded_connector_revision_mismatch");
+      }
+    }
+  }
+  return { ok: errors.length === 0, errors, expected_host_kind: expectedHostKind };
 }
 
 export function evaluateHeadlessCapabilities(
   capabilities,
   expectedProtocol = SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL
 ) {
-  const errors = [];
-  if (capabilities?.protocol_version !== expectedProtocol) errors.push("protocol_mismatch");
-  if (capabilities?.host?.host_kind !== "headless") errors.push("host_kind_not_headless");
-  if (!["exact_player_environment_only", "exact_platform_modset"]
-    .includes(capabilities?.game?.modset?.status)) {
-    errors.push("unsupported_modset");
-  }
-  if (capabilities?.execution_available !== true) errors.push("execution_unavailable");
+  const result = evaluateHostCapabilities(capabilities, "headless", expectedProtocol);
+  const errors = result.errors.map((error) => error === "host_kind_mismatch"
+    ? "host_kind_not_headless"
+    : error);
   return { ok: errors.length === 0, errors };
 }
 
@@ -90,6 +233,119 @@ function hostFiles(localRoot) {
     current: path.join(runtimeRoot, "current.json"),
     control: path.join(runtimeRoot, "current-control.json")
   };
+}
+
+function expectedLaunchArgs(record) {
+  const displayMode = recordedDisplayMode(record);
+  if (displayMode == null) return null;
+  const profileMode = record.profile?.mode;
+  if (displayMode === "native_window" && profileMode !== "isolated_local_profile") return null;
+  if (!(["isolated_local_profile", "shared_steam_profile"].includes(profileMode))) return null;
+  return [
+    ...(displayMode === "headless" ? ["--headless"] : []),
+    "--verbose",
+    ...(profileMode === "isolated_local_profile" ? ["--force-steam=off", "--clientId=1"] : [])
+  ];
+}
+
+function processGeneration(pid, readStartedAt = readGameProcessStartedAt) {
+  try {
+    return readStartedAt(pid);
+  } catch {
+    return null;
+  }
+}
+
+async function waitForProcessGeneration(pid, child, readStartedAt, wait) {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() <= deadline) {
+    if (child.exitCode != null || child.signalCode != null) return null;
+    const startedAt = processGeneration(pid, readStartedAt);
+    if (startedAt != null) return startedAt;
+    await wait(100);
+  }
+  return null;
+}
+
+export function inspectRecordedProcess(record, {
+  getProcessCommand = null,
+  getProcessStartedAt = readGameProcessStartedAt
+} = {}) {
+  if (!record?.pid || !record?.executable) return { exists: false, matches: false, reason: "recorded_process_identity_missing", command: null };
+  const processResult = getProcessCommand == null
+    ? processCommandResult(record.pid)
+    : (() => {
+        const command = getProcessCommand(record.pid);
+        return command == null ? { status: "absent", command: null } : { status: "observed", command };
+      })();
+  if (processResult.status === "absent") return { exists: false, matches: false, reason: "process_exited", command: null };
+  if (processResult.status !== "observed") {
+    return { exists: true, matches: false, reason: "process_command_unavailable", command: null };
+  }
+  const command = processResult.command;
+  if (!record.process_started_at) {
+    return { exists: true, matches: false, reason: "recorded_process_generation_missing", command };
+  }
+  const startedAt = processGeneration(record.pid, getProcessStartedAt);
+  if (startedAt == null) {
+    return { exists: true, matches: false, reason: "process_generation_unavailable", command };
+  }
+  if (startedAt !== record.process_started_at) {
+    return { exists: true, matches: false, reason: "process_generation_mismatch", command };
+  }
+  const expectedArgs = expectedLaunchArgs(record);
+  if (expectedArgs == null || JSON.stringify(record.args) !== JSON.stringify(expectedArgs)
+      || !commandOwnsRuntime(command, record.executable, expectedArgs)) {
+    return { exists: true, matches: false, reason: "process_command_mismatch", command };
+  }
+  return { exists: true, matches: true, reason: null, command };
+}
+
+function lifecycleFileFromRecord(record, runtimeRoot) {
+  if (typeof record?.session_directory !== "string") return null;
+  const sessionDirectory = path.resolve(record.session_directory);
+  const relative = path.relative(path.resolve(runtimeRoot), sessionDirectory);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
+  return path.join(sessionDirectory, "lifecycle.json");
+}
+
+function persistClosedRecord(record, files, writeRecord = writeJson) {
+  const lifecycleFile = lifecycleFileFromRecord(record, files.runtimeRoot);
+  if (lifecycleFile) writeRecord(lifecycleFile, record);
+  const current = readHostRecord(files.current);
+  if (current?.pid === record.pid && current?.session_directory === record.session_directory) {
+    unlinkSync(files.current);
+  }
+  if (existsSync(files.control)) {
+    const control = JSON.parse(readFileSync(files.control, "utf8"));
+    if (control?.pid === record.pid && control?.session_directory === record.session_directory) {
+      unlinkSync(files.control);
+    }
+  }
+}
+
+function finalizeSharedProfileSentinel(record, {
+  snapshotSharedProfile = () => snapshotFilesystemTree(sharedGameUserDataRoot()),
+  compareSnapshots = compareFilesystemSnapshots
+} = {}) {
+  if (record.shared_profile_sentinel == null && record.shared_profile_sentinel_before != null) {
+    try {
+      record.shared_profile_sentinel = compareSnapshots(
+        record.shared_profile_sentinel_before,
+        snapshotSharedProfile()
+      );
+      record.shared_profile_integrity_status = record.shared_profile_sentinel.unchanged
+        ? "unchanged"
+        : "changed";
+    } catch (error) {
+      record.shared_profile_sentinel = {
+        unchanged: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+      record.shared_profile_integrity_status = "measurement_failed";
+    }
+  }
+  return record.shared_profile_integrity_status ?? "not_required";
 }
 
 function childReference(child) {
@@ -103,11 +359,19 @@ function childReference(child) {
   };
 }
 
-export async function queryHeadlessStatus({ localRoot, endpoint = DEFAULT_ENDPOINT }) {
+export async function queryHeadlessStatus({
+  localRoot,
+  endpoint = DEFAULT_ENDPOINT,
+  getProcessCommand = null,
+  getProcessStartedAt = readGameProcessStartedAt,
+  readEndpoint = readJson
+}) {
   const files = hostFiles(localRoot);
   const record = readHostRecord(files.current);
-  const command = record?.pid ? processCommand(record.pid) : null;
-  const endpointResult = await readJson(endpoint, "/api/player-environment/capabilities", 1000);
+  const process = record?.pid
+    ? inspectRecordedProcess(record, { getProcessCommand, getProcessStartedAt })
+    : null;
+  const endpointResult = await readEndpoint(endpoint, "/api/player-environment/capabilities", 1000);
   return {
     schema_version: 1,
     generated_at: new Date().toISOString(),
@@ -115,9 +379,11 @@ export async function queryHeadlessStatus({ localRoot, endpoint = DEFAULT_ENDPOI
     process: record?.pid
       ? {
           pid: record.pid,
-          running: command != null,
-          command_matches_record: commandOwnsHeadlessRuntime(command, record.executable),
-          command
+          running: process.exists,
+          command_matches_record: process.matches,
+          ownership_error: process.reason,
+          command: process.command,
+          display_mode: recordedDisplayMode(record)
         }
       : null,
     endpoint: endpointResult.ok
@@ -131,54 +397,131 @@ export async function queryHeadlessStatus({ localRoot, endpoint = DEFAULT_ENDPOI
   };
 }
 
-export async function stopHeadlessHost({ localRoot, endpoint = DEFAULT_ENDPOINT }) {
+export async function stopHeadlessHost({
+  localRoot,
+  endpoint = DEFAULT_ENDPOINT,
+  dependencies = {}
+}) {
+  const {
+    getProcessCommand = null,
+    getProcessStartedAt = readGameProcessStartedAt,
+    requestShutdown = requestHostShutdown,
+    killProcess = process.kill.bind(process),
+    wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    readEndpoint = readJson,
+    snapshotSharedProfile = () => snapshotFilesystemTree(sharedGameUserDataRoot()),
+    compareSnapshots = compareFilesystemSnapshots,
+    writeRecord = writeJson
+  } = dependencies;
   const files = hostFiles(localRoot);
   const record = readHostRecord(files.current);
   if (!record?.pid || !record.executable) {
-    return { status: "not_running", detail: "No Headless lifecycle record exists." };
+    return { status: "not_running", detail: "No Host Runtime lifecycle record exists." };
   }
-  const command = processCommand(record.pid);
-  if (!command) {
-    unlinkSync(files.current);
-    return { status: "not_running", detail: "The recorded process no longer exists." };
+  const inspect = () => inspectRecordedProcess(record, { getProcessCommand, getProcessStartedAt });
+  let owned = inspect();
+  if (!owned.exists) {
+    if (owned.reason === "process_exited") {
+      const status = finalizeSharedProfileSentinel(record, { snapshotSharedProfile, compareSnapshots });
+      if (status === "changed" || status === "measurement_failed") record.status = "failed";
+      persistClosedRecord(record, files, writeRecord);
+      return {
+        status: status === "changed" || status === "measurement_failed" ? "stopped_integrity_failed" : "not_running",
+        detail: "The recorded process no longer exists.",
+        shared_profile_integrity_status: status
+      };
+    }
+    throw new Error(`Refusing to signal PID ${record.pid}; ${owned.reason}.`);
   }
-  if (!commandOwnsHeadlessRuntime(command, record.executable)) {
-    throw new Error(`Refusing to signal PID ${record.pid}; it is not the recorded Headless runtime.`);
+  if (!owned.matches) {
+    throw new Error(`Refusing to signal PID ${record.pid}; ${owned.reason}.`);
   }
   const control = existsSync(files.control)
     ? JSON.parse(readFileSync(files.control, "utf8"))
     : null;
-  const hostShutdown = await requestHostShutdown({
+  const hostShutdown = await requestShutdown({
     endpoint,
     hostControlToken: control?.host_control_token ?? null,
     expectedRuntimeInstanceId: record.loaded_identity?.host?.runtime_instance_id ?? null
   });
   const started = Date.now();
-  while (hostShutdown.status === "requested"
-      && Date.now() - started < 10_000
-      && processCommand(record.pid)) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
+  let stopped = false;
+  while (hostShutdown.status === "requested" && Date.now() - started < 10_000) {
+    owned = inspect();
+    if (!owned.exists) {
+      stopped = owned.reason === "process_exited";
+      if (!stopped) return { status: "ownership_lost", pid: record.pid, host_shutdown: hostShutdown, reason: owned.reason };
+      break;
+    }
+    if (!owned.matches) {
+      return { status: "ownership_lost", pid: record.pid, host_shutdown: hostShutdown, reason: owned.reason };
+    }
+    await wait(100);
   }
-  let stopped = processCommand(record.pid) == null;
   let forced = false;
   if (!stopped) {
-    process.kill(record.pid, "SIGKILL");
+    // PID and start-time are checked again immediately before any fallback signal.
+    owned = inspect();
+    if (!owned.exists && owned.reason === "process_exited") stopped = true;
+    else if (!owned.matches) {
+      return { status: "ownership_lost", pid: record.pid, host_shutdown: hostShutdown, reason: owned.reason };
+    } else {
+      try {
+        killProcess(record.pid, "SIGKILL");
+        forced = true;
+      } catch (error) {
+        owned = inspect();
+        if (!owned.exists && owned.reason === "process_exited") stopped = true;
+        else throw error;
+      }
+    }
+  }
+  if (!stopped && forced) {
     forced = true;
     const forcedStarted = Date.now();
-    while (Date.now() - forcedStarted < 5_000 && processCommand(record.pid)) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    while (Date.now() - forcedStarted < 5_000) {
+      owned = inspect();
+      if (!owned.exists && owned.reason === "process_exited") {
+        stopped = true;
+        break;
+      }
+      if (!owned.matches) break;
+      await wait(100);
     }
-    stopped = processCommand(record.pid) == null;
   }
-  if (stopped && existsSync(files.current)) unlinkSync(files.current);
-  if (stopped && existsSync(files.control)) unlinkSync(files.control);
-  const endpointAfter = await readJson(endpoint, "/api/player-environment/capabilities", 1000);
+  if (!stopped) {
+    owned = inspect();
+    if (!owned.exists && owned.reason === "process_exited") stopped = true;
+    else if (!owned.matches) {
+      return { status: "ownership_lost", pid: record.pid, host_shutdown: hostShutdown, reason: owned.reason };
+    }
+  }
+  if (stopped) {
+    const integrity = finalizeSharedProfileSentinel(record, { snapshotSharedProfile, compareSnapshots });
+    if (integrity === "changed" || integrity === "measurement_failed") {
+      record.status = "failed";
+      record.error = `Shared game profile sentinel ${integrity}.`;
+    }
+    persistClosedRecord(record, files, writeRecord);
+    const endpointAfter = await readEndpoint(endpoint, "/api/player-environment/capabilities", 1000);
+    return {
+      status: integrity === "changed" || integrity === "measurement_failed" ? "stopped_integrity_failed" : "stopped",
+      pid: record.pid,
+      host_shutdown: hostShutdown,
+      forced,
+      endpoint_released: !endpointAfter.ok,
+      shared_profile_integrity_status: integrity,
+      shared_profile_sentinel: record.shared_profile_sentinel ?? null
+    };
+  }
+  const endpointAfter = await readEndpoint(endpoint, "/api/player-environment/capabilities", 1000);
   return {
-    status: stopped ? "stopped" : "still_running",
+    status: "still_running",
     pid: record.pid,
     host_shutdown: hostShutdown,
     forced,
-    endpoint_released: !endpointAfter.ok
+    endpoint_released: !endpointAfter.ok,
+    close_unconfirmed: true
   };
 }
 
@@ -189,79 +532,343 @@ export async function runHeadlessHost({
   timeoutMs = 90_000,
   mirrorLogs = false,
   sharedProfileAcknowledged = false,
-  isolatedProfileId = null
+  isolatedProfileId = null,
+  displayMode = "headless",
+  expectedExperimentalConnectorSource = null,
+  dependencies = {}
 }) {
+  validateHostDisplayMode(displayMode);
+  if (expectedExperimentalConnectorSource != null) {
+    if (typeof expectedExperimentalConnectorSource !== "string"
+        || !/^[a-f0-9]{40}$/u.test(expectedExperimentalConnectorSource)) {
+      throw new Error("Experimental Connector source canaries require one exact lowercase 40-character Git revision.");
+    }
+    if (displayMode !== "native_window") {
+      throw new Error("Experimental Connector source canaries are limited to native-window Host starts.");
+    }
+  }
+  if (displayMode === "native_window" && (!isolatedProfileId || sharedProfileAcknowledged)) {
+    throw new Error("Native-window Host launches require --isolated-profile and reject --shared-profile.");
+  }
+  const {
+    launchRuntime = shippedRuntimeLaunch,
+    getProcessCommand = null,
+    getProcessStartedAt = readGameProcessStartedAt,
+    enumerateGameProcesses = listGameProcesses,
+    readEndpoint = readJson,
+    waitEndpoint = waitForEndpoint,
+    waitSnapshot = waitForInteractiveSnapshot,
+    waitChildExit = (child) => new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal }))),
+    requestProvenance = requestHostProvenance,
+    stopRuntimeChild = stopChild,
+    wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    snapshotSharedProfile = () => snapshotFilesystemTree(sharedGameUserDataRoot()),
+    compareSnapshots = compareFilesystemSnapshots,
+    getInstalledIdentity = readInstalledConnectorIdentity,
+    getDiskIdentity = readDiskIdentity,
+    requireSupported = requireSupportedRuntime,
+    projectIdentity = readProjectIdentity,
+    writeRecord = writeJson,
+    signalSource = process,
+    installSignalHandlers = true,
+    signalStopTimeoutMs = 25_000
+  } = dependencies;
+  if (!Number.isSafeInteger(signalStopTimeoutMs) || signalStopTimeoutMs < 1) {
+    throw new Error("Signal stop timeout must be a positive safe integer.");
+  }
   const launchProfile = resolveLaunchProfile({
     localRoot,
     isolatedProfileId,
     sharedProfileAcknowledged
   });
   const files = hostFiles(localRoot);
-  const diskIdentity = readDiskIdentity(installation);
-  const compatibility = requireSupportedRuntime(diskIdentity);
-  const existing = await queryHeadlessStatus({ localRoot, endpoint });
+  const diskIdentity = getDiskIdentity(installation);
+  const compatibility = requireSupported(diskIdentity);
+  const existing = await queryHeadlessStatus({
+    localRoot,
+    endpoint,
+    getProcessCommand,
+    getProcessStartedAt,
+    readEndpoint
+  });
   if (existing.process?.running || existing.endpoint.reachable) {
     throw new Error("A game process or Connector endpoint is already active; inspect it with `npm run status`.");
+  }
+  if (displayMode === "native_window") {
+    const running = enumerateGameProcesses(undefined, { failClosed: true });
+    if (running.length > 0) {
+      throw new Error(`Refusing native-window launch beside an existing STS2 process:\n${running.join("\n")}`);
+    }
+  }
+
+  const installedConnector = displayMode === "native_window" ? getInstalledIdentity(installation) : null;
+  if (displayMode === "native_window" && installedConnector?.status !== "verified") {
+    throw new Error(`Native-window launch requires a verified installed Connector identity; got ${installedConnector?.status ?? "missing"}.`);
+  }
+  const connectorCanary = expectedExperimentalConnectorSource == null
+    ? null
+    : resolveExperimentalConnectorCanary({
+      installation,
+      compatibility,
+      acknowledged: true
+    });
+  if (connectorCanary != null
+      && (connectorCanary.source_revision !== expectedExperimentalConnectorSource
+        || connectorCanary.source_revision !== installedConnector.identity?.source_revision
+        || connectorCanary.artifact_sha256 !== installedConnector.installed_sha256
+        || installedConnector.identity?.artifact_sha256 !== installedConnector.installed_sha256)) {
+    throw new Error("Experimental Connector source canary does not match the verified installed identity.");
+  }
+  const connectorAuthority = displayMode === "native_window"
+    ? {
+      profile: connectorCanary == null ? "sealed_only" : "exact_process_local_canary",
+      source_revision: installedConnector.identity?.source_revision ?? null,
+      artifact_sha256: installedConnector.installed_sha256 ?? null
+    }
+    : null;
+  const sharedProfileSentinelBefore = displayMode === "native_window"
+    ? snapshotSharedProfile()
+    : null;
+  if (displayMode === "native_window"
+      && (typeof sharedProfileSentinelBefore?.root !== "string"
+        || typeof sharedProfileSentinelBefore.present !== "boolean")) {
+    throw new Error("Could not establish the shared game-profile sentinel before visible launch.");
   }
 
   const sessionDirectory = path.join(files.runtimeRoot, `session-${safeTimestamp()}`);
   mkdirSync(sessionDirectory, { recursive: true });
   const stdoutFile = path.join(sessionDirectory, "stdout.log");
   const stderrFile = path.join(sessionDirectory, "stderr.log");
-  const launch = shippedRuntimeLaunch(installation, {
-    launchProfile,
-    connectorEndpoint: endpoint
-  });
-  const { child, args } = launch;
-  if (launch.hostControlToken == null) {
-    throw new Error("Connector Host lifecycle control was not configured for the process.");
-  }
   mkdirSync(files.runtimeRoot, { recursive: true });
-  writeFileSync(files.control, `${JSON.stringify({
-    schema_version: 1,
-    pid: child.pid,
-    host_control_token: launch.hostControlToken
-  })}\n`, { mode: 0o600 });
+  const lifecycleFile = path.join(sessionDirectory, "lifecycle.json");
   const stdoutStream = createWriteStream(stdoutFile);
   const stderrStream = createWriteStream(stderrFile);
-  child.stdout.pipe(stdoutStream);
-  child.stderr.pipe(stderrStream);
-  if (mirrorLogs) {
-    child.stdout.pipe(process.stdout);
-    child.stderr.pipe(process.stderr);
-  }
-
+  let launch = null;
+  let child = null;
   let record = {
-    schema_version: 1,
+    schema_version: 2,
     status: "starting",
     started_at: new Date().toISOString(),
-    pid: child.pid,
+    pid: null,
     executable: installation.executable,
-    args,
+    args: [],
+    display_mode: displayMode,
     endpoint,
-    connector: launch.connector,
+    connector: null,
     profile: publicProfileDescriptor(launchProfile),
-    headless: readProjectIdentity(),
+    ...(displayMode === "headless" ? { headless: projectIdentity() } : { host_runtime_identity: projectIdentity() }),
     session_directory: sessionDirectory,
     stdout_file: stdoutFile,
     stderr_file: stderrFile,
     disk_identity: diskIdentity,
     compatibility,
+    requested_display_mode: displayMode,
+    loaded_host_kind: null,
+    process_started_at: null,
+    shared_profile_sentinel_before: sharedProfileSentinelBefore,
+    shared_profile_integrity_status: displayMode === "native_window" ? "pending" : "not_required",
+    ...(connectorAuthority == null ? {} : { connector_authority: connectorAuthority }),
     loaded_identity: null
   };
-  writeJson(files.current, record);
-  writeJson(path.join(sessionDirectory, "lifecycle.json"), record);
-
+  let stopAttemptPromise = null;
+  let stopOutcomePromise = null;
+  let signalRequested = false;
+  let signalHandlersInstalled = false;
+  let completedSentinel = false;
+  let childExit = null;
+  let runtimeInstanceId = null;
+  let resolveSignalRequested;
+  let resolveChildExit;
+  const signalRequest = new Promise((resolve) => { resolveSignalRequested = resolve; });
+  const childExitObserved = new Promise((resolve) => { resolveChildExit = resolve; });
+  const startStopAttempt = () => {
+    if (child == null || !record.process_started_at) return null;
+    if (stopAttemptPromise == null) {
+      stopAttemptPromise = Promise.resolve()
+        .then(() => stopRuntimeChild(child, {
+          endpoint,
+          hostControlToken: launch?.hostControlToken ?? null,
+          expectedRuntimeInstanceId: runtimeInstanceId,
+          beforeSignal: () => inspectRecordedProcess(record, { getProcessCommand, getProcessStartedAt }).matches
+        }))
+        .then(
+          (result) => ({ kind: "result", result }),
+          (error) => ({ kind: "error", error })
+        );
+    }
+    return stopAttemptPromise;
+  };
+  const beginSignalShutdown = () => {
+    if (!signalRequested) return null;
+    return startStopAttempt();
+  };
+  const stopOutcome = () => {
+    if (closeConfirmed()) {
+      return Promise.resolve({
+        status: "closed",
+        exit: childExit ?? { code: child?.exitCode ?? null, signal: child?.signalCode ?? null }
+      });
+    }
+    const attempt = startStopAttempt();
+    if (attempt == null) return Promise.resolve({ status: "ownership_unproven" });
+    if (stopOutcomePromise == null) {
+      let timer = null;
+      const timeout = new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ kind: "timeout" }), signalStopTimeoutMs);
+      });
+      stopOutcomePromise = Promise.race([
+        attempt,
+        childExitObserved.then((exit) => ({ kind: "exit", exit })),
+        timeout
+      ]).then((outcome) => {
+        if (timer != null) clearTimeout(timer);
+        if (closeConfirmed()) return { status: "closed", exit: childExit };
+        if (outcome.kind === "error") {
+          return {
+            status: "stop_failed",
+            error: outcome.error instanceof Error ? outcome.error.message : String(outcome.error)
+          };
+        }
+        if (outcome.kind === "timeout") return { status: "close_unconfirmed", reason: "stop_timeout" };
+        return { status: "close_unconfirmed", result: outcome.result ?? null };
+      });
+    }
+    return stopOutcomePromise;
+  };
+  const signalInterruption = async () => {
+    const outcome = await stopOutcome();
+    if (outcome.status === "closed") {
+      throw new Error("Host launch interrupted by an operator signal.");
+    }
+    throw new Error(`Host signal shutdown did not confirm process exit (${outcome.status}); lifecycle ownership is retained.`);
+  };
+  const awaitStartupPhase = async (pending) => {
+    const phase = Promise.resolve(pending).then(
+      (value) => ({ kind: "value", value }),
+      (error) => ({ kind: "error", error })
+    );
+    const outcome = await Promise.race([
+      phase,
+      signalRequest.then(() => ({ kind: "signal" }))
+    ]);
+    if (outcome.kind === "signal" || signalRequested) await signalInterruption();
+    if (outcome.kind === "error") throw outcome.error;
+    return outcome.value;
+  };
+  const onSignal = () => {
+    signalRequested = true;
+    resolveSignalRequested();
+    beginSignalShutdown();
+  };
+  const writeLifecycle = () => writeRecord(lifecycleFile, record);
+  const writeOwnedCurrent = () => {
+    writeRecord(files.current, record);
+    writeFileSync(files.control, `${JSON.stringify({
+      schema_version: 1,
+      pid: child.pid,
+      process_started_at: record.process_started_at,
+      display_mode: displayMode,
+      session_directory: sessionDirectory,
+      host_control_token: launch?.hostControlToken ?? null
+    })}\n`, { mode: 0o600 });
+  };
+  const finalizeSentinelIfClosed = () => {
+    if (displayMode !== "native_window" || completedSentinel || record.shared_profile_sentinel != null) return;
+    const persisted = readHostRecord(lifecycleFile);
+    if (persisted?.shared_profile_sentinel != null) {
+      record = {
+        ...record,
+        shared_profile_sentinel: persisted.shared_profile_sentinel,
+        shared_profile_integrity_status: persisted.shared_profile_integrity_status
+      };
+      completedSentinel = true;
+      return;
+    }
+    record.shared_profile_integrity_status = finalizeSharedProfileSentinel(record, {
+      snapshotSharedProfile,
+      compareSnapshots
+    });
+    completedSentinel = true;
+  };
+  const closeConfirmed = () => child != null && (child.exitCode != null || child.signalCode != null || childExit != null);
   try {
-    const capabilitiesResult = await waitForEndpoint(endpoint, timeoutMs, childReference(child));
+    launch = launchRuntime(installation, {
+      launchProfile,
+      displayMode,
+      connectorEndpoint: endpoint,
+      connectorCanary
+    });
+    child = launch.child;
+    child.stdout.pipe(stdoutStream);
+    child.stderr.pipe(stderrStream);
+    if (mirrorLogs) {
+      child.stdout.pipe(process.stdout);
+      child.stderr.pipe(process.stderr);
+    }
+    child.once("exit", (code, signal) => {
+      childExit = { code, signal };
+      resolveChildExit(childExit);
+    });
+    if (installSignalHandlers) {
+      signalSource.once("SIGINT", onSignal);
+      signalSource.once("SIGTERM", onSignal);
+      signalHandlersInstalled = true;
+    }
+    if (!Number.isSafeInteger(child.pid) || child.pid <= 0) {
+      throw new Error("The shipped runtime did not provide a valid owned process identifier.");
+    }
+    // Persist the child identity as soon as spawn returns. If a later readiness
+    // gate fails before the process generation can be measured, the lifecycle
+    // remains visible and blocks a second launch; it still cannot signal that
+    // process without a verified generation stamp.
+    record = {
+      ...record,
+      pid: child.pid,
+      args: launch.args,
+      connector: launch.connector
+    };
+    writeLifecycle();
+    writeOwnedCurrent();
+    const startedAt = await waitForProcessGeneration(child.pid, child, getProcessStartedAt, wait);
+    if (startedAt == null) throw new Error("Could not establish the launched process generation.");
+    record = {
+      ...record,
+      process_started_at: startedAt
+    };
+    writeLifecycle();
+    writeOwnedCurrent();
+    if (launch.hostControlToken == null) {
+      throw new Error("Connector Host lifecycle control was not configured for the process.");
+    }
+    beginSignalShutdown();
+    if (signalRequested) await signalInterruption();
+
+    const capabilitiesResult = await awaitStartupPhase(
+      waitEndpoint(endpoint, timeoutMs, childReference(child))
+    );
     if (!capabilitiesResult.ok) {
       throw new Error(`Connector endpoint did not become ready: ${capabilitiesResult.error}`);
     }
-    const capabilityGate = evaluateHeadlessCapabilities(capabilitiesResult.value);
+    runtimeInstanceId = capabilitiesResult.value?.host?.runtime_instance_id ?? null;
+    const capabilityGate = displayMode === "headless"
+      ? evaluateHeadlessCapabilities(capabilitiesResult.value)
+      : evaluateHostCapabilities(capabilitiesResult.value, displayMode,
+        SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL, installedConnector);
     if (!capabilityGate.ok) {
-      throw new Error(`Loaded environment is not an admitted Headless runtime: ${capabilityGate.errors.join(", ")}`);
+      throw new Error(`Loaded environment failed the ${displayMode} Host gate: ${capabilityGate.errors.join(", ")}`);
     }
-    const snapshots = await waitForInteractiveSnapshot(endpoint, timeoutMs, childReference(child));
+    if (displayMode === "native_window") {
+      const provenance = await awaitStartupPhase(requestProvenance({
+          endpoint,
+          hostControlToken: launch.hostControlToken,
+          expectedRuntimeInstanceId: runtimeInstanceId
+        }));
+      if (provenance.status !== "observed"
+          || provenance.response?.runtime_instance_id !== runtimeInstanceId) {
+        throw new Error("Authenticated Host provenance did not bind the isolated native-window process to its endpoint.");
+      }
+    }
+    const snapshots = await awaitStartupPhase(waitSnapshot(endpoint, timeoutMs, childReference(child)));
     const snapshot = snapshots.at(-1);
     if (!snapshotIsInteractive(snapshot)) {
       throw new Error("The real runtime loaded but did not mount an interactive Player Environment decision.");
@@ -270,6 +877,7 @@ export async function runHeadlessHost({
       ...record,
       status: "ready",
       ready_at: new Date().toISOString(),
+      loaded_host_kind: capabilitiesResult.value.host.host_kind,
       loaded_identity: {
         protocol: capabilitiesResult.value.protocol_version,
         host: capabilitiesResult.value.host,
@@ -282,52 +890,87 @@ export async function runHeadlessHost({
         bound_action_count: snapshot.value.bound_actions.actions.length
       }
     };
-    writeJson(files.current, record);
-    writeJson(path.join(sessionDirectory, "lifecycle.json"), record);
+    writeOwnedCurrent();
+    writeLifecycle();
     console.log(JSON.stringify({ status: "ready", ...record.loaded_identity, initial_snapshot: record.initial_snapshot }, null, 2));
-
-    let stopping = false;
-    const forwardSignal = () => {
-      if (stopping) return;
-      stopping = true;
-      void stopChild(child, {
-        endpoint,
-        hostControlToken: launch.hostControlToken,
-        expectedRuntimeInstanceId: record.loaded_identity?.host?.runtime_instance_id ?? null
-      });
-    };
-    process.once("SIGINT", forwardSignal);
-    process.once("SIGTERM", forwardSignal);
-    const exit = await new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
-    process.off("SIGINT", forwardSignal);
-    process.off("SIGTERM", forwardSignal);
-    record = { ...record, status: "exited", exited_at: new Date().toISOString(), exit };
-    writeJson(path.join(sessionDirectory, "lifecycle.json"), record);
-    if (existsSync(files.current) && readHostRecord(files.current)?.pid === child.pid) {
-      unlinkSync(files.current);
+    const exitPromise = childExit == null ? waitChildExit(child) : Promise.resolve(childExit);
+    const normalExit = Promise.resolve(exitPromise).then(
+      (value) => ({ kind: "exit", value }),
+      (error) => ({ kind: "wait_error", error })
+    );
+    const lifecycleOutcome = await Promise.race([
+      normalExit,
+      signalRequest.then(() => ({ kind: "signal" }))
+    ]);
+    let exit;
+    if (lifecycleOutcome.kind === "wait_error") throw lifecycleOutcome.error;
+    if (lifecycleOutcome.kind === "signal" || signalRequested) {
+      const closed = await stopOutcome();
+      if (closed.status !== "closed") {
+        throw new Error(`Host signal shutdown did not confirm process exit (${closed.status}); lifecycle ownership is retained.`);
+      }
+      exit = closed.exit ?? childExit ?? {
+        code: child?.exitCode ?? null,
+        signal: child?.signalCode ?? null
+      };
+    } else {
+      exit = lifecycleOutcome.value;
     }
-    if (existsSync(files.control)) unlinkSync(files.control);
+    childExit = exit;
+    record = { ...record, status: "exited", exited_at: new Date().toISOString(), exit };
+    finalizeSentinelIfClosed();
+    if (record.shared_profile_integrity_status === "changed"
+        || record.shared_profile_integrity_status === "measurement_failed") {
+      record = { ...record, status: "failed", error: "Shared game profile sentinel did not remain unchanged." };
+    }
+    writeLifecycle();
+    persistClosedRecord(record, files, writeRecord);
+    if (record.status === "failed") throw new Error(record.error);
     return record;
   } catch (error) {
-    const exit = await stopChild(child, {
-      endpoint,
-      hostControlToken: launch.hostControlToken,
-      expectedRuntimeInstanceId: record.loaded_identity?.host?.runtime_instance_id ?? null
-    });
+    let stopResult = null;
+    if (child != null && !closeConfirmed()) {
+      stopResult = await stopOutcome();
+    }
+    const closed = child == null || closeConfirmed();
     record = {
       ...record,
-      status: "failed",
+      status: closed ? "failed" : "close_unconfirmed",
       failed_at: new Date().toISOString(),
       error: error instanceof Error ? error.message : String(error),
-      exit
+      stop_result: stopResult,
+      exit: childExit
     };
-    writeJson(path.join(sessionDirectory, "lifecycle.json"), record);
-    if (existsSync(files.current) && readHostRecord(files.current)?.pid === child.pid) {
-      unlinkSync(files.current);
+    if (closed) {
+      finalizeSentinelIfClosed();
+      if (record.shared_profile_integrity_status === "changed"
+          || record.shared_profile_integrity_status === "measurement_failed") {
+        record.error = `${record.error}; shared game profile sentinel ${record.shared_profile_integrity_status}`;
+      }
+      writeLifecycle();
+      persistClosedRecord(record, files, writeRecord);
+    } else {
+      record.shared_profile_integrity_status = displayMode === "native_window" ? "pending_process_close" : "not_required";
+      writeLifecycle();
+      if (child?.pid != null) writeOwnedCurrent();
     }
-    if (existsSync(files.control)) unlinkSync(files.control);
     throw error;
   } finally {
-    await Promise.allSettled([finished(stdoutStream), finished(stderrStream)]);
+    if (signalHandlersInstalled) {
+      signalSource.off("SIGINT", onSignal);
+      signalSource.off("SIGTERM", onSignal);
+    }
+    if (child == null || closeConfirmed()) {
+      stdoutStream.end();
+      stderrStream.end();
+    } else {
+      child.once("exit", () => {
+        stdoutStream.end();
+        stderrStream.end();
+      });
+    }
+    if (child == null || closeConfirmed()) {
+      await Promise.allSettled([finished(stdoutStream), finished(stderrStream)]);
+    }
   }
 }

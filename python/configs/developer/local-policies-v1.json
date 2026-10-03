@@ -17,7 +17,7 @@
       "id": "s1-human-combat-v4",
       "label": "S1 \u00b7 Defect A0 \u666e\u901a\u6218\u6597",
       "adapter": "s1-v1",
-      "manifest": "policy-manifests/s1-policy-adapter-v7.json",
+      "manifest": "policy-manifests/s1-policy-adapter-v8.json",
       "config": "configs/v0/experiments/s1-human-combat-live-v2.json"
     }
   ]

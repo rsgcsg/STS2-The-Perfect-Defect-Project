@@ -15,6 +15,7 @@ import pytest
 from spireagent.artifact_contracts import Parent
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.local import LocalBlobStore
+from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ManifestArtifactStore, copy_artifact
 from spireagent.workbench.developer import (
     LocalResearchWorkspaceConfig,
@@ -167,13 +168,14 @@ def test_canonical_m0_cli_reserves_before_input_and_binds_resume_export(
             "--project-config", str(config_path), "--inputs", input_id,
             "--operation", operation,
             "--recipe", "stage1a.dsimple.light-action.m0.s.v1", "--steps", "2",
-            "--stop-after", "1",
+            "--stop-after", "1", "--checkpoint-interval", "3",
         )
         assert paused["state"] == "paused" and paused["checkpoint_id"]
         completed = _cli(
             monkeypatch, *common, "run-light-action-m0",
             "--project-config", str(config_path), "--run", paused["run_id"],
             "--operation", operation, "--resume", paused["checkpoint_id"],
+            "--checkpoint-interval", "3",
         )
         assert completed["state"] == "completed" and completed["result_id"]
     finally:
@@ -207,6 +209,10 @@ def test_canonical_m0_cli_reserves_before_input_and_binds_resume_export(
             dataset.records.owner.close()
     assert owner.require_training_datasets(store, (dataset_id,), operation)[
         "historical_external_exposure"] == "unknown"
+    run_events = [item.parameters.value()
+                  for item in ObjectStoreRunReporter(store, store.blobs).events(paused["run_id"])]
+    assert [item["details"]["checkpoint_interval"]
+            for item in run_events if item["kind"] in {"started", "resumed"}] == [3, 3]
     report = store.get_manifest(
         store.get_manifest(completed["result_id"]).parent("offline_evaluation"))
     assert report.parameters.value()["evaluation_scope"] == \
@@ -218,6 +224,9 @@ def test_canonical_m0_cli_reserves_before_input_and_binds_resume_export(
     summaries.extend(item["bootstrap"] for item in metrics["baselines"].values())
     assert all(item["status"] == "unknown"
                and item["unit"] == "session_scoped_run_group" for item in summaries)
+    from test_token_comparison import assert_m0_comparison_preserves_qualification
+
+    assert_m0_comparison_preserves_qualification(store, completed["result_id"])
     with owner.transaction() as db:
         evaluations = db.execute(
             "SELECT kind,reference FROM curation_uses WHERE kind='evaluation'"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -17,6 +18,7 @@ import pytest
 import test_local_human_dataset as human_fixture
 import test_local_recording_preview as recording_fixture
 
+from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError
 from spireagent.source import source_identity
 from spireagent.storage import replaceable_file
@@ -45,6 +47,8 @@ from spireagent.workbench.local_training import (
     LOCK_FILE,
     MEMORY_RECIPE,
     OPERATION_FILE,
+    PUBLIC_M0_RECIPE,
+    SCHEMA_V3,
     LocalTrainingService,
 )
 from spireagent.workbench.memory_recipe import RESET_K1_RECIPE
@@ -117,6 +121,135 @@ def test_missing_model_backend_preserves_valid_training_input(tmp_path, monkeypa
     service._thread.join(timeout=10)
     assert not service._thread.is_alive()
     assert lock_path.read_bytes() == lock_bytes
+
+
+def test_public_m0_profile_is_closed_and_persisted_in_the_existing_operation(tmp_path, monkeypatch):
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    service = LocalTrainingService(config)
+    with pytest.raises(BoundaryError, match="unsupported_input_profile"):
+        service.start(dataset_id, input_profile="canonical")
+    with pytest.raises(BoundaryError, match="unsupported_input_profile"):
+        service.start(dataset_id, input_profile={"profile": "public_lite"})
+
+    def parked(held, _path, _identity, _owner, _store):
+        held.__exit__(None, None, None)
+
+    monkeypatch.setattr(service, "_run", parked)
+    started = service.start(dataset_id, input_profile="public_lite")["operation"]
+    assert started["schema"] == SCHEMA_V3
+    assert started["input_profile"] == "public_lite"
+    assert started["recipe"] == PUBLIC_M0_RECIPE
+    assert started["result_type"] == "evaluated"
+    assert started["evaluation_status"] == "pending"
+    assert service._thread is not None
+    service._thread.join(timeout=10)
+    assert not service._thread.is_alive()
+    owner = configured_owner(config)
+    operation = LocalTrainingService._read(owner.path.parent / OPERATION_FILE, owner.identity)
+    assert operation["schema"] == SCHEMA_V3
+    assert operation["input_profile"] == "public_lite"
+
+
+def test_public_m0_workbench_http_train_export_and_registration_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dataset_id, _, store = _ready(tmp_path, monkeypatch)
+    config_path = tmp_path / "project.json"
+    config_path.write_text(canonical_json(config.to_dict()), encoding="utf-8")
+    app = Application(config, config_path=config_path)
+    from spireagent.workbench.developer_server import atomic_json
+
+    atomic_json(config.state_dir / "runtime.json", {
+        "instance_id": app.instance_id,
+        "configuration_id": configuration_id(config),
+    })
+    # LocalTrainingService starts real `sys.executable -m ...` children in ROOT.
+    # Keep that interpreter/module path intact; a POSIX shebang wrapper is not a
+    # Windows executable and would bypass the service's clean child environment.
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    cookie = f"{app.account.cookie_name}={app.account.cookie}"
+    headers = {"Cookie": cookie, "Content-Type": "application/json", "Origin": url,
+               "X-CSRF-Token": app.account.csrf}
+
+    def request_json(path: str, *, body: dict | None = None) -> dict:
+        request = Request(url + path,
+                          data=json.dumps(body).encode() if body is not None else None,
+                          headers=headers, method="POST" if body is not None else "GET")
+        with urlopen(request, timeout=10) as response:
+            return json.load(response)
+
+    try:
+        started = request_json("/api/local-training/start",
+                               body={"dataset_id": dataset_id,
+                                     "input_profile": "public_lite"})
+        assert started["schema"] == SCHEMA_V3
+        assert started["operation"]["input_profile"] == "public_lite"
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            status = request_json("/api/local-training/status")
+            if status["operation"].get("status") in {"completed", "failed", "interrupted_unknown"}:
+                break
+            time.sleep(0.2)
+        assert status["operation"]["status"] == "completed", status
+        trained = status["operation"]
+        assert trained["schema"] == SCHEMA_V3
+        assert trained["input_profile"] == "public_lite"
+        model = store.get_manifest(trained["model_id"])
+        assert model.parameters.value()["schema"] == \
+            "stpd/stage1a-light-action-m0-public-model-v1"
+        assert model.parameters.value()["config"]["steps"] == 3
+
+        worker_errors = []
+        old_thread_trace = threading.gettrace()
+
+        def trace_export(frame, event, arg):
+            if frame.f_code.co_name == "_run" and event == "exception":
+                worker_errors.append(arg[0])
+
+        threading.settrace(trace_export)
+        try:
+            exporting = request_json("/api/local-model-exports/start",
+                                     body={"model_id": trained["model_id"]})
+            assert exporting["schema"] == "stpd/local-model-export-operation-v3"
+            assert exporting["operation"]["model_type"] == "public_m0"
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                exported = request_json("/api/local-model-exports/status")
+                if exported["operation"].get("status") in {"completed", "failed", "interrupted"}:
+                    break
+                time.sleep(0.2)
+        finally:
+            threading.settrace(old_thread_trace)
+        assert exported["operation"]["status"] == "completed", exported
+        assert UnboundLocalError not in worker_errors
+        destination = app.local_model_export.verified_public_m0_for_registration(
+            trained["model_id"], deadline=time.monotonic() + 10)
+        assert destination.is_dir()
+        package = destination / "model.json"
+        assert package.is_file()
+        original_package = package.read_bytes()
+        package.write_bytes(b"{}\n")
+        with pytest.raises(BoundaryError, match="public_m0_export_verification_failed"):
+            app.local_model_export.start(trained["model_id"])
+        package.write_bytes(original_package)
+        assert app.local_model_export.start(trained["model_id"])["operation"]["status"] == \
+            "completed"
+
+        owner = configured_owner(config)
+        with owner.transaction() as db:
+            db.execute("DELETE FROM curation_source_uses WHERE reference=?",
+                       (trained["operation_id"],))
+            db.execute("DELETE FROM curation_uses WHERE reference=?",
+                       (trained["operation_id"],))
+        with pytest.raises(BoundaryError, match="public_m0_lineage_invalid"):
+            app.local_model_export.start(trained["model_id"])
+    finally:
+        server.shutdown()
+        server.server_close()
+        app.close()
 
 
 def test_private_child_drains_large_stderr_and_keeps_stdout_machine_record(tmp_path: Path):
@@ -379,7 +512,7 @@ def test_m2_rejects_unclaimed_or_unindexed_source_before_derivatives(
                           (failed["operation_id"],)).fetchone() == (0,)
 
 
-def test_m2_preparation_limit_error_is_durable_unknown_without_retry(
+def test_m2_preparation_limit_error_is_durable_failure_without_automatic_retry(
     tmp_path: Path, monkeypatch,
 ) -> None:
     config, dataset_id, _, store = _human_ready(tmp_path, monkeypatch)
@@ -395,14 +528,15 @@ def test_m2_preparation_limit_error_is_durable_unknown_without_retry(
     service = LocalTrainingService(config)
     service.start(dataset_id, recipe=MEMORY_RECIPE)
     failed = _settle(service)
-    assert failed["status"] == "interrupted_unknown", failed
+    assert failed["status"] == "failed", failed
     assert failed["error_code"] == "m2_limit_exceeded_no_truncation"
     assert len(calls) == 1 and "prepare-workbench-memory" in calls[0]
     assert set(store.manifest_ids()) == before
-    assert LocalTrainingService(config).status()["operation"]["status"] == "interrupted_unknown"
-    with pytest.raises(BoundaryError, match="previous_training_outcome_unknown"):
-        service.start(dataset_id, recipe=MEMORY_RECIPE)
-    assert len(calls) == 1
+    assert LocalTrainingService(config).status()["operation"]["status"] == "failed"
+    service.start(dataset_id, recipe=MEMORY_RECIPE)
+    retried = _settle(service)
+    assert retried["status"] == "failed", retried
+    assert len(calls) == 2, "a second child runs only after a separate explicit start"
 
 
 def test_m2_pre_spawn_failure_is_retryable_failed_without_run(
@@ -659,7 +793,7 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
     tmp_path: Path, monkeypatch,
 ) -> None:
     config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
-    producer = source_identity(ROOT)
+    producer = source_identity(ROOT, require_clean=False)
 
     launches = []
 
@@ -675,7 +809,7 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
     service.start(dataset_id)
     result = _settle(service)
     assert len(launches) == 1
-    assert result["status"] == "interrupted_unknown", result
+    assert result["status"] == "failed", result
     assert result["error_code"] == "training_process_failed"
     assert "run_id" in result and "result_id" not in result
     owner = configured_owner(config)
@@ -684,7 +818,7 @@ def test_nonzero_child_keeps_run_and_private_exit_for_diagnosis(
     log = owner.path.parent / ("local-training-" + result["operation_id"] + ".log")
     assert log.read_bytes() == b"synthetic private failure\n"
     assert "synthetic private failure" not in json.dumps(service.status())
-    with pytest.raises(BoundaryError, match="previous_training_outcome_unknown"):
+    with pytest.raises(BoundaryError, match="previous_training_failed"):
         LocalTrainingService(config).start(dataset_id)
 
 
@@ -693,7 +827,7 @@ def test_parent_exception_diagnostic_preserves_unknown_after_child_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, log_write_fails: bool,
 ) -> None:
     config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
-    producer = source_identity(ROOT)
+    producer = source_identity(ROOT, require_clean=False)
     secret = "private-training-dataset-path"
 
     def fail_child(_command, _log_path, _environment, *, on_started):
@@ -1366,3 +1500,306 @@ def test_failed_windows_journal_replacement_preserves_recovery_candidates(
     else:
         assert path.read_bytes() == old
         assert not backups
+
+
+def _remote_m0_target() -> dict:
+    return {
+        "target_id": "c" * 64,
+        "app_id": "stpd-compute-" + "d" * 48,
+        "deployment_source_sha256": "e" * 64,
+        "gpu": "L4",
+        "timeout_seconds": 900,
+        "startup_timeout_seconds": 120,
+        "max_total_steps": 3,
+    }
+
+
+def _remote_m0_request(operation_id: str, attempt_id: str, target_step: int,
+                       resume_checkpoint_id: str | None = None) -> bytes:
+    return training_module.json_bytes({
+        "schema": "stpd/token-remote-update-request-v1",
+        "operation_id": operation_id,
+        "attempt_id": attempt_id,
+        "target_step": target_step,
+        "resume_checkpoint_id": resume_checkpoint_id,
+    })
+
+
+def _pin_remote_m0_provider_identity(
+    service: LocalTrainingService, operation: dict,
+) -> tuple[bytes, bytes, dict]:
+    attempt = operation["remote"]["attempts"][-1]
+    producer = {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "a" * 40,
+        "uv_lock_sha256": "b" * 64,
+    }
+    runtime = {"torch_version": "2.8.0", "cpu_threads": 2}
+    plan = {
+        "gpu": "L4", "cpu": 2.0, "memory_mib": 8192,
+        "function_timeout_seconds": 900, "startup_timeout_seconds": 120,
+        "scaledown_seconds": 30, "max_containers": 1, "retries": 0,
+    }
+    spec_bytes = training_module.json_bytes({
+        "schema": "stpd/modal-m0-attempt-spec-v1",
+        "attempt_id": attempt["attempt_id"],
+        "request_sha256": attempt["request_sha256"],
+        "account_id": "test-account", "environment_name": "test-env",
+        "image_object_id": "im-test-image", "producer": producer,
+        "target_runtime": runtime, "resource_plan": plan,
+        "app_name": "stpd-m0-update-" + attempt["attempt_id"],
+    })
+    service.persist_remote_attempt_spec(operation["operation_id"], spec_bytes)
+    app_ref = {
+        "schema": "stpd/modal-m0-app-ref-v1",
+        "account_id": "test-account", "environment_name": "test-env",
+        "app_id": "ap-test-app", "app_version": 1, "function_id": "fu-test-function",
+        "image_object_id": "im-test-image", "producer": producer,
+        "attempt_id": attempt["attempt_id"], "request_sha256": attempt["request_sha256"],
+        "target_runtime": runtime, "resource_plan": plan,
+        "app_name": "stpd-m0-update-" + attempt["attempt_id"],
+        "function_name": "token_remote_update",
+    }
+    app_ref_bytes = training_module.json_bytes(app_ref)
+    service.persist_remote_app_ref(operation["operation_id"], app_ref_bytes)
+    handle = {key: item for key, item in app_ref.items() if key != "schema"}
+    handle_bytes = training_module.json_bytes({
+        "schema": "stpd/modal-m0-call-v3", "target": handle,
+        "target_id": "c" * 64, "target_runtime": {
+            "target_id": "c" * 64, "producer": producer,
+            "image_object_id": "im-test-image", "torch_version": "2.8.0",
+            "cpu_threads": 2,
+        },
+        "call_id": "fc-test-call", "request_sha256": attempt["request_sha256"],
+        "request_size_bytes": 17, "attempt_id": attempt["attempt_id"],
+        "run_id": "d" * 64, "input_id": "e" * 64,
+        "operation_id": operation["operation_id"], "producer": producer,
+        "result_identity_sha256": "f" * 64, "target_device": "cuda",
+        "target_step": attempt["target_step"],
+        "resume_checkpoint_id": attempt["resume_checkpoint_id"],
+    })
+    return app_ref_bytes, handle_bytes, {"app_id": app_ref["app_id"]}
+
+
+def _remote_stop_confirmation(app_id: str) -> dict:
+    return {"app_id": app_id, "app_state": "stopped", "active_tasks": 0,
+            "active_containers": 0, "confirmed": True}
+
+
+def test_remote_m0_reservation_is_durable_and_restart_keeps_saved_handle_pollable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dataset_id, _, store = _ready(tmp_path, monkeypatch)
+    service = LocalTrainingService(config)
+    before = store.manifest_ids()
+    request = _remote_m0_request("7" * 32, "8" * 32, 3)
+    reserved = service.reserve_remote_m0(
+        dataset_id, input_profile="public_lite", request_bytes=request,
+        target=_remote_m0_target(), target_step=3,
+    )["operation"]
+    assert reserved["schema"] == training_module.SCHEMA_V4
+    assert reserved["status"] == "pending"
+    assert reserved["stage"] == "remote_submit_intent"
+    assert reserved["remote"]["target"]["app_id"] == _remote_m0_target()["app_id"]
+    assert "request_ref" not in reserved["remote"]["attempts"][0]
+    assert store.manifest_ids() == before  # Private request bytes add no training artifact.
+
+    owner = configured_owner(config)
+    path = owner.path.parent / OPERATION_FILE
+    lock_path = owner.path.parent / LOCK_FILE
+    with instance_lock(lock_path):
+        assert LocalTrainingService(config).status()["operation"]["status"] == "pending"
+    raw = json.loads(path.read_bytes())
+    attempt = raw["remote"]["attempts"][0]
+    assert training_module._read_remote_blob(
+        store, attempt["request_ref"], attempt["request_sha256"],
+        object_prefix=training_module.REMOTE_REQUEST_PREFIX,
+        chunk_prefix=training_module.REMOTE_REQUEST_CHUNK_PREFIX,
+        maximum=training_module.REMOTE_MAX_REQUEST_BYTES,
+        label="remote_request",
+    ) == request
+    assert attempt["request_sha256"] == hashlib.sha256(request).hexdigest()
+
+    app_ref_bytes, handle_bytes, _ = _pin_remote_m0_provider_identity(service, reserved)
+    service.record_remote_observation(
+        reserved["operation_id"], state="running", provider_terminal=False,
+        handle_bytes=handle_bytes,
+    )
+    restarted = LocalTrainingService(config).status()["operation"]
+    assert restarted["status"] == "pending"
+    assert restarted["stage"] == "remote_running"
+    assert "error_code" not in restarted
+    persisted = json.loads(path.read_bytes())
+    assert persisted["status"] == "pending"
+    assert persisted["stage"] == "remote_running"
+    _, saved_app_ref, saved_handle = training_module._remote_provider_bytes(
+        store, persisted["remote"]["attempts"][0],
+    )
+    assert saved_app_ref == app_ref_bytes
+    assert saved_handle == handle_bytes
+    with pytest.raises(BoundaryError) as rejected:
+        LocalTrainingService(config).start(dataset_id)
+    assert rejected.value.code == "previous_training_outcome_unknown"
+    assert len(json.loads(path.read_bytes())["remote"]["attempts"]) == 1
+
+
+def test_remote_m0_cancel_requires_provider_terminal_proof_and_checkpoint_to_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    service = LocalTrainingService(config)
+    operation = service.reserve_remote_m0(
+        dataset_id, input_profile="public_lite",
+        request_bytes=_remote_m0_request("9" * 32, "1" * 32, 3),
+        target=_remote_m0_target(), target_step=3,
+    )["operation"]
+    _, handle_bytes, app = _pin_remote_m0_provider_identity(service, operation)
+    service.record_remote_observation(
+        operation["operation_id"], state="running", provider_terminal=False,
+        handle_bytes=handle_bytes,
+    )
+    cancelling = service.request_remote_cancel(operation["operation_id"])
+    assert cancelling["status"] == "cancelling"
+    with pytest.raises(BoundaryError) as unconfirmed:
+        service.record_remote_observation(
+            operation["operation_id"], state="cancelled", provider_terminal=False,
+        )
+    assert unconfirmed.value.code == "provider_terminal_required"
+    owner = configured_owner(config)
+    journal = json.loads((owner.path.parent / OPERATION_FILE).read_bytes())
+    assert journal["status"] == "cancelling"
+    stopping = service.record_remote_observation(
+        operation["operation_id"], state="cancelled", provider_terminal=True,
+    )
+    assert stopping["status"] == "pending"
+    assert stopping["stage"] == "remote_stopping"
+    cancelled = service.record_remote_stop_confirmation(
+        operation["operation_id"], _remote_stop_confirmation(app["app_id"]),
+    )
+    assert cancelled["status"] == "cancelled"
+    assert cancelled.get("checkpoint_id") is None
+    with pytest.raises(BoundaryError) as no_checkpoint:
+        service.resume_remote_m0(
+            operation["operation_id"], request_bytes=b'{"train_only":true}', target_step=3,
+        )
+    assert no_checkpoint.value.code == "verified_remote_checkpoint_required"
+
+
+def test_remote_m0_pause_needs_a_local_checkpoint_before_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    service = LocalTrainingService(config)
+    request = _remote_m0_request("2" * 32, "3" * 32, 1)
+    operation = service.reserve_remote_m0(
+        dataset_id, input_profile="public_lite",
+        request_bytes=request,
+        target=_remote_m0_target(), target_step=1,
+    )["operation"]
+    first = operation["remote"]["attempts"][0]["attempt_id"]
+    _, handle_bytes, app = _pin_remote_m0_provider_identity(service, operation)
+    service.record_remote_observation(
+        operation["operation_id"], state="running", provider_terminal=False,
+        handle_bytes=handle_bytes,
+    )
+    checkpoint_id = "f" * 64
+    provider_result = b'{"typed_result":"opaque-to-local-owner"}'
+    stopping = service.record_remote_observation(
+        operation["operation_id"], state="paused", provider_terminal=True,
+        checkpoint_candidate_sha256="a" * 64, provider_result_bytes=provider_result,
+    )
+    assert first == operation["remote"]["attempts"][0]["attempt_id"]
+    assert stopping["status"] == "pending"
+    assert stopping["stage"] == "remote_stopping"
+    awaiting_local_checkpoint = service.record_remote_stop_confirmation(
+        operation["operation_id"], _remote_stop_confirmation(app["app_id"]),
+    )
+    assert awaiting_local_checkpoint["status"] == "pending"
+    assert awaiting_local_checkpoint["stage"] == "remote_acceptance"
+    evidence = service._remote_finalization_evidence(operation["operation_id"])
+    assert evidence["provider_handle_bytes"] == handle_bytes
+    assert evidence["app_ref_bytes"] is not None
+    assert evidence["attempt_spec_bytes"] is not None
+    assert evidence["request_bytes"] == request
+    assert evidence["result_bytes"] == provider_result
+    with pytest.raises(BoundaryError) as unverified:
+        service.accept_remote_checkpoint(operation["operation_id"], checkpoint_id)
+    assert unverified.value.code == "remote_checkpoint_local_validation_failed"
+    with pytest.raises(BoundaryError) as no_checkpoint:
+        service.resume_remote_m0(
+            operation["operation_id"], request_bytes=b'{"train_only":true,"resume":3}',
+            target_step=3,
+        )
+    assert no_checkpoint.value.code == "verified_remote_checkpoint_required"
+
+
+def test_remote_m0_candidate_stays_unaccepted_until_local_artifact_chain_is_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    service = LocalTrainingService(config)
+    request = _remote_m0_request("4" * 32, "5" * 32, 3)
+    operation = service.reserve_remote_m0(
+        dataset_id, input_profile="public_lite",
+        request_bytes=request,
+        target=_remote_m0_target(), target_step=3,
+    )["operation"]
+    _, handle_bytes, app = _pin_remote_m0_provider_identity(service, operation)
+    service.record_remote_observation(
+        operation["operation_id"], state="running", provider_terminal=False,
+        handle_bytes=handle_bytes,
+    )
+    stopping = service.record_remote_observation(
+        operation["operation_id"], state="completed", provider_terminal=True,
+        checkpoint_candidate_sha256="b" * 64,
+        provider_result_bytes=b'{"typed_result":"untrusted"}',
+    )
+    assert stopping["stage"] == "remote_stopping"
+    candidate = service.record_remote_stop_confirmation(
+        operation["operation_id"], _remote_stop_confirmation(app["app_id"]),
+    )
+    assert candidate["status"] == "pending"
+    assert candidate["stage"] == "remote_acceptance"
+    assert candidate.get("result_id") is None
+    assert candidate["remote"]["attempts"][-1]["validated_checkpoint_id"] is None
+    evidence = service._remote_finalization_evidence(operation["operation_id"])
+    assert evidence["request_bytes"] == request
+    assert evidence["result_bytes"] == b'{"typed_result":"untrusted"}'
+    with pytest.raises(BoundaryError) as unverified:
+        service.accept_remote_candidate(
+            operation["operation_id"], input_id="1" * 64, run_id="2" * 64,
+            result_id="4" * 64,
+        )
+    assert unverified.value.code == "remote_candidate_local_validation_failed"
+    current = LocalTrainingService(config).status()["operation"]
+    assert current["status"] == "pending"
+    assert current["stage"] == "remote_acceptance"
+    assert current.get("result_id") is None
+    assert current["remote"]["attempts"][-1]["validated_checkpoint_id"] is None
+
+
+def test_legacy_v3_unknown_status_read_does_not_rewrite_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, dataset_id, _, _ = _ready(tmp_path, monkeypatch)
+    owner = configured_owner(config)
+    path = owner.path.parent / OPERATION_FILE
+    lock_path = owner.path.parent / LOCK_FILE
+    with instance_lock(lock_path):
+        pass
+    training_module.write_replaceable_json(path, {
+        "schema": SCHEMA_V3,
+        "status": "pending",
+        "stage": "allocating",
+        "operation_id": "7" * 32,
+        "dataset_id": dataset_id,
+        "_owner": list(owner.identity),
+        "recipe": PUBLIC_M0_RECIPE,
+        "input_profile": "public_lite",
+        "result_type": "evaluated",
+        "evaluation_status": "pending",
+    })
+    before = path.read_bytes()
+    observed = LocalTrainingService(config).status()["operation"]
+    assert observed["status"] == "interrupted_unknown"
+    assert path.read_bytes() == before
