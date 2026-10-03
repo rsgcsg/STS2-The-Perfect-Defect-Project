@@ -23,7 +23,9 @@ from spireagent.source import source_identity
 from .public_m2_modal import (
     MAX_PUBLIC_M2_REQUEST_BYTES,
     MAX_PUBLIC_M2_RESULT_BYTES,
+    PublicM2ModalBinding,
     PublicM2ModalResources,
+    encode_modal_response,
 )
 
 RUNTIME_RECEIPT_SCHEMA = "stpd/public-m2-modal-runtime-v1"
@@ -167,7 +169,9 @@ def _worker_main() -> int:
             request, request_sha256=request_sha256, producer=producer,
             resources=resources, expected_runtime=expected_runtime,
         )
-        sys.stdout.buffer.write(result)
+        binding = PublicM2ModalBinding(
+            producer, request_sha256, image_id, runtime_sha, resources)
+        sys.stdout.buffer.write(encode_modal_response(result, binding))
         sys.stdout.buffer.flush()
     except Exception:
         print("public_m2_remote_worker_failed", file=sys.stderr)

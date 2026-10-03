@@ -19,10 +19,8 @@ from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import decode_json, json_bytes
 from stpd.cloud_jobs.public_m2_modal import (
     MAX_PUBLIC_M2_REQUEST_BYTES,
-    MAX_PUBLIC_M2_RESULT_BYTES,
-    PublicM2ModalBinding,
+    MAX_PUBLIC_M2_TRANSPORT_BYTES,
     PublicM2ModalResources,
-    encode_modal_response,
 )
 from stpd.cloud_jobs.public_m2_remote_worker import decode_runtime_evidence
 
@@ -81,10 +79,7 @@ _PINNED_ENV = {
     "MKL_NUM_THREADS": str(_RUNTIME_RECEIPT["cpu_threads"]),
     "OPENBLAS_NUM_THREADS": str(_RUNTIME_RECEIPT["cpu_threads"]),
 }
-_BINDING = PublicM2ModalBinding(
-    _PRODUCER, _REQUEST_SHA256, _IMAGE_OBJECT_ID,
-    _RUNTIME_RECEIPT_SHA256, _PLAN,
-)
+_DEADLINE_SECONDS = _PLAN.deadline_seconds
 
 _APP = modal.App(_APP_NAME)
 _IMAGE = modal.Image.from_id(_IMAGE_OBJECT_ID)
@@ -125,16 +120,16 @@ def public_m2_remote(request_bytes: bytes) -> bytes:
             ["/opt/stpd/python/.venv/bin/python", "-m",
              "stpd.cloud_jobs.public_m2_remote_worker"],
             cwd="/opt/stpd/python", env=worker_env, input=request_bytes,
-            capture_output=True, timeout=_PLAN.deadline_seconds, check=False,
+            capture_output=True, timeout=_DEADLINE_SECONDS, check=False,
         )
     except Exception:
         raise RuntimeError("locked_worker_failed") from None
     if completed.returncode != 0:
         raise RuntimeError("locked_worker_failed")
     result = completed.stdout
-    if not isinstance(result, bytes) or not 1 <= len(result) <= MAX_PUBLIC_M2_RESULT_BYTES:
+    if not isinstance(result, bytes) or not 1 <= len(result) <= MAX_PUBLIC_M2_TRANSPORT_BYTES:
         raise RuntimeError("result_size_limit")
-    return encode_modal_response(result, _BINDING)
+    return result
 
 
 app = _APP

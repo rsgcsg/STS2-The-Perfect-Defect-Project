@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import runpy
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -14,8 +16,10 @@ from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, json_bytes
 from stpd.cloud_jobs import public_m2_remote_worker as worker
 from stpd.cloud_jobs.public_m2_modal import (
+    PublicM2ModalBinding,
     PublicM2ModalResources,
     _decode_modal_response,
+    encode_modal_response,
 )
 
 ENTRY = Path(__file__).resolve().parents[1] / "deploy/cloud-worker/public_m2_update_modal.py"
@@ -59,6 +63,13 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> tuple[bytes, PublicM2ModalResources
     return request, plan
 
 
+def _binding(request: bytes, plan: PublicM2ModalResources) -> PublicM2ModalBinding:
+    return PublicM2ModalBinding(
+        Producer("repo", "b" * 40, "c" * 64), hashlib.sha256(request).hexdigest(),
+        "im-one", hashlib.sha256(json_bytes(_runtime())).hexdigest(), plan,
+    )
+
+
 def _load_entry(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, Any], dict[str, Any]]:
     observed: dict[str, Any] = {}
 
@@ -99,16 +110,19 @@ def test_entry_declares_explicit_resources_and_uses_locked_venv(
         hashlib.sha256(json_bytes(_runtime())).hexdigest())
 
     calls: list[dict[str, Any]] = []
+    binding = _binding(request, plan)
 
     def fake_run(args: list[str], **kwargs: Any) -> Any:
         calls.append({"args": args, **kwargs})
-        return SimpleNamespace(returncode=0, stdout=b"opaque-result", stderr=b"")
+        return SimpleNamespace(returncode=0,
+                               stdout=encode_modal_response(b"opaque-result", binding),
+                               stderr=b"")
 
     monkeypatch.setattr(namespace["public_m2_remote"].__globals__["subprocess"],
                         "run", fake_run)
     monkeypatch.setenv("PYTHONPATH", "/host/unsafe")
     framed = namespace["public_m2_remote"](request)
-    assert _decode_modal_response(framed, namespace["_BINDING"]) == b"opaque-result"
+    assert _decode_modal_response(framed, binding) == b"opaque-result"
     assert len(calls) == 1
     assert calls[0]["args"] == [
         "/opt/stpd/python/.venv/bin/python", "-m",
@@ -135,10 +149,47 @@ def test_entry_rejects_bad_plan_or_request_before_worker(
         namespace["public_m2_remote"](request)
 
 
+def test_serialized_wrapper_runs_without_importing_stpd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cloudpickle = pytest.importorskip("modal._vendor.cloudpickle")
+    _env(monkeypatch)
+    namespace, _ = _load_entry(monkeypatch)
+    function = namespace["public_m2_remote"]
+    assert not {"_PLAN", "_BINDING", "encode_modal_response"} & set(function.__code__.co_names)
+    serialized = cloudpickle.dumps(function)
+    isolated = r'''
+import importlib.abc
+import sys
+class BlockStpd(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if (fullname == "stpd" or fullname.startswith("stpd.")
+                or fullname == "spireagent" or fullname.startswith("spireagent.")):
+            raise ImportError("STPD package unavailable in Modal injected Python")
+sys.meta_path.insert(0, BlockStpd())
+from modal._vendor import cloudpickle
+function = cloudpickle.loads(sys.stdin.buffer.read())
+try:
+    function(b"wrong-request")
+except ValueError as error:
+    if str(error) != "request_identity_or_size_mismatch":
+        raise
+else:
+    raise AssertionError("wrong request unexpectedly accepted")
+sys.stdout.write("serialized-stdlib-only")
+'''
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", isolated], input=serialized, capture_output=True,
+        cwd="/tmp", env={**os.environ, "PYTHONPATH": ""}, timeout=10, check=False,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    assert completed.stdout == b"serialized-stdlib-only"
+
+
 def test_wrapper_child_runtime_binding_through_locked_stdio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    request, _ = _env(monkeypatch)
+    request, plan = _env(monkeypatch)
     namespace, _ = _load_entry(monkeypatch)
     producer = Producer("repo", "b" * 40, "c" * 64)
     runtime = _runtime()
@@ -169,7 +220,7 @@ def test_wrapper_child_runtime_binding_through_locked_stdio(
     monkeypatch.setattr(namespace["public_m2_remote"].__globals__["subprocess"],
                         "run", fake_run)
     framed = namespace["public_m2_remote"](request)
-    assert _decode_modal_response(framed, namespace["_BINDING"]) == b"typed-result-wire"
+    assert _decode_modal_response(framed, _binding(request, plan)) == b"typed-result-wire"
     assert executions == [request]
     monkeypatch.setattr(worker, "read_runtime_evidence",
                         lambda: {**runtime, "gpu_name": "other"})
