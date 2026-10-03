@@ -132,14 +132,19 @@ def derive_public_m2_segments(
     Requires a complete verified projection for one source/session/run; slim refs
     alone cannot establish source integrity. Journal time only locates an exact-ref
     accepted event inside a sequence-ordered interval; it never proves an edge.
+    A malformed journal raises BoundaryError; the caller must record an explicit
+    unknown source outcome rather than filtering offending marks and retrying.
     """
     digest(source_archive_sha256, "public_m2_segment.source")
     if not session_id or not run_id or not journal:
         raise BoundaryError("public_m2_segment", "source_session_run_journal_required")
-    marks = sorted(journal, key=lambda row: row.sequence)
-    if any(type(m.sequence) is not int or m.sequence < 1 or m.session_id != session_id
-           or not m.kind or not m.event_ref for m in marks):
+    # Check untrusted legacy projections before sorting: None/mixed sequence
+    # values must be a typed boundary failure, not a Python comparison error.
+    if any(not isinstance(m, JournalMark) or type(m.sequence) is not int
+           or m.sequence < 1 or m.session_id != session_id
+           or not m.kind or not m.event_ref for m in journal):
         raise BoundaryError("public_m2_segment", "journal_binding_invalid")
+    marks = sorted(journal, key=lambda row: row.sequence)
     for mark in marks:
         digest(mark.event_ref, "public_m2_segment.journal_ref")
     if len({m.sequence for m in marks}) != len(marks):
@@ -161,8 +166,8 @@ def derive_public_m2_segments(
             raise BoundaryError("public_m2_segment", "ledger_binding_invalid")
 
     # State is projected after each journal mark. A missing sequence or time
-    # contradiction clears the active span; a later explicit run marker may open
-    # a new one, without disqualifying already bounded earlier observations.
+    # regression clears the active span. Equal timestamps carry state by journal
+    # sequence but create no placement interval at that instant.
     capture = False
     run_active = False
     segment: str | None = None
@@ -173,10 +178,11 @@ def derive_public_m2_segments(
         if previous is not None:
             before = _time(previous.recorded_at)
             valid_order = (mark.sequence == previous.sequence + 1 and before is not None
-                           and when is not None and before < when)
+                           and when is not None and before <= when)
             if valid_order:
                 assert before is not None and when is not None
-                intervals.append((before, when, segment, "inactive_or_gap"))
+                if before < when:
+                    intervals.append((before, when, segment, "inactive_or_gap"))
             else:
                 run_active = False
                 segment = None

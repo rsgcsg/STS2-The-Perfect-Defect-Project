@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from platform_bundle3_fixture import bundle3, rows, seal
+import pytest
+from platform_bundle3_fixture import bundle3, rows, seal, stream
 
+from spireagent.json_boundary import BoundaryError
 from stpd.canonical import semantic_hash
 from stpd.fullrun.platform_bundle3 import PlatformBundle3SourceAdapter, archive_bundle
 from stpd.fullrun.public_m2_segments import (
@@ -129,8 +131,24 @@ def test_session_pause_tagged_prior_run_and_local_projection_omission():
     assert result.edges[-1].allowed
 
 
+@pytest.mark.parametrize("bad_sequence", [None, "2", True])
+def test_malformed_journal_sequence_is_typed_boundary_failure(bad_sequence):
+    marks = list(journal(("session_started", 0), ("run_started_native", 1),
+                         ("session_closed", 8)))
+    marks[1] = replace(marks[1], sequence=bad_sequence)
+    with pytest.raises(BoundaryError, match="journal_binding_invalid"):
+        derive(marks, [occurrence(1, 2)])
+
+
 def test_official_bundle3_fixture_fields_join_by_exact_accepted_ref(tmp_path):
     bundle = bundle3(tmp_path, runs=1)
+    path = bundle / "raw/run-journal.jsonl"
+    original = rows(path)
+    ordinary = {**original[1], "kind": "act_change_owner_ready", "event_id": "same-tick"}
+    original.insert(2, ordinary)  # Same timestamp as native start, no capture gap.
+    for index, row in enumerate(original, 1):
+        row["sequence"] = index
+    stream(path, original)
     seal(bundle)
     source = archive_bundle(bundle)
     projection = PlatformBundle3SourceAdapter().project(source)
@@ -170,5 +188,6 @@ def test_official_bundle3_fixture_fields_join_by_exact_accepted_ref(tmp_path):
     )
     assert len(result.placements) == 2
     assert all(item.status == "known-qualified" for item in result.placements)
+    assert result.placements[0].capture_segment_id == result.placements[1].capture_segment_id
     # This fixture's two independent frame objects do not assert an exact edge.
     assert result.edges[0].reason == "proved_frame_edge_mismatch"
