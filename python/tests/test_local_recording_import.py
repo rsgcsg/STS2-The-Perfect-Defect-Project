@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import gzip
+import hashlib
+import io
 import json
 import shutil
+import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from platform_bundle3_fixture import bundle3, load, seal, write
 
 from spireagent.artifact_contracts import Manifest, Producer
-from spireagent.json_boundary import BoundaryError, FrozenObject
+from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.local_verified_bundle import MAX_ARCHIVE, verified_local_bundle
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.registry import SQLiteRegistry
 from spireagent.storage.store import ManifestArtifactStore
@@ -18,6 +24,8 @@ from spireagent.workbench import local_recording_import as importing
 from spireagent.workbench import managed_local_workspace as managed
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig, ProjectConfig, combination
 from spireagent.workbench.inplace_curation import InplaceCurationPreparation
+from spireagent.workbench.local_dataset import LocalDatasetService
+from spireagent.workbench.member_client import MemberClient
 
 
 class Catalog:
@@ -93,6 +101,68 @@ def finished(importer: importing.LocalRecordingImporter) -> dict:
     importer.thread.join(timeout=15)
     assert not importer.thread.is_alive()
     return importer.status()
+
+
+def archive_directory(directory: Path) -> bytes:
+    raw = io.BytesIO()
+    with (gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as zipped,
+          tarfile.open(fileobj=zipped, mode="w|") as archive):
+        for path in sorted(item for item in directory.rglob("*") if item.is_file()):
+            relative = path.relative_to(directory).as_posix()
+            content = path.read_bytes()
+            info = tarfile.TarInfo(relative)
+            info.size, info.mode, info.mtime = len(content), 0o644, 0
+            archive.addfile(info, io.BytesIO(content))
+    return raw.getvalue()
+
+
+def save_member_export(config: ProjectConfig, archive: bytes, *,
+                       collections: list[str] | None = None,
+                       row_overrides: dict | None = None,
+                       stored_bytes: bytes | None = None) -> tuple[str, str]:
+    artifact_id, upload_id = "a" * 64, "b" * 32
+    row = {
+        "artifact_id": artifact_id,
+        "type": "payload",
+        "role": "archive",
+        "sha256": hashlib.sha256(archive).hexdigest(),
+        "size": len(archive),
+        "media_type": "application/gzip",
+        "upload_id": upload_id,
+    }
+    row.update(row_overrides or {})
+    row["file_id"] = hashlib.sha256(
+        json_bytes([row["artifact_id"], row["type"], row["role"]])
+    ).hexdigest()
+    row["filename"] = row["file_id"] + (".json" if row["type"] == "manifest" else ".bin")
+    row.setdefault("media_type", "application/json" if row["type"] == "manifest"
+                   else "application/gzip")
+    selection = {"collections": [upload_id] if collections is None else collections,
+                 "artifacts": []}
+    content = {
+        "schema": "stpd/project-export-v1",
+        "policy": "stpd/project-sharing-v2",
+        "selection": selection,
+        "files": [row],
+        "total_bytes": row["size"],
+        "files_count": 1,
+        "scope": "selected_own_payloads",
+        "non_claims": ["complete lineage cache", "research admission", "training permission"],
+    }
+    export_id = hashlib.sha256(json_bytes(content)).hexdigest()
+    directory = config.state_dir / "downloads" / export_id
+    directory.mkdir(parents=True)
+    importing.atomic_json(directory / "download.json", {
+        "status": "verified", "export_id": export_id,
+        "verified_files": 1, "verified_bytes": row["size"],
+        "total_files": 1, "total_bytes": row["size"],
+        "directory": str(directory), "training_admitted": False,
+    })
+    importing.atomic_json(directory / "inventory.json", {
+        **content, "export_id": export_id, "created_at": "2026-01-01T00:00:00Z",
+    })
+    (directory / row["file_id"]).write_bytes(archive if stored_bytes is None else stored_bytes)
+    return export_id, row["file_id"]
 
 
 def test_explicit_verified_import_publishes_once_and_preserves_source(tmp_path, monkeypatch):
@@ -222,6 +292,218 @@ def test_pending_restart_is_unknown_and_never_runs_without_post(tmp_path, monkey
     assert restarted.status()["status"] == "interrupted_unknown"
     assert restarted.thread is None
     assert not store.manifest_ids()
+
+
+@pytest.mark.parametrize("fresh_owner", [False, True])
+def test_member_archive_import_replay_interruption_and_explicit_source_index(
+    tmp_path, monkeypatch, fresh_owner,
+):
+    importer, catalog, store, _ = setup(tmp_path, monkeypatch)
+    if fresh_owner:
+        managed.create_managed_workspace(importer.config.state_dir)
+        config = ProjectConfig(importer.config.state_dir, "", "", None, combination())
+        importer = importing.LocalRecordingImporter(config, catalog)
+        store, _ = importing._selected_store(config)
+    source = bundle3(tmp_path / "member-fixture", runs=1)
+    recording = load(source / "raw/recording-manifest.json")
+    recording["close_schema_version"] = 1
+    write(source / "raw/recording-manifest.json", recording)
+    write(source / "raw/session-close-receipt.json", {
+        "schema": "sts2.human-annotator/session-close-1",
+        "session_id": recording["session_id"],
+        "timeline_id": recording["timeline_id"],
+        "status": "closed",
+        "closed_at": "2026-09-01T00:00:02Z",
+    })
+    seal(source)
+    original = archive_directory(source)
+    export_id, file_id = save_member_export(importer.config, original)
+    importer.members = MemberClient(SimpleNamespace(config=importer.config))
+
+    class NoPacker:
+        def __init__(self, *_args):
+            pytest.fail("member archive import must not repack the original archive")
+
+    monkeypatch.setattr(importing, "CollectionTool", NoPacker)
+    identity = importer._member_source_identity(export_id, file_id)
+    owner = importing._selected_curation_owner(importer.config)
+    assert owner is not None
+    assert owner.legacy_guard is not fresh_owner
+    owner.begin_source(identity)
+    importing.atomic_json(importer.path, {
+        "schema": importing.SCHEMA, "status": "pending", "candidate_id": identity,
+        "source_kind": "member_archive", "export_id": export_id, "file_id": file_id,
+    })
+    recovered = importing.LocalRecordingImporter(importer.config, catalog, importer.members)
+    assert recovered.status()["status"] == "interrupted_unknown"
+    assert recovered.start_member_archive(export_id, file_id, True)["status"] == "pending"
+    done = finished(recovered)
+    assert done["status"] == "completed", (done.get("error_code"), done)
+    artifact_id = done["artifact_id"]
+    assert store.manifest_ids() == (artifact_id,)
+    manifest = store.get_manifest(artifact_id)
+    parameters = manifest.parameters.value()
+    assert parameters["schema"] == importing.EVIDENCE_SCHEMA
+    assert parameters["source_kind"] == "member_collection_archive"
+    assert parameters["research_admission"] == "not_evaluated"
+    assert parameters["hub_receipt"] is None
+    assert "tool_release_id" not in parameters
+    assert store.bytes(manifest.payload("archive"), maximum=MAX_ARCHIVE) == original
+    with verified_local_bundle(store, manifest) as verified:
+        assert verified.archive_sha256 == hashlib.sha256(original).hexdigest()
+        assert verified.bundle.session_id == parameters["session_id"]
+
+    with owner.transaction() as db:
+        assert db.execute("SELECT artifact,status FROM local_source_pending WHERE candidate=?",
+                          (identity,)).fetchone() == (artifact_id, "published")
+    assert recovered.start_member_archive(export_id, file_id, True)["artifact_id"] == artifact_id
+    assert store.manifest_ids() == (artifact_id,)
+
+    # Only the explicit existing dataset preview indexes the source and clears pending.
+    from spireagent.workbench.local_curation import LocalCurationOwner
+
+    complete_index = LocalCurationOwner.complete_index
+
+    def verify_unknown_before_pending_clear(selected_owner, candidate_id, source_id):
+        with selected_owner.transaction() as db:
+            runs = {row[0] for row in db.execute(
+                "SELECT run FROM curation_source_runs WHERE source=?", (source_id,))}
+            assert runs
+            assert selected_owner.gold_history_unknown(db, runs)
+        complete_index(selected_owner, candidate_id, source_id)
+
+    monkeypatch.setattr(LocalCurationOwner, "complete_index", verify_unknown_before_pending_clear)
+    datasets = LocalDatasetService(importer.config)
+    datasets.start_preview(artifact_id, "training", None)
+    assert datasets.thread is not None
+    datasets.thread.join(timeout=30)
+    assert not datasets.thread.is_alive()
+    assert datasets.status()["operation"]["status"] == "preview_ready", datasets.status()
+    with owner.transaction() as db:
+        assert db.execute("SELECT 1 FROM local_source_pending WHERE candidate=?",
+                          (identity,)).fetchone() is None
+        assert db.execute("SELECT complete FROM curation_sources WHERE id=?",
+                          (artifact_id,)).fetchone() == (1,)
+
+    # Indexing a remote archive never establishes its pre-download exposure history,
+    # including for a fresh owner and already imported/indexed immutable sources.
+    reopened = importing._selected_curation_owner(importer.config)
+    assert reopened is not None
+    runs = reopened.ledger.source_runs(artifact_id)
+    assert runs
+    with reopened.transaction() as db:
+        assert reopened.gold_history_unknown(db, runs)
+        reopened._historical_claim_guard(db, "training", runs)
+        reopened._historical_claim_guard(db, "test", runs)
+    with pytest.raises(BoundaryError, match="legacy_gold_history_unknown"):
+        reopened.ledger.claim("member-gold", "gold", runs)
+    assert recovered.start_member_archive(export_id, file_id, True)["artifact_id"] == artifact_id
+    with reopened.transaction() as db:
+        assert reopened.gold_history_unknown(db, runs)
+
+    # A preview may complete between the pending lookup and published_source write.
+    owner.begin_source(identity)
+    owner.published_source(identity, artifact_id)
+
+    def complete_before_reconcile(candidate_id, source_id):
+        owner.complete_index(candidate_id, source_id)
+        raise BoundaryError("local_curation", "source_pending_identity_conflict")
+
+    monkeypatch.setattr(owner, "published_source", complete_before_reconcile)
+    importing._reconcile_published_source(owner, identity, artifact_id)
+    with owner.transaction() as db:
+        assert db.execute("SELECT 1 FROM local_source_pending WHERE candidate=?",
+                          (identity,)).fetchone() is None
+
+    # An explicit replay still requires the saved verified receipt before consulting
+    # the already published immutable source.
+    (importer.config.state_dir / "downloads" / export_id / "download.json").unlink()
+    with pytest.raises(BoundaryError, match="download_receipt_unavailable"):
+        recovered.start_member_archive(export_id, file_id, True)
+    assert store.manifest_ids() == (artifact_id,)
+
+
+def test_member_archive_worker_rechecks_receipt_after_preflight(tmp_path, monkeypatch):
+    importer, _, store, _ = setup(tmp_path, monkeypatch)
+    export_id, file_id = save_member_export(importer.config, b"synthetic archive bytes")
+    members = MemberClient(SimpleNamespace(config=importer.config))
+    importer.members = members
+    verify = members.verified_collection_archive
+    calls = 0
+
+    def lose_receipt_before_worker_read(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            (importer.config.state_dir / "downloads" / export_id / "download.json").unlink()
+        return verify(*args, **kwargs)
+
+    monkeypatch.setattr(members, "verified_collection_archive", lose_receipt_before_worker_read)
+    importer.start_member_archive(export_id, file_id, True)
+    result = finished(importer)
+    assert calls == 2
+    assert result["status"] == "failed"
+    assert result["error_code"] == "download_receipt_unavailable"
+    assert store.manifest_ids() == ()
+
+
+def test_member_archive_unsafe_tar_fails_before_source_publication(tmp_path, monkeypatch):
+    importer, catalog, store, _ = setup(tmp_path, monkeypatch)
+    raw = io.BytesIO()
+    with (gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as zipped,
+          tarfile.open(fileobj=zipped, mode="w|") as archive):
+        info = tarfile.TarInfo("../../outside.json")
+        info.size = 4
+        archive.addfile(info, io.BytesIO(b"safe"))
+    export_id, file_id = save_member_export(importer.config, raw.getvalue())
+    importer.members = MemberClient(SimpleNamespace(config=importer.config))
+    importer.start_member_archive(export_id, file_id, True)
+    result = finished(importer)
+    assert result["status"] == "failed"
+    assert result["error_code"] == "unsafe_or_duplicate_member"
+    assert store.manifest_ids() == ()
+    assert not (importer.config.state_dir.parent / "outside.json").exists()
+
+
+def test_member_archive_replay_reconciles_published_owner_pending(tmp_path, monkeypatch):
+    importer, catalog, store, _ = setup(tmp_path, monkeypatch)
+    source = bundle3(tmp_path / "published-fixture", runs=1)
+    recording = load(source / "raw/recording-manifest.json")
+    recording["close_schema_version"] = 1
+    write(source / "raw/recording-manifest.json", recording)
+    write(source / "raw/session-close-receipt.json", {
+        "schema": "sts2.human-annotator/session-close-1",
+        "session_id": recording["session_id"],
+        "timeline_id": recording["timeline_id"],
+        "status": "closed",
+        "closed_at": "2026-09-01T00:00:02Z",
+    })
+    seal(source)
+    export_id, file_id = save_member_export(importer.config, archive_directory(source))
+    importer.members = MemberClient(SimpleNamespace(config=importer.config))
+    owner = importing.configured_owner(importer.config)
+    real_published_source = owner.published_source
+    monkeypatch.setattr(importing, "_selected_curation_owner", lambda _config: owner)
+    monkeypatch.setattr(owner, "published_source", lambda *_args:
+                        (_ for _ in ()).throw(OSError("synthetic interruption after publish")))
+
+    importer.start_member_archive(export_id, file_id, True)
+    failed = finished(importer)
+    assert failed["status"] == "published_index_unavailable", failed
+    identity = importer._member_source_identity(export_id, file_id)
+    artifact_id = store.manifest_ids()[0]
+    with owner.transaction() as db:
+        assert db.execute("SELECT artifact,status FROM local_source_pending WHERE candidate=?",
+                          (identity,)).fetchone() == (None, "publishing")
+
+    monkeypatch.setattr(owner, "published_source", real_published_source)
+    retried = importer.start_member_archive(export_id, file_id, True)
+    assert retried["status"] == "completed", retried
+    assert retried["artifact_id"] == artifact_id
+    assert store.manifest_ids() == (artifact_id,)
+    with owner.transaction() as db:
+        assert db.execute("SELECT artifact,status FROM local_source_pending WHERE candidate=?",
+                          (identity,)).fetchone() == (artifact_id, "published")
 
 
 def test_publication_read_failure_reports_unknown_after_possible_commit(tmp_path, monkeypatch):

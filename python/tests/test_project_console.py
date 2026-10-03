@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
 import sys
 import threading
+import time
+from contextlib import contextmanager
 from io import BytesIO
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -28,6 +31,37 @@ def config(tmp_path, *, delivery=True, hub=True):
         tmp_path / "delivery.json" if delivery else None,
         combination(),
     )
+
+
+def _raw_post_response(
+    port: int, headers: bytes, body: bytes = b"", *, path: str = "/api/console/collections",
+) -> bytes:
+    with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
+        client.settimeout(2)
+        request = (
+            f"POST {path} HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+        ).encode("ascii") + headers + b"\r\n" + body
+        client.sendall(request)
+        response = bytearray()
+        while chunk := client.recv(4096):
+            response.extend(chunk)
+        return bytes(response)
+
+
+@contextmanager
+def _test_server(tmp_path):
+    app = Application(config(tmp_path, delivery=False, hub=False))
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+        app.close()
 
 
 def test_shared_shell_has_no_embedded_runtime_data_or_external_dependencies():
@@ -300,6 +334,21 @@ def test_http_shell_and_assets_do_not_query_owners_or_accept_browser_mutations(
             with pytest.raises(HTTPError) as error:
                 urlopen(Request(root + path, data=b"{}"), timeout=2)
             assert error.value.code == 403
+        browser_headers = {
+            "Cookie": f"{app.account.cookie_name}={app.account.cookie}",
+            "Origin": root,
+            "X-CSRF-Token": app.account.csrf,
+            "Content-Type": "application/json",
+        }
+        with pytest.raises(HTTPError) as error:
+            urlopen(
+                Request(
+                    root + "/api/local-datasets/not-a-route",
+                    data=b"{}", headers=browser_headers,
+                ),
+                timeout=2,
+            )
+        assert error.value.code == 404
         with pytest.raises(HTTPError) as error:
             urlopen(
                 Request(root + "/assets/console.js", headers={"Host": "attacker.example"}),
@@ -311,6 +360,87 @@ def test_http_shell_and_assets_do_not_query_owners_or_accept_browser_mutations(
         server.server_close()
         thread.join(timeout=3)
         app.close()
+
+
+def test_rejected_chunked_post_closes_without_running_action(tmp_path, monkeypatch):
+    app = Application(config(tmp_path, delivery=False, hub=False))
+    calls = []
+    monkeypatch.setattr(
+        app, "start_local_training", lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    body = b'{"dataset_id":"' + b"a" * 64 + b'"}'
+    chunked_body = f"{len(body):X}\r\n".encode("ascii") + body + b"\r\n0\r\n\r\n"
+    try:
+        response = _raw_post_response(
+            server.server_port, b"Transfer-Encoding: chunked\r\n", chunked_body,
+            path="/api/local-training/start",
+        )
+        assert response == b""
+        assert calls == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+        app.close()
+
+
+def test_rejected_post_closes_ambiguous_and_out_of_bound_framing(tmp_path):
+    invalid_framing = (
+        (b"Content-Length: invalid\r\n", b""),
+        (b"Content-Length: -1\r\n", b""),
+        (b"Content-Length: 65537\r\n", b""),
+        (b"Content-Length: 0\r\nContent-Length: 0\r\n", b""),
+        (b"Content-Length: 0\r\nContent-Length: 1\r\n", b""),
+        (b"Transfer-Encoding: gzip\r\n", b""),
+        (b"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n", b""),
+        (b"Transfer-Encoding: chunked\r\nContent-Length: 0\r\n", b""),
+    )
+    with _test_server(tmp_path) as server:
+        for headers, body in invalid_framing:
+            assert _raw_post_response(server.server_port, headers, body) == b""
+
+
+def test_rejected_post_incomplete_content_length_closes_after_deadline(tmp_path):
+    with _test_server(tmp_path) as server:
+        started = time.monotonic()
+        response = _raw_post_response(server.server_port, b"Content-Length: 2\r\n", b"{")
+        elapsed = time.monotonic() - started
+        assert response == b""
+        assert 0.75 <= elapsed < 2
+
+
+def test_rejected_post_drain_deadline_is_absolute(monkeypatch):
+    from types import SimpleNamespace
+
+    from spireagent.workbench import developer_server
+
+    now = [0.0]
+    time_module = SimpleNamespace(monotonic=lambda: now[0])
+    monkeypatch.setattr(developer_server, "time", time_module)
+
+    class SlowStream:
+        def read1(self, size):
+            assert size > 0
+            now[0] += 0.6
+            return b"x"
+
+    class RecordedSocket:
+        def __init__(self):
+            self.timeouts = []
+
+        def settimeout(self, value):
+            self.timeouts.append(value)
+
+    connection = RecordedSocket()
+    complete = developer_server._discard_rejected_post_bytes(
+        SlowStream(), connection, 3, deadline=1.0,
+    )
+    assert complete is False
+    assert connection.timeouts == pytest.approx([1.0, 0.4])
+    assert now[0] > 1.0
 
 
 def test_upgrade_can_observe_and_stop_predecessor_but_cannot_start_it(

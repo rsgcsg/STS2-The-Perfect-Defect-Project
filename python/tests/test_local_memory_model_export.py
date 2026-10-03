@@ -129,7 +129,7 @@ def test_missing_use_and_index_block_before_export_or_child(tmp_path: Path, monk
     assert dataset and runs and store
 
 
-def test_spawn_failure_is_failed_but_started_child_outcome_is_unknown(
+def test_spawn_and_known_exit_fail_and_retry_requires_an_explicit_start(
         tmp_path: Path, monkeypatch) -> None:
     config, _owner, _store, _dataset, _sources, _runs, _run_id, model_id = _fixture(
         tmp_path, monkeypatch)
@@ -139,17 +139,49 @@ def test_spawn_failure_is_failed_but_started_child_outcome_is_unknown(
         service.start(model_id)
         assert _settle(service)["status"] == "failed"
 
-    def started_failure(_command, _log_path, _environment, *, on_started):
+    calls = []
+
+    def known_failure(_command, _log_path, _environment, *, on_started):
+        calls.append("child")
         on_started()
         return 2, b""
 
     with patch("spireagent.workbench.local_model_export.private_child",
-               side_effect=started_failure):
+               side_effect=known_failure):
+        service.start(model_id)
+        assert _settle(service)["status"] == "failed"
+        durable = json.loads((config.state_dir / OPERATION_FILE).read_bytes())
+        assert durable["status"] == "failed" and durable["model_type"] == "memory"
+        assert not (config.state_dir / EXPORT_ROOT / model_id).exists()
+        service.status()
+        assert len(calls) == 1, "status observation never retries a known failed child"
+
+        service.start(model_id)
+        assert _settle(service)["status"] == "failed"
+        assert len(calls) == 2, "a second child requires another explicit start"
+
+
+def test_started_child_without_terminal_return_stays_unknown_without_retry(
+        tmp_path: Path, monkeypatch) -> None:
+    config, _owner, _store, _dataset, _sources, _runs, _run_id, model_id = _fixture(
+        tmp_path, monkeypatch)
+    service = LocalModelExport(config)
+    calls = []
+
+    def lost_terminal_result(_command, _log_path, _environment, *, on_started):
+        calls.append("child")
+        on_started()
+        raise TimeoutError("child_exit_unavailable")
+
+    with patch("spireagent.workbench.local_model_export.private_child",
+               side_effect=lost_terminal_result):
         service.start(model_id)
         assert _settle(service)["status"] == "interrupted"
-    durable = json.loads((config.state_dir / OPERATION_FILE).read_bytes())
-    assert durable["status"] == "pending" and durable["model_type"] == "memory"
-    assert not (config.state_dir / EXPORT_ROOT / model_id).exists()
+        durable = json.loads((config.state_dir / OPERATION_FILE).read_bytes())
+        assert durable["status"] == "pending" and durable["model_type"] == "memory"
+        assert not (config.state_dir / EXPORT_ROOT / model_id).exists()
+        assert LocalModelExport(config).status()["operation"]["status"] == "interrupted"
+        assert len(calls) == 1, "unknown outcomes are observed without an automatic retry"
 
 
 def test_registration_uses_completed_child_receipt_without_web_replay(
