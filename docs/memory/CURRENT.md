@@ -1,4 +1,4 @@
-# Current project context, 2026-10-01
+# Current project context, 2026-10-03
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
 Resolve live GitHub refs before work; current authorities override this file.
@@ -54,13 +54,18 @@ have separately tested frozen-Qwen/LoRA routes. Source acceptance is supported b
 diagnostic decisions, complete 10 scratch updates with pause/resume and export.
 A further 100-update run completed on the same 49/16 projection. Training
 top-1 improved from 0.4405 to 0.5102; diagnostic top-1 remained 0.375 and
-probabilities remain near uniform. No model strength or native model execution
-is qualified. The user requested a safe stop after this round; no further
-training or new native canary is scheduled. Generic public M0 has no current
-Managed Runtime bridge. Native-v1 M2 still needs its distinct engine, worker,
-export, online scorer and product integration. Its projector/common kernel
-cannot make a usable live model by itself. Public M0 is not a same-input matched
-baseline for native-v1 M2/Reset.
+probabilities remain near uniform. Those results retain their own identities and
+do not establish model strength or independent-game generalization. The earlier
+safe-stop request applied to that 100-update scope.
+
+The separate light-action M0 run now has a bounded train-to-game closeout; it does not
+complete Stage 1a or qualify full-game behavior or model strength. See [the exact
+evidence and artifact identities](../../python/docs/research/evidence/STAGE1A_LIGHT_ACTION_M0_CLOSURE_2026-10-03.md).
+
+This local public-M0 registration does not provide a generic Managed Runtime bridge.
+Native-v1 M2 still needs its distinct engine, worker, export, online scorer and
+product integration. Its projector/common kernel cannot make a usable live model
+by itself. Public M0 is not a same-input matched baseline for native-v1 M2/Reset.
 
 User declaration registration records a current statement without backdating old
 use or proving Human origin. The new reader permits SQLite coordination sidecars
