@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -34,6 +35,59 @@ def one_thread():
     torch.set_num_threads(1)
     yield
     torch.set_num_threads(prior)
+
+
+def _tamper_manifest(raw: bytes, kind: str, change):
+    """Rebind descendant IDs so inventory checks see an otherwise coherent delta."""
+    header, blobs = _unpack(raw, _RESULT_MAGIC, MAX_RESULT_BYTES)
+    originals = {
+        entry["id"]: Manifest.from_bytes(entry["raw"].encode(), entry["id"])
+        for entry in header["manifests"]
+    }
+    target_id = next(key for key, item in originals.items() if item.kind == kind)
+    rewritten = {target_id: change(originals[target_id], blobs)}
+    mapping = {target_id: rewritten[target_id].artifact_id}
+    while True:
+        changed = False
+        for identity, item in originals.items():
+            if identity == target_id:
+                continue
+            parents = tuple(Parent(parent.role, mapping.get(parent.artifact_id,
+                                                            parent.artifact_id))
+                            for parent in item.parents)
+            parameters = item.parameters.value()
+            if item.kind == "run_event":
+                details = parameters["details"]
+                parameters["details"] = {
+                    key: mapping.get(value, value) for key, value in details.items()
+                }
+            candidate = replace(item, parents=parents,
+                                parameters=FrozenObject.of(parameters))
+            if candidate.artifact_id != identity:
+                rewritten[identity] = candidate
+                if mapping.get(identity) != candidate.artifact_id:
+                    mapping[identity] = candidate.artifact_id
+                    changed = True
+        if not changed:
+            break
+    items = {mapping.get(key, key): rewritten.get(key, item)
+             for key, item in originals.items()}
+    header["manifests"] = [
+        {"id": key, "raw": item.to_bytes().decode()}
+        for key, item in sorted(items.items())
+    ]
+    header["event_ids"] = [mapping.get(key, key) for key in header["event_ids"]]
+    result_id = header["worker_result"]["result_id"]
+    if result_id is not None:
+        header["worker_result"]["result_id"] = mapping.get(result_id, result_id)
+    return _pack(_RESULT_MAGIC, {key: value for key, value in header.items()
+                                 if key != "blobs"}, blobs, MAX_RESULT_BYTES)
+
+
+def _extra_payload(item: Manifest, blobs: dict[str, bytes]) -> Manifest:
+    sha = next(iter(blobs))
+    return replace(item, payloads=(*item.payloads,
+                                   Payload("unexpected", sha, len(blobs[sha]))))
 
 
 def test_first_remote_window_returns_checkpoint_delta(tmp_path):
@@ -186,6 +240,132 @@ def test_source_projection_never_reads_declared_raw_payload(tmp_path):
         b"".join(projected.read_payload(Payload(
             "raw", payload.sha256, payload.size, payload.media_type,
         )))
+
+
+@pytest.mark.parametrize("change", ["payload", "parameter", "parent", "details"])
+def test_remote_rejects_extra_event_inventory_before_local_write(tmp_path, change):
+    bundle = _fixture(tmp_path)
+    store, reporter, producer, _, _, _, _ = bundle
+    run = _prepare(bundle)
+    _, _, _, _, engine = _load_run(store, run.artifact_id, producer)
+    request = build_public_m2_remote_request(
+        store, reporter, run.artifact_id, producer, attempt_id="a" * 32,
+        expected_runtime=engine.runtime, resume=None, max_windows=1,
+    )
+    sha = hashlib.sha256(request).hexdigest()
+    result = execute_public_m2_remote_request(request, request_sha256=sha)
+
+    def corrupt(item, blobs):
+        if change == "payload":
+            return _extra_payload(item, blobs)
+        if change == "parent":
+            return replace(item, parents=(*item.parents,
+                                          Parent("training_input",
+                                                 run.parent("training_input"))))
+        values = item.parameters.value()
+        if change == "parameter":
+            values["unexpected"] = 1
+        else:
+            values["details"]["unexpected"] = 1
+        return replace(item, parameters=FrozenObject.of(values))
+
+    tampered = _tamper_manifest(result, "run_event", corrupt)
+    before = store.manifest_ids()
+    with pytest.raises(BoundaryError, match="event_inventory_mismatch"):
+        accept_public_m2_remote_result(
+            store, reporter, request, tampered, request_sha256=sha,
+            expected_runtime=engine.runtime,
+        )
+    assert store.manifest_ids() == before
+
+
+def test_remote_rejects_extra_stage_payload_before_local_write(tmp_path):
+    bundle = _fixture(tmp_path)
+    store, reporter, producer, _, _, _, _ = bundle
+    run = _prepare(bundle)
+    _, _, _, _, engine = _load_run(store, run.artifact_id, producer)
+    prior = None
+    old_stage = None
+    for attempt in range(10):
+        request = build_public_m2_remote_request(
+            store, reporter, run.artifact_id, producer,
+            attempt_id=f"{attempt + 1:032x}", expected_runtime=engine.runtime,
+            resume=prior, max_windows=1,
+        )
+        sha = hashlib.sha256(request).hexdigest()
+        result = execute_public_m2_remote_request(request, request_sha256=sha)
+        for kind in ({2: ("offline_evaluation", "analysis"),
+                      9: ("run_result",)}.get(attempt, ())):
+            tampered = _tamper_manifest(result, kind, _extra_payload)
+            before = store.manifest_ids()
+            with pytest.raises(BoundaryError):
+                accept_public_m2_remote_result(
+                    store, reporter, request, tampered, request_sha256=sha,
+                    expected_runtime=engine.runtime,
+                )
+            assert store.manifest_ids() == before
+        if attempt == 9:
+            assert old_stage is not None
+            old_ids = {old_stage.artifact_id, *(parent.artifact_id
+                        for parent in old_stage.parents
+                        if parent.role in {"checkpoint", "model", "offline_evaluation"})}
+
+            def old_result(item, _blobs, stage=old_stage):
+                parents = tuple(
+                    Parent(parent.role, stage.artifact_id if parent.role == "stage"
+                           else stage.parent(parent.role))
+                    if parent.role in {"stage", "model", "offline_evaluation"}
+                    else parent for parent in item.parents
+                )
+                return replace(item, parents=parents)
+
+            crossed = _tamper_manifest(result, "run_result", old_result)
+            header, blobs = _unpack(crossed, _RESULT_MAGIC, MAX_RESULT_BYTES)
+            entries = {}
+            for entry in header["manifests"]:
+                item = Manifest.from_bytes(entry["raw"].encode(), entry["id"])
+                if item.kind in {"analysis", "model", "offline_evaluation"}:
+                    continue
+                if (item.kind == "run_event"
+                        and item.parameters.value()["kind"] == "epoch_stage"):
+                    values = item.parameters.value()
+                    values["details"] = {"epoch": 1, "stage_id": old_stage.artifact_id}
+                    changed = replace(item, parameters=FrozenObject.of(values))
+                    header["event_ids"] = [changed.artifact_id if key == entry["id"]
+                                           else key for key in header["event_ids"]]
+                    item = changed
+                entries[item.artifact_id] = item
+            for identity in old_ids:
+                item = store.get_manifest(identity)
+                entries[identity] = item
+                for payload in item.payloads:
+                    blobs[payload.sha256] = b"".join(store.read_payload(payload))
+            header["manifests"] = [
+                {"id": key, "raw": item.to_bytes().decode()}
+                for key, item in sorted(entries.items())
+            ]
+            referenced = {payload.sha256 for item in entries.values()
+                          for payload in item.payloads}
+            blobs = {key: value for key, value in blobs.items() if key in referenced}
+            crossed = _pack(_RESULT_MAGIC,
+                            {key: value for key, value in header.items()
+                             if key != "blobs"}, blobs, MAX_RESULT_BYTES)
+            before = store.manifest_ids()
+            with pytest.raises(BoundaryError, match="terminal_result_mismatch"):
+                accept_public_m2_remote_result(
+                    store, reporter, request, crossed, request_sha256=sha,
+                    expected_runtime=engine.runtime,
+                )
+            assert store.manifest_ids() == before
+        outcome = accept_public_m2_remote_result(
+            store, reporter, request, result, request_sha256=sha,
+            expected_runtime=engine.runtime,
+        )
+        prior = outcome.checkpoint_id
+        if attempt == 2:
+            old_stage = next(store.get_manifest(key) for key in store.manifest_ids()
+                             if store.get_manifest(key).kind == "analysis")
+    assert outcome.state == "completed"
 
 
 def test_terminal_completion_is_selected_only_in_local_reporter(tmp_path):

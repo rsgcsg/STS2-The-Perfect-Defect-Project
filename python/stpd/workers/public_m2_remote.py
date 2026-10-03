@@ -528,7 +528,8 @@ def _checked_delta(
                 or info["input_identity"] != run.parameters.value()["input_identity"]
                 or sorted(parent.role for parent in item.parents) != [
                     "checkpoint", "model", "offline_evaluation", "run", "training_input",
-                ] or item.parent("training_input") != training.artifact_id):
+                ] or item.payloads
+                or item.parent("training_input") != training.artifact_id):
             raise BoundaryError(_STAGE, "stage_lineage_mismatch")
         checkpoint_id = item.parent("checkpoint")
         checkpoint = checkpoints.get(checkpoint_id)
@@ -556,6 +557,9 @@ def _checked_delta(
                 or model.payload("state_tokenizer") != training.payload("state_tokenizer")
                 or evaluation.kind != "offline_evaluation"
                 or evaluation.producer != run.producer
+                or sorted(parent.role for parent in evaluation.parents)
+                != ["checkpoint", "model", "run", "training_input"]
+                or evaluation.payloads
                 or evaluation.parent("checkpoint") != checkpoint_id
                 or evaluation.parent("model") != model.artifact_id
                 or evaluation.parent("run") != run_id
@@ -610,6 +614,31 @@ def _checked_result(
     events = [delta[key] for key in event_ids]
     values = [item.parameters.value() for item in events]
     kinds = [value.get("kind") for value in values]
+    event_fields = {
+        "schema", "attempt", "kind", "completed_epochs", "chain_index",
+        "window_cursor", "label_count", "optimizer_updates", "details",
+    }
+    detail_fields = {
+        "loading": {"resume"}, "started": set(), "resumed": set(),
+        "window_completed": {"loss_mean", "labels"},
+        "checkpoint": {"checkpoint_id"},
+        "epoch_stage": {"epoch", "stage_id"},
+        "paused": {"checkpoint_id"}, "completed": {"result_id"},
+    }
+    if any(
+        set(value) != event_fields
+        or type(value["details"]) is not dict
+        or type(value["kind"]) is not str
+        or set(value["details"]) != detail_fields.get(value["kind"])
+        or sorted(parent.role for parent in item.parents) != ["run"]
+        or item.payloads
+        or any(type(value[key]) is not int or value[key] < 0 for key in (
+            "completed_epochs", "chain_index", "window_cursor", "label_count",
+            "optimizer_updates",
+        ))
+        for item, value in zip(events, values, strict=True)
+    ):
+        raise BoundaryError(_STAGE, "event_inventory_mismatch")
     if (len(events) < 4 or kinds[:2] != ["loading", "resumed" if request_header["resume_id"]
                                   else "started"]
             or kinds[-1] != state
@@ -627,6 +656,8 @@ def _checked_result(
                 "checkpoint_id" if state == "paused" else "result_id"
             ) != (checkpoint_id if state == "paused" else raw["result_id"])):
         raise BoundaryError(_STAGE, "event_progress_mismatch")
+    if values[0]["details"]["resume"] != request_header["resume_id"]:
+        raise BoundaryError(_STAGE, "event_resume_mismatch")
     digest(values[0].get("attempt"), _STAGE, length=32)
     prior_updates = 0
     prior_labels = 0
@@ -667,6 +698,12 @@ def _checked_result(
                     or delta[stage_id].parameters.value().get("epoch")
                     != value.get("details", {}).get("epoch")):
                 raise BoundaryError(_STAGE, "stage_event_mismatch")
+    staged_ids = [value["details"]["stage_id"] for value in values
+                  if value["kind"] == "epoch_stage"]
+    analysis_ids = {key for key, item in delta.items() if item.kind == "analysis"}
+    if (len(staged_ids) > 1 or len(staged_ids) != len(set(staged_ids))
+            or set(staged_ids) != analysis_ids):
+        raise BoundaryError(_STAGE, "stage_event_mismatch")
     if (request_header["max_windows"] > 0 and checkpoint_id not in {
             value.get("details", {}).get("checkpoint_id") for value in values
             if value.get("kind") == "checkpoint"
@@ -678,6 +715,10 @@ def _checked_result(
             raise BoundaryError(_STAGE, "result_manifest_missing")
         result = delta[identity]
         if (result.kind != "run_result" or result.producer != run.producer
+                or sorted(parent.role for parent in result.parents)
+                != ["checkpoint", "model", "offline_evaluation", "run", "stage",
+                    "training_input"]
+                or result.payloads
                 or result.parameters.value() != {
                     "schema": RESULT_SCHEMA, "state": "completed", "epoch": 5,
                     "operation_id": run.parameters.value()["operation_id"],
@@ -686,7 +727,9 @@ def _checked_result(
                 } or result.parent("checkpoint") != checkpoint_id
                 or result.parent("training_input") != training.artifact_id
                 or checkpoints[checkpoint_id]["completed_epochs"] != 5
-                or result.parent("stage") not in delta
+                or result.parent("stage") not in staged_ids
+                or delta[result.parent("stage")].parameters.value()["epoch"] != 5
+                or delta[result.parent("stage")].parent("checkpoint") != checkpoint_id
                 or result.parent("model") != delta[result.parent("stage")].parent("model")
                 or result.parent("offline_evaluation")
                 != delta[result.parent("stage")].parent("offline_evaluation")):
