@@ -76,6 +76,9 @@ def _verify_match(
         or config.state_tokenizer_sha256 != hashlib.sha256(source.state_tokenizer).hexdigest()
         or m2_config.state_tokenizer_sha256 != config.state_tokenizer_sha256
         or m2_config.shape != shape
+        or m2_config.slots != 8
+        or m2_config.reset_each_step is not False
+        or m2_config.device != config.device
         or m2_config.max_action_bytes != config.max_action_bytes
         or m2_config.max_actions_per_step != config.max_actions_per_step
         or m2_config.max_chain_steps != config.max_chain_steps

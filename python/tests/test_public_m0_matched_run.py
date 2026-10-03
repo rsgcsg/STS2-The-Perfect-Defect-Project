@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
+from unittest.mock import patch
 
 import pytest
 import torch
 from test_public_m2_run import _fixture, _prepare
 
+import stpd.workers.public_m0_matched_run as m0_run_module
 from spireagent.json_boundary import BoundaryError
 from stpd.models.token_core import ScratchShape
 from stpd.workers.public_m0_matched_engine import (
@@ -145,6 +147,38 @@ def test_formal_a01_prepare_requires_matching_standard_a02_run(tmp_path):
     )
     assert a01.parent("matched_m2_run") == matched.artifact_id
     assert a01.parameters.value()["config"]["shape_override"] is None
+
+
+@pytest.mark.parametrize("m2_change", [{"slots": 1}, {"reset_each_step": True}])
+def test_a01_rejects_other_m2_memory_arm(tmp_path, m2_change):
+    bundle = _fixture(tmp_path)
+    store, _, producer, view, allocation, value, m2 = bundle
+    other_arm = replace(m2, **m2_change)
+    matched = prepare_public_m2_run(
+        store, value, other_arm, producer,
+        source_view_id=view.artifact_id, allocation_id=allocation.artifact_id,
+        operation_id="e" * 32,
+    )
+    with pytest.raises(BoundaryError, match="matched_m2_run_mismatch"):
+        _prepare_fixture(bundle, matched.artifact_id)
+
+
+def test_a01_rejects_other_device_even_when_reference_is_prevalidated(tmp_path):
+    """Compare device identity without claiming a CUDA device is present locally."""
+    bundle = _fixture(tmp_path)
+    store, _, producer, _, _, value, m2 = bundle
+    matched = _prepare(bundle)
+    loaded = _load_run(store, matched.artifact_id, producer)
+    wrong_device = (
+        loaded[0], loaded[1], loaded[2], replace(loaded[3], device="cuda:0"), loaded[4],
+    )
+    with (
+        patch.object(m0_run_module, "_load_run", return_value=wrong_device),
+        pytest.raises(BoundaryError, match="matched_m2_run_mismatch"),
+    ):
+        m0_run_module._verify_match(
+            store, matched.artifact_id, producer, value, _config(value, m2),
+        )
 
 
 def test_cross_model_checkpoint_rejected_before_mutation(tmp_path):
