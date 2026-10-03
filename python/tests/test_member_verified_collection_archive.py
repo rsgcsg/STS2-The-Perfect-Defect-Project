@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 from spireagent.workbench.developer import atomic_json
 from spireagent.workbench.member_client import MemberClient
 
@@ -55,6 +55,12 @@ def saved_export(
     export_id = hashlib.sha256(json_bytes(content)).hexdigest()
     directory = state / "downloads" / export_id
     directory.mkdir(parents=True)
+    atomic_json(directory / "download.json", {
+        "status": "verified", "export_id": export_id,
+        "verified_files": 1, "verified_bytes": row["size"],
+        "total_files": 1, "total_bytes": row["size"],
+        "directory": str(directory), "training_admitted": False,
+    })
     atomic_json(directory / "inventory.json", {
         **content, "export_id": export_id, "created_at": "2026-01-01T00:00:00Z",
     })
@@ -113,6 +119,7 @@ def test_saved_download_catalog_projects_only_collection_archive_metadata(tmp_pa
 
 def test_saved_download_catalog_ignores_missing_or_unverified_receipts(tmp_path: Path) -> None:
     client, export_id, _ = saved_export(tmp_path, b"synthetic archive bytes")
+    (tmp_path / "downloads" / export_id / "download.json").unlink()
     assert client.verified_collection_archive_catalog()["items"] == []
 
     directory = tmp_path / "downloads" / export_id
@@ -125,6 +132,44 @@ def test_saved_download_catalog_ignores_missing_or_unverified_receipts(tmp_path:
     catalog = client.verified_collection_archive_catalog()
     assert catalog["items"] == []
     assert catalog["excluded_count"] == 1
+
+
+@pytest.mark.parametrize("invalid", [
+    "missing", "malformed", "symlink", "oversized", "not_object",
+    "status", "export_id", "training_admitted", "verified_files", "verified_bytes",
+    "total_files", "total_bytes", "boolean_count",
+])
+def test_archive_execution_rechecks_exact_verified_download_receipt(
+    tmp_path: Path, monkeypatch, invalid: str,
+) -> None:
+    client, export_id, file_id = saved_export(tmp_path, b"synthetic archive bytes")
+    receipt = tmp_path / "downloads" / export_id / "download.json"
+    monkeypatch.setattr(client.account, "request", lambda *_args, **_kwargs:
+                        pytest.fail("saved archive admission must not contact Hub"), raising=False)
+    if invalid == "missing":
+        receipt.unlink()
+    elif invalid == "malformed":
+        receipt.write_bytes(b"{")
+    elif invalid == "symlink":
+        other = tmp_path / "receipt.json"
+        receipt.rename(other)
+        receipt.symlink_to(other)
+    elif invalid == "oversized":
+        receipt.write_bytes(b" " * (32 * 1024 + 1))
+    elif invalid == "not_object":
+        receipt.write_bytes(b"[]")
+    else:
+        value = decode_json(receipt.read_bytes())
+        if invalid == "boolean_count":
+            value["verified_files"] = True
+        else:
+            value[invalid] = {"status": "downloading", "export_id": "c" * 64,
+                              "training_admitted": True}.get(invalid, 0)
+        atomic_json(receipt, value)
+    assert client.verified_collection_archive_catalog()["items"] == []
+    with pytest.raises(BoundaryError) as failure:
+        client.verified_collection_archive(export_id, file_id, maximum_archive_bytes=1024)
+    assert failure.value.code == "download_receipt_unavailable"
 
 
 @pytest.mark.parametrize(

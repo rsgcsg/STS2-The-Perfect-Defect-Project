@@ -152,6 +152,12 @@ def save_member_export(config: ProjectConfig, archive: bytes, *,
     export_id = hashlib.sha256(json_bytes(content)).hexdigest()
     directory = config.state_dir / "downloads" / export_id
     directory.mkdir(parents=True)
+    importing.atomic_json(directory / "download.json", {
+        "status": "verified", "export_id": export_id,
+        "verified_files": 1, "verified_bytes": row["size"],
+        "total_files": 1, "total_bytes": row["size"],
+        "directory": str(directory), "training_admitted": False,
+    })
     importing.atomic_json(directory / "inventory.json", {
         **content, "export_id": export_id, "created_at": "2026-01-01T00:00:00Z",
     })
@@ -288,10 +294,16 @@ def test_pending_restart_is_unknown_and_never_runs_without_post(tmp_path, monkey
     assert not store.manifest_ids()
 
 
+@pytest.mark.parametrize("fresh_owner", [False, True])
 def test_member_archive_import_replay_interruption_and_explicit_source_index(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, fresh_owner,
 ):
     importer, catalog, store, _ = setup(tmp_path, monkeypatch)
+    if fresh_owner:
+        managed.create_managed_workspace(importer.config.state_dir)
+        config = ProjectConfig(importer.config.state_dir, "", "", None, combination())
+        importer = importing.LocalRecordingImporter(config, catalog)
+        store, _ = importing._selected_store(config)
     source = bundle3(tmp_path / "member-fixture", runs=1)
     recording = load(source / "raw/recording-manifest.json")
     recording["close_schema_version"] = 1
@@ -314,7 +326,9 @@ def test_member_archive_import_replay_interruption_and_explicit_source_index(
 
     monkeypatch.setattr(importing, "CollectionTool", NoPacker)
     identity = importer._member_source_identity(export_id, file_id)
-    owner = importing.configured_owner(importer.config)
+    owner = importing._selected_curation_owner(importer.config)
+    assert owner is not None
+    assert owner.legacy_guard is not fresh_owner
     owner.begin_source(identity)
     importing.atomic_json(importer.path, {
         "schema": importing.SCHEMA, "status": "pending", "candidate_id": identity,
@@ -346,6 +360,19 @@ def test_member_archive_import_replay_interruption_and_explicit_source_index(
     assert store.manifest_ids() == (artifact_id,)
 
     # Only the explicit existing dataset preview indexes the source and clears pending.
+    from spireagent.workbench.local_curation import LocalCurationOwner
+
+    complete_index = LocalCurationOwner.complete_index
+
+    def verify_unknown_before_pending_clear(selected_owner, candidate_id, source_id):
+        with selected_owner.transaction() as db:
+            runs = {row[0] for row in db.execute(
+                "SELECT run FROM curation_source_runs WHERE source=?", (source_id,))}
+            assert runs
+            assert selected_owner.gold_history_unknown(db, runs)
+        complete_index(selected_owner, candidate_id, source_id)
+
+    monkeypatch.setattr(LocalCurationOwner, "complete_index", verify_unknown_before_pending_clear)
     datasets = LocalDatasetService(importer.config)
     datasets.start_preview(artifact_id, "training", None)
     assert datasets.thread is not None
@@ -357,6 +384,22 @@ def test_member_archive_import_replay_interruption_and_explicit_source_index(
                           (identity,)).fetchone() is None
         assert db.execute("SELECT complete FROM curation_sources WHERE id=?",
                           (artifact_id,)).fetchone() == (1,)
+
+    # Indexing a remote archive never establishes its pre-download exposure history,
+    # including for a fresh owner and already imported/indexed immutable sources.
+    reopened = importing._selected_curation_owner(importer.config)
+    assert reopened is not None
+    runs = reopened.ledger.source_runs(artifact_id)
+    assert runs
+    with reopened.transaction() as db:
+        assert reopened.gold_history_unknown(db, runs)
+        reopened._historical_claim_guard(db, "training", runs)
+        reopened._historical_claim_guard(db, "test", runs)
+    with pytest.raises(BoundaryError, match="legacy_gold_history_unknown"):
+        reopened.ledger.claim("member-gold", "gold", runs)
+    assert recovered.start_member_archive(export_id, file_id, True)["artifact_id"] == artifact_id
+    with reopened.transaction() as db:
+        assert reopened.gold_history_unknown(db, runs)
 
     # A preview may complete between the pending lookup and published_source write.
     owner.begin_source(identity)
@@ -371,6 +414,37 @@ def test_member_archive_import_replay_interruption_and_explicit_source_index(
     with owner.transaction() as db:
         assert db.execute("SELECT 1 FROM local_source_pending WHERE candidate=?",
                           (identity,)).fetchone() is None
+
+    # An explicit replay still requires the saved verified receipt before consulting
+    # the already published immutable source.
+    (importer.config.state_dir / "downloads" / export_id / "download.json").unlink()
+    with pytest.raises(BoundaryError, match="download_receipt_unavailable"):
+        recovered.start_member_archive(export_id, file_id, True)
+    assert store.manifest_ids() == (artifact_id,)
+
+
+def test_member_archive_worker_rechecks_receipt_after_preflight(tmp_path, monkeypatch):
+    importer, _, store, _ = setup(tmp_path, monkeypatch)
+    export_id, file_id = save_member_export(importer.config, b"synthetic archive bytes")
+    members = MemberClient(SimpleNamespace(config=importer.config))
+    importer.members = members
+    verify = members.verified_collection_archive
+    calls = 0
+
+    def lose_receipt_before_worker_read(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            (importer.config.state_dir / "downloads" / export_id / "download.json").unlink()
+        return verify(*args, **kwargs)
+
+    monkeypatch.setattr(members, "verified_collection_archive", lose_receipt_before_worker_read)
+    importer.start_member_archive(export_id, file_id, True)
+    result = finished(importer)
+    assert calls == 2
+    assert result["status"] == "failed"
+    assert result["error_code"] == "download_receipt_unavailable"
+    assert store.manifest_ids() == ()
 
 
 def test_member_archive_unsafe_tar_fails_before_source_publication(tmp_path, monkeypatch):

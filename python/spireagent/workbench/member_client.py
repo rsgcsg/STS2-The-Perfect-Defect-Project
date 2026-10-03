@@ -227,30 +227,16 @@ class MemberClient:
                         if directory.is_symlink():
                             excluded += 1
                             continue
-                        receipt_raw = self._read_regular_file(
-                            directory / "download.json", maximum=DOWNLOAD_RECEIPT_LIMIT,
-                            error_code="download_receipt_unavailable",
-                        )
                         inventory_raw = self._read_regular_file(
                             directory / "inventory.json", maximum=EXPORT_INVENTORY_LIMIT,
                             error_code="download_inventory_unavailable",
                         )
-                        receipt = decode_json(receipt_raw)
                         inventory = decode_json(inventory_raw)
-                        if not isinstance(receipt, dict):
-                            raise BoundaryError("member", "download_receipt_unavailable")
                         files, total = self._validate_export_inventory(inventory, entry.name)
                         collection_ids = self._selected_collection_ids(inventory, files)
-                        if (
-                            receipt.get("status") != "verified"
-                            or receipt.get("export_id") != entry.name
-                            or receipt.get("training_admitted") is not False
-                            or receipt.get("verified_files") != len(files)
-                            or receipt.get("verified_bytes") != total
-                            or receipt.get("total_files") != len(files)
-                            or receipt.get("total_bytes") != total
-                        ):
-                            raise BoundaryError("member", "download_receipt_unavailable")
+                        self._require_verified_download_receipt(
+                            directory, entry.name, len(files), total,
+                        )
                         for file in files:
                             metadata = self._collection_archive_metadata(file, collection_ids)
                             if metadata is None or metadata["size"] > MAX_ARCHIVE:
@@ -349,7 +335,11 @@ class MemberClient:
     def verified_collection_archive(
         self, export_id: str, file_id: str, *, maximum_archive_bytes: int,
     ) -> VerifiedMemberCollectionArchive:
-        """Recheck the saved member inventory and exact selected collection bytes."""
+        """Recheck the saved receipt, inventory and exact selected collection bytes.
+
+        The local receipt records download completion, not cryptographic Hub provenance
+        or historical research-use admission.
+        """
         export = digest(export_id, "member.export_id")
         selected_file = digest(file_id, "member.file_id")
         if type(maximum_archive_bytes) is not int or maximum_archive_bytes <= 0:
@@ -373,7 +363,8 @@ class MemberClient:
             value = decode_json(raw_inventory)
         except BoundaryError as error:
             raise BoundaryError("member", "invalid_export_inventory") from error
-        files, _ = self._validate_export_inventory(value, export)
+        files, total = self._validate_export_inventory(value, export)
+        self._require_verified_download_receipt(directory, export, len(files), total)
         collection_ids = self._selected_collection_ids(value, files)
         item = next((row for row in files if row.get("file_id") == selected_file), None)
         if item is None:
@@ -423,6 +414,32 @@ class MemberClient:
             archive_bytes=archive_bytes,
             archive=archive,
         )
+
+    def _require_verified_download_receipt(
+        self, directory: Path, export_id: str, files: int, total: int,
+    ) -> None:
+        """One bounded, no-follow completion gate for both catalog and execution."""
+        raw = self._read_regular_file(
+            directory / "download.json", maximum=DOWNLOAD_RECEIPT_LIMIT,
+            error_code="download_receipt_unavailable",
+        )
+        try:
+            receipt = decode_json(raw)
+        except BoundaryError as error:
+            raise BoundaryError("member", "download_receipt_unavailable") from error
+        expected = {
+            "verified_files": files, "verified_bytes": total,
+            "total_files": files, "total_bytes": total,
+        }
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("status") != "verified"
+            or receipt.get("export_id") != export_id
+            or receipt.get("training_admitted") is not False
+            or any(type(receipt.get(key)) is not int or receipt[key] != count
+                   for key, count in expected.items())
+        ):
+            raise BoundaryError("member", "download_receipt_unavailable")
 
     def _update(self, **values: Any) -> None:
         with self.lock:
