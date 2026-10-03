@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import asdict, fields
+from typing import Any
+
+from torch import Tensor
 
 from spireagent.artifact_contracts import Manifest, Parent, Payload, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, digest
@@ -37,7 +41,7 @@ from .public_m2_engine import (
     PublicM2Engine,
     PublicM2EngineChain,
     PublicM2EngineConfig,
-    load_public_m2_weights,
+    _tensor_digest,
 )
 from .reporting import RunReporter
 from .worker import WorkerExecutionError, WorkerResult
@@ -320,7 +324,7 @@ def _checkpoint(
 def _restore(
     store: ArtifactStore, checkpoint_id: str, run: Manifest, training: Manifest,
     engine: PublicM2Engine,
-) -> None:
+) -> tuple[dict[str, Any], str]:
     item = store.get_manifest(checkpoint_id)
     info = item.parameters.value()
     if (
@@ -354,6 +358,7 @@ def _restore(
     ):
         raise BoundaryError(_BOUNDARY, "checkpoint_progress_mismatch")
     engine.restore(raw)
+    return decoded, hashlib.sha256(raw).hexdigest()
 
 
 def _stage(
@@ -488,27 +493,61 @@ def _verify_completed(
         or evaluation.parent("training_input") != training.artifact_id
     ):
         raise BoundaryError(_BOUNDARY, "completed_stage_mismatch")
-    _restore(store, checkpoint_id, run, training, engine)
+    checkpoint, checkpoint_sha256 = _restore(store, checkpoint_id, run, training, engine)
     if not engine.finished:
         raise BoundaryError(_BOUNDARY, "incomplete_terminal_checkpoint")
-    metrics = engine.evaluate_dev()
-    if evaluation.parameters.value() != {
-        "schema": EVALUATION_SCHEMA, "epoch": 5, "partition": "dev",
-        "input_identity": run.parameters.value()["input_identity"],
-        "loss_mean": metrics.loss_mean, "top1_accuracy": metrics.top1_accuracy,
-        "label_count": metrics.label_count, "correct_count": metrics.correct_count,
-        "qualification": "engineering_only",
-    }:
+    metrics = evaluation.parameters.value()
+    dev_labels = sum(len(chain.steps) for chain in engine.dev_chains)
+    if (
+        set(metrics) != {
+            "schema", "epoch", "partition", "input_identity", "loss_mean",
+            "top1_accuracy", "label_count", "correct_count", "qualification",
+        }
+        or metrics["schema"] != EVALUATION_SCHEMA
+        or metrics["epoch"] != 5
+        or metrics["partition"] != "dev"
+        or metrics["input_identity"] != run.parameters.value()["input_identity"]
+        or type(metrics["label_count"]) is not int
+        or metrics["label_count"] != dev_labels
+        or type(metrics["correct_count"]) is not int
+        or not 0 <= metrics["correct_count"] <= dev_labels
+        or type(metrics["top1_accuracy"]) not in {float, int}
+        or not math.isfinite(metrics["top1_accuracy"])
+        or metrics["top1_accuracy"] != metrics["correct_count"] / dev_labels
+        or type(metrics["loss_mean"]) not in {float, int}
+        or not math.isfinite(metrics["loss_mean"])
+        or metrics["loss_mean"] < 0
+        or metrics["qualification"] != "engineering_only"
+    ):
         raise BoundaryError(_BOUNDARY, "completed_evaluation_mismatch")
     raw_weights = _read(store, model.payload("weights"), MAX_CHECKPOINT_BYTES)
-    if (raw_weights != engine.export_weights()
-            or model.payload("state_tokenizer").sha256
-            != training.payload("state_tokenizer").sha256):
+    exported = decode_checkpoint(raw_weights)
+    source_tokenizer = training.payload("state_tokenizer")
+    if (
+        set(exported) != {
+            "schema", "config", "input_digest", "implementation_sha256",
+            "completed_epochs", "optimizer_updates", "run_complete",
+            "checkpoint_digest", "weights", "weights_digest",
+        }
+        or exported["schema"] != PUBLIC_M2_EXPORT_SCHEMA
+        or exported["config"] != asdict(engine.config)
+        or exported["input_digest"] != engine.input_digest
+        or exported["implementation_sha256"] != engine.runtime["implementation_sha256"]
+        or exported["completed_epochs"] != 5
+        or exported["run_complete"] is not True
+        or exported["optimizer_updates"] != checkpoint["optimizer_updates"]
+        or exported["checkpoint_digest"] != checkpoint_sha256
+        or not isinstance(exported["weights"], dict)
+        or set(exported["weights"]) != set(checkpoint["model"])
+        or any(not isinstance(value, Tensor) for value in exported["weights"].values())
+        or exported["weights_digest"] != _tensor_digest(exported["weights"])
+        or exported["weights_digest"] != checkpoint["model_digest"]
+        or model.payload("state_tokenizer") != Payload(
+            "state_tokenizer", source_tokenizer.sha256,
+            source_tokenizer.size, source_tokenizer.media_type,
+        )
+    ):
         raise BoundaryError(_BOUNDARY, "completed_weights_mismatch")
-    load_public_m2_weights(
-        raw_weights, engine.config, input_digest=engine.input_digest,
-        completed_epochs=5, inference_device="cpu",
-    )
 
 
 def execute_public_m2_run(
@@ -564,7 +603,8 @@ def execute_public_m2_run(
         initial_updates = engine.optimizer_updates
         # A crash after an epoch checkpoint but before its readout can be
         # reconciled idempotently on explicit resume of that exact checkpoint.
-        if engine.completed_epochs in {1, 3, 5} and resume is not None:
+        if (engine.completed_epochs in {1, 3, 5} and resume is not None
+                and engine.chain_index == 0 and engine.window_cursor == 0):
             stage_id = _stage(store, run, training, engine, resume)
             event("epoch_stage", epoch=engine.completed_epochs, stage_id=stage_id)
         else:
@@ -601,11 +641,11 @@ def execute_public_m2_run(
                 "qualification": "engineering_only",
             }),
         )
+        _verify_completed(store, result, run, training, engine)
         result_id = reporter.complete(result)
         selected = reporter.completed(run_id)
         if selected is None or selected.artifact_id != result_id:
             raise BoundaryError(_BOUNDARY, "completion_race")
-        _verify_completed(store, selected, run, training, engine)
         event("completed", result_id=result_id)
         return WorkerResult("completed", run_id, checkpoint_id, result_id)
     except WorkerExecutionError:

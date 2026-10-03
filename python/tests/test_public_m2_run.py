@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict, replace
+from unittest.mock import patch
 
 import pytest
 import torch
 from tokenizers import Tokenizer, models
 
+import stpd.workers.public_m2_run as run_module
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.storage.local import LocalBlobStore
@@ -30,7 +32,11 @@ from stpd.fullrun.public_m2_sequences import (
 )
 from stpd.models.light_action_m2_training_data import LightActionM2TrainingStep
 from stpd.models.token_core import ScratchShape
-from stpd.workers.public_m2_engine import PublicM2EngineConfig, load_public_m2_weights
+from stpd.workers.public_m2_engine import (
+    PublicM2Engine,
+    PublicM2EngineConfig,
+    load_public_m2_weights,
+)
 from stpd.workers.public_m2_run import (
     CHECKPOINT_SCHEMA,
     EVALUATION_SCHEMA,
@@ -300,3 +306,57 @@ def test_runtime_producer_pin_fails_before_an_attempt_event(tmp_path):
     with pytest.raises(BoundaryError, match="run_identity_mismatch"):
         execute_public_m2_run(store, reporter, run.artifact_id, changed)
     assert reporter.events(run.artifact_id) == ()
+
+
+@pytest.mark.parametrize("pause_windows,epoch", [(3, 1), (7, 3)])
+def test_resume_inside_epoch_two_or_four_does_not_republish_prior_stage(
+    tmp_path, pause_windows, epoch,
+):
+    bundle = _fixture(tmp_path)
+    store, reporter, producer, _, _, _, _ = bundle
+    run = _prepare(bundle)
+    paused = execute_public_m2_run(
+        store, reporter, run.artifact_id, producer,
+        stop_after_windows=pause_windows,
+    )
+    checkpoint = store.get_manifest(paused.checkpoint_id).parameters.value()
+    assert checkpoint["completed_epochs"] == epoch
+    assert checkpoint["window_cursor"] == 8
+    result = execute_public_m2_run(
+        store, reporter, run.artifact_id, producer, resume=paused.checkpoint_id,
+    )
+    assert result.state == "completed"
+
+
+def test_completed_read_never_reevaluates_dev_or_loads_inference_model(tmp_path):
+    bundle = _fixture(tmp_path)
+    store, reporter, producer, _, _, _, _ = bundle
+    run = _prepare(bundle)
+    original = PublicM2Engine.evaluate_dev
+    calls = 0
+
+    def once(self):
+        nonlocal calls
+        calls += 1
+        if calls > 3:
+            raise AssertionError("completed verification recomputed dev")
+        return original(self)
+
+    with patch.object(PublicM2Engine, "evaluate_dev", once):
+        completed = execute_public_m2_run(store, reporter, run.artifact_id, producer)
+        repeated = execute_public_m2_run(store, reporter, run.artifact_id, producer)
+    assert completed.result_id == repeated.result_id
+    assert calls == 3  # only epoch 1/3/5 readouts
+
+
+def test_terminal_verification_precedes_singleton_completion(tmp_path):
+    bundle = _fixture(tmp_path)
+    store, reporter, producer, _, _, _, _ = bundle
+    run = _prepare(bundle)
+    with (
+        patch.object(run_module, "_verify_completed",
+                     side_effect=BoundaryError("fixture", "verification_failed")),
+        pytest.raises(BoundaryError),
+    ):
+        execute_public_m2_run(store, reporter, run.artifact_id, producer)
+    assert reporter.completed(run.artifact_id) is None
