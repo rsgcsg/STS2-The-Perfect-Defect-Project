@@ -18,6 +18,17 @@ _WINDOWS_READ_ATTEMPTS = 10
 _WINDOWS_READ_DELAY = 0.01
 
 
+def sync_directory(path: Path) -> None:
+    """Fsync directory entries where the platform supports directory handles."""
+    if sys.platform == "win32":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 @contextmanager
 def open_replaceable_read(path: Path) -> Iterator[BinaryIO]:
     """Open a snapshot without preventing a concurrent atomic replacement.
@@ -120,11 +131,7 @@ def _write_json(path: Path, value: Any,
             os.replace(temporary, path)
         replaced = True
         if replace_existing is None:
-            directory = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            sync_directory(path.parent)
     finally:
         if replaced:
             temporary.unlink(missing_ok=True)

@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 from typing import Any, cast
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from spireagent.hub.campaigns import Campaigns
 from spireagent.hub.console_auth import ConsolePrincipal
@@ -50,6 +50,20 @@ class MemberApi:
 
     def read(self, route: str, query: str, principal: ConsolePrincipal) -> dict[str, Any]:
         current = self._principal(principal)
+        if route == "curation-overlap":
+            try:
+                pairs = parse_qsl(
+                    query, strict_parsing=True, keep_blank_values=True, max_num_fields=2
+                )
+                values = dict(pairs)
+                if len(pairs) != 2 or len(values) != 2 or set(values) != {"candidate", "gold"}:
+                    raise ValueError
+            except ValueError:
+                raise BoundaryError("member_api", "invalid_curation_overlap_query") from None
+            self.exports.collections.require_member(current)
+            from spireagent.hub.curation_access import overlap_metadata
+
+            return overlap_metadata(self.service, current, values["candidate"], values["gold"])
         quality = re.fullmatch(r"collections/([a-f0-9]{32})/decisions", route)
         if quality:
             limit, offset, status = pagination(query)

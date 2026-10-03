@@ -1,0 +1,97 @@
+{
+  "schema": "sts2.policy-runtime/policy-manifest-1",
+  "manifest_id": "stpd-s1-human-combat-c70c482c-v8-public-contract-closure",
+  "policy": {
+    "id": "stpd-s1-human-combat",
+    "version": "1.0.0",
+    "provider": "stpd",
+    "architecture": "scheme1-linear-pretrained"
+  },
+  "adapter": {
+    "id": "stpd-s1-decision-adapter",
+    "version": "1.0.3",
+    "protocol": "sts2.policy-runtime/decision-only-ndjson-1",
+    "code_sha256": "12eb0fe0f28928d4082b70140e8f2e2cb107922a88bbc61546207d6845e8ce13"
+  },
+  "artifact": {
+    "id": "checkpoint-step-1659",
+    "path": "../.local/training-ready/s1-smoke-output/source-caddbcc71a99/checkpoint-step-1659.pt",
+    "sha256": "c70c482ca1af52c9dc5477a45623f7ad531222400ba6eefd3c17c87b7cc922d3"
+  },
+  "representation": {
+    "id": "stpd-combat-v0-standard",
+    "version": "stpd-model-serialization-v1",
+    "input_schema": "sts2.player-environment/snapshot-1"
+  },
+  "requirements": {
+    "connector_protocol_version": "1.0.0",
+    "environment": {
+      "host_kind": "live_ui",
+      "connector_version": "1.2.0-rc.6",
+      "connector_source_revision": "4de52cfd72c6bf5b0d2312538152e81c616dabfb",
+      "connector_artifact_sha256": "ef673b76469f3b7442a88e7c038a43dc23de1b0cfe1908a96d878b0cc18b2897",
+      "connector_module_version_id": "6f4e58b7-f55e-46d2-8d4f-d1d37f29fd99",
+      "modset_status": "exact_platform_modset",
+      "modset_fingerprint": "5a21659597de401d2ce34bc3205be3d535f92aba74538548a6e6145376af8149",
+      "loaded_mod_ids": [
+        "STS2_PLATFORM"
+      ]
+    },
+    "reads": [],
+    "whole_decision_admission": true,
+    "candidate_order_digest": "sha256-json-bound-action-id-order",
+    "score_count_matches_candidate_count": true,
+    "selected_index": true,
+    "successor_required": true
+  },
+  "support": {
+    "game_versions": [
+      "v0.111.0"
+    ],
+    "game_commits": [
+      "41cef1ea"
+    ],
+    "interaction_kinds": [
+      "combat_turn"
+    ],
+    "action_verbs": [
+      "play",
+      "end_turn"
+    ]
+  },
+  "adapter_config": {
+    "s1": {
+      "config": {
+        "path": "configs/v0/experiments/s1-human-combat-live-v2.json",
+        "sha256": "262eb952991300431b6c3f42fed18c02e6f0140ff6ddf3710b71339da93f44a7",
+        "schema": "stpd/s1-human-combat-live-config-v1"
+      },
+      "qwen": {
+        "model_id": "Qwen/Qwen3-0.6B-Base",
+        "model_revision": "da87bfb608c14b7cf20ba1ce41287e8de496c0cd",
+        "control": "pretrained"
+      },
+      "serializer": {
+        "version": "stpd-model-serialization-v1",
+        "input_profile": "stpd-combat-v0-standard"
+      },
+      "admission": {
+        "character_definition_id": "DEFECT",
+        "ascension": 0,
+        "context_kind": "combat",
+        "research_action_kinds": [
+          "play_card",
+          "end_turn"
+        ]
+      },
+      "code_digest_scope": "runtime-import-closure-v1"
+    }
+  },
+  "claims": {
+    "full_run": false,
+    "selector": false,
+    "catalog_filtered": false,
+    "creates_action_authority": false,
+    "creates_native_operands": false
+  }
+}
