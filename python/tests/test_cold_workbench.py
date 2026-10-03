@@ -156,6 +156,9 @@ try:
         report = json.load(response)
     assert report["evaluation_id"] == evaluation_id
     assert report["validation_scope"] == "recorded_report_and_parent_identities"
+    assert report["dev_qualification"]["native_run_independence"] == "unknown"
+    assert report["dev_qualification"]["physical_game_independence"] == "unresolved"
+    assert report["dev_qualification"]["clean_held_out_claim"] is False
     for model_id, recipe in json.loads(memory_models_json).items():
         with client.open(base + "/api/local-workspace/artifacts/" + model_id) as response:
             detail = json.load(response)

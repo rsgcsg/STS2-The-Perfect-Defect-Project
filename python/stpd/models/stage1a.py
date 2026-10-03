@@ -118,9 +118,12 @@ class LightActionM0Scorer(nn.Module):
     """Stateless shared-state D-Simple with a fixed independent byte-action path."""
 
     def __init__(self, core: TokenCore, *, max_action_bytes: int,
-                 initialization_seed: int) -> None:
+                 initialization_seed: int, public_profile: str | None = None) -> None:
         super().__init__()
-        if type(max_action_bytes) is not int or not 1 <= max_action_bytes <= 8192:
+        if public_profile not in {None, "public_lite", "public_compact"}:
+            raise ValueError("invalid public profile")
+        cap = 1_000_000 if public_profile is not None else 8192
+        if type(max_action_bytes) is not int or not 1 <= max_action_bytes <= cap:
             raise ValueError("invalid action byte limit")
         if core.width <= 0 or core.vocab_size <= 0:
             raise ValueError("invalid state core dimensions")
@@ -196,6 +199,7 @@ class LightActionM0Scorer(nn.Module):
 def build_scorer(
     recipe_id: str, core: TokenCore, *, readout_initial: Tensor | None = None,
     max_action_bytes: int | None = None, scoring_seed: int | None = None,
+    public_profile: str | None = None,
 ) -> BTokenScorer | DSimpleTokenScorer | LightActionM0Scorer:
     recipe = recipe_for(recipe_id)
     if recipe.graph == LIGHT_ACTION_M0_GRAPH:
@@ -207,7 +211,10 @@ def build_scorer(
             raise ValueError("M0 requires its independent byte limit and scoring seed")
         return LightActionM0Scorer(
             core, max_action_bytes=max_action_bytes, initialization_seed=scoring_seed,
+            public_profile=public_profile,
         )
+    if public_profile is not None:
+        raise ValueError("public M0 profile requires the M0 graph")
     if core.frozen != (recipe.backbone == "pf"):
         raise ValueError("recipe and backbone training scope disagree")
     if recipe.family == "b":
