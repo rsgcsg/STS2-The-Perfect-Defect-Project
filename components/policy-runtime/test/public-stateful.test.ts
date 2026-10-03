@@ -305,7 +305,7 @@ describe("public Snapshot stateful protocol 4", () => {
       inputStream.write(`${JSON.stringify({ schema: POLICY_PORT_V4_SCHEMA, message_type: "decide", request_id: requestId, decision: nextDecision, control: nextControl })}\n`);
       return responseLine;
     };
-    const response = await send("request-a", decision, control) as { message_type: string; completion: ReturnType<typeof completion> };
+    const response = await send("request-a", decision, control) as { message_type: string; output: { candidate_digest: string; scores: number[]; selected_index: number | null }; completion: ReturnType<typeof completion> };
     expect(response.message_type).toBe("decision");
     expect(response.completion).toEqual(completion(decision, control));
     expect(seen).toHaveLength(1);
@@ -321,6 +321,18 @@ describe("public Snapshot stateful protocol 4", () => {
       bound_actions: { ...observation.bound_actions, actions: [action("bound-a", "conflict")] } }, reads: [] } };
     const conflict = await send("request-a-conflict", changedBody, control);
     expect(conflict.message_type).toBe("error");
+    expect(seen).toHaveLength(1);
+
+    const priorActionAck: PublicStatefulControlMetadata["previous_action"] = {
+      decision_id: "decision-before", source_snapshot_id: "snapshot-before", candidate_digest: "b".repeat(64),
+      bound_action_id: "bound-before", request_id: "request-before", receipt: { delivery: "delivered", reason_code: null },
+      successor: { snapshot_id: observation.snapshot_id, sequence: observation.sequence }
+    };
+    const ackControl = { ...control, previous_action: priorActionAck };
+    const ackedRetry = await send("request-a-ack", decision, ackControl) as { message_type: string; output: { candidate_digest: string; scores: number[]; selected_index: number | null }; completion: ReturnType<typeof completion> };
+    expect(ackedRetry.message_type).toBe("decision");
+    expect(ackedRetry.output).toEqual(response.output);
+    expect(ackedRetry.completion.previous_action_request_id).toBe("request-before");
     expect(seen).toHaveLength(1);
 
     const nextObservation = snapshot("snapshot-b", 19);

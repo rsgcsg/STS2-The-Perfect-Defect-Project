@@ -132,12 +132,16 @@ receipt/successor evidence. These objects are not merged.
 `servePublicStatefulPolicyPort` creates a fresh scorer instance for each control
 namespace. The scorer callback receives only `decision`; it never receives
 `control` or `previous_action`. The helper caches the result for the current
-namespace and ordinal, so an identical poll/retry (ignoring only
-Connector-declared `observed_at`) does not call the scorer or advance its
-hidden state twice. Conflicting reuse, ordinal gaps, or backward ordinals fail
-closed. A new Runtime token and segment create a fresh scorer instance. A
-consumer adapter must project its permitted current-observation/candidate
-features explicitly; it must not serialize control metadata into features.
+namespace and ordinal. The cache identity covers the complete decision context
+and namespace watermark, ignoring only Connector-declared `observed_at`; a
+valid `previous_action` control acknowledgment may be updated on a same-ordinal
+retry. Such a retry returns the cached scores and refreshes the completion
+acknowledgment without calling the scorer or advancing hidden state again.
+Conflicting decision or namespace-watermark reuse, ordinal gaps, or backward
+ordinals fail closed. A new Runtime token and segment create a fresh scorer
+instance. A consumer adapter must project its permitted current-observation/
+candidate features explicitly; it must not serialize control metadata into
+features.
 
 `previous_action` is protocol execution metadata only. It binds the last
 delivered Connector receipt to the stable successor Snapshot and may repeat

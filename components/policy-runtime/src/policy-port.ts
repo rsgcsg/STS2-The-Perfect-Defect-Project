@@ -462,7 +462,7 @@ export async function servePublicStatefulPolicyPort(createScorer: PublicStateful
       const fingerprint = publicDecisionFingerprint(decision, control);
       let selected: AdapterDecision;
       if (last && control.observation_ordinal === last.ordinal) {
-        if (fingerprint !== last.fingerprint) throw new Error("public stateful ordinal was reused with conflicting decision or control metadata");
+        if (fingerprint !== last.fingerprint) throw new Error("public stateful ordinal was reused with conflicting decision or namespace watermark");
         selected = last.output;
       } else {
         if (control.observation_ordinal !== (last ? last.ordinal : 0) + 1)
@@ -559,7 +559,9 @@ function publicCompletion(decision: PublicStatefulDecisionContext, control: Publ
 function publicDecisionFingerprint(decision: PublicStatefulDecisionContext, control: PublicStatefulControlMetadata): string {
   const { observed_at: _connectorDeclaredVolatileField, ...observation } = decision.bundle.observation;
   const stableDecision = { ...decision, bundle: { ...decision.bundle, observation } };
-  return createHash("sha256").update(canonicalJson({ decision: stableDecision, control }), "utf8").digest("hex");
+  const namespaceWatermark = { continuity_token: control.continuity_token, episode_scope: control.episode_scope,
+    episode_id: control.episode_id, segment_id: control.segment_id, observation_ordinal: control.observation_ordinal };
+  return createHash("sha256").update(canonicalJson({ decision: stableDecision, namespaceWatermark }), "utf8").digest("hex");
 }
 
 function validateV2Request(value: unknown, schema: typeof POLICY_PORT_V2_SCHEMA | typeof POLICY_PORT_V3_SCHEMA): PolicyPortV2DecisionRequest {
