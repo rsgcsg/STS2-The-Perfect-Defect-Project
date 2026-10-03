@@ -2237,7 +2237,7 @@ def test_compressed_provider_submission_retains_canonical_hash_and_wire_size(
     logical = b"request"
     framed = encode_m0_request(logical, compress=True)
     request = _request(logical)
-    parse_request[framed] = request
+    parse_request[logical] = request
     function = FakeFunction()
     provider = _provider(sdk=FakeSDK(function), request=request)
     handle = provider.submit(framed)
@@ -2256,7 +2256,7 @@ def test_compressed_worker_stdin_binds_logical_hash_before_execution(
     logical = b"request"
     framed = encode_m0_request(logical, compress=True)
     request = _request(logical)
-    monkeypatch.setattr(m0_modal, "_decode_request", lambda raw: request if raw == framed else None)
+    monkeypatch.setattr(m0_modal, "_decode_request", lambda raw: request if raw == logical else None)
     observed = []
     monkeypatch.setattr(
         m0_modal, "execute_m0_request_bytes",

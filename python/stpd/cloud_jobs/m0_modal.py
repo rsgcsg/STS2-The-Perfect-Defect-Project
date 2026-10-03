@@ -1120,9 +1120,10 @@ def _worker_main() -> int:
         request_bytes = sys.stdin.buffer.read(MAX_M0_REQUEST_BYTES + 1)
         if not 1 <= len(request_bytes) <= MAX_M0_REQUEST_BYTES:
             raise BoundaryError("modal_m0", "request_size_limit")
-        request = _decode_request(request_bytes)
+        logical_request_bytes = decode_m0_request(request_bytes)
+        request = _decode_request(logical_request_bytes)
         if (
-            request.request_sha256 != request_sha256
+            hashlib.sha256(logical_request_bytes).hexdigest() != request_sha256
             or request.attempt_id != attempt_id
             or _request_runtime(request) != (torch_version, cpu_threads)
         ):
@@ -1766,8 +1767,9 @@ class ModalM0Provider:
             or not 1 <= len(request_bytes) <= MAX_M0_REQUEST_BYTES
         ):
             raise BoundaryError("modal_m0", "request_size_limit")
-        request = _decode_request(request_bytes)
-        if request.to_bytes() != decode_m0_request(request_bytes):
+        logical_request_bytes = decode_m0_request(request_bytes)
+        request = _decode_request(logical_request_bytes)
+        if request.to_bytes() != logical_request_bytes:
             raise BoundaryError("modal_m0", "noncanonical_request")
         if (
             request.attempt_id != target.attempt_id
