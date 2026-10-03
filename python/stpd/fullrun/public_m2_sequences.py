@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, cast
 
 from tokenizers import Tokenizer
 
@@ -111,10 +111,10 @@ class PublicM2Input:
 
     @property
     def identity(self) -> str:
-        return semantic_hash(self.content())
+        return cast(str, semantic_hash(self.content()))
 
     def payload_bytes(self) -> bytes:
-        return json_bytes({**self.content(), "identity": self.identity})
+        return cast(bytes, json_bytes({**self.content(), "identity": self.identity}))
 
 
 def _validate_sample(sample: ModelSample) -> None:
