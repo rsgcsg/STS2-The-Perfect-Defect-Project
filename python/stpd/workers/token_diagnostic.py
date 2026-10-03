@@ -5,13 +5,12 @@ from __future__ import annotations
 import hashlib
 import io
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, digest, json_bytes
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ManifestArtifactStore
-from spireagent.workbench.local_curation import LocalCurationOwner
 from stpd.fullrun.evaluation import action_only_prior, evaluate_samples, summarize_rows
 from stpd.fullrun.light_action_inputs import load_checkpoint_diagnostic_inputs
 from stpd.workers.token_ranking import (
@@ -26,6 +25,20 @@ from ..canonical import semantic_hash
 
 SCHEMA = "stpd/private-checkpoint-diagnostic-v1"
 MAX_DIAGNOSTIC_BYTES = 64 * 1024**2
+
+
+class _CheckpointDiagnosticOwner(Protocol):
+    def check_checkpoint_allocation_dev(
+        self, store: ManifestArtifactStore, checkpoint_id: str,
+        evaluation_input_id: str, training_operation_id: str,
+        evaluation_operation_id: str,
+    ) -> dict[str, Any]: ...
+
+    def reserve_checkpoint_allocation_dev(
+        self, store: ManifestArtifactStore, checkpoint_id: str,
+        evaluation_input_id: str, training_operation_id: str,
+        evaluation_operation_id: str,
+    ) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -101,7 +114,7 @@ def _mean_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def diagnose_checkpoint(
     store: ManifestArtifactStore,
-    owner: LocalCurationOwner,
+    owner: _CheckpointDiagnosticOwner,
     checkpoint_id: str,
     evaluation_input_id: str,
     training_operation_id: str,
