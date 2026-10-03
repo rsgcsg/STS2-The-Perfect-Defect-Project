@@ -266,7 +266,7 @@ export interface StatefulAdapterDecision {
 /** Runtime owned scope for a generic public Snapshot memory segment. */
 export type PublicStatefulEpisodeScope = "single_game_episode" | "bounded_policy_segment";
 
-/** Confirmed action feedback is exposed only after a delivered receipt and stable successor. */
+/** Runtime execution metadata, never a scorer feature or model-history input. */
 export interface PublicPreviousAction {
   decision_id: string;
   source_snapshot_id: string;
@@ -277,14 +277,28 @@ export interface PublicPreviousAction {
   successor: { snapshot_id: string; sequence: number };
 }
 
-/** Port 4 keeps opaque model memory inside its process, keyed by this Runtime minted segment/token. */
-export interface PublicStatefulPolicyDecisionInput extends PolicyDecisionInput {
+/** Current generic Snapshot decision context, separate from the control envelope. */
+export interface PublicStatefulDecisionContext extends Omit<PolicyDecisionInput, "bundle"> {
+  bundle: { observation: PlayerEnvironmentSnapshot; reads: [] };
+}
+
+/** Namespace supplied to a fresh scorer instance for one Runtime-owned segment. */
+export interface PublicStatefulMemoryNamespace {
   continuity_token: string;
   episode_scope: PublicStatefulEpisodeScope;
   episode_id: string;
   segment_id: string;
+}
+
+/** Protocol control only. previous_action is execution evidence, not model feedback. */
+export interface PublicStatefulControlMetadata extends PublicStatefulMemoryNamespace {
   observation_ordinal: number;
   previous_action: PublicPreviousAction | null;
+}
+
+export interface PublicStatefulPolicyRequest {
+  decision: PublicStatefulDecisionContext;
+  control: PublicStatefulControlMetadata;
 }
 
 export interface PublicStatefulCompletion {
@@ -302,8 +316,10 @@ export interface PublicStatefulAdapterDecision {
   completion: PublicStatefulCompletion;
 }
 
-export type PublicStatefulPolicy = (input: PublicStatefulPolicyDecisionInput, signal: AbortSignal,
-  onOffer: () => void) => Promise<PublicStatefulAdapterDecision> | PublicStatefulAdapterDecision;
+/** Runtime-side port callback receives model context and protocol metadata as separate values. */
+export type PublicStatefulPolicy = (decision: PublicStatefulDecisionContext,
+  control: PublicStatefulControlMetadata, signal: AbortSignal, onOffer: () => void) =>
+    Promise<PublicStatefulAdapterDecision> | PublicStatefulAdapterDecision;
 
 /** In-process implementations mark their call as offered at invocation. */
 export type StatefulPolicy = (input: StatefulPolicyDecisionInput, signal: AbortSignal,
@@ -315,6 +331,11 @@ export type StatefulPolicy = (input: StatefulPolicyDecisionInput, signal: AbortS
  * fences and ignores the result when a policy cannot cancel in-process.
  */
 export type Policy = (input: PolicyDecisionInput, signal?: AbortSignal) => Promise<AdapterDecision> | AdapterDecision;
+
+/** Each Runtime-minted namespace must get a fresh scorer with observation-derived state only. */
+export type PublicStatefulScorer = (decision: PublicStatefulDecisionContext, signal?: AbortSignal) =>
+  Promise<AdapterDecision> | AdapterDecision;
+export type PublicStatefulScorerFactory = (namespace: PublicStatefulMemoryNamespace) => PublicStatefulScorer;
 
 export interface PolicyPortDecisionRequest { schema: typeof POLICY_PORT_SCHEMA; message_type: "decide"; request_id: string; input: PolicyDecisionInput }
 export interface PolicyPortReadyResponse { schema: typeof POLICY_PORT_SCHEMA; message_type: "ready"; adapter: PolicyManifest["adapter"] }
@@ -330,7 +351,7 @@ export interface PolicyPortV3ReadyResponse { schema: typeof POLICY_PORT_V3_SCHEM
 export interface PolicyPortV3DecisionResponse { schema: typeof POLICY_PORT_V3_SCHEMA; message_type: "decision"; request_id: string; output: AdapterDecision; completion: ObservationCompletion }
 export interface PolicyPortV3ErrorResponse { schema: typeof POLICY_PORT_V3_SCHEMA; message_type: "error"; request_id: string; error: { code: string; message: string } }
 
-export interface PolicyPortV4DecisionRequest { schema: typeof POLICY_PORT_V4_SCHEMA; message_type: "decide"; request_id: string; input: PublicStatefulPolicyDecisionInput }
+export interface PolicyPortV4DecisionRequest { schema: typeof POLICY_PORT_V4_SCHEMA; message_type: "decide"; request_id: string; decision: PublicStatefulDecisionContext; control: PublicStatefulControlMetadata }
 export interface PolicyPortV4ReadyResponse { schema: typeof POLICY_PORT_V4_SCHEMA; message_type: "ready"; adapter: PolicyManifest["adapter"] }
 export interface PolicyPortV4DecisionResponse { schema: typeof POLICY_PORT_V4_SCHEMA; message_type: "decision"; request_id: string; output: AdapterDecision; completion: PublicStatefulCompletion }
 export interface PolicyPortV4ErrorResponse { schema: typeof POLICY_PORT_V4_SCHEMA; message_type: "error"; request_id: string; error: { code: string; message: string } }
@@ -464,8 +485,8 @@ export function validatePolicyManifest(value: unknown): PolicyManifest {
   if (adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-4") {
     if (representation.input_schema !== "sts2.player-environment/snapshot-1" || (requirements.reads as string[]).length !== 0)
       throw new Error("public stateful port 4 requires generic Snapshot input without Reads");
-    if (object(root.adapter_config, "manifest.adapter_config").public_stateful_profile !== "stpd/public-m2-observation-only-v1")
-      throw new Error("public stateful port 4 requires the observation-only public M2 profile");
+    if (object(root.adapter_config, "manifest.adapter_config").public_stateful_profile !== "sts2.policy-runtime/public-observation-stateful-v1")
+      throw new Error("public stateful port 4 requires the model-neutral Runtime public observation profile");
   }
   if (representation.input_schema === "sts2.player-environment/text-menu-snapshot-2" && adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-1") throw new Error("text menu v2 requires stateful policy port");
   const support = object(root.support, "manifest.support"); exactKeys(support, ["game_versions", "game_commits", "interaction_kinds", "action_verbs"]); nonEmptyUniqueStringArray(support, "game_versions"); nonEmptyUniqueStringArray(support, "game_commits"); nonEmptyUniqueStringArray(support, "interaction_kinds"); nonEmptyUniqueStringArray(support, "action_verbs");

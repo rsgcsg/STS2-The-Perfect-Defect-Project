@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { decodePlayerSnapshot, decodeTextMenuSnapshot, decodeTextMenuV2Snapshot } from "@rsgcsg/sts2-connector-client";
-import type { Policy, AdapterDecision, PolicyDecisionInput, PolicyManifest, PolicyPortDecisionRequest, PolicyPortDecisionResponse, PolicyPortErrorResponse, PolicyPortReadyResponse, PolicyPortV2DecisionRequest, PolicyPortV2DecisionResponse, PolicyPortV2ErrorResponse, PolicyPortV2ReadyResponse, PolicyPortV3ReadyResponse, PolicyPortV3DecisionResponse, PolicyPortV3ErrorResponse, PolicyPortV4DecisionRequest, PolicyPortV4DecisionResponse, PolicyPortV4ErrorResponse, PolicyPortV4ReadyResponse, PublicStatefulAdapterDecision, PublicStatefulCompletion, PublicStatefulPolicy, PublicStatefulPolicyDecisionInput, StatefulAdapterDecision, StatefulPolicy, StatefulPolicyDecisionInput } from "./contracts.js";
+import type { Policy, AdapterDecision, PolicyDecisionInput, PolicyManifest, PolicyPortDecisionRequest, PolicyPortDecisionResponse, PolicyPortErrorResponse, PolicyPortReadyResponse, PolicyPortV2DecisionRequest, PolicyPortV2DecisionResponse, PolicyPortV2ErrorResponse, PolicyPortV2ReadyResponse, PolicyPortV3ReadyResponse, PolicyPortV3DecisionResponse, PolicyPortV3ErrorResponse, PolicyPortV4DecisionRequest, PolicyPortV4DecisionResponse, PolicyPortV4ErrorResponse, PolicyPortV4ReadyResponse, PublicStatefulAdapterDecision, PublicStatefulCompletion, PublicStatefulControlMetadata, PublicStatefulDecisionContext, PublicStatefulMemoryNamespace, PublicStatefulScorer, PublicStatefulScorerFactory, StatefulAdapterDecision, StatefulPolicy, StatefulPolicyDecisionInput } from "./contracts.js";
 import { POLICY_PORT_SCHEMA, POLICY_PORT_V2_SCHEMA, POLICY_PORT_V3_SCHEMA, POLICY_PORT_V4_SCHEMA, assertAdapterDecision, validateAdapterDecision, validatePolicyManifest } from "./contracts.js";
+import { canonicalJson } from "./evidence.js";
 import { admitWholeDecisionBundle } from "./runtime.js";
 
 export const DEFAULT_POLICY_ADAPTER_STARTUP_TIMEOUT_MS = 30_000;
@@ -11,7 +12,7 @@ export const DEFAULT_POLICY_ADAPTER_STARTUP_TIMEOUT_MS = 30_000;
 export class NdjsonPolicyPort {
   private readonly pending = new Map<string, { expectedDigest: string; expectedCount: number; resolve: (choice: AdapterDecision) => void; reject: (error: Error) => void }>();
   private readonly pendingV2 = new Map<string, { input: StatefulPolicyDecisionInput; resolve: (choice: StatefulAdapterDecision) => void; reject: (error: Error) => void }>();
-  private readonly pendingV4 = new Map<string, { input: PublicStatefulPolicyDecisionInput; resolve: (choice: PublicStatefulAdapterDecision) => void; reject: (error: Error) => void }>();
+  private readonly pendingV4 = new Map<string, { decision: PublicStatefulDecisionContext; control: PublicStatefulControlMetadata; resolve: (choice: PublicStatefulAdapterDecision) => void; reject: (error: Error) => void }>();
   private readonly cancelled = new Set<string>();
   private closed = false;
   private stderrTail = "";
@@ -95,11 +96,12 @@ export class NdjsonPolicyPort {
     return this.decideStateful(input, signal, onOffer, POLICY_PORT_V3_SCHEMA);
   }
 
-  decideV4(input: PublicStatefulPolicyDecisionInput, signal: AbortSignal, onOffer: () => void): Promise<PublicStatefulAdapterDecision> {
+  decideV4(decision: PublicStatefulDecisionContext, control: PublicStatefulControlMetadata,
+          signal: AbortSignal, onOffer: () => void): Promise<PublicStatefulAdapterDecision> {
     if (this.closed) return Promise.reject(new Error("policy child port is closed"));
     if (signal.aborted) return Promise.reject(new Error("policy decision cancelled"));
     const requestId = randomUUID();
-    const wire = `${JSON.stringify({ schema: POLICY_PORT_V4_SCHEMA, message_type: "decide", request_id: requestId, input })}\n`;
+    const wire = `${JSON.stringify({ schema: POLICY_PORT_V4_SCHEMA, message_type: "decide", request_id: requestId, decision, control })}\n`;
     return new Promise<PublicStatefulAdapterDecision>((resolve, reject) => {
       let settled = false;
       const onAbort = () => {
@@ -115,7 +117,7 @@ export class NdjsonPolicyPort {
         signal.removeEventListener("abort", onAbort);
         callback(value);
       };
-      this.pendingV4.set(requestId, { input, resolve: settle(resolve), reject: settle(reject) });
+      this.pendingV4.set(requestId, { decision, control, resolve: settle(resolve), reject: settle(reject) });
       signal.addEventListener("abort", onAbort, { once: true });
       if (signal.aborted) { onAbort(); return; }
       let writeInvoked = false;
@@ -320,10 +322,11 @@ export class NdjsonPolicyPort {
       return;
     }
     try {
-      const input = pending.input;
+      const decision = pending.decision;
+      const control = pending.control;
       const completion = response.completion as PublicStatefulCompletion;
-      validatePublicCompletion(completion, input);
-      const output = validateAdapterDecision(response.output, input.candidate_digest, input.candidate_count);
+      validatePublicCompletion(completion, decision, control);
+      const output = validateAdapterDecision(response.output, decision.candidate_digest, decision.candidate_count);
       pending.resolve({ output, completion });
     } catch (error) { pending.reject(error instanceof Error ? error : new Error(String(error))); }
   }
@@ -418,21 +421,66 @@ export async function serveStatefulPolicyPort(policy: StatefulPolicy,
   }
 }
 
-/** Serial public Snapshot memory port. Its ordinal and token are Runtime supplied. */
-export async function servePublicStatefulPolicyPort(policy: PublicStatefulPolicy,
+/** Serial generic public Snapshot port. Control metadata never reaches the scorer callback. */
+export async function servePublicStatefulPolicyPort(createScorer: PublicStatefulScorerFactory,
   input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WritableStream = process.stdout): Promise<void> {
   const lines = createInterface({ input });
+  let activeNamespace: PublicStatefulMemoryNamespace | null = null;
+  let scorer: PublicStatefulScorer | null = null;
+  let last: { ordinal: number; fingerprint: string; output: AdapterDecision } | null = null;
+  let scorerFailed = false;
   for await (const line of lines) {
     let value: unknown;
     try { value = JSON.parse(line); }
     catch { writePort(output, { schema: POLICY_PORT_V4_SCHEMA, message_type: "error", request_id: "unknown", error: { code: "invalid_json", message: "request was not JSON" } }); continue; }
     try {
       const request = validateV4Request(value);
-      const result = await policy(request.input, new AbortController().signal, () => {});
-      assertAdapterDecision(result.output);
-      validateAdapterDecision(result.output, request.input.candidate_digest, request.input.candidate_count);
-      validatePublicCompletion(result.completion, request.input);
-      writePort(output, { schema: POLICY_PORT_V4_SCHEMA, message_type: "decision", request_id: request.request_id, output: result.output, completion: result.completion });
+      const { decision, control } = request;
+      const namespace: PublicStatefulMemoryNamespace = {
+        continuity_token: control.continuity_token, episode_scope: control.episode_scope,
+        episode_id: control.episode_id, segment_id: control.segment_id
+      };
+      const sameSegment = activeNamespace !== null && activeNamespace.continuity_token === namespace.continuity_token &&
+        activeNamespace.segment_id === namespace.segment_id;
+      if (activeNamespace && sameSegment && canonicalJson(activeNamespace) !== canonicalJson(namespace))
+        throw new Error("public stateful memory namespace identity changed within a segment");
+      if (activeNamespace && !sameSegment &&
+          (activeNamespace.continuity_token === namespace.continuity_token || activeNamespace.segment_id === namespace.segment_id))
+        throw new Error("public stateful namespace rotation must change both segment and continuity token");
+      if (!sameSegment) {
+        if (control.observation_ordinal !== 1) throw new Error("new public stateful segment must start at observation ordinal 1");
+        activeNamespace = Object.freeze(namespace);
+        scorer = null;
+        last = null;
+        scorerFailed = true;
+        const nextScorer = createScorer(activeNamespace);
+        if (typeof nextScorer !== "function") throw new Error("public stateful scorer factory returned no scorer");
+        scorer = nextScorer;
+        scorerFailed = false;
+      }
+      if (scorerFailed || !scorer) throw new Error("public stateful scorer segment failed and requires a new Runtime segment");
+      const fingerprint = publicDecisionFingerprint(decision, control);
+      let selected: AdapterDecision;
+      if (last && control.observation_ordinal === last.ordinal) {
+        if (fingerprint !== last.fingerprint) throw new Error("public stateful ordinal was reused with conflicting decision or control metadata");
+        selected = last.output;
+      } else {
+        if (control.observation_ordinal !== (last ? last.ordinal : 0) + 1)
+          throw new Error("public stateful observation ordinal is not the next decision ordinal");
+        try {
+          // The scorer sees only PolicyDecisionInput. Runtime control metadata,
+          // including previous_action receipt/successor, remains in this port layer.
+          const outputChoice = await scorer(decision, new AbortController().signal);
+          assertAdapterDecision(outputChoice);
+          selected = validateAdapterDecision(outputChoice, decision.candidate_digest, decision.candidate_count);
+          last = { ordinal: control.observation_ordinal, fingerprint, output: { ...selected, scores: [...selected.scores] } };
+        } catch (error) {
+          scorerFailed = true;
+          throw error;
+        }
+      }
+      const completion = publicCompletion(decision, control);
+      writePort(output, { schema: POLICY_PORT_V4_SCHEMA, message_type: "decision", request_id: request.request_id, output: selected, completion });
     } catch (error) {
       const requestId = value !== null && typeof value === "object" && typeof (value as Record<string, unknown>).request_id === "string" ? String((value as Record<string, unknown>).request_id) : "unknown";
       writePort(output, { schema: POLICY_PORT_V4_SCHEMA, message_type: "error", request_id: requestId, error: { code: "policy_error", message: error instanceof Error ? error.message : String(error) } });
@@ -443,31 +491,40 @@ export async function servePublicStatefulPolicyPort(policy: PublicStatefulPolicy
 function validateV4Request(value: unknown): PolicyPortV4DecisionRequest {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("v4 request must be an object");
   const request = value as Record<string, unknown>;
-  if (!exactKeys(request, ["schema", "message_type", "request_id", "input"]) || request.schema !== POLICY_PORT_V4_SCHEMA || request.message_type !== "decide" || typeof request.request_id !== "string" || !request.request_id)
+  if (!exactKeys(request, ["schema", "message_type", "request_id", "decision", "control"]) || request.schema !== POLICY_PORT_V4_SCHEMA || request.message_type !== "decide" || typeof request.request_id !== "string" || !request.request_id)
     throw new Error("invalid v4 request contract");
-  const inputValue = request.input;
-  if (inputValue === null || typeof inputValue !== "object" || Array.isArray(inputValue)) throw new Error("v4 input must be an object");
-  const input = inputValue as Record<string, unknown>;
-  if (!exactKeys(input, ["run_id", "manifest", "bundle", "candidate_digest", "candidate_count", "continuity_token", "episode_scope", "episode_id", "segment_id", "observation_ordinal", "previous_action"]) ||
-      typeof input.run_id !== "string" || !input.run_id || typeof input.continuity_token !== "string" || !input.continuity_token ||
-      (input.episode_scope !== "single_game_episode" && input.episode_scope !== "bounded_policy_segment") ||
-      typeof input.episode_id !== "string" || !input.episode_id || typeof input.segment_id !== "string" || !input.segment_id ||
-      !Number.isSafeInteger(input.observation_ordinal) || Number(input.observation_ordinal) < 1 ||
-      typeof input.candidate_digest !== "string" || !/^[a-f0-9]{64}$/u.test(input.candidate_digest) ||
-      !Number.isSafeInteger(input.candidate_count) || Number(input.candidate_count) < 0)
-    throw new Error("invalid v4 input contract");
-  const manifest = validatePolicyManifest(input.manifest);
+  const decisionValue = request.decision;
+  const controlValue = request.control;
+  if (decisionValue === null || typeof decisionValue !== "object" || Array.isArray(decisionValue) ||
+      controlValue === null || typeof controlValue !== "object" || Array.isArray(controlValue)) throw new Error("v4 decision and control must be separate objects");
+  const decision = decisionValue as Record<string, unknown>;
+  const control = controlValue as Record<string, unknown>;
+  if (!exactKeys(decision, ["run_id", "manifest", "bundle", "candidate_digest", "candidate_count"]) ||
+      typeof decision.run_id !== "string" || !decision.run_id ||
+      typeof decision.candidate_digest !== "string" || !/^[a-f0-9]{64}$/u.test(decision.candidate_digest) ||
+      !Number.isSafeInteger(decision.candidate_count) || Number(decision.candidate_count) < 0)
+    throw new Error("invalid v4 decision context");
+  if (!exactKeys(control, ["continuity_token", "episode_scope", "episode_id", "segment_id", "observation_ordinal", "previous_action"]) ||
+      typeof control.continuity_token !== "string" || !control.continuity_token ||
+      (control.episode_scope !== "single_game_episode" && control.episode_scope !== "bounded_policy_segment") ||
+      typeof control.episode_id !== "string" || !control.episode_id || typeof control.segment_id !== "string" || !control.segment_id ||
+      !Number.isSafeInteger(control.observation_ordinal) || Number(control.observation_ordinal) < 1)
+    throw new Error("invalid v4 protocol control metadata");
+  const manifest = validatePolicyManifest(decision.manifest);
   if (manifest.adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-4" || manifest.representation.input_schema !== "sts2.player-environment/snapshot-1" || (manifest.requirements as { reads: string[] }).reads.length !== 0)
     throw new Error("v4 request requires a public Snapshot port 4 manifest without Reads");
-  validatePublicPreviousAction(input.previous_action);
-  const bundle = input.bundle;
+  validatePublicPreviousAction(control.previous_action);
+  const bundle = decision.bundle;
   if (bundle === null || typeof bundle !== "object" || Array.isArray(bundle) || !exactKeys(bundle as Record<string, unknown>, ["observation", "reads"]) || !Array.isArray((bundle as Record<string, unknown>).reads) || ((bundle as Record<string, unknown>).reads as unknown[]).length !== 0)
     throw new Error("v4 request requires a generic Snapshot bundle without Reads");
   const observation = decodePlayerSnapshot((bundle as Record<string, unknown>).observation).data;
   const admission = admitWholeDecisionBundle({ observation, reads: [] }, manifest);
-  if (!admission.admitted || admission.candidateDigest !== input.candidate_digest || admission.candidateCount !== input.candidate_count)
+  if (!admission.admitted || admission.candidateDigest !== decision.candidate_digest || admission.candidateCount !== decision.candidate_count)
     throw new Error("v4 request requires the exact complete Connector candidate catalog");
-  return request as unknown as PolicyPortV4DecisionRequest;
+  return { schema: POLICY_PORT_V4_SCHEMA, message_type: "decide", request_id: request.request_id as string,
+    decision: { run_id: decision.run_id as string, manifest, bundle: { observation, reads: [] },
+      candidate_digest: decision.candidate_digest as string, candidate_count: decision.candidate_count as number },
+    control: control as unknown as PublicStatefulControlMetadata };
 }
 
 function validatePublicPreviousAction(value: unknown): void {
@@ -484,12 +541,25 @@ function validatePublicPreviousAction(value: unknown): void {
     throw new Error("invalid public previous action receipt/successor");
 }
 
-function validatePublicCompletion(completion: PublicStatefulCompletion, input: PublicStatefulPolicyDecisionInput): void {
+function validatePublicCompletion(completion: PublicStatefulCompletion, decision: PublicStatefulDecisionContext,
+                                  control: PublicStatefulControlMetadata): void {
   if (completion === null || typeof completion !== "object" || !exactKeys(completion as unknown as Record<string, unknown>, ["continuity_token", "episode_id", "segment_id", "observation_ordinal", "snapshot_id", "sequence", "previous_action_request_id"]) ||
-      completion.continuity_token !== input.continuity_token || completion.episode_id !== input.episode_id || completion.segment_id !== input.segment_id ||
-      completion.observation_ordinal !== input.observation_ordinal || completion.snapshot_id !== input.bundle.observation.snapshot_id || completion.sequence !== input.bundle.observation.sequence ||
-      completion.previous_action_request_id !== (input.previous_action?.request_id ?? null) || !Number.isSafeInteger(completion.sequence) || completion.sequence < 0)
+      completion.continuity_token !== control.continuity_token || completion.episode_id !== control.episode_id || completion.segment_id !== control.segment_id ||
+      completion.observation_ordinal !== control.observation_ordinal || completion.snapshot_id !== decision.bundle.observation.snapshot_id || completion.sequence !== decision.bundle.observation.sequence ||
+      completion.previous_action_request_id !== (control.previous_action?.request_id ?? null) || !Number.isSafeInteger(completion.sequence) || completion.sequence < 0)
     throw new Error("public stateful completion watermark mismatch");
+}
+
+function publicCompletion(decision: PublicStatefulDecisionContext, control: PublicStatefulControlMetadata): PublicStatefulCompletion {
+  return { continuity_token: control.continuity_token, episode_id: control.episode_id, segment_id: control.segment_id,
+    observation_ordinal: control.observation_ordinal, snapshot_id: decision.bundle.observation.snapshot_id,
+    sequence: decision.bundle.observation.sequence, previous_action_request_id: control.previous_action?.request_id ?? null };
+}
+
+function publicDecisionFingerprint(decision: PublicStatefulDecisionContext, control: PublicStatefulControlMetadata): string {
+  const { observed_at: _connectorDeclaredVolatileField, ...observation } = decision.bundle.observation;
+  const stableDecision = { ...decision, bundle: { ...decision.bundle, observation } };
+  return createHash("sha256").update(canonicalJson({ decision: stableDecision, control }), "utf8").digest("hex");
 }
 
 function validateV2Request(value: unknown, schema: typeof POLICY_PORT_V2_SCHEMA | typeof POLICY_PORT_V3_SCHEMA): PolicyPortV2DecisionRequest {

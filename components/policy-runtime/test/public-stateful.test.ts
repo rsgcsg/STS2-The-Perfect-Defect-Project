@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import type { PlayerEnvironmentBoundAction, PlayerEnvironmentCapabilities, PlayerEnvironmentReceipt, PlayerEnvironmentSnapshot } from "@rsgcsg/sts2-connector-client";
 import { candidateOrderDigest } from "../src/digest.js";
-import { POLICY_PORT_V4_SCHEMA, validatePolicyManifest, type PolicyManifest, type PolicyConnector, type PublicStatefulPolicyDecisionInput } from "../src/contracts.js";
+import { POLICY_PORT_V4_SCHEMA, validatePolicyManifest, type PolicyManifest, type PolicyConnector, type PublicStatefulControlMetadata, type PublicStatefulDecisionContext, type PublicStatefulMemoryNamespace } from "../src/contracts.js";
 import type { AgentRunEvidence } from "../src/evidence.js";
 import { NdjsonPolicyPort, servePublicStatefulPolicyPort } from "../src/policy-port.js";
 import { PolicyRuntime } from "../src/runtime.js";
@@ -30,7 +30,7 @@ function manifest(): PolicyManifest {
     representation: { id: "public-snapshot", version: "1", input_schema: "sts2.player-environment/snapshot-1" },
     requirements: { connector_protocol_version: "1.0.0", environment: { host_kind: "test", connector_version: "1", connector_source_revision: "source", connector_artifact_sha256: "b".repeat(64), connector_module_version_id: "mvid", modset_status: "exact", modset_fingerprint: "modset", loaded_mod_ids: ["fixture-mod"] }, reads: [], whole_decision_admission: true, candidate_order_digest: "sha256-json-bound-action-id-order", score_count_matches_candidate_count: true, selected_index: true, successor_required: true },
     support: { game_versions: ["fixture-game"], game_commits: ["fixture-commit"], interaction_kinds: ["test"], action_verbs: ["end_turn"] },
-    adapter_config: { public_stateful_profile: "stpd/public-m2-observation-only-v1" },
+    adapter_config: { public_stateful_profile: "sts2.policy-runtime/public-observation-stateful-v1" },
     claims: { full_run: false, selector: false, catalog_filtered: false, creates_action_authority: false, creates_native_operands: false }
   };
 }
@@ -65,40 +65,66 @@ class FixtureConnector implements PolicyConnector {
 function evidence(events: Array<{ kind: string; payload: Record<string, unknown> }> = []): AgentRunEvidence {
   return { append: vi.fn(async (kind: string, payload: Record<string, unknown>) => { events.push({ kind, payload }); }), finalize: vi.fn(async () => {}) } as unknown as AgentRunEvidence;
 }
-function completion(input: PublicStatefulPolicyDecisionInput) {
-  return { continuity_token: input.continuity_token, episode_id: input.episode_id, segment_id: input.segment_id,
-    observation_ordinal: input.observation_ordinal, snapshot_id: input.bundle.observation.snapshot_id,
-    sequence: input.bundle.observation.sequence, previous_action_request_id: input.previous_action?.request_id ?? null };
+function completion(decision: PublicStatefulDecisionContext, control: PublicStatefulControlMetadata) {
+  return { continuity_token: control.continuity_token, episode_id: control.episode_id, segment_id: control.segment_id,
+    observation_ordinal: control.observation_ordinal, snapshot_id: decision.bundle.observation.snapshot_id,
+    sequence: decision.bundle.observation.sequence, previous_action_request_id: control.previous_action?.request_id ?? null };
 }
-function runtime(connector: FixtureConnector, policy: (input: PublicStatefulPolicyDecisionInput) => ReturnType<typeof completion> | Promise<ReturnType<typeof completion>>, opts: { timeout?: number; events?: Array<{ kind: string; payload: Record<string, unknown> }> } = {}) {
+function runtime(connector: FixtureConnector, policy: (decision: PublicStatefulDecisionContext, control: PublicStatefulControlMetadata) => void | Promise<void>, opts: { timeout?: number; events?: Array<{ kind: string; payload: Record<string, unknown> }> } = {}) {
   return new PolicyRuntime({ manifest: manifest(), connector, runId: "public-run", evidence: evidence(opts.events),
     runtimeIdentity: { version: "test", code_sha256: "d".repeat(64) }, policyTimeoutMs: opts.timeout,
-    publicStatefulPolicy: async (input) => ({ output: { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }, completion: await policy(input) }) });
+    publicStatefulPolicy: async (decision, control) => {
+      await policy(decision, control);
+      return { output: { candidate_digest: decision.candidate_digest, scores: [1], selected_index: 0 }, completion: completion(decision, control) };
+    } });
 }
 
 describe("public Snapshot stateful protocol 4", () => {
   it("requires explicit Runtime-owned segment creation and keeps scope separate from its token", async () => {
-    const connector = new FixtureConnector(), seen: PublicStatefulPolicyDecisionInput[] = [];
-    const rt = runtime(connector, async input => { seen.push(input); return completion(input); });
+    const connector = new FixtureConnector(), seen: Array<{ decision: PublicStatefulDecisionContext; control: PublicStatefulControlMetadata }> = [];
+    const rt = runtime(connector, async (decision, control) => { seen.push({ decision, control }); });
     expect(validatePolicyManifest(manifest()).adapter.protocol).toBe("sts2.policy-runtime/decision-only-ndjson-4");
     const bad = manifest(); bad.adapter_config = {};
-    expect(() => validatePolicyManifest(bad)).toThrow(/observation-only public M2 profile/);
+    expect(() => validatePolicyManifest(bad)).toThrow(/model-neutral Runtime public observation profile/);
+    const oldResearchProfile = manifest(); oldResearchProfile.adapter_config = { public_stateful_profile: "stpd/public-m2-observation-only-v1" };
+    expect(() => validatePolicyManifest(oldResearchProfile)).toThrow(/model-neutral Runtime public observation profile/);
     await expect(rt.setMode("auto")).rejects.toThrow(/explicitly begun/);
     const begun = await rt.beginPublicStatefulSegment("bounded_policy_segment");
     expect(begun.scope).toBe("bounded_policy_segment");
     await expect(rt.beginPublicStatefulSegment("bounded_policy_segment")).rejects.toThrow(/already active/);
     await rt.setMode("shadow");
     expect((await rt.tick()).type).toBe("shadow");
-    expect(seen[0]).toMatchObject({ episode_scope: "bounded_policy_segment", episode_id: begun.episode_id, segment_id: begun.segment_id, observation_ordinal: 1 });
-    expect(seen[0]!.continuity_token).not.toBe(begun.episode_id);
+    expect(seen[0]!.control).toMatchObject({ episode_scope: "bounded_policy_segment", episode_id: begun.episode_id, segment_id: begun.segment_id, observation_ordinal: 1 });
+    expect(seen[0]!.control.continuity_token).not.toBe(begun.episode_id);
+    expect(seen[0]!.decision).not.toHaveProperty("control");
     const ended = await rt.endPublicStatefulSegment();
     expect(ended).toEqual(begun);
     await expect(rt.setMode("auto")).rejects.toThrow(/explicitly begun/);
   });
 
+  it("scores the same Snapshot again after an explicit new segment in Shadow", async () => {
+    const connector = new FixtureConnector(), events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    const seen: Array<{ decision: PublicStatefulDecisionContext; control: PublicStatefulControlMetadata }> = [];
+    const rt = runtime(connector, async (decision, control) => { seen.push({ decision, control }); }, { events });
+    const first = await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    await rt.setMode("shadow");
+    expect((await rt.tick()).type).toBe("shadow");
+    await rt.endPublicStatefulSegment();
+    const second = await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    await rt.setMode("shadow");
+    expect((await rt.tick()).type).toBe("shadow");
+    expect(seen).toHaveLength(2);
+    expect(seen.map(item => item.control.observation_ordinal)).toEqual([1, 1]);
+    expect(seen[0]!.decision.bundle.observation.snapshot_id).toBe(seen[1]!.decision.bundle.observation.snapshot_id);
+    expect(seen[0]!.control.segment_id).toBe(first.segment_id);
+    expect(seen[1]!.control.segment_id).toBe(second.segment_id);
+    expect(events.filter(event => event.kind === "public_stateful_decision_input")).toHaveLength(2);
+    await rt.setMode("human");
+  });
+
   it("reuses an ordinal for a polled identity, ignores only observed_at, and accepts sequence gaps with a new identity", async () => {
     const connector = new FixtureConnector(), ordinals: number[] = [];
-    const rt = runtime(connector, async input => { ordinals.push(input.observation_ordinal); return completion(input); });
+    const rt = runtime(connector, async (_decision, control) => { ordinals.push(control.observation_ordinal); });
     await rt.beginPublicStatefulSegment("bounded_policy_segment");
     await rt.setMode("auto");
     expect((await rt.tick()).type).toBe("not_delivered");
@@ -112,7 +138,7 @@ describe("public Snapshot stateful protocol 4", () => {
 
   it("fails closed when one snapshot identity is reused with a conflicting canonical body", async () => {
     const connector = new FixtureConnector(), ordinals: number[] = [];
-    const rt = runtime(connector, async input => { ordinals.push(input.observation_ordinal); return completion(input); });
+    const rt = runtime(connector, async (_decision, control) => { ordinals.push(control.observation_ordinal); });
     await rt.beginPublicStatefulSegment("bounded_policy_segment");
     await rt.setMode("shadow");
     expect((await rt.tick()).type).toBe("shadow");
@@ -125,9 +151,9 @@ describe("public Snapshot stateful protocol 4", () => {
   });
 
   it("keeps previous-action feedback stable for a same-observation submission retry", async () => {
-    const connector = new FixtureConnector(), seen: PublicStatefulPolicyDecisionInput[] = [];
+    const connector = new FixtureConnector(), seen: Array<{ decision: PublicStatefulDecisionContext; control: PublicStatefulControlMetadata }> = [];
     connector.delivery = "delivered";
-    const rt = runtime(connector, async input => { seen.push(input); return completion(input); });
+    const rt = runtime(connector, async (decision, control) => { seen.push({ decision, control }); });
     await rt.beginPublicStatefulSegment("bounded_policy_segment");
     await rt.setMode("auto");
     const first = await rt.tick();
@@ -136,14 +162,14 @@ describe("public Snapshot stateful protocol 4", () => {
     connector.delivery = "not_delivered";
     expect((await rt.tick()).type).toBe("not_delivered");
     expect((await rt.tick()).type).toBe("not_delivered");
-    expect(seen.map(input => input.observation_ordinal)).toEqual([1, 2, 2]);
-    expect(seen[2]!.previous_action).toEqual(seen[1]!.previous_action);
-    expect(seen[1]!.previous_action?.request_id).toBe(first.receipt.request_id);
+    expect(seen.map(item => item.control.observation_ordinal)).toEqual([1, 2, 2]);
+    expect(seen[2]!.control.previous_action).toEqual(seen[1]!.control.previous_action);
+    expect(seen[1]!.control.previous_action?.request_id).toBe(first.receipt.request_id);
     await rt.setMode("human");
   });
 
   it("fails closed when a new Snapshot moves to a different Connector session", async () => {
-    const connector = new FixtureConnector(), rt = runtime(connector, async input => completion(input));
+    const connector = new FixtureConnector(), rt = runtime(connector, async () => {});
     await rt.beginPublicStatefulSegment("single_game_episode");
     await rt.setMode("auto");
     expect((await rt.tick()).type).toBe("not_delivered");
@@ -163,7 +189,7 @@ describe("public Snapshot stateful protocol 4", () => {
     }), finalize: vi.fn(async () => {}) } as unknown as AgentRunEvidence;
     const rt = new PolicyRuntime({ manifest: manifest(), connector, runId: "evidence-failure", evidence: ev,
       runtimeIdentity: { version: "test", code_sha256: "d".repeat(64) },
-      publicStatefulPolicy: async input => ({ output: { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }, completion: completion(input) }) });
+      publicStatefulPolicy: async (decision, control) => ({ output: { candidate_digest: decision.candidate_digest, scores: [1], selected_index: 0 }, completion: completion(decision, control) }) });
     await rt.beginPublicStatefulSegment("bounded_policy_segment");
     await expect(rt.setMode("shadow")).rejects.toThrow(/mode change failed closed/);
     expect(events.some(event => event.kind === "public_stateful_episode_ended" && event.payload.reason === "mode_change_evidence_write_failed")).toBe(true);
@@ -171,9 +197,9 @@ describe("public Snapshot stateful protocol 4", () => {
   });
 
   it("passes only a delivered action receipt and verified successor as next-call feedback", async () => {
-    const connector = new FixtureConnector(), seen: PublicStatefulPolicyDecisionInput[] = [];
+    const connector = new FixtureConnector(), seen: PublicStatefulControlMetadata[] = [];
     connector.delivery = "delivered";
-    const rt = runtime(connector, async input => { seen.push(input); return completion(input); });
+    const rt = runtime(connector, async (_decision, control) => { seen.push(control); });
     await rt.beginPublicStatefulSegment("bounded_policy_segment");
     await rt.setMode("auto");
     expect((await rt.tick()).type).toBe("delivered");
@@ -186,7 +212,7 @@ describe("public Snapshot stateful protocol 4", () => {
   });
 
   it("does not retry an unknown delivery under the public stateful port", async () => {
-    const connector = new FixtureConnector(), rt = runtime(connector, async input => completion(input));
+    const connector = new FixtureConnector(), rt = runtime(connector, async () => {});
     connector.delivery = "unknown";
     await rt.beginPublicStatefulSegment("bounded_policy_segment");
     await rt.setMode("auto");
@@ -198,16 +224,16 @@ describe("public Snapshot stateful protocol 4", () => {
 
   it("rotates token and segment after timeout; a late old completion cannot submit", async () => {
     const connector = new FixtureConnector(), events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
-    let firstInput: PublicStatefulPolicyDecisionInput | null = null;
+    let firstInput: { decision: PublicStatefulDecisionContext; control: PublicStatefulControlMetadata } | null = null;
     let resolveFirst!: (value: ReturnType<typeof completion>) => void;
     const rt = new PolicyRuntime({ manifest: manifest(), connector, runId: "late-run", evidence: evidence(events),
       runtimeIdentity: { version: "test", code_sha256: "d".repeat(64) }, policyTimeoutMs: 10,
-      publicStatefulPolicy: async input => {
+      publicStatefulPolicy: async (decision, control) => {
         if (!firstInput) {
-          firstInput = input;
-          return { output: { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }, completion: await new Promise(resolve => { resolveFirst = resolve; }) };
+          firstInput = { decision, control };
+          return { output: { candidate_digest: decision.candidate_digest, scores: [1], selected_index: 0 }, completion: await new Promise(resolve => { resolveFirst = resolve; }) };
         }
-        return { output: { candidate_digest: input.candidate_digest, scores: [1], selected_index: null }, completion: completion(input) };
+        return { output: { candidate_digest: decision.candidate_digest, scores: [1], selected_index: null }, completion: completion(decision, control) };
       } });
     await rt.beginPublicStatefulSegment("single_game_episode");
     await rt.setMode("shadow");
@@ -218,10 +244,10 @@ describe("public Snapshot stateful protocol 4", () => {
     expect((await rt.tick()).type).toBe("shadow");
     expect(events.some(event => event.kind === "public_stateful_observation_segment_reset" && event.payload.memory_continuity === false)).toBe(true);
     expect(events.some(event => event.kind === "public_stateful_episode_ended" && event.payload.requires_explicit_begin === true)).toBe(true);
-    resolveFirst(completion(old));
+    resolveFirst(completion(old.decision, old.control));
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(connector.submitCount).toBe(0);
-    expect(nextSegment.episode_id).not.toBe(old.episode_id);
+    expect(nextSegment.episode_id).not.toBe(old.control.episode_id);
   });
 
   it("accepts only v4 completion watermarks and drops a late response after request cancellation", async () => {
@@ -233,26 +259,26 @@ describe("public Snapshot stateful protocol 4", () => {
     stdout.write(`${JSON.stringify({ schema: POLICY_PORT_V4_SCHEMA, message_type: "ready", adapter: manifest().adapter })}\n`);
     await port.ready();
     const observation = snapshot();
-    const input: PublicStatefulPolicyDecisionInput = { run_id: "run", manifest: manifest(), bundle: { observation, reads: [] },
-      candidate_digest: candidateOrderDigest(["bound-a"]), candidate_count: 1, continuity_token: "token-a",
-      episode_scope: "bounded_policy_segment", episode_id: "episode-a", segment_id: "segment-a", observation_ordinal: 1, previous_action: null };
+    const decision: PublicStatefulDecisionContext = { run_id: "run", manifest: manifest(), bundle: { observation, reads: [] },
+      candidate_digest: candidateOrderDigest(["bound-a"]), candidate_count: 1 };
+    const control: PublicStatefulControlMetadata = { continuity_token: "token-a", episode_scope: "bounded_policy_segment",
+      episode_id: "episode-a", segment_id: "segment-a", observation_ordinal: 1, previous_action: null };
     try {
-      const first = port.decideV4(input, new AbortController().signal, () => {});
+      const first = port.decideV4(decision, control, new AbortController().signal, () => {});
       const firstId = (JSON.parse(writes[0]!) as { request_id: string }).request_id;
-      const done = { continuity_token: input.continuity_token, episode_id: input.episode_id, segment_id: input.segment_id,
-        observation_ordinal: input.observation_ordinal, snapshot_id: observation.snapshot_id, sequence: observation.sequence, previous_action_request_id: null };
+      const done = completion(decision, control);
       stdout.write(`${JSON.stringify({ schema: POLICY_PORT_V4_SCHEMA, message_type: "decision", request_id: firstId,
-        output: { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }, completion: done })}\n`);
+        output: { candidate_digest: decision.candidate_digest, scores: [1], selected_index: 0 }, completion: done })}\n`);
       await expect(first).resolves.toMatchObject({ completion: done });
 
       const controller = new AbortController();
-      const late = port.decideV4(input, controller.signal, () => {});
+      const late = port.decideV4(decision, control, controller.signal, () => {});
       const lateId = (JSON.parse(writes[1]!) as { request_id: string }).request_id;
       const rejected = expect(late).rejects.toThrow("cancelled");
       controller.abort();
       await rejected;
       stdout.write(`${JSON.stringify({ schema: POLICY_PORT_V4_SCHEMA, message_type: "decision", request_id: lateId,
-        output: { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }, completion: done })}\n`);
+        output: { candidate_digest: decision.candidate_digest, scores: [1], selected_index: 0 }, completion: done })}\n`);
       await new Promise<void>(resolve => setImmediate(resolve));
       expect(child.kill).not.toHaveBeenCalled();
     } finally { port.close(); stdin.destroy(); stdout.destroy(); stderr.destroy(); }
@@ -260,21 +286,65 @@ describe("public Snapshot stateful protocol 4", () => {
 
   it("validates a v4 child request against generic Snapshot and the complete ordered catalog", async () => {
     const inputStream = new PassThrough(), outputStream = new PassThrough();
-    const seen: PublicStatefulPolicyDecisionInput[] = [];
-    const policyServer = servePublicStatefulPolicyPort(async input => {
-      seen.push(input);
-      return { output: { candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }, completion: completion(input) };
+    const seen: PublicStatefulDecisionContext[] = [], namespaces: PublicStatefulMemoryNamespace[] = [];
+    const policyServer = servePublicStatefulPolicyPort(namespace => {
+      namespaces.push(namespace);
+      return async decision => {
+        seen.push(decision);
+        return { candidate_digest: decision.candidate_digest, scores: [1], selected_index: 0 };
+      };
     }, inputStream, outputStream);
     const observation = snapshot();
-    const input: PublicStatefulPolicyDecisionInput = { run_id: "run", manifest: manifest(), bundle: { observation, reads: [] },
-      candidate_digest: candidateOrderDigest(["bound-a"]), candidate_count: 1, continuity_token: "token-a",
-      episode_scope: "single_game_episode", episode_id: "episode-a", segment_id: "segment-a", observation_ordinal: 3, previous_action: null };
-    const responseLine = new Promise<string>(resolve => outputStream.once("data", chunk => resolve(chunk.toString().trim())));
-    inputStream.write(`${JSON.stringify({ schema: POLICY_PORT_V4_SCHEMA, message_type: "decide", request_id: "request-a", input })}\n`);
-    const response = JSON.parse(await responseLine) as { message_type: string; completion: ReturnType<typeof completion> };
+    const decision: PublicStatefulDecisionContext = { run_id: "run", manifest: manifest(), bundle: { observation, reads: [] },
+      candidate_digest: candidateOrderDigest(["bound-a"]), candidate_count: 1 };
+    const control: PublicStatefulControlMetadata = { continuity_token: "token-a", episode_scope: "single_game_episode",
+      episode_id: "episode-a", segment_id: "segment-a", observation_ordinal: 1, previous_action: null };
+    const readResponse = () => new Promise<Record<string, unknown>>(resolve => outputStream.once("data", chunk => resolve(JSON.parse(chunk.toString().trim()) as Record<string, unknown>)));
+    const send = async (requestId: string, nextDecision: PublicStatefulDecisionContext, nextControl: PublicStatefulControlMetadata) => {
+      const responseLine = readResponse();
+      inputStream.write(`${JSON.stringify({ schema: POLICY_PORT_V4_SCHEMA, message_type: "decide", request_id: requestId, decision: nextDecision, control: nextControl })}\n`);
+      return responseLine;
+    };
+    const response = await send("request-a", decision, control) as { message_type: string; completion: ReturnType<typeof completion> };
     expect(response.message_type).toBe("decision");
-    expect(response.completion).toEqual(completion(input));
+    expect(response.completion).toEqual(completion(decision, control));
     expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toHaveProperty("control");
+    expect(seen[0]).not.toHaveProperty("previous_action");
+
+    const polledDecision: PublicStatefulDecisionContext = { ...decision, bundle: { observation: { ...observation, observed_at: "2026-10-03T00:00:01.000Z" }, reads: [] } };
+    const cached = await send("request-a-retry", polledDecision, control) as { message_type: string; completion: ReturnType<typeof completion> };
+    expect(cached.message_type).toBe("decision");
+    expect(seen).toHaveLength(1);
+
+    const changedBody: PublicStatefulDecisionContext = { ...decision, bundle: { observation: { ...observation,
+      bound_actions: { ...observation.bound_actions, actions: [action("bound-a", "conflict")] } }, reads: [] } };
+    const conflict = await send("request-a-conflict", changedBody, control);
+    expect(conflict.message_type).toBe("error");
+    expect(seen).toHaveLength(1);
+
+    const nextObservation = snapshot("snapshot-b", 19);
+    const nextDecision: PublicStatefulDecisionContext = { ...decision, bundle: { observation: nextObservation, reads: [] } };
+    const priorAction: PublicStatefulControlMetadata["previous_action"] = {
+      decision_id: "decision-a", source_snapshot_id: "snapshot-a", candidate_digest: decision.candidate_digest,
+      bound_action_id: "bound-a", request_id: "request-previous", receipt: { delivery: "delivered", reason_code: null },
+      successor: { snapshot_id: "snapshot-b", sequence: 19 }
+    };
+    const nextControl = { ...control, observation_ordinal: 2, previous_action: priorAction };
+    const next = await send("request-b", nextDecision, nextControl) as { message_type: string; completion: ReturnType<typeof completion> };
+    expect(next.message_type).toBe("decision");
+    expect(next.completion.previous_action_request_id).toBe("request-previous");
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).not.toHaveProperty("control");
+    expect(seen[1]).not.toHaveProperty("previous_action");
+
+    const newNamespaceControl = { ...control, continuity_token: "token-b", episode_id: "episode-b", segment_id: "segment-b" };
+    const newNamespaceDecision: PublicStatefulDecisionContext = { ...decision, bundle: { observation: snapshot("snapshot-c", 20), reads: [] } };
+    const reset = await send("request-c", newNamespaceDecision, newNamespaceControl) as { message_type: string };
+    expect(reset.message_type).toBe("decision");
+    expect(namespaces).toHaveLength(2);
+    expect(namespaces[1]!.continuity_token).toBe("token-b");
+    expect(seen).toHaveLength(3);
     inputStream.end();
     await policyServer;
     outputStream.destroy();

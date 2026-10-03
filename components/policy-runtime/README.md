@@ -118,6 +118,50 @@ child computation. After too many outstanding cancelled request IDs the port
 closes and kills that child rather than forgetting old IDs. This contract does
 not claim native action execution, actual-action feedback, or model quality.
 
+## Public Snapshot stateful port (generic, opt-in)
+
+`decision-only-ndjson-4` is a model-neutral Runtime protocol for a policy that
+keeps opaque state over explicitly observed public Snapshots. Its manifest uses
+`public_stateful_profile=sts2.policy-runtime/public-observation-stateful-v1`, a
+generic `snapshot-1` representation, and zero Reads. The wire request has two
+sibling objects: `decision` contains the existing Policy Decision context and
+complete ordered catalog; `control` contains the Runtime-minted token, declared
+scope, episode/segment IDs, observation ordinal, and optional prior-action
+receipt/successor evidence. These objects are not merged.
+
+`servePublicStatefulPolicyPort` creates a fresh scorer instance for each control
+namespace. The scorer callback receives only `decision`; it never receives
+`control` or `previous_action`. The helper caches the result for the current
+namespace and ordinal, so an identical poll/retry (ignoring only
+Connector-declared `observed_at`) does not call the scorer or advance its
+hidden state twice. Conflicting reuse, ordinal gaps, or backward ordinals fail
+closed. A new Runtime token and segment create a fresh scorer instance. A
+consumer adapter must project its permitted current-observation/candidate
+features explicitly; it must not serialize control metadata into features.
+
+`previous_action` is protocol execution metadata only. It binds the last
+delivered Connector receipt to the stable successor Snapshot and may repeat
+unchanged on same-observation retries. Its `request_id` is an idempotency key
+for execution association; receipt, action, and successor are not scorer input,
+M2 prior-action features, or model feedback. Completion echoes the associated
+request ID for protocol validation. Any STPD consumer must independently
+validate its own training profile, including observation-only and no-prior-
+action/no-feedback requirements; Policy Runtime does not require or assert an
+STPD profile. This source contains no numeric M2 adapter and does not establish
+M2 runtime readiness.
+
+The operator starts with `POST /v2/stateful-segment/begin` and
+`{"scope":"single_game_episode|bounded_policy_segment"}` while Runtime is in
+Human mode. Runtime mints the episode/segment IDs and continuity token; the
+operator declaration is not proof that the generic Snapshot stream identifies
+game boundaries. Runtime binds the segment to the first Snapshot's declared
+Connector runtime and environment identity and fails closed on detected drift.
+`POST /v2/stateful-segment/end` with `{}` closes it. Failure, timeout, unknown
+delivery, or Human handoff fences the segment; evidence marks memory continuity
+false, and continued operation requires another explicit begin. Therefore this
+protocol supports bounded observed-segment continuity only and cannot attest
+whole-game memory across a reset.
+
 ## Confirmed interaction port (opt-in)
 
 `sts2.policy-runtime/decision-only-ndjson-3` uses `policy-port-3` with an

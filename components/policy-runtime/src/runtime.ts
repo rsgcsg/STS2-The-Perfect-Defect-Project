@@ -3,7 +3,7 @@ import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvi
 import { admitWholeDecision } from "./admission.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { candidateOrderDigest } from "./digest.js";
-import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type ConfirmedInteraction, type DecisionAction, type ManagedCapabilities, type ManagedControlConfirmation, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type PublicPreviousAction, type PublicStatefulAdapterDecision, type PublicStatefulCompletion, type PublicStatefulEpisodeScope, type PublicStatefulPolicy, type PublicStatefulPolicyDecisionInput, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
+import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type ConfirmedInteraction, type DecisionAction, type ManagedCapabilities, type ManagedControlConfirmation, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type PublicPreviousAction, type PublicStatefulAdapterDecision, type PublicStatefulCompletion, type PublicStatefulControlMetadata, type PublicStatefulEpisodeScope, type PublicStatefulPolicy, type PublicStatefulDecisionContext, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
 import { StaleWholeBundleError } from "./connector.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 
@@ -217,6 +217,7 @@ export class PolicyRuntime {
       segment.latest = null;
       segment.observations.clear();
       segment.previousAction = null;
+      this.lastPolicySnapshotId = null;
       this.publicSegmentEvents.push({ type: "reset", value: { episodeId: segment.episodeId, previousSegmentId, segmentId: segment.segmentId, reason } });
       return;
     }
@@ -277,14 +278,15 @@ export class PolicyRuntime {
     return ordinal;
   }
 
-  private validatePublicCompletion(completion: PublicStatefulCompletion, input: PublicStatefulPolicyDecisionInput): void {
+  private validatePublicCompletion(completion: PublicStatefulCompletion, input: PublicStatefulDecisionContext,
+                                   control: PublicStatefulControlMetadata): void {
     const current = this.publicSegment;
     if (completion === null || typeof completion !== "object" ||
         Object.keys(completion).sort().join(",") !== "continuity_token,episode_id,observation_ordinal,previous_action_request_id,segment_id,sequence,snapshot_id" ||
-        completion.continuity_token !== input.continuity_token || completion.episode_id !== input.episode_id || completion.segment_id !== input.segment_id ||
-        completion.observation_ordinal !== input.observation_ordinal || completion.snapshot_id !== input.bundle.observation.snapshot_id || completion.sequence !== input.bundle.observation.sequence ||
-        completion.previous_action_request_id !== (input.previous_action?.request_id ?? null) || !Number.isSafeInteger(completion.sequence) || completion.sequence < 0 ||
-        !current || current.episodeId !== input.episode_id || current.segmentId !== input.segment_id || current.continuityToken !== input.continuity_token ||
+        completion.continuity_token !== control.continuity_token || completion.episode_id !== control.episode_id || completion.segment_id !== control.segment_id ||
+        completion.observation_ordinal !== control.observation_ordinal || completion.snapshot_id !== input.bundle.observation.snapshot_id || completion.sequence !== input.bundle.observation.sequence ||
+        completion.previous_action_request_id !== (control.previous_action?.request_id ?? null) || !Number.isSafeInteger(completion.sequence) || completion.sequence < 0 ||
+        !current || current.episodeId !== control.episode_id || current.segmentId !== control.segment_id || current.continuityToken !== control.continuity_token ||
         current.latest?.snapshotId !== completion.snapshot_id || current.latest.sequence !== completion.sequence || current.latest.ordinal !== completion.observation_ordinal) {
       throw new Error("public stateful completion watermark mismatch");
     }
@@ -373,6 +375,7 @@ export class PolicyRuntime {
         nextOrdinal: 0, latest: null, observations: new Map(), previousAction: null
       };
       this.publicSegment = segment;
+      this.lastPolicySnapshotId = null;
       if (!(await this.appendEvidence("public_stateful_episode_started", { scope, episode_id: segment.episodeId, segment_id: segment.segmentId }))) {
         this.publicSegment = null;
         throw new Error("public stateful segment evidence could not be recorded");
@@ -621,7 +624,8 @@ export class PolicyRuntime {
           bundle.observation.snapshot_id !== candidatePreviousAction.source_snapshot_id
           ? candidatePreviousAction : null;
         publicPreviousActionRequestId = previousAction?.request_id ?? null;
-        const publicInput: PublicStatefulPolicyDecisionInput = { ...input, continuity_token: segment.continuityToken,
+        const publicDecision = input as PublicStatefulDecisionContext;
+        const publicControl: PublicStatefulControlMetadata = { continuity_token: segment.continuityToken,
           episode_scope: segment.scope, episode_id: segment.episodeId, segment_id: segment.segmentId,
           observation_ordinal: observationOrdinal, previous_action: previousAction };
         const onOffer = () => {
@@ -629,10 +633,10 @@ export class PolicyRuntime {
         };
         if (this.options.statefulOfferBoundary !== "port_write") onOffer();
         const result: PublicStatefulAdapterDecision = await withTimeout(
-          Promise.resolve(this.options.publicStatefulPolicy!(publicInput, policyController.signal, onOffer)),
+          Promise.resolve(this.options.publicStatefulPolicy!(publicDecision, publicControl, policyController.signal, onOffer)),
           this.policyTimeoutMs, "policy decision timed out", policyController.signal);
         if (!offered) throw new Error("stateful policy returned before offer");
-        this.validatePublicCompletion(result.completion, publicInput);
+        this.validatePublicCompletion(result.completion, publicDecision, publicControl);
         adapterDecision = result.output;
       } else if (this.stateful) {
         const continuityToken = this.bindContinuity(gameContinuityId!, bundle.observation);
