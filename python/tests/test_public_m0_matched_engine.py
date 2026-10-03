@@ -45,7 +45,15 @@ def _config(source, *, epochs: int = 1, window_steps: int = 8,
     shape = (ScratchShape(vocab, 12, 1, 2, 24, 0.1, source.max_state_tokens)
              if tiny else None)
     return PublicM0MatchedConfig(
-        source_digest=source.identity, max_chain_steps=16, max_total_steps=32,
+        source_digest=source.identity,
+        state_tokenizer_sha256=hashlib.sha256(source.state_tokenizer).hexdigest(),
+        vocab_size=vocab, max_state_tokens=source.max_state_tokens,
+        max_action_bytes=source.max_action_bytes,
+        train_windows_per_epoch=sum(
+            (len(chain.steps) + window_steps - 1) // window_steps
+            for chain in source.chains if chain.split == "train"
+        ),
+        max_chain_steps=16, max_total_steps=32,
         max_total_input_tokens=100_000, max_actions_per_step=2,
         epochs=epochs, window_steps=window_steps, shape_override=shape,
     )
@@ -76,7 +84,8 @@ def test_mid_chain_resume_matches_uninterrupted_and_dev_is_read_only() -> None:
     assert exported["shape_profile"] == "synthetic_override"
     assert exported["checkpoint_digest"] == hashlib.sha256(original.checkpoint()).hexdigest()
     loaded = load_public_m0_matched_weights(
-        original.export_weights(), source, config, completed_epochs=1,
+        original.export_weights(), source.state_tokenizer, config,
+        source_digest=source.identity, completed_epochs=1,
     )
     assert not loaded.training and loaded.state_projection.weight.device.type == "cpu"
 
@@ -162,7 +171,45 @@ def test_cuda_tagged_export_metadata_loads_on_cpu_contract_only() -> None:
     value = decode_checkpoint(producer.export_weights())
     value["config"]["device"] = "cuda:0"
     loaded = load_public_m0_matched_weights(
-        encode_checkpoint(value), source, replace(config, device="cuda:0"),
+        encode_checkpoint(value), source.state_tokenizer,
+        replace(config, device="cuda:0"), source_digest=source.identity,
         completed_epochs=1,
     )
     assert loaded.state_projection.weight.device.type == "cpu"
+
+
+def test_export_loads_and_scores_without_training_source() -> None:
+    torch.set_num_threads(1)
+    source = _source(2, 1)
+    config = _config(source)
+    engine = PublicM0MatchedEngine(source, config)
+    engine.advance_window()
+    step = source.chains[0].steps[0]
+    page = torch.tensor(step.page, dtype=torch.long)
+    actions = tuple(torch.tensor(action, dtype=torch.long) for action in step.byte_actions)
+    engine.model.eval()
+    with torch.no_grad():
+        expected = engine.model(page, actions).clone()
+    raw, tokenizer, digest = engine.export_weights(), source.state_tokenizer, source.identity
+    del engine, source
+    loaded = load_public_m0_matched_weights(
+        raw, tokenizer, config, source_digest=digest, completed_epochs=1,
+    )
+    with torch.no_grad():
+        torch.testing.assert_close(loaded(page, actions), expected, rtol=0, atol=0)
+
+    with pytest.raises(BoundaryError, match="export_identity_mismatch"):
+        load_public_m0_matched_weights(
+            raw, tokenizer, config, source_digest="b" * 64, completed_epochs=1,
+        )
+    with pytest.raises(BoundaryError, match="tokenizer_identity_mismatch"):
+        load_public_m0_matched_weights(
+            raw, tokenizer + b"x", config, source_digest=digest, completed_epochs=1,
+        )
+    value = decode_checkpoint(raw)
+    value["max_action_bytes"] += 1
+    with pytest.raises(BoundaryError, match="export_identity_mismatch"):
+        load_public_m0_matched_weights(
+            encode_checkpoint(value), tokenizer, config,
+            source_digest=digest, completed_epochs=1,
+        )

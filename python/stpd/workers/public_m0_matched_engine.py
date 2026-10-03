@@ -52,6 +52,11 @@ def _device(value: str, *, available: bool) -> torch.device:
 @dataclass(frozen=True)
 class PublicM0MatchedConfig:
     source_digest: str
+    state_tokenizer_sha256: str
+    vocab_size: int
+    max_state_tokens: int
+    max_action_bytes: int
+    train_windows_per_epoch: int
     max_chain_steps: int
     max_total_steps: int
     max_total_input_tokens: int
@@ -68,8 +73,16 @@ class PublicM0MatchedConfig:
     shape_override: ScratchShape | None = None
 
     def validate(self, *, require_device: bool = True) -> None:
-        if (type(self.source_digest) is not str or len(self.source_digest) != 64
-                or any(char not in "0123456789abcdef" for char in self.source_digest)
+        if (any(type(digest) is not str or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)
+                for digest in (self.source_digest, self.state_tokenizer_sha256))
+                or type(self.vocab_size) is not int or self.vocab_size < 258
+                or type(self.max_state_tokens) is not int
+                or not 1 <= self.max_state_tokens <= 1_000_000
+                or type(self.max_action_bytes) is not int
+                or not 1 <= self.max_action_bytes <= 1_000_000
+                or type(self.train_windows_per_epoch) is not int
+                or not 1 <= self.train_windows_per_epoch <= 100_000
                 or type(self.max_chain_steps) is not int or self.max_chain_steps < 1
                 or type(self.max_total_steps) is not int or self.max_total_steps < 1
                 or type(self.max_total_input_tokens) is not int
@@ -78,6 +91,7 @@ class PublicM0MatchedConfig:
                 or not 1 <= self.max_actions_per_step <= 16_384
                 or type(self.seed) is not int or not 0 <= self.seed < 2**63
                 or type(self.epochs) is not int or not 1 <= self.epochs <= 5
+                or self.train_windows_per_epoch * self.epochs > 100_000
                 or type(self.window_steps) is not int or not 1 <= self.window_steps <= 8
                 or type(self.max_window_tokens) is not int
                 or not 1 <= self.max_window_tokens <= 65_536
@@ -152,29 +166,36 @@ def _implementation_digest() -> str:
     return digest.hexdigest()
 
 
-def _shape(source: PublicM2Input, config: PublicM0MatchedConfig) -> ScratchShape:
-    vocab_size = Tokenizer.from_str(source.state_tokenizer.decode()).get_vocab_size()
-    expected = ScratchShape(vocab_size, 384, 2, 6, 1536, 0.1, source.max_state_tokens)
+def _shape(config: PublicM0MatchedConfig) -> ScratchShape:
+    expected = ScratchShape(config.vocab_size, 384, 2, 6, 1536, 0.1,
+                            config.max_state_tokens)
     shape = expected if config.shape_override is None else config.shape_override
-    if shape.vocab_size != vocab_size or shape.max_tokens != source.max_state_tokens:
+    if shape.vocab_size != config.vocab_size or shape.max_tokens != config.max_state_tokens:
         raise BoundaryError(_STAGE, "shape_source_mismatch")
     return shape
 
 
-def _construct(source: PublicM2Input, config: PublicM0MatchedConfig,
+def _validate_tokenizer(raw: bytes, config: PublicM0MatchedConfig) -> None:
+    if (type(raw) is not bytes
+            or hashlib.sha256(raw).hexdigest() != config.state_tokenizer_sha256
+            or Tokenizer.from_str(raw.decode()).get_vocab_size() != config.vocab_size):
+        raise BoundaryError(_STAGE, "tokenizer_identity_mismatch")
+
+
+def _construct(config: PublicM0MatchedConfig,
                *, target: torch.device, total_updates: int) -> LightActionM0Scorer:
-    shape = _shape(source, config)
+    shape = _shape(config)
     if config.shape_override is None:
         old = LightActionM0Config(
             seed=config.seed, steps=total_updates, learning_rate=config.learning_rate,
             weight_decay=config.weight_decay, gradient_clip=config.gradient_clip,
-            device="cpu", max_state_tokens=source.max_state_tokens,
-            max_action_bytes=source.max_action_bytes, public_profile="public_compact",
+            device="cpu", max_state_tokens=config.max_state_tokens,
+            max_action_bytes=config.max_action_bytes, public_profile="public_compact",
         )
         state_codec = {
             "family": "train-only-byte-bpe", "fit_scope": "exact-frozen-train-membership",
-            "sha256": hashlib.sha256(source.state_tokenizer).hexdigest(),
-            "vocab_size": shape.vocab_size, "max_tokens": source.max_state_tokens,
+            "sha256": config.state_tokenizer_sha256,
+            "vocab_size": shape.vocab_size, "max_tokens": config.max_state_tokens,
         }
         model, _ = construct_model(old, shape.vocab_size, state_codec=state_codec)
         if not isinstance(model, LightActionM0Scorer):
@@ -184,7 +205,7 @@ def _construct(source: PublicM2Input, config: PublicM0MatchedConfig,
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(config.seed)
             model = LightActionM0Scorer(
-                ScratchTokenCore(shape), max_action_bytes=source.max_action_bytes,
+                ScratchTokenCore(shape), max_action_bytes=config.max_action_bytes,
                 initialization_seed=_scoring_seed(config.seed), public_profile="public_compact",
             )
     return model.to(target)
@@ -205,6 +226,10 @@ class PublicM0MatchedEngine:
             raise BoundaryError(_STAGE, "source_identity_mismatch")
         if read_public_m2_input(source.payload_bytes(), source.state_tokenizer) != source:
             raise BoundaryError(_STAGE, "invalid_compiled_source")
+        _validate_tokenizer(source.state_tokenizer, config)
+        if (source.max_state_tokens != config.max_state_tokens
+                or source.max_action_bytes != config.max_action_bytes):
+            raise BoundaryError(_STAGE, "source_limits_mismatch")
         self.source, self.config = source, config
         self.device = _device(config.device, available=True)
         self.train_chains = tuple(chain for chain in source.chains if chain.split == "train")
@@ -213,10 +238,12 @@ class PublicM0MatchedEngine:
             raise BoundaryError(_STAGE, "train_dev_required")
         self._preflight_limits()
         self.total_windows = sum(self._window_count(chain) for chain in self.train_chains)
+        if self.total_windows != config.train_windows_per_epoch:
+            raise BoundaryError(_STAGE, "train_window_count_mismatch")
         self.total_updates = self.total_windows * config.epochs
         if self.total_updates > 100_000:
             raise BoundaryError(_STAGE, "update_limit_exceeded")
-        self.model = _construct(source, config, target=self.device,
+        self.model = _construct(config, target=self.device,
                                 total_updates=self.total_updates)
         self.parameters = tuple(parameter for parameter in self.model.parameters()
                                 if parameter.requires_grad)
@@ -411,7 +438,7 @@ class PublicM0MatchedEngine:
         rng = {"cpu": cpu_rng, **({} if cuda_rng is None else {"cuda": cuda_rng})}
         return encode_checkpoint({
             "schema": CHECKPOINT_SCHEMA, "config": asdict(self.config),
-            "core_shape": asdict(_shape(self.source, self.config)),
+            "core_shape": asdict(_shape(self.config)),
             "source_digest": self.source.identity, "runtime": self.runtime,
             "completed_epochs": self.completed_epochs, "chain_index": self.chain_index,
             "window_cursor": self.window_cursor, "label_count": self.label_count,
@@ -434,7 +461,7 @@ class PublicM0MatchedEngine:
                                "parameter_names", "cpu_rng", "cuda_rng", "rng_digest"}
                     or value["schema"] != CHECKPOINT_SCHEMA
                     or value["config"] != asdict(self.config)
-                    or value["core_shape"] != asdict(_shape(self.source, self.config))
+                    or value["core_shape"] != asdict(_shape(self.config))
                     or value["source_digest"] != self.source.identity
                     or value["runtime"] != self.runtime
                     or value["parameter_names"] != self.parameter_names):
@@ -518,8 +545,13 @@ class PublicM0MatchedEngine:
         weights = _weights(self.model)
         return encode_checkpoint({
             "schema": EXPORT_SCHEMA, "config": asdict(self.config),
-            "core_shape": asdict(_shape(self.source, self.config)),
+            "core_shape": asdict(_shape(self.config)),
             "source_digest": self.source.identity,
+            "state_tokenizer_sha256": self.config.state_tokenizer_sha256,
+            "vocab_size": self.config.vocab_size,
+            "max_state_tokens": self.config.max_state_tokens,
+            "max_action_bytes": self.config.max_action_bytes,
+            "train_windows_per_epoch": self.total_windows,
             "implementation_sha256": self.runtime["implementation_sha256"],
             "completed_epochs": self.completed_epochs,
             "optimizer_updates": self.optimizer_updates, "run_complete": self.finished,
@@ -531,24 +563,32 @@ class PublicM0MatchedEngine:
 
 
 def load_public_m0_matched_weights(
-    raw: bytes, source: PublicM2Input, config: PublicM0MatchedConfig,
-    *, completed_epochs: int, inference_device: str = "cpu",
+    raw: bytes, state_tokenizer: bytes, config: PublicM0MatchedConfig,
+    *, source_digest: str, completed_epochs: int, inference_device: str = "cpu",
 ) -> LightActionM0Scorer:
-    """Load an exact epoch export without requiring its training CUDA device."""
+    """Load an exact epoch export without retaining labeled train/dev chains."""
     config.validate(require_device=False)
     target = _device(inference_device, available=True)
     try:
+        _validate_tokenizer(state_tokenizer, config)
         value = decode_checkpoint(raw)
         if (set(value) != {"schema", "config", "core_shape", "source_digest",
+                           "state_tokenizer_sha256", "vocab_size", "max_state_tokens",
+                           "max_action_bytes", "train_windows_per_epoch",
                            "implementation_sha256",
                            "completed_epochs", "optimizer_updates", "run_complete",
                            "shape_profile", "checkpoint_digest", "weights",
                            "weights_digest"}
                 or value["schema"] != EXPORT_SCHEMA
                 or value["config"] != asdict(config)
-                or value["core_shape"] != asdict(_shape(source, config))
-                or config.source_digest != source.identity
-                or value["source_digest"] != source.identity
+                or value["core_shape"] != asdict(_shape(config))
+                or source_digest != config.source_digest
+                or value["source_digest"] != source_digest
+                or value["state_tokenizer_sha256"] != config.state_tokenizer_sha256
+                or value["vocab_size"] != config.vocab_size
+                or value["max_state_tokens"] != config.max_state_tokens
+                or value["max_action_bytes"] != config.max_action_bytes
+                or value["train_windows_per_epoch"] != config.train_windows_per_epoch
                 or value["implementation_sha256"] != _implementation_digest()
                 or type(completed_epochs) is not int or completed_epochs not in _EXPORT_EPOCHS
                 or completed_epochs > config.epochs
@@ -557,17 +597,15 @@ def load_public_m0_matched_weights(
                 or value["shape_profile"] != ("standard_384" if config.shape_override is None
                                              else "synthetic_override")
                 or type(value["optimizer_updates"]) is not int
-                or value["optimizer_updates"] != completed_epochs * sum(
-                    (len(chain.steps) + config.window_steps - 1) // config.window_steps
-                    for chain in source.chains if chain.split == "train")
+                or value["optimizer_updates"] != (completed_epochs
+                                                  * config.train_windows_per_epoch)
                 or type(value["checkpoint_digest"]) is not str
                 or len(value["checkpoint_digest"]) != 64
                 or any(char not in "0123456789abcdef"
                        for char in value["checkpoint_digest"])):
             raise BoundaryError(_STAGE, "export_identity_mismatch")
-        windows = sum((len(chain.steps) + config.window_steps - 1) // config.window_steps
-                      for chain in source.chains if chain.split == "train")
-        model = _construct(source, config, target=target, total_updates=windows * config.epochs)
+        model = _construct(config, target=target,
+                           total_updates=config.train_windows_per_epoch * config.epochs)
         weights = value["weights"]
         expected = model.state_dict()
         if (not isinstance(weights, dict) or set(weights) != set(expected)
