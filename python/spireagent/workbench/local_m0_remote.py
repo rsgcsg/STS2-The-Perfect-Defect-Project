@@ -14,7 +14,7 @@ from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ROOT
 from spireagent.workbench.local_training import (
-    REMOTE_MAX_REQUEST_BYTES,
+    REMOTE_MAX_LOGICAL_REQUEST_BYTES,
     REMOTE_MAX_TIMEOUT_SECONDS,
     REMOTE_MAX_TOTAL_STEPS,
     LocalTrainingService,
@@ -32,6 +32,7 @@ from stpd.cloud_jobs.m0_modal import (
     ModalM0RuntimeEvidence,
     ModalM0Target,
 )
+from stpd.cloud_jobs.m0_request_wire import encode_m0_request
 from stpd.workers.token_ranking import LightActionM0Config, decode_config
 from stpd.workers.token_remote_update import (
     TokenRemoteUpdateRequest,
@@ -120,7 +121,7 @@ class LocalM0RemoteController:
             store, latest["request_ref"], latest["request_sha256"],
             object_prefix="local-training/remote-requests/",
             chunk_prefix="local-training/remote-request-chunks/",
-            maximum=REMOTE_MAX_REQUEST_BYTES, label="remote_request",
+            maximum=REMOTE_MAX_LOGICAL_REQUEST_BYTES, label="remote_request",
         )
         return current, request_bytes
 
@@ -183,9 +184,7 @@ class LocalM0RemoteController:
             store, owner, run_id, producer, operation_id, target_step,
             attempt_id=attempt_id,
         )
-        request_bytes = request.to_bytes()
-        if len(request_bytes) > REMOTE_MAX_REQUEST_BYTES:
-            raise BoundaryError("local_m0_remote", "request_size_limit")
+        request_bytes = encode_m0_request(request.to_bytes())
         spec = self._spec(request, self.settings)
         target = self._target(spec, config.steps)
         provider = self.provider_factory(spec=spec)
@@ -269,17 +268,18 @@ class LocalM0RemoteController:
         config = request.config
         if not isinstance(config, LightActionM0Config):
             raise BoundaryError("local_m0_remote", "m0_config_required")
+        request_bytes = encode_m0_request(request.to_bytes())
         spec = self._spec(request, settings, previous_spec.resource_plan)
         provider = self.provider_factory(spec=spec)
         provider.verify_account_id(spec.account_id)
         self.training.resume_remote_m0(
-            operation_id, request_bytes=request.to_bytes(), target_step=target_step,
+            operation_id, request_bytes=request_bytes, target_step=target_step,
         )
         self.training.persist_remote_attempt_spec(operation_id, spec.to_bytes())
         try:
             app_ref = provider.prepare_app(spec)
             self.training.persist_remote_app_ref(operation_id, app_ref.to_bytes())
-            handle = provider.submit(request.to_bytes(), app_ref)
+            handle = provider.submit(request_bytes, app_ref)
             self.training.record_remote_observation(
                 operation_id, state="running", provider_terminal=False,
                 handle_bytes=handle.to_bytes(),

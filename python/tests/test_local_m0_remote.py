@@ -140,6 +140,7 @@ class _FakeModalState:
         self.cancels = 0
         self.stops = 0
         self.request = None
+        self.request_bytes = None
         self.result_bytes = None
         self.handle = None
         self.runtime_evidence = None
@@ -232,6 +233,7 @@ class _FakeProvider:
             target.target_runtime.torch_version, target.target_runtime.cpu_threads,
         )
         self.state.request = request
+        self.state.request_bytes = request_bytes
         self.state.result_bytes = self._make_result(request)
         self.state.submits += 1
         self.state.handle = ModalM0Call(
@@ -979,9 +981,17 @@ def test_reconcile_closes_reservation_crash_before_attempt_spec(
         torch.set_num_threads(previous_threads)
 
 
+@pytest.mark.parametrize("compressed", [False, True])
 def test_remote_controller_restarts_by_polling_saved_handle_and_completes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, compressed: bool,
 ) -> None:
+    if compressed:
+        from stpd.cloud_jobs.m0_request_wire import encode_m0_request
+
+        monkeypatch.setattr(
+            "spireagent.workbench.local_m0_remote.encode_m0_request",
+            lambda raw: encode_m0_request(raw, compress=True),
+        )
     case = _case(tmp_path, monkeypatch, steps=1)
     torch, previous_threads, service, store, _owner, _producer, run, _config, _, _ = case
     try:
@@ -1021,9 +1031,18 @@ def test_remote_controller_restarts_by_polling_saved_handle_and_completes(
         torch.set_num_threads(previous_threads)
 
 
+@pytest.mark.parametrize("compressed", [False, True])
 def test_partial_checkpoint_is_accepted_and_resumed_through_real_core(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, compressed: bool,
 ) -> None:
+    if compressed:
+        from stpd.cloud_jobs import m0_request_wire
+
+        encode = m0_request_wire.encode_m0_request
+        monkeypatch.setattr(
+            "spireagent.workbench.local_m0_remote.encode_m0_request",
+            lambda raw: encode(raw, compress=True),
+        )
     case = _case(tmp_path, monkeypatch, steps=2)
     torch, previous_threads, service, store, _owner, _producer, run, _config, _, _ = case
     try:
@@ -1041,6 +1060,16 @@ def test_partial_checkpoint_is_accepted_and_resumed_through_real_core(
         assert attempt["provider_result_sha256"]
         assert attempt["runtime_evidence_sha256"]
         assert service.status()["operation"]["status"] == "paused"
+        saved, logical = _controller(service, state)._saved(operation["operation_id"])
+        assert logical == state.request.to_bytes()
+        assert saved["remote"]["attempts"][-1]["request_sha256"] == (
+            hashlib.sha256(logical).hexdigest()
+        )
+        if compressed:
+            from stpd.cloud_jobs.m0_request_wire import REQUEST_WIRE_MAGIC
+
+            assert state.request_bytes.startswith(REQUEST_WIRE_MAGIC)
+            assert state.request_bytes != logical
         resumed = _controller(service, state).resume(
             operation["operation_id"], 2, wait_seconds=0,
         )

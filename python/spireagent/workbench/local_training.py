@@ -47,7 +47,11 @@ from spireagent.workbench.memory_recipe import (
     recipe_for_memory_config,
 )
 from spireagent.workbench.research_process import private_child as _private_child
-from stpd.cloud_jobs.m0_modal import MAX_M0_REQUEST_BYTES
+from stpd.cloud_jobs.m0_request_wire import (
+    MAX_M0_LOGICAL_REQUEST_BYTES,
+    MAX_M0_REQUEST_BYTES,
+    decode_m0_request,
+)
 
 SCHEMA = "stpd/local-training-operation-v1"
 SCHEMA_V2 = "stpd/local-training-operation-v2"
@@ -86,6 +90,7 @@ REMOTE_CONTROL_PREFIX = "local-training/remote-control/"
 REMOTE_OPERATION_HISTORY_PREFIX = "local-training/remote-operation-history/"
 REMOTE_CHUNK_BYTES = 8 * 1024 * 1024
 REMOTE_MAX_REQUEST_BYTES = MAX_M0_REQUEST_BYTES
+REMOTE_MAX_LOGICAL_REQUEST_BYTES = MAX_M0_LOGICAL_REQUEST_BYTES
 REMOTE_MAX_RESULT_BYTES = 128 * 1024 * 1024
 REMOTE_MAX_CONTROL_BYTES = 128 * 1024
 REMOTE_MAX_TIMEOUT_SECONDS = 900
@@ -316,7 +321,7 @@ def _remote_request_identity(raw: bytes) -> dict[str, Any]:
     if not isinstance(raw, bytes) or not 1 <= len(raw) <= REMOTE_MAX_REQUEST_BYTES:
         raise BoundaryError("local_training", "remote_request_size_limit")
     try:
-        value = decode_json(raw)
+        value = decode_json(decode_m0_request(raw))
         if (not isinstance(value, dict)
                 or value.get("schema") != REMOTE_REQUEST_SCHEMA):
             raise ValueError
@@ -771,11 +776,14 @@ def _read_remote_blob(store: ManifestArtifactStore, object_ref: str, sha256: str
 
 
 def _persist_remote_request(store: ManifestArtifactStore, request_bytes: bytes) -> tuple[str, str]:
-    """Store exact typed request bytes in bounded chunks, outside manifest inventory."""
+    """Store canonical logical bytes, retaining the legacy request hash and refs."""
+    if (not isinstance(request_bytes, bytes)
+            or not 1 <= len(request_bytes) <= REMOTE_MAX_REQUEST_BYTES):
+        raise BoundaryError("local_training", "remote_request_size_limit")
     return _persist_remote_blob(
-        store, request_bytes, object_prefix=REMOTE_REQUEST_PREFIX,
+        store, decode_m0_request(request_bytes), object_prefix=REMOTE_REQUEST_PREFIX,
         chunk_prefix=REMOTE_REQUEST_CHUNK_PREFIX,
-        maximum=REMOTE_MAX_REQUEST_BYTES, label="remote_request",
+        maximum=REMOTE_MAX_LOGICAL_REQUEST_BYTES, label="remote_request",
     )
 
 
@@ -795,7 +803,7 @@ def _read_remote_evidence(
     request_bytes = _read_remote_blob(
         store, attempt["request_ref"], attempt["request_sha256"],
         object_prefix=REMOTE_REQUEST_PREFIX, chunk_prefix=REMOTE_REQUEST_CHUNK_PREFIX,
-        maximum=REMOTE_MAX_REQUEST_BYTES, label="remote_request",
+        maximum=REMOTE_MAX_LOGICAL_REQUEST_BYTES, label="remote_request",
     )
     result_bytes = _read_remote_blob(
         store, attempt["provider_result_ref"], attempt["provider_result_sha256"],
@@ -1264,7 +1272,7 @@ class LocalTrainingService:
                 store, latest["request_ref"], latest["request_sha256"],
                 object_prefix=REMOTE_REQUEST_PREFIX,
                 chunk_prefix=REMOTE_REQUEST_CHUNK_PREFIX,
-                maximum=REMOTE_MAX_REQUEST_BYTES, label="remote_request",
+                maximum=REMOTE_MAX_LOGICAL_REQUEST_BYTES, label="remote_request",
             )
             spec_bytes, app_ref_bytes, handle_bytes = _remote_provider_bytes(store, latest)
             if spec_bytes is None or app_ref_bytes is not None or handle_bytes is not None:
@@ -1386,7 +1394,7 @@ class LocalTrainingService:
                 store, latest["request_ref"], latest["request_sha256"],
                 object_prefix=REMOTE_REQUEST_PREFIX,
                 chunk_prefix=REMOTE_REQUEST_CHUNK_PREFIX,
-                maximum=REMOTE_MAX_REQUEST_BYTES, label="remote_request",
+                maximum=REMOTE_MAX_LOGICAL_REQUEST_BYTES, label="remote_request",
             )
             spec_bytes, app_ref_bytes, handle_bytes = _remote_provider_bytes(store, latest)
             if (spec_bytes is None or app_ref_bytes is not None or handle_bytes is not None):
@@ -1531,7 +1539,7 @@ class LocalTrainingService:
                             or new_request.attempt_id != attempt_id
                             or new_request.input_id != old_request.input_id
                             or new_spec.attempt_id != attempt_id
-                            or new_spec.request_sha256 != hashlib.sha256(request_bytes).hexdigest()
+                            or new_spec.request_sha256 != new_request.request_sha256
                             or new_spec.producer != new_request.producer
                             or new_spec.target_runtime != new_request.target_runtime
                             or new_spec.app_name == old_spec.app_name
@@ -2071,7 +2079,7 @@ class LocalTrainingService:
             request_bytes = _read_remote_blob(
                 store, latest["request_ref"], latest["request_sha256"],
                 object_prefix=REMOTE_REQUEST_PREFIX, chunk_prefix=REMOTE_REQUEST_CHUNK_PREFIX,
-                maximum=REMOTE_MAX_REQUEST_BYTES, label="remote_request",
+                maximum=REMOTE_MAX_LOGICAL_REQUEST_BYTES, label="remote_request",
             )
             from stpd.cloud_jobs.m0_modal import M0AttemptSpec
             from stpd.workers.token_remote_update import TokenRemoteUpdateRequest

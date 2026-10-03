@@ -33,6 +33,7 @@ from spireagent.json_boundary import (
 )
 from spireagent.storage.store import ArtifactStore
 
+from ..cloud_jobs.m0_request_wire import MAX_M0_LOGICAL_REQUEST_BYTES, decode_m0_request
 from ..fullrun.features import ModelSample
 from ..fullrun.light_action_inputs import (
     CANONICAL_SCHEMA,
@@ -71,7 +72,7 @@ from .worker import WorkerResult
 
 REQUEST_SCHEMA = "stpd/token-remote-update-request-v1"
 RESULT_SCHEMA = "stpd/token-remote-update-result-v1"
-MAX_REQUEST_BYTES = 1024 * 1024 * 1024
+MAX_REQUEST_BYTES = MAX_M0_LOGICAL_REQUEST_BYTES
 MAX_INDEXED_TRAIN_ROWS = 1_000_000
 
 
@@ -376,6 +377,7 @@ class TokenRemoteUpdateRequest:
 
     @classmethod
     def from_bytes(cls, raw: bytes) -> TokenRemoteUpdateRequest:
+        raw = decode_m0_request(raw)
         if len(raw) > MAX_REQUEST_BYTES:
             raise BoundaryError("token_remote_update", "request_size_limit")
         value = object_fields(decode_json(raw), {

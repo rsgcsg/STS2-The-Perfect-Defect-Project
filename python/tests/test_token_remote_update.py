@@ -14,6 +14,7 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ManifestArtifactStore
+from stpd.cloud_jobs.m0_request_wire import encode_m0_request
 from stpd.fullrun.light_action_inputs import load_light_action_inputs
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.token_ranking import (
@@ -95,6 +96,13 @@ def test_remote_update_request_transports_train_only_and_validates_exact_checkpo
         assert all(identity.encode("utf-8") not in wire for identity in dev_ids)
         decoded_request = TokenRemoteUpdateRequest.from_bytes(wire)
         assert decoded_request == request
+        compressed = encode_m0_request(wire, compress=True)
+        decoded_request = TokenRemoteUpdateRequest.from_bytes(compressed)
+        assert decoded_request == request
+        assert decoded_request.to_bytes() == wire
+        assert decoded_request.request_sha256 == hashlib.sha256(wire).hexdigest()
+        with pytest.raises(BoundaryError, match="noncanonical_request"):
+            TokenRemoteUpdateRequest.from_bytes(encode_m0_request(wire + b" ", compress=True))
 
         before = store.manifest_ids()
         result = execute_token_remote_update(decoded_request)
@@ -169,9 +177,12 @@ def test_remote_update_resume_uses_exact_existing_checkpoint_and_rejects_tamperi
         assert request.resume_manifest == checkpoint
         assert request.resume_checkpoint == checkpoint_bytes
 
-        resumed = execute_token_remote_update(TokenRemoteUpdateRequest.from_bytes(
-            request.to_bytes(),
-        ))
+        logical = request.to_bytes()
+        compressed = encode_m0_request(logical, compress=True)
+        decoded = TokenRemoteUpdateRequest.from_bytes(compressed)
+        assert decoded == TokenRemoteUpdateRequest.from_bytes(logical) == request
+        assert decoded.request_sha256 == hashlib.sha256(logical).hexdigest()
+        resumed = execute_token_remote_update(decoded)
         expected = TokenRankingEngine(inputs, config)
         expected.restore(checkpoint_bytes)
         expected.advance()

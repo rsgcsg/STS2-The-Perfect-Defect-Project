@@ -35,6 +35,7 @@ from spireagent.json_boundary import BoundaryError, decode_json, digest, json_by
 from spireagent.source import REPOSITORY, source_identity
 
 from ..canonical import semantic_hash
+from .m0_request_wire import MAX_M0_REQUEST_BYTES, decode_m0_request
 
 MODAL_SDK_VERSION = "1.5.5"
 CALL_SCHEMA = "stpd/modal-m0-call-v3"
@@ -45,9 +46,8 @@ M0_MODAL_FUNCTION_NAME = "token_remote_update"
 MAX_MODAL_COMMAND_SECONDS = 120
 MAX_MODAL_CONTROL_SECONDS = 5
 
-# A resumed request base64-embeds its checkpoint; leave headroom over the current
-# ~81-MiB checkpoint result. Modal object-stores payloads over 2 MiB automatically.
-MAX_M0_REQUEST_BYTES = 256 * 1024 * 1024
+# The wire cap also applies to compressed requests. Modal object-stores payloads
+# over 2 MiB automatically; canonical logical request identity is unchanged.
 MAX_M0_RESULT_BYTES = 128 * 1024 * 1024
 MAX_POLL_TIMEOUT_SECONDS = 60.0
 _FRAME_MAGIC = b"STPD-M0-MODAL-RESULT\x00"
@@ -1118,9 +1118,11 @@ def _worker_main() -> int:
         ):
             raise BoundaryError("modal_m0", "resource_plan_mismatch")
         request_bytes = sys.stdin.buffer.read(MAX_M0_REQUEST_BYTES + 1)
+        if not 1 <= len(request_bytes) <= MAX_M0_REQUEST_BYTES:
+            raise BoundaryError("modal_m0", "request_size_limit")
         request = _decode_request(request_bytes)
         if (
-            hashlib.sha256(request_bytes).hexdigest() != request_sha256
+            request.request_sha256 != request_sha256
             or request.attempt_id != attempt_id
             or _request_runtime(request) != (torch_version, cpu_threads)
         ):
@@ -1765,7 +1767,7 @@ class ModalM0Provider:
         ):
             raise BoundaryError("modal_m0", "request_size_limit")
         request = _decode_request(request_bytes)
-        if request.to_bytes() != request_bytes:
+        if request.to_bytes() != decode_m0_request(request_bytes):
             raise BoundaryError("modal_m0", "noncanonical_request")
         if (
             request.attempt_id != target.attempt_id

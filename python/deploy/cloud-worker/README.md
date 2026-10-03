@@ -16,6 +16,17 @@ The portable tests never deploy an App, fetch weights or use paid compute.
 
 ## Input and output
 
+The M0 request transport accepts legacy canonical request JSON and a bounded
+version-1 zlib frame (`STPD-M0-REQUEST`, NUL, version byte 1, big-endian uint64
+logical length, 32-byte SHA256, then one zlib stream). The wire limit remains
+256 MiB; declared and actual decompressed bytes are bounded at 1 GiB. Malformed,
+truncated, trailing, digest-mismatched and noncanonical logical requests fail
+before training. The local M0 controller frames only requests exceeding the
+wire limit, preserving legacy wire bytes for smaller requests. Owner storage,
+attempts, provider environment pins, results and recovery bind the original
+canonical logical request hash; a frame is not a new training identity. A new
+exact-source worker image is required before using this transport in compute.
+
 A CPU controller publishes `FeatureJobSpec` + `publish_feature_job` against an already
 validated ModelView. Supply the exact target Qwen identity, hidden size, batch size, fixed
 TrainingConfig and optional protocol. The Qwen identity comes from the qualified target

@@ -2044,9 +2044,13 @@ def test_real_train_only_request_round_trips_through_mock_modal_and_local_valida
         torch.set_num_threads(previous_threads)
 
 
+@pytest.mark.parametrize("compressed", [False, True])
 def test_deployment_entry_declares_fixed_image_bounded_ephemeral_worker_without_running_it(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, compressed: bool,
 ):
+    from stpd.cloud_jobs.m0_request_wire import encode_m0_request
+
+    wire_bytes = encode_m0_request(b"request", compress=compressed)
     configured: dict[str, object] = {}
     subprocess_calls: list[tuple[list[str], dict[str, object]]] = []
 
@@ -2115,7 +2119,7 @@ def test_deployment_entry_declares_fixed_image_bounded_ephemeral_worker_without_
     assert "secrets" not in configured and "volumes" not in configured
     assert configured["env"]["OMP_NUM_THREADS"] == str(OBSERVED["cpu_threads"])
     assert configured["env"]["MKL_NUM_THREADS"] == str(OBSERVED["cpu_threads"])
-    assert namespace["token_remote_update"](b"request") == b"bounded-worker-frame"
+    assert namespace["token_remote_update"](wire_bytes) == b"bounded-worker-frame"
     assert len(subprocess_calls) == 1
     command, options = subprocess_calls[0]
     assert command == [
@@ -2124,7 +2128,7 @@ def test_deployment_entry_declares_fixed_image_bounded_ephemeral_worker_without_
         "stpd.cloud_jobs.m0_modal",
     ]
     assert options["cwd"] == "/opt/stpd/python"
-    assert options["input"] == b"request"
+    assert options["input"] == wire_bytes
     assert options["timeout"] == 900
     assert "PYTHONPATH" not in options["env"]
     assert "PYTHONHOME" not in options["env"]
@@ -2223,3 +2227,59 @@ def test_prepare_stopped_proof_rejects_incomplete_foreign_or_changed_evidence(ch
         provider.inspect_prepare_stopped(spec)
     assert provider.target is None and provider.target_runtime is None
     assert cli.deploy_calls == cli.stop_calls == sdk.function.spawn_calls == []
+
+
+def test_compressed_provider_submission_retains_canonical_hash_and_wire_size(
+    parse_request: dict[bytes, FakeRequest],
+) -> None:
+    from stpd.cloud_jobs.m0_request_wire import encode_m0_request
+
+    logical = b"request"
+    framed = encode_m0_request(logical, compress=True)
+    request = _request(logical)
+    parse_request[framed] = request
+    function = FakeFunction()
+    provider = _provider(sdk=FakeSDK(function), request=request)
+    handle = provider.submit(framed)
+    assert function.spawn_calls == [framed]
+    assert handle.request_sha256 == hashlib.sha256(logical).hexdigest()
+    assert handle.request_size_bytes == len(framed)
+
+
+def test_compressed_worker_stdin_binds_logical_hash_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+
+    from stpd.cloud_jobs.m0_request_wire import encode_m0_request
+
+    logical = b"request"
+    framed = encode_m0_request(logical, compress=True)
+    request = _request(logical)
+    monkeypatch.setattr(m0_modal, "_decode_request", lambda raw: request if raw == framed else None)
+    observed = []
+    monkeypatch.setattr(
+        m0_modal, "execute_m0_request_bytes",
+        lambda raw, **_kwargs: observed.append(raw) or b"worker-response",
+    )
+    monkeypatch.setenv("STPD_M0_MODAL_IMAGE_ID", "im-image01")
+    monkeypatch.setenv("STPD_M0_MODAL_ATTEMPT_ID", request.attempt_id)
+    monkeypatch.setenv("STPD_M0_MODAL_REQUEST_SHA256", request.request_sha256)
+    monkeypatch.setenv("STPD_M0_SOURCE_REVISION", PRODUCER.source_revision)
+    monkeypatch.setenv("STPD_M0_UV_LOCK_SHA256", PRODUCER.uv_lock_sha256)
+    monkeypatch.setenv("STPD_M0_TORCH_VERSION", request.torch_version)
+    monkeypatch.setenv("STPD_M0_CPU_THREADS", str(request.cpu_threads))
+    monkeypatch.setenv("STPD_M0_MODAL_PLAN_SHA256", m0_modal.M0_PILOT_EXECUTION_PLAN.plan_sha256)
+    stdout = io.BytesIO()
+    monkeypatch.setattr(
+        m0_modal, "sys",
+        SimpleNamespace(stdin=SimpleNamespace(buffer=io.BytesIO(framed)),
+                        stdout=SimpleNamespace(buffer=stdout)),
+    )
+    assert m0_modal._worker_main() == 0
+    assert observed == [framed]
+    assert stdout.getvalue() == b"worker-response"
+    monkeypatch.setenv("STPD_M0_MODAL_REQUEST_SHA256", hashlib.sha256(framed).hexdigest())
+    m0_modal.sys.stdin.buffer = io.BytesIO(framed)
+    assert m0_modal._worker_main() == 1
+    assert observed == [framed]
