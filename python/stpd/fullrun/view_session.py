@@ -18,6 +18,8 @@ from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ArtifactStore
 
+from .selection_session import _local_store_identity
+
 if TYPE_CHECKING:
     from .features import ModelSample
 
@@ -25,6 +27,7 @@ if TYPE_CHECKING:
 @dataclass
 class ViewSession:
     store: ArtifactStore
+    store_identity: tuple[str, int, int] | None = None
     identity: str | None = None
     value: tuple[Manifest, tuple[ModelSample, ...]] | None = None
     hits: int = 0
@@ -37,12 +40,20 @@ _CURRENT: ContextVar[ViewSession | None] = ContextVar("verified_model_views", de
 @contextmanager
 def verified_model_views(store: ArtifactStore) -> Iterator[ViewSession]:
     """Opt in for one owner command; nested/task contexts restore their prior scope."""
-    session = ViewSession(store)
+    session = ViewSession(store, store_identity=_local_store_identity(store))
     token = _CURRENT.set(session)
     try:
         yield session
     finally:
+        session.identity = session.value = None
         _CURRENT.reset(token)
+
+
+def _same_store(session: ViewSession, store: ArtifactStore) -> bool:
+    if session.store_identity is not None:
+        return _local_store_identity(store) == session.store_identity
+    # Preserve exact-object-only reuse for existing non-local view consumers.
+    return session.store is store
 
 
 def _seed_published_public_bc_view(
@@ -58,7 +69,7 @@ def _seed_published_public_bc_view(
     have both succeeded. It is inert outside that exact store's active session.
     """
     session = _CURRENT.get()
-    if session is None or session.store is not store:
+    if session is None or not _same_store(session, store):
         return
 
     from .features import ModelSample
@@ -94,7 +105,7 @@ def load_view(
     loader: Callable[[ArtifactStore, str], tuple[Manifest, tuple[ModelSample, ...]]],
 ) -> tuple[Manifest, tuple[ModelSample, ...]]:
     session = _CURRENT.get()
-    if session is None or session.store is not store:
+    if session is None or not _same_store(session, store):
         return loader(store, identity)
     if session.identity == identity and session.value is not None:
         # Parent IDs and payload digests are content-bound by each checked manifest.
