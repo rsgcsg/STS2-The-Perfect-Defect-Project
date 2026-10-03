@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvironmentSnapshot, TextMenuV2Snapshot } from "@rsgcsg/sts2-connector-client";
 import { admitWholeDecision } from "./admission.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { candidateOrderDigest } from "./digest.js";
-import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type ConfirmedInteraction, type DecisionAction, type ManagedCapabilities, type ManagedControlConfirmation, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
+import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type ConfirmedInteraction, type DecisionAction, type ManagedCapabilities, type ManagedControlConfirmation, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type PublicPreviousAction, type PublicStatefulAdapterDecision, type PublicStatefulCompletion, type PublicStatefulEpisodeScope, type PublicStatefulPolicy, type PublicStatefulPolicyDecisionInput, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
 import { StaleWholeBundleError } from "./connector.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 
@@ -17,6 +17,7 @@ export interface RuntimeOptions {
   connector: PolicyConnector;
   policy?: Policy;
   statefulPolicy?: StatefulPolicy;
+  publicStatefulPolicy?: PublicStatefulPolicy;
   /** A child port marks an offer only when stdin.write is invoked. */
   statefulOfferBoundary?: "invocation" | "port_write";
   mode?: RuntimeMode;
@@ -34,6 +35,23 @@ export interface RuntimeOptions {
   /** Digest of the validated, separately sealed Managed environment binding. */
   managedBindingSha256?: string;
 }
+
+interface PublicObservationIdentity { snapshotId: string; sequence: number; digest: string; ordinal: number }
+interface ActivePublicStatefulSegment {
+  scope: PublicStatefulEpisodeScope;
+  episodeId: string;
+  segmentId: string;
+  continuityToken: string;
+  runtimeInstanceId: string | null;
+  environmentFingerprint: string | null;
+  nextOrdinal: number;
+  latest: PublicObservationIdentity | null;
+  observations: Map<string, PublicObservationIdentity>;
+  previousAction: PublicPreviousAction | null;
+}
+interface ClosedPublicStatefulSegment { scope: PublicStatefulEpisodeScope; episodeId: string; segmentId: string; reason: string }
+interface ResetPublicStatefulSegment { episodeId: string; previousSegmentId: string; segmentId: string; reason: string }
+type PublicStatefulSegmentEvent = { type: "closed"; value: ClosedPublicStatefulSegment } | { type: "reset"; value: ResetPublicStatefulSegment };
 
 export interface Admission { admitted: boolean; reason: string; candidateDigest: string; candidateCount: number }
 
@@ -97,6 +115,8 @@ export class PolicyRuntime {
   private activePolicy: { controller: AbortController } | null = null;
   private continuity: { token: string; gameId: string; runtimeId: string; environment: string } | null = null;
   private confirmedInteraction: { value: ConfirmedInteraction; sequence: number; epoch: number } | null = null;
+  private publicSegment: ActivePublicStatefulSegment | null = null;
+  private publicSegmentEvents: PublicStatefulSegmentEvent[] = [];
   private autonomyBudgetTimer: ReturnType<typeof setTimeout> | undefined;
   private autonomyBudgetGeneration = 0;
   private autonomyBudgetHandoffQueued = false;
@@ -128,9 +148,11 @@ export class PolicyRuntime {
         || (managed && !/^[a-f0-9]{64}$/u.test(options.managedBindingSha256 ?? ""))) {
       throw new Error("Managed Runtime requires one exact environment binding digest");
     }
-    if (this.stateful && !options.statefulPolicy) throw new Error("stateful adapter requires a stateful policy");
+    if (this.publicStateful && (!options.publicStatefulPolicy || options.mode !== undefined && options.mode !== "human"))
+      throw new Error("public stateful port 4 requires its policy and must start in Human mode");
+    if (this.stateful && !this.publicStateful && !options.statefulPolicy) throw new Error("stateful adapter requires a stateful policy");
     if (!this.stateful && !options.policy) throw new Error("v1 adapter requires a policy");
-    if (this.interactionPort && !options.evidence) throw new Error("v3 confirmed interaction requires an Evidence writer");
+    if ((this.interactionPort || this.publicStateful) && !options.evidence) throw new Error("stateful interaction requires an Evidence writer");
     if (options.evidence && !/^[a-f0-9]{64}$/u.test(options.runtimeIdentity?.code_sha256 ?? "")) {
       throw new Error("Agent evidence requires an exact Policy Runtime code SHA-256");
     }
@@ -166,6 +188,10 @@ export class PolicyRuntime {
     return this.options.manifest.adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-1";
   }
 
+  private get publicStateful(): boolean {
+    return this.options.manifest.adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-4";
+  }
+
   private get interactionPort(): boolean {
     return this.options.manifest.adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-3";
   }
@@ -181,14 +207,87 @@ export class PolicyRuntime {
     return this.continuity.token;
   }
 
-  private rotateContinuity(): void {
+  private rotateContinuity(reason = "policy_completion_failed"): void {
+    if (this.publicStateful && this.publicSegment) {
+      const segment = this.publicSegment;
+      const previousSegmentId = segment.segmentId;
+      segment.segmentId = randomUUID();
+      segment.continuityToken = randomUUID();
+      segment.nextOrdinal = 0;
+      segment.latest = null;
+      segment.observations.clear();
+      segment.previousAction = null;
+      this.publicSegmentEvents.push({ type: "reset", value: { episodeId: segment.episodeId, previousSegmentId, segmentId: segment.segmentId, reason } });
+      return;
+    }
     if (this.continuity) this.continuity = { ...this.continuity, token: randomUUID() };
   }
 
-  private resetInteractionContinuity(): void {
+  private resetInteractionContinuity(reason = "runtime_reset"): void {
+    if (this.publicStateful) {
+      const segment = this.publicSegment;
+      if (segment) {
+        this.publicSegmentEvents.push({ type: "closed", value: { scope: segment.scope, episodeId: segment.episodeId, segmentId: segment.segmentId, reason } });
+        this.publicSegment = null;
+      }
+      return;
+    }
     if (!this.interactionPort) return;
     this.confirmedInteraction = null;
     this.rotateContinuity();
+  }
+
+  private async flushPublicSegmentEvents(): Promise<void> {
+    while (this.publicSegmentEvents.length > 0) {
+      const event = this.publicSegmentEvents.shift()!;
+      const recorded = event.type === "reset"
+        ? await this.appendEvidence("public_stateful_observation_segment_reset", { episode_id: event.value.episodeId, previous_segment_id: event.value.previousSegmentId, segment_id: event.value.segmentId, reason: event.value.reason, memory_continuity: false })
+        : await this.appendEvidence("public_stateful_episode_ended", { scope: event.value.scope, episode_id: event.value.episodeId, segment_id: event.value.segmentId, reason: event.value.reason, requires_explicit_begin: true, memory_continuity: false });
+      if (!recorded) {
+        this.tainted = true;
+        this.taintReason = "public_stateful_segment_evidence_write_failed";
+        this.mode = "human";
+      }
+    }
+  }
+
+  private publicObservationOrdinal(snapshot: Extract<AnyDecisionBundle["observation"], { schema: "sts2.player-environment/snapshot-1" }>): number {
+    const segment = this.publicSegment;
+    if (!segment) throw new Error("public_stateful_segment_required");
+    if (segment.runtimeInstanceId === null || segment.environmentFingerprint === null) {
+      segment.runtimeInstanceId = snapshot.session.runtime_instance_id;
+      segment.environmentFingerprint = snapshot.session.environment_fingerprint;
+    } else if (segment.runtimeInstanceId !== snapshot.session.runtime_instance_id ||
+        segment.environmentFingerprint !== snapshot.session.environment_fingerprint) {
+      throw new Error("public_stateful_session_identity_drift");
+    }
+    const { observed_at: _connectorDeclaredVolatileField, ...canonicalSnapshot } = snapshot;
+    const digest = createHash("sha256").update(canonicalJson(canonicalSnapshot), "utf8").digest("hex");
+    const prior = segment.observations.get(snapshot.snapshot_id);
+    if (prior) {
+      if (prior.sequence !== snapshot.sequence || prior.digest !== digest) throw new Error("public_snapshot_identity_conflict");
+      if (segment.latest?.snapshotId !== snapshot.snapshot_id) throw new Error("public_snapshot_identity_reused");
+      return prior.ordinal;
+    }
+    if (segment.latest && snapshot.sequence <= segment.latest.sequence) throw new Error("public_snapshot_sequence_not_newer");
+    const ordinal = ++segment.nextOrdinal;
+    const identity = { snapshotId: snapshot.snapshot_id, sequence: snapshot.sequence, digest, ordinal };
+    segment.observations.set(snapshot.snapshot_id, identity);
+    segment.latest = identity;
+    return ordinal;
+  }
+
+  private validatePublicCompletion(completion: PublicStatefulCompletion, input: PublicStatefulPolicyDecisionInput): void {
+    const current = this.publicSegment;
+    if (completion === null || typeof completion !== "object" ||
+        Object.keys(completion).sort().join(",") !== "continuity_token,episode_id,observation_ordinal,previous_action_request_id,segment_id,sequence,snapshot_id" ||
+        completion.continuity_token !== input.continuity_token || completion.episode_id !== input.episode_id || completion.segment_id !== input.segment_id ||
+        completion.observation_ordinal !== input.observation_ordinal || completion.snapshot_id !== input.bundle.observation.snapshot_id || completion.sequence !== input.bundle.observation.sequence ||
+        completion.previous_action_request_id !== (input.previous_action?.request_id ?? null) || !Number.isSafeInteger(completion.sequence) || completion.sequence < 0 ||
+        !current || current.episodeId !== input.episode_id || current.segmentId !== input.segment_id || current.continuityToken !== input.continuity_token ||
+        current.latest?.snapshotId !== completion.snapshot_id || current.latest.sequence !== completion.sequence || current.latest.ordinal !== completion.observation_ordinal) {
+      throw new Error("public stateful completion watermark mismatch");
+    }
   }
 
   private validateCompletion(completion: ObservationCompletion, input: StatefulPolicyDecisionInput): void {
@@ -261,12 +360,41 @@ export class PolicyRuntime {
     this.checkRecoveryEpoch(expected.recoveryEpoch);
   }
 
+  async beginPublicStatefulSegment(scope: PublicStatefulEpisodeScope): Promise<{ scope: PublicStatefulEpisodeScope; episode_id: string; segment_id: string }> {
+    if (!this.publicStateful) throw new Error("public stateful segments require policy port 4");
+    if (scope !== "single_game_episode" && scope !== "bounded_policy_segment") throw new Error("public stateful episode scope is invalid");
+    return this.serialize(async () => {
+      if (this.stopped || this.tainted) throw new Error("Runtime cannot begin a public stateful segment");
+      if (this.mode !== "human") throw new Error("public stateful segment must begin in Human mode");
+      if (this.publicSegment) throw new Error("a public stateful segment is already active; end it before beginning another");
+      const segment: ActivePublicStatefulSegment = {
+        scope, episodeId: randomUUID(), segmentId: randomUUID(), continuityToken: randomUUID(),
+        runtimeInstanceId: null, environmentFingerprint: null,
+        nextOrdinal: 0, latest: null, observations: new Map(), previousAction: null
+      };
+      this.publicSegment = segment;
+      if (!(await this.appendEvidence("public_stateful_episode_started", { scope, episode_id: segment.episodeId, segment_id: segment.segmentId }))) {
+        this.publicSegment = null;
+        throw new Error("public stateful segment evidence could not be recorded");
+      }
+      return { scope, episode_id: segment.episodeId, segment_id: segment.segmentId };
+    });
+  }
+
+  async endPublicStatefulSegment(): Promise<{ scope: PublicStatefulEpisodeScope; episode_id: string; segment_id: string }> {
+    if (!this.publicStateful) throw new Error("public stateful segments require policy port 4");
+    const active = this.publicSegment;
+    if (!active) throw new Error("no public stateful segment is active");
+    await this.setMode("human");
+    return { scope: active.scope, episode_id: active.episodeId, segment_id: active.segmentId };
+  }
+
   async setMode(mode: RuntimeMode, expected?: RuntimeControlPreconditions): Promise<RuntimeStatus> {
     // Human/Stop invalidate preparation in every client as soon as they enter
     // this owner, even when an existing operation still holds the mutation queue.
     if (mode === "human") {
       this.advanceRecoveryEpoch();
-      this.resetInteractionContinuity();
+      this.resetInteractionContinuity("human_handoff");
       this.cancelActivePolicy();
     }
     if (mode === "human" || expected === undefined) this.requestedMode = mode;
@@ -277,7 +405,8 @@ export class PolicyRuntime {
           this.requestedMode = mode;
         }
         if (this.stopped) throw new Error("runtime is stopped");
-        if (mode !== this.mode) this.resetInteractionContinuity();
+        if (this.publicStateful && mode !== "human" && !this.publicSegment) throw new Error("public stateful segment must be explicitly begun before enabling policy");
+        if (mode !== this.mode && !this.publicStateful) this.resetInteractionContinuity("mode_changed");
         if (this.tainted && mode !== "human") throw new Error(`runtime is tainted: ${this.taintReason}`);
         if (mode === "human") {
           this.mode = "human";
@@ -305,10 +434,13 @@ export class PolicyRuntime {
         if (mode === "shadow" && this.mode !== "shadow") this.lastPolicySnapshotId = null;
         this.mode = mode;
         if (mode === "auto") this.consecutiveStaleSubmissions = 0;
+        await this.flushPublicSegmentEvents();
         if (!(await this.appendEvidence("mode_changed", { mode, autonomy_budget: this.autonomyBudgetStatus() }))) {
           this.mode = "human";
           if (this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
+          this.resetInteractionContinuity("mode_change_evidence_write_failed");
           await this.releaseController();
+          await this.flushPublicSegmentEvents();
           throw new Error("Agent evidence is unavailable; mode change failed closed");
         }
         return this.status();
@@ -341,6 +473,7 @@ export class PolicyRuntime {
     if (this.stopped) return { type: "not_admitted", reason: "runtime_stopped", status: this.status() };
     if (this.tainted) return { type: "not_admitted", reason: "runtime_tainted", status: this.status() };
     if (this.mode === "human") return { type: "human", status: this.status() };
+    if (this.publicStateful && !this.publicSegment) return { type: "not_admitted", reason: "public_stateful_segment_required", status: this.status() };
     if (this.mutationCancellationRequested())
       return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
     if (!this.autonomyBudgetAvailable()) {
@@ -383,7 +516,7 @@ export class PolicyRuntime {
     let bundle: AnyDecisionBundle | null;
     let gameContinuityId: string | null = null;
     try {
-      if (this.stateful) {
+      if (this.stateful && !this.publicStateful) {
         if (!this.options.connector.observeTextMenuContext) throw new Error("text_menu_context_unsupported");
         const observation = await this.withManagedObservationLease(preparationEpoch,
           () => this.options.connector.observeTextMenuContext!(inputProfile));
@@ -424,7 +557,7 @@ export class PolicyRuntime {
     if (this.recoveryEpoch !== preparationEpoch || this.mutationCancellationRequested())
       return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
     if (!bundle) return { type: "not_admitted", reason: "stale_refresh_exhausted", status: this.status() };
-    if (this.stateful && (typeof gameContinuityId !== "string" || gameContinuityId.length === 0)) {
+    if (this.stateful && !this.publicStateful && (typeof gameContinuityId !== "string" || gameContinuityId.length === 0)) {
       this.continuity = null;
       await this.failClosed("game_continuity_unavailable");
       return { type: "not_admitted", reason: "game_continuity_unavailable", status: this.status() };
@@ -452,6 +585,15 @@ export class PolicyRuntime {
       }
       return { type: "not_admitted", reason: admission.reason, status: this.status() };
     }
+    let observationOrdinal: number | null = null;
+    if (this.publicStateful) {
+      try { observationOrdinal = this.publicObservationOrdinal(bundle.observation as Extract<AnyDecisionBundle["observation"], { schema: "sts2.player-environment/snapshot-1" }>); }
+      catch (error) {
+        const reason = message(error);
+        await this.failClosed(reason);
+        return { type: "not_admitted", reason, status: this.status() };
+      }
+    }
     if (this.mode === "shadow" && this.lastPolicySnapshotId === bundle.observation.snapshot_id) {
       return { type: "not_admitted", reason: "snapshot_already_scored", status: this.status() };
     }
@@ -464,12 +606,35 @@ export class PolicyRuntime {
     }
     let adapterDecision: AdapterDecision;
     let observationContext: { continuity_token: string; previous_interaction_request_id: string | null } | null = null;
+    let publicPreviousActionRequestId: string | null = null;
     const policyRecoveryEpoch = this.recoveryEpoch;
     const policyController = new AbortController();
     this.activePolicy = { controller: policyController };
     let offered = false;
     try {
-      if (this.stateful) {
+      if (this.publicStateful) {
+        const segment = this.publicSegment;
+        if (!segment || observationOrdinal === null) throw new Error("public_stateful_segment_required");
+        const candidatePreviousAction = segment.previousAction;
+        const previousAction = candidatePreviousAction &&
+          bundle.observation.sequence >= candidatePreviousAction.successor.sequence &&
+          bundle.observation.snapshot_id !== candidatePreviousAction.source_snapshot_id
+          ? candidatePreviousAction : null;
+        publicPreviousActionRequestId = previousAction?.request_id ?? null;
+        const publicInput: PublicStatefulPolicyDecisionInput = { ...input, continuity_token: segment.continuityToken,
+          episode_scope: segment.scope, episode_id: segment.episodeId, segment_id: segment.segmentId,
+          observation_ordinal: observationOrdinal, previous_action: previousAction };
+        const onOffer = () => {
+          offered = true;
+        };
+        if (this.options.statefulOfferBoundary !== "port_write") onOffer();
+        const result: PublicStatefulAdapterDecision = await withTimeout(
+          Promise.resolve(this.options.publicStatefulPolicy!(publicInput, policyController.signal, onOffer)),
+          this.policyTimeoutMs, "policy decision timed out", policyController.signal);
+        if (!offered) throw new Error("stateful policy returned before offer");
+        this.validatePublicCompletion(result.completion, publicInput);
+        adapterDecision = result.output;
+      } else if (this.stateful) {
         const continuityToken = this.bindContinuity(gameContinuityId!, bundle.observation);
         const pendingInteraction = this.confirmedInteraction;
         const previousInteraction = pendingInteraction && pendingInteraction.epoch === this.recoveryEpoch
@@ -507,7 +672,7 @@ export class PolicyRuntime {
         // A timeout can win the race without aborting the pending port read.
         // Fence that request before another continuity token can be offered.
         policyController.abort();
-        this.rotateContinuity();
+        this.rotateContinuity("policy_completion_failed");
         if (this.interactionPort) this.confirmedInteraction = null;
       }
       if (this.autonomyBudgetState.exhaustedReason === "deadline") {
@@ -523,7 +688,8 @@ export class PolicyRuntime {
       if (this.activePolicy?.controller === policyController) this.activePolicy = null;
     }
     if (this.recoveryEpoch !== policyRecoveryEpoch || this.mutationCancellationRequested()) {
-      this.resetInteractionContinuity();
+      this.resetInteractionContinuity("recovery_after_policy");
+      await this.flushPublicSegmentEvents();
       return { type: "not_admitted", reason: "runtime_recovery_epoch_mismatch", status: this.status() };
     }
     const decision = makeDecision(this.options.manifest, this.runId, bundle, adapterDecision, admission, this.now());
@@ -537,6 +703,14 @@ export class PolicyRuntime {
     }
     const resolvedActionId = resolved ? decisionActionId(resolved) : null;
     this.lastDecision = { decision_id: decision.decision_id, candidate_digest: decision.candidate_digest, candidate_count: decision.candidate_count, scores: [...decision.scores], selected_index: decision.selected_index, bound_action_id: resolvedActionId, bound_action_label: resolved?.label ?? null };
+    if (this.publicStateful && !(await this.appendEvidence("public_stateful_decision_input", {
+      episode_id: this.publicSegment?.episodeId ?? null, segment_id: this.publicSegment?.segmentId ?? null,
+      observation_ordinal: observationOrdinal, snapshot_id: bundle.observation.snapshot_id,
+      sequence: bundle.observation.sequence, previous_action_request_id: publicPreviousActionRequestId
+    }))) {
+      await this.failClosed("agent_evidence_write_failed_before_submit");
+      return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
+    }
     if (textMenu && !(await this.appendEvidence("text_decision_input", {
       decision_id: decision.decision_id, snapshot: bundle.observation,
       ...(this.interactionPort ? { observation_context: observationContext } : {})
@@ -627,6 +801,14 @@ export class PolicyRuntime {
       if (!successor) { await this.taint("successor_not_stable"); return { type: "unknown", decision, receipt, error: "delivered action did not yield a stable distinct successor", status: this.status() }; }
       this.lastReceipt = { ...this.lastReceipt!, successor_snapshot_id: successor.snapshot_id };
       if (!(await this.appendEvidence("successor", { decision_id: decision.decision_id, successor }))) await this.taintWithoutEvidence("agent_evidence_write_failed_after_successor");
+      if (this.publicStateful && this.publicSegment && !this.tainted) {
+        this.publicSegment.previousAction = {
+          decision_id: decision.decision_id, source_snapshot_id: bundle.observation.snapshot_id,
+          candidate_digest: decision.candidate_digest, bound_action_id: (resolved as PlayerEnvironmentBoundAction).bound_action_id,
+          request_id: requestId, receipt: { delivery: "delivered", reason_code: receipt.reason_code ?? null },
+          successor: { snapshot_id: successor.snapshot_id, sequence: successor.sequence }
+        };
+      }
       if (this.mode === "one_step") await this.completeOneStep();
       return { type: "delivered", decision, bound_action: resolved as PlayerEnvironmentBoundAction, receipt, successor: successor as PlayerEnvironmentSnapshot, status: this.status() };
     } catch (error) {
@@ -768,13 +950,14 @@ export class PolicyRuntime {
 
   async stop(): Promise<RuntimeStatus> {
     this.advanceRecoveryEpoch();
-    this.resetInteractionContinuity();
+    this.resetInteractionContinuity("runtime_stopped");
     this.stopRequested = true;
     this.cancelActivePolicy();
     return this.serialize(async () => {
       if (this.stopped) return this.status();
       if (this.autonomyBudgetState.state === "active") this.endAutonomyBudget("stopped");
       await this.releaseController();
+      await this.flushPublicSegmentEvents();
       if (!(await this.appendEvidence("stopped", { autonomy_budget: this.autonomyBudgetStatus(), controller: this.controllerStatus() }))) {
         await this.taintWithoutEvidence("agent_evidence_write_failed_on_stop");
       }
@@ -856,11 +1039,11 @@ export class PolicyRuntime {
       game_continuity_id: confirmation.game_continuity_id,
       control_epoch: confirmation.control_epoch };
   }
-  private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { this.resetInteractionContinuity(); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("handoff_to_human", { reason }); }
-  private async completeOneStep(): Promise<void> { this.resetInteractionContinuity(); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("one_step_completed", { autonomy_budget: this.autonomyBudgetStatus() }); }
-  private async failClosed(reason: string): Promise<void> { this.resetInteractionContinuity(); this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.appendEvidence("fail_closed", { reason }); }
+  private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { this.resetInteractionContinuity(reason); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.flushPublicSegmentEvents(); await this.appendEvidence("handoff_to_human", { reason }); }
+  private async completeOneStep(): Promise<void> { this.resetInteractionContinuity("one_step_completed"); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.flushPublicSegmentEvents(); await this.appendEvidence("one_step_completed", { autonomy_budget: this.autonomyBudgetStatus() }); }
+  private async failClosed(reason: string): Promise<void> { this.resetInteractionContinuity(reason); this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.flushPublicSegmentEvents(); await this.appendEvidence("fail_closed", { reason }); }
   private async taint(reason: string): Promise<void> { await this.taintWithoutEvidence(reason); await this.appendEvidence("runtime_tainted", { reason, retry: false }); }
-  private async taintWithoutEvidence(reason: string, release = true): Promise<void> { this.resetInteractionContinuity(); this.tainted = true; this.taintReason = reason; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); if (release) try { await this.releaseController(); } catch { /* retain held state; a failed release is not confirmation */ } }
+  private async taintWithoutEvidence(reason: string, release = true): Promise<void> { this.resetInteractionContinuity(reason); this.tainted = true; this.taintReason = reason; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); if (release) try { await this.releaseController(); } catch { /* retain held state; a failed release is not confirmation */ } await this.flushPublicSegmentEvents(); }
   private async appendEvidence(kind: string, payload: Record<string, unknown>): Promise<boolean> { try { await this.options.evidence?.append(kind, payload, this.now()); return true; } catch (error) { const reason = `agent_evidence_write_failed:${message(error)}`; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); return false; } }
 
   private beginAutonomyBudget(): void {
@@ -982,7 +1165,7 @@ export class PolicyRuntime {
     if (!this.autonomyBudgetRecoveryFenced) {
       this.autonomyBudgetRecoveryFenced = true;
       this.advanceRecoveryEpoch();
-      this.resetInteractionContinuity();
+      this.resetInteractionContinuity("autonomy_budget_exhausted");
       this.cancelActivePolicy();
       this.mode = "human";
     }
@@ -1002,6 +1185,7 @@ export class PolicyRuntime {
     if (this.autonomyBudgetState.state === "active") this.markBudgetExhausted(reason);
     this.requestAutonomyBudgetHandoff();
     try { await this.releaseController(); } catch { /* releaseController records and taints its exact failure */ }
+    await this.flushPublicSegmentEvents();
     const recorded = await this.appendEvidence("autonomy_budget_exhausted", { reason, budget: this.autonomyBudgetStatus(), controller: this.controllerStatus() });
     if (!recorded && !this.tainted) {
       const failure = "autonomy_budget_exhaustion_evidence_write_failed";

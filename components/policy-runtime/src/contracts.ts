@@ -21,6 +21,7 @@ export const AGENT_RUN_SCHEMA = "sts2.policy-runtime/agent-run-1" as const;
 export const POLICY_PORT_SCHEMA = "sts2.policy-runtime/policy-port-1" as const;
 export const POLICY_PORT_V2_SCHEMA = "sts2.policy-runtime/policy-port-2" as const;
 export const POLICY_PORT_V3_SCHEMA = "sts2.policy-runtime/policy-port-3" as const;
+export const POLICY_PORT_V4_SCHEMA = "sts2.policy-runtime/policy-port-4" as const;
 export const EVIDENCE_MANIFEST_SCHEMA = "sts2.policy-runtime/immutable-evidence-manifest-1" as const;
 export const POLICY_RUNTIME_VERSION = "0.1.0-rc.17" as const;
 export const RUNTIME_ENVIRONMENT_SCHEMA = "sts2.policy-runtime/environment-1" as const;
@@ -163,7 +164,7 @@ export interface PolicyManifest {
   schema: typeof POLICY_MANIFEST_SCHEMA;
   manifest_id: string;
   policy: { id: string; version: string; provider: string; architecture: string };
-  adapter: { id: string; version: string; protocol: "sts2.policy-runtime/decision-only-ndjson-1" | "sts2.policy-runtime/decision-only-ndjson-2" | "sts2.policy-runtime/decision-only-ndjson-3"; code_sha256: string };
+  adapter: { id: string; version: string; protocol: "sts2.policy-runtime/decision-only-ndjson-1" | "sts2.policy-runtime/decision-only-ndjson-2" | "sts2.policy-runtime/decision-only-ndjson-3" | "sts2.policy-runtime/decision-only-ndjson-4"; code_sha256: string };
   artifact: { id: string; path: string; sha256: string };
   representation: { id: string; version: string; input_schema: "sts2.player-environment/snapshot-1" | "sts2.player-environment/text-menu-snapshot-1" | "sts2.player-environment/text-menu-snapshot-2" };
   requirements: ConnectorPolicyRequirements | ManagedPolicyRequirements;
@@ -262,6 +263,48 @@ export interface StatefulAdapterDecision {
   completion: ObservationCompletion;
 }
 
+/** Runtime owned scope for a generic public Snapshot memory segment. */
+export type PublicStatefulEpisodeScope = "single_game_episode" | "bounded_policy_segment";
+
+/** Confirmed action feedback is exposed only after a delivered receipt and stable successor. */
+export interface PublicPreviousAction {
+  decision_id: string;
+  source_snapshot_id: string;
+  candidate_digest: string;
+  bound_action_id: string;
+  request_id: string;
+  receipt: { delivery: "delivered"; reason_code: string | null };
+  successor: { snapshot_id: string; sequence: number };
+}
+
+/** Port 4 keeps opaque model memory inside its process, keyed by this Runtime minted segment/token. */
+export interface PublicStatefulPolicyDecisionInput extends PolicyDecisionInput {
+  continuity_token: string;
+  episode_scope: PublicStatefulEpisodeScope;
+  episode_id: string;
+  segment_id: string;
+  observation_ordinal: number;
+  previous_action: PublicPreviousAction | null;
+}
+
+export interface PublicStatefulCompletion {
+  continuity_token: string;
+  episode_id: string;
+  segment_id: string;
+  observation_ordinal: number;
+  snapshot_id: string;
+  sequence: number;
+  previous_action_request_id: string | null;
+}
+
+export interface PublicStatefulAdapterDecision {
+  output: AdapterDecision;
+  completion: PublicStatefulCompletion;
+}
+
+export type PublicStatefulPolicy = (input: PublicStatefulPolicyDecisionInput, signal: AbortSignal,
+  onOffer: () => void) => Promise<PublicStatefulAdapterDecision> | PublicStatefulAdapterDecision;
+
 /** In-process implementations mark their call as offered at invocation. */
 export type StatefulPolicy = (input: StatefulPolicyDecisionInput, signal: AbortSignal,
   onOffer: () => void) => Promise<StatefulAdapterDecision> | StatefulAdapterDecision;
@@ -286,6 +329,11 @@ export interface PolicyPortV3DecisionRequest { schema: typeof POLICY_PORT_V3_SCH
 export interface PolicyPortV3ReadyResponse { schema: typeof POLICY_PORT_V3_SCHEMA; message_type: "ready"; adapter: PolicyManifest["adapter"] }
 export interface PolicyPortV3DecisionResponse { schema: typeof POLICY_PORT_V3_SCHEMA; message_type: "decision"; request_id: string; output: AdapterDecision; completion: ObservationCompletion }
 export interface PolicyPortV3ErrorResponse { schema: typeof POLICY_PORT_V3_SCHEMA; message_type: "error"; request_id: string; error: { code: string; message: string } }
+
+export interface PolicyPortV4DecisionRequest { schema: typeof POLICY_PORT_V4_SCHEMA; message_type: "decide"; request_id: string; input: PublicStatefulPolicyDecisionInput }
+export interface PolicyPortV4ReadyResponse { schema: typeof POLICY_PORT_V4_SCHEMA; message_type: "ready"; adapter: PolicyManifest["adapter"] }
+export interface PolicyPortV4DecisionResponse { schema: typeof POLICY_PORT_V4_SCHEMA; message_type: "decision"; request_id: string; output: AdapterDecision; completion: PublicStatefulCompletion }
+export interface PolicyPortV4ErrorResponse { schema: typeof POLICY_PORT_V4_SCHEMA; message_type: "error"; request_id: string; error: { code: string; message: string } }
 
 export interface PolicyConnector {
   capabilities(options?: { fresh?: boolean; inputProfile?: TextInputProfile }): Promise<PlayerEnvironmentCapabilities | TextMenuCapabilities | TextMenuV2Capabilities | ManagedCapabilities>;
@@ -394,7 +442,7 @@ export function validatePolicyManifest(value: unknown): PolicyManifest {
   exactKeys(root, ["schema", "manifest_id", "policy", "adapter", "artifact", "representation", "requirements", "support", "adapter_config", "claims"]);
   literal(root, "schema", POLICY_MANIFEST_SCHEMA); nonEmpty(root, "manifest_id");
   const policy = object(root.policy, "manifest.policy"); exactKeys(policy, ["id", "version", "provider", "architecture"]); nonEmpty(policy, "id"); nonEmpty(policy, "version"); nonEmpty(policy, "provider"); nonEmpty(policy, "architecture");
-  const adapter = object(root.adapter, "manifest.adapter"); exactKeys(adapter, ["id", "version", "protocol", "code_sha256"]); nonEmpty(adapter, "id"); nonEmpty(adapter, "version"); enumField(adapter, "protocol", ["sts2.policy-runtime/decision-only-ndjson-1", "sts2.policy-runtime/decision-only-ndjson-2", "sts2.policy-runtime/decision-only-ndjson-3"]); sha256Field(adapter, "code_sha256");
+  const adapter = object(root.adapter, "manifest.adapter"); exactKeys(adapter, ["id", "version", "protocol", "code_sha256"]); nonEmpty(adapter, "id"); nonEmpty(adapter, "version"); enumField(adapter, "protocol", ["sts2.policy-runtime/decision-only-ndjson-1", "sts2.policy-runtime/decision-only-ndjson-2", "sts2.policy-runtime/decision-only-ndjson-3", "sts2.policy-runtime/decision-only-ndjson-4"]); sha256Field(adapter, "code_sha256");
   const artifact = object(root.artifact, "manifest.artifact"); exactKeys(artifact, ["id", "path", "sha256"]); nonEmpty(artifact, "id"); nonEmpty(artifact, "path"); sha256Field(artifact, "sha256");
   const representation = object(root.representation, "manifest.representation"); exactKeys(representation, ["id", "version", "input_schema"]); nonEmpty(representation, "id"); nonEmpty(representation, "version"); enumField(representation, "input_schema", ["sts2.player-environment/snapshot-1", "sts2.player-environment/text-menu-snapshot-1", "sts2.player-environment/text-menu-snapshot-2"]);
   const requirements = object(root.requirements, "manifest.requirements");
@@ -412,7 +460,13 @@ export function validatePolicyManifest(value: unknown): PolicyManifest {
   }
   stringArray(requirements, "reads"); uniqueStringArray(requirements, "reads"); literal(requirements, "whole_decision_admission", true); literal(requirements, "candidate_order_digest", representation.input_schema !== "sts2.player-environment/snapshot-1" ? "sha256-json-menu-action-id-order" : "sha256-json-bound-action-id-order"); literal(requirements, "score_count_matches_candidate_count", true); literal(requirements, "selected_index", true); literal(requirements, "successor_required", true);
   if (representation.input_schema !== "sts2.player-environment/snapshot-1" && (requirements.reads as string[]).length !== 0) throw new Error("text menu profile has no Reads");
-  if (adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-1" && representation.input_schema === "sts2.player-environment/snapshot-1") throw new Error("stateful policy port requires text menu input");
+  if (adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-1" && adapter.protocol !== "sts2.policy-runtime/decision-only-ndjson-4" && representation.input_schema === "sts2.player-environment/snapshot-1") throw new Error("stateful policy port requires text menu input");
+  if (adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-4") {
+    if (representation.input_schema !== "sts2.player-environment/snapshot-1" || (requirements.reads as string[]).length !== 0)
+      throw new Error("public stateful port 4 requires generic Snapshot input without Reads");
+    if (object(root.adapter_config, "manifest.adapter_config").public_stateful_profile !== "stpd/public-m2-observation-only-v1")
+      throw new Error("public stateful port 4 requires the observation-only public M2 profile");
+  }
   if (representation.input_schema === "sts2.player-environment/text-menu-snapshot-2" && adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-1") throw new Error("text menu v2 requires stateful policy port");
   const support = object(root.support, "manifest.support"); exactKeys(support, ["game_versions", "game_commits", "interaction_kinds", "action_verbs"]); nonEmptyUniqueStringArray(support, "game_versions"); nonEmptyUniqueStringArray(support, "game_commits"); nonEmptyUniqueStringArray(support, "interaction_kinds"); nonEmptyUniqueStringArray(support, "action_verbs");
   object(root.adapter_config, "manifest.adapter_config");
