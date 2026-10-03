@@ -103,7 +103,9 @@ _v2_sdk_available = v2_sdk_available
 REGISTRY = "token-policies-v1.json"
 LOCK = "token-policies-v1.lock"
 REGISTRATIONS = "model-registrations"
-# Full Public M0 export revalidation measured 22.66 s; leave time for Runtime checks and bind.
+# Local admission reprojects the dataset and verifies its immutable completion bytes.
+# Keep that data-sized phase separate from Runtime/Connector checks and roster binding.
+EXPORT_VERIFICATION_SECONDS = 300.0
 REGISTRATION_SECONDS = 45.0
 # Source-reviewed engineering support: LiveObservationReader registrations,
 # SnapshotBuilder/providers and NativeTextMenu overrides. This is not native
@@ -682,7 +684,7 @@ class LocalModelRegistration:
     def _register(self, model_id: object, *, environment_kind: str) -> dict[str, Any]:
         identity = digest(model_id, "local_model_registration.model_id")
 
-        deadline = monotonic() + REGISTRATION_SECONDS
+        deadline = monotonic() + EXPORT_VERIFICATION_SECONDS
         # Weight/scorer verification and current-store binding are explicit POST work.
         observed = self.export.status()
         operation = observed["operation"]
@@ -747,6 +749,9 @@ class LocalModelRegistration:
             recipe = check_model(artifact)[0].recipe
             if recipe not in RECIPE_LABELS:
                 raise BoundaryError("local_model_registration", "unsupported_model_recipe")
+        _remaining(deadline)
+        # Only a fully verified export reaches the bounded Runtime/registration phase.
+        deadline = monotonic() + REGISTRATION_SECONDS
         managed = environment_kind == "managed"
         if managed and (not memory or input_profile_for_recipe(recipe)
                         != "text-menu-v2-confirmed-interaction"):
