@@ -26,6 +26,13 @@ def test_local_recordings_route_uses_authenticated_local_browser_and_is_read_onl
         "requires_cloud_account": False,
     }
     monkeypatch.setattr(app.local_recordings, "read", lambda: reads.append(True) or value)
+    archive_catalog = {
+        "schema": "stpd/local-member-collection-archive-catalog-v1",
+        "status": "empty", "items": [], "excluded_count": 0, "truncated": False,
+    }
+    archive_reads = []
+    monkeypatch.setattr(app.members, "verified_collection_archive_catalog",
+                        lambda: archive_reads.append(True) or archive_catalog)
     monkeypatch.setattr(app.account, "status", lambda: (_ for _ in ()).throw(
         AssertionError("local source view must not request cloud identity")))
     server = create_server(app)
@@ -37,15 +44,26 @@ def test_local_recordings_route_uses_authenticated_local_browser_and_is_read_onl
         with pytest.raises(HTTPError) as denied:
             client.open(root + "/api/local-recordings")
         assert denied.value.code == 401
+        with pytest.raises(HTTPError) as archive_denied:
+            client.open(root + "/api/local-recordings/member-archives")
+        assert archive_denied.value.code == 401
         client.open(root + "/").close()
         with client.open(root + "/api/local-recordings") as response:
             observed = json.load(response)
         assert observed == value
         assert len(reads) == 1
+        with client.open(root + "/api/local-recordings/member-archives") as response:
+            observed_archives = json.load(response)
+        assert observed_archives == archive_catalog
+        assert len(archive_reads) == 1
         with pytest.raises(HTTPError) as query:
             client.open(root + "/api/local-recordings?path=/private")
         assert query.value.code == 400
         assert len(reads) == 1
+        with pytest.raises(HTTPError) as archive_query:
+            client.open(root + "/api/local-recordings/member-archives?path=/private")
+        assert archive_query.value.code == 400
+        assert len(archive_reads) == 1
 
         request = Request(
             root + "/api/local-recordings",
@@ -55,6 +73,7 @@ def test_local_recordings_route_uses_authenticated_local_browser_and_is_read_onl
             client.open(request)
         assert wrong_host.value.code == 403
         assert len(reads) == 1
+        assert len(archive_reads) == 1
         assert app.hub is None
     finally:
         server.shutdown()

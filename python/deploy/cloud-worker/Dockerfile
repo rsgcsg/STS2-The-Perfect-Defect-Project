@@ -19,7 +19,7 @@ RUN git fetch origin "$STPD_SOURCE_REVISION" && \
     git checkout --detach "$STPD_SOURCE_REVISION" && \
     case "$STPD_IMAGE_PROFILE" in \
       hub) uv sync --locked --extra cloud --extra research ;; \
-      worker) uv sync --locked --all-extras ;; \
+      worker) env -u UV_INDEX_URL uv sync --locked --all-extras ;; \
       *) echo "Unknown image profile" >&2; exit 1 ;; \
     esac
 ENV STPD_IMAGE_PROFILE=$STPD_IMAGE_PROFILE
