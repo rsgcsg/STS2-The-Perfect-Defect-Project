@@ -1,7 +1,8 @@
 """Typed local public M2 run, explicit pause/resume and three epoch readouts.
 
-The source owner admits use before preparation. This worker checks exact public
-lineage and immutable bytes; it cannot grant admission from an input digest.
+The source owner admits use before preparation. This worker checks declared
+parent identities and immutable bytes, not authoritative public-view reprojection
+or train-only tokenizer fitting; an input digest cannot grant source admission.
 The caller serializes writers for each run ID. Crash recovery reaches only the
 last durable epoch or explicit-pause checkpoint advertised in run events.
 """
