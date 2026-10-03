@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict, dataclass
-from typing import Any, cast
+from typing import Any
 
 from tokenizers import Tokenizer
 
@@ -114,10 +114,10 @@ class PublicM2Input:
 
     @property
     def identity(self) -> str:
-        return cast(str, semantic_hash(self.content()))
+        return semantic_hash(self.content())
 
     def payload_bytes(self) -> bytes:
-        return cast(bytes, json_bytes({**self.content(), "identity": self.identity}))
+        return json_bytes({**self.content(), "identity": self.identity})
 
 
 def _validate_sample(sample: ModelSample) -> None:
@@ -163,11 +163,11 @@ def project_public_m2_chains(
         if not isinstance(row, PublicM2EvidenceRow):
             raise BoundaryError("public_m2_sequence", "typed_evidence_required")
         row.validate()
-        sample = by_id.get(row.transition_id)
+        bound_sample = by_id.get(row.transition_id)
         occurrence = (row.session_id, row.native_run_id, row.action_sequence)
-        if (row.transition_id in seen or occurrence in occurrences or sample is None
-                or sample.run_id != row.run_id
-                or semantic_hash(sample.to_dict()) != row.public_sample_sha256):
+        if (row.transition_id in seen or occurrence in occurrences or bound_sample is None
+                or bound_sample.run_id != row.run_id
+                or semantic_hash(bound_sample.to_dict()) != row.public_sample_sha256):
             raise BoundaryError("public_m2_sequence", "source_sample_binding_mismatch")
         seen.add(row.transition_id)
         occurrences.add(occurrence)
