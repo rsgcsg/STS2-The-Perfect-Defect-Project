@@ -61,6 +61,7 @@ def _verify_match(
     store: ArtifactStore, matched_m2_run_id: str, producer: Producer,
     source: PublicM2Input, config: PublicM0MatchedConfig,
 ) -> None:
+    config.validate()
     m2_run, _, m2_input, m2_config, m2_engine = _load_run(
         store, matched_m2_run_id, producer,
     )
