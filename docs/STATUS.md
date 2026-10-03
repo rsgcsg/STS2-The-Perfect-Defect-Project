@@ -1,5 +1,13 @@
 # Current Status
 
+## Source alignment, 2026-10-03
+
+The [branch closeout candidate](evidence/BRANCH_ALIGNMENT_2026-10-03.md) consolidates
+PR #140/#141/#144/#145 and a reviewed member-archive admission repair. Its combined
+checks and develop merge remain pending. Workshop and native-v1 M2 follow-up branches
+remain separate. Running collectors, installed artifacts and cloud services retain
+their own identities; the historical operating records below are not fresh checks.
+
 ## Dataset library — application update deployed
 
 Workbench source is `fedbed097e30fb78bf0e86efff560fd8b1263c99`. The accepted
