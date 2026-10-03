@@ -58,20 +58,9 @@ probabilities remain near uniform. Those results retain their own identities and
 do not establish model strength or independent-game generalization. The earlier
 safe-stop request applied to that 100-update scope.
 
-A separate light-action M0 input used 3,000 train/16 dev decisions and completed
-9,000 CUDA updates; CPU scoring was 0.541667 Top-1 / 0.980435 NLL. It is engineering-
-only, within one purpose allocation, with no run-independence proof. Local public-M0
-registration led to a one-step native `play` with checked successor, then Human/released.
-See [the exact bounded-chain closure](../../python/docs/research/evidence/STAGE1A_LIGHT_ACTION_M0_CLOSURE_2026-10-03.md).
-
-A separate profile-3 canary delivered nine actions (4 `Strike`, 2 `Defend`, 3
-`end_turn`) in an unfinished floor-1 combat, rounds 2–4. All decisions/successors passed
-verification; there were no rejected, unknown, retry, or taint outcomes. Its 65-event
-receipt records 9 controller acquisitions/releases and a 16-request/300-second cap,
-stopped for cleanup margin. Paired profile-2 receipts preserve all 977 file hashes and
-modification times with no additions or changes. Typed final status is Human/released/
-stopped with recorder off. This remains separate from the one-step canary and is not a
-full-game or model-strength result.
+The separate light-action M0 run now has a bounded train-to-game closeout; it does not
+complete Stage 1a or qualify full-game behavior or model strength. See [the exact
+evidence and artifact identities](../../python/docs/research/evidence/STAGE1A_LIGHT_ACTION_M0_CLOSURE_2026-10-03.md).
 
 This local public-M0 registration does not provide a generic Managed Runtime bridge.
 Native-v1 M2 still needs its distinct engine, worker, export, online scorer and
