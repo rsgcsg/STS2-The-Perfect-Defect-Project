@@ -45,7 +45,12 @@ run, consecutive native action ordinals, and exact equality of the preceding pro
 successor frame and the next pre frame. A missing row, unknown edge, pause/reload
 boundary, changed source or split prevents carry. Ordinal adjacency and repeated
 visible text alone do not prove an edge. Recording-segment identity is derived from
-the verifier's journal/trace by the intake owner.
+the verifier's journal/trace by the intake owner. It must also split at an intervening
+unknown or unproved accepted occurrence in the complete action ledger, even if two
+retained canonical rows happen to have consecutive ordinals and equal frame hashes.
+Capture-active intervals and qualified continuity segments are separate facts; the
+input carries the stricter continuity-segment identity. A paused interval is never an
+active segment, and complete-run status is not a prerequisite for a bounded segment.
 
 The resulting chain is a maximal selected evidence segment. Its first observed pre
 state receives an explicit **model memory reset**, which is not a game reset or a
@@ -99,6 +104,13 @@ writer per run. The current M0 owner journal is a singleton beside its curation 
 changing a generic state directory does not isolate it. Do not fork curation owners
 to bypass the shared use/Gold ledger. First validate one A02 end-to-end run before
 adding concurrent execution infrastructure.
+
+The typed run checks declared parent identities and immutable input bytes. It does
+not independently prove source admission or tokenizer fitting. A formal intake must
+reproject the authoritative allocation/public view, join the audited source metadata
+by exact transition identity, fit the smallest train tier once, and bind the resulting
+inputs to that intake receipt. Subsequent runs and resumes reuse these compiled inputs;
+they do not repeat source preparation or infer admission from a schema label.
 
 The private batch control owns the authorized raw-cost limit and each attempt's
 reservation, image/source/input/resource identity, lifecycle and stop confirmation.
