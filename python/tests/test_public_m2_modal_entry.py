@@ -176,6 +176,11 @@ except ValueError as error:
         raise
 else:
     raise AssertionError("wrong request unexpectedly accepted")
+from types import SimpleNamespace
+function.__globals__["subprocess"].run = lambda *args, **kwargs: SimpleNamespace(
+    returncode=0, stdout=b"framed-response")
+if function(b"opaque-remote-request") != b"framed-response":
+    raise AssertionError("stdlib wrapper did not reach subprocess result path")
 sys.stdout.write("serialized-stdlib-only")
 '''
     completed = subprocess.run(
