@@ -33,9 +33,18 @@ recording/control/transfer journey; it is not a zero-failure Human or Full-Run g
 No raw disposition is reclassified. Only in-progress/resume run boundaries exist.
 
 Local model preparation, Recorder-to-model handoff and separately authorized Agent
-reports retain their own boundaries. Native model outcomes remain unmeasured and
-S1 requires CUDA. No Windows native, GPU training, scientific or production-throughput
-qualification is added. Compute budget remains zero.
+reports retain their own boundaries. A separate [Stage1a light-action M0 bounded-chain closure](../python/docs/research/evidence/STAGE1A_LIGHT_ACTION_M0_CLOSURE_2026-10-03.md)
+records one completed 9,000-update CUDA run on a 3,000-train/16-dev engineering
+allocation, CPU offline scoring, and local registration. One native canary delivered
+a `play` action with an observed successor. A separate profile-3 canary delivered
+nine actions (four `Strike`, two `Defend`, three `end_turn`) during an unfinished
+floor-1 battle in rounds 2–4 and passed evidence verification; it is not combined
+with the one-step run.
+Its dev sample is not independent and these bounded actions say nothing about a
+full-game outcome or model quality. Historical S1 still requires CUDA;
+no Windows native, scientific, or production-throughput qualification is added. PR #144
+remains a draft at the cited code head; the bounded worker run does not authorize
+additional compute.
 
 See [the member task flow](../python/docs/UNIFIED_TASK_FLOW.zh-CN.md),
 [collection orchestration](../python/docs/COLLECTION_FLOW.md),

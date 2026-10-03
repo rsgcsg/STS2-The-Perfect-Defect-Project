@@ -25,9 +25,13 @@ SCHEMA = "stpd/stage1a-light-action-m0-dual-input-v1"
 INPUT_FORMAT = "stpd-token-light-action-m0-v1"
 CANONICAL_SCHEMA = "stpd/stage1a-light-action-m0-canonical-input-v1"
 CANONICAL_INPUT_FORMAT = "stpd-token-light-action-m0-canonical-v1"
+PUBLIC_SCHEMA = "stpd/stage1a-light-action-m0-public-input-v1"
+PUBLIC_INPUT_FORMAT = "stpd-token-light-action-m0-public-v1"
 TRAINING_BINDING_SCHEMA = "stpd/light-action-m0-training-binding-v1"
 MAX_TOKENIZER_BYTES = 16 * 1024 * 1024
 TEXT_MENU_VIEW_SCHEMA = "stpd/text-menu-bc-view-v1"
+PUBLIC_LITE_VIEW_SCHEMA = "stpd/public-observation-bc-view-v1"
+PUBLIC_COMPACT_VIEW_SCHEMA = "stpd/public-observation-bc-view-v2"
 DEFAULT_MAX_STATE_TOKENS = 8192
 DEFAULT_MAX_ACTION_BYTES = 8192
 
@@ -50,6 +54,17 @@ class LoadedLightActionInputs:
     samples: tuple[ModelSample, ...]
     rows: tuple[LightActionTokenRow, ...]
     state_tokenizer: Tokenizer
+
+
+@dataclass(frozen=True)
+class LoadedCheckpointDiagnosticInputs:
+    """Verified M0 training codec plus separately bound engineering dev samples."""
+
+    training: LoadedLightActionInputs
+    evaluation_input: Manifest
+    evaluation_view: Manifest
+    evaluation_samples: tuple[ModelSample, ...]
+    evaluation_rows: tuple[LightActionTokenRow, ...]
 
 
 def fit_state_bpe(samples: tuple[ModelSample, ...], *, vocab_size: int = 8192) -> bytes:
@@ -78,10 +93,17 @@ def _source_view(
     view = store.get_manifest(view_id)
     schema = view.parameters.value().get("schema")
     if (view.kind != "model_view"
-            or schema not in {TEXT_MENU_VIEW_SCHEMA, "stpd/decision-model-view-v1"}):
+            or schema not in {TEXT_MENU_VIEW_SCHEMA, "stpd/decision-model-view-v1",
+                              PUBLIC_LITE_VIEW_SCHEMA, PUBLIC_COMPACT_VIEW_SCHEMA}):
         raise BoundaryError("light_action_inputs", "supported_m0_model_view_required")
     if schema == TEXT_MENU_VIEW_SCHEMA:
         renderer = TEXT_MENU_RENDERER
+    elif schema in {PUBLIC_LITE_VIEW_SCHEMA, PUBLIC_COMPACT_VIEW_SCHEMA}:
+        from .public_inputs import COMPACT_IDENTITY, IDENTITY
+
+        renderer = COMPACT_IDENTITY if schema == PUBLIC_COMPACT_VIEW_SCHEMA else IDENTITY
+        if view.parameters.value().get("serializer") != renderer:
+            raise BoundaryError("light_action_inputs", "public_renderer_mismatch")
     else:
         from .representation import FullRunSerializer
 
@@ -122,16 +144,60 @@ def _training_binding(store: ArtifactStore, view: Manifest, value: object) -> di
            length=32)
     digest(value["allocation_id"], "light_action_inputs.allocation_id")
     digest(value["model_view_id"], "light_action_inputs.model_view_id")
-    if (view.parameters.value().get("schema") != "stpd/decision-model-view-v1"
+    view_schema = view.parameters.value().get("schema")
+    canonical = view_schema == "stpd/decision-model-view-v1"
+    public = view_schema in {PUBLIC_LITE_VIEW_SCHEMA, PUBLIC_COMPACT_VIEW_SCHEMA}
+    if (not (canonical or public)
             or sorted(parent.role for parent in view.parents) != ["allocation", "dataset"]
             or datasets != [view.parent("dataset")]
             or value["allocation_id"] != view.parent("allocation")
             or value["model_view_id"] != view.artifact_id):
         raise BoundaryError("light_action_inputs", "training_binding_ancestry_mismatch")
     allocation = store.get_manifest(view.parent("allocation"))
-    if (allocation.kind != "protocol" or allocation.parent("dataset") != datasets[0]):
+    from .decision_training import ALLOCATION_SCHEMA
+
+    if (allocation.kind != "protocol"
+            or allocation.parameters.value().get("schema") != ALLOCATION_SCHEMA
+            or [parent.role for parent in allocation.parents] != ["dataset"]
+            or allocation.parent("dataset") != datasets[0]):
         raise BoundaryError("light_action_inputs", "training_binding_ancestry_mismatch")
     return value
+
+
+def _public_source_manifest(view: Manifest) -> tuple[str, dict[str, Any]]:
+    """Validate public source identity from its manifest without loading rows."""
+    from .public_inputs import COMPACT_IDENTITY, IDENTITY
+
+    info = view.parameters.value()
+    schema = info.get("schema")
+    if schema == PUBLIC_COMPACT_VIEW_SCHEMA:
+        renderer = COMPACT_IDENTITY
+    elif schema == PUBLIC_LITE_VIEW_SCHEMA:
+        renderer = IDENTITY
+    else:
+        renderer = None
+    if (view.kind != "model_view" or not isinstance(schema, str) or renderer is None
+            or info.get("serializer") != renderer):
+        raise BoundaryError("light_action_inputs", "public_renderer_mismatch")
+    return schema, renderer
+
+
+def _public_input_binding(
+    store: ArtifactStore, manifest: Manifest, view: Manifest,
+) -> dict[str, Any]:
+    """Validate all public M0 provenance in manifests only, before payload access."""
+    info = manifest.parameters.value()
+    schema, renderer = _public_source_manifest(view)
+    if (manifest.kind != "training_input"
+            or info.get("schema") != PUBLIC_SCHEMA
+            or info.get("format") != PUBLIC_INPUT_FORMAT
+            or info.get("source_schema") != schema
+            or info.get("source_renderer") != renderer
+            or [parent.role for parent in manifest.parents] != ["model_view"]
+            or sorted(payload.role for payload in manifest.payloads)
+            != ["action_codec", "rows", "state_tokenizer"]):
+        raise BoundaryError("light_action_inputs", "public_input_identity_mismatch")
+    return _training_binding(store, view, info.get("training_binding"))
 
 
 def canonical_training_binding(store: ArtifactStore, identity: str) -> dict[str, Any]:
@@ -144,12 +210,35 @@ def canonical_training_binding(store: ArtifactStore, identity: str) -> dict[str,
     manifest = store.get_manifest(identity)
     info = manifest.parameters.value()
     if (manifest.kind != "training_input" or info.get("schema") != CANONICAL_SCHEMA
+            or info.get("format") != CANONICAL_INPUT_FORMAT
             or [parent.role for parent in manifest.parents] != ["model_view"]):
         raise BoundaryError("light_action_inputs", "canonical_training_input_required")
     view = store.get_manifest(manifest.parent("model_view"))
-    if view.parameters.value().get("schema") != "stpd/decision-model-view-v1":
+    if (view.kind != "model_view"
+            or view.parameters.value().get("schema") != "stpd/decision-model-view-v1"
+            or info.get("source_schema") != "stpd/decision-model-view-v1"):
         raise BoundaryError("light_action_inputs", "input_family_source_mismatch")
+    serializer_info = view.parameters.value().get("serializer")
+    if not isinstance(serializer_info, dict):
+        raise BoundaryError("light_action_inputs", "canonical_serializer_mismatch")
+    from .representation import FullRunSerializer
+
+    serializer = FullRunSerializer(serializer_info.get("profile", ""))
+    if (serializer.identity != serializer_info
+            or info.get("source_renderer") != serializer.identity):
+        raise BoundaryError("light_action_inputs", "canonical_serializer_mismatch")
     return _training_binding(store, view, info.get("training_binding"))
+
+
+def public_training_binding(store: ArtifactStore, identity: str) -> dict[str, Any]:
+    """Read the immutable public M0 binding using manifests only, before payload access."""
+    manifest = store.get_manifest(identity)
+    info = manifest.parameters.value()
+    if (manifest.kind != "training_input" or info.get("schema") != PUBLIC_SCHEMA
+            or [parent.role for parent in manifest.parents] != ["model_view"]):
+        raise BoundaryError("light_action_inputs", "public_training_input_required")
+    view = store.get_manifest(manifest.parent("model_view"))
+    return _public_input_binding(store, manifest, view)
 
 
 def _state_codec(raw: bytes, tokenizer: Tokenizer, family: Literal["s", "qwen3"],
@@ -189,9 +278,12 @@ def _compile(
     max_state_tokens: int, max_action_bytes: int,
     source_schema: str = TEXT_MENU_VIEW_SCHEMA,
     source_renderer: dict[str, Any] | None = None,
+    verify_train_only_fit: bool = True,
 ) -> tuple[Tokenizer, tuple[LightActionTokenRow, ...], dict[str, Any]]:
-    if (type(max_state_tokens) is not int or not 1 <= max_state_tokens <= 8192
-            or type(max_action_bytes) is not int or not 1 <= max_action_bytes <= 8192):
+    public = source_schema in {PUBLIC_LITE_VIEW_SCHEMA, PUBLIC_COMPACT_VIEW_SCHEMA}
+    cap = 1_000_000 if public else 8192
+    if (type(max_state_tokens) is not int or not 1 <= max_state_tokens <= cap
+            or type(max_action_bytes) is not int or not 1 <= max_action_bytes <= cap):
         raise BoundaryError("light_action_inputs", "invalid_independent_length_limits")
     if family not in {"s", "qwen3"}:
         raise BoundaryError("light_action_inputs", "unsupported_state_codec")
@@ -200,9 +292,9 @@ def _compile(
         pin = load_pin()
         expected = pin.file_by_name["tokenizer.json"]
         if (digest != expected.sha256 or len(raw) != expected.size_bytes
-            or max_state_tokens > pin.hard_limit):
+            or (not public and max_state_tokens > pin.hard_limit)):
             raise BoundaryError("light_action_inputs", "qwen_state_tokenizer_pin_mismatch")
-    elif raw != fit_state_bpe(samples):
+    elif verify_train_only_fit and raw != fit_state_bpe(samples):
         raise BoundaryError("light_action_inputs", "state_bpe_must_fit_train_only")
     try:
         tokenizer = Tokenizer.from_str(raw.decode("utf-8"))
@@ -238,13 +330,16 @@ def _compile(
         raise BoundaryError("light_action_inputs", "catalog_projection_mismatch")
     state_codec = _state_codec(raw, tokenizer, family, max_state_tokens)
     canonical = source_schema == "stpd/decision-model-view-v1"
-    if source_schema not in {TEXT_MENU_VIEW_SCHEMA, "stpd/decision-model-view-v1"}:
+    public = source_schema in {PUBLIC_LITE_VIEW_SCHEMA, PUBLIC_COMPACT_VIEW_SCHEMA}
+    if source_schema not in {TEXT_MENU_VIEW_SCHEMA, "stpd/decision-model-view-v1",
+                             PUBLIC_LITE_VIEW_SCHEMA, PUBLIC_COMPACT_VIEW_SCHEMA}:
         raise BoundaryError("light_action_inputs", "supported_m0_model_view_required")
     if source_renderer is None:
         source_renderer = TEXT_MENU_RENDERER
     info = {
-        "schema": CANONICAL_SCHEMA if canonical else SCHEMA,
-        "format": CANONICAL_INPUT_FORMAT if canonical else INPUT_FORMAT,
+        "schema": CANONICAL_SCHEMA if canonical else PUBLIC_SCHEMA if public else SCHEMA,
+        "format": (CANONICAL_INPUT_FORMAT if canonical else
+                   PUBLIC_INPUT_FORMAT if public else INPUT_FORMAT),
         "graph": LIGHT_ACTION_M0_GRAPH,
         "source_schema": source_schema, "source_renderer": source_renderer,
         "state_codec": state_codec,
@@ -264,7 +359,8 @@ def _compile(
         },
         "purpose": "engineering", "fit_scope": "train_only" if family == "s" else "pinned",
         "projection": ("recompiled_from_exact_canonical_decision_model_view_v1" if canonical
-                       else "recompiled_from_exact_text_menu_model_view_v1"),
+                       else "recompiled_from_exact_public_observation_view" if public else
+                       "recompiled_from_exact_text_menu_model_view_v1"),
     }
     return tokenizer, tuple(rows), info
 
@@ -276,11 +372,19 @@ def publish_light_action_inputs(
     max_action_bytes: int = DEFAULT_MAX_ACTION_BYTES,
     training_binding: dict[str, Any] | None = None,
 ) -> Manifest:
+    # Bind an admitted M0 source from manifests before reprojecting its payloads.
+    view_manifest = store.get_manifest(view_id)
+    source_schema = view_manifest.parameters.value().get("schema")
+    canonical = source_schema == "stpd/decision-model-view-v1"
+    public = source_schema in {PUBLIC_LITE_VIEW_SCHEMA, PUBLIC_COMPACT_VIEW_SCHEMA}
+    binding = (_training_binding(store, view_manifest, training_binding)
+               if canonical or public else None)
+    if public:
+        _public_source_manifest(view_manifest)
+    if not (canonical or public) and training_binding is not None:
+        raise BoundaryError("light_action_inputs", "training_binding_only_for_admitted_m0")
     view, samples, renderer = _source_view(store, view_id)
-    canonical = view.parameters.value().get("schema") == "stpd/decision-model-view-v1"
-    binding = _training_binding(store, view, training_binding) if canonical else None
-    if not canonical and training_binding is not None:
-        raise BoundaryError("light_action_inputs", "training_binding_only_for_canonical_m0")
+    source_schema = view.parameters.value().get("schema")
     if state_family == "s" and snapshot is None:
         raw = fit_state_bpe(samples)
     elif state_family == "qwen3" and snapshot is not None:
@@ -313,7 +417,9 @@ def publish_light_action_inputs(
 def load_light_action_inputs(store: ArtifactStore, identity: str) -> LoadedLightActionInputs:
     manifest = store.get_manifest(identity)
     info = manifest.parameters.value()
-    if (manifest.kind != "training_input" or info.get("schema") not in {SCHEMA, CANONICAL_SCHEMA}
+    if (manifest.kind != "training_input" or info.get("schema") not in {
+                SCHEMA, CANONICAL_SCHEMA, PUBLIC_SCHEMA,
+            }
             or [parent.role for parent in manifest.parents] != ["model_view"]
             or sorted(payload.role for payload in manifest.payloads)
             != ["action_codec", "rows", "state_tokenizer"]):
@@ -324,14 +430,22 @@ def load_light_action_inputs(store: ArtifactStore, identity: str) -> LoadedLight
     # a forged legacy input schema over a canonical allocation must fail closed
     # before loading training examples.
     view_manifest = store.get_manifest(view_id)
-    canonical = (view_manifest.kind == "model_view"
-                 and view_manifest.parameters.value().get("schema")
-                 == "stpd/decision-model-view-v1")
-    if canonical != (info.get("schema") == CANONICAL_SCHEMA):
+    view_schema = view_manifest.parameters.value().get("schema")
+    canonical = view_manifest.kind == "model_view" and view_schema == "stpd/decision-model-view-v1"
+    public = view_manifest.kind == "model_view" and view_schema in {
+        PUBLIC_LITE_VIEW_SCHEMA, PUBLIC_COMPACT_VIEW_SCHEMA,
+    }
+    if ((canonical and info.get("schema") != CANONICAL_SCHEMA)
+            or (public and info.get("schema") != PUBLIC_SCHEMA)
+            or (not canonical and not public
+                and info.get("schema") not in {SCHEMA, CANONICAL_SCHEMA})):
         raise BoundaryError("light_action_inputs", "input_family_source_mismatch")
-    binding = (_training_binding(store, view_manifest, info.get("training_binding"))
+    if not canonical and not public and info.get("schema") == CANONICAL_SCHEMA:
+        raise BoundaryError("light_action_inputs", "input_family_source_mismatch")
+    binding = (_public_input_binding(store, manifest, view_manifest) if public else
+               _training_binding(store, view_manifest, info.get("training_binding"))
                if canonical else None)
-    if not canonical and "training_binding" in info:
+    if not canonical and not public and "training_binding" in info:
         raise BoundaryError("light_action_inputs", "unexpected_training_binding")
     view, samples, renderer = _source_view(store, view_id)
     if (manifest.payload("state_tokenizer").size > MAX_TOKENIZER_BYTES
@@ -368,3 +482,68 @@ def load_light_action_inputs(store: ArtifactStore, identity: str) -> LoadedLight
             or b"".join(store.read_payload(manifest.payload("rows"))) != encoded_rows):
         raise BoundaryError("light_action_inputs", "source_projection_mismatch")
     return LoadedLightActionInputs(manifest, samples, rows, tokenizer)
+
+
+def load_checkpoint_diagnostic_inputs(
+    store: ArtifactStore, training_input_id: str, evaluation_input_id: str,
+) -> LoadedCheckpointDiagnosticInputs:
+    """Load a verified public-compact checkpoint codec and project another dev view.
+
+    The training input is verified by the normal loader, including its train-only codec
+    identity. A distinct evaluation view is encoded using those persisted codec bytes and
+    never fits or changes a codec from evaluation samples.
+    """
+    from .public_inputs import COMPACT_IDENTITY
+
+    training = load_light_action_inputs(store, training_input_id)
+    training_info = training.manifest.parameters.value()
+    training_view = store.get_manifest(training.manifest.parent("model_view"))
+    if (training_info.get("schema") != PUBLIC_SCHEMA
+            or training_view.parameters.value().get("schema") != PUBLIC_COMPACT_VIEW_SCHEMA
+            or training_view.parameters.value().get("serializer") != COMPACT_IDENTITY
+            or training_info.get("source_renderer") != COMPACT_IDENTITY):
+        raise BoundaryError("light_action_inputs", "public_compact_m0_required")
+
+    evaluation_input = store.get_manifest(evaluation_input_id)
+    evaluation_binding = public_training_binding(store, evaluation_input_id)
+    evaluation_view, evaluation_samples, evaluation_renderer = _source_view(
+        store, evaluation_input.parent("model_view"))
+    if (evaluation_input.kind != "training_input"
+            or evaluation_input.parameters.value().get("schema") != PUBLIC_SCHEMA
+            or evaluation_binding["model_view_id"] != evaluation_view.artifact_id
+            or evaluation_view.parameters.value().get("schema") != PUBLIC_COMPACT_VIEW_SCHEMA
+            or evaluation_renderer != COMPACT_IDENTITY
+            or evaluation_renderer != training_info["source_renderer"]):
+        raise BoundaryError("light_action_inputs", "matching_public_compact_dev_view_required")
+
+    if evaluation_view.artifact_id == training_view.artifact_id:
+        return LoadedCheckpointDiagnosticInputs(
+            training, evaluation_input, evaluation_view, training.samples, training.rows,
+        )
+
+    state_codec = training_info.get("state_codec")
+    if not isinstance(state_codec, dict):
+        raise BoundaryError("light_action_inputs", "state_codec_identity_mismatch")
+    family_name = state_codec.get("family")
+    if family_name == "train-only-byte-bpe":
+        family: Literal["s", "qwen3"] = "s"
+    elif family_name == "pinned-qwen3":
+        family = "qwen3"
+    else:
+        raise BoundaryError("light_action_inputs", "state_codec_identity_mismatch")
+    raw = b"".join(store.read_payload(training.manifest.payload("state_tokenizer")))
+    max_state_tokens = training_info.get("max_state_tokens")
+    max_action_bytes = training_info.get("max_action_bytes")
+    if type(max_state_tokens) is not int or type(max_action_bytes) is not int:
+        raise BoundaryError("light_action_inputs", "invalid_independent_length_limits")
+    _, evaluation_rows, _ = _compile(
+        evaluation_samples, raw, family,
+        max_state_tokens=max_state_tokens,
+        max_action_bytes=max_action_bytes,
+        source_schema=evaluation_view.parameters.value()["schema"],
+        source_renderer=evaluation_renderer,
+        verify_train_only_fit=False,
+    )
+    return LoadedCheckpointDiagnosticInputs(
+        training, evaluation_input, evaluation_view, evaluation_samples, evaluation_rows,
+    )

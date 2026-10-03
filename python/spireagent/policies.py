@@ -4,7 +4,10 @@ from types import ModuleType
 
 from spireagent.json_boundary import BoundaryError
 
-SUPPORTED_ADAPTERS = frozenset({"s1-v1", "token-v1", "stpd-m2-decision-adapter"})
+PUBLIC_M0_ADAPTER = "stpd-public-m0-decision-adapter"
+SUPPORTED_ADAPTERS = frozenset({
+    "s1-v1", "token-v1", "stpd-m2-decision-adapter", PUBLIC_M0_ADAPTER,
+})
 
 
 def policy_support(adapter: str) -> ModuleType:
@@ -20,4 +23,8 @@ def policy_support(adapter: str) -> ModuleType:
         from stpd import memory_policy_installation
 
         return memory_policy_installation
+    if adapter == PUBLIC_M0_ADAPTER:
+        from stpd import public_m0_policy_installation
+
+        return public_m0_policy_installation
     raise BoundaryError("local_model", "unsupported_trusted_adapter")

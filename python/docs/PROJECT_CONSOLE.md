@@ -102,6 +102,17 @@ persisted pending/completed/failed/interrupted status; page refresh never retrie
 This local manifest has no Hub receipt and is not itself a Dataset or training input.
 The separate purpose-bound Dataset path below rechecks the source before selecting samples.
 
+The same local import page can explicitly inspect already downloaded member exports. Its
+read-only catalog projects only collection archive payloads from a saved verified download
+receipt; artifact files and other downloads are not import candidates. The page receives the
+archive label, size, and export/file/source IDs, never saved paths or archive bytes, and does
+not fetch the Hub inventory again. The singular selection requires a fresh Human-origin
+checkbox. Import rechecks the saved inventory and selected file size/hash through the same
+persistent local importer. If Workbench restarts during a pending import, refresh reports the
+operation as unknown and never retries it. A completed import is a locally verified evidence
+artifact; source/use indexing and sample preview remain separate explicit steps, and no
+training admission is inferred.
+
 Selecting that exact local-verified evidence artifact exposes an explicit **预览样本** command.
 The local browser POST starts one bounded background read of the selected store; GET only reads
 the current in-memory status and never starts projection. The command rechecks the manifest,
@@ -181,8 +192,12 @@ run/result/checkpoint and package bytes. Registration checks that receipt, curre
 training-use admission and immutable store pins without replaying the training
 engine in the Web process. An older completed export without a receipt remains
 readable but needs the explicit “重新核验导出” action before registration.
-Registration uses one 22-second deadline and checks it before writing the roster;
-timeout never automatically retries or activates a model. The user checks current
+Registration allows up to 300 seconds for local source/use admission and complete
+export verification, then starts a separate 45-second budget for Runtime/Connector
+checks, policy binding and the roster write. These are cooperative deadlines checked
+between synchronous steps, not hard process-kill limits. Expired verification never
+reaches the Runtime checks; the registration budget is checked before writing the roster.
+Timeout never automatically retries or activates a model. The user checks current
 status before explicitly retrying an unregistered model. It adds a selection to
 the existing local roster without starting a live policy or taking game control.
 The private `text-menu-m2-v1` Runtime
