@@ -49,6 +49,7 @@ def test_first_remote_window_returns_checkpoint_delta(tmp_path):
         request, request_sha256=hashlib.sha256(request).hexdigest(),
     )
     header, blobs = _unpack(result, _RESULT_MAGIC, MAX_RESULT_BYTES)
+    assert header["runtime"] == engine.runtime
     assert header["worker_result"]["state"] == "paused"
     assert header["worker_result"]["checkpoint_id"]
     assert len(header["event_ids"]) >= 4
@@ -56,6 +57,12 @@ def test_first_remote_window_returns_checkpoint_delta(tmp_path):
     assert reporter.events(run.artifact_id) == ()
     with pytest.raises(BoundaryError, match="request_digest_mismatch"):
         execute_public_m2_remote_request(request, request_sha256="0" * 64)
+    with patch.object(remote_module, "_runtime_evidence", return_value={
+        **engine.runtime, "platform": "synthetic-wrong-platform",
+    }), pytest.raises(BoundaryError, match="runtime_mismatch"):
+        execute_public_m2_remote_request(
+            request, request_sha256=hashlib.sha256(request).hexdigest(),
+        )
 
 
 def test_local_accept_then_resume_to_first_stage(tmp_path):

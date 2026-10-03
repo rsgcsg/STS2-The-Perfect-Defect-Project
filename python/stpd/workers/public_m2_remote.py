@@ -10,12 +10,15 @@ from __future__ import annotations
 import hashlib
 import io
 import math
+import platform
 import struct
 import tempfile
 from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+
+import torch
 
 from spireagent.artifact_contracts import Manifest, Payload, Producer
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes, object_fields
@@ -25,6 +28,7 @@ from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
 
 from .checkpoint_codec import decode_checkpoint
+from .public_m2_engine import _implementation_digest
 from .public_m2_preflight import (
     PublicM2Preflight,
     validate_public_m2_checkpoint,
@@ -241,6 +245,17 @@ def _runtime_pin(value: object, profile: PublicM2Preflight) -> dict[str, Any]:
     return value
 
 
+def _runtime_evidence() -> dict[str, Any]:
+    """Ordinary process observation, not a trusted execution attestation."""
+    return {
+        "torch": str(torch.__version__), "python": platform.python_version(),
+        "platform": platform.platform(),
+        "default_dtype": str(torch.get_default_dtype()),
+        "cpu_threads": torch.get_num_threads(),
+        "implementation_sha256": _implementation_digest(),
+    }
+
+
 def _remaining_windows(profile: PublicM2Preflight, checkpoint: dict[str, Any] | None
                        ) -> int:
     if checkpoint is not None and checkpoint["completed_epochs"] == profile.config.epochs:
@@ -435,10 +450,11 @@ def execute_public_m2_remote_request(raw: bytes, *, request_sha256: str) -> byte
                         == "epoch_stage"}) > 1):
             raise BoundaryError(_STAGE, "attempt_bound_exceeded")
         checkpoint = store.get_manifest(result.checkpoint_id)
-        runtime = decode_checkpoint(_payload_bytes(
+        checkpoint_runtime = decode_checkpoint(_payload_bytes(
             store, checkpoint.payload("checkpoint"), MAX_RESULT_BYTES,
         ))["runtime"]
-        if runtime != header["expected_runtime"]:
+        runtime = _runtime_evidence()
+        if runtime != header["expected_runtime"] or runtime != checkpoint_runtime:
             raise BoundaryError(_STAGE, "runtime_mismatch")
         delta = {key: store.get_manifest(key) for key in set(store.manifest_ids()) - before}
         if any(item.kind not in _DELTA_KINDS or item.producer != producer
