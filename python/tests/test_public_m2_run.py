@@ -127,6 +127,24 @@ def _prepare(bundle):
     )
 
 
+def test_cuda_declared_run_prepares_without_local_cuda_and_execute_still_checks(tmp_path):
+    if torch.cuda.is_available():
+        pytest.skip("requires a host without CUDA")
+    bundle = _fixture(tmp_path)
+    store, reporter, producer, view, allocation, value, config = bundle
+    torch.set_num_threads(2)
+    run = prepare_public_m2_run(
+        store, value, replace(config, device="cuda:0"), producer,
+        source_view_id=view.artifact_id, allocation_id=allocation.artifact_id,
+        operation_id="f" * 32,
+    )
+    assert run.parameters.value()["config"]["device"] == "cuda:0"
+    assert run.parameters.value()["engine_input_digest"]
+    with pytest.raises(BoundaryError, match="unavailable_device"):
+        execute_public_m2_run(store, reporter, run.artifact_id, producer)
+    assert reporter.events(run.artifact_id) == ()
+
+
 def test_d6_prepared_manifest_and_initial_event_wire_golden(tmp_path):
     """Freeze exact M2 wire identities before adding another model run flavor."""
     bundle = _fixture(tmp_path)

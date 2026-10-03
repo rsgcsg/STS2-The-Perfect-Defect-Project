@@ -19,6 +19,11 @@ from stpd.workers.public_m2_engine import (
     PublicM2EngineConfig,
     load_public_m2_weights,
 )
+from stpd.workers.public_m2_preflight import (
+    preflight_public_m2_engine,
+    validate_public_m2_checkpoint,
+    validate_public_m2_export,
+)
 
 
 def _step(position: int, *, target: str = "b") -> LightActionM2TrainingStep:
@@ -89,6 +94,96 @@ def test_mid_chain_resume_matches_uninterrupted_and_dev_is_read_only(
 
 def test_public_m2_learning_rate_default_matches_six_arm_plan() -> None:
     assert _config().learning_rate == 3e-4
+
+
+def test_cpu_preflight_validates_checkpoint_and_export_structure() -> None:
+    torch.set_num_threads(1)
+    engine = _engine()
+    engine.advance_window()
+    profile = preflight_public_m2_engine(
+        engine.train_chains, engine.dev_chains, engine.config,
+    )
+    raw = engine.checkpoint()
+    assert validate_public_m2_checkpoint(
+        raw, profile, expected_runtime=engine.runtime,
+    )["window_cursor"] == 8
+    for key, changed in (
+        ("input_digest", "f" * 64),
+        ("runtime", {**engine.runtime, "implementation_sha256": "f" * 64}),
+        ("memory", torch.zeros(1, 12)),
+        ("cpu_rng", torch.zeros(1, dtype=torch.uint8)),
+    ):
+        value = decode_checkpoint(raw)
+        value[key] = changed
+        with pytest.raises(BoundaryError):
+            validate_public_m2_checkpoint(
+                encode_checkpoint(value), profile, expected_runtime=engine.runtime,
+            )
+    value = decode_checkpoint(raw)
+    first = next(iter(value["optimizer"]["state"].values()))
+    first["step"] = first["step"].to(torch.int64)
+    from stpd.workers.public_m2_engine import _optimizer_digest
+    value["optimizer_digest"] = _optimizer_digest(
+        value["optimizer"], profile.parameter_names,
+    )
+    with pytest.raises(BoundaryError, match="optimizer_state_mismatch"):
+        validate_public_m2_checkpoint(
+            encode_checkpoint(value), profile, expected_runtime=engine.runtime,
+        )
+    value = decode_checkpoint(raw)
+    first_name = next(iter(value["model"]))
+    value["model"][first_name] = value["model"][first_name].flatten()[:1]
+    value["model_digest"] = engine_module._tensor_digest(value["model"])
+    with pytest.raises(BoundaryError, match="model_mismatch"):
+        validate_public_m2_checkpoint(
+            encode_checkpoint(value), profile, expected_runtime=engine.runtime,
+        )
+    value = decode_checkpoint(raw)
+    first_name = next(iter(value["model"]))
+    value["model"][first_name].flatten()[0] = float("nan")
+    value["model_digest"] = engine_module._tensor_digest(value["model"])
+    with pytest.raises(BoundaryError, match="non_finite_tensor"):
+        validate_public_m2_checkpoint(
+            encode_checkpoint(value), profile, expected_runtime=engine.runtime,
+        )
+    engine.advance_window()
+    checkpoint_raw = engine.checkpoint()
+    export = engine.export_weights()
+    assert validate_public_m2_export(
+        export, profile, completed_epochs=1, checkpoint_raw=checkpoint_raw,
+        expected_runtime=engine.runtime,
+    )["optimizer_updates"] == 2
+    with pytest.raises(BoundaryError, match="checkpoint_mismatch"):
+        validate_public_m2_export(
+            export, profile, completed_epochs=1,
+            checkpoint_raw=raw, expected_runtime=engine.runtime,
+        )
+
+
+def test_gpu_tagged_checkpoint_cpu_validation_is_structural_only() -> None:
+    """This fabricated header is not evidence that a CUDA RNG can be restored."""
+    torch.set_num_threads(1)
+    engine = _engine()
+    engine.advance_window()
+    config = replace(engine.config, device="cuda:0")
+    profile = preflight_public_m2_engine(engine.train_chains, engine.dev_chains, config)
+    value = decode_checkpoint(engine.checkpoint())
+    value["config"] = engine_module.asdict(config)
+    value["cuda_rng"] = torch.tensor([1, 2, 3], dtype=torch.uint8)
+    value["rng_digest"] = engine_module._tensor_digest({
+        "cpu_rng": value["cpu_rng"], "cuda_rng": value["cuda_rng"],
+    })
+    assert validate_public_m2_checkpoint(
+        encode_checkpoint(value), profile, expected_runtime=engine.runtime,
+    )["config"]["device"] == "cuda:0"
+    value["cuda_rng"] = torch.tensor([1, 2, 3], dtype=torch.int64)
+    value["rng_digest"] = engine_module._tensor_digest({
+        "cpu_rng": value["cpu_rng"], "cuda_rng": value["cuda_rng"],
+    })
+    with pytest.raises(BoundaryError, match="rng_mismatch"):
+        validate_public_m2_checkpoint(
+            encode_checkpoint(value), profile, expected_runtime=engine.runtime,
+        )
 
 
 def test_five_epoch_exports_are_bound_to_same_incomplete_run() -> None:

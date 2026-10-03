@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict, fields
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
+
+import torch
 
 from spireagent.artifact_contracts import Manifest, Producer
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ArtifactStore
 
+from ..fullrun.public_m2_input_storage import read_public_m2_input
 from ..fullrun.public_m2_sequences import PublicM2Input
 from ..models.token_core import ScratchShape
 from .public_m0_matched_engine import (
@@ -25,7 +29,10 @@ from .public_m0_matched_engine import (
 from .public_m0_matched_engine import (
     PublicM0MatchedConfig,
     PublicM0MatchedEngine,
+    _construct,
+    _implementation_digest,
     _shape,
+    _validate_tokenizer,
 )
 from .public_m2_run import (
     _execute_run,
@@ -61,9 +68,9 @@ def _verify_match(
     store: ArtifactStore, matched_m2_run_id: str, producer: Producer,
     source: PublicM2Input, config: PublicM0MatchedConfig,
 ) -> None:
-    config.validate()
+    config.validate(require_device=False)
     m2_run, _, m2_input, m2_config, m2_engine = _load_run(
-        store, matched_m2_run_id, producer,
+        store, matched_m2_run_id, producer, preflight_only=True,
     )
     shape = config.shape_override or ScratchShape(
         config.vocab_size, 384, 2, 6, 1536, 0.1, config.max_state_tokens,
@@ -117,11 +124,43 @@ def _export_extra(engine: PublicM0MatchedEngine) -> dict[str, Any]:
     }
 
 
+def _preflight_engine(source: PublicM2Input,
+                      config: PublicM0MatchedConfig) -> Any:
+    if not isinstance(source, PublicM2Input):
+        raise BoundaryError("public_m0_matched_run", "typed_input_required")
+    config.validate(require_device=False)
+    if torch.get_default_dtype() != torch.float32:
+        raise BoundaryError("public_m0_matched_run", "float32_required")
+    if (source.identity != config.source_digest
+            or read_public_m2_input(source.payload_bytes(), source.state_tokenizer) != source
+            or source.max_state_tokens != config.max_state_tokens
+            or source.max_action_bytes != config.max_action_bytes):
+        raise BoundaryError("public_m0_matched_run", "source_identity_mismatch")
+    _validate_tokenizer(source.state_tokenizer, config)
+    train = tuple(chain for chain in source.chains if chain.split == "train")
+    dev = tuple(chain for chain in source.chains if chain.split == "dev")
+    if not train or not dev:
+        raise BoundaryError("public_m0_matched_run", "train_dev_required")
+    windows = sum((len(chain.steps) + config.window_steps - 1) // config.window_steps
+                  for chain in train)
+    if windows != config.train_windows_per_epoch:
+        raise BoundaryError("public_m0_matched_run", "train_window_count_mismatch")
+    checker = cast(Any, SimpleNamespace(
+        source=source, config=config, device=torch.device("cpu"),
+        model=_construct(config, target=torch.device("cpu"),
+                         total_updates=windows * config.epochs),
+    ))
+    PublicM0MatchedEngine._preflight_limits(checker)
+    PublicM0MatchedEngine._preflight_model_inputs(checker)
+    checker.runtime = {"implementation_sha256": _implementation_digest()}
+    return checker
+
+
 _M0_FLAVOR = _RunFlavor(
     INPUT_SCHEMA, EXPERIMENT_SCHEMA, RUN_SCHEMA, CHECKPOINT_SCHEMA, MODEL_SCHEMA,
     EVALUATION_SCHEMA, STAGE_SCHEMA, ENGINE_CHECKPOINT_SCHEMA, ENGINE_EXPORT_SCHEMA,
     "scratch_public_m0_matched_a01_five_epoch", MODEL_KIND, _config,
-    PublicM0MatchedEngine, lambda engine: engine.source.identity,
+    PublicM0MatchedEngine, _preflight_engine, lambda engine: engine.source.identity,
     "source_digest", "source_digest", frozenset({
         "core_shape", "state_tokenizer_sha256", "vocab_size", "max_state_tokens",
         "max_action_bytes", "train_windows_per_epoch", "shape_profile",

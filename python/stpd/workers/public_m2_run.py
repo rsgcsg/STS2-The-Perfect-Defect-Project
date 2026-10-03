@@ -44,6 +44,7 @@ from .public_m2_engine import (
     PublicM2EngineConfig,
     _tensor_digest,
 )
+from .public_m2_preflight import preflight_public_m2_engine
 from .reporting import RunReporter
 from .worker import WorkerExecutionError, WorkerResult
 
@@ -97,6 +98,11 @@ def _chains(value: PublicM2Input, split: str) -> tuple[PublicM2EngineChain, ...]
 
 
 def _engine(value: PublicM2Input, config: PublicM2EngineConfig) -> PublicM2Engine:
+    _check_engine_input(value, config)
+    return PublicM2Engine(_chains(value, "train"), _chains(value, "dev"), config)
+
+
+def _check_engine_input(value: PublicM2Input, config: PublicM2EngineConfig) -> None:
     if (
         config.source_digest != value.identity
         or config.state_tokenizer_sha256 != hashlib.sha256(value.state_tokenizer).hexdigest()
@@ -106,7 +112,11 @@ def _engine(value: PublicM2Input, config: PublicM2EngineConfig) -> PublicM2Engin
         or config.epochs != 5
     ):
         raise BoundaryError(_BOUNDARY, "input_config_mismatch")
-    return PublicM2Engine(_chains(value, "train"), _chains(value, "dev"), config)
+
+
+def _preflight_engine(value: PublicM2Input, config: PublicM2EngineConfig) -> Any:
+    _check_engine_input(value, config)
+    return preflight_public_m2_engine(_chains(value, "train"), _chains(value, "dev"), config)
 
 
 def _tokenizer_vocab_size(raw: bytes) -> int:
@@ -142,6 +152,7 @@ class _RunFlavor:
     model_kind: str | None
     config_decode: Callable[[object], Any]
     engine_factory: Callable[[PublicM2Input, Any], Any]
+    preflight_factory: Callable[[PublicM2Input, Any], Any]
     input_binding: Callable[[Any], str]
     checkpoint_binding_key: str
     export_binding_key: str
@@ -154,7 +165,7 @@ _M2_FLAVOR = _RunFlavor(
     INPUT_SCHEMA, EXPERIMENT_SCHEMA, RUN_SCHEMA, CHECKPOINT_SCHEMA, MODEL_SCHEMA,
     EVALUATION_SCHEMA, STAGE_SCHEMA, PUBLIC_M2_CHECKPOINT_SCHEMA,
     PUBLIC_M2_EXPORT_SCHEMA, "scratch_public_m2_five_epoch", None,
-    _config, _engine, lambda engine: engine.input_digest,
+    _config, _engine, _preflight_engine, lambda engine: engine.input_digest,
     "input_digest", "input_digest", frozenset(), lambda engine: {}, None,
 )
 
@@ -204,7 +215,7 @@ def _prepare_run(
     if flavor.verify_reference is not None:
         assert reference_run_id is not None
         flavor.verify_reference(store, reference_run_id, producer, value, config)
-    engine = flavor.engine_factory(value, config)
+    engine = flavor.preflight_factory(value, config)
     # One caller-held writer lock is still required. This read makes an
     # already-published operation idempotent and rejects a new meaning for it;
     # ArtifactStore has no atomic operation-ID index of its own.
@@ -227,7 +238,7 @@ def _prepare_run(
             or existing_info.get("matched_m2_run_id") != reference_run_id
         ):
             raise BoundaryError(_BOUNDARY, "operation_id_collision")
-        _load_run(store, existing.artifact_id, producer, flavor=flavor)
+        _load_run(store, existing.artifact_id, producer, flavor=flavor, preflight_only=True)
         return existing
     input_payload = store.put_payload("training_input", io.BytesIO(raw), "application/json")
     tokenizer_payload = store.put_payload(
@@ -288,6 +299,7 @@ def prepare_public_m2_run(
 
 def _load_run(
     store: ArtifactStore, run_id: str, runtime: Producer, *, flavor: _RunFlavor = _M2_FLAVOR,
+    preflight_only: bool = False,
 ) -> tuple[Manifest, Manifest, PublicM2Input, Any, Any]:
     run = store.get_manifest(run_id)
     info = run.parameters.value()
@@ -352,7 +364,8 @@ def _load_run(
     config = flavor.config_decode(info["config"])
     if flavor.verify_reference is not None:
         flavor.verify_reference(store, info["matched_m2_run_id"], runtime, value, config)
-    engine = flavor.engine_factory(value, config)
+    engine = (flavor.preflight_factory(value, config) if preflight_only
+              else flavor.engine_factory(value, config))
     experiment = store.get_manifest(run.parent("experiment"))
     if (
         experiment.kind != "experiment" or experiment.producer != runtime

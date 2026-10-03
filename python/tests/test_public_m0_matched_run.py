@@ -128,6 +128,32 @@ def test_formal_prepare_rejects_synthetic_shape_and_mismatched_reference(tmp_pat
         execute_public_m0_matched_run(store, bundle[1], run.artifact_id, producer)
 
 
+def test_a01_cuda_declared_reference_prepares_without_local_cuda(tmp_path):
+    if torch.cuda.is_available():
+        pytest.skip("requires a host without CUDA")
+    bundle = _fixture(tmp_path)
+    store, _, producer, view, allocation, value, m2 = bundle
+    torch.set_num_threads(2)
+    m2_cuda = replace(
+        m2, device="cuda:0",
+        shape=ScratchShape(258, 384, 2, 6, 1536, 0.1, value.max_state_tokens),
+    )
+    matched = prepare_public_m2_run(
+        store, value, m2_cuda, producer,
+        source_view_id=view.artifact_id, allocation_id=allocation.artifact_id,
+        operation_id="f" * 32,
+    )
+    a01 = replace(_config(value, m2_cuda), shape_override=None, device="cuda:0")
+    run = prepare_public_m0_matched_run(
+        store, value, a01, producer, source_view_id=view.artifact_id,
+        allocation_id=allocation.artifact_id,
+        matched_m2_run_id=matched.artifact_id, operation_id="e" * 32,
+    )
+    assert run.parent("matched_m2_run") == matched.artifact_id
+    with pytest.raises(BoundaryError, match="unavailable_device"):
+        execute_public_m0_matched_run(store, bundle[1], run.artifact_id, producer)
+
+
 def test_formal_a01_prepare_requires_matching_standard_a02_run(tmp_path):
     bundle = _fixture(tmp_path)
     store, _, producer, view, allocation, value, m2 = bundle
