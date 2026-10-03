@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 from dataclasses import asdict, replace
 from unittest.mock import patch
 
@@ -124,6 +125,56 @@ def _prepare(bundle):
         source_view_id=view.artifact_id, allocation_id=allocation.artifact_id,
         operation_id="c" * 32,
     )
+
+
+def test_d6_prepared_manifest_and_initial_event_wire_golden(tmp_path):
+    """Freeze exact M2 wire identities before adding another model run flavor."""
+    bundle = _fixture(tmp_path)
+    store, reporter, producer, _, _, _, _ = bundle
+    run = _prepare(bundle)
+    expected = {
+        "training_input": (
+            "89d6eff54a6479bd7b8d38d2d5f581369e89b4f5181579f56b66fd90575d92ff",
+            "5684d19bbb122d33ba8326663287f558df4a90ea7eb950a24ce8a96b74b3542a",
+        ),
+        "experiment": (
+            "2a0acf87a4e7dfed3b885406d568183f23b817e4df4f08bc7b16a04173274ea2",
+            "e4c5275c1a67fc8dcb5456f29df4145b7efee6faa1c158faa0342bba57f6e944",
+        ),
+        "run": (
+            "cb8868134ff51344cd561339fac1532c191706baae5720dc15c6bc36189339ef",
+            "37c79e29a472907a7c4b2b8f264ce0f6c48958566e609872d8ee71e18c8a04ff",
+        ),
+    }
+    actual = {
+        item.kind: (item.artifact_id, hashlib.sha256(item.to_bytes()).hexdigest())
+        for identity in store.manifest_ids()
+        if (item := store.get_manifest(identity)).kind in expected
+    }
+    assert actual == expected
+    with patch.object(run_module.uuid, "uuid4", return_value=uuid.UUID(
+        "01234567-89ab-cdef-0123-456789abcdef"
+    )):
+        execute_public_m2_run(
+            store, reporter, run.artifact_id, producer, stop_after_windows=1,
+        )
+    expected_events = {
+        "loading": (
+            "ddc3abee2026a07b6ad4373c33931ff29077a7d728aa31000218a25b6d207ff9",
+            "0f0f4080de6fa2e89ce17854b1a3f010c4003bbf8a3524c03984e315542f2a90",
+        ),
+        "started": (
+            "97a126578475deb78804236ec16fb94b5d162083714de06789574ec94dfab03a",
+            "4d0b1e54e37b1eefbd3410551c6821e36e44e397b11811a55b5c0ca0860596b0",
+        ),
+    }
+    events = {
+        item.parameters.value()["kind"]:
+            (item.artifact_id, hashlib.sha256(item.to_bytes()).hexdigest())
+        for item in reporter.events(run.artifact_id)
+        if item.parameters.value()["kind"] in expected_events
+    }
+    assert events == expected_events
 
 
 def test_canonical_wire_round_trip_and_rejects_edge_fit_and_action_corruption(tmp_path):
