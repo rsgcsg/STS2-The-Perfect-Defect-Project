@@ -26,6 +26,11 @@ wire limit, preserving legacy wire bytes for smaller requests. Owner storage,
 attempts, provider environment pins, results and recovery bind the original
 canonical logical request hash; a frame is not a new training identity. A new
 exact-source worker image is required before using this transport in compute.
+Framed requests are stored as the same bounded frame in 8 MiB chunks, with a
+request-only versioned index recording both logical and wire lengths/digests.
+The existing request ref remains its logical hash. Recovery verifies chunks,
+wire bytes, bounded decompression and logical identity. Existing legacy indices
+remain readable and immutable; generic result storage retains its v1 contract.
 
 A CPU controller publishes `FeatureJobSpec` + `publish_feature_job` against an already
 validated ModelView. Supply the exact target Qwen identity, hidden size, batch size, fixed

@@ -27,7 +27,7 @@ from typing import Any, cast
 from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes
 from spireagent.source import source_identity
-from spireagent.storage.blobs import safe_key
+from spireagent.storage.blobs import StoreError, safe_key
 from spireagent.storage.replaceable_file import (
     has_unresolved_replacement,
     read_replaceable_bytes,
@@ -50,6 +50,7 @@ from spireagent.workbench.research_process import private_child as _private_chil
 from stpd.cloud_jobs.m0_request_wire import (
     MAX_M0_LOGICAL_REQUEST_BYTES,
     MAX_M0_REQUEST_BYTES,
+    REQUEST_WIRE_MAGIC,
     decode_m0_request,
 )
 
@@ -91,6 +92,7 @@ REMOTE_OPERATION_HISTORY_PREFIX = "local-training/remote-operation-history/"
 REMOTE_CHUNK_BYTES = 8 * 1024 * 1024
 REMOTE_MAX_REQUEST_BYTES = MAX_M0_REQUEST_BYTES
 REMOTE_MAX_LOGICAL_REQUEST_BYTES = MAX_M0_LOGICAL_REQUEST_BYTES
+REMOTE_REQUEST_WIRE_INDEX_SCHEMA = "stpd/local-training-remote-request-wire-index-v1"
 REMOTE_MAX_RESULT_BYTES = 128 * 1024 * 1024
 REMOTE_MAX_CONTROL_BYTES = 128 * 1024
 REMOTE_MAX_TIMEOUT_SECONDS = 900
@@ -695,7 +697,8 @@ def _validate_remote_operation(value: dict[str, Any]) -> None:
 
 def _persist_remote_blob(store: ManifestArtifactStore, raw: bytes, *,
                          object_prefix: str, chunk_prefix: str,
-                         maximum: int, label: str) -> tuple[str, str]:
+                         maximum: int, label: str,
+                         logical_identity: tuple[str, int] | None = None) -> tuple[str, str]:
     if not isinstance(raw, bytes):
         raise BoundaryError("local_training", label + "_must_be_bytes")
     if not raw or len(raw) > maximum:
@@ -705,7 +708,16 @@ def _persist_remote_blob(store: ManifestArtifactStore, raw: bytes, *,
         getattr(blobs, "get", None)
     ):
         raise BoundaryError("local_training", label + "_blob_store_unavailable")
-    sha256 = hashlib.sha256(raw).hexdigest()
+    wire_sha256 = hashlib.sha256(raw).hexdigest()
+    sha256 = wire_sha256 if logical_identity is None else logical_identity[0]
+    if logical_identity is not None and (
+        object_prefix != REMOTE_REQUEST_PREFIX
+        or chunk_prefix != REMOTE_REQUEST_CHUNK_PREFIX
+        or label != "remote_request"
+        or not raw.startswith(REQUEST_WIRE_MAGIC)
+        or not 1 <= logical_identity[1] <= REMOTE_MAX_LOGICAL_REQUEST_BYTES
+    ):
+        raise BoundaryError("local_training", "remote_request_storage_identity_invalid")
     object_key = object_prefix + sha256
     chunks = []
     try:
@@ -717,12 +729,20 @@ def _persist_remote_blob(store: ManifestArtifactStore, raw: bytes, *,
             if blobs.get(chunk_key) != chunk:
                 raise ValueError("remote evidence chunk mismatch")
             chunks.append({"sha256": chunk_sha256, "size": len(chunk)})
-        index = json.dumps({
+        index_value = {
             "schema": "stpd/local-training-remote-evidence-index-v1",
             "sha256": sha256,
             "size": len(raw),
             "chunks": chunks,
-        }, sort_keys=True, separators=(",", ":")).encode()
+        }
+        if logical_identity is not None:
+            index_value.update({
+                "schema": REMOTE_REQUEST_WIRE_INDEX_SCHEMA,
+                "size": logical_identity[1],
+                "wire_sha256": wire_sha256,
+                "wire_size": len(raw),
+            })
+        index = json.dumps(index_value, sort_keys=True, separators=(",", ":")).encode()
         blobs.put_if_absent(object_key, index)
         if blobs.get(object_key) != index:
             raise ValueError("remote evidence index mismatch")
@@ -741,14 +761,32 @@ def _read_remote_blob(store: ManifestArtifactStore, object_ref: str, sha256: str
         raise BoundaryError("local_training", label + "_reference_invalid")
     try:
         index_bytes = blobs.get(object_ref)
-        index = json.loads(index_bytes)
-        if (not isinstance(index, dict)
-                or set(index) != {"schema", "sha256", "size", "chunks"}
-                or index["schema"] != "stpd/local-training-remote-evidence-index-v1"
-                or index["sha256"] != sha256
+        index = decode_json(index_bytes)
+        if not isinstance(index, dict):
+            raise ValueError("remote evidence index invalid")
+        compressed = index.get("schema") == REMOTE_REQUEST_WIRE_INDEX_SCHEMA
+        fields = {"schema", "sha256", "size", "chunks"}
+        if compressed:
+            if (object_prefix != REMOTE_REQUEST_PREFIX
+                    or chunk_prefix != REMOTE_REQUEST_CHUNK_PREFIX
+                    or label != "remote_request"):
+                raise ValueError("compressed evidence is request-only")
+            fields |= {"wire_sha256", "wire_size"}
+            stored_size = index.get("wire_size")
+            stored_sha256 = digest(index.get("wire_sha256"), "local_training.request_wire_sha256")
+            stored_maximum = REMOTE_MAX_REQUEST_BYTES
+        else:
+            if index.get("schema") != "stpd/local-training-remote-evidence-index-v1":
+                raise ValueError("remote evidence index invalid")
+            stored_size = index.get("size")
+            stored_sha256 = sha256
+            stored_maximum = maximum
+        if (set(index) != fields or index["sha256"] != sha256
                 or type(index["size"]) is not int or not 0 < index["size"] <= maximum
+                or (compressed and index["size"] > REMOTE_MAX_LOGICAL_REQUEST_BYTES)
+                or type(stored_size) is not int or not 0 < stored_size <= stored_maximum
                 or not isinstance(index["chunks"], list)
-                or len(index["chunks"]) != math.ceil(index["size"] / REMOTE_CHUNK_BYTES)):
+                or len(index["chunks"]) != math.ceil(stored_size / REMOTE_CHUNK_BYTES)):
             raise ValueError("remote evidence index invalid")
         pieces = []
         total = 0
@@ -763,11 +801,19 @@ def _read_remote_blob(store: ManifestArtifactStore, object_ref: str, sha256: str
             if len(chunk) != size or hashlib.sha256(chunk).hexdigest() != chunk_sha256:
                 raise ValueError("remote evidence chunk integrity mismatch")
             total += size
+            if total > stored_size:
+                raise ValueError("remote evidence chunk total exceeds bound")
             pieces.append(chunk)
         raw = b"".join(pieces)
-        if (total != index["size"] or hashlib.sha256(raw).hexdigest() != sha256
-                or len(raw) > maximum):
+        if (total != stored_size or hashlib.sha256(raw).hexdigest() != stored_sha256
+                or len(raw) > stored_maximum):
             raise ValueError("remote evidence integrity mismatch")
+        if compressed:
+            if not raw.startswith(REQUEST_WIRE_MAGIC):
+                raise ValueError("compressed request frame required")
+            raw = decode_m0_request(raw)
+            if len(raw) != index["size"] or hashlib.sha256(raw).hexdigest() != sha256:
+                raise ValueError("remote logical request integrity mismatch")
         return raw
     except BoundaryError:
         raise
@@ -776,14 +822,35 @@ def _read_remote_blob(store: ManifestArtifactStore, object_ref: str, sha256: str
 
 
 def _persist_remote_request(store: ManifestArtifactStore, request_bytes: bytes) -> tuple[str, str]:
-    """Store canonical logical bytes, retaining the legacy request hash and refs."""
+    """Keep framed bytes in chunks under the original canonical logical hash/ref."""
     if (not isinstance(request_bytes, bytes)
             or not 1 <= len(request_bytes) <= REMOTE_MAX_REQUEST_BYTES):
         raise BoundaryError("local_training", "remote_request_size_limit")
+    logical = decode_m0_request(request_bytes)
+    sha256 = hashlib.sha256(logical).hexdigest()
+    reference = REMOTE_REQUEST_PREFIX + sha256
+    # A prior legacy/framed representation is immutable. Reuse it only after
+    # verifying all its bytes; never overwrite it to change storage encoding.
+    try:
+        store.blobs.get(reference)
+    except StoreError as error:
+        if error.code != "object_not_found":
+            raise
+    else:
+        saved = _read_remote_blob(
+            store, reference, sha256, object_prefix=REMOTE_REQUEST_PREFIX,
+            chunk_prefix=REMOTE_REQUEST_CHUNK_PREFIX,
+            maximum=REMOTE_MAX_LOGICAL_REQUEST_BYTES, label="remote_request",
+        )
+        if saved != logical:
+            raise BoundaryError("local_training", "remote_request_storage_identity_invalid")
+        return reference, sha256
+    framed = request_bytes.startswith(REQUEST_WIRE_MAGIC)
     return _persist_remote_blob(
-        store, decode_m0_request(request_bytes), object_prefix=REMOTE_REQUEST_PREFIX,
+        store, request_bytes, object_prefix=REMOTE_REQUEST_PREFIX,
         chunk_prefix=REMOTE_REQUEST_CHUNK_PREFIX,
-        maximum=REMOTE_MAX_LOGICAL_REQUEST_BYTES, label="remote_request",
+        maximum=REMOTE_MAX_REQUEST_BYTES, label="remote_request",
+        logical_identity=(sha256, len(logical)) if framed else None,
     )
 
 
