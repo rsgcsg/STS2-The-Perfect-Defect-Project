@@ -18,6 +18,12 @@ from ..light_action_codec import SPEC, SPEC_BYTES, SPEC_SHA256, encode_action
 from ..qwen.l1 import load_pin
 from ..stage1a_recipes import LIGHT_ACTION_M0_GRAPH
 from .features import ModelSample
+from .light_action_row_storage import (
+    decoded_rows,
+    prepare_rows,
+    require_equal_rows,
+    storage_identity,
+)
 from .text_menu_inputs import IDENTITY as TEXT_MENU_RENDERER
 from .token_inputs import MAX_PAYLOAD, _source, input_texts
 
@@ -400,12 +406,16 @@ def publish_light_action_inputs(
                              source_renderer=renderer)
     if binding is not None:
         info["training_binding"] = binding
-    encoded_rows = b"".join(json_bytes(row.to_dict()) for row in rows)
-    if len(encoded_rows) > MAX_PAYLOAD:
-        raise BoundaryError("light_action_inputs", "input_size_limit")
-    state_payload = store.put_payload("state_tokenizer", io.BytesIO(raw), "application/json")
-    action_payload = store.put_payload("action_codec", io.BytesIO(SPEC_BYTES), "application/json")
-    rows_payload = store.put_payload("rows", io.BytesIO(encoded_rows), "application/x-ndjson")
+    with prepare_rows(json_bytes(row.to_dict()) for row in rows) as (
+        row_stream, row_storage, row_media_type,
+    ):
+        if row_storage is not None:
+            info["rows_storage"] = row_storage
+        state_payload = store.put_payload("state_tokenizer", io.BytesIO(raw), "application/json")
+        action_payload = store.put_payload(
+            "action_codec", io.BytesIO(SPEC_BYTES), "application/json",
+        )
+        rows_payload = store.put_payload("rows", row_stream, row_media_type)
     manifest = Manifest(
         "training_input", producer, (Parent("model_view", view_id),),
         (state_payload, action_payload, rows_payload), FrozenObject.of(info),
@@ -477,10 +487,20 @@ def load_light_action_inputs(store: ArtifactStore, identity: str) -> LoadedLight
     )
     if binding is not None:
         expected["training_binding"] = binding
-    encoded_rows = b"".join(json_bytes(row.to_dict()) for row in rows)
-    if (info != expected
-            or b"".join(store.read_payload(manifest.payload("rows"))) != encoded_rows):
+    row_storage = (storage_identity(info["rows_storage"])
+                   if "rows_storage" in info else None)
+    if row_storage is not None:
+        expected["rows_storage"] = row_storage
+    if info != expected:
         raise BoundaryError("light_action_inputs", "source_projection_mismatch")
+    row_payload = manifest.payload("rows")
+    require_equal_rows(
+        decoded_rows(
+            store.read_payload(row_payload), stored_size=row_payload.size,
+            media_type=row_payload.media_type, identity=row_storage,
+        ),
+        (json_bytes(row.to_dict()) for row in rows),
+    )
     return LoadedLightActionInputs(manifest, samples, rows, tokenizer)
 
 
