@@ -1,4 +1,4 @@
-# Current project context, 2026-10-01
+# Current project context, 2026-10-03
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
 Resolve live GitHub refs before work; current authorities override this file.
@@ -54,13 +54,33 @@ have separately tested frozen-Qwen/LoRA routes. Source acceptance is supported b
 diagnostic decisions, complete 10 scratch updates with pause/resume and export.
 A further 100-update run completed on the same 49/16 projection. Training
 top-1 improved from 0.4405 to 0.5102; diagnostic top-1 remained 0.375 and
-probabilities remain near uniform. No model strength or native model execution
-is qualified. The user requested a safe stop after this round; no further
-training or new native canary is scheduled. Generic public M0 has no current
-Managed Runtime bridge. Native-v1 M2 still needs its distinct engine, worker,
-export, online scorer and product integration. Its projector/common kernel
-cannot make a usable live model by itself. Public M0 is not a same-input matched
-baseline for native-v1 M2/Reset.
+probabilities remain near uniform. Those results retain their own identities and
+do not establish model strength or independent-game generalization. The earlier
+safe-stop request applied to that 100-update scope.
+
+A separate light-action M0 input used 3,000 train decisions and 16 dev decisions,
+completed 9,000 updates, and scored the model on CPU. Its summary is 0.541667
+Top-1 / 0.980435 NLL, but it is engineering-only, within the training-purpose
+allocation, and has no run-independence proof. The model was exported and registered
+in the local public-M0 roster; a one-step native run delivered a `play` action with
+an observed successor before returning to Human/released state. This is one bounded
+action, not a full run, game outcome, or model-quality result. See [the exact closure
+and artifact identities](../../python/docs/research/evidence/STAGE1A_LIGHT_ACTION_M0_CLOSURE_2026-10-03.md).
+An additional profile-3 game run sealed after nine OneSteps in 282.708 seconds,
+covering one ordinary floor-1 combat across rounds 2–4: four `Strike`, two `Defend`,
+and three `end_turn` actions. The battle remained unfinished; all nine decisions and
+successors passed evidence checks with no rejected, unknown, retry, or taint outcome.
+Its 65-event receipt records nine controller acquisitions/releases and a 16-request/
+300-second budget stopped for cleanup margin. It remains separate from the earlier
+one-action canary. Paired profile-2 preservation receipts show 977 file identities, SHA-256 values, and
+modification times unchanged, with zero added or changed files. The typed final
+task status records Human mode, released controller, stopped model service, completed
+stop operation, and recording lifecycle ready with no recording ID (recorder off).
+
+This local public-M0 registration does not provide a generic Managed Runtime bridge.
+Native-v1 M2 still needs its distinct engine, worker, export, online scorer and
+product integration. Its projector/common kernel cannot make a usable live model
+by itself. Public M0 is not a same-input matched baseline for native-v1 M2/Reset.
 
 User declaration registration records a current statement without backdating old
 use or proving Human origin. The new reader permits SQLite coordination sidecars
