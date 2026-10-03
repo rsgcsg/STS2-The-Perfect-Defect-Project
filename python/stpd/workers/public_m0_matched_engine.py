@@ -94,7 +94,7 @@ class PublicM0MatchedConfig:
                 or self.train_windows_per_epoch * self.epochs > 100_000
                 or type(self.window_steps) is not int or not 1 <= self.window_steps <= 8
                 or type(self.max_window_tokens) is not int
-                or not 1 <= self.max_window_tokens <= 65_536
+                or not 1 <= self.max_window_tokens <= 98_304
                 or self.shape_override is not None
                 and not isinstance(self.shape_override, ScratchShape)):
             raise BoundaryError(_STAGE, "invalid_config")
@@ -293,6 +293,7 @@ class PublicM0MatchedEngine:
                 tokens += len(step.page) + sum(map(len, step.byte_actions))
             for start in range(0, len(chain.steps), self.config.window_steps):
                 window = chain.steps[start:start + self.config.window_steps]
+                # Account for every candidate in every decision; never crop a catalog.
                 if sum(len(step.page) + sum(map(len, step.byte_actions))
                        for step in window) > self.config.max_window_tokens:
                     raise BoundaryError(_STAGE, "window_limit_exceeded")

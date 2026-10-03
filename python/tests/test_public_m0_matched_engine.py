@@ -90,6 +90,26 @@ def test_mid_chain_resume_matches_uninterrupted_and_dev_is_read_only() -> None:
     assert not loaded.training and loaded.state_projection.weight.device.type == "cpu"
 
 
+def test_four_decision_windows_resume_byte_exact_and_extended_limit() -> None:
+    torch.set_num_threads(1)
+    source = _source()
+    config = replace(_config(source, window_steps=4), max_window_tokens=98_304)
+    config.validate()
+    with pytest.raises(BoundaryError, match="invalid_config"):
+        replace(config, max_window_tokens=98_305).validate()
+    original = PublicM0MatchedEngine(source, config)
+    first = original.advance_window()
+    assert (first.label_count, first.window_cursor) == (4, 4)
+    raw = original.checkpoint()
+    resumed = PublicM0MatchedEngine(source, config)
+    resumed.restore(raw)
+    while not original.finished:
+        original.advance_window()
+        resumed.advance_window()
+    assert original.optimizer_updates == resumed.optimizer_updates == 3
+    assert original.checkpoint() == resumed.checkpoint()
+
+
 def test_same_five_epoch_run_exports_incomplete_intermediates() -> None:
     torch.set_num_threads(1)
     source = _source(1, 1)

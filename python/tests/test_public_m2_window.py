@@ -171,6 +171,35 @@ def test_no_silent_window_split_or_label_omission():
     assert optimizer.state == {}
 
 
+def test_98304_budget_counts_every_candidate_without_truncation():
+    subject = model()
+    full = (BOS_ACT, *(65,) * 14, EOS_ACT)
+    short = (BOS_ACT, *(65,) * 12, EOS_ACT)
+    row = LightActionM2TrainingStep(
+        position=0, page=(1, 2),
+        action_ids=tuple(f"a{index}" for index in range(6144)),
+        byte_actions=(full,) * 6143 + (short,),
+        target_action_id="a0", previous_actual_action=None, reset_before=True,
+    )
+    assert len(row.page) + sum(map(len, row.byte_actions)) == 98_304
+    with patch.object(subject, "_validate_action", wraps=subject._validate_action) as checked:
+        assert preflight_public_m2_window(
+            subject, (row,), subject.initial_memory(), chain_start=True,
+            max_window_steps=4, max_window_tokens=98_304,
+        ) == (0,)
+    assert checked.call_count == len(row.action_ids)
+    with pytest.raises(BoundaryError, match="window_input_budget_exceeded"):
+        preflight_public_m2_window(
+            subject, (row,), subject.initial_memory(), chain_start=True,
+            max_window_steps=4, max_window_tokens=98_303,
+        )
+    with pytest.raises(BoundaryError, match="invalid_window"):
+        preflight_public_m2_window(
+            subject, (row,), subject.initial_memory(), chain_start=True,
+            max_window_steps=4, max_window_tokens=98_305,
+        )
+
+
 def test_eval_preflight_accepts_unlabeled_row_but_preserves_binding_checks():
     subject = model()
     row = replace(steps(0, 1)[0], target_action_id=None)

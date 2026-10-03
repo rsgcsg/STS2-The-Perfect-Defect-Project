@@ -20,7 +20,9 @@ from .light_action_m2_training_data import LightActionM2TrainingStep
 from .losses import listwise_rank_loss
 
 MAX_PUBLIC_M2_WINDOW_STEPS = 8
-MAX_PUBLIC_M2_WINDOW_TOKENS = 65_536
+# Sum of all observation and candidate-action tokens in one update window;
+# this is not a single Transformer sequence length or a truncation policy.
+MAX_PUBLIC_M2_WINDOW_TOKENS = 98_304
 _BOUNDARY = "public_m2_window"
 
 
