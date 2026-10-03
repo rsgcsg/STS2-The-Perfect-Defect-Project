@@ -15,7 +15,7 @@ import math
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import asdict, fields
+from dataclasses import asdict, dataclass, fields
 from typing import Any
 
 from torch import Tensor
@@ -127,20 +127,67 @@ def _config(value: object) -> PublicM2EngineConfig:
     return PublicM2EngineConfig(**{**value, "shape": ScratchShape(**shape)})
 
 
-def prepare_public_m2_run(
+@dataclass(frozen=True)
+class _RunFlavor:
+    input_schema: str
+    experiment_schema: str
+    run_schema: str
+    checkpoint_schema: str
+    model_schema: str
+    evaluation_schema: str
+    stage_schema: str
+    engine_checkpoint_schema: str
+    engine_export_schema: str
+    purpose: str
+    model_kind: str | None
+    config_decode: Callable[[object], Any]
+    engine_factory: Callable[[PublicM2Input, Any], Any]
+    input_binding: Callable[[Any], str]
+    checkpoint_binding_key: str
+    export_binding_key: str
+    export_extra_fields: frozenset[str]
+    export_extra_expected: Callable[[Any], dict[str, Any]]
+    verify_reference: Callable[[ArtifactStore, str, Producer, PublicM2Input, Any], None] | None
+
+
+_M2_FLAVOR = _RunFlavor(
+    INPUT_SCHEMA, EXPERIMENT_SCHEMA, RUN_SCHEMA, CHECKPOINT_SCHEMA, MODEL_SCHEMA,
+    EVALUATION_SCHEMA, STAGE_SCHEMA, PUBLIC_M2_CHECKPOINT_SCHEMA,
+    PUBLIC_M2_EXPORT_SCHEMA, "scratch_public_m2_five_epoch", None,
+    _config, _engine, lambda engine: engine.input_digest,
+    "input_digest", "input_digest", frozenset(), lambda engine: {}, None,
+)
+
+
+def _kind(flavor: _RunFlavor) -> dict[str, str]:
+    return {} if flavor.model_kind is None else {"model_kind": flavor.model_kind}
+
+
+def _reference_parents(flavor: _RunFlavor, reference: str | None) -> tuple[Parent, ...]:
+    if flavor.verify_reference is None:
+        if reference is not None:
+            raise BoundaryError(_BOUNDARY, "unexpected_matched_reference")
+        return ()
+    if reference is None:
+        raise BoundaryError(_BOUNDARY, "matched_m2_run_required")
+    digest(reference, _BOUNDARY + ".matched_m2_run")
+    return (Parent("matched_m2_run", reference),)
+
+
+def _prepare_run(
     store: ArtifactStore,
     training_input: PublicM2Input,
-    config: PublicM2EngineConfig,
+    config: Any,
     producer: Producer,
     *,
     source_view_id: str,
     allocation_id: str,
     operation_id: str,
+    flavor: _RunFlavor,
+    reference_run_id: str | None = None,
 ) -> Manifest:
     """Publish one immutable five-epoch run after complete typed preflight."""
-    if (not isinstance(training_input, PublicM2Input)
-            or not isinstance(config, PublicM2EngineConfig)
-            or not isinstance(producer, Producer)):
+    if not isinstance(training_input, PublicM2Input) or not isinstance(producer, Producer):
         raise BoundaryError(_BOUNDARY, "typed_prepare_required")
     digest(operation_id, _BOUNDARY + ".operation", length=32)
     raw = training_input.payload_bytes()
@@ -152,15 +199,19 @@ def prepare_public_m2_run(
     expected_source = public_m2_source_binding_digest(source_view_id, allocation_id)
     if value.source_binding_digest != expected_source:
         raise BoundaryError(_BOUNDARY, "source_binding_mismatch")
-    engine = _engine(value, config)
     _source_lineage(store, source_view_id, allocation_id)
+    reference_parents = _reference_parents(flavor, reference_run_id)
+    if flavor.verify_reference is not None:
+        assert reference_run_id is not None
+        flavor.verify_reference(store, reference_run_id, producer, value, config)
+    engine = flavor.engine_factory(value, config)
     # One caller-held writer lock is still required. This read makes an
     # already-published operation idempotent and rejects a new meaning for it;
     # ArtifactStore has no atomic operation-ID index of its own.
     for identity in store.manifest_ids():
         existing = store.get_manifest(identity)
         existing_info = existing.parameters.value()
-        if (existing.kind != "run" or existing_info.get("schema") != RUN_SCHEMA
+        if (existing.kind != "run" or existing_info.get("schema") != flavor.run_schema
                 or existing_info.get("operation_id") != operation_id):
             continue
         if (
@@ -170,12 +221,13 @@ def prepare_public_m2_run(
             or existing_info.get("source_binding_digest") != expected_source
             or existing_info.get("source_view_id") != source_view_id
             or existing_info.get("allocation_id") != allocation_id
-            or existing_info.get("engine_input_digest") != engine.input_digest
+            or existing_info.get("engine_input_digest") != flavor.input_binding(engine)
             or existing_info.get("implementation_sha256")
             != engine.runtime["implementation_sha256"]
+            or existing_info.get("matched_m2_run_id") != reference_run_id
         ):
             raise BoundaryError(_BOUNDARY, "operation_id_collision")
-        _load_run(store, existing.artifact_id, producer)
+        _load_run(store, existing.artifact_id, producer, flavor=flavor)
         return existing
     input_payload = store.put_payload("training_input", io.BytesIO(raw), "application/json")
     tokenizer_payload = store.put_payload(
@@ -186,43 +238,57 @@ def prepare_public_m2_run(
         (Parent("source_view", source_view_id), Parent("allocation", allocation_id)),
         (input_payload, tokenizer_payload),
         FrozenObject.of({
-            "schema": INPUT_SCHEMA, "input_identity": value.identity,
+            "schema": flavor.input_schema, "input_identity": value.identity,
             "source_binding_digest": expected_source,
             "train_chain_count": len(_chains(value, "train")),
             "dev_chain_count": len(_chains(value, "dev")),
-            "qualification": "engineering_only",
+            "qualification": "engineering_only", **_kind(flavor),
         }),
     )
     store.publish(training)
     experiment = Manifest(
         "experiment", producer, (Parent("training_input", training.artifact_id),),
         parameters=FrozenObject.of({
-            "schema": EXPERIMENT_SCHEMA, "purpose": "scratch_public_m2_five_epoch",
-            "config": asdict(config),
+            "schema": flavor.experiment_schema, "purpose": flavor.purpose,
+            "config": asdict(config), **_kind(flavor),
         }),
     )
     store.publish(experiment)
     run = Manifest(
         "run", producer,
         (Parent("training_input", training.artifact_id),
-         Parent("experiment", experiment.artifact_id)),
+         Parent("experiment", experiment.artifact_id), *reference_parents),
         parameters=FrozenObject.of({
-            "schema": RUN_SCHEMA, "operation_id": operation_id,
+            "schema": flavor.run_schema, "operation_id": operation_id,
             "config": asdict(config), "input_identity": value.identity,
-            "engine_input_digest": engine.input_digest,
+            "engine_input_digest": flavor.input_binding(engine),
             "implementation_sha256": engine.runtime["implementation_sha256"],
             "source_binding_digest": expected_source,
             "source_view_id": source_view_id, "allocation_id": allocation_id,
             "checkpoint_policy": CHECKPOINT_POLICY, "partition": "train",
+            **_kind(flavor),
+            **({} if reference_run_id is None else {"matched_m2_run_id": reference_run_id}),
         }),
     )
     store.publish(run)
     return run
 
 
+def prepare_public_m2_run(
+    store: ArtifactStore, training_input: PublicM2Input, config: PublicM2EngineConfig,
+    producer: Producer, *, source_view_id: str, allocation_id: str, operation_id: str,
+) -> Manifest:
+    if not isinstance(config, PublicM2EngineConfig):
+        raise BoundaryError(_BOUNDARY, "typed_prepare_required")
+    return _prepare_run(
+        store, training_input, config, producer, source_view_id=source_view_id,
+        allocation_id=allocation_id, operation_id=operation_id, flavor=_M2_FLAVOR,
+    )
+
+
 def _load_run(
-    store: ArtifactStore, run_id: str, runtime: Producer
-) -> tuple[Manifest, Manifest, PublicM2Input, PublicM2EngineConfig, PublicM2Engine]:
+    store: ArtifactStore, run_id: str, runtime: Producer, *, flavor: _RunFlavor = _M2_FLAVOR,
+) -> tuple[Manifest, Manifest, PublicM2Input, Any, Any]:
     run = store.get_manifest(run_id)
     info = run.parameters.value()
     if (
@@ -231,10 +297,20 @@ def _load_run(
             "schema", "operation_id", "config", "input_identity", "engine_input_digest",
             "implementation_sha256", "source_binding_digest", "source_view_id",
             "allocation_id", "checkpoint_policy", "partition",
+            *(_kind(flavor)),
+            *({"matched_m2_run_id"} if flavor.verify_reference is not None else set()),
         }
-        or info["schema"] != RUN_SCHEMA or info["checkpoint_policy"] != CHECKPOINT_POLICY
+        or info["schema"] != flavor.run_schema
+        or any(info[key] != value for key, value in _kind(flavor).items())
+        or info["checkpoint_policy"] != CHECKPOINT_POLICY
         or info["partition"] != "train"
-        or sorted(parent.role for parent in run.parents) != ["experiment", "training_input"]
+        or sorted(parent.role for parent in run.parents) != sorted(
+            ["experiment", "training_input", *(
+                ["matched_m2_run"] if flavor.verify_reference is not None else []
+            )]
+        )
+        or (flavor.verify_reference is not None and
+            run.parent("matched_m2_run") != info["matched_m2_run_id"])
     ):
         raise BoundaryError(_BOUNDARY, "run_identity_mismatch")
     digest(info["operation_id"], _BOUNDARY + ".operation", length=32)
@@ -247,9 +323,10 @@ def _load_run(
         != ["state_tokenizer", "training_input"]
         or set(training_info) != {
             "schema", "input_identity", "source_binding_digest", "train_chain_count",
-            "dev_chain_count", "qualification",
+            "dev_chain_count", "qualification", *(_kind(flavor)),
         }
-        or training_info["schema"] != INPUT_SCHEMA
+        or training_info["schema"] != flavor.input_schema
+        or any(training_info[key] != value for key, value in _kind(flavor).items())
         or training_info["qualification"] != "engineering_only"
         or training.parent("source_view") != info["source_view_id"]
         or training.parent("allocation") != info["allocation_id"]
@@ -272,18 +349,20 @@ def _load_run(
         or training_info["dev_chain_count"] != len(_chains(value, "dev"))
     ):
         raise BoundaryError(_BOUNDARY, "input_identity_mismatch")
-    config = _config(info["config"])
-    engine = _engine(value, config)
+    config = flavor.config_decode(info["config"])
+    if flavor.verify_reference is not None:
+        flavor.verify_reference(store, info["matched_m2_run_id"], runtime, value, config)
+    engine = flavor.engine_factory(value, config)
     experiment = store.get_manifest(run.parent("experiment"))
     if (
         experiment.kind != "experiment" or experiment.producer != runtime
         or sorted(parent.role for parent in experiment.parents) != ["training_input"]
         or experiment.parent("training_input") != training.artifact_id
         or experiment.parameters.value() != {
-            "schema": EXPERIMENT_SCHEMA, "purpose": "scratch_public_m2_five_epoch",
-            "config": asdict(config),
+            "schema": flavor.experiment_schema, "purpose": flavor.purpose,
+            "config": asdict(config), **_kind(flavor),
         }
-        or info["engine_input_digest"] != engine.input_digest
+        or info["engine_input_digest"] != flavor.input_binding(engine)
         or info["implementation_sha256"] != engine.runtime["implementation_sha256"]
     ):
         raise BoundaryError(_BOUNDARY, "run_input_mismatch")
@@ -292,7 +371,7 @@ def _load_run(
 
 def _checkpoint(
     store: ArtifactStore, run: Manifest, training: Manifest,
-    engine: PublicM2Engine, event: Callable[..., None],
+    engine: Any, event: Callable[..., None], *, flavor: _RunFlavor = _M2_FLAVOR,
 ) -> str:
     raw = engine.checkpoint()
     if len(raw) > MAX_CHECKPOINT_BYTES:
@@ -304,17 +383,18 @@ def _checkpoint(
         "checkpoint", run.producer,
         (Parent("run", run.artifact_id), Parent("training_input", training.artifact_id)),
         (payload,), FrozenObject.of({
-            "schema": CHECKPOINT_SCHEMA,
+            "schema": flavor.checkpoint_schema,
             "operation_id": run.parameters.value()["operation_id"],
             "input_identity": run.parameters.value()["input_identity"],
-            "engine_input_digest": engine.input_digest,
+            "engine_input_digest": flavor.input_binding(engine),
             "implementation_sha256": engine.runtime["implementation_sha256"],
             "config": asdict(engine.config),
-            "engine_schema": PUBLIC_M2_CHECKPOINT_SCHEMA,
+            "engine_schema": flavor.engine_checkpoint_schema,
             "completed_epochs": engine.completed_epochs,
             "chain_index": engine.chain_index, "window_cursor": engine.window_cursor,
             "label_count": engine.label_count,
             "optimizer_updates": engine.optimizer_updates,
+            **_kind(flavor),
         }),
     )
     store.publish(item)
@@ -324,7 +404,7 @@ def _checkpoint(
 
 def _restore(
     store: ArtifactStore, checkpoint_id: str, run: Manifest, training: Manifest,
-    engine: PublicM2Engine,
+    engine: Any, *, flavor: _RunFlavor = _M2_FLAVOR,
 ) -> tuple[dict[str, Any], str]:
     item = store.get_manifest(checkpoint_id)
     info = item.parameters.value()
@@ -338,12 +418,14 @@ def _restore(
             "schema", "operation_id", "input_identity", "engine_input_digest",
             "implementation_sha256", "config", "engine_schema", "completed_epochs",
             "chain_index", "window_cursor", "label_count", "optimizer_updates",
+            *(_kind(flavor)),
         }
-        or info["schema"] != CHECKPOINT_SCHEMA
-        or info["engine_schema"] != PUBLIC_M2_CHECKPOINT_SCHEMA
+        or info["schema"] != flavor.checkpoint_schema
+        or info["engine_schema"] != flavor.engine_checkpoint_schema
+        or any(info[key] != value for key, value in _kind(flavor).items())
         or info["operation_id"] != run.parameters.value()["operation_id"]
         or info["input_identity"] != run.parameters.value()["input_identity"]
-        or info["engine_input_digest"] != engine.input_digest
+        or info["engine_input_digest"] != flavor.input_binding(engine)
         or info["implementation_sha256"] != engine.runtime["implementation_sha256"]
         or info["config"] != asdict(engine.config)
     ):
@@ -355,7 +437,7 @@ def _restore(
             "completed_epochs", "chain_index", "window_cursor", "label_count",
             "optimizer_updates",
         ))
-        or decoded["input_digest"] != engine.input_digest
+        or decoded[flavor.checkpoint_binding_key] != flavor.input_binding(engine)
     ):
         raise BoundaryError(_BOUNDARY, "checkpoint_progress_mismatch")
     engine.restore(raw)
@@ -363,8 +445,8 @@ def _restore(
 
 
 def _stage(
-    store: ArtifactStore, run: Manifest, training: Manifest, engine: PublicM2Engine,
-    checkpoint_id: str,
+    store: ArtifactStore, run: Manifest, training: Manifest, engine: Any,
+    checkpoint_id: str, *, flavor: _RunFlavor = _M2_FLAVOR,
 ) -> str:
     epoch = engine.completed_epochs
     if epoch not in {1, 3, 5} or engine.chain_index != 0 or engine.window_cursor != 0:
@@ -374,7 +456,7 @@ def _stage(
     if len(raw_weights) > MAX_CHECKPOINT_BYTES:
         raise BoundaryError(_BOUNDARY, "weights_size_limit")
     exported = decode_checkpoint(raw_weights)
-    if (exported["schema"] != PUBLIC_M2_EXPORT_SCHEMA
+    if (exported["schema"] != flavor.engine_export_schema
             or exported["completed_epochs"] != epoch
             or exported["run_complete"] is not (epoch == 5)):
         raise BoundaryError(_BOUNDARY, "stage_export_mismatch")
@@ -389,13 +471,13 @@ def _stage(
         (weights, Payload("state_tokenizer", tokenizer.sha256, tokenizer.size,
                           tokenizer.media_type)),
         FrozenObject.of({
-            "schema": MODEL_SCHEMA, "epoch": epoch, "run_complete": epoch == 5,
+            "schema": flavor.model_schema, "epoch": epoch, "run_complete": epoch == 5,
             "operation_id": run.parameters.value()["operation_id"],
             "config": asdict(engine.config),
             "input_identity": run.parameters.value()["input_identity"],
-            "engine_input_digest": engine.input_digest,
+            "engine_input_digest": flavor.input_binding(engine),
             "implementation_sha256": engine.runtime["implementation_sha256"],
-            "qualification": "engineering_only",
+            "qualification": "engineering_only", **_kind(flavor),
         }),
     )
     store.publish(model)
@@ -404,11 +486,11 @@ def _stage(
         (Parent("run", run.artifact_id), Parent("training_input", training.artifact_id),
          Parent("checkpoint", checkpoint_id), Parent("model", model.artifact_id)),
         parameters=FrozenObject.of({
-            "schema": EVALUATION_SCHEMA, "epoch": epoch, "partition": "dev",
+            "schema": flavor.evaluation_schema, "epoch": epoch, "partition": "dev",
             "input_identity": run.parameters.value()["input_identity"],
             "loss_mean": metrics.loss_mean, "top1_accuracy": metrics.top1_accuracy,
             "label_count": metrics.label_count, "correct_count": metrics.correct_count,
-            "qualification": "engineering_only",
+            "qualification": "engineering_only", **_kind(flavor),
         }),
     )
     store.publish(evaluation)
@@ -418,9 +500,9 @@ def _stage(
          Parent("checkpoint", checkpoint_id), Parent("model", model.artifact_id),
          Parent("offline_evaluation", evaluation.artifact_id)),
         parameters=FrozenObject.of({
-            "schema": STAGE_SCHEMA, "epoch": epoch, "run_complete": epoch == 5,
+            "schema": flavor.stage_schema, "epoch": epoch, "run_complete": epoch == 5,
             "operation_id": run.parameters.value()["operation_id"],
-            "input_identity": run.parameters.value()["input_identity"],
+            "input_identity": run.parameters.value()["input_identity"], **_kind(flavor),
         }),
     )
     store.publish(stage)
@@ -429,7 +511,7 @@ def _stage(
 
 def _verify_completed(
     store: ArtifactStore, result: Manifest, run: Manifest, training: Manifest,
-    engine: PublicM2Engine,
+    engine: Any, *, flavor: _RunFlavor = _M2_FLAVOR,
 ) -> None:
     if (
         result.kind != "run_result" or result.producer != run.producer
@@ -442,7 +524,7 @@ def _verify_completed(
             "schema": RESULT_SCHEMA, "state": "completed", "epoch": 5,
             "operation_id": run.parameters.value()["operation_id"],
             "input_identity": run.parameters.value()["input_identity"],
-            "qualification": "engineering_only",
+            "qualification": "engineering_only", **_kind(flavor),
         }
     ):
         raise BoundaryError(_BOUNDARY, "completed_result_mismatch")
@@ -451,13 +533,13 @@ def _verify_completed(
     evaluation = store.get_manifest(result.parent("offline_evaluation"))
     checkpoint_id = result.parent("checkpoint")
     expected_model = {
-        "schema": MODEL_SCHEMA, "epoch": 5, "run_complete": True,
+        "schema": flavor.model_schema, "epoch": 5, "run_complete": True,
         "operation_id": run.parameters.value()["operation_id"],
         "config": asdict(engine.config),
         "input_identity": run.parameters.value()["input_identity"],
-        "engine_input_digest": engine.input_digest,
+        "engine_input_digest": flavor.input_binding(engine),
         "implementation_sha256": engine.runtime["implementation_sha256"],
-        "qualification": "engineering_only",
+        "qualification": "engineering_only", **_kind(flavor),
     }
     if (
         stage.kind != "analysis" or stage.producer != run.producer
@@ -465,9 +547,10 @@ def _verify_completed(
             "checkpoint", "model", "offline_evaluation", "run", "training_input",
         ]
         or stage.parameters.value() != {
-            "schema": STAGE_SCHEMA, "epoch": 5, "run_complete": True,
+            "schema": flavor.stage_schema, "epoch": 5, "run_complete": True,
             "operation_id": run.parameters.value()["operation_id"],
             "input_identity": run.parameters.value()["input_identity"],
+            **_kind(flavor),
         }
         or stage.parent("model") != model.artifact_id
         or stage.parent("offline_evaluation") != evaluation.artifact_id
@@ -484,7 +567,7 @@ def _verify_completed(
         or model.parent("run") != run.artifact_id
         or model.parent("training_input") != training.artifact_id
         or evaluation.kind != "offline_evaluation" or evaluation.producer != run.producer
-        or evaluation.parameters.value().get("schema") != EVALUATION_SCHEMA
+        or evaluation.parameters.value().get("schema") != flavor.evaluation_schema
         or evaluation.parameters.value().get("epoch") != 5
         or sorted(parent.role for parent in evaluation.parents)
         != ["checkpoint", "model", "run", "training_input"]
@@ -494,7 +577,9 @@ def _verify_completed(
         or evaluation.parent("training_input") != training.artifact_id
     ):
         raise BoundaryError(_BOUNDARY, "completed_stage_mismatch")
-    checkpoint, checkpoint_sha256 = _restore(store, checkpoint_id, run, training, engine)
+    checkpoint, checkpoint_sha256 = _restore(
+        store, checkpoint_id, run, training, engine, flavor=flavor,
+    )
     if not engine.finished:
         raise BoundaryError(_BOUNDARY, "incomplete_terminal_checkpoint")
     metrics = evaluation.parameters.value()
@@ -503,8 +588,10 @@ def _verify_completed(
         set(metrics) != {
             "schema", "epoch", "partition", "input_identity", "loss_mean",
             "top1_accuracy", "label_count", "correct_count", "qualification",
+            *(_kind(flavor)),
         }
-        or metrics["schema"] != EVALUATION_SCHEMA
+        or metrics["schema"] != flavor.evaluation_schema
+        or any(metrics[key] != value for key, value in _kind(flavor).items())
         or metrics["epoch"] != 5
         or metrics["partition"] != "dev"
         or metrics["input_identity"] != run.parameters.value()["input_identity"]
@@ -526,13 +613,16 @@ def _verify_completed(
     source_tokenizer = training.payload("state_tokenizer")
     if (
         set(exported) != {
-            "schema", "config", "input_digest", "implementation_sha256",
+            "schema", "config", flavor.export_binding_key, "implementation_sha256",
             "completed_epochs", "optimizer_updates", "run_complete",
             "checkpoint_digest", "weights", "weights_digest",
+            *flavor.export_extra_fields,
         }
-        or exported["schema"] != PUBLIC_M2_EXPORT_SCHEMA
+        or exported["schema"] != flavor.engine_export_schema
         or exported["config"] != asdict(engine.config)
-        or exported["input_digest"] != engine.input_digest
+        or exported[flavor.export_binding_key] != flavor.input_binding(engine)
+        or any(exported[key] != value for key, value in
+               flavor.export_extra_expected(engine).items())
         or exported["implementation_sha256"] != engine.runtime["implementation_sha256"]
         or exported["completed_epochs"] != 5
         or exported["run_complete"] is not True
@@ -551,18 +641,19 @@ def _verify_completed(
         raise BoundaryError(_BOUNDARY, "completed_weights_mismatch")
 
 
-def execute_public_m2_run(
+def _execute_run(
     store: ArtifactStore, reporter: RunReporter, run_id: str, runtime: Producer,
     *, resume: str | None = None, stop_after_windows: int | None = None,
+    flavor: _RunFlavor = _M2_FLAVOR,
 ) -> WorkerResult:
     """Execute one bounded attempt; explicit resume selects one durable checkpoint."""
     if (stop_after_windows is not None and
             (type(stop_after_windows) is not int or stop_after_windows < 1)):
         raise BoundaryError(_BOUNDARY, "invalid_pause_budget")
-    run, training, _, _, engine = _load_run(store, run_id, runtime)
+    run, training, _, _, engine = _load_run(store, run_id, runtime, flavor=flavor)
     completed = reporter.completed(run_id)
     if completed is not None:
-        _verify_completed(store, completed, run, training, engine)
+        _verify_completed(store, completed, run, training, engine, flavor=flavor)
         return WorkerResult("completed", run_id, result_id=completed.artifact_id)
     events = reporter.events(run_id)
     if resume is None and events:
@@ -591,14 +682,14 @@ def execute_public_m2_run(
                 "chain_index": engine.chain_index, "window_cursor": engine.window_cursor,
                 "label_count": engine.label_count,
                 "optimizer_updates": engine.optimizer_updates,
-                "details": details,
+                "details": details, **_kind(flavor),
             }),
         ))
 
     try:
         event("loading", resume=resume)
         if resume is not None:
-            _restore(store, resume, run, training, engine)
+            _restore(store, resume, run, training, engine, flavor=flavor)
         event("resumed" if resume else "started")
         checkpoint_id: str | None = resume
         initial_updates = engine.optimizer_updates
@@ -606,7 +697,7 @@ def execute_public_m2_run(
         # reconciled idempotently on explicit resume of that exact checkpoint.
         if (engine.completed_epochs in {1, 3, 5} and resume is not None
                 and engine.chain_index == 0 and engine.window_cursor == 0):
-            stage_id = _stage(store, run, training, engine, resume)
+            stage_id = _stage(store, run, training, engine, resume, flavor=flavor)
             event("epoch_stage", epoch=engine.completed_epochs, stage_id=stage_id)
         else:
             stage_id = None
@@ -616,14 +707,20 @@ def execute_public_m2_run(
             event("window_completed", loss_mean=progress.loss_mean,
                   labels=progress.label_count)
             if engine.completed_epochs != before_epoch:
-                checkpoint_id = _checkpoint(store, run, training, engine, event)
+                checkpoint_id = _checkpoint(
+                    store, run, training, engine, event, flavor=flavor,
+                )
                 if engine.completed_epochs in {1, 3, 5}:
-                    stage_id = _stage(store, run, training, engine, checkpoint_id)
+                    stage_id = _stage(
+                        store, run, training, engine, checkpoint_id, flavor=flavor,
+                    )
                     event("epoch_stage", epoch=engine.completed_epochs, stage_id=stage_id)
             if (stop_after_windows is not None
                     and engine.optimizer_updates - initial_updates >= stop_after_windows
                     and not engine.finished):
-                checkpoint_id = _checkpoint(store, run, training, engine, event)
+                checkpoint_id = _checkpoint(
+                    store, run, training, engine, event, flavor=flavor,
+                )
                 event("paused", checkpoint_id=checkpoint_id)
                 return WorkerResult("paused", run_id, checkpoint_id=checkpoint_id)
         if checkpoint_id is None or stage_id is None:
@@ -639,10 +736,10 @@ def execute_public_m2_run(
                 "schema": RESULT_SCHEMA, "state": "completed", "epoch": 5,
                 "operation_id": run.parameters.value()["operation_id"],
                 "input_identity": run.parameters.value()["input_identity"],
-                "qualification": "engineering_only",
+                "qualification": "engineering_only", **_kind(flavor),
             }),
         )
-        _verify_completed(store, result, run, training, engine)
+        _verify_completed(store, result, run, training, engine, flavor=flavor)
         result_id = reporter.complete(result)
         selected = reporter.completed(run_id)
         if selected is None or selected.artifact_id != result_id:
@@ -657,3 +754,13 @@ def execute_public_m2_run(
         raise WorkerExecutionError(
             "execution_failed", failure_durable=bool(reporter.events(run_id))
         ) from error
+
+
+def execute_public_m2_run(
+    store: ArtifactStore, reporter: RunReporter, run_id: str, runtime: Producer,
+    *, resume: str | None = None, stop_after_windows: int | None = None,
+) -> WorkerResult:
+    return _execute_run(
+        store, reporter, run_id, runtime, resume=resume,
+        stop_after_windows=stop_after_windows, flavor=_M2_FLAVOR,
+    )
