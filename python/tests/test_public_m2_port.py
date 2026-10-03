@@ -151,6 +151,41 @@ def test_changed_same_ordinal_body_or_catalog_rejected_before_write():
     assert len(model.calls) == 1
 
 
+def test_returned_scores_cannot_mutate_cached_observation():
+    adapter, model = setup()
+    payload = request(adapter)
+    output, _ = decide(adapter, payload)
+    expected = copy.deepcopy(output)
+    output["scores"][0] = 999.0
+    replay, _ = decide(adapter, payload)
+    assert replay == expected
+    replay["scores"].clear()
+    assert decide(adapter, payload)[0] == expected and len(model.calls) == 1
+
+
+def test_new_episode_cannot_reuse_closed_segment_identity():
+    adapter, model = setup()
+    first = request(adapter)
+    decide(adapter, first)
+    changed = request(adapter, token="token-b", sequence=8)
+    changed["control"].update(episode_id="episode-2", segment_id="segment-token-a")
+    with pytest.raises(BoundaryError, match="closed_or_unbegun_segment"):
+        decide(adapter, changed)
+    assert len(model.calls) == 1
+
+
+def test_reset_arm_resets_each_new_observation_but_never_cached_retry():
+    adapter, model = setup()
+    adapter.config = replace(adapter.config, reset_each_step=True)
+    first = request(adapter)
+    decide(adapter, first)
+    decide(adapter, first)
+    second = request(adapter, ordinal=2, sequence=8)
+    decide(adapter, second)
+    decide(adapter, second)
+    assert len(model.calls) == 2 and all(call[2] for call in model.calls)
+
+
 def test_new_ordinal_writes_once_and_new_token_resets_without_resurrection():
     adapter, model = setup()
     first = request(adapter)

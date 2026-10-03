@@ -219,7 +219,7 @@ class PublicM2PolicyAdapter:
                         or public.candidate_digest != self._candidate_digest
                         or self._output is None):
                     raise BoundaryError("public_m2_policy", "same_ordinal_observation_changed")
-                return dict(self._output), self._completion(
+                return copy.deepcopy(self._output), self._completion(
                     namespace, ordinal, watermark, previous_request_id)
             if (ordinal != self._ordinal + 1 or self._watermark is None
                     or watermark[1] <= self._watermark[1]):
@@ -230,7 +230,7 @@ class PublicM2PolicyAdapter:
                     or self._active is not None and (
                         namespace[0] != self._active[0]
                         or namespace[1] == self._active[1]
-                        or namespace[3:] == self._active[3:])):
+                        or namespace[4] == self._active[4])):
                 raise BoundaryError("public_m2_policy", "closed_or_unbegun_segment")
             memory = self.model.initial_memory()
         if memory is None:
@@ -258,7 +258,7 @@ class PublicM2PolicyAdapter:
                 scores, updated = self.model.step(
                     page, actions, memory.detach().clone(),
                     previous_actual_action=None, public_feedback=None,
-                    reset_before=(ordinal == 1),
+                    reset_before=(ordinal == 1 or self.config.reset_each_step),
                 )
             if (scores.shape != (len(keys),) or scores.device != memory.device
                     or not bool(torch.isfinite(scores).all())
@@ -284,7 +284,7 @@ class PublicM2PolicyAdapter:
         self._candidate_digest = public.candidate_digest
         self._output = output
         self._memory = updated.detach().clone()
-        return dict(output), self._completion(namespace, ordinal, watermark,
+        return copy.deepcopy(output), self._completion(namespace, ordinal, watermark,
                                               previous_request_id)
 
     @staticmethod
