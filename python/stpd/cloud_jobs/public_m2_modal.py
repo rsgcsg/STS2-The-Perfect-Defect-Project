@@ -13,6 +13,7 @@ import importlib
 import importlib.metadata
 import math
 import re
+import struct
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +25,8 @@ from .modal import MODAL_SDK_VERSION
 MAX_PUBLIC_M2_REQUEST_BYTES = 256 * 1024 * 1024
 MAX_PUBLIC_M2_RESULT_BYTES = 128 * 1024 * 1024
 MAX_POLL_TIMEOUT_SECONDS = 60.0
+_RESULT_MAGIC = b"STPD-PUBLIC-M2-MODAL-RESULT\x00"
+_MAX_RESULT_HEADER_BYTES = 16 * 1024
 _ID = {
     "app": re.compile(r"ap-[A-Za-z0-9_-]+\Z"),
     "function": re.compile(r"fu-[A-Za-z0-9_-]+\Z"),
@@ -43,6 +46,61 @@ def _id(value: object, kind: str) -> str:
     if not isinstance(value, str) or _ID[kind].fullmatch(value) is None:
         raise BoundaryError("public_m2_modal", "invalid_" + kind + "_id")
     return value
+
+
+def encode_modal_response(result: bytes, binding: PublicM2ModalBinding) -> bytes:
+    """Transport receipt from the deployed wrapper; leaves the M2 wire opaque."""
+    if not isinstance(binding, PublicM2ModalBinding):
+        raise BoundaryError("public_m2_modal", "typed_binding_required")
+    if not isinstance(result, bytes) or not 1 <= len(result) <= MAX_PUBLIC_M2_RESULT_BYTES:
+        raise BoundaryError("public_m2_modal", "result_size_limit")
+    header = json_bytes({
+        "schema": "stpd/public-m2-modal-response-v1",
+        "request_sha256": binding.request_sha256,
+        "producer": binding.producer.to_dict(),
+        "image_object_id": binding.image_object_id,
+        "runtime_receipt_sha256": binding.runtime_receipt_sha256,
+        "result_sha256": hashlib.sha256(result).hexdigest(),
+        "result_size_bytes": len(result),
+    })
+    if len(header) > _MAX_RESULT_HEADER_BYTES:
+        raise BoundaryError("public_m2_modal", "result_header_size_limit")
+    return _RESULT_MAGIC + struct.pack(">I", len(header)) + header + result
+
+
+def _decode_modal_response(raw: bytes, binding: PublicM2ModalBinding) -> bytes:
+    minimum = len(_RESULT_MAGIC) + 4 + 1 + 1
+    if (not isinstance(raw, bytes) or not minimum <= len(raw)
+            <= MAX_PUBLIC_M2_RESULT_BYTES + len(_RESULT_MAGIC) + 4
+            + _MAX_RESULT_HEADER_BYTES):
+        raise BoundaryError("public_m2_modal", "result_size_limit")
+    if not raw.startswith(_RESULT_MAGIC):
+        raise BoundaryError("public_m2_modal", "invalid_result_frame")
+    offset = len(_RESULT_MAGIC)
+    header_size = struct.unpack_from(">I", raw, offset)[0]
+    offset += 4
+    if not 1 <= header_size <= _MAX_RESULT_HEADER_BYTES or offset + header_size >= len(raw):
+        raise BoundaryError("public_m2_modal", "result_header_size_limit")
+    header_raw = raw[offset:offset + header_size]
+    header = object_fields(decode_json(header_raw), {
+        "schema", "request_sha256", "producer", "image_object_id",
+        "runtime_receipt_sha256", "result_sha256", "result_size_bytes",
+    }, "public_m2_modal.response")
+    if json_bytes(header) != header_raw:
+        raise BoundaryError("public_m2_modal", "noncanonical_result_header")
+    body = raw[offset + header_size:]
+    if not 1 <= len(body) <= MAX_PUBLIC_M2_RESULT_BYTES:
+        raise BoundaryError("public_m2_modal", "result_size_limit")
+    if (header["schema"] != "stpd/public-m2-modal-response-v1"
+            or header["request_sha256"] != binding.request_sha256
+            or header["producer"] != binding.producer.to_dict()
+            or header["image_object_id"] != binding.image_object_id
+            or header["runtime_receipt_sha256"] != binding.runtime_receipt_sha256
+            or type(header["result_size_bytes"]) is not int
+            or header["result_size_bytes"] != len(body)
+            or header["result_sha256"] != hashlib.sha256(body).hexdigest()):
+        raise BoundaryError("public_m2_modal", "result_target_binding_mismatch")
+    return body
 
 
 @dataclass(frozen=True)
@@ -310,6 +368,9 @@ class ModalPublicM2Provider:
                 or resources.memory_mb != plan.memory_mib
                 or response.function.timeout_secs != plan.deadline_seconds
                 or definition.startup_timeout_secs != plan.startup_timeout_seconds
+                or not definition.single_use_containers
+                or definition.max_inputs != 1
+                or definition.max_concurrent_inputs not in (0, 1)
                 or scaling.scaledown_window != plan.scaledown_seconds
                 or scaling.max_containers != 1
                 or scaling.min_containers != 0
@@ -412,8 +473,6 @@ class ModalPublicM2Provider:
             if not isinstance(error, Exception):
                 raise
             raise BoundaryError("public_m2_modal", "result_unavailable") from None
-        if not isinstance(result, bytes) or not 1 <= len(result) <= MAX_PUBLIC_M2_RESULT_BYTES:
-            raise BoundaryError("public_m2_modal", "result_size_limit")
-        # Opaque bytes become a valid result only after controller persistence and
-        # accept_public_m2_remote_result's full request/result binding check.
-        return result
+        # The transport header binds the deployed wrapper's pinned environment;
+        # model result semantics still belong to the controller's acceptance API.
+        return _decode_modal_response(result, self.expected)

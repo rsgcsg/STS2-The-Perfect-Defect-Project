@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import runpy
 import sys
 from pathlib import Path
@@ -12,7 +13,10 @@ import pytest
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, json_bytes
 from stpd.cloud_jobs import public_m2_remote_worker as worker
-from stpd.cloud_jobs.public_m2_modal import PublicM2ModalResources
+from stpd.cloud_jobs.public_m2_modal import (
+    PublicM2ModalResources,
+    _decode_modal_response,
+)
 
 ENTRY = Path(__file__).resolve().parents[1] / "deploy/cloud-worker/public_m2_update_modal.py"
 
@@ -50,6 +54,8 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> tuple[bytes, PublicM2ModalResources
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
+    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        monkeypatch.setenv(key, "2")
     return request, plan
 
 
@@ -101,7 +107,8 @@ def test_entry_declares_explicit_resources_and_uses_locked_venv(
     monkeypatch.setattr(namespace["public_m2_remote"].__globals__["subprocess"],
                         "run", fake_run)
     monkeypatch.setenv("PYTHONPATH", "/host/unsafe")
-    assert namespace["public_m2_remote"](request) == b"opaque-result"
+    framed = namespace["public_m2_remote"](request)
+    assert _decode_modal_response(framed, namespace["_BINDING"]) == b"opaque-result"
     assert len(calls) == 1
     assert calls[0]["args"] == [
         "/opt/stpd/python/.venv/bin/python", "-m",
@@ -126,6 +133,49 @@ def test_entry_rejects_bad_plan_or_request_before_worker(
     monkeypatch.setenv("STPD_PUBLIC_M2_IMAGE_ID", "im-other")
     with pytest.raises(RuntimeError, match="deployed_environment_identity_mismatch"):
         namespace["public_m2_remote"](request)
+
+
+def test_wrapper_child_runtime_binding_through_locked_stdio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, _ = _env(monkeypatch)
+    namespace, _ = _load_entry(monkeypatch)
+    producer = Producer("repo", "b" * 40, "c" * 64)
+    runtime = _runtime()
+    remote = ModuleType("stpd.workers.public_m2_remote")
+    executions: list[bytes] = []
+
+    def execute(raw: bytes, *, request_sha256: str) -> bytes:
+        assert request_sha256 == hashlib.sha256(request).hexdigest()
+        executions.append(raw)
+        return b"typed-result-wire"
+
+    remote.__dict__["execute_public_m2_remote_request"] = execute
+    monkeypatch.setitem(sys.modules, remote.__name__, remote)
+    monkeypatch.setattr(worker, "_runtime_source_identity", lambda: producer)
+    monkeypatch.setattr(worker, "read_runtime_evidence", lambda: runtime)
+
+    def fake_run(args: list[str], **kwargs: Any) -> Any:
+        stdout = io.BytesIO()
+        with monkeypatch.context() as local:
+            for key, value in kwargs["env"].items():
+                local.setenv(key, value)
+            local.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(kwargs["input"])))
+            local.setattr(sys, "stdout", SimpleNamespace(buffer=stdout))
+            local.setattr(sys, "stderr", io.StringIO())
+            status = worker._worker_main()
+        return SimpleNamespace(returncode=status, stdout=stdout.getvalue(), stderr=b"")
+
+    monkeypatch.setattr(namespace["public_m2_remote"].__globals__["subprocess"],
+                        "run", fake_run)
+    framed = namespace["public_m2_remote"](request)
+    assert _decode_modal_response(framed, namespace["_BINDING"]) == b"typed-result-wire"
+    assert executions == [request]
+    monkeypatch.setattr(worker, "read_runtime_evidence",
+                        lambda: {**runtime, "gpu_name": "other"})
+    with pytest.raises(RuntimeError, match="locked_worker_failed"):
+        namespace["public_m2_remote"](request)
+    assert executions == [request]
 
 
 def test_worker_checks_source_runtime_before_opaque_execute(

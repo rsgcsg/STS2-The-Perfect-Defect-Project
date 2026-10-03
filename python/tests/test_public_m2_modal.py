@@ -18,6 +18,7 @@ from stpd.cloud_jobs.public_m2_modal import (
     PublicM2ModalCall,
     PublicM2ModalResources,
     PublicM2ModalTarget,
+    encode_modal_response,
 )
 
 
@@ -83,9 +84,13 @@ class _FakeSdk:
         self.saved_app_id = target.app_id
         self.saved_function_id = target.function_id
         self.previous_app_id = ""
+        self.single_use_containers = True
+        self.max_inputs = 1
+        self.max_concurrent_inputs = 0
         self.spawn_calls = 0
         self.spawn_error = False
-        self.poll_value: bytes | BaseException = b"opaque-result"
+        self.poll_value: bytes | BaseException = encode_modal_response(
+            b"opaque-result", target.binding)
         self.function_get_calls = 0
         state = self
 
@@ -138,6 +143,9 @@ class _FakeSdk:
                 milli_cpu=int(plan.cpu * 1000), memory_mb=plan.memory_mib),
             startup_timeout_secs=plan.startup_timeout_seconds,
             retry_policy=_Proto(retries=0),
+            single_use_containers=self.single_use_containers,
+            max_inputs=self.max_inputs,
+            max_concurrent_inputs=self.max_concurrent_inputs,
         )
         return _Api.FunctionGetResponse(
             function_id=self.function_id,
@@ -228,10 +236,17 @@ def test_controller_pins_and_request_hash_are_checked_before_spawn() -> None:
     ("image_id", "deployment_resource_mismatch"),
     ("gpu", "deployment_resource_mismatch"),
     ("previous_app_id", "deployment_identity_mismatch"),
+    ("single_use_containers", "deployment_resource_mismatch"),
+    ("max_inputs", "deployment_resource_mismatch"),
+    ("max_concurrent_inputs", "deployment_resource_mismatch"),
 ])
 def test_live_deployment_drift_blocks_spawn(drift: str, code: str) -> None:
     provider, sdk, raw = _setup()
-    setattr(sdk, drift, "im-other" if drift == "image_id" else "drift")
+    bad: object = {
+        "image_id": "im-other", "single_use_containers": False,
+        "max_inputs": 2, "max_concurrent_inputs": 2,
+    }.get(drift, "drift")
+    setattr(sdk, drift, bad)
     with pytest.raises(BoundaryError) as error:
         provider.submit(raw)
     assert _code(error) == code
@@ -265,11 +280,40 @@ def test_saved_call_drift_timeout_and_result_cap(monkeypatch: pytest.MonkeyPatch
     with pytest.raises(BoundaryError) as error:
         provider.poll(handle)
     assert _code(error) == "result_size_limit"
+    oversized_frame = encode_modal_response(b"x" * 5, provider.expected)
     monkeypatch.setattr(public_m2_modal, "MAX_PUBLIC_M2_RESULT_BYTES", 4)
-    sdk.poll_value = b"x" * 5
+    sdk.poll_value = oversized_frame
     with pytest.raises(BoundaryError) as error:
         provider.poll(handle)
     assert _code(error) == "result_size_limit"
+
+
+def test_transport_frame_binds_deployed_source_image_runtime_and_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider, sdk, raw = _setup()
+    handle = provider.submit(raw)
+    variants = (
+        replace(provider.expected, request_sha256="e" * 64),
+        replace(provider.expected, producer=Producer("other", "a" * 40, "b" * 64)),
+        replace(provider.expected, image_object_id="im-other"),
+        replace(provider.expected, runtime_receipt_sha256="d" * 64),
+    )
+    for variant in variants:
+        sdk.poll_value = encode_modal_response(b"opaque-result", variant)
+        with pytest.raises(BoundaryError) as error:
+            provider.poll(handle)
+        assert _code(error) == "result_target_binding_mismatch"
+    frame = encode_modal_response(b"opaque-result", provider.expected)
+    sdk.poll_value = frame[:-1] + b"X"
+    with pytest.raises(BoundaryError) as error:
+        provider.poll(handle)
+    assert _code(error) == "result_target_binding_mismatch"
+
+    small_frame = encode_modal_response(b"four", provider.expected)
+    monkeypatch.setattr(public_m2_modal, "MAX_PUBLIC_M2_RESULT_BYTES", 4)
+    sdk.poll_value = small_frame
+    assert provider.poll(handle) == b"four"  # Header allowance is separate.
 
 
 def test_foreign_handle_and_invalid_resources_rejected() -> None:

@@ -20,8 +20,11 @@ from spireagent.json_boundary import decode_json, json_bytes
 from stpd.cloud_jobs.public_m2_modal import (
     MAX_PUBLIC_M2_REQUEST_BYTES,
     MAX_PUBLIC_M2_RESULT_BYTES,
+    PublicM2ModalBinding,
     PublicM2ModalResources,
+    encode_modal_response,
 )
+from stpd.cloud_jobs.public_m2_remote_worker import decode_runtime_evidence
 
 APP_PREFIX = "stpd-public-m2-"
 FUNCTION_NAME = "public_m2_remote"
@@ -49,6 +52,7 @@ if not 1 <= len(_RUNTIME_RECEIPT_RAW) <= 8192:
     raise ValueError("runtime_receipt_size_limit")
 if hashlib.sha256(_RUNTIME_RECEIPT_RAW).hexdigest() != _RUNTIME_RECEIPT_SHA256:
     raise ValueError("runtime_receipt_digest_mismatch")
+_RUNTIME_RECEIPT = decode_runtime_evidence(_RUNTIME_RECEIPT_RAW)
 _PLAN_RAW = os.environ.get("STPD_PUBLIC_M2_RESOURCE_PLAN", "").encode("utf-8")
 _PLAN = PublicM2ModalResources.from_bytes(_PLAN_RAW)
 _PLAN_SHA256 = _required("STPD_PUBLIC_M2_RESOURCE_PLAN_SHA256", _HEX64)
@@ -71,7 +75,16 @@ _PINNED_ENV = {
     "STPD_PUBLIC_M2_RESOURCE_PLAN": _PLAN_RAW.decode("utf-8"),
     "STPD_PUBLIC_M2_RESOURCE_PLAN_SHA256": _PLAN_SHA256,
     "STPD_PUBLIC_M2_PRODUCER": _PRODUCER_RAW.decode("utf-8"),
+    # Qualification probes and execution must use the same explicit thread
+    # environment before Torch loads. Other numerical flags are observed only.
+    "OMP_NUM_THREADS": str(_RUNTIME_RECEIPT["cpu_threads"]),
+    "MKL_NUM_THREADS": str(_RUNTIME_RECEIPT["cpu_threads"]),
+    "OPENBLAS_NUM_THREADS": str(_RUNTIME_RECEIPT["cpu_threads"]),
 }
+_BINDING = PublicM2ModalBinding(
+    _PRODUCER, _REQUEST_SHA256, _IMAGE_OBJECT_ID,
+    _RUNTIME_RECEIPT_SHA256, _PLAN,
+)
 
 _APP = modal.App(_APP_NAME)
 _IMAGE = modal.Image.from_id(_IMAGE_OBJECT_ID)
@@ -121,7 +134,7 @@ def public_m2_remote(request_bytes: bytes) -> bytes:
     result = completed.stdout
     if not isinstance(result, bytes) or not 1 <= len(result) <= MAX_PUBLIC_M2_RESULT_BYTES:
         raise RuntimeError("result_size_limit")
-    return result
+    return encode_modal_response(result, _BINDING)
 
 
 app = _APP

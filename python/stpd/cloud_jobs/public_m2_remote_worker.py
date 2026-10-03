@@ -158,6 +158,10 @@ def _worker_main() -> int:
         if hashlib.sha256(runtime_raw).hexdigest() != runtime_sha:
             raise BoundaryError("public_m2_modal_worker", "runtime_receipt_digest_mismatch")
         expected_runtime = decode_runtime_evidence(runtime_raw)
+        threads = str(expected_runtime["cpu_threads"])
+        if any(os.environ.get(key) != threads for key in (
+                "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")):
+            raise BoundaryError("public_m2_modal_worker", "thread_environment_mismatch")
         request = sys.stdin.buffer.read(MAX_PUBLIC_M2_REQUEST_BYTES + 1)
         result = _execute_once(
             request, request_sha256=request_sha256, producer=producer,
