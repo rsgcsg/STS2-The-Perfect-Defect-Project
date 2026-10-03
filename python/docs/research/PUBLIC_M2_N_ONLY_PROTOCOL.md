@@ -73,9 +73,13 @@ they never trim text, truncate actions or silently discard candidates.
 
 ## Numerical and recovery boundary
 
-The nominal window is eight decisions, with an explicit configurable range of one
-to eight for a measured pilot. Freeze the chosen size across comparison arms before
-their full runs. Windows do not cross chains. A final shorter window uses the actual
+The current common candidate is four decisions with an aggregate window limit of
+98,304 tokens. This counts each page and every complete candidate encoding; it does
+not increase the token core's single-sequence length or permit cropping. The earlier
+65,536-token pilot bound rejected complete catalogs in the verified input. The
+configurable window range remains one to eight, and engine defaults remain unchanged.
+Freeze the measured candidate across all six arms before their full runs. Windows do
+not cross chains. A final shorter window uses the actual
 decision-count mean. Each window performs exactly one AdamW update on mean listwise
 cross entropy; it does not scale gradients by total chain length.
 
@@ -102,15 +106,34 @@ state; it is not a counterfactual game rollout or independent-game qualification
 Reuse the existing ArtifactStore, RunReporter and typed checkpoint codec. Keep one
 writer per run. The current M0 owner journal is a singleton beside its curation registry;
 changing a generic state directory does not isolate it. Do not fork curation owners
-to bypass the shared use/Gold ledger. First validate one A02 end-to-end run before
-adding concurrent execution infrastructure.
+to bypass the shared use/Gold ledger. First qualify the pipeline through a separately
+identified, owner-admitted pilot before starting formal A02 or adding concurrent
+execution infrastructure. The pilot retains the shared tokenizer's complete train
+fit provenance, uses whole evidence segments, and has a finite epoch-1 stage goal.
+Its small dev subset is resource/export evidence, not a six-arm evaluation result.
+Formal arms start again from seed 1701; pilot weights are not implicitly promoted.
 
 The typed run checks declared parent identities and immutable input bytes. It does
 not independently prove source admission or tokenizer fitting. A formal intake must
 reproject the authoritative allocation/public view, join the audited source metadata
 by exact transition identity, fit the smallest train tier once, and bind the resulting
-inputs to that intake receipt. Subsequent runs and resumes reuse these compiled inputs;
-they do not repeat source preparation or infer admission from a schema label.
+inputs to that intake receipt. Subsequent runs and resumes reuse these compiled inputs
+without re-fitting the codec. This does not replace current owner admission. Existing
+owner checks run in one verified-source scope; a new process must revalidate that
+scope rather than pretending that a previous process's cache is still available.
+
+The remote bytes path sends typed run/input artifacts and only the source manifests
+needed to declare lineage, never their raw evidence payloads. A local acceptance
+pass checks the complete returned checkpoint/stage/event inventory before importing
+it, and selects completion locally only for a verified epoch-5 result. Checkpoints
+inside a disposable worker are not durable until their result bytes are returned and
+accepted locally. An unknown submission cannot be retried automatically.
+
+The Modal wrapper runs only standard-library transport code. Model execution uses
+the pinned image's locked virtual-environment interpreter. The worker compares actual
+source and runtime observations with an independently obtained qualification receipt;
+the provider binds image, resources, call identity and the returned receipt. These are
+ordinary process/provider checks, not hardware attestation or proof of model quality.
 
 The private batch control owns the authorized raw-cost limit and each attempt's
 reservation, image/source/input/resource identity, lifecycle and stop confirmation.
@@ -118,8 +141,9 @@ No provider submission follows from this source document. Builds, pilots, retrie
 CPU and RAM count toward the same budget; credits do not reduce raw usage.
 
 The first gates are synthetic train/pause/resume/dev/export parity, a verified real
-chain inventory and compilation, then one bounded CUDA pilot. The public generic
-Snapshot also needs a formal stateful Runtime/consumer path: existing stateful ports
-currently admit text-menu snapshots, while public M0 uses a stateless port. This
-candidate does not hide memory behind that stateless contract or change Connector
-action semantics. Source integration does not establish live M2 readiness.
+chain inventory and compilation, then one bounded CUDA pilot. Measure the largest
+training window with backward enabled and dev windows only through no-grad evaluation;
+also check the longest individual state. The public generic Snapshot path uses the
+separate port-4 consumer candidate and requires its matching Runtime contract. It
+does not hide memory behind the old stateless contract or change Connector action
+semantics. Source integration does not establish live M2 readiness.
