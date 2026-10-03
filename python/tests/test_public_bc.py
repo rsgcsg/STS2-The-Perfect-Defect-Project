@@ -2,7 +2,9 @@
 import copy
 import io
 import json
+from contextlib import nullcontext
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import torch
@@ -12,12 +14,20 @@ from test_public_inputs import snapshot
 from test_stage1a_training import tiny_config
 
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.storage.blobs import StoreError
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
+from spireagent.storage.store import ManifestArtifactStore
 from stpd.fullrun.decision_training import AllocationSpec, publish_allocation
 from stpd.fullrun.features import load_model_view
+from stpd.fullrun.light_action_inputs import (
+    TRAINING_BINDING_SCHEMA,
+    load_light_action_inputs,
+    publish_light_action_inputs,
+)
 from stpd.fullrun.public_bc import bound_choice, project_allocation, publish_public_bc_view
 from stpd.fullrun.public_inputs import project_public_snapshot
 from stpd.fullrun.token_inputs import load_token_inputs, publish_token_inputs
+from stpd.fullrun.view_session import verified_model_views
 from stpd.policy.token_decision import TokenDecisionScorer, export_token_model
 from stpd.workers.token_worker import execute_tokens, prepare_token_run
 
@@ -31,6 +41,17 @@ def binding():
               "bound_action": {**selected, "arguments": {}}}
     frame = {"snapshot_id": observation["snapshot_id"], "snapshot": observation}
     return frame, {"snapshot_id": frame["snapshot_id"]}, action
+
+
+def _public_allocation(tmp_path, monkeypatch):
+    import test_decision_store
+
+    monkeypatch.setattr(test_decision_store, "bundle3", lambda p: bundle3(p, public_bindings=True))
+    owner, dataset = prepared(tmp_path)
+    allocation = publish_allocation(
+        owner.store, dataset, AllocationSpec(max_train=2, max_dev=1), owner.producer,
+    )
+    return owner, allocation
 
 
 def test_exact_human_choice_uses_ids_not_semantic_guess_or_candidate_position():
@@ -76,6 +97,168 @@ def test_unavailable_human_observation_is_reported_without_substituting_executio
     with pytest.raises(BoundaryError, match="nonempty_train_dev"):
         publish_public_bc_view(owner.store, allocation.artifact_id, owner.producer)
     assert owner.store.manifest_ids() == before
+
+
+def test_publication_and_input_load_share_one_verified_projection_in_same_session(
+    tmp_path, monkeypatch,
+):
+    from stpd.fullrun import public_bc
+
+    owner, allocation = _public_allocation(tmp_path, monkeypatch)
+    original = public_bc.project_allocation
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(public_bc, "project_allocation", counted)
+    with verified_model_views(owner.store) as session:
+        view = publish_public_bc_view(owner.store, allocation.artifact_id, owner.producer)
+        assert calls == 1
+        binding = {
+            "schema": TRAINING_BINDING_SCHEMA,
+            "dataset_ids": [allocation.parent("dataset")],
+            "training_operation_id": "a" * 32,
+            "allocation_id": allocation.artifact_id,
+            "model_view_id": view.artifact_id,
+        }
+        inputs = publish_light_action_inputs(
+            owner.store, view.artifact_id, "s", owner.producer,
+            training_binding=binding,
+        )
+        loaded = load_light_action_inputs(owner.store, inputs.artifact_id)
+        assert len(loaded.samples) == 3
+        assert calls == 1
+        assert (session.misses, session.hits) == (1, 2)
+
+
+@pytest.mark.parametrize("session_store", ["none", "different_object_same_blobs"])
+def test_publication_does_not_seed_without_the_exact_active_store_session(
+    tmp_path, monkeypatch, session_store,
+):
+    from stpd.fullrun import public_bc
+
+    owner, allocation = _public_allocation(tmp_path, monkeypatch)
+    original = public_bc.project_allocation
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(public_bc, "project_allocation", counted)
+    if session_store == "none":
+        context = nullcontext(None)
+    else:
+        other_store = ManifestArtifactStore(owner.store.blobs)
+        context = verified_model_views(other_store)
+    with context as session:
+        view = publish_public_bc_view(owner.store, allocation.artifact_id, owner.producer)
+        loaded = load_model_view(owner.store, view.artifact_id)
+        assert loaded[0].artifact_id == view.artifact_id
+        assert loaded[0].to_bytes() == view.to_bytes()
+        assert {payload.role: payload for payload in loaded[0].payloads} == {
+            payload.role: payload for payload in view.payloads
+        }
+        assert len(loaded[1]) == 3
+        assert calls == 2
+    if session is not None:
+        assert session.identity is None and session.value is None
+        assert (session.misses, session.hits) == (0, 0)
+
+
+@pytest.mark.parametrize("damage", ["view_payload", "source_archive", "missing_allocation"])
+def test_published_view_hit_still_checks_its_complete_artifact_closure(
+    tmp_path, monkeypatch, damage,
+):
+    owner, allocation = _public_allocation(tmp_path, monkeypatch)
+    with verified_model_views(owner.store) as session:
+        view = publish_public_bc_view(owner.store, allocation.artifact_id, owner.producer)
+        load_model_view(owner.store, view.artifact_id)
+        assert session.hits == 1
+
+        if damage == "missing_allocation":
+            manifest_path = (Path(owner.store.blobs.root) / "manifests"
+                             / f"{allocation.artifact_id}.json")
+            manifest_path.unlink()
+            expected_error = "object_not_found"
+        else:
+            if damage == "view_payload":
+                payload = view.payload("samples")
+            else:
+                pending = [view]
+                source = None
+                while pending:
+                    item = pending.pop()
+                    if item.kind == "evidence":
+                        source = item
+                        break
+                    pending.extend(owner.store.get_manifest(p.artifact_id) for p in item.parents)
+                assert source is not None
+                payload = source.payload("archive")
+            index = json.loads(
+                owner.store.blobs.get(f"payload-indexes/v1/{payload.sha256}.json")
+            )
+            chunk = index["chunks"][0]["sha256"]
+            object_path = Path(owner.store.blobs.root) / "objects" / "sha256" / chunk
+            object_path.write_bytes(b"corrupt")
+            expected_error = "integrity"
+
+        with pytest.raises(StoreError, match=expected_error):
+            load_model_view(owner.store, view.artifact_id)
+        assert session.hits == 1
+
+
+def test_published_view_cache_is_exact_identity_keyed_and_rejects_changed_identity(
+    tmp_path, monkeypatch,
+):
+    owner, allocation = _public_allocation(tmp_path, monkeypatch)
+    with verified_model_views(owner.store) as session:
+        view = publish_public_bc_view(owner.store, allocation.artifact_id, owner.producer)
+        altered = replace(
+            view,
+            parameters=FrozenObject.of({**view.parameters.value(), "samples": 4}),
+        )
+        owner.store.publish(altered)
+        with pytest.raises(BoundaryError, match="view_identity_mismatch"):
+            load_model_view(owner.store, altered.artifact_id)
+        assert session.identity == view.artifact_id
+        assert session.value is not None and session.value[0] == view
+
+
+def test_publication_cache_respects_nested_session_restore(tmp_path, monkeypatch):
+    from stpd.fullrun import public_bc
+    from stpd.fullrun.view_session import _CURRENT
+
+    owner, allocation = _public_allocation(tmp_path, monkeypatch)
+    original = public_bc.project_allocation
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(public_bc, "project_allocation", counted)
+    with verified_model_views(owner.store) as outer:
+        outer_view = publish_public_bc_view(owner.store, allocation.artifact_id, owner.producer)
+        assert outer.value is not None
+        outer_value = outer.value
+        with verified_model_views(owner.store) as inner:
+            inner_view = publish_public_bc_view(
+                owner.store, allocation.artifact_id, owner.producer, compact=False,
+            )
+            assert inner.identity == inner_view.artifact_id
+            assert load_model_view(owner.store, inner_view.artifact_id)[0] == inner_view
+            assert (inner.misses, inner.hits) == (1, 1)
+        assert _CURRENT.get() is outer
+        assert outer.identity == outer_view.artifact_id
+        assert load_model_view(owner.store, outer_view.artifact_id) is outer_value
+        assert (outer.misses, outer.hits) == (1, 1)
+    assert calls == 2
 
 
 def test_public_view_reprojects_sources_and_scores_same_text_after_export(tmp_path, monkeypatch):

@@ -25,7 +25,7 @@ from .s1 import (
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = ROOT / "configs/v0/experiments/s1-human-combat-live-v2.json"
-DEFAULT_MANIFEST = ROOT / "policy-manifests" / "s1-policy-adapter-v7.json"
+DEFAULT_MANIFEST = ROOT / "policy-manifests" / "s1-policy-adapter-v8.json"
 MANIFEST_SCHEMA = "sts2.policy-runtime/policy-manifest-1"
 PORT_SCHEMA = "sts2.policy-runtime/policy-port-1"
 ADAPTER_PROTOCOL = "sts2.policy-runtime/decision-only-ndjson-1"

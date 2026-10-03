@@ -57,6 +57,7 @@ window.SpireProject = (() => {
   const commandControls = new Map();
   let activeDataset = null;
   let localRecordingSnapshot = null;
+  let localMemberArchiveSnapshot = null;
   const datasetSnapshots = new WeakMap();
   const datasetReads = new Map();
   let datasetReadEpoch = 0;
@@ -278,6 +279,16 @@ window.SpireProject = (() => {
       runtime_game_mismatch: "模型运行器连接的不是当前游戏，请重新加载模型。",
       runtime_recovery_epoch_mismatch: "你已暂停或结束测试，这条旧操作已取消。",
       request_unknown: "请求结果尚未确认，请先刷新状态。不会自动重发操作。",
+      download_checksum_mismatch: "本机归档与已保存清单的大小或校验值不符，未导入。请刷新已下载归档后再明确重试。",
+      download_file_unavailable: "本机归档文件当前不可用，未导入。请确认下载完整后刷新归档目录。",
+      download_inventory_unavailable: "本机下载清单无法读取，未导入。请重新检查已下载归档状态。",
+      download_receipt_unavailable: "没有可用的完整下载回执，未导入。请确认成员归档已经下载并通过校验。",
+      invalid_export_inventory: "本机导出清单未通过身份校验，未导入。请刷新归档目录并核对来源。",
+      collection_archive_not_selected: "所选文件不是该导出中明确选取的 collection archive，未导入。",
+      member_download_unavailable: "本机成员下载服务不可用，未导入。请重新读取本机状态。",
+      workspace_required: "请先建立或选择本机资料空间，再导入成员归档。",
+      curation_owner_recovery_required: "本机来源用途状态需要先恢复，归档尚未导入。",
+      previous_import_interrupted: "工作台上次关闭时导入仍在处理中，结果未知。先刷新并核对状态；不会自动重试。",
       local_model_export_failed: "本机模型导出与校验未完成。请刷新状态后再按需明确重试。",
       local_model_registration_invalid: "本机模型登记状态格式未知；未发起模型操作。请刷新状态。",
       local_models_extra_required: "本机模型计算依赖尚未按发行包准备；请先用已验证的开发者工具包初始化模型环境。未启动训练或登记。",
@@ -327,7 +338,7 @@ window.SpireProject = (() => {
         : "服务暂时不可用，请刷新状态。")
     );
   };
-  async function request(ctx, path, body, localCsrfToken) {
+  async function request(ctx, path, body, localCsrfToken, requestTimeoutMs) {
     if (!live(ctx)) throw new Error("context_changed");
     const mutation = body !== undefined;
     if (mutation && modelWatch?.ctx === ctx) stopModelWatch();
@@ -346,7 +357,8 @@ window.SpireProject = (() => {
         credentials: "same-origin",
         cache: "no-store",
         redirect: "error",
-        signal: AbortSignal.timeout(mutation ? 25000 : 15000),
+        signal: AbortSignal.timeout(Number.isFinite(requestTimeoutMs)
+          ? requestTimeoutMs : mutation ? 25000 : 15000),
         headers: mutation
           ? {
               "Content-Type": "application/json",
@@ -1261,37 +1273,40 @@ window.SpireProject = (() => {
     return box;
   }
   function downloadState(value) {
+    const safeValue = Object.fromEntries(
+      Object.entries(value).filter(([key]) => key !== "directory"),
+    );
     const box = panel(
       "本机下载状态",
       "仅显示服务已报告的进展。没有百分比或预计完成时间的推算。",
     );
     box.append(
       fields([
-        ["状态", show(value.status)],
-        ["导出身份", value.export_id || "尚无下载"],
+        ["状态", show(safeValue.status)],
+        ["导出身份", safeValue.export_id || "尚无下载"],
         [
           "已校验 / 总文件",
-          `${count(value.verified_files)} / ${count(value.total_files)}`,
+          `${count(safeValue.verified_files)} / ${count(safeValue.total_files)}`,
         ],
         [
           "已校验 / 总字节",
-          `${bytes(value.verified_bytes)} / ${bytes(value.total_bytes)}`,
+          `${bytes(safeValue.verified_bytes)} / ${bytes(safeValue.total_bytes)}`,
         ],
       ]),
     );
-    if (value.error_code || value.error)
+    if (safeValue.error_code || safeValue.error)
       box.append(
         el(
           "p",
-          failure({ message: value.error_code || value.error }),
+          failure({ message: safeValue.error_code || safeValue.error }),
           "banner error",
         ),
       );
-    if (["pending", "downloading"].includes(value.status))
+    if (["pending", "downloading"].includes(safeValue.status))
       box.append(
         el("p", "下载仍由本机后台服务处理。关闭网页不表示下载完成。", "muted"),
       );
-    if (value.status === "verified")
+    if (safeValue.status === "verified")
       box.append(
         el(
           "p",
@@ -1299,9 +1314,9 @@ window.SpireProject = (() => {
           "banner good",
         ),
       );
-    if (value.directory)
-      box.append(fields([["服务管理的本机保存目录", value.directory]]));
-    box.append(technical(value, "实际下载回执与观测"));
+    if (local && safeValue.status === "verified")
+      box.append(link("在本机资料中导入已下载的成员归档", route("local-workspace")));
+    box.append(technical(safeValue, "实际下载回执与观测"));
     return box;
   }
   function boundaryLabel(coverage) {
@@ -2969,9 +2984,80 @@ window.SpireProject = (() => {
     return memoryRecipeView(value.workbench_memory_recipe);
   }
 
+  function publicM0ModelProfile(value) {
+    const parameters = value?.parameters;
+    if (value?.kind !== "model" || !hex(value.artifact_id)
+        || parameters?.schema !== "stpd/stage1a-light-action-m0-public-model-v1"
+        || parameters.qualification !== "engineering_only"
+        || parameters.input_schema !== "stpd/stage1a-light-action-m0-public-input-v1"
+        || parameters.input_format !== "stpd-token-light-action-m0-public-v1") return null;
+    const config = parameters.config && typeof parameters.config === "object"
+      && !Array.isArray(parameters.config) ? parameters.config : {};
+    const backbone = parameters.backbone && typeof parameters.backbone === "object"
+      && !Array.isArray(parameters.backbone) ? parameters.backbone.kind : null;
+    const recipes = {
+      scratch: "stage1a.dsimple.light-action.m0.s.v1",
+      pf: "stage1a.dsimple.light-action.m0.pf.v1",
+      pl: "stage1a.dsimple.light-action.m0.pl.v1",
+    };
+    const renderer = parameters.source_renderer && typeof parameters.source_renderer === "object"
+      && !Array.isArray(parameters.source_renderer) ? parameters.source_renderer : {};
+    const profile = config.public_profile;
+    const renderers = {
+      public_lite: {version:"stpd-public-snapshot-lite-v1", profile:"public_lite", status:"provisional"},
+      public_compact: {version:"stpd-public-snapshot-compact-v2", profile:"public_compact", status:"provisional"},
+    };
+    const expected = Object.hasOwn(renderers, profile) ? renderers[profile] : null;
+    const binding = parameters.training_binding && typeof parameters.training_binding === "object"
+      && !Array.isArray(parameters.training_binding) ? parameters.training_binding : null;
+    const exactBinding = binding && Object.keys(binding).length === 5
+      && ["schema", "dataset_ids", "training_operation_id", "allocation_id", "model_view_id"]
+        .every(key => Object.hasOwn(binding, key))
+      && binding.schema === "stpd/light-action-m0-training-binding-v1"
+      && Array.isArray(binding.dataset_ids) && binding.dataset_ids.length > 0
+      && binding.dataset_ids.every(identity => hex(identity))
+      && binding.dataset_ids.join("\n") === [...new Set(binding.dataset_ids)].sort().join("\n")
+      && hex(binding.training_operation_id, 32)
+      && hex(binding.allocation_id) && hex(binding.model_view_id);
+    if (config.recipe !== recipes[backbone] || parameters.recipe !== config.recipe || !expected
+        || Object.keys(renderer).length !== 3
+        || renderer.version !== expected.version || renderer.profile !== expected.profile
+        || renderer.status !== expected.status
+        || !exactBinding || config.device !== "cpu"
+        || !Number.isSafeInteger(parameters.steps) || parameters.steps < 1
+        || config.steps !== parameters.steps) return null;
+    return {profile, backbone};
+  }
+
+  function supportsPublicM0WorkbenchActions(value) {
+    return publicM0ModelProfile(value)?.backbone === "scratch";
+  }
+
   function localModelOverview(value) {
     const parameters = value.parameters && typeof value.parameters === "object"
       && !Array.isArray(value.parameters) ? value.parameters : {};
+    if (parameters.schema === "stpd/stage1a-light-action-m0-public-model-v1") {
+      const variant = publicM0ModelProfile(value);
+      const config = parameters.config && typeof parameters.config === "object"
+        && !Array.isArray(parameters.config) ? parameters.config : {};
+      const profileName = variant?.profile === "public_lite" ? "Public Lite（可读内联）"
+        : variant?.profile === "public_compact" ? "Public Compact（兼容格式）" : "未知";
+      const overview = panel("模型概览", "以下摘要来自本机模型清单；不会读取权重或代表模型质量。Public M0 按完整公开 Snapshot 和完整动作目录训练。 ");
+      overview.append(fields([
+        ["训练方式", "D-Simple 轻动作 M0"],
+        ["公开输入", profileName],
+        ["骨干", variant?.backbone === "scratch" ? "S · 从头训练"
+          : variant?.backbone === "pf" ? "PF · 冻结骨干"
+            : variant?.backbone === "pl" ? "PL · LoRA" : "未知"],
+        ["训练步数", Number.isSafeInteger(parameters.steps)
+          && parameters.steps > 0 && parameters.steps === config.steps
+          ? count(parameters.steps) : "未知"],
+        ["用途", "工程训练；不代表模型质量或实战能力"],
+      ]));
+      if (variant && variant.backbone !== "scratch")
+        overview.append(el("p", "PF/PL Public M0 暂通过研究 CLI 管理；此 Workbench 尚不提供导出或登记操作。", "small muted"));
+      return overview;
+    }
     if (parameters.schema === "stpd/experimental-m2-model-v1") {
       const variant = memoryModelVariant(value);
       const overview = panel("模型概览", "以下是本机模型清单中的训练记录；此处不读取权重或评估模型质量。");
@@ -3053,6 +3139,8 @@ window.SpireProject = (() => {
       && !Array.isArray(parameters.backbone) ? parameters.backbone : {};
     if (parameters.schema === "stpd/experimental-m2-model-v1")
       return memoryModelVariant(value) !== null;
+    if (parameters.schema === "stpd/stage1a-light-action-m0-public-model-v1")
+      return supportsPublicM0WorkbenchActions(value);
     const serializerKeys = ["input_profile", "profile", "source_schema", "status", "version"];
     return value?.kind === "model" && hex(value.artifact_id)
       && parameters.schema === "stpd/stage1a-model-v1"
@@ -3096,12 +3184,19 @@ window.SpireProject = (() => {
     const actionName = managed ? "register-managed-model" : "register-local-model";
     const refreshName = managed ? "refresh-managed-model-registration" : "refresh-local-model-registration";
     const memory = model.parameters?.schema === "stpd/experimental-m2-model-v1";
-    const expectedProfile = memory
+    const publicM0Variant = publicM0ModelProfile(model);
+    const publicM0 = publicM0Variant?.backbone === "scratch";
+    if (publicM0Variant && !publicM0) {
+      return panel("公共 M0 模型", "PF/PL Public M0 暂通过研究 CLI 管理；此 Workbench 尚不提供导出或登记操作。");
+    }
+    const expectedProfile = publicM0 ? "public-snapshot-m0-v1" : memory
       ? (model.workbench_memory_recipe?.endsWith(".v2")
         ? "text-menu-m2-v2" : "text-menu-m2-v1") : "text-menu-v1";
     const card = panel(
-      managed ? "用于独立游戏环境" : "用于原游戏",
-      "登记会依据本机文本菜单运行环境建立模型选择项；不会安装运行组件、加载模型或进入游戏。之后仍需在模型页单独检查条件并选择加载。",
+      managed ? "用于独立游戏环境" : publicM0 ? "登记到模型列表" : "用于原游戏",
+      publicM0
+        ? "登记会核对公开 Snapshot Runtime 合同与当前 Host/Connector 能力，并建立本机模型选择项；不会安装运行组件或加载模型。之后仍需在模型页单独检查条件并选择加载。"
+        : "登记会依据本机文本菜单运行环境建立模型选择项；不会安装运行组件、加载模型或进入游戏。之后仍需在模型页单独检查条件并选择加载。",
     );
     if (managed) card.append(el("p", "先在“环境与场景”启动独立游戏。此登记复用同一份模型权重；加载时绑定所选环境，暂停模型后仍可继续同一局。", "small muted"));
     const statusPath = `/api/local-model-registrations/status?model_id=${encodeURIComponent(model.artifact_id)}${managed ? "&environment_kind=managed" : ""}`;
@@ -3131,7 +3226,11 @@ window.SpireProject = (() => {
     const registerAction = (label) => command(ctx, actionName, label, async () => {
       if (!live(ctx) || !supportsLocalModelExport(model)) return;
       try {
-        const result = await request(ctx, "/api/local-model-registrations/register", {model_id:model.artifact_id, ...(managed ? {environment_kind:"managed"} : {})}, csrf);
+        const result = await request(
+          ctx, "/api/local-model-registrations/register",
+          {model_id:model.artifact_id, ...(managed ? {environment_kind:"managed"} : {})},
+          csrf, 60000,
+        );
         if (result.schema !== "stpd/local-model-registration-v1"
             || (result.environment_kind || "native") !== environmentKind
             || result.model_id !== model.artifact_id || result.status !== "registered"
@@ -3181,8 +3280,15 @@ window.SpireProject = (() => {
   async function localModelExportCard(ctx, model) {
     const variant = memoryModelVariant(model);
     const memory = variant !== null;
+    const publicM0Variant = publicM0ModelProfile(model);
+    const publicM0 = publicM0Variant?.backbone === "scratch";
+    if (publicM0Variant && !publicM0) {
+      return panel("公共 M0 模型", "PF/PL Public M0 暂通过研究 CLI 管理；此 Workbench 尚不提供导出或登记操作。");
+    }
     const memoryName = variant?.name;
-    const card = panel("导出并校验", memory
+    const card = panel("导出并校验", publicM0
+      ? "导出会重新核对 Public M0 的精确模型、完整动作目录和独立评分器加载；不会登记、加载或证明策略质量。"
+      : memory
       ? `导出只保存并检查实验性 ${memoryName} 训练模型；导出校验不包含评估结论。登记前需单独固定记忆模型运行包并核对环境；导出不会自动登记或加载。`
       : "导出只保存并检查本机模型文件；不会登记为游戏模型或加载，也不检查游戏兼容性。服务端会重新验证模型身份。");
     const path = "/api/local-model-exports/status";
@@ -3198,7 +3304,8 @@ window.SpireProject = (() => {
     const operation = status?.operation && typeof status.operation === "object"
       && !Array.isArray(status.operation) ? status.operation : null;
     if (!["stpd/local-model-export-operation-v1",
-          "stpd/local-model-export-operation-v2"].includes(status?.schema)) {
+          "stpd/local-model-export-operation-v2",
+          "stpd/local-model-export-operation-v3"].includes(status?.schema)) {
       const message = "导出状态格式未知；未发起导出。";
       card.append(el("p", message, "small muted"));
       card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
@@ -3210,10 +3317,15 @@ window.SpireProject = (() => {
       : hex(operation.model_id));
     const validType = status.schema === "stpd/local-model-export-operation-v1"
       ? operation?.model_type === undefined
-      : operation?.model_type === "memory";
+      : status.schema === "stpd/local-model-export-operation-v2"
+        ? operation?.model_type === "memory"
+        : publicM0 && operation?.model_type === "public_m0"
+          && operation?.profile === "public-snapshot-m0-v1";
     if (!operation || !knownStates.includes(operation.status) || !validOwner || !validType
         || (memory && operation.status !== "idle" && operation.model_id === model.artifact_id
-            && status.schema !== "stpd/local-model-export-operation-v2")) {
+            && status.schema !== "stpd/local-model-export-operation-v2")
+        || (publicM0 && operation.status !== "idle" && operation.model_id === model.artifact_id
+            && status.schema !== "stpd/local-model-export-operation-v3")) {
       card.append(el("p", "导出状态格式未知；未发起导出。", "small muted"));
       card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
       return card;
@@ -3269,7 +3381,9 @@ window.SpireProject = (() => {
       card.append(el("p", "另一模型的导出正在进行；完成前不能启动此模型的导出。", "small muted"));
     } else if (operation.status === "completed" && sameModel) {
       label = "重新核验导出";
-      card.append(el("p", memory
+      card.append(el("p", publicM0
+        ? "Public M0 已通过独立评分器和产物身份校验；这不代表模型策略质量。登记仍会另行核对通用 Snapshot Runtime 和当前完整动作目录。"
+        : memory
         ? `${memoryName} 训练模型已导出并校验；评估须在独立区域核对。登记还需核对记忆模型运行包与环境，加载另行操作。`
         : "导出校验本身不会加载模型；当前运行状态请到模型页查看。游戏兼容性仍须单独检查。", "small muted"));
       if (Number.isSafeInteger(operation.payload_bytes) && operation.payload_bytes >= 0)
@@ -3573,13 +3687,18 @@ window.SpireProject = (() => {
   }
 
   async function localTrainingCard(ctx, dataset) {
+    const curatedTrainingDataset = dataset.parameters?.schema === "stpd/curated-decision-dataset-v1"
+      && dataset.parameters?.purpose === "training";
     const card = panel(
       "本机短训练",
-      dataset.parameters?.schema === "stpd/managed-text-menu-observed-source-v1"
+      curatedTrainingDataset
+        ? "Public M0 Lite 是此入口的默认工程小样：完整公开 Snapshot、完整动作目录、D-Simple 轻动作图、CPU 从头训练 3 步。既有任务的配方以其模型记录为准；可明确选择 Compact 兼容格式或保留既有 D-Simple 短配方。不会自动下载骨干、登记或加载模型，也不代表策略质量。"
+        : dataset.parameters?.schema === "stpd/managed-text-menu-observed-source-v1"
         ? "此来源只可明确选择 text-menu-v2 M2 或 Reset 的 K1/K8 工程训练。操作者未验证；仅训练，不生成独立开发集指标，也不代表模型质量或记忆收益。"
         : "从此入口新启动的任务默认使用 D-Simple-S v1、CPU 2 线程和 3 步；既有任务的配方以其模型记录为准。可明确选择实验性 M2 或 Reset 的 K1/K8 配方（Reset 每步重置，独立训练对照）；记忆配方仅训练、不做独立评估或开发集指标。本机服务会核对训练用途与来源资格；结果不代表模型策略质量或记忆收益。",
     );
-    card.append(el("p", "观察记忆使用页面观察；操作记忆（含已确认的上一操作）需要支持已确认操作历史的录制格式。可用历史与训练用途资格由本机服务核对，旧格式不会自动转换。", "small muted"));
+    if (!curatedTrainingDataset)
+      card.append(el("p", "观察记忆使用页面观察；操作记忆（含已确认的上一操作）需要支持已确认操作历史的录制格式。可用历史与训练用途资格由本机服务核对，旧格式不会自动转换。", "small muted"));
     let data;
     try {
       data = await request(ctx, "/api/local-training/status");
@@ -3591,10 +3710,18 @@ window.SpireProject = (() => {
     }
     if (!live(ctx)) return card;
     if (!data || typeof data !== "object" || Array.isArray(data)
-        || !["stpd/local-training-operation-v1", "stpd/local-training-operation-v2"].includes(data.schema)
+        || !["stpd/local-training-operation-v1", "stpd/local-training-operation-v2",
+          "stpd/local-training-operation-v3"].includes(data.schema)
         || !data.operation || typeof data.operation !== "object") {
       card.append(el("p", "本机训练状态格式未知，当前不能启动训练。", "small muted"));
       card.append(technical({error_code:"unknown_local_training_status_schema"}, "查看状态格式错误"));
+      return card;
+    }
+    if (data.schema === "stpd/local-training-operation-v3"
+        && data.operation.status !== "idle"
+        && !["public_lite", "public_compact"].includes(data.operation.input_profile)) {
+      card.append(el("p", "Public M0 训练状态缺少可核对的公开输入配置；未显示结果或启动新任务。", "small muted"));
+      card.append(technical({error_code:"unknown_public_m0_training_profile"}, "查看训练状态"));
       return card;
     }
     const csrfToken = data.csrf_token;
@@ -3613,12 +3740,21 @@ window.SpireProject = (() => {
     const managed = dataset.parameters?.schema === "stpd/managed-text-menu-observed-source-v1";
     const defaultRecipe = "stage1a.dsimple.s.v1";
     const memoryView = memoryRecipeView(operation.recipe);
-    const recipeLabel = memoryView ? memoryRecipeLabel(memoryView)
-      : operation.recipe === defaultRecipe ? "D-Simple-S v1" : "以模型记录为准";
-    const choices = Object.entries(memoryRecipeViews)
-      .filter(([, view]) => memoryRecipePageProfile(view) === (managed ? "text-menu-v2" : "text-menu-v1"))
-      .map(([id, view]) => [id, `${memoryRecipeLabel(view)} · 仅训练`]);
-    if (!managed) choices.unshift([defaultRecipe, "D-Simple-S v1（默认，短训练）"]);
+    const currentPublicProfile = ["public_lite", "public_compact"].includes(operation.input_profile)
+      ? operation.input_profile : null;
+    const recipeLabel = currentPublicProfile === "public_lite" ? "Public M0 Lite · 3 步 CPU 工程训练"
+      : currentPublicProfile === "public_compact" ? "Public M0 Compact · 3 步 CPU 工程训练"
+        : memoryView ? memoryRecipeLabel(memoryView)
+          : operation.recipe === defaultRecipe ? "D-Simple-S v1" : "以模型记录为准";
+    const choices = curatedTrainingDataset
+      ? [["public_lite", "Public M0 Lite（默认，可读内联）"],
+        ["public_compact", "Public M0 Compact（兼容格式）"],
+        [defaultRecipe, "既有 D-Simple-S v1（文本菜单输入）"]]
+      : Object.entries(memoryRecipeViews)
+        .filter(([, view]) => memoryRecipePageProfile(view) === (managed ? "text-menu-v2" : "text-menu-v1"))
+        .map(([id, view]) => [id, `${memoryRecipeLabel(view)} · 仅训练`]);
+    if (!managed && !curatedTrainingDataset)
+      choices.unshift([defaultRecipe, "D-Simple-S v1（默认，短训练）"]);
     if (operation.status !== "idle") card.append(el("p", `当前任务配方：${recipeLabel}。${operation.result_type === "train_only" ? "此训练任务不执行独立评估。" : ""}`, "small muted"));
     if (operation.status === "pending") {
       const stage = localTrainingStage(operation.stage);
@@ -3645,7 +3781,9 @@ window.SpireProject = (() => {
           card.append(link("打开待核对的数据集", route("local-workspace", operation.dataset_id)));
       }
     } else if (currentForDataset && operation.status === "completed") {
-      card.append(el("p", operation.result_type === "train_only"
+      card.append(el("p", currentPublicProfile
+        ? `Public M0 ${currentPublicProfile === "public_lite" ? "Lite" : "Compact"} 工程训练已完成；模型仍未登记或加载，结果不代表策略质量。`
+        : operation.result_type === "train_only"
         ? `${memoryView?.name || "实验性"} 训练任务已完成；此任务不包含开发集评估指标，也没有加载到游戏。`
         : "本机训练已完成；这不表示模型已加载到游戏或具备已验证的策略质量。", "small muted"));
     } else if (!(["idle", "completed", "failed"].includes(operation.status))) {
@@ -3692,8 +3830,11 @@ window.SpireProject = (() => {
       card.append(el("p", "本机浏览器保护令牌暂不可用，请刷新后重试。", "small muted"));
     if (canStart) {
       const form = el("div");
-      const recipe = select(form, "训练配方", "local-training-recipe", choices,
-        managed ? v2MemoryRecipe : defaultRecipe);
+      const defaultChoice = currentPublicProfile || (curatedTrainingDataset
+        ? "public_lite" : managed ? v2MemoryRecipe : defaultRecipe);
+      const recipe = select(form, curatedTrainingDataset ? "训练方式" : "训练配方",
+        "local-training-recipe", choices, choices.some(([id]) => id === defaultChoice)
+          ? defaultChoice : choices[0]?.[0] || defaultRecipe);
       card.append(form);
       const startOptions = {primary:true};
       card.append(command(ctx, "start-local-training",
@@ -3704,7 +3845,9 @@ window.SpireProject = (() => {
           startOptions.disabled = true;
           await request(ctx, "/api/local-training/start", {
             dataset_id:dataset.artifact_id,
-            ...(memoryRecipeView(recipe.value) ? {recipe:recipe.value} : {}),
+            ...(["public_lite", "public_compact"].includes(recipe.value)
+              ? {input_profile:recipe.value}
+              : memoryRecipeView(recipe.value) ? {recipe:recipe.value} : {}),
           }, csrfToken);
           await reload(ctx);
         }, startOptions));
@@ -3713,9 +3856,10 @@ window.SpireProject = (() => {
         && hex(operation.run_id) && hex(operation.result_id) && hex(operation.model_id)
         && (hex(operation.evaluation_id) || operation.result_type === "train_only")) {
       const form = el("div");
+      const previousChoice = currentPublicProfile || operation.recipe;
       const recipe = select(form, "新实验配方", "local-training-new-recipe", choices,
-        choices.some(([id]) => id === operation.recipe) ? operation.recipe
-          : managed ? v2MemoryRecipe : defaultRecipe);
+        choices.some(([id]) => id === previousChoice) ? previousChoice
+          : curatedTrainingDataset ? "public_lite" : managed ? v2MemoryRecipe : defaultRecipe);
       card.append(form);
       const newOptions = {type:"secondary"};
       card.append(command(ctx, "start-local-training-new", "新建一次训练", async () => {
@@ -3724,7 +3868,9 @@ window.SpireProject = (() => {
         newOptions.disabled = true;
         await request(ctx, "/api/local-training/start", {
           dataset_id:dataset.artifact_id, after_completed_operation_id:taskId,
-          ...(memoryRecipeView(recipe.value) ? {recipe:recipe.value} : {}),
+          ...(["public_lite", "public_compact"].includes(recipe.value)
+            ? {input_profile:recipe.value}
+            : memoryRecipeView(recipe.value) ? {recipe:recipe.value} : {}),
         }, csrfToken);
         await reload(ctx);
       }, newOptions));
@@ -3741,18 +3887,34 @@ window.SpireProject = (() => {
       "选择已结束的录制，验证后加入本机资料库。原始录制保留，不会上传或开始训练。",
     );
     const {csrf_token: localCsrfToken, ...safeImportStatus} = importStatus;
+    const memberArchiveImport = importStatus.source_kind === "member_archive";
     if (importStatus.status === "pending") {
-      section.append(el("p", "本机正在打包并验证所选录制；可离开本页，稍后刷新状态。", "small muted"));
+      section.append(el("p", memberArchiveImport
+        ? "本机正在核对并导入所选成员归档；可离开本页，稍后刷新状态。不会自动重试。"
+        : "本机正在打包并验证所选录制；可离开本页，稍后刷新状态。", "small muted"));
     } else if (importStatus.status === "completed") {
-      section.append(el("p", "上一次本机导入已完成。", "small muted"));
+      section.append(el("p", memberArchiveImport
+        ? "成员归档已验证并导入本机。导入本身不会评定训练资格或开始训练。"
+        : "上一次本机导入已完成。", "small muted"));
       if (importStatus.artifact_id)
-        section.append(link("查看已导入对象", route("local-workspace", importStatus.artifact_id)));
+        section.append(link(memberArchiveImport ? "打开对象并单独预览样本" : "查看已导入对象",
+          route("local-workspace", importStatus.artifact_id)));
+      if (memberArchiveImport)
+        section.append(el("p", "下一步：在对象详情中明确预览样本；来源索引与训练用途资格仍需另行评估。", "small muted"));
     } else if (importStatus.status === "published_index_unavailable") {
-      section.append(el("p", "归档已写入本机资料库，但索引更新失败；请查看状态并修复后再明确重试。", "small muted"));
+      section.append(el("p", memberArchiveImport
+        ? "成员归档证据已写入本机资料库，但本机索引更新失败；请查看状态并处理索引后再单独预览。不会自动重试或训练。"
+        : "归档已写入本机资料库，但索引更新失败；请查看状态并修复后再明确重试。", "small muted"));
     } else if (["failed", "interrupted_unknown", "publication_unknown"].includes(importStatus.status)) {
-      section.append(el("p", "上一次导入未确认完成；不会自动重试。请查看状态并核对后再明确操作。", "small muted"));
+      section.append(el("p", memberArchiveImport
+        ? "成员归档导入未完成或结果未知。原下载保留，不会自动重试；请查看具体错误并刷新可用归档后再明确操作。"
+        : "上一次导入未确认完成；不会自动重试。请查看状态并核对后再明确操作。", "small muted"));
     }
-    if (importStatus.error_code) section.append(technical(safeImportStatus, "查看导入状态"));
+    if (importStatus.error_code) {
+      if (memberArchiveImport && ["failed", "interrupted_unknown", "publication_unknown"].includes(importStatus.status))
+        section.append(el("p", failure({message:importStatus.error_code}), "small muted"));
+      section.append(technical(safeImportStatus, "查看导入状态"));
+    }
     section.append(command(ctx, "refresh-local-import-status", "刷新导入状态", async () => {
       await reload(ctx);
     }, {type:"secondary"}));
@@ -3823,6 +3985,89 @@ window.SpireProject = (() => {
     }
     if (!data.candidate_count)
       section.append(empty("没有检测到已结束的录制", "尚未结束或信息不完整的录制不会列出。"));
+    return section;
+  }
+
+  function localMemberArchiveCard(ctx, importStatus, csrfToken) {
+    const section = panel(
+      "导入已下载的成员归档",
+      "只列出本机已有完整下载回执的集合归档。此操作仅导入到本机；来源索引和训练资格另行评估，不会自动训练。",
+    );
+    if (localMemberArchiveSnapshot === null) {
+      section.append(command(ctx, "read-member-archives", "查看已下载成员归档", async () => {
+        localMemberArchiveSnapshot = await request(ctx, "/api/local-recordings/member-archives");
+        await reload(ctx);
+      }, {type:"secondary"}));
+      return section;
+    }
+
+    const data = localMemberArchiveSnapshot;
+    section.append(command(ctx, "refresh-member-archives", "刷新已下载归档", async () => {
+      localMemberArchiveSnapshot = await request(ctx, "/api/local-recordings/member-archives");
+      await reload(ctx);
+    }, {type:"secondary"}));
+    if (data.schema !== "stpd/local-member-collection-archive-catalog-v1"
+        || !Array.isArray(data.items)) {
+      section.append(el("p", "本机已下载归档目录格式不可用；请刷新状态。", "small muted"));
+      return section;
+    }
+    if (data.excluded_count)
+      section.append(el("p", `${count(data.excluded_count)} 个不完整或不符合条件的下载未列入可导入清单。`, "small muted"));
+    if (data.truncated)
+      section.append(el("p", "本次目录检查只处理了前 200 个导出目录；超出部分暂未列出。", "small muted"));
+
+    const items = data.items.filter(item =>
+      hex(item?.export_id) && hex(item?.file_id) && hex(item?.artifact_id)
+      && hex(item?.upload_id, 32) && Number.isSafeInteger(item?.size) && item.size > 0
+      && item.name === "项目成员集合归档");
+    const rows = items.map(item => [
+      item.name,
+      bytes(item.size),
+      el("span", item.upload_id, "mono break"),
+      el("span", `${item.export_id} · ${item.file_id}`, "mono break"),
+    ]);
+    if (rows.length) section.append(table(["名称", "大小", "来源 collection ID", "导出 / 文件身份"], rows));
+
+    const alreadyImported = item => importStatus.status === "completed"
+      && importStatus.source_kind === "member_archive"
+      && importStatus.export_id === item.export_id && importStatus.file_id === item.file_id;
+    const selectable = items.filter(item => !alreadyImported(item));
+    if (importStatus.status === "pending") {
+      section.append(el("p", "已有本机导入任务正在处理。刷新导入状态后再选择其他归档。", "small muted"));
+    } else if (selectable.length) {
+      const choiceId = item => `${item.export_id}/${item.file_id}`;
+      const selection = select(section, "选择一个集合归档", "member-archive-selection", [
+        ["", "请选择一份已下载归档"],
+        ...selectable.map(item => [choiceId(item), `${item.name} · ${item.upload_id.slice(0, 12)} · ${bytes(item.size)}`]),
+      ], "");
+      const checkbox = input(section, "我确认所选归档来自真人操作", "member-archive-attestation", false, "checkbox");
+      const selectedItem = () => selectable.find(item => choiceId(item) === selection.value);
+      const canImport = () => checkbox.checked && !!selectedItem() && !!csrfToken;
+      const button = command(ctx, "import-member-archive", "验证并导入本机", async () => {
+        const item = selectedItem();
+        if (!canImport() || !item) return;
+        await request(ctx, "/api/local-recordings/import-member-archive", {
+          export_id: item.export_id,
+          file_id: item.file_id,
+          human_origin_attested: true,
+        }, csrfToken);
+        await reload(ctx);
+      }, {disabled:true, primary:true});
+      selection.onchange = () => {
+        checkbox.checked = false;
+        button.disabled = true;
+      };
+      checkbox.onchange = () => { button.disabled = !canImport(); };
+      section.append(button, command(ctx, "cancel-member-archive-selection", "取消选择", async () => {
+        selection.value = "";
+        checkbox.checked = false;
+        button.disabled = true;
+      }, {type:"secondary"}));
+    } else if (!items.length) {
+      section.append(empty("没有可导入的已验证成员归档", "这里只显示可验证的 collection archive；产物文件与其他下载不会作为录制导入。"));
+    } else {
+      section.append(el("p", "当前列出的成员归档已导入。", "small muted"));
+    }
     return section;
   }
 
@@ -4614,7 +4859,8 @@ window.SpireProject = (() => {
         if (trainingBinding) box.append(await localTrainingCard(ctx, value));
       }
       if (value.kind === "model" && ["stpd/stage1a-model-v1",
-          "stpd/experimental-m2-model-v1"].includes(value.parameters?.schema))
+          "stpd/experimental-m2-model-v1",
+          "stpd/stage1a-light-action-m0-public-model-v1"].includes(value.parameters?.schema))
         box.append(localModelOverview(value));
       if (value.kind === "model" && value.parameters?.schema === "stpd/experimental-m2-model-v1"
           && memoryModelVariant(value) !== null
@@ -4699,6 +4945,7 @@ window.SpireProject = (() => {
 
     const importStatus = await request(ctx, "/api/local-recordings/import/status");
     box.append(localRecordingCard(ctx, importStatus));
+    box.append(localMemberArchiveCard(ctx, importStatus, importStatus.csrf_token));
 
     const query = drafts.get("local-workspace-search") || "";
     const selectedKind = drafts.get("local-workspace-kind") || "";
@@ -4930,6 +5177,7 @@ window.SpireProject = (() => {
       const nextAccount = `${identity?.principal?.subject || "anonymous"}:${identity?.principal?.role || ""}:${identity?.status || ""}`;
       if (account !== nextAccount) {
         account = nextAccount;
+        localMemberArchiveSnapshot = null;
         activeDataset = null;
         offsets = new Map();
         drafts = new Map();

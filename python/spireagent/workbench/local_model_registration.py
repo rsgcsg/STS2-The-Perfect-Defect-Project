@@ -36,6 +36,7 @@ from spireagent.workbench.memory_recipe import (
     memory_settings_for_recipe,
 )
 from spireagent.workbench.runtime_install import (
+    BUNDLED_LAYOUT,
     CONNECTOR_PACKAGE,
     RUNTIME_PACKAGE,
     v2_sdk_available,
@@ -46,6 +47,8 @@ SCHEMA = "stpd/local-model-registration-v1"
 PROFILE = "text-menu-v1"
 M2_PROFILE = "text-menu-m2-v1"
 V2_M2_PROFILE = "text-menu-m2-v2"
+PUBLIC_M0_PROFILE = "public-snapshot-m0-v1"
+PUBLIC_M0_ADAPTER = "stpd-public-m0-decision-adapter"
 RECIPE_LABELS = {"stage1a.b.s.v2": "B", "stage1a.dsimple.s.v1": "D-Simple"}
 
 
@@ -84,11 +87,26 @@ def _export_memory_profile(export: Path) -> str:
             else M2_PROFILE)
 
 
+def _connector_sdk_path(node_modules: Path, pin: dict[str, Any]) -> Path:
+    """Resolve Connector from the dependency layout already checked against its pin."""
+    layout = pin.get("dependency_layout")
+    if layout == BUNDLED_LAYOUT:
+        root = node_modules / RUNTIME_PACKAGE / "node_modules"
+    elif layout is None:
+        root = node_modules
+    else:
+        raise BoundaryError("local_model_registration", "runtime_package_not_pinned")
+    return root / CONNECTOR_PACKAGE / "dist" / "index.js"
+
+
 _v2_sdk_available = v2_sdk_available
 REGISTRY = "token-policies-v1.json"
 LOCK = "token-policies-v1.lock"
 REGISTRATIONS = "model-registrations"
-REGISTRATION_SECONDS = 22.0
+# Local admission reprojects the dataset and verifies its immutable completion bytes.
+# Keep that data-sized phase separate from Runtime/Connector checks and roster binding.
+EXPORT_VERIFICATION_SECONDS = 300.0
+REGISTRATION_SECONDS = 45.0
 # Source-reviewed engineering support: LiveObservationReader registrations,
 # SnapshotBuilder/providers and NativeTextMenu overrides. This is not native
 # or full-run qualification; Runtime remains the current-menu authority.
@@ -126,7 +144,9 @@ _SDK_SCRIPT = """
 const {PlayerEnvironmentRestClient} = await import(process.argv[1]);
 const client = new PlayerEnvironmentRestClient(process.argv[2], 5000);
 const result = await (process.argv[3] === 'text-menu-v2'
-  ? client.textMenuV2Capabilities() : client.textMenuCapabilities());
+  ? client.textMenuV2Capabilities()
+  : process.argv[3] === 'public-snapshot-m0-v1'
+    ? client.capabilities() : client.textMenuCapabilities());
 process.stdout.write(JSON.stringify(result.data));
 """
 _CONTEXT_SCRIPT = """
@@ -161,6 +181,8 @@ def _requirements(value: Any, *, input_profile: str = PROFILE
                   ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Project only typed SDK capabilities; never derive support from a page."""
     try:
+        if input_profile == PUBLIC_M0_PROFILE:
+            return _public_m0_requirements(value)
         v2 = input_profile == "text-menu-v2"
         if (input_profile not in {PROFILE, "text-menu-v2"}
                 or not isinstance(value, dict) or value["input_profile"] != input_profile
@@ -208,9 +230,131 @@ def _requirements(value: Any, *, input_profile: str = PROFILE
                    "action_verbs": [*VERBS, *(["select_card", "select_target",
                                                "cancel_selection"] if v2 else [])]}
         return requirements, support
+    except BoundaryError:
+        raise
     except (KeyError, TypeError, ValueError) as error:
         raise BoundaryError(
             "local_model_registration", "text_menu_capabilities_incompatible",
+        ) from error
+
+
+def _public_m0_requirements(value: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Bind generic Snapshot identity and the M0/Connector common verb scope."""
+    from stpd.fullrun.public_inputs import PUBLIC_VERBS
+    from stpd.public_m0_policy_installation import (
+        GENERIC_ACTION_VERBS,
+        GENERIC_INTERACTION_KINDS,
+    )
+
+    try:
+        if (not isinstance(value, dict)
+                or set(value) != {
+                    "protocol_version", "snapshot_schema", "action_schema", "receipt_schema",
+                    "control_schema", "status", "host", "game", "environment_fingerprint",
+                    "verbs", "snapshot_bound", "single_controller", "execution_available",
+                    "control", "evidence_profiles", "non_claims",
+                }
+                or value["snapshot_schema"] != "sts2.player-environment/snapshot-1"
+                or value["action_schema"] != "sts2.player-environment/action-1"
+                or value["receipt_schema"] != "sts2.player-environment/receipt-1"
+                or value["control_schema"] != "sts2.player-environment/control-1"
+                or value["snapshot_bound"] is not True
+                or value["single_controller"] is not True
+                or value["execution_available"] is not True
+                or not isinstance(value["status"], str) or not value["status"]
+                or not isinstance(value["environment_fingerprint"], str)
+                or not value["environment_fingerprint"]
+                or not isinstance(value["verbs"], list) or not value["verbs"]
+                or any(not isinstance(item, str) or not item for item in value["verbs"])
+                or len(set(value["verbs"])) != len(value["verbs"])
+                or not isinstance(value["non_claims"], list)
+                or any(not isinstance(item, str) or not item for item in value["non_claims"])):
+            raise ValueError
+        host, game = value["host"], value["game"]
+        if not isinstance(host, dict) or set(host) != {
+            "id", "name", "version", "runtime_instance_id", "host_kind", "implementation",
+        }:
+            raise ValueError
+        implementation = host["implementation"]
+        if not isinstance(implementation, dict) or set(implementation) != {
+            "source_revision", "artifact_sha256", "module_version_id",
+        }:
+            raise ValueError
+        if not isinstance(game, dict) or set(game) != {
+            "version", "commit", "branch", "main_assembly_hash", "compatibility", "modset",
+        }:
+            raise ValueError
+        modset, compatibility, control = game["modset"], game["compatibility"], value["control"]
+        if (not isinstance(modset, dict) or set(modset) != {
+                "status", "fingerprint", "scope", "loaded_mod_ids", "detail",
+            }
+                or not isinstance(compatibility, dict) or set(compatibility) != {
+                    "status", "observation_allowed", "detail",
+                }
+                or compatibility["observation_allowed"] is not True
+                or not isinstance(control, dict) or set(control) != {"recommended_renewal_ms"}
+                or type(control["recommended_renewal_ms"]) is not int
+                or control["recommended_renewal_ms"] < 0
+                or not isinstance(value["evidence_profiles"], list)):
+            raise ValueError
+        evidence_keys = {
+            "id", "enabled", "supported_kinds", "snapshot_bound", "runtime_bound",
+            "default_in_consumer_flow", "creates_mutation_authority", "enters_action_ledger",
+        }
+        for profile in value["evidence_profiles"]:
+            if (not isinstance(profile, dict) or set(profile) != evidence_keys
+                    or not isinstance(profile["id"], str) or not profile["id"]
+                    or type(profile["enabled"]) is not bool
+                    or not isinstance(profile["supported_kinds"], list)
+                    or any(not isinstance(item, str) or not item
+                           for item in profile["supported_kinds"])
+                    or profile["snapshot_bound"] is not True
+                    or profile["runtime_bound"] is not True
+                    or profile["default_in_consumer_flow"] is not False
+                    or profile["creates_mutation_authority"] is not False
+                    or profile["enters_action_ledger"] is not False):
+                raise ValueError
+        strings = (
+            value["protocol_version"], host["host_kind"], host["version"],
+            implementation["source_revision"], implementation["artifact_sha256"],
+            implementation["module_version_id"], game["version"], game["commit"],
+            modset["status"], modset["fingerprint"],
+        )
+        if (not all(isinstance(item, str) and item for item in strings)
+                or host["host_kind"] not in {"live_ui", "headless", "replay", "test"}
+                or not re.fullmatch(r"[a-f0-9]{64}", implementation["artifact_sha256"])
+                or not isinstance(modset["loaded_mod_ids"], list)
+                or any(not isinstance(item, str) or not item
+                       for item in modset["loaded_mod_ids"])
+                or len(set(modset["loaded_mod_ids"])) != len(modset["loaded_mod_ids"])):
+            raise ValueError
+        action_verbs = sorted(set(value["verbs"]) & GENERIC_ACTION_VERBS & set(PUBLIC_VERBS))
+        if not action_verbs:
+            raise ValueError
+        environment = {
+            "host_kind": host["host_kind"], "connector_version": host["version"],
+            "connector_source_revision": implementation["source_revision"],
+            "connector_artifact_sha256": implementation["artifact_sha256"],
+            "connector_module_version_id": implementation["module_version_id"],
+            "modset_status": modset["status"], "modset_fingerprint": modset["fingerprint"],
+            "loaded_mod_ids": modset["loaded_mod_ids"],
+        }
+        requirements = {
+            "connector_protocol_version": value["protocol_version"], "environment": environment,
+            "reads": [], "whole_decision_admission": True,
+            "candidate_order_digest": "sha256-json-bound-action-id-order",
+            "score_count_matches_candidate_count": True, "selected_index": True,
+            "successor_required": True,
+        }
+        support = {
+            "game_versions": [game["version"]], "game_commits": [game["commit"]],
+            "interaction_kinds": sorted(GENERIC_INTERACTION_KINDS),
+            "action_verbs": action_verbs,
+        }
+        return requirements, support
+    except (KeyError, TypeError, ValueError) as error:
+        raise BoundaryError(
+            "local_model_registration", "generic_capabilities_incompatible",
         ) from error
 
 
@@ -277,6 +421,13 @@ def bind_text_menu_export(*args: Any, **kwargs: Any) -> Any:
     return bind(*args, **kwargs)
 
 
+def bind_public_m0_export(*args: Any, **kwargs: Any) -> Any:
+    """Load the M0 binding owner only for an explicit registration operation."""
+    from stpd.public_m0_policy_installation import bind_public_m0_export as bind
+
+    return bind(*args, **kwargs)
+
+
 class LocalModelRegistration:
     def __init__(self, config: ProjectConfig, export: LocalModelExport,
                  models: LocalModelService) -> None:
@@ -304,12 +455,17 @@ class LocalModelRegistration:
 
         stale = False
         memory = profile in {M2_PROFILE, V2_M2_PROFILE}
+        public_m0 = profile == PUBLIC_M0_PROFILE
         if memory:
             from stpd.memory_policy_installation import code_digest as memory_code_digest
             from stpd.memory_policy_installation import validate as validate_memory
+        if public_m0:
+            from stpd.public_m0_policy_installation import code_digest as public_code_digest
+            from stpd.public_m0_policy_installation import validate as validate_public_m0
 
-        current_code = (memory_code_digest(self.models.root) if memory
-                        else code_digest(self.models.root))
+        current_code = (memory_code_digest(self.models.root) if memory else
+                        public_code_digest(self.models.root) if public_m0 else
+                        code_digest(self.models.root))
         for entry in reversed(self._entries()):
             if entry.get("runtime_profile") != profile:
                 continue
@@ -325,7 +481,8 @@ class LocalModelRegistration:
                 if manifest.get("adapter", {}).get("code_sha256") != current_code:
                     stale = True
                     continue
-                validator = validate_memory if memory else validate
+                validator = (validate_memory if memory else
+                             validate_public_m0 if public_m0 else validate)
                 validator(self.models.root,
                           _inside(self.models.private_root, entry["config"]),
                           _inside(self.models.private_root, entry["manifest"]),
@@ -352,7 +509,15 @@ class LocalModelRegistration:
         operation = observed["operation"]
         memory = (operation.get("model_id") == identity
                   and operation.get("model_type") == "memory")
-        profile = M2_PROFILE if memory else PROFILE
+        public_m0 = (operation.get("model_id") == identity
+                     and operation.get("model_type") == "public_m0")
+        profile = (M2_PROFILE if memory else PUBLIC_M0_PROFILE if public_m0 else PROFILE)
+        if public_m0 and (
+            observed.get("schema") != "stpd/local-model-export-operation-v3"
+            or operation.get("profile") != PUBLIC_M0_PROFILE
+        ):
+            return _public(identity, "unavailable", reason_code="registration_metadata_invalid",
+                           profile=PUBLIC_M0_PROFILE)
         if observed.get("availability") == "workspace_changed":
             return _public(identity, "unavailable", reason_code="workspace_changed",
                            profile=profile)
@@ -365,6 +530,26 @@ class LocalModelRegistration:
             export = self.config.state_dir / "model-exports" / identity
             if memory:
                 profile = _export_memory_profile(export)
+            elif public_m0:
+                from spireagent.artifact_contracts import Manifest
+                from stpd.policy.token_decision import (
+                    PUBLIC_LIGHT_ACTION_M0_EXPORT_SCHEMA,
+                    PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA,
+                    check_light_action_m0_model,
+                )
+
+                envelope = _object_file(export / "model.json")
+                if (envelope.get("schema") != PUBLIC_LIGHT_ACTION_M0_EXPORT_SCHEMA
+                        or envelope.get("model_id") != identity):
+                    return _public(identity, "unavailable",
+                                   reason_code="public_m0_export_verification_required",
+                                   profile=PUBLIC_M0_PROFILE)
+                artifact = Manifest.from_bytes(json_bytes(envelope.get("model")), identity)
+                _, info = check_light_action_m0_model(artifact)
+                if info.get("schema") != PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA:
+                    return _public(identity, "unavailable",
+                                   reason_code="public_m0_export_verification_required",
+                                   profile=PUBLIC_M0_PROFILE)
             if not local_models_available():
                 return _public(identity, "unavailable",
                                reason_code="local_models_extra_required", profile=profile)
@@ -391,8 +576,7 @@ class LocalModelRegistration:
                 try:
                     node_modules = directory / "runtime" / "node_modules"
                     validate_runtime_install(node_modules, pin, self.models._connector_pin())
-                    sdk = (node_modules / RUNTIME_PACKAGE / "node_modules" /
-                           CONNECTOR_PACKAGE / "dist" / "index.js")
+                    sdk = _connector_sdk_path(node_modules, pin)
                     if environment_kind == "native" and not _v2_sdk_available(sdk):
                         return _public(identity, "unavailable",
                                        reason_code="v2_runtime_contract_unavailable",
@@ -408,9 +592,12 @@ class LocalModelRegistration:
 
     def _capabilities(self, sdk: Path, *, deadline: float,
                       input_profile: str = PROFILE) -> dict[str, Any]:
+        unavailable = ("generic_capabilities_unavailable"
+                       if input_profile == PUBLIC_M0_PROFILE
+                       else "text_menu_capabilities_unavailable")
         node = shutil.which("node")
         if node is None:
-            raise BoundaryError("local_model_registration", "text_menu_capabilities_unavailable")
+            raise BoundaryError("local_model_registration", unavailable)
         endpoint = _loopback(self.config.platform_url or "http://127.0.0.1:15526")
         environment = {key: value for key, value in os.environ.items() if key in
                        {"PATH", "SYSTEMROOT", "SystemRoot", "TMPDIR", "TEMP", "TMP"}}
@@ -429,8 +616,7 @@ class LocalModelRegistration:
             return value
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             _remaining(deadline)
-            raise BoundaryError("local_model_registration",
-                                "text_menu_capabilities_unavailable") from error
+            raise BoundaryError("local_model_registration", unavailable) from error
 
     def _context_available(self, sdk: Path, *, deadline: float,
                            input_profile: str = PROFILE) -> None:
@@ -498,16 +684,31 @@ class LocalModelRegistration:
     def _register(self, model_id: object, *, environment_kind: str) -> dict[str, Any]:
         identity = digest(model_id, "local_model_registration.model_id")
 
-        deadline = monotonic() + REGISTRATION_SECONDS
+        deadline = monotonic() + EXPORT_VERIFICATION_SECONDS
         # Weight/scorer verification and current-store binding are explicit POST work.
         observed = self.export.status()
         operation = observed["operation"]
         memory = (observed.get("schema") == "stpd/local-model-export-operation-v2"
                   and operation.get("model_id") == identity
                   and operation.get("model_type") == "memory")
+        public_m0 = (observed.get("schema") == "stpd/local-model-export-operation-v3"
+                     and operation.get("model_id") == identity
+                     and operation.get("model_type") == "public_m0"
+                     and operation.get("profile") == PUBLIC_M0_PROFILE)
+        if operation.get("model_type") == "public_m0" and not public_m0:
+            raise BoundaryError("local_model_registration",
+                                "public_m0_export_verification_required")
         require_local_models("local_model_registration")
-        export = (self.export.verified_memory_for_registration(identity, deadline=deadline)
-                  if memory else self.export.verified_for_registration(identity))
+        if memory:
+            export = self.export.verified_memory_for_registration(identity, deadline=deadline)
+        elif public_m0:
+            verify_public = getattr(self.export, "verified_public_m0_for_registration", None)
+            if verify_public is None:
+                raise BoundaryError("local_model_registration",
+                                    "public_m0_export_verification_required")
+            export = verify_public(identity, deadline=deadline)
+        else:
+            export = self.export.verified_for_registration(identity)
         _remaining(deadline)
         if memory:
             # The isolated verification child has checked exact model/run lineage
@@ -517,6 +718,26 @@ class LocalModelRegistration:
             if recipe not in MEMORY_RECIPE_LABELS:
                 raise BoundaryError("local_model_registration", "unsupported_model_recipe")
             profile = V2_M2_PROFILE if recipe in V2_MEMORY_RECIPES else M2_PROFILE
+        elif public_m0:
+            from stpd.models.stage1a import recipe_for
+            from stpd.policy.token_decision import (
+                PUBLIC_LIGHT_ACTION_M0_EXPORT_SCHEMA,
+                PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA,
+                check_light_action_m0_model,
+            )
+
+            profile = PUBLIC_M0_PROFILE
+            envelope = _object_file(export / "model.json")
+            if (envelope.get("schema") != PUBLIC_LIGHT_ACTION_M0_EXPORT_SCHEMA
+                    or envelope.get("model_id") != identity):
+                raise BoundaryError("local_model_registration",
+                                    "public_m0_export_verification_required")
+            artifact = Manifest.from_bytes(json_bytes(envelope.get("model")), identity)
+            m0_config, info = check_light_action_m0_model(artifact)
+            recipe = m0_config.recipe
+            if (info.get("schema") != PUBLIC_LIGHT_ACTION_M0_MODEL_SCHEMA
+                    or recipe_for(recipe).graph != "dsimple.light-action.m0.v1"):
+                raise BoundaryError("local_model_registration", "unsupported_public_m0_model")
         else:
             from stpd.policy.token_decision import check_model
 
@@ -528,37 +749,46 @@ class LocalModelRegistration:
             recipe = check_model(artifact)[0].recipe
             if recipe not in RECIPE_LABELS:
                 raise BoundaryError("local_model_registration", "unsupported_model_recipe")
+        _remaining(deadline)
+        # Only a fully verified export reaches the bounded Runtime/registration phase.
+        deadline = monotonic() + REGISTRATION_SECONDS
         managed = environment_kind == "managed"
         if managed and (not memory or input_profile_for_recipe(recipe)
                         != "text-menu-v2-confirmed-interaction"):
             raise BoundaryError("local_model_registration",
                                 "managed_requires_confirmed_interaction_model")
-        try:
-            directory, pin = self.models.text_runtime_profile(profile)
-        except BoundaryError as error:
-            if error.code == "text_runtime_profile_required":
-                raise BoundaryError("local_model_registration",
-                                    "text_runtime_profile_required") from error
-            raise
+        if profile == PUBLIC_M0_PROFILE:
+            directory, pin = self.models.directory, self.models.registry()["runtime_package"]
+            if not isinstance(pin, dict) or pin.get("package") != RUNTIME_PACKAGE:
+                raise BoundaryError("local_model_registration", "runtime_package_not_pinned")
+        else:
+            try:
+                directory, pin = self.models.text_runtime_profile(profile)
+            except BoundaryError as error:
+                if error.code == "text_runtime_profile_required":
+                    raise BoundaryError("local_model_registration",
+                                        "text_runtime_profile_required") from error
+                raise
         try:
             node_modules = directory / "runtime" / "node_modules"
             validate_runtime_install(node_modules, pin, self.models._connector_pin())
         except (BoundaryError, OSError, PackageIdentityError, ValueError) as error:
             _remaining(deadline)
-            raise BoundaryError("local_model_registration",
-                                "text_runtime_local_install_required") from error
-        sdk = (node_modules / RUNTIME_PACKAGE / "node_modules" / CONNECTOR_PACKAGE
-               / "dist" / "index.js")
+            code = ("runtime_package_not_pinned" if profile == PUBLIC_M0_PROFILE
+                    else "text_runtime_local_install_required")
+            raise BoundaryError("local_model_registration", code) from error
+        sdk = _connector_sdk_path(node_modules, pin)
         if not managed and profile == V2_M2_PROFILE and not _v2_sdk_available(sdk):
             raise BoundaryError("local_model_registration", "v2_runtime_contract_unavailable")
         _remaining(deadline)
-        input_profile = "text-menu-v2" if profile == V2_M2_PROFILE else PROFILE
+        input_profile = ("text-menu-v2" if profile == V2_M2_PROFILE else
+                         PUBLIC_M0_PROFILE if profile == PUBLIC_M0_PROFILE else PROFILE)
         if managed:
             requirements, support = _managed_requirements(self.models._managed_runtime_target())
         else:
             capabilities = (self._capabilities(sdk, deadline=deadline,
                                                input_profile=input_profile)
-                            if profile == V2_M2_PROFILE else
+                            if profile in {V2_M2_PROFILE, PUBLIC_M0_PROFILE} else
                             self._capabilities(sdk, deadline=deadline))
             requirements, support = _requirements(capabilities,
                                                   input_profile=input_profile)
@@ -596,13 +826,16 @@ class LocalModelRegistration:
                         )
                 else:
                     folder.mkdir(mode=0o700)
-                selection = ("local-text-m2-" if memory else "local-text-b-") + uuid.uuid4().hex
+                selection = ("local-text-m2-" if memory else
+                             "local-public-m0-" if public_m0 else
+                             "local-text-b-") + uuid.uuid4().hex
                 target = folder / selection
                 target.mkdir(mode=0o700)
                 config_path, manifest_path = target / "config.json", target / "manifest.json"
                 try:
                     binder = (bind_managed_memory_export if managed else
-                              bind_memory_export if memory else bind_text_menu_export)
+                              bind_memory_export if memory else
+                              bind_public_m0_export if public_m0 else bind_text_menu_export)
                     binding: dict[str, Any] = {"manifest_id": selection,
                                "policy": {"id": selection, "version": "1.0.0",
                                           "provider": "stpd", "architecture": recipe},
@@ -616,12 +849,14 @@ class LocalModelRegistration:
                         self._m2_runtime_manifest_compatible(node_modules, manifest_path,
                                                              deadline=deadline)
                     entries = self._entries()
-                    label = (MEMORY_RECIPE_LABELS[recipe] if memory
-                             else RECIPE_LABELS[recipe])
+                    label = (MEMORY_RECIPE_LABELS[recipe] if memory else
+                             "D-Simple public M0" if public_m0 else RECIPE_LABELS[recipe])
                     entry = {"id": selection,
-                             "label": ("独立游戏环境 " if managed else "本机文字菜单 ")
+                             "label": ("独立游戏环境 " if managed else
+                                       "本机公开快照 " if public_m0 else "本机文字菜单 ")
                                       + label + " " + identity[:8],
-                             "adapter": "stpd-m2-decision-adapter" if memory else "token-v1",
+                             "adapter": ("stpd-m2-decision-adapter" if memory else
+                                         PUBLIC_M0_ADAPTER if public_m0 else "token-v1"),
                              "runtime_profile": profile,
                              "manifest": manifest_path.relative_to(
                                  self.models.private_root).as_posix(),

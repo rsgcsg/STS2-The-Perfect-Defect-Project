@@ -16,17 +16,25 @@ from test_text_menu_data import row, snapshot
 
 from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
+from stpd.canonical import semantic_hash
 from stpd.fullrun.light_action_inputs import load_light_action_inputs, publish_light_action_inputs
 from stpd.fullrun.text_menu_data import publish_text_menu_bc_view, publish_text_menu_source
 from stpd.fullrun.text_menu_inputs import project_text_menu_snapshot
 from stpd.light_action_codec import SPEC_BYTES
+from stpd.models.stage1a import recipe_for
 from stpd.policy.token_decision import (
     LIGHT_ACTION_M0_EXPORT_SCHEMA,
     LIGHT_ACTION_M0_FILES,
     LightActionM0DecisionScorer,
+    _m0_runtime_backbone_matches,
     export_light_action_m0_model,
+    light_action_m0_runtime_config,
 )
-from stpd.workers.token_ranking import LightActionM0Config, TokenRankingEngine
+from stpd.workers.token_ranking import (
+    LightActionM0Config,
+    TokenRankingEngine,
+    config_payload,
+)
 from stpd.workers.token_worker import execute_tokens, prepare_token_run
 
 
@@ -87,6 +95,8 @@ def test_m0_scratch_train_resume_dev_export_and_fresh_process_score(tmp_path):
         engine = TokenRankingEngine(inputs, LightActionM0Config(steps=2))
         engine.restore(b"".join(archive.read_payload(checkpoint.payload("checkpoint"))))
         standalone = LightActionM0DecisionScorer(destination)
+        assert standalone.runtime_device == "cpu"
+        assert standalone.config.device == "cpu"
         for index, sample in enumerate(inputs.samples):
             assert standalone.score_texts(sample.state_text, sample.action_texts) == pytest.approx(
                 engine.scores(index), rel=0, abs=0,
@@ -122,6 +132,64 @@ print(json.dumps({'model_id': scorer.artifact.artifact_id,
     )
     fresh = json.loads(output.strip().splitlines()[-1])
     assert fresh == {"model_id": model_id, "scores": scores}
+
+
+def test_m0_runtime_device_is_separate_from_training_identity():
+    training = LightActionM0Config(device="cuda")
+    runtime = light_action_m0_runtime_config(training)
+    assert training.device == config_payload(training)["device"] == "cuda"
+    assert runtime.device == "cpu"
+    with pytest.raises(BoundaryError, match="unsupported_runtime_device"):
+        light_action_m0_runtime_config(training, "tpu")
+    with pytest.raises(BoundaryError, match="cuda_scratch_m0_only"):
+        light_action_m0_runtime_config(
+            LightActionM0Config(
+                recipe="stage1a.dsimple.light-action.m0.pf.v1", device="cpu",
+            ),
+            "cuda",
+        )
+
+
+def test_m0_pf_runtime_identity_normalizes_only_the_recorded_training_device():
+    training_config = LightActionM0Config(
+        recipe="stage1a.dsimple.light-action.m0.pf.v1", device="mps",
+    )
+    recipe = recipe_for(training_config.recipe)
+    state_codec = {"family": "pinned-qwen3", "sha256": "a" * 64}
+
+    def backbone(device: str, *, weights_sha256: str = "b" * 64) -> dict:
+        identity = {
+            "kind": "pf",
+            "qwen": {"device": device, "weights_sha256": weights_sha256},
+            "state_codec": state_codec,
+        }
+        identity["core_fingerprint"] = semantic_hash({
+            "core": identity,
+            "graph": recipe.graph,
+            "vocabulary_size": 128,
+            "max_state_tokens": training_config.max_state_tokens,
+        })
+        return identity
+
+    runtime = backbone("cpu")
+    training = backbone("mps")
+    assert _m0_runtime_backbone_matches(runtime, training, training_config, 128)
+    assert not _m0_runtime_backbone_matches(
+        runtime, backbone("cpu"), training_config, 128,
+    )
+    forged_runtime_fingerprint = backbone("cpu")
+    forged_runtime_fingerprint["core_fingerprint"] = "0" * 64
+    assert not _m0_runtime_backbone_matches(
+        forged_runtime_fingerprint, training, training_config, 128,
+    )
+    forged_training_fingerprint = backbone("mps")
+    forged_training_fingerprint["core_fingerprint"] = "0" * 64
+    assert not _m0_runtime_backbone_matches(
+        training, forged_training_fingerprint, training_config, 128,
+    )
+    assert not _m0_runtime_backbone_matches(
+        backbone("cpu", weights_sha256="c" * 64), training, training_config, 128,
+    )
 
 
 def test_m0_standalone_scorer_rejects_action_overflow_and_tampered_codec(tmp_path):
@@ -191,7 +259,7 @@ def test_m0_qwen_backbone_exports_and_scores_from_pinned_tiny_fixture(
 
     def backend_factory(_snapshot, *, device):
         assert device == "cpu"
-        return _tiny_backend(inputs.state_tokenizer.get_vocab_size())
+        return _tiny_backend(inputs.state_tokenizer.get_vocab_size(), device=device)
 
     monkeypatch.setattr("stpd.workers.token_ranking.PortableQwenBackend", backend_factory)
     monkeypatch.setattr("stpd.qwen.readout_backend.validate_engineering_identity", lambda _id: None)
