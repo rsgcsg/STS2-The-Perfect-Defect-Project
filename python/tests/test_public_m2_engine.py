@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
 import pytest
 import torch
@@ -113,6 +114,44 @@ def test_preflight_rejects_partial_input_and_restore_poison() -> None:
     mismatch = _engine(source_digest="c" * 64)
     with pytest.raises(BoundaryError):
         mismatch.restore(engine.checkpoint())
+
+
+def test_restore_rejects_typed_but_invalid_adam_step_and_poison() -> None:
+    torch.set_num_threads(1)
+    producer = _engine()
+    producer.advance_window()
+    value = decode_checkpoint(producer.checkpoint())
+    first = next(iter(value["optimizer"]["state"]))
+    value["optimizer"]["state"][first]["step"] = torch.tensor(1, dtype=torch.int64)
+    value["optimizer_digest"] = engine_module._optimizer_digest(
+        value["optimizer"], producer.parameter_names,
+    )
+    victim = _engine()
+    with pytest.raises(BoundaryError):
+        victim.restore(encode_checkpoint(value))
+    with pytest.raises(BoundaryError):
+        victim.advance_window()
+
+
+def test_gpu_tagged_training_export_loads_for_cpu_inference() -> None:
+    """Contract-only fixture: a CUDA header here is not a CUDA training claim."""
+    torch.set_num_threads(1)
+    engine = _engine()
+    while not engine.finished:
+        engine.advance_window()
+    value = decode_checkpoint(engine.export_weights())
+    value["config"]["device"] = "cuda:0"
+    config = replace(engine.config, device="cuda:0")
+    loaded = load_public_m2_weights(
+        encode_checkpoint(value), config, input_digest=engine.input_digest,
+        completed_epochs=1,
+    )
+    assert loaded.write_queries.device.type == "cpu"
+    with pytest.raises(BoundaryError):
+        load_public_m2_weights(
+            encode_checkpoint(value), config, input_digest=engine.input_digest,
+            completed_epochs=1, inference_device="unavailable",
+        )
 
 
 def test_long_chain_has_no_legacy_64_step_reset_or_truncation() -> None:
