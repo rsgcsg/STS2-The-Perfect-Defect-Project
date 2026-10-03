@@ -284,6 +284,28 @@ class LocalCurationOwner:
         return False
 
     def gold_history_unknown(self, db: sqlite3.Connection, runs: Iterable[str]) -> bool:
+        # A member archive has prior use outside this local owner's ledger. Its source
+        # metadata preserves that boundary even after pending/indexing is complete,
+        # for both fresh owners and member sources imported by earlier code.
+        runs = set(runs)
+        selected_runs = tuple(runs)
+        sources: set[str] = set()
+        for offset in range(0, len(selected_runs), 256):
+            batch = selected_runs[offset:offset + 256]
+            placeholders = ",".join("?" for _ in batch)
+            sources.update(row[0] for row in db.execute(
+                "SELECT DISTINCT source FROM curation_source_runs WHERE run IN ("
+                + placeholders + ")", batch))
+        if sources:
+            store = ManifestArtifactStore(LocalBlobStore(
+                self.store_dir, create=False, readonly=True))
+            for source in sources:
+                manifest = store.get_manifest(source)
+                parameters = manifest.parameters.value()
+                if (manifest.kind == "evidence"
+                        and parameters.get("schema") == "stpd/local-verified-bundle-v1"
+                        and parameters.get("source_kind") == "member_collection_archive"):
+                    return True
         if not self.legacy_guard:
             return False
         if db.execute("SELECT 1 FROM local_legacy_unknown_runs WHERE run='*'").fetchone():

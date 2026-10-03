@@ -107,11 +107,14 @@ read-only catalog projects only collection archive payloads from a saved verifie
 receipt; artifact files and other downloads are not import candidates. The page receives the
 archive label, size, and export/file/source IDs, never saved paths or archive bytes, and does
 not fetch the Hub inventory again. The singular selection requires a fresh Human-origin
-checkbox. Import rechecks the saved inventory and selected file size/hash through the same
-persistent local importer. If Workbench restarts during a pending import, refresh reports the
-operation as unknown and never retries it. A completed import is a locally verified evidence
+checkbox. Import rechecks the verified download receipt, exact inventory totals, and selected
+file size/hash through the same persistent local importer. If Workbench restarts during a
+pending import, refresh reports the operation as unknown and never retries it. A completed
+import is a locally verified evidence
 artifact; source/use indexing and sample preview remain separate explicit steps, and no
-training admission is inferred.
+training admission is inferred. The saved receipt records local download completion and does
+not prove cryptographic Hub provenance. A member archive's pre-download use remains unknown
+after local indexing, including in a fresh local workspace; it cannot receive a Gold claim.
 
 Selecting that exact local-verified evidence artifact exposes an explicit **预览样本** command.
 The local browser POST starts one bounded background read of the selected store; GET only reads
