@@ -111,6 +111,8 @@ class PublicM2ModalResources:
     gpu: str
     cpu: float
     memory_mib: int
+    cpu_limit: float
+    memory_limit_mib: int
     deadline_seconds: int
     startup_timeout_seconds: int
     scaledown_seconds: int = 30
@@ -127,6 +129,15 @@ class PublicM2ModalResources:
             raise BoundaryError("public_m2_modal", "explicit_cpu_required")
         if type(self.memory_mib) is not int or not 128 <= self.memory_mib <= 262_144:
             raise BoundaryError("public_m2_modal", "explicit_memory_required")
+        if (isinstance(self.cpu_limit, bool)
+                or not isinstance(self.cpu_limit, (float, int))
+                or not math.isfinite(self.cpu_limit)
+                or not self.cpu <= self.cpu_limit <= 64
+                or self.cpu_limit * 1000 != int(self.cpu_limit * 1000)):
+            raise BoundaryError("public_m2_modal", "explicit_cpu_limit_required")
+        if (type(self.memory_limit_mib) is not int
+                or not self.memory_mib <= self.memory_limit_mib <= 262_144):
+            raise BoundaryError("public_m2_modal", "explicit_memory_limit_required")
         if (type(self.deadline_seconds) is not int
                 or not 1 <= self.deadline_seconds <= 86_400
                 or type(self.startup_timeout_seconds) is not int
@@ -142,6 +153,7 @@ class PublicM2ModalResources:
     def to_dict(self) -> dict[str, Any]:
         return {
             "gpu": self.gpu, "cpu": self.cpu, "memory_mib": self.memory_mib,
+            "cpu_limit": self.cpu_limit, "memory_limit_mib": self.memory_limit_mib,
             "deadline_seconds": self.deadline_seconds,
             "startup_timeout_seconds": self.startup_timeout_seconds,
             "scaledown_seconds": self.scaledown_seconds,
@@ -368,7 +380,9 @@ class ModalPublicM2Provider:
                 or resources.gpu_config.gpu_type != gpu_name
                 or resources.gpu_config.count != gpu_count
                 or resources.milli_cpu != int(plan.cpu * 1000)
+                or resources.milli_cpu_max != int(plan.cpu_limit * 1000)
                 or resources.memory_mb != plan.memory_mib
+                or resources.memory_mb_max != plan.memory_limit_mib
                 or response.function.timeout_secs != plan.deadline_seconds
                 or definition.startup_timeout_secs != plan.startup_timeout_seconds
                 or not definition.single_use_containers

@@ -42,7 +42,7 @@ def _runtime() -> dict[str, Any]:
 
 def _env(monkeypatch: pytest.MonkeyPatch) -> tuple[bytes, PublicM2ModalResources]:
     request = b"opaque-remote-request"
-    plan = PublicM2ModalResources("L4", 2.0, 8192, 900, 120)
+    plan = PublicM2ModalResources("L4", 2.0, 8192, 4.0, 12288, 900, 120)
     receipt = json_bytes(_runtime())
     producer = Producer("repo", "b" * 40, "c" * 64)
     values = {
@@ -99,8 +99,8 @@ def test_entry_declares_explicit_resources_and_uses_locked_venv(
     options = observed["function_options"]
     assert observed["app_name"] == "stpd-public-m2-" + "d" * 32
     assert observed["image_id"] == "im-one"
-    assert options["gpu"] == "L4" and options["cpu"] == 2.0
-    assert options["memory"] == 8192 and options["timeout"] == 900
+    assert options["gpu"] == "L4" and options["cpu"] == (2.0, 4.0)
+    assert options["memory"] == (8192, 12288) and options["timeout"] == 900
     assert options["startup_timeout"] == 120
     assert options["scaledown_window"] == plan.scaledown_seconds
     assert options["retries"] == 0 and options["max_containers"] == 1

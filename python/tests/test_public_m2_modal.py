@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from spireagent.artifact_contracts import Producer
-from spireagent.json_boundary import BoundaryError
+from spireagent.json_boundary import BoundaryError, json_bytes
 from stpd.cloud_jobs import public_m2_modal
 from stpd.cloud_jobs.public_m2_modal import (
     ModalPublicM2Provider,
@@ -79,6 +79,8 @@ class _FakeSdk:
         self.target = target
         self.image_id = target.binding.image_object_id
         self.gpu = target.binding.resources.gpu
+        self.cpu_max = int(target.binding.resources.cpu_limit * 1000)
+        self.memory_max = target.binding.resources.memory_limit_mib
         self.app_id = target.app_id
         self.function_id = target.function_id
         self.saved_app_id = target.app_id
@@ -140,7 +142,8 @@ class _FakeSdk:
             function_name=self.target.function_name, image_id=self.image_id,
             resources=_Proto(
                 gpu_config=_Proto(gpu_type=self.gpu, count=1),
-                milli_cpu=int(plan.cpu * 1000), memory_mb=plan.memory_mib),
+                milli_cpu=int(plan.cpu * 1000), milli_cpu_max=self.cpu_max,
+                memory_mb=plan.memory_mib, memory_mb_max=self.memory_max),
             startup_timeout_secs=plan.startup_timeout_seconds,
             retry_policy=_Proto(retries=0),
             single_use_containers=self.single_use_containers,
@@ -183,7 +186,7 @@ class _FakeSdk:
 
 def _setup() -> tuple[ModalPublicM2Provider, _FakeSdk, bytes]:
     raw = b"opaque-canonical-remote-request"
-    resources = PublicM2ModalResources("L4", 2.0, 8192, 900, 120)
+    resources = PublicM2ModalResources("L4", 2.0, 8192, 4.0, 12288, 900, 120)
     binding = PublicM2ModalBinding(
         Producer("repo", "a" * 40, "b" * 64), hashlib.sha256(raw).hexdigest(),
         "im-exact", "c" * 64, resources,
@@ -214,6 +217,26 @@ def test_submit_poll_opaque_bytes_and_durable_handle() -> None:
     assert sdk.spawn_calls == 1
 
 
+def test_locked_sdk_scalar_request_and_tuple_limits_are_distinct() -> None:
+    resources_module = pytest.importorskip("modal._resources")
+    convert = resources_module.convert_fn_config_to_resources_config
+    scalar = convert(cpu=2.0, memory=8192, gpu="L4")
+    bounded = convert(cpu=(2.0, 4.0), memory=(8192, 12288), gpu="L4")
+    assert (scalar.milli_cpu, scalar.milli_cpu_max,
+            scalar.memory_mb, scalar.memory_mb_max) == (2000, 0, 8192, 0)
+    assert (bounded.milli_cpu, bounded.milli_cpu_max,
+            bounded.memory_mb, bounded.memory_mb_max) == (2000, 4000, 8192, 12288)
+
+
+def test_old_request_only_resource_wire_is_rejected() -> None:
+    provider, _, _ = _setup()
+    old = provider.expected.resources.to_dict()
+    old.pop("cpu_limit")
+    old.pop("memory_limit_mib")
+    with pytest.raises(BoundaryError, match="missing_or_unknown_fields"):
+        PublicM2ModalResources.from_bytes(json_bytes(old))
+
+
 def test_controller_pins_and_request_hash_are_checked_before_spawn() -> None:
     provider, sdk, raw = _setup()
     with pytest.raises(BoundaryError) as error:
@@ -235,6 +258,8 @@ def test_controller_pins_and_request_hash_are_checked_before_spawn() -> None:
     ("function_id", "deployment_identity_mismatch"),
     ("image_id", "deployment_resource_mismatch"),
     ("gpu", "deployment_resource_mismatch"),
+    ("cpu_max", "deployment_resource_mismatch"),
+    ("memory_max", "deployment_resource_mismatch"),
     ("previous_app_id", "deployment_identity_mismatch"),
     ("single_use_containers", "deployment_resource_mismatch"),
     ("max_inputs", "deployment_resource_mismatch"),
@@ -245,6 +270,7 @@ def test_live_deployment_drift_blocks_spawn(drift: str, code: str) -> None:
     bad: object = {
         "image_id": "im-other", "single_use_containers": False,
         "max_inputs": 2, "max_concurrent_inputs": 2,
+        "cpu_max": 0, "memory_max": 0,
     }.get(drift, "drift")
     setattr(sdk, drift, bad)
     with pytest.raises(BoundaryError) as error:
@@ -329,3 +355,9 @@ def test_foreign_handle_and_invalid_resources_rejected() -> None:
     with pytest.raises(BoundaryError) as error:
         replace(provider.expected.resources, max_containers=2)
     assert _code(error) == "one_container_required"
+    with pytest.raises(BoundaryError) as error:
+        replace(provider.expected.resources, cpu_limit=1.0)
+    assert _code(error) == "explicit_cpu_limit_required"
+    with pytest.raises(BoundaryError) as error:
+        replace(provider.expected.resources, memory_limit_mib=4096)
+    assert _code(error) == "explicit_memory_limit_required"
