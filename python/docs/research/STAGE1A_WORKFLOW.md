@@ -18,6 +18,16 @@ input ID. `--backbone pf --snapshot SNAPSHOT` uses the pinned Qwen tokenizer; bo
 share its second input ID. Both paths preserve every decision/candidate and reject overflow.
 The source allocation, serializer and train/dev members remain identical across the four.
 
+Light-action M0 rows retain canonical NDJSON and legacy input manifests when the
+stored payload fits 256 MiB. Larger logical row streams use the versioned
+`rows_storage` descriptor and `application/vnd.stpd.light-action-input-rows+zlib`
+payload, bounded at 256 MiB stored / 1 GiB logical. The descriptor and frame bind
+original logical length and SHA256; artifact identity separately binds stored
+bytes. Writing spools rows and loading compares bounded decompression against
+complete source recompilation, including the original train-only BPE check.
+No decisions, candidates or tokens are dropped. Existing schemas/readers remain
+compatible for legacy bytes; compressed artifacts require the updated loader.
+
 ## Bounded training and recovery
 
 For the first scratch D-Simple engineering run:

@@ -188,3 +188,48 @@ def test_stream_comparison_retains_exact_canonical_bytes() -> None:
             codec.require_equal_rows(altered, (b"abcdef",))
     assert codec.MAX_STORED_BYTES == 256 * 1024 * 1024
     assert codec.MAX_LOGICAL_BYTES == 1024 * 1024 * 1024
+
+
+@pytest.mark.parametrize("family", ["public", "canonical"])
+def test_compressed_rows_preserve_owner_bound_public_and_canonical_inputs(
+    tmp_path, monkeypatch, family,
+) -> None:
+    from contextlib import contextmanager
+
+    from stpd.fullrun import light_action_inputs
+
+    prepare = codec.prepare_rows
+
+    @contextmanager
+    def compressed_rows(chunks):
+        raw = b"".join(chunks)  # Small synthetic fixture only.
+        threshold = (len(raw) + len(_frame(raw))) // 2
+        with monkeypatch.context() as context:
+            context.setattr(codec, "MAX_STORED_BYTES", threshold)
+            with prepare((raw,)) as result:
+                yield result
+
+    monkeypatch.setattr(light_action_inputs, "prepare_rows", compressed_rows)
+    if family == "public":
+        from test_local_m0_remote import _case
+
+        case = _case(tmp_path, monkeypatch, steps=1)
+        torch, threads, _service, store, _owner, _producer, run, *_rest = case
+        identity = run.parent("training_input")
+    else:
+        from test_token_remote_update import _canonical_run
+
+        case = _canonical_run(tmp_path, monkeypatch)
+        torch, threads, store, _owner, _operation, _producer, inputs, *_rest = case
+        identity = inputs.manifest.artifact_id
+    try:
+        loaded = light_action_inputs.load_light_action_inputs(store, identity)
+        info = loaded.manifest.parameters.value()
+        assert info["rows_storage"]["schema"] == codec.STORAGE_SCHEMA
+        assert info["schema"] == (light_action_inputs.PUBLIC_SCHEMA if family == "public"
+                                  else light_action_inputs.CANONICAL_SCHEMA)
+        assert info["training_binding"]["training_operation_id"]
+        assert {sample.split for sample in loaded.samples} == {"train", "dev"}
+        assert len(loaded.rows) == len(loaded.samples)
+    finally:
+        torch.set_num_threads(threads)

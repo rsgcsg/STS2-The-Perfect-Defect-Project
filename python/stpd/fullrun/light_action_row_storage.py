@@ -13,9 +13,10 @@ import tempfile
 import zlib
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from typing import Any, BinaryIO
+from typing import Any
 
 from spireagent.json_boundary import BoundaryError, digest, object_fields
+from spireagent.storage.store import BinarySource
 
 MAX_STORED_BYTES = 256 * 1024 * 1024
 MAX_LOGICAL_BYTES = 1024 * 1024 * 1024
@@ -41,7 +42,7 @@ def storage_identity(value: object) -> dict[str, Any]:
 @contextmanager
 def prepare_rows(
     chunks: Iterable[bytes],
-) -> Iterator[tuple[BinaryIO, dict[str, Any] | None, str]]:
+) -> Iterator[tuple[BinarySource, dict[str, Any] | None, str]]:
     """Spool canonical bytes, preserving legacy storage unless compression is needed."""
     with tempfile.SpooledTemporaryFile(max_size=8 * STREAM_BYTES, mode="w+b") as logical:
         whole = hashlib.sha256()
