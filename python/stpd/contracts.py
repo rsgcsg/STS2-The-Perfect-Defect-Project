@@ -190,7 +190,8 @@ class QwenIdentity:
 class PlayerEnvironmentPort(Protocol):
     """Strategy-free public Player Environment consumed by STPD."""
 
-    ready: Mapping[str, Any]
+    @property
+    def ready(self) -> Mapping[str, Any]: ...
 
     def reset(self, seed: str) -> Mapping[str, Any]: ...
 

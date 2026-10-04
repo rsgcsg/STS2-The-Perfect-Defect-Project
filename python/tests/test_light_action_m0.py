@@ -38,13 +38,17 @@ from stpd.models.token_core import ScratchShape, ScratchTokenCore
 from stpd.qwen.portable_backend import PortableQwenBackend
 from stpd.qwen.readout_backend import FrozenQwenTokenCore, LoRAQwenTokenCore
 from stpd.stage1a_recipes import LIGHT_ACTION_M0_GRAPH, RECIPES, recipe_for
+from stpd.workers.checkpoint_codec import decode_checkpoint
 from stpd.workers.token_ranking import (
     CHECKPOINT_SCHEMA,
     LIGHT_ACTION_M0_CHECKPOINT_SCHEMA,
     LightActionM0Config,
     TokenRankingEngine,
+    config_payload,
+    construct_model,
     model_weights,
     restore_weights,
+    seeded_step,
 )
 from stpd.workers.token_worker import (
     LIGHT_ACTION_M0_MODEL_SCHEMA,
@@ -61,6 +65,86 @@ def _inputs(tmp_path):
     view = publish_text_menu_bc_view(archive, source.artifact_id, PRODUCER)
     item = publish_light_action_inputs(archive, view.artifact_id, "s", PRODUCER)
     return archive, view, load_light_action_inputs(archive, item.artifact_id)
+
+
+def test_m0_cuda_config_has_separate_identity_and_rejects_qwen():
+    cpu = LightActionM0Config(steps=1)
+    cuda = replace(cpu, device="cuda")
+    assert config_payload(cuda) != config_payload(cpu)
+    with pytest.raises(BoundaryError, match="cuda_scratch_m0_only"):
+        LightActionM0Config(
+            recipe="stage1a.dsimple.light-action.m0.pf.v1", device="cuda",
+        )
+
+
+def test_m0_cuda_is_explicitly_unavailable_without_fallback(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(BoundaryError, match="cuda_unavailable_no_fallback"):
+        construct_model(LightActionM0Config(device="cuda"), vocab_size=258)
+
+
+def test_seeded_cuda_step_restores_mocked_all_device_rng(monkeypatch):
+    original = [torch.tensor([3, 5, 8], dtype=torch.uint8)]
+    seeded = []
+    restored = []
+    monkeypatch.setattr(torch.cuda, "get_rng_state_all", lambda: [value.clone()
+                                                                    for value in original])
+    monkeypatch.setattr(torch.cuda, "manual_seed_all", seeded.append)
+    monkeypatch.setattr(torch.cuda, "set_rng_state_all", lambda states: restored.extend(states))
+    cpu_before = torch.get_rng_state()
+    base_seed = 41
+    for completed_steps in range(2):
+        with seeded_step(base_seed + completed_steps, "cuda"):
+            assert seeded[-1] == base_seed + completed_steps
+    assert torch.equal(torch.get_rng_state(), cpu_before)
+    assert seeded == [41, 42]
+    assert len(restored) == 2 and all(torch.equal(value, original[0]) for value in restored)
+
+
+def test_cuda_checkpoint_restore_does_not_touch_caller_rng(monkeypatch):
+    rng_calls = []
+
+    def unexpected_cuda_rng_access(*_args, **_kwargs):
+        rng_calls.append("touched")
+        raise AssertionError("checkpoint must not read or replace caller CUDA RNG")
+
+    monkeypatch.setattr(torch.cuda, "get_rng_state_all", unexpected_cuda_rng_access)
+    monkeypatch.setattr(torch.cuda, "set_rng_state_all", unexpected_cuda_rng_access)
+    monkeypatch.setattr("stpd.workers.token_ranking.restore_weights", lambda *args, **kwargs: None)
+
+    class Optimizer:
+        def state_dict(self):
+            return {"state": {}, "param_groups": []}
+
+        def load_state_dict(self, _state):
+            return None
+
+    engine = object.__new__(TokenRankingEngine)
+    engine.config = LightActionM0Config(device="cuda", steps=1)
+    engine.score_device = engine.config.device
+    engine.read_only_diagnostic = False
+    engine.is_light_action_m0 = True
+    engine.data_identity = "synthetic-identity"
+    engine.step = 0
+    engine.model = object()
+    engine.frozen = False
+    engine.adapter_tensor_names = None
+    engine.parameters = []
+    engine.optimizer = Optimizer()
+    def synthetic_weights():
+        return {"synthetic": torch.ones(1)}
+
+    engine._weights = synthetic_weights
+    cpu_rng_before = torch.get_rng_state()
+    encoded = engine.checkpoint()
+    checkpoint = decode_checkpoint(encoded)
+    assert checkpoint["rng_protocol"] == "seed_plus_completed_steps_cuda_v1"
+    assert "cuda_rng_states" not in checkpoint
+
+    engine.restore(encoded)
+    assert engine.step == 0
+    assert not rng_calls
+    assert torch.equal(torch.get_rng_state(), cpu_rng_before)
 
 
 def _small_bpe() -> bytes:
@@ -245,6 +329,7 @@ def test_scratch_engine_resume_and_worker_preserve_m0_identity(tmp_path):
     assert restored.scores(0) == baseline.scores(0)
 
     run = prepare_token_run(archive, inputs, config, PRODUCER)
+    assert "checkpoint_interval" not in run.parameters.value()
     reporter = ObjectStoreRunReporter(archive, archive.blobs)
     first = execute_tokens(archive, reporter, run.artifact_id, PRODUCER, stop_after=1)
     assert first.state == "paused" and first.checkpoint_id
@@ -254,6 +339,14 @@ def test_scratch_engine_resume_and_worker_preserve_m0_identity(tmp_path):
     result = archive.get_manifest(final.result_id)
     model = archive.get_manifest(result.parent("model"))
     checkpoint = archive.get_manifest(final.checkpoint_id)
+    events = [item.parameters.value() for item in reporter.events(run.artifact_id)]
+    assert [item["step"] for item in events if item["kind"] == "step"] == [1, 2]
+    assert [archive.get_manifest(item["details"]["checkpoint_id"]).parameters.value()["step"]
+            for item in events if item["kind"] == "checkpoint"] == [1, 2]
+    assert all("checkpoint_interval" not in item["details"] for item in events
+               if item["kind"] in {"started", "resumed"})
+    assert all(type(item["details"]["loss"]) is float for item in events
+               if item["kind"] == "step")
     info = model.parameters.value()
     assert info["schema"] == LIGHT_ACTION_M0_MODEL_SCHEMA
     assert info["graph"] == LIGHT_ACTION_M0_GRAPH
@@ -270,7 +363,118 @@ def test_scratch_engine_resume_and_worker_preserve_m0_identity(tmp_path):
     assert CHECKPOINT_SCHEMA != LIGHT_ACTION_M0_CHECKPOINT_SCHEMA
 
 
-def _tiny_backend(vocab_size: int, *, seed: int = 521):
+def test_worker_checkpoint_interval_forces_pause_and_final_and_resumes_exactly(tmp_path):
+    torch.set_num_threads(2)
+    archive, _, inputs = _inputs(tmp_path)
+    config = LightActionM0Config(steps=5, max_state_tokens=8192, max_action_bytes=8192)
+    baseline = TokenRankingEngine(inputs, config)
+    baseline_losses = [baseline.advance() for _ in range(config.steps)]
+    baseline_weights = baseline.model_bytes()
+
+    run = prepare_token_run(archive, inputs, config, PRODUCER, replicate="interval-3")
+    reporter = ObjectStoreRunReporter(archive, archive.blobs)
+    for invalid in (0, -1, True, 1.5, "3"):
+        with pytest.raises(BoundaryError, match="invalid_checkpoint_interval"):
+            execute_tokens(archive, reporter, run.artifact_id, PRODUCER,
+                           checkpoint_interval=invalid)
+    assert reporter.events(run.artifact_id) == ()
+
+    paused = execute_tokens(archive, reporter, run.artifact_id, PRODUCER,
+                            stop_after=2, checkpoint_interval=3)
+    assert paused.state == "paused" and paused.checkpoint_id
+    assert archive.get_manifest(paused.checkpoint_id).parameters.value()["step"] == 2
+    completed = execute_tokens(archive, reporter, run.artifact_id, PRODUCER,
+                               resume=paused.checkpoint_id, checkpoint_interval=3)
+    assert completed.state == "completed" and completed.checkpoint_id
+
+    events = [item.parameters.value() for item in reporter.events(run.artifact_id)]
+    step_events = [item for item in events if item["kind"] == "step"]
+    checkpoint_events = [item for item in events if item["kind"] == "checkpoint"]
+    assert [item["step"] for item in step_events] == [1, 2, 3, 4, 5]
+    assert [item["details"]["loss"] for item in step_events] == baseline_losses
+    assert [item["step"] for item in checkpoint_events] == [2, 3, 5]
+    starts = [item for item in events if item["kind"] in {"started", "resumed"}]
+    assert [item["kind"] for item in starts] == ["started", "resumed"]
+    assert all(item["details"]["checkpoint_interval"] == 3 for item in starts)
+
+    final_checkpoint = archive.get_manifest(completed.checkpoint_id)
+    model = archive.get_manifest(archive.get_manifest(completed.result_id).parent("model"))
+    assert final_checkpoint.parameters.value()["step"] == 5
+    assert b"".join(archive.read_payload(model.payload("weights"))) == baseline_weights
+
+
+def test_worker_checkpoint_write_failure_keeps_last_checkpoint_without_retry(tmp_path,
+                                                                              monkeypatch):
+    torch.set_num_threads(2)
+    archive, _, inputs = _inputs(tmp_path)
+    config = LightActionM0Config(steps=3, max_state_tokens=8192, max_action_bytes=8192)
+    run = prepare_token_run(archive, inputs, config, PRODUCER, replicate="failure-2")
+    reporter = ObjectStoreRunReporter(archive, archive.blobs)
+    original_put_payload = archive.put_payload
+    checkpoint_writes = 0
+
+    def fail_second_checkpoint(role, *args, **kwargs):
+        nonlocal checkpoint_writes
+        if role == "checkpoint":
+            checkpoint_writes += 1
+            if checkpoint_writes == 2:
+                raise OSError("injected checkpoint payload failure")
+        return original_put_payload(role, *args, **kwargs)
+
+    monkeypatch.setattr(archive, "put_payload", fail_second_checkpoint)
+    with pytest.raises(OSError, match="injected checkpoint payload failure"):
+        execute_tokens(archive, reporter, run.artifact_id, PRODUCER,
+                       checkpoint_interval=2)
+
+    assert checkpoint_writes == 2
+    events = [item.parameters.value() for item in reporter.events(run.artifact_id)]
+    checkpoint_events = [item for item in events if item["kind"] == "checkpoint"]
+    step_events = [item for item in events if item["kind"] == "step"]
+    failed = next(item for item in events if item["kind"] == "failed")
+    assert [item["step"] for item in checkpoint_events] == [2]
+    assert [item["step"] for item in step_events] == [1, 2, 3]
+    assert failed["details"]["last_checkpoint"] == checkpoint_events[0]["details"][
+        "checkpoint_id"]
+    assert reporter.completed(run.artifact_id) is None
+
+
+def test_worker_resumed_checkpoint_write_failure_keeps_resume_id_without_retry(
+    tmp_path, monkeypatch,
+):
+    torch.set_num_threads(2)
+    archive, _, inputs = _inputs(tmp_path)
+    config = LightActionM0Config(steps=4, max_state_tokens=8192, max_action_bytes=8192)
+    run = prepare_token_run(archive, inputs, config, PRODUCER, replicate="resume-failure-3")
+    reporter = ObjectStoreRunReporter(archive, archive.blobs)
+    paused = execute_tokens(archive, reporter, run.artifact_id, PRODUCER,
+                            stop_after=2, checkpoint_interval=3)
+    assert paused.state == "paused" and paused.checkpoint_id
+    assert archive.get_manifest(paused.checkpoint_id).parameters.value()["step"] == 2
+
+    original_put_payload = archive.put_payload
+    checkpoint_writes = 0
+
+    def fail_first_checkpoint(role, *args, **kwargs):
+        nonlocal checkpoint_writes
+        if role == "checkpoint":
+            checkpoint_writes += 1
+            raise OSError("injected resumed checkpoint payload failure")
+        return original_put_payload(role, *args, **kwargs)
+
+    monkeypatch.setattr(archive, "put_payload", fail_first_checkpoint)
+    with pytest.raises(OSError, match="injected resumed checkpoint payload failure"):
+        execute_tokens(archive, reporter, run.artifact_id, PRODUCER,
+                       resume=paused.checkpoint_id, checkpoint_interval=3)
+
+    assert checkpoint_writes == 1
+    events = [item.parameters.value() for item in reporter.events(run.artifact_id)]
+    failed = next(item for item in events if item["kind"] == "failed")
+    assert failed["step"] == 3
+    assert failed["details"]["last_checkpoint"] == paused.checkpoint_id
+    assert reporter.completed(run.artifact_id) is None
+
+
+def _tiny_backend(vocab_size: int, *, seed: int = 521, device: str = "cpu"):
     from transformers import Qwen3Config, Qwen3Model
 
     with torch.random.fork_rng(devices=[]):
@@ -285,6 +489,7 @@ def _tiny_backend(vocab_size: int, *, seed: int = 521):
     backend.hidden_size = 24
     backend.identity = SimpleNamespace(
         model_id="Qwen/Qwen3-0.6B-Base", model_revision="d" * 40,
+        device=device,
         weights_sha256="a" * 64, config_sha256="b" * 64,
         tokenizer_revision="d" * 40, tokenizer_sha256="c" * 64,
     )
@@ -319,7 +524,7 @@ def test_tiny_qwen3_lora_is_trainable_frozen_base_and_checkpointable(tmp_path, m
 
     def backend_factory(snapshot, *, device):
         assert device == "cpu"
-        return _tiny_backend(vocab_size)
+        return _tiny_backend(vocab_size, device=device)
 
     monkeypatch.setattr("stpd.workers.token_ranking.PortableQwenBackend", backend_factory)
     monkeypatch.setattr("stpd.qwen.readout_backend.validate_engineering_identity", lambda _id: None)

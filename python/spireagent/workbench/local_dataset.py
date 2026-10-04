@@ -143,6 +143,30 @@ class LocalDatasetService:
         store = ManifestArtifactStore(LocalBlobStore(directory / "store", create=False))
         return owner, store, directory / "registry.sqlite"
 
+    def register_user_declaration(
+        self, dataset_ids: object, *, request_id: object, statement: object,
+        statement_source: object, self_recorded: object,
+        project_training_authorized_now: object,
+    ) -> dict[str, Any]:
+        """Register a declaration through this service's configured local owner."""
+        if not isinstance(dataset_ids, (list, tuple)) or not 1 <= len(dataset_ids) <= 100:
+            raise BoundaryError("local_dataset", "declaration_scope_invalid")
+        identities = tuple(digest(item, "local_dataset.declaration_dataset")
+                           for item in dataset_ids)
+        if len(set(identities)) != len(identities):
+            raise BoundaryError("local_dataset", "declaration_scope_invalid")
+        request = digest(request_id, "local_dataset.declaration_request", length=32)
+        if (not isinstance(statement, str) or not isinstance(statement_source, dict)
+                or type(self_recorded) is not bool
+                or type(project_training_authorized_now) is not bool):
+            raise BoundaryError("local_dataset", "declaration_request_invalid")
+        owner, store, _ = self._selected()
+        return owner.register_user_declaration(
+            store, identities, source_identity(ROOT), request_id=request, statement=statement,
+            statement_source=statement_source, self_recorded=self_recorded,
+            project_training_authorized_now=project_training_authorized_now,
+        )
+
     def _availability(self) -> tuple[str, str | None]:
         if self.operation_invalid:
             return "recovery_required", "operation_file_invalid"

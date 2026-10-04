@@ -12,7 +12,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Protocol, TextIO
 
 from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError, object_fields
@@ -25,6 +25,16 @@ from .token_decision import TokenDecisionScorer
 
 PORT_SCHEMA = "sts2.policy-runtime/policy-port-1"
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class DecisionPortAdapter(Protocol):
+    """Narrow shared interface for stateless decision-only adapters."""
+
+    manifest: dict[str, Any]
+
+    def decide(self, value: object) -> dict[str, Any]: ...
+
+    def close(self) -> None: ...
 
 
 class TokenPolicyAdapter:
@@ -106,7 +116,7 @@ class TokenPolicyAdapter:
         self.closed = True
 
 
-def serve(adapter: TokenPolicyAdapter, source: TextIO, destination: TextIO) -> int:
+def serve(adapter: DecisionPortAdapter, source: TextIO, destination: TextIO) -> int:
     def emit(value: dict) -> None:
         destination.write(canonical_json(value) + "\n")
         destination.flush()

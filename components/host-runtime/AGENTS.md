@@ -2,9 +2,11 @@
 
 This file adds Host Runtime-specific rules to the Platform root `AGENTS.md`.
 
-This component runs the real Slay the Spire 2 runtime without a normal display.
-The component name is Host Runtime; `headless` is its stable CLI/runtime mode
-term. It is not a simulator, strategy agent, RL framework, or copy of the game.
+This component runs the real Slay the Spire 2 runtime. `headless` remains the
+stable default CLI/runtime mode; an explicitly isolated `native_window` mode
+uses the same Host lifecycle for visible operator canaries. The component name
+is Host Runtime. It is not a simulator, strategy agent, RL framework, or copy
+of the game.
 
 ## Evidence First
 
