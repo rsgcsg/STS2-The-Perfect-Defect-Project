@@ -1162,6 +1162,17 @@ describe("runtime integration fake", () => {
     const connector = new FakeConnector(bundle(["loop", "return"]));
     connector.stale = false;
     connector.successorActionIds = ["loop", "return"];
+    const submit = connector.submit.bind(connector);
+    connector.submit = async input => {
+      const receipt = await submit(input);
+      if (!receipt.successor) return receipt;
+      const progressed = { ...receipt.successor, persistent: {
+        content_schema: "sts2.player-environment/persistent/run-player-1" as const,
+        content: { visible_progress: connector.submitCount }
+      } };
+      connector.current = { observation: progressed, reads: [] };
+      return { ...receipt, successor: progressed };
+    };
     const seenCatalogs: string[][] = [];
     const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-budget-submit", autoBudget: { maxSubmissions: 6, maxPolicyCalls: 6, deadlineMs: 10_000 }, successorPoll: { maxAttempts: 2, baseBackoffMs: 0 }, sleep: async () => {}, policy: (input) => {
       seenCatalogs.push(decisionActions(input.bundle.observation).map(decisionActionId));

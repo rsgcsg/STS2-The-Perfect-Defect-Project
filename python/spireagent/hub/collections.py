@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 import time
 from contextlib import closing
 from typing import TYPE_CHECKING, Any
@@ -17,6 +18,7 @@ from stpd.collection_activity import ENROLLMENT_SCHEMA, validate_enrollment
 
 if TYPE_CHECKING:
     from spireagent.hub.uploads import UploadService
+    from spireagent.storage.store import ArtifactStore
 
 MAX_SELECTIONS = 100
 
@@ -200,6 +202,11 @@ class CollectionAccess:
                 "ON s.upload_id=u.id WHERE u.id=?",
                 (identity,),
             ).fetchone()
+            return self._manifest_for_shared_row(row, self.service.store)
+
+    @staticmethod
+    def _manifest_for_shared_row(row: Any, store: ArtifactStore) -> Manifest:
+        """Apply the same current receipt/share checks to an already-read upload row."""
         if row is None or row["approved"] == 0 or (
             row["approved"] is None and row["status"] != "verified"
         ):
@@ -207,7 +214,7 @@ class CollectionAccess:
         if row["status"] not in {"verified", "quarantined"} or not row["receipt"]:
             raise BoundaryError("sharing", "collection_not_received")
         receipt = json.loads(row["receipt"])
-        manifest = self.service.store.get_manifest(receipt["evidence_id"])
+        manifest = store.get_manifest(receipt["evidence_id"])
         info = manifest.parameters.value()
         intent = json.loads(row["intent"])
         archive = manifest.payload("archive")
@@ -223,6 +230,37 @@ class CollectionAccess:
         ):
             raise BoundaryError("sharing", "collection_identity_mismatch")
         return manifest
+
+    @classmethod
+    def manifests_for_evidence(
+        cls,
+        db: sqlite3.Connection,
+        store: Any,
+        evidence_id: str,
+        *,
+        max_rows: int | None = None,
+    ) -> tuple[Manifest, ...]:
+        """Require current project-shareable uploads for one source in a caller snapshot."""
+        digest(evidence_id, "sharing.evidence_id")
+        query = (
+            "SELECT u.*,s.approved FROM uploads u LEFT JOIN collection_sharing s "
+            "ON s.upload_id=u.id WHERE json_extract(u.receipt,'$.evidence_id')=? ORDER BY u.id"
+        )
+        parameters: tuple[Any, ...] = (evidence_id,)
+        if max_rows is not None:
+            if max_rows < 0:
+                raise ValueError("max_rows must not be negative")
+            query += " LIMIT ?"
+            parameters += (max_rows + 1,)
+        rows = db.execute(query, parameters).fetchall()
+        if max_rows is not None and len(rows) > max_rows:
+            raise BoundaryError("sharing", "source_upload_limit")
+        if not rows:
+            raise BoundaryError("sharing", "collection_not_shared")
+        manifests = tuple(cls._manifest_for_shared_row(row, store) for row in rows)
+        if any(manifest.artifact_id != evidence_id for manifest in manifests):
+            raise BoundaryError("sharing", "collection_identity_mismatch")
+        return manifests
 
     def artifact(self, artifact_id: str, *, use: str | None = None) -> Manifest:
         manifest = self.service.store.get_manifest(digest(artifact_id, "export.artifact_id"))

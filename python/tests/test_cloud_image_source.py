@@ -40,3 +40,14 @@ def test_image_cached_clone_fetches_new_exact_source(tmp_path: Path) -> None:
     assert git(clone, "rev-parse", "HEAD") == target
     assert (clone / "source").read_text() == "approved-new-source"
     assert git(clone, "status", "--porcelain") == ""
+
+
+def test_worker_sync_ignores_injected_index_and_keeps_locked_extras() -> None:
+    root = Path(__file__).resolve().parents[1]
+    recipe = (root / "deploy/cloud-worker/Dockerfile").read_text()
+    worker = re.search(r"(?m)^\s*worker\)\s*(.*?)\s*;;\s*\\?$", recipe)
+
+    assert worker is not None
+    assert worker.group(1).split() == [
+        "env", "-u", "UV_INDEX_URL", "uv", "sync", "--locked", "--all-extras",
+    ]
