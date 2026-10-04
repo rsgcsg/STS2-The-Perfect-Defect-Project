@@ -65,12 +65,18 @@ def test_launcher_binding_is_idempotent_for_same_profile_and_rejects_another(
         "workbench_sha256": "d" * 64,
         "uv_lock_sha256": "e" * 64,
     }
+    from types import SimpleNamespace
+
     from spireagent.workbench import developer
 
     monkeypatch.setattr(developer, "tool_identity", lambda: identity)
-    monkeypatch.setattr(developer.ProjectConfig, "load", lambda *_a, **_k: object())
+    monkeypatch.setattr(developer.ProjectConfig, "load",
+                        lambda *_a, **_k: SimpleNamespace(combination={"approved": True}))
+    monkeypatch.setattr(install, "_workbench_identity_for_source",
+                        lambda _: {**identity, "working_tree_clean": True})
     prepared = {"workbench_launcher_schema": install.LAUNCHER_SCHEMA,
-                "source_revision": "c" * 40, "uv_lock_sha256": "e" * 64}
+                "source_revision": "c" * 40, "uv_lock_sha256": "e" * 64,
+                "developer_combination": {"approved": True}}
 
     install._install_open_launcher(release, config, prepared, platform="darwin")
     binding_file = home / "Library/Application Support/spireagent/workbench/launcher.json"
@@ -111,19 +117,26 @@ def test_explicit_launcher_rebind_checks_exact_prior_bytes_and_preserves_profile
     monkeypatch.setattr(install, "_launcher_directory", lambda **_: root)
     identity = {"working_tree_clean": True, "source_revision": "c" * 40,
                 "uv_lock_sha256": "e" * 64, "workbench_sha256": "d" * 64}
+    from types import SimpleNamespace
+
     from spireagent.workbench import developer
     monkeypatch.setattr(developer, "tool_identity", lambda: identity)
-    monkeypatch.setattr(developer.ProjectConfig, "load", lambda *_a, **_k: object())
+    monkeypatch.setattr(developer.ProjectConfig, "load",
+                        lambda *_a, **_k: SimpleNamespace(combination={"approved": True}))
+    monkeypatch.setattr(install, "_workbench_identity_for_source",
+                        lambda _: {**identity, "working_tree_clean": True})
     prepared = {"workbench_launcher_schema": install.LAUNCHER_SCHEMA,
-                "source_revision": "c" * 40, "uv_lock_sha256": "e" * 64}
+                "source_revision": "c" * 40, "uv_lock_sha256": "e" * 64,
+                "developer_combination": {"approved": True}}
     install._install_open_launcher(release, profiles[0], prepared, platform="darwin")
     binding_file, script_file = install._launcher_files(root)
     prior, script = binding_file.read_bytes(), script_file.read_bytes()
     with pytest.raises(BoundaryError, match="launcher_config_binding_mismatch"):
         install._install_open_launcher(release, profiles[1], prepared, platform="darwin")
-    with pytest.raises(BoundaryError, match="launcher_binding_changed"):
+    with pytest.raises(BoundaryError, match="launcher_pair_changed"):
         install._install_open_launcher(release, profiles[1], prepared, platform="darwin",
-                                       expected_binding_sha256="a" * 64)
+                                       expected_binding_sha256="a" * 64,
+                                       expected_open_sha256="a" * 64)
     assert binding_file.read_bytes() == prior and script_file.read_bytes() == script
     replacement = tmp_path / ("f" * 64)
     target_python = replacement / "source/python"
@@ -139,25 +152,244 @@ def test_explicit_launcher_rebind_checks_exact_prior_bytes_and_preserves_profile
         failing.setattr(install, "_write_executable", fail_after_replace)
         with pytest.raises(OSError, match="injected fsync failure"):
             install._install_open_launcher(replacement, profiles[1], prepared, platform="darwin",
-                                           expected_binding_sha256=install.sha(prior))
+                                           expected_binding_sha256=install.sha(prior),
+                                           expected_open_sha256=install.sha(script))
     assert binding_file.read_bytes() == prior and script_file.read_bytes() == script
     install._install_open_launcher(release, profiles[1], prepared, platform="darwin",
-                                   expected_binding_sha256=install.sha(prior))
+                                   expected_binding_sha256=install.sha(prior),
+                                   expected_open_sha256=install.sha(script))
     assert json.loads(binding_file.read_bytes())["config_path"] == str(profiles[1])
     for profile in profiles:
         assert profile.read_text() == '{"preserve":"original"}'
-    with pytest.raises(BoundaryError, match="launcher_binding_changed"):
+    with pytest.raises(BoundaryError, match="launcher_pair_changed"):
         install._install_open_launcher(release, profiles[0], prepared, platform="darwin",
-                                       expected_binding_sha256=install.sha(prior))
+                                       expected_binding_sha256=install.sha(prior),
+                                       expected_open_sha256=install.sha(script))
     # An explicit rollback uses the newly observed binding, through the same owner.
     install._install_open_launcher(release, profiles[0], prepared, platform="darwin",
-                                   expected_binding_sha256=install.sha(binding_file.read_bytes()))
+                                   expected_binding_sha256=install.sha(binding_file.read_bytes()),
+                                   expected_open_sha256=install.sha(script_file.read_bytes()))
     assert binding_file.read_bytes() == prior
     binding_file.unlink()
-    with pytest.raises(BoundaryError, match="launcher_not_installed"):
+    with pytest.raises(BoundaryError, match="launcher_pair_incomplete"):
         install._install_open_launcher(release, profiles[1], prepared, platform="darwin",
-                                       expected_binding_sha256=install.sha(prior))
+                                       expected_binding_sha256=install.sha(prior),
+                                       expected_open_sha256=install.sha(script))
     assert not binding_file.exists() and script_file.read_bytes() == script
+
+
+def test_launcher_rebind_requires_both_compare_and_swap_digests(tmp_path, monkeypatch):
+    release = tmp_path / ("b" * 64)
+    python_root = release / "source/python"
+    (python_root / ".venv/bin").mkdir(parents=True)
+    (python_root / ".venv/bin/python").touch()
+    (python_root / "tools").mkdir()
+    (python_root / "tools/install_developer_kit.py").touch()
+    config = tmp_path / "profile.json"
+    config.write_text("{}")
+    root = tmp_path / "launcher"
+    monkeypatch.setattr(install, "_launcher_directory", lambda **_: root)
+    from spireagent.workbench import developer
+    monkeypatch.setattr(developer, "tool_identity", lambda: {
+        "working_tree_clean": True, "source_revision": "c" * 40,
+        "uv_lock_sha256": "e" * 64, "workbench_sha256": "d" * 64,
+    })
+    monkeypatch.setattr(developer.ProjectConfig, "load", lambda *_a, **_k: object())
+    prepared = {"workbench_launcher_schema": install.LAUNCHER_SCHEMA,
+                "source_revision": "c" * 40, "uv_lock_sha256": "e" * 64}
+    with pytest.raises(BoundaryError, match="launcher_replacement_arguments_invalid"):
+        install._install_open_launcher(
+            release, config, prepared, platform="darwin", expected_binding_sha256="a" * 64,
+        )
+
+
+def test_backup_launcher_snapshots_both_exact_files_as_nonlaunchable_history(
+        tmp_path, monkeypatch):
+    release = tmp_path / ("c" * 64)
+    root = tmp_path / "global-launcher"
+    root.mkdir()
+    root.chmod(0o700)
+    monkeypatch.setattr(install, "_launcher_directory", lambda **_: root)
+    source_identity = {"source_revision": "a" * 40, "uv_lock_sha256": "b" * 64,
+                       "workbench_sha256": "c" * 64}
+    monkeypatch.setattr(install, "status", lambda _: {
+        "source_revision": "a" * 40, "uv_lock_sha256": "b" * 64,
+    })
+    monkeypatch.setattr(install, "_workbench_identity_for_source",
+                        lambda _: {**source_identity, "working_tree_clean": True})
+    config = tmp_path / "private-profile.json"
+    config.write_text("{}")
+    binding = {
+        "schema": install.LAUNCHER_SCHEMA,
+        "release_directory": str(release.resolve()), "kit_sha256": release.name,
+        "source_revision": source_identity["source_revision"],
+        "uv_lock_sha256": source_identity["uv_lock_sha256"],
+        "workbench_sha256": source_identity["workbench_sha256"],
+        "config_path": str(config),
+    }
+    binding_raw = json.dumps(binding, separators=(",", ":")).encode()
+    open_raw = b"#!/bin/sh\nlegacy bytes\n"
+    (root / "launcher.json").write_bytes(binding_raw)
+    (root / "launcher.json").chmod(0o600)
+    (root / "open").write_bytes(open_raw)
+    (root / "open").chmod(0o700)
+    output = tmp_path / "history-snapshot"
+    result = install.backup_launcher(
+        release, output, install.sha(binding_raw), install.sha(open_raw),
+    )
+    manifest_raw = (output / "snapshot.json").read_bytes()
+    manifest = json.loads(manifest_raw)
+    assert result["launchable"] is False
+    assert result["snapshot_manifest_sha256"] == install.sha(manifest_raw)
+    assert manifest["restore_eligibility"] == "not_granted"
+    assert (output / "launcher.json").read_bytes() == binding_raw
+    assert (output / "open").read_bytes() == open_raw
+    assert (output / "launcher.json").stat().st_mode & 0o777 == 0o600
+    assert (output / "open").stat().st_mode & 0o777 == 0o700
+    with pytest.raises(BoundaryError, match="launcher_snapshot_path_invalid"):
+        install.backup_launcher(
+            release, output, install.sha(binding_raw), install.sha(open_raw),
+        )
+
+
+def test_launcher_backup_rejects_partial_and_changed_pairs(tmp_path, monkeypatch):
+    root = tmp_path / "launcher"
+    root.mkdir()
+    root.chmod(0o700)
+    monkeypatch.setattr(install, "_launcher_directory", lambda **_: root)
+    (root / "launcher.json").write_bytes(b"{}")
+    with pytest.raises(BoundaryError, match="launcher_pair_incomplete"):
+        install._launcher_pair(root)
+
+
+def test_prepare_target_restore_revalidates_release_config_and_both_current_hashes(
+        tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from spireagent.workbench import developer
+
+    release = tmp_path / ("e" * 64)
+    python_root = release / "source/python"
+    python = python_root / ".venv/bin/python"
+    tool = python_root / "tools/install_developer_kit.py"
+    python.parent.mkdir(parents=True)
+    tool.parent.mkdir(parents=True)
+    python.touch()
+    tool.touch()
+    config = tmp_path / "private-config.json"
+    config.write_text("{}")
+    root = tmp_path / "global-launcher"
+    root.mkdir()
+    root.chmod(0o700)
+    monkeypatch.setattr(install, "_launcher_directory", lambda **_: root)
+    combination = {"release": "approved"}
+    prepared = {
+        "workbench_launcher_schema": install.LAUNCHER_SCHEMA,
+        "source_revision": "a" * 40, "uv_lock_sha256": "b" * 64,
+        "developer_combination": combination,
+    }
+    monkeypatch.setattr(install, "status", lambda _: dict(prepared))
+    monkeypatch.setattr(install, "_workbench_identity_for_source", lambda _: {
+        "source_revision": "a" * 40, "uv_lock_sha256": "b" * 64,
+        "workbench_sha256": "c" * 64, "working_tree_clean": True,
+    })
+    monkeypatch.setattr(developer.ProjectConfig, "load", lambda *_a, **_k: SimpleNamespace(
+        combination=combination))
+
+    target_snapshot = tmp_path / "target-snapshot"
+    target = install.prepare_launcher_target(release, config, target_snapshot)
+    current_binding, current_open = install._launcher_files(root)
+    current_binding.write_bytes(b"reviewed current binding")
+    current_open.write_bytes(b"reviewed current open")
+    current_binding.chmod(0o600)
+    current_open.chmod(0o700)
+    binding_sha = install.sha(current_binding.read_bytes())
+    open_sha = install.sha(current_open.read_bytes())
+
+    restored = install.restore_launcher(
+        target_snapshot, target["snapshot_manifest_sha256"], binding_sha, open_sha,
+    )
+    assert restored["status"] == "launcher_restored"
+    assert json.loads(current_binding.read_bytes())["release_directory"] == str(release)
+    assert current_open.read_bytes() == install._launcher_script(release).encode()
+    with pytest.raises(BoundaryError, match="launcher_pair_changed"):
+        install.restore_launcher(
+            target_snapshot, target["snapshot_manifest_sha256"], binding_sha, open_sha,
+        )
+
+
+def test_prepare_target_rejects_prior_config_combination_drift(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from spireagent.workbench import developer
+
+    release = tmp_path / ("f" * 64)
+    python_root = release / "source/python"
+    (python_root / ".venv/bin").mkdir(parents=True)
+    (python_root / ".venv/bin/python").touch()
+    (python_root / "tools").mkdir()
+    (python_root / "tools/install_developer_kit.py").touch()
+    config = tmp_path / "private-config.json"
+    config.write_text("{}")
+    prepared = {
+        "workbench_launcher_schema": install.LAUNCHER_SCHEMA,
+        "source_revision": "a" * 40, "uv_lock_sha256": "b" * 64,
+        "developer_combination": {"evidence_source_revision": "new"},
+    }
+    monkeypatch.setattr(install, "status", lambda _: dict(prepared))
+    monkeypatch.setattr(developer.ProjectConfig, "load", lambda *_a, **_k: SimpleNamespace(
+        combination={"evidence_source_revision": "legacy"}))
+    snapshot = tmp_path / "must-not-exist"
+    with pytest.raises(BoundaryError, match="launcher_config_combination_mismatch"):
+        install.prepare_launcher_target(release, config, snapshot)
+    assert not snapshot.exists()
+
+
+def test_pair_rollback_attempts_both_files_and_reports_recovery_required(tmp_path, monkeypatch):
+    root = tmp_path / "launcher"
+    root.mkdir()
+    root.chmod(0o700)
+    binding_path, open_path = install._launcher_files(root)
+    binding_path.write_bytes(b"old binding")
+    open_path.write_bytes(b"old open")
+    original_writer = install._write_launcher_file
+    attempts = []
+
+    def fail_target_open_and_binding_rollback(path, contents, mode):
+        attempts.append((path.name, contents))
+        if path.name == "open" and contents == b"target open":
+            original_writer(path, contents, mode)
+            raise OSError("target open fsync failed")
+        if path.name == "launcher.json" and contents == b"old binding":
+            raise OSError("binding rollback failed")
+        return original_writer(path, contents, mode)
+
+    monkeypatch.setattr(install, "_write_launcher_file", fail_target_open_and_binding_rollback)
+    with pytest.raises(BoundaryError, match="launcher_recovery_required"):
+        install._write_launcher_pair(root, b"target binding", b"target open", 0o600, 0o700)
+    assert ("launcher.json", b"old binding") in attempts
+    assert ("open", b"old open") in attempts
+    assert binding_path.read_bytes() == b"target binding"
+    assert open_path.read_bytes() == b"old open"
+
+
+def test_installer_cli_rejects_one_sided_compare_and_swap_and_wrong_defer_command(
+        monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [
+        "install_developer_kit.py", "install-launcher", "--config", "/tmp/profile.json",
+        "--expected-launcher-binding-sha256", "a" * 64,
+    ])
+    assert install.main() == 1
+    assert json.loads(capsys.readouterr().out)["code"] == "launcher_replacement_arguments_invalid"
+    monkeypatch.setattr(sys, "argv", [
+        "install_developer_kit.py", "install-launcher", "--config", "/tmp/profile.json",
+        "--expected-open-sha256", "a" * 64,
+    ])
+    assert install.main() == 1
+    assert json.loads(capsys.readouterr().out)["code"] == "launcher_replacement_arguments_invalid"
+    monkeypatch.setattr(sys, "argv", ["install_developer_kit.py", "launch", "--defer-launcher"])
+    assert install.main() == 1
+    assert json.loads(capsys.readouterr().out)["code"] == "defer_launcher_arguments_invalid"
 
 def test_isolated_installer_entry_imports_its_source_packages():
     tool = Path(__file__).resolve().parents[1] / "tools/install_developer_kit.py"
@@ -166,7 +398,11 @@ def test_isolated_installer_entry_imports_its_source_packages():
         cwd=tool.parents[1], capture_output=True, text=True, timeout=10,
     )
     assert result.returncode == 0, result.stderr
-    assert "install-launcher" in result.stdout and "launch" in result.stdout
+    assert all(name in result.stdout for name in (
+        "install-launcher", "backup-launcher", "prepare-launcher-target",
+        "restore-launcher", "launch", "--expected-open-sha256",
+        "--defer-launcher",
+    ))
 
 
 def test_isolated_installer_entry_keeps_locked_evidence_import_origin():

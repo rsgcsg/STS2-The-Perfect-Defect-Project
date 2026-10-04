@@ -156,7 +156,7 @@ or uploads.
 
 For kits whose `combination.json` declares
 `workbench_launcher_schema: spireagent/workbench-launcher-v1`, successful
-initialization installs a fixed per-user macOS entry at
+initialization normally installs a fixed per-user macOS entry at
 `~/Library/Application Support/spireagent/workbench/open`. The game Mod can
 invoke it only after an explicit Open action reports the Workbench stopped. The
 entry accepts no arguments, verifies its exact kit and bound config through the
@@ -168,23 +168,68 @@ currently macOS-only; Windows is not qualified.
 
 To change the game entry to a different existing project, use the selected approved
 release's `install-launcher` entry with `--config /ABS/target/project.json` and
-`--expected-launcher-binding-sha256 SHA256_OF_CURRENT_LAUNCHER_JSON`. Inspect and
-retain the current `launcher.json` first. Without that exact expected digest, a
-different project remains rejected. The installer validates the selected release,
-source, lock and target project; a changed or absent prior binding stops replacement.
-Concurrent installer operations are serialized. It only changes the fixed launcher
-binding and executable; it does not migrate models, saves, queues or consent, start a
-service, or redirect a running game's already registered URL. Stop/reopen the chosen
-Workbench through its owner and verify the game button's observed URL separately.
-Rollback uses the same command with the former approved release/project and the
-newly observed current binding digest. Do not edit an old release's source or
-`launcher.json` to imitate this operation; older releases need a newly reviewed kit
-containing this installer capability.
-A caught publication exception restores the previous binding and script bytes.
-This two-file update is not a crash-atomic transaction: forced termination, power
-loss or a further rollback I/O failure can leave an identity mismatch. Preserve
-the diagnostic and re-run the reviewed installer against the observed binding;
-launcher identity checks fail closed rather than execute a mismatched release.
+`--expected-launcher-binding-sha256 SHA256_OF_CURRENT_LAUNCHER_JSON` and
+`--expected-open-sha256 SHA256_OF_CURRENT_OPEN`. Both compare-and-swap hashes are
+required together. Concurrent owner operations are serialized under the install lock.
+The installer validates the selected release, source, lock and target project; a changed
+or partial prior pair stops replacement. It does not migrate models, saves, queues or
+consent, start a service, or redirect a running game's already registered URL. Stop and
+reopen the chosen Workbench through its owner and verify the game button's observed URL
+separately.
+
+For an environment-only setup, add `--defer-launcher` to `initialize`. Dependency and
+runtime setup completes, the result reports `workbench_launcher: deferred`, and the
+global launcher files remain untouched. This option is valid only for `initialize`.
+
+Before a reviewed change, the exact existing pair can be retained as a private historical
+snapshot. The snapshot records bytes, modes, hashes and the verified release identity. It
+is explicitly `launchable: false`; archiving a legacy pair does not qualify it for restore
+or execution. A legacy config whose stored combination differs from its archived kit cannot
+be prepared as a restore target. The mismatch must be resolved through the approved
+Workbench setup flow before creating a launchable target snapshot.
+
+```bash
+shasum -a 256 "$HOME/Library/Application Support/spireagent/workbench/launcher.json" \
+  "$HOME/Library/Application Support/spireagent/workbench/open"
+uv run --locked --extra cloud python tools/install_developer_kit.py backup-launcher \
+  --snapshot-directory /ABS/private/launcher-history-2026-10-04 \
+  --expected-launcher-binding-sha256 BINDING_SHA256 \
+  --expected-open-sha256 OPEN_SHA256
+```
+
+`backup-launcher` uses the executing prepared release as its owner. It obtains the prior
+release path from the verified current binding, checks that prior release's own archive,
+source, lock and Workbench identity, and records the pair without granting launchability.
+
+To make a restore target, first prepare the pair from a verified prepared release and a
+private project config. This validates that config against that release's archived
+combination, then records the exact owner-generated binding and executable without
+publishing them globally:
+
+```bash
+uv run --locked --extra cloud python tools/install_developer_kit.py prepare-launcher-target \
+  --directory /ABS/releases/TARGET_KIT_SHA256 \
+  --config /ABS/target/project.json \
+  --snapshot-directory /ABS/private/launcher-target
+```
+
+Only a `launchable: true` target snapshot passes restore validation. Restore rechecks the
+target kit archive, source, lock, Workbench digest and config combination, then compares
+both currently installed file hashes under the owner lock:
+
+```bash
+uv run --locked --extra cloud python tools/install_developer_kit.py restore-launcher \
+  --snapshot-directory /ABS/private/launcher-target \
+  --snapshot-manifest-sha256 TARGET_MANIFEST_SHA256 \
+  --expected-launcher-binding-sha256 CURRENT_BINDING_SHA256 \
+  --expected-open-sha256 CURRENT_OPEN_SHA256
+```
+
+A caught publication exception attempts to restore both prior file byte sequences and
+modes. If either rollback write fails, the owner reports `launcher_recovery_required` and
+leaves any historical snapshot intact. The two-file update is not crash-atomic: forced
+termination or power loss can leave an identity mismatch. Launcher identity checks fail
+closed rather than execute a mismatched release.
 
 A kit may additionally contain an independently approved `text-runtime/profile.json`
 and `text-runtime/runtime.tgz`. Its inventory and external ZIP SHA256 bind both;

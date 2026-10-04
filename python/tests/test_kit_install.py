@@ -928,6 +928,39 @@ def test_initialize_refuses_a_running_profile_before_changing_dependencies(tmp_p
     assert selected.to_dict() == json.loads(profile.read_bytes())
 
 
+def test_initialize_defer_launcher_completes_environment_without_global_write(
+        tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from spireagent.workbench import developer, developer_server
+
+    profile = tmp_path / "project.json"
+    profile.write_text("{}")
+    release = tmp_path / ("d" * 64)
+    prepared = {
+        "status": "prepared", "workbench_launcher_schema": install.LAUNCHER_SCHEMA,
+        "python_environment_profile": "cloud", "private_host_runtime": "not_bundled",
+        "text_runtime": "not_bundled", "m2_runtime": "not_bundled",
+        "m2_v2_runtime": "not_bundled",
+    }
+    monkeypatch.setattr(install, "status", lambda _: dict(prepared))
+    monkeypatch.setattr(developer.ProjectConfig, "load",
+                        lambda *_a, **_k: SimpleNamespace(state_dir=tmp_path / "state"))
+    monkeypatch.setattr(developer_server, "instance_lock", lambda *_a, **_k: nullcontext())
+    commands = []
+    monkeypatch.setattr(install, "run", lambda args, _: commands.append(args) or "")
+    monkeypatch.setattr(install.sys, "platform", "darwin")
+    monkeypatch.setattr(install.subprocess, "run", lambda *_a, **_k: pytest.fail(
+        "deferred initialization must not invoke the global launcher owner"))
+
+    result = install.initialize(release, profile, defer_launcher=True)
+
+    assert result["environment"] == "initialized"
+    assert result["workbench_launcher"] == "deferred"
+    assert [command[:2] for command in commands] == [["npm", "ci"], ["npm", "ci"], ["uv", "sync"]]
+
+
 def test_initialize_text_runtime_releases_instance_lock_before_owner_cli(tmp_path, monkeypatch):
     from test_project_console import config
 
