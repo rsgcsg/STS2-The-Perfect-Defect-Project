@@ -26,6 +26,24 @@ test("CI contract rejects unscoped push duplication", () => {
   assert.ok(ciWorkflowErrors(source).includes("CI push trigger must be branch-scoped"));
 });
 
+test("CI contract requires early committed-range hygiene rather than a late dirty diff", () => {
+  const source = currentSource().replace("run: node tools/check-plan.mjs patch", "run: git diff --check");
+  assert.ok(ciWorkflowErrors(source).includes(
+    "CI must check the committed patch before selecting expensive jobs"));
+});
+
+test("CI contract rejects moving patch preflight after route selection", () => {
+  const source = currentSource();
+  const start = source.indexOf("      - name: Check committed patch before");
+  const end = source.indexOf("      - id: route", start);
+  const step = source.slice(start, end);
+  const without = source.slice(0, start) + source.slice(end);
+  const beforeDocs = without.indexOf("\n  docs:");
+  const changed = without.slice(0, beforeDocs) + step + without.slice(beforeDocs);
+  assert.ok(ciWorkflowErrors(changed).includes(
+    "CI must check the committed patch before selecting expensive jobs"));
+});
+
 test("CI contract rejects replacing selected gates with a hand-picked subset", () => {
   const source = currentSource().replaceAll("run: node tools/check-plan.mjs execute", "run: npm --prefix components/annotator run test");
   assert.ok(ciWorkflowErrors(source).includes("Windows portability must run the selected root check"));

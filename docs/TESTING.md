@@ -25,7 +25,14 @@ path-based review signals and never rewrites semantic truth.
 GitHub-hosted CI is intentionally a **source/test portability gate**, not an
 exact-game or runtime qualification environment.
 
-The workflow always starts a `plan` job. The same local router is available as:
+The workflow always starts a `plan` job.
+
+Before routing, CI checks committed patch hygiene against the PR/push base, so
+clean checkouts cannot hide committed whitespace errors until the long suite ends.
+Manual/scheduled runs and initial pushes check the current commit against its first
+parent (or the root commit). This preflight changes no selected tests or required aggregate.
+
+The same local router is available as:
 
 ```bash
 npm run check:plan -- --base origin/develop

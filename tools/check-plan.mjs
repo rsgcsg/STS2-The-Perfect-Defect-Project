@@ -60,6 +60,20 @@ export function makePlan({ base, head = "HEAD", forceFull = false, cwd = root } 
   }
 }
 
+export function checkPatch({ base, head = "HEAD", cwd = root } = {}) {
+  const git = (...args) => execFileSync("git", args,
+    { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const exactHead = git("rev-parse", "--verify", "--end-of-options", `${head}^{commit}`).trim();
+  if (base && base !== "0".repeat(40)) {
+    const exactBase = git("rev-parse", "--verify", "--end-of-options", `${base}^{commit}`).trim();
+    git("diff", "--check", exactBase, exactHead, "--");
+  } else {
+    // Dispatch/schedule and an initial push have no comparison base. Check
+    // the current commit, including a merge's changes from its first parent.
+    git("show", "--format=", "--check", "--diff-merges=first-parent", exactHead, "--");
+  }
+}
+
 export function aggregatePassed(scope, results) {
   if (results.plan !== "success") return false;
   if (scope === "docs") return results.docs === "success" && results.linux === "skipped" && results.windows === "skipped";
@@ -84,7 +98,10 @@ function execute(scope) {
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
-  if (args[0] === "aggregate") {
+  if (args[0] === "patch") {
+    checkPatch({ base: process.env.CHECK_BASE });
+    process.stdout.write("Committed patch hygiene passed\n");
+  } else if (args[0] === "aggregate") {
     const e = process.env;
     const results = {plan: e.PLAN_RESULT, docs: e.DOCS_RESULT, linux: e.LINUX_RESULT, windows: e.WINDOWS_RESULT};
     if (!aggregatePassed(e.CHECK_SCOPE, results)) process.exitCode = 1;

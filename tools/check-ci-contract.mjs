@@ -43,6 +43,11 @@ export function ciWorkflowErrors(rawSource) {
   const plan = jobBlock(source, "plan");
   const docs = jobBlock(source, "docs");
   if (!plan || !/run: node tools\/check-plan\.mjs\s*$/mu.test(plan)) errors.push("CI must use the shared check planner");
+  if (!plan || !/run: node tools\/check-plan\.mjs patch\s*$/mu.test(plan) ||
+      !plan.includes("CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}") ||
+      plan.indexOf("run: node tools/check-plan.mjs patch") > plan.indexOf("- id: route")) {
+    errors.push("CI must check the committed patch before selecting expensive jobs");
+  }
   if (!docs || !docs.includes("run: node tools/check-plan.mjs execute")) errors.push("CI must check editorial changes");
   if (!/^  schedule:/mu.test(source)) errors.push("CI must retain periodic full checks");
   for (const [name, scope] of [["docs", "docs"], ["linux-portability", "full"], ["windows-portability", "full"]]) {

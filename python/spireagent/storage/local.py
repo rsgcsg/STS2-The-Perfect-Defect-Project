@@ -42,6 +42,18 @@ class LocalBlobStore:
             raise StoreError("read_only_store")
         bounded(data)
         path = self._path(key)
+        # Repeated immutable publication must still compare the actual bounded
+        # bytes. Only a missing object needs another durable temporary write;
+        # a concurrent first publisher is reconciled by the link below.
+        try:
+            existing = self.get(key)
+        except StoreError as error:
+            if error.code != "object_not_found":
+                raise
+        else:
+            if existing != data:
+                raise StoreError("immutable_key_collision")
+            return False
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(prefix=".pending-", dir=path.parent)
         temporary = Path(temporary_name)
