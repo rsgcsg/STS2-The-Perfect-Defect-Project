@@ -316,6 +316,8 @@ def _load_stage(
                         run_owner.MAX_CHECKPOINT_BYTES)
     checkpoint_header = decode_checkpoint(checkpoint_raw)
     runtime = checkpoint_header.get("runtime")
+    if not isinstance(runtime, dict):
+        raise BoundaryError(BOUNDARY, "checkpoint_runtime_required")
     checked_checkpoint = validate_public_m2_checkpoint(
         checkpoint_raw, preflight, expected_runtime=runtime,
     )
@@ -497,16 +499,7 @@ def _summary_payload(summary: EvaluationSummary, prepared: PreparedEval) -> byte
         or not summary.inference_device
     ):
         raise BoundaryError(BOUNDARY, "full_dev_result_coverage_mismatch")
-    if hasattr(summary, "to_dict") and callable(summary.to_dict):
-        result = summary.to_dict()
-    elif hasattr(summary, "__dataclass_fields__"):
-        result = asdict(summary)
-    else:
-        raise BoundaryError(BOUNDARY, "typed_evaluation_result_required")
-    raw = json_bytes(result)
-    if len(raw) > MAX_REPORT_BYTES:
-        raise BoundaryError(BOUNDARY, "evaluation_report_size_limit")
-    return raw
+    return _result_payload(summary)[1]
 
 
 def prepare_stage_evaluation(
