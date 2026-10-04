@@ -53,6 +53,24 @@ test("CI contract rejects unpinned GitHub Actions", () => {
   assert.ok(ciWorkflowErrors(source).some((error) => error.includes("actions/setup-node@v7")));
 });
 
+test("CI contract requires enough timeout for the full Windows portability gate", () => {
+  const source = currentSource().replace("    timeout-minutes: 90", "    timeout-minutes: 55");
+  assert.ok(ciWorkflowErrors(source).includes("Windows portability timeout must be at least 90 minutes for its full portable gate"));
+});
+
+test("CI contract does not mistake a Windows step timeout for the job timeout", () => {
+  const source = currentSource();
+  const marker = "  windows-portability:\n";
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1);
+  const prefix = source.slice(0, start);
+  const windowsBlock = source.slice(start)
+    .replace("    timeout-minutes: 90\n", "")
+    .replace("      - name: Install dependencies\n        run: npm ci\n",
+      "      - name: Install dependencies\n        timeout-minutes: 120\n        run: npm ci\n");
+  assert.ok(ciWorkflowErrors(prefix + windowsBlock).includes("Windows portability timeout must be at least 90 minutes for its full portable gate"));
+});
+
 // Same root contract covers both language stacks after consolidation.
 
 test("both language environments remain required on both OS lanes", () => {

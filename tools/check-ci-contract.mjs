@@ -76,6 +76,10 @@ export function ciWorkflowErrors(rawSource) {
 
   if (windows) {
     requireMatch(errors, "Windows portability must use windows-latest", windows, /runs-on:\s*windows-latest/u);
+    const timeoutMinutes = Number(windows.match(/^    timeout-minutes:[ \t]*(\d+)[ \t]*$/mu)?.[1]);
+    if (!Number.isInteger(timeoutMinutes) || timeoutMinutes < 90) {
+      errors.push("Windows portability timeout must be at least 90 minutes for its full portable gate");
+    }
     requireMatch(errors, "Windows portability must run the selected root check", windows, /run:\s*node tools\/check-plan\.mjs execute\s*$/mu);
     requireMatch(errors, "Windows portability must run git diff --check", windows, /run:\s*git diff --check\s*$/mu);
     requireMatch(errors, "Windows checkout must fetch full history", windows, /fetch-depth:\s*0/u);
