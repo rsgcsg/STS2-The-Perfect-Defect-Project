@@ -16,7 +16,7 @@ and private-profile digest are provenance supplied by the trusted local
 application, not independent re-attestation of installed bytes or private
 profile contents by Evidence.
 
-Evidence `0.1.0-rc.25` verifies Policy Runtime adapter protocols v1 through v4
+Evidence `0.1.0-rc.26` verifies Policy Runtime adapter protocols v1 through v4
 in the Policy Manifest and adapter attestation. The opt-in v3 interaction-memory
 port requires a declared text-menu representation, just as v2 does. Port 4 is
 model-neutral: it requires the public Snapshot-1 representation, zero Reads,
@@ -28,8 +28,12 @@ snapshot ID/sequence/ordinal. A non-null prior-action request must resolve to a
 same-segment delivered receipt and recorded successor. Repeated polls can reuse
 the same snapshot identity and ordinal; a new snapshot advances the ordinal by
 one while Connector sequence numbers may have gaps. Reset must bind the old
-segment/commitment and rotate both identities. The verifier checks these
-recorded associations; it cannot reconstruct the raw token, observe omitted
+segment/commitment and rotate both identities, after which the replacement is
+closing-only until episode end and a fresh explicit begin. A non-null action
+acknowledgment must identify the exact recorded successor watermark or a later,
+distinct observation. `runtime_tainted` is terminal for port 4; unknown or
+rejected delivery and tainted runs cannot start or score another segment.
+The verifier checks these recorded associations; it cannot reconstruct the raw token, observe omitted
 Snapshot fields, or prove an uninterrupted game episode from an operator-declared
 scope. It checks commitment equality/rotation but cannot independently verify
 the commitment preimage or derive its run binding. Port 4 input remains separate

@@ -743,7 +743,7 @@ export class PolicyRuntime {
       observation_ordinal: observationOrdinal, snapshot_id: bundle.observation.snapshot_id,
       sequence: bundle.observation.sequence, previous_action_request_id: publicPreviousActionRequestId
     }))) {
-      await this.failClosed("agent_evidence_write_failed_before_submit");
+      await this.taint("agent_evidence_write_failed_before_submit");
       return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
     }
     if (textMenu && !(await this.appendEvidence("text_decision_input", {
@@ -754,7 +754,8 @@ export class PolicyRuntime {
       return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
     }
     if (!(await this.appendEvidence("decision", { decision, resolved_bound_action_id: resolvedActionId }))) {
-      await this.failClosed("agent_evidence_write_failed_before_submit");
+      if (this.publicStateful) await this.taint("agent_evidence_write_failed_before_submit");
+      else await this.failClosed("agent_evidence_write_failed_before_submit");
       return { type: "not_admitted", reason: "agent_evidence_write_failed", status: this.status() };
     }
     if (this.mode === "shadow") return { type: "shadow", decision, status: this.status() };

@@ -76,8 +76,8 @@ function tokenCommitment(runId: string, token: string): string {
     .update("sts2.policy-runtime/public-stateful-continuity-token-commitment-v1\0", "utf8")
     .update(runId, "utf8").update("\0", "utf8").update(token, "utf8").digest("hex");
 }
-function runtime(connector: FixtureConnector, policy: (decision: PublicStatefulDecisionContext, control: PublicStatefulControlMetadata) => void | Promise<void>, opts: { timeout?: number; events?: Array<{ kind: string; payload: Record<string, unknown> }> } = {}) {
-  return new PolicyRuntime({ manifest: manifest(), connector, runId: "public-run", evidence: evidence(opts.events),
+function runtime(connector: FixtureConnector, policy: (decision: PublicStatefulDecisionContext, control: PublicStatefulControlMetadata) => void | Promise<void>, opts: { timeout?: number; events?: Array<{ kind: string; payload: Record<string, unknown> }>; evidenceSink?: AgentRunEvidence } = {}) {
+  return new PolicyRuntime({ manifest: manifest(), connector, runId: "public-run", evidence: opts.evidenceSink ?? evidence(opts.events),
     runtimeIdentity: { version: "test", code_sha256: "d".repeat(64) }, policyTimeoutMs: opts.timeout,
     publicStatefulPolicy: async (decision, control) => {
       await policy(decision, control);
@@ -209,6 +209,35 @@ describe("public Snapshot stateful protocol 4", () => {
     await expect(rt.setMode("shadow")).rejects.toThrow(/mode change failed closed/);
     expect(events.some(event => event.kind === "public_stateful_episode_ended" && event.payload.reason === "mode_change_evidence_write_failed")).toBe(true);
     await expect(rt.setMode("auto")).rejects.toThrow(/explicitly begun/);
+  });
+
+  it("taints a port 4 run when decision evidence fails after a public input was recorded", async () => {
+    const connector = new FixtureConnector();
+    const events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    let failDecisionOnce = true;
+    const faultEvidence = {
+      append: vi.fn(async (kind: string, payload: Record<string, unknown>) => {
+        if (kind === "decision" && failDecisionOnce) {
+          failDecisionOnce = false;
+          throw new Error("injected decision evidence write failure");
+        }
+        events.push({ kind, payload });
+      }),
+      finalize: vi.fn(async () => {}),
+    } as unknown as AgentRunEvidence;
+    const rt = runtime(connector, async () => {}, { events, evidenceSink: faultEvidence });
+    await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    await rt.setMode("shadow");
+
+    await expect(rt.tick()).resolves.toMatchObject({ type: "not_admitted", reason: "agent_evidence_write_failed" });
+    expect(rt.status().tainted).toBe(true);
+    expect(connector.submitCount).toBe(0);
+    expect(events.map(event => event.kind)).toContain("public_stateful_decision_input");
+    expect(events.map(event => event.kind)).not.toContain("decision");
+    expect(events.map(event => event.kind)).toContain("public_stateful_episode_ended");
+    expect(events.map(event => event.kind)).toContain("runtime_tainted");
+    expect(events.findIndex(event => event.kind === "public_stateful_episode_ended"))
+      .toBeLessThan(events.findIndex(event => event.kind === "runtime_tainted"));
   });
 
   it("passes only a delivered action receipt and verified successor as next-call feedback", async () => {

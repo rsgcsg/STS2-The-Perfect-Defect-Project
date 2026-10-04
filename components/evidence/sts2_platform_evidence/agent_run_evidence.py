@@ -732,6 +732,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                     or payload["segment_id"] != public_segment["segment_id"]
                     or commitment != public_segment["commitment"]):
                 raise AgentRunEvidenceError("public_stateful_token_binding", "public stateful input differs from its active episode, segment, or token commitment", _EVENTS_FILE)
+            if public_segment.get("closing_only"):
+                raise AgentRunEvidenceError("public_stateful_segment_order", "a reset segment is closing-only and cannot score before a fresh explicit begin", _EVENTS_FILE)
             _positive_int(payload, "observation_ordinal", _EVENTS_FILE)
             ordinal = payload["observation_ordinal"]
             snapshot_id = _text(payload, "snapshot_id", _EVENTS_FILE)
@@ -761,10 +763,17 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 previous_decision_id = matching[0]
                 previous_receipt = receipts[previous_decision_id]
                 previous_watermark = public_decision_watermarks.get(previous_decision_id)
+                previous_successor = successors.get(previous_decision_id)
+                successor_snapshot_id = previous_successor.get("snapshot_id") if previous_successor is not None else None
+                successor_sequence = previous_successor.get("sequence") if previous_successor is not None else None
                 if (previous_decision_id in rejected_receipts or previous_receipt.get("delivery") != "delivered"
                         or previous_decision_id not in successors or previous_watermark is None
                         or public_decision_segments.get(previous_decision_id) != public_segment["segment_id"]
-                        or snapshot_id == previous_watermark[0] or observed_sequence <= previous_watermark[1]):
+                        or snapshot_id == previous_watermark[0] or observed_sequence <= previous_watermark[1]
+                        or successor_snapshot_id == previous_watermark[0] or successor_sequence is None
+                        or successor_sequence <= previous_watermark[1] or observed_sequence < successor_sequence
+                        or (snapshot_id == successor_snapshot_id and observed_sequence != successor_sequence)
+                        or (snapshot_id != successor_snapshot_id and observed_sequence <= successor_sequence)):
                     raise AgentRunEvidenceError("public_stateful_ack_association", "previous action lacks one delivered receipt and observed successor before a newer observation", _EVENTS_FILE)
             pending_public_input = dict(payload)
             pending_public_input_interrupted = False
@@ -772,6 +781,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _exact_keys(payload, {"episode_id", "previous_segment_id", "segment_id", "previous_continuity_token_commitment", "continuity_token_commitment", "reason", "memory_continuity"}, "public_stateful_observation_segment_reset payload")
             if public_segment is None:
                 raise AgentRunEvidenceError("public_stateful_segment_order", "public stateful reset requires an active segment", _EVENTS_FILE)
+            if public_segment.get("closing_only"):
+                raise AgentRunEvidenceError("public_stateful_reset_binding", "a reset segment cannot be rotated again before it is explicitly ended", _EVENTS_FILE)
             old_commitment = _public_stateful_commitment(payload, "previous_continuity_token_commitment")
             new_commitment = _public_stateful_commitment(payload, "continuity_token_commitment")
             _literal(payload, "memory_continuity", False, _EVENTS_FILE)
@@ -787,7 +798,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 raise AgentRunEvidenceError("public_stateful_reset_binding", "public stateful reset must rotate to a new token commitment", _EVENTS_FILE)
             public_segment_ids.add(next_segment_id)
             public_token_commitments.add(new_commitment)
-            public_segment = {**public_segment, "segment_id": next_segment_id, "commitment": new_commitment}
+            public_segment = {**public_segment, "segment_id": next_segment_id, "commitment": new_commitment, "closing_only": True}
             public_observations = {}
             public_latest_observation = None
         elif kind == "public_stateful_episode_ended":
@@ -1060,6 +1071,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _exact_keys(payload, {"reason", "retry"}, "runtime_tainted payload")
             _text(payload, "reason", _EVENTS_FILE)
             _literal(payload, "retry", False, _EVENTS_FILE)
+            if public_stateful_port:
+                public_terminal_receipt = True
             autonomy_mode = False
         events.append(value)
     if pending_text_input is not None and manifest["status"] != "tainted":
@@ -1070,7 +1083,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         if public_segment is not None and manifest["status"] != "tainted":
             raise AgentRunEvidenceError("public_stateful_segment_order", "an untainted port 4 run must explicitly end its active segment", _EVENTS_FILE)
         if public_terminal_receipt and manifest["status"] != "tainted":
-            raise AgentRunEvidenceError("taint_drift", "unknown or rejected port 4 delivery requires a tainted run", _EVENTS_FILE)
+            raise AgentRunEvidenceError("taint_drift", "unknown, rejected, or runtime-tainted port 4 evidence requires a tainted run", _EVENTS_FILE)
     if any(decision_id not in text_outcomes for decision_id in text_dispatches) and manifest["status"] != "tainted":
         raise AgentRunEvidenceError("text_result_missing", "dispatched text action has no result in untainted run", _EVENTS_FILE)
     if managed_control is not None and manifest["status"] != "tainted":

@@ -173,9 +173,13 @@ The Agent-run log uses the existing `public_stateful_episode_started`,
 run-bound SHA-256 commitment over the Runtime token instead of the raw token;
 reset records both the prior and replacement commitments. The commitment is an
 opaque equality/rotation witness and cannot be used to reconstruct the token.
-The Evidence consumer separately checks that decision watermarks match their
-decisions, and that prior-action request IDs bind to a same-segment delivered
-receipt and recorded successor.
+After a reset, the replacement segment is closing-only: Runtime ends it before
+any further scoring, and another policy segment requires a fresh explicit begin.
+Port 4 evidence-write failure after a public input taints the run because the
+scored output can no longer be fully represented. The Evidence consumer checks
+that decision watermarks match their decisions, and that prior-action request
+IDs bind to a same-segment delivered receipt and an observed Snapshot at or
+beyond its recorded successor.
 
 ## Confirmed interaction port (opt-in)
 

@@ -428,17 +428,17 @@ class AgentRunEvidenceTests(unittest.TestCase):
             event("public_stateful_decision_input", {
                 "episode_id": episode_id, "segment_id": segment_id,
                 "continuity_token_commitment": commitment, "observation_ordinal": 2,
-                "snapshot_id": "snapshot-2", "sequence": 5,
+                "snapshot_id": "snapshot-5", "sequence": 5,
                 "previous_action_request_id": request_id,
             }),
-            decision("decision-2", "snapshot-2", selected=False),
+            decision("decision-2", "snapshot-5", selected=False),
+            event("controller_released", {}),
             event("public_stateful_episode_ended", {
                 "scope": "single_game_episode", "episode_id": episode_id,
                 "segment_id": segment_id, "continuity_token_commitment": commitment,
                 "reason": "explicit_end", "requires_explicit_begin": True,
                 "memory_continuity": False,
             }),
-            event("controller_released", {}),
         ]
         for index, item in enumerate(events, 1):
             item["sequence"] = index
@@ -460,14 +460,30 @@ class AgentRunEvidenceTests(unittest.TestCase):
         result = AgentRunEvidenceVerifier().verify(self._public_stateful_evidence("run-public-stateful"))
         self.assertTrue(result.passed, result.findings)
 
+        exact_successor = self._public_stateful_evidence("run-public-stateful-exact-successor")
+        events = [json.loads(line) for line in (exact_successor / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        events[7]["payload"].update(snapshot_id="snapshot-2", sequence=2)
+        events[8]["payload"]["decision"].update(snapshot_id="snapshot-2")
+        self._rewrite_events(exact_successor, events)
+        result = AgentRunEvidenceVerifier().verify(exact_successor)
+        self.assertTrue(result.passed, result.findings)
+
     def test_public_stateful_port4_rejects_token_drift_missing_fields_and_bad_ack(self) -> None:
         verifier = AgentRunEvidenceVerifier()
         cases = (
             ("token-drift", "public_stateful_token_binding", lambda events: events[2]["payload"].update(continuity_token_commitment="b" * 64)),
             ("missing-start-commitment", "schema_keys", lambda events: events[0]["payload"].pop("continuity_token_commitment")),
             ("missing-decision-commitment", "schema_keys", lambda events: events[2]["payload"].pop("continuity_token_commitment")),
-            ("missing-end-commitment", "schema_keys", lambda events: events[9]["payload"].pop("continuity_token_commitment")),
+            ("missing-end-commitment", "schema_keys", lambda events: events[10]["payload"].pop("continuity_token_commitment")),
             ("bad-ack", "public_stateful_ack_association", lambda events: events[7]["payload"].update(previous_action_request_id="request-unmatched")),
+            ("ack-before-successor", "public_stateful_ack_association", lambda events: (
+                events[7]["payload"].update(snapshot_id="snapshot-between", sequence=2),
+                events[8]["payload"]["decision"].update(snapshot_id="snapshot-between"),
+            )),
+            ("ack-successor-identity-watermark-conflict", "public_stateful_ack_association", lambda events: (
+                events[7]["payload"].update(snapshot_id="snapshot-2", sequence=5),
+                events[8]["payload"]["decision"].update(snapshot_id="snapshot-2"),
+            )),
         )
         for name, expected_code, mutate in cases:
             with self.subTest(name=name):
@@ -490,7 +506,7 @@ class AgentRunEvidenceTests(unittest.TestCase):
             with self.subTest(name=name):
                 directory = self._public_stateful_evidence(name)
                 events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
-                ended = events.pop(-2)
+                ended = events.pop(-1)
                 reset = {
                     "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
                     "recorded_at": "2026-08-25T00:00:03.000Z",
@@ -527,6 +543,72 @@ class AgentRunEvidenceTests(unittest.TestCase):
                 result = verifier.verify(directory)
                 self.assertFalse(result.passed)
                 self.assertEqual(result.findings[0].code, expected_code)
+
+    def test_public_stateful_port4_rejects_scoring_after_rotating_reset_before_explicit_begin(self) -> None:
+        directory = self._public_stateful_evidence("run-public-stateful-reset-continues")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        events = events[:7]
+        events.extend([
+            {
+                "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                "recorded_at": "2026-08-25T00:00:03.000Z", "kind": "controller_released", "payload": {},
+            },
+            {
+                "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                "recorded_at": "2026-08-25T00:00:03.100Z",
+                "kind": "public_stateful_observation_segment_reset",
+                "payload": {
+                    "episode_id": "episode-1", "previous_segment_id": "segment-1",
+                    "segment_id": "segment-2", "previous_continuity_token_commitment": "a" * 64,
+                    "continuity_token_commitment": "b" * 64,
+                    "reason": "policy_completion_failed", "memory_continuity": False,
+                },
+            },
+            {
+                "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                "recorded_at": "2026-08-25T00:00:03.200Z", "kind": "public_stateful_decision_input",
+                "payload": {
+                    "episode_id": "episode-1", "segment_id": "segment-2",
+                    "continuity_token_commitment": "b" * 64, "observation_ordinal": 1,
+                    "snapshot_id": "snapshot-5", "sequence": 5, "previous_action_request_id": None,
+                },
+            },
+        ])
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(directory, events)
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "public_stateful_segment_order")
+
+    def test_public_stateful_runtime_taint_is_terminal_even_without_a_receipt(self) -> None:
+        directory = self._public_stateful_evidence("run-public-stateful-taint-terminal")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        events.extend([
+            {
+                "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                "recorded_at": "2026-08-25T00:00:04.000Z", "kind": "runtime_tainted",
+                "payload": {"reason": "unknown_delivery_after_submit", "retry": False},
+            },
+            {
+                "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                "recorded_at": "2026-08-25T00:00:05.000Z", "kind": "public_stateful_episode_started",
+                "payload": {
+                    "scope": "single_game_episode", "episode_id": "episode-2", "segment_id": "segment-2",
+                    "continuity_token_commitment": "c" * 64,
+                },
+            },
+        ])
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update(status="tainted", tainted=True)
+        manifest_path.write_bytes(canonical(manifest))
+        self._rewrite_events(directory, events)
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "unknown_retry")
 
     def test_public_stateful_port4_rejects_reads_and_non_model_neutral_profile(self) -> None:
         verifier = AgentRunEvidenceVerifier()
