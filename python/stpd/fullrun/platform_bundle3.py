@@ -13,17 +13,21 @@ import tarfile
 import tempfile
 import zlib
 from collections import Counter, defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from sts2_platform_evidence import DirectoryTransferManifest
 from sts2_platform_evidence.human_session_bundle_v3 import (
     HumanSessionBundleV3,
     HumanSessionBundleV3Verifier,
 )
 
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json
-from spireagent.local_verified_bundle import VerifiedLocalBundle
+from spireagent.local_verified_bundle import MAX_TRANSFER, VerifiedLocalBundle
 
 from ..canonical import canonical_json, semantic_hash
 from .contracts import (
@@ -75,6 +79,28 @@ _METADATA = frozenset(
         "hovered",
     }
 )
+
+
+@dataclass(frozen=True)
+class VerifiedBundle3Archive:
+    transfer: DirectoryTransferManifest
+    session_id: str
+    timeline_id: str
+    worker_id: str
+    campaign_id: str
+    manifest_sha256: str
+    close_sha256: str
+
+
+@contextmanager
+def _verified_archive(source: bytes) -> Iterator[tuple[Path, HumanSessionBundleV3]]:
+    with tempfile.TemporaryDirectory(prefix="stpd-verified-bundle3-") as name:
+        directory = Path(name)
+        _extract(source, directory)
+        verification = HumanSessionBundleV3Verifier().verify(directory)
+        if verification.status != "pass" or verification.value is None:
+            raise BoundaryError("platform_verifier", "bundle3_verification_failed")
+        yield directory, verification.value
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -407,19 +433,42 @@ class PlatformBundle3SourceAdapter:
     adapter_id = ADAPTER_ID
 
     def project(self, source: bytes) -> SourceProjection:
-        with tempfile.TemporaryDirectory(prefix="stpd-verified-bundle3-") as name:
-            directory = Path(name)
-            _extract(source, directory)
-            verification = HumanSessionBundleV3Verifier().verify(directory)
-            if verification.status != "pass" or verification.value is None:
-                raise BoundaryError("platform_verifier", "bundle3_verification_failed")
-            bundle = verification.value
+        with _verified_archive(source) as (directory, bundle):
             return self._project(
                 directory,
                 source,
                 bundle.bundle_content_id,
                 dict(bundle.capture_profile),
                 dict(bundle.manifest),
+            )
+
+    def verify_with_transfer(self, source: bytes) -> VerifiedBundle3Archive:
+        """Typed-verify an original archive and derive its canonical transfer view."""
+        with _verified_archive(source) as (directory, bundle):
+            transfer = DirectoryTransferManifest.from_directory(
+                directory, content_id=bundle.bundle_content_id,
+                artifact_type="human-session-bundle",
+            )
+            if (len(transfer.files) > 50000
+                    or sum(item.bytes for item in transfer.files) > 2 * 1024**3):
+                raise BoundaryError("platform_projection", "bundle_size_limit")
+            hashes: dict[str, str] = {}
+            for field, relative in (
+                ("manifest_sha256", "raw/recording-manifest.json"),
+                ("close_sha256", "raw/session-close-receipt.json"),
+            ):
+                path = directory / relative
+                if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_TRANSFER:
+                    raise BoundaryError("platform_projection", "recording_source_hash_invalid")
+                hashes[field] = hashlib.sha256(path.read_bytes()).hexdigest()
+            return VerifiedBundle3Archive(
+                transfer=transfer,
+                session_id=bundle.session_id,
+                timeline_id=bundle.timeline_id,
+                worker_id=bundle.worker_id,
+                campaign_id=bundle.campaign_id,
+                manifest_sha256=hashes["manifest_sha256"],
+                close_sha256=hashes["close_sha256"],
             )
 
     def _project_verified_local(

@@ -72,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
             "credential",
             "collection-tool",
             "collection-upgrade",
+            "remote-m0",
         ),
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -153,6 +154,17 @@ def main(argv: list[str] | None = None) -> int:
                         help="operator-provided exact private Host package pin JSON")
     parser.add_argument("--input-profile", choices=("text-menu-v1", "text-menu-v2"),
                         help="explicit Managed text-menu profile in the private Host setup")
+    parser.add_argument("--remote-action", choices=("start", "resume", "reconcile",
+                                                       "cancel", "retire", "status"))
+    parser.add_argument("--run-id", help="owner-admitted CUDA M0 run for remote start")
+    parser.add_argument("--operation-id", help="journaled remote M0 operation")
+    parser.add_argument("--target-step", type=int,
+                        help="explicit cumulative step target, bounded by the run config")
+    parser.add_argument("--modal-account", help="exact Modal account/workspace ID")
+    parser.add_argument("--modal-environment", help="exact Modal environment name")
+    parser.add_argument("--modal-image-id", help="immutable prebuilt Modal image ID")
+    parser.add_argument("--wait-seconds", type=float, default=900,
+                        help="bounded poll window (0 to 900 seconds)")
     args = parser.parse_args(argv)
     try:
         result: Any
@@ -198,6 +210,51 @@ def main(argv: list[str] | None = None) -> int:
                     expected_new_profile_sha256=args.expected_new_profile_sha256,
                     archived_profile_sha256=args.archived_profile_sha256,
                 )
+            elif args.command == "remote-m0":
+                from spireagent.workbench.local_m0_remote import (
+                    LocalM0RemoteController,
+                    ModalM0Settings,
+                )
+                from spireagent.workbench.local_training import LocalTrainingService
+
+                if args.remote_action is None:
+                    raise BoundaryError("local_m0_remote", "remote_action_required")
+                service = LocalTrainingService(config)
+                if args.remote_action == "status":
+                    result = service.status()
+                elif args.remote_action == "start":
+                    if (args.run_id is None or args.target_step is None
+                            or args.modal_account is None
+                            or args.modal_environment is None
+                            or args.modal_image_id is None):
+                        raise BoundaryError("local_m0_remote", "start_arguments_required")
+                    controller = LocalM0RemoteController(
+                        service,
+                        ModalM0Settings(args.modal_account, args.modal_environment,
+                                        args.modal_image_id),
+                    )
+                    result = controller.start(
+                        args.run_id, args.target_step, wait_seconds=args.wait_seconds,
+                    )
+                elif args.remote_action == "resume":
+                    if args.operation_id is None or args.target_step is None:
+                        raise BoundaryError("local_m0_remote", "resume_arguments_required")
+                    result = LocalM0RemoteController(service).resume(
+                        args.operation_id, args.target_step,
+                        wait_seconds=args.wait_seconds,
+                    )
+                else:
+                    if args.operation_id is None:
+                        raise BoundaryError("local_m0_remote", "operation_id_required")
+                    controller = LocalM0RemoteController(service)
+                    if args.remote_action == "cancel":
+                        result = controller.cancel(args.operation_id,
+                                                   wait_seconds=args.wait_seconds)
+                    elif args.remote_action == "retire":
+                        result = controller.retire_preflight_failure(args.operation_id)
+                    else:
+                        result = controller.reconcile(args.operation_id,
+                                                      wait_seconds=args.wait_seconds)
             elif args.command == "environment-profile":
                 from spireagent.workbench.local_environment import configure_managed_host
 
