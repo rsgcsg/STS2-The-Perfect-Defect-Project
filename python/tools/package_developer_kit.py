@@ -24,6 +24,10 @@ from sts2_platform_evidence.collection_tool import CollectionTool
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes
 from spireagent.source import source_identity
 from spireagent.workbench.developer import combination
+from spireagent.workbench.kit_environment import (
+    PROFILE_FIELD,
+    resolve_python_environment_profile,
+)
 from spireagent.workbench.kit_runtime import (
     KIT_RUNTIME_PAIRS,
     PRIVATE_HOST_ARCHIVE,
@@ -65,10 +69,16 @@ python tools/open_workbench.py --config /ABS/project.json
 ```
 
 The local home, fixed model environment and recorded reports work without team login.
-If this approved kit contains a fixed text Runtime pair, initialize installs the
-locked `local-models` Python extra; a collection-only kit remains light. No model
-weights or Qwen/Transformers are downloaded by this step. For team collection and
-uploads, an administrator invites your email. Supply the approved `--hub-url`
+The packager accepts `--python-environment-profile cloud` or
+`--python-environment-profile cloud-local-models`. For M0 collection kits, select
+`cloud-local-models` explicitly, even when the kit contains no model Runtime pair.
+An explicit profile uses developer-kit schema v2 so older v1 consumers reject it
+instead of silently ignoring the selection. Omitted profiles keep schema v1 and its
+legacy inference. The profile selects Python dependencies only; it does not make a
+model eligible or qualify a model. Older kits without the field infer
+`cloud-local-models` when any fixed text Runtime pair is bundled, and `cloud`
+otherwise. No model weights or Qwen/Transformers are downloaded by this step. For
+team collection and uploads, an administrator invites your email. Supply the approved `--hub-url`
 when first creating the private profile; an existing no-Hub profile requires the
 documented stopped, explicit replacement setup that preserves its other settings.
 Then use account/device setup to log in and approve the matching computer name
@@ -155,6 +165,7 @@ def package(
     m2_v2_runtime_archive: PinnedFile | None = None,
     private_host_profile: PinnedFile | None = None,
     private_host_archive: PinnedFile | None = None,
+    python_environment_profile: str | None = None,
 ) -> dict[str, Any]:
     """Verify with the owning tool contract, then publish one immutable deterministic ZIP."""
     if output.exists() or output.is_symlink():
@@ -173,6 +184,20 @@ def package(
                                 "_profile_and_archive_required")
     if (private_host_profile is None) != (private_host_archive is None):
         raise BoundaryError("developer_kit", "private_host_profile_and_archive_required")
+    if python_environment_profile is not None:
+        # Validate type/value before any archive publication. Profile selection is
+        # independent of model bundle presence except for the cloud contradiction.
+        candidate_files: dict[str, bytes] = {}
+        for profile_id, (supplied_profile, supplied_archive) in supplied.items():
+            if supplied_profile is not None and supplied_archive is not None:
+                candidate_files[KIT_RUNTIME_PAIRS[profile_id][0]] = b"profile"
+                candidate_files[KIT_RUNTIME_PAIRS[profile_id][1]] = b"archive"
+        try:
+            resolve_python_environment_profile(
+                {PROFILE_FIELD: python_environment_profile}, candidate_files,
+                KIT_RUNTIME_PAIRS)
+        except ValueError as error:
+            raise BoundaryError("developer_kit", str(error)) from error
     files = {
         "README.md": README.encode(),
         "mod/STS2_PLATFORM.dll": mod_dll.read(),
@@ -253,7 +278,8 @@ def package(
     if owner.verify() != tool_manifest:
         raise BoundaryError("developer_kit", "tool_changed_during_packaging")
     manifest = {
-        "schema": "spireagent/developer-kit-v1",
+        "schema": ("spireagent/developer-kit-v2" if python_environment_profile is not None
+                   else "spireagent/developer-kit-v1"),
         "workbench_launcher_schema": "spireagent/workbench-launcher-v1",
         "stpd_source_revision": producer.source_revision,
         "uv_lock_sha256": producer.uv_lock_sha256,
@@ -268,6 +294,8 @@ def package(
         "platform_bom_sha256": platform_bom.sha256,
         "files": {name: sha256(raw) for name, raw in sorted(files.items())},
     }
+    if python_environment_profile is not None:
+        manifest[PROFILE_FIELD] = python_environment_profile
     for profile_id, (supplied_profile, supplied_archive) in supplied.items():
         if supplied_profile is not None and supplied_archive is not None:
             manifest[KIT_RUNTIME_PAIRS[profile_id][4]] = {
@@ -382,6 +410,11 @@ def main() -> int:
     parser.add_argument("--private-host-archive", type=Path)
     parser.add_argument("--private-host-archive-sha256")
     parser.add_argument(
+        "--python-environment-profile",
+        choices=("cloud", "cloud-local-models"),
+        help="explicit locked Python dependency profile (omission preserves legacy inference)",
+    )
+    parser.add_argument(
         "--output",
         required=True,
         type=Path,
@@ -436,6 +469,7 @@ def main() -> int:
             private_host_archive=(PinnedFile(args.private_host_archive,
                                              args.private_host_archive_sha256)
                                   if args.private_host_archive is not None else None),
+            python_environment_profile=args.python_environment_profile,
         )
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         code = error.code if isinstance(error, BoundaryError) else type(error).__name__

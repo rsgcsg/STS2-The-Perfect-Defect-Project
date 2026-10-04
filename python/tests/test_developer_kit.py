@@ -176,6 +176,7 @@ def test_deterministic_public_inventory_and_real_owner_verification(inputs, tmp_
         }
         assert set(archive.namelist()) == expected
         manifest = json.loads(archive.read("combination.json"))
+        assert "python_environment_profile" not in manifest
         assert manifest["workbench_launcher_schema"] == "spireagent/workbench-launcher-v1"
         assert set(manifest["files"]) == expected - {"combination.json"}
         for name, expected_hash in manifest["files"].items():
@@ -191,6 +192,43 @@ def test_deterministic_public_inventory_and_real_owner_verification(inputs, tmp_
         # Only our generated archive, after exact path inventory verification.
         archive.extractall(extracted)
     CollectionTool(extracted / "collection-tool", inputs["tool_release_id"])
+
+
+@pytest.mark.parametrize("profile", ["cloud", "cloud-local-models"])
+def test_explicit_python_profile_is_valid_for_collection_only_kit(inputs, profile):
+    receipt = package(**{**inputs, "python_environment_profile": profile})
+    with zipfile.ZipFile(inputs["output"]) as archive:
+        manifest = json.loads(archive.read("combination.json"))
+    assert manifest["schema"] == "spireagent/developer-kit-v2"
+    assert manifest["python_environment_profile"] == profile
+    assert receipt["sha256"] == sha256(inputs["output"].read_bytes())
+
+
+@pytest.mark.parametrize("bad_profile", [True, [], {}, "unknown"])
+def test_package_rejects_invalid_explicit_python_environment_profile(inputs, bad_profile):
+    with pytest.raises(BoundaryError, match="python_environment_profile_invalid"):
+        package(**{**inputs, "python_environment_profile": bad_profile})
+    assert not inputs["output"].exists()
+
+
+@pytest.mark.parametrize("profile_id", [
+    "text-menu-v1", "text-menu-m2-v1", "text-menu-m2-v2",
+])
+def test_package_rejects_cloud_profile_with_each_bundled_text_runtime_pair(
+        inputs, tmp_path, profile_id):
+    pair_fields = {
+        "text-menu-v1": ("text_runtime_profile", "text_runtime_archive"),
+        "text-menu-m2-v1": ("m2_runtime_profile", "m2_runtime_archive"),
+        "text-menu-m2-v2": ("m2_v2_runtime_profile", "m2_v2_runtime_archive"),
+    }
+    paths = (tmp_path / "profile.json", tmp_path / "runtime.tgz")
+    for path, raw in zip(paths, (b"profile", b"archive"), strict=True):
+        path.write_bytes(raw)
+    options = {field: PinnedFile(path, sha256(path.read_bytes()))
+               for field, path in zip(pair_fields[profile_id], paths, strict=True)}
+    with pytest.raises(BoundaryError, match="contradicts_bundled_text_runtime"):
+        package(**{**inputs, **options, "python_environment_profile": "cloud"})
+    assert not inputs["output"].exists()
 
 
 def test_optional_runtime_requires_external_pins_and_fixed_inventory(inputs, tmp_path,
@@ -286,6 +324,8 @@ def test_verified_kit_runtime_inventory_selects_only_locked_model_extra(profile)
     from tools.install_developer_kit import KIT_RUNTIME_PAIRS, _environment_extras
 
     receipt = {pair[4]: "not_bundled" for pair in KIT_RUNTIME_PAIRS.values()}
+    receipt["python_environment_profile"] = (
+        "cloud" if profile is None else "cloud-local-models")
     if profile is not None:
         receipt[KIT_RUNTIME_PAIRS[profile][4]] = "bundled_installation_not_checked"
     assert _environment_extras(receipt) == (["--extra", "cloud"] if profile is None else
@@ -297,7 +337,10 @@ def test_register_uses_same_verified_kit_extra_selection(tmp_path, monkeypatch,
                                                          with_model):
     from tools import install_developer_kit as install
 
-    prepared = {"tool_release_id": "a" * 64, "m2_v2_runtime": (
+    prepared = {"tool_release_id": "a" * 64,
+                "python_environment_profile": (
+                    "cloud-local-models" if with_model else "cloud"),
+                "m2_v2_runtime": (
         "bundled_installation_not_checked" if with_model else "not_bundled")}
     monkeypatch.setattr(install, "status", lambda _directory: prepared)
     commands = []
@@ -631,7 +674,8 @@ def test_optional_runtime_package_prepare_and_status_preserve_staged_bytes(
         install.status(target)
 
 
-def test_packager_uses_real_npm_closure_validation(inputs, tmp_path, bundled_release):
+def test_packager_uses_real_npm_closure_validation(inputs, tmp_path, bundled_release,
+                                                  isolated_port):
     from tools.install_developer_kit import run
 
     _, runtime_root, pin = bundled_release

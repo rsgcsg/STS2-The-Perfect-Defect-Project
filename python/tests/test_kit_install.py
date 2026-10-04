@@ -13,15 +13,24 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.kit_runtime import private_host_runtime_pin
 from tools import install_developer_kit as install
 
+_OMIT_PROFILE = object()
 
-def archive(tmp_path: Path, *, extra: str | None = None) -> tuple[Path, str]:
+
+def archive(tmp_path: Path, *, extra: str | None = None,
+            python_profile: object = _OMIT_PROFILE,
+            schema: str = "spireagent/developer-kit-v1",
+            runtime_profile_id: str | None = None) -> tuple[Path, str]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     files = {name: b"synthetic" for name in install.STAGING}
     for name in ("platform-bom.json", "developer-combination.json", "mod/STS2_PLATFORM.json"):
         files[name] = b"synthetic"
     if extra:
         files[extra] = b"unsafe"
+    if runtime_profile_id is not None:
+        pair = install.KIT_RUNTIME_PAIRS[runtime_profile_id]
+        files[pair[0]], files[pair[1]] = b"profile", b"archive"
     manifest = {
-        "schema": "spireagent/developer-kit-v1",
+        "schema": schema,
         "stpd_source_revision": "a" * 40,
         "uv_lock_sha256": "b" * 64,
         "collection_tool_release_id": "c" * 64,
@@ -31,6 +40,13 @@ def archive(tmp_path: Path, *, extra: str | None = None) -> tuple[Path, str]:
         "developer_combination_sha256": install.sha(files["developer-combination.json"]),
         "files": {name: install.sha(raw) for name, raw in files.items()},
     }
+    if python_profile is not _OMIT_PROFILE:
+        manifest["python_environment_profile"] = python_profile
+    if runtime_profile_id is not None:
+        pair = install.KIT_RUNTIME_PAIRS[runtime_profile_id]
+        manifest[pair[4]] = {"profile_sha256": install.sha(files[pair[0]]),
+                             "archive_sha256": install.sha(files[pair[1]])}
+        manifest["files"] = {name: install.sha(raw) for name, raw in files.items()}
     files["combination.json"] = json.dumps(manifest).encode()
     target = tmp_path / "kit.zip"
     with zipfile.ZipFile(target, "w") as z:
@@ -45,7 +61,8 @@ def archive(tmp_path: Path, *, extra: str | None = None) -> tuple[Path, str]:
 
 
 def prepared_status_fixture(tmp_path: Path, monkeypatch, *, include_text_runtime: bool = False,
-                            include_private_host: bool = False):
+                            include_private_host: bool = False,
+                            python_environment_profile: str | None = None):
     directory = tmp_path / ("f" * 64)
     kit, source = directory / "kit", directory / "source"
     files = {name: ("synthetic:" + name).encode() for name in install.STAGING}
@@ -83,6 +100,8 @@ def prepared_status_fixture(tmp_path: Path, monkeypatch, *, include_text_runtime
             "profile_sha256": install.sha(files[runtime_pair[0]]),
             "archive_sha256": install.sha(files[runtime_pair[1]]),
         }
+    if python_environment_profile is not None:
+        manifest["python_environment_profile"] = python_environment_profile
     if private is not None:
         manifest[install.PRIVATE_HOST_MANIFEST_KEY] = {
             "profile_sha256": install.sha(files[install.PRIVATE_HOST_PROFILE]),
@@ -296,6 +315,121 @@ def test_verified_inventory_needs_independent_archive_hash(tmp_path):
         install.verified_archive(path, install.sha(path.read_bytes()))
 
 
+@pytest.mark.parametrize("bad_schema", [None, True, [], {}, "unsupported"])
+def test_archive_rejects_invalid_schema_types(tmp_path, bad_schema):
+    path, expected = archive(tmp_path, schema=bad_schema)
+    with pytest.raises(BoundaryError, match="unsupported_kit_schema"):
+        install.verified_archive(path, expected)
+
+
+@pytest.mark.parametrize("bad_profile", [None, True, [], {}, "unknown"])
+def test_archive_rejects_invalid_explicit_profile_before_prepare_mutation(
+        tmp_path, monkeypatch, bad_profile):
+    path, expected = archive(
+        tmp_path, python_profile=bad_profile, schema="spireagent/developer-kit-v2")
+    releases = tmp_path / "releases"
+    with pytest.raises(BoundaryError):
+        install.prepare(path, expected, releases)
+    assert not releases.exists()
+
+    releases.mkdir()
+    old_release = releases / ("e" * 64)
+    old_release.mkdir()
+    marker = old_release / "approved-release-marker"
+    marker.write_text("preserve")
+    with pytest.raises(BoundaryError):
+        install.prepare(path, expected, releases)
+    assert marker.read_text() == "preserve"
+
+
+def test_archive_profile_schema_compatibility_is_fail_closed(tmp_path):
+    legacy_path, legacy_hash = archive(tmp_path / "legacy")
+    legacy, _ = install.verified_archive(legacy_path, legacy_hash)
+    assert legacy["schema"] == "spireagent/developer-kit-v1"
+    v2_path, v2_hash = archive(
+        tmp_path / "v2", schema="spireagent/developer-kit-v2",
+        python_profile="cloud-local-models")
+    v2, _ = install.verified_archive(v2_path, v2_hash)
+    assert v2["python_environment_profile"] == "cloud-local-models"
+    missing_path, missing_hash = archive(
+        tmp_path / "missing", schema="spireagent/developer-kit-v2")
+    with pytest.raises(BoundaryError, match="kit_schema_python_environment_profile_mismatch"):
+        install.verified_archive(missing_path, missing_hash)
+    added_path, added_hash = archive(
+        tmp_path / "added", python_profile="cloud")
+    with pytest.raises(BoundaryError, match="kit_schema_python_environment_profile_mismatch"):
+        install.verified_archive(added_path, added_hash)
+
+
+def test_prepared_v2_profile_is_archive_bound_through_status_initialize_and_register(
+        tmp_path, monkeypatch):
+    lock_raw = b"synthetic selected uv lock"
+    path, _ = archive(tmp_path)
+    with zipfile.ZipFile(path) as source_archive:
+        files = {name: source_archive.read(name) for name in source_archive.namelist()}
+    manifest = json.loads(files["combination.json"])
+    manifest["schema"] = "spireagent/developer-kit-v2"
+    manifest["python_environment_profile"] = "cloud-local-models"
+    manifest["uv_lock_sha256"] = install.sha(lock_raw)
+    files["combination.json"] = json.dumps(manifest).encode()
+    path.write_bytes(b"")
+    with zipfile.ZipFile(path, "w") as target_archive:
+        for name, raw in files.items():
+            target_archive.writestr(name, raw)
+    expected = install.sha(path.read_bytes())
+
+    commands = []
+
+    def run(args, cwd, **_kwargs):
+        commands.append(args)
+        if args[:2] == ["git", "clone"]:
+            source = Path(args[-1])
+            (source / "python/configs/developer").mkdir(parents=True)
+            (source / "python/uv.lock").write_bytes(lock_raw)
+            (source / "python/configs/developer/combination-v1.json").write_bytes(
+                files["developer-combination.json"])
+            (source / "apps/game-mod").mkdir(parents=True)
+            (source / "apps/game-mod/mod_manifest.json").write_bytes(
+                files["mod/STS2_PLATFORM.json"])
+            return ""
+        if args == ["git", "rev-parse", "HEAD"]:
+            return manifest["stpd_source_revision"]
+        return ""
+
+    monkeypatch.setattr(install, "run", run)
+    monkeypatch.setattr(install, "CollectionTool", lambda *_args, **_kwargs: None)
+    releases = tmp_path / "releases"
+    prepared = install.prepare(path, expected, releases)
+    directory = Path(prepared["directory"])
+    assert prepared["python_environment_profile"] == "cloud-local-models"
+    assert install.status(directory)["python_environment_profile"] == "cloud-local-models"
+
+    # A changed profile in the extracted manifest breaks the exact archive binding;
+    # initialize/register reject before their npm/uv or owner commands can run.
+    extracted_manifest = json.loads((directory / "kit/combination.json").read_bytes())
+    extracted_manifest["python_environment_profile"] = "cloud"
+    (directory / "kit/combination.json").write_text(json.dumps(extracted_manifest))
+    command_count = len(commands)
+    with pytest.raises(BoundaryError, match="prepared_manifest_changed"):
+        install.initialize(directory, tmp_path / "project.json")
+    with pytest.raises(BoundaryError, match="prepared_manifest_changed"):
+        install.register(directory, tmp_path / "project.json")
+    assert len(commands) == command_count
+
+
+@pytest.mark.parametrize("profile_id", [
+    "text-menu-v1", "text-menu-m2-v1", "text-menu-m2-v2",
+])
+def test_archive_rejects_cloud_profile_with_each_bundled_runtime_pair(
+        tmp_path, profile_id):
+    path, expected = archive(
+        tmp_path, schema="spireagent/developer-kit-v2", python_profile="cloud",
+        runtime_profile_id=profile_id)
+    with pytest.raises(BoundaryError,
+                       match="python_environment_profile_contradicts_bundled_text_runtime"):
+        install.verified_archive(path, expected)
+
+
 def test_status_separates_private_host_candidate_from_public_tuple_and_selection(
         tmp_path, monkeypatch):
     directory, source, _, files = prepared_status_fixture(
@@ -307,7 +441,6 @@ def test_status_separates_private_host_candidate_from_public_tuple_and_selection
     assert identity["distribution"] == "private_kit_candidate"
     assert identity["host_runtime"]["source_revision"] == "a" * 40
     assert install.PRIVATE_HOST_PROFILE not in install.STAGING
-
     profile_raw = files[install.PRIVATE_HOST_PROFILE]
     archive_raw = files[install.PRIVATE_HOST_ARCHIVE]
     bom_raw = files["platform-bom.json"]
@@ -324,6 +457,14 @@ def test_status_separates_private_host_candidate_from_public_tuple_and_selection
     staged_sdk.symlink_to(outside)
     with pytest.raises(BoundaryError, match="staged_private_host_package_changed"):
         install.status(directory)
+
+
+def test_status_infers_legacy_profile_only_from_fixed_runtime_pairs(tmp_path, monkeypatch):
+    directory, _, _, _ = prepared_status_fixture(tmp_path / "collection", monkeypatch)
+    assert install.status(directory)["python_environment_profile"] == "cloud"
+    directory, _, _, _ = prepared_status_fixture(
+        tmp_path / "with-runtime", monkeypatch, include_text_runtime=True)
+    assert install.status(directory)["python_environment_profile"] == "cloud-local-models"
 
 
 def test_initialize_stages_private_host_for_existing_environment_profile_only(
@@ -355,6 +496,44 @@ def test_initialize_stages_private_host_for_existing_environment_profile_only(
     ]
     assert all("environment-profile" not in args for args in commands)
     assert (source / install.PRIVATE_HOST_PACKAGE_DESTINATION).is_dir()
+
+
+@pytest.mark.parametrize("profile, expected_extras", [
+    ("cloud", ["--extra", "cloud"]),
+    ("cloud-local-models", ["--extra", "cloud", "--extra", "local-models"]),
+])
+def test_status_initialize_and_register_share_explicit_collection_only_profile(
+        tmp_path, monkeypatch, profile, expected_extras):
+    from test_project_console import config
+
+    directory, _, _, _ = prepared_status_fixture(
+        tmp_path, monkeypatch, python_environment_profile=profile)
+    prepared = install.status(directory)
+    assert prepared["python_environment_profile"] == profile
+    assert install._environment_extras(prepared) == expected_extras
+    profile_root = tmp_path / "profile"
+    profile_root.mkdir()
+    profile = profile_root / "project.json"
+    profile.write_text(json.dumps(config(profile_root).to_dict()))
+    commands = []
+
+    def run(args, cwd, **_kwargs):
+        commands.append(args)
+        if args == ["git", "rev-parse", "HEAD"]:
+            return "a" * 40
+        if args and "collection-tool" in args:
+            return json.dumps({"status": "registered"})
+        return ""
+
+    monkeypatch.setattr(install, "run", run)
+    for _ in range(2):
+        assert install.initialize(directory, profile)["environment"] == "initialized"
+    assert install.register(directory, profile)["status"] == "registered"
+    relevant = [args for args in commands if args and args[0] in {"uv", "npm"}]
+    assert sum(args[:5] == ["uv", "sync", "--project", "python", "--locked"]
+               and args[5:] == expected_extras for args in relevant) == 2
+    assert any(args[:5] == ["uv", "run", "--project", "python", "--locked"]
+               and args[5:5 + len(expected_extras)] == expected_extras for args in relevant)
 
 
 
@@ -708,7 +887,8 @@ def test_wrong_native_game_and_running_game_never_deploy(tmp_path, monkeypatch):
 
 
 def test_registration_uses_selected_owner_and_never_replaces_existing_tool(tmp_path, monkeypatch):
-    monkeypatch.setattr(install, "status", lambda _: {"tool_release_id": "a" * 64})
+    monkeypatch.setattr(install, "status", lambda _: {
+        "tool_release_id": "a" * 64, "python_environment_profile": "cloud"})
     calls = []
 
     def run(args, cwd):
@@ -734,8 +914,9 @@ def test_initialize_refuses_a_running_profile_before_changing_dependencies(tmp_p
     directory = tmp_path / "release"
     directory.mkdir()
     calls = []
-    monkeypatch.setattr(install, "status", lambda _: {"status": "prepared",
-                                                     "text_runtime": "not_bundled"})
+    monkeypatch.setattr(install, "status", lambda _: {
+        "status": "prepared", "text_runtime": "not_bundled",
+        "python_environment_profile": "cloud"})
     monkeypatch.setattr(install, "run", lambda args, cwd: calls.append(args) or "")
     with instance_lock(selected.state_dir / "instance.lock"), pytest.raises(BoundaryError):
         install.initialize(directory, profile)
@@ -758,7 +939,8 @@ def test_initialize_text_runtime_releases_instance_lock_before_owner_cli(tmp_pat
     directory = tmp_path / "release"
     directory.mkdir()
     monkeypatch.setattr(install, "status", lambda _: {
-        "status": "prepared", "text_runtime": "bundled_installation_not_checked"})
+        "status": "prepared", "text_runtime": "bundled_installation_not_checked",
+        "python_environment_profile": "cloud-local-models"})
     commands = []
     def run(args, cwd):
         commands.append(args)
@@ -790,7 +972,8 @@ def test_initialize_m2_runtime_uses_real_cli_parser_and_owner_install_boundary(
     directory.mkdir()
     monkeypatch.setattr(install, "status", lambda _: {
         "status": "prepared", "text_runtime": "not_bundled",
-        "m2_runtime": "bundled_installation_not_checked"})
+        "m2_runtime": "bundled_installation_not_checked",
+        "python_environment_profile": "cloud-local-models"})
     monkeypatch.setattr(developer_cli.ProjectConfig, "load", lambda *_a, **_k: selected)
     monkeypatch.setattr(local_model_cli, "running", lambda _: None)
     expected = (selected.state_dir / "models/text-menu-m2-v1",
@@ -826,7 +1009,8 @@ def test_initialize_new_profile_runs_real_owner_setup_without_selection(tmp_path
     registry = source / "python/.local/token-policies-v1.json"
     original_registry = registry.read_bytes() if registry.exists() else None
     monkeypatch.setattr(install, "status", lambda _: {
-        "status": "prepared", "text_runtime": "bundled_installation_not_checked"})
+        "status": "prepared", "text_runtime": "bundled_installation_not_checked",
+        "python_environment_profile": "cloud-local-models"})
     calls = []
     def run(args, cwd):
         calls.append((args, cwd))
