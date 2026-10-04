@@ -634,6 +634,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
     pending_text_input: str | None = None
     public_stateful_port = adapter_protocol == _PUBLIC_STATEFUL_PROTOCOL
     public_segment: dict[str, Any] | None = None
+    public_episode_environment: tuple[str, str] | None = None
     public_episode_ids: set[str] = set()
     public_segment_ids: set[str] = set()
     public_token_commitments: set[str] = set()
@@ -642,11 +643,11 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
     public_observations: dict[str, tuple[str, int, int]] = {}
     public_latest_observation: tuple[str, int, int] | None = None
     public_latest_ack_request_id: str | None = None
-    public_environment: Mapping[str, Any] | None = None
     pending_public_input: Mapping[str, Any] | None = None
     pending_public_input_interrupted = False
     public_abandoned_input = False
     public_terminal_receipt = False
+    public_stopped = False
     context_port = adapter_protocol == "sts2.policy-runtime/decision-only-ndjson-3"
     text_contexts: dict[str, str] = {}
     context_token: str | None = None
@@ -689,6 +690,22 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                                         "text_menu_result_rejected", "text_observed_successor"}:
             raise AgentRunEvidenceError("unknown_retry", "v2 unknown native delivery cannot continue text decisions or delivery", _EVENTS_FILE)
         payload = value["payload"]
+        # Runtime closes its active public segment before successful Human,
+        # stop, handoff, budget, fail-closed, and taint exits. Retain the same
+        # boundary when an artifact records the recovery event before its
+        # explicit end, so only cleanup (never another score/reset) can follow.
+        closes_public_segment = kind in {
+            "handoff_to_human", "one_step_completed", "stopped", "fail_closed",
+            "autonomy_budget_exhausted", "runtime_tainted", "receipt_rejected",
+        }
+        if kind == "mode_changed" and payload.get("mode") == "human":
+            closes_public_segment = True
+        if kind == "receipt":
+            receipt_payload = payload.get("receipt")
+            closes_public_segment = (isinstance(receipt_payload, dict)
+                                     and receipt_payload.get("delivery") == "unknown")
+        if public_stateful_port and public_segment is not None and closes_public_segment:
+            public_segment["closing_only"] = True
         if pending_public_input is not None and kind != "decision":
             if kind not in {"controller_released", "public_stateful_episode_ended", "fail_closed", "runtime_tainted"}:
                 raise AgentRunEvidenceError("public_stateful_decision_order", "public stateful input must immediately precede its decision", _EVENTS_FILE)
@@ -706,6 +723,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _exact_keys(payload, {"scope", "episode_id", "segment_id", "continuity_token_commitment"}, "public_stateful_episode_started payload")
             if public_terminal_receipt:
                 raise AgentRunEvidenceError("unknown_retry", "public stateful episode cannot restart after unknown or rejected delivery", _EVENTS_FILE)
+            if public_stopped:
+                raise AgentRunEvidenceError("public_stateful_segment_order", "a stopped Runtime cannot begin another public stateful episode", _EVENTS_FILE)
             if autonomy_mode is True:
                 raise AgentRunEvidenceError("public_stateful_segment_order", "a public stateful episode must begin while Runtime is in Human mode", _EVENTS_FILE)
             if public_segment is not None:
@@ -721,12 +740,15 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             public_segment_ids.add(segment_id)
             public_token_commitments.add(commitment)
             public_segment = {"scope": scope, "episode_id": episode_id, "segment_id": segment_id, "commitment": commitment}
+            public_episode_environment = None
             public_observations = {}
             public_latest_observation = None
             public_latest_ack_request_id = None
         elif kind == "public_stateful_decision_input":
             if public_terminal_receipt:
                 raise AgentRunEvidenceError("unknown_retry", "public stateful scoring cannot continue after unknown or rejected delivery", _EVENTS_FILE)
+            if public_stopped:
+                raise AgentRunEvidenceError("public_stateful_segment_order", "a stopped Runtime cannot score another public stateful observation", _EVENTS_FILE)
             if environment is None:
                 raise AgentRunEvidenceError("environment_identity_order", "public stateful input requires environment admission", _EVENTS_FILE)
             _exact_keys(payload, {"episode_id", "segment_id", "continuity_token_commitment", "observation_ordinal", "snapshot_id", "sequence", "previous_action_request_id"}, "public_stateful_decision_input payload")
@@ -739,6 +761,11 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 raise AgentRunEvidenceError("public_stateful_token_binding", "public stateful input differs from its active episode, segment, or token commitment", _EVENTS_FILE)
             if public_segment.get("closing_only"):
                 raise AgentRunEvidenceError("public_stateful_segment_order", "a reset segment is closing-only and cannot score before a fresh explicit begin", _EVENTS_FILE)
+            environment_identity = (str(environment["runtime_instance_id"]), str(environment["environment_fingerprint"]))
+            if public_episode_environment is None:
+                public_episode_environment = environment_identity
+            elif environment_identity != public_episode_environment:
+                raise AgentRunEvidenceError("public_stateful_environment_drift", "port 4 episode environment identity changed before a scored input", _EVENTS_FILE)
             _positive_int(payload, "observation_ordinal", _EVENTS_FILE)
             ordinal = payload["observation_ordinal"]
             snapshot_id = _text(payload, "snapshot_id", _EVENTS_FILE)
@@ -827,6 +854,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             public_observations = {}
             public_latest_observation = None
             public_latest_ack_request_id = None
+            public_episode_environment = None
         elif kind == "text_decision_input":
             if environment is None:
                 raise AgentRunEvidenceError("environment_identity_order", "text input requires environment admission", _EVENTS_FILE)
@@ -884,10 +912,6 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             if managed_control is not None:
                 raise AgentRunEvidenceError("managed_control", "environment changed while Managed control was held", _EVENTS_FILE)
             admitted_environment = _verify_environment_admission(payload, manifest)
-            if public_stateful_port:
-                if public_environment is not None and admitted_environment != public_environment:
-                    raise AgentRunEvidenceError("public_stateful_environment_drift", "port 4 Runtime environment identity changed after admission", _EVENTS_FILE)
-                public_environment = admitted_environment
             environment = admitted_environment
         elif kind == "stale_whole_bundle_discarded":
             _verify_stale_event(payload)
@@ -899,8 +923,15 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 _verify_autonomy_budget(payload["autonomy_budget"])
             observed_mode = payload["mode"]
             next_autonomy_mode = observed_mode in {"one_step", "auto", "shadow"}
-            if public_stateful_port and next_autonomy_mode and public_segment is not None and public_segment.get("closing_only"):
-                raise AgentRunEvidenceError("public_stateful_segment_order", "a handed-off public stateful segment must end before policy can resume", _EVENTS_FILE)
+            if public_stateful_port and next_autonomy_mode:
+                if public_terminal_receipt:
+                    raise AgentRunEvidenceError("unknown_retry", "public stateful policy cannot resume after unknown or rejected delivery", _EVENTS_FILE)
+                if public_stopped:
+                    raise AgentRunEvidenceError("public_stateful_segment_order", "a stopped Runtime cannot resume public stateful policy", _EVENTS_FILE)
+                if public_segment is None:
+                    raise AgentRunEvidenceError("public_stateful_segment_order", "public stateful policy mode requires an explicitly begun segment", _EVENTS_FILE)
+                if public_segment.get("closing_only"):
+                    raise AgentRunEvidenceError("public_stateful_segment_order", "a handed-off public stateful segment must end before policy can resume", _EVENTS_FILE)
             if next_autonomy_mode and not autonomy_mode:
                 if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA and (
                     "autonomy_budget" not in payload or payload["autonomy_budget"]["state"] != "active"
@@ -1066,8 +1097,6 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         elif kind == "handoff_to_human":
             _exact_keys(payload, {"reason"}, "handoff_to_human payload")
             _text(payload, "reason", _EVENTS_FILE)
-            if public_stateful_port and public_segment is not None:
-                public_segment["closing_only"] = True
             autonomy_mode = False
         elif kind == "one_step_completed":
             if set(payload) not in (set(), {"autonomy_budget"}):
@@ -1086,6 +1115,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                       else {"held", "released"}, _EVENTS_FILE)
                 if managed_control is not None and payload["controller"] == "released":
                     raise AgentRunEvidenceError("managed_control", "Stop claims release without Managed release confirmation", _EVENTS_FILE)
+            if public_stateful_port:
+                public_stopped = True
             autonomy_mode = False
         elif kind == "fail_closed":
             pending_text_input = None

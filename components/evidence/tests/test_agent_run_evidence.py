@@ -594,6 +594,127 @@ class AgentRunEvidenceTests(unittest.TestCase):
         result = verifier.verify(tainted_close)
         self.assertTrue(result.passed, result.findings)
 
+    def test_public_stateful_recovery_transitions_close_old_segments(self) -> None:
+        exhausted_budget = {
+            "state": "exhausted", "max_submissions": 1, "submissions_used": 0,
+            "max_policy_calls": 1, "policy_calls_used": 0, "deadline_ms": 1000,
+            "elapsed_ms": 1000, "remaining_ms": 0, "exhausted_reason": "deadline",
+            "ended_reason": None,
+        }
+        cases = (
+            ("human-then-auto", [("mode_changed", {"mode": "human"}),
+                                  ("mode_changed", {"mode": "auto"})], False),
+            ("one-step", [("one_step_completed", {})], False),
+            ("handoff", [("handoff_to_human", {"reason": "auto_surface_not_admitted"})], False),
+            ("fail-closed", [("fail_closed", {"reason": "policy_unavailable"})], False),
+            ("budget-exhausted", [("autonomy_budget_exhausted", {
+                "reason": "deadline", "budget": exhausted_budget, "controller": "released",
+            })], False),
+            ("stopped", [("stopped", {})], False),
+            ("tainted", [("runtime_tainted", {"reason": "unknown_delivery", "retry": False})], True),
+        )
+        verifier = AgentRunEvidenceVerifier()
+        for name, recovery_events, tainted in cases:
+            with self.subTest(name=name):
+                directory = self._public_stateful_evidence("run-public-stateful-terminal-" + name)
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+                inserted = []
+                for kind, payload in recovery_events:
+                    item = copy.deepcopy(events[0])
+                    item.update(kind=kind, payload=payload)
+                    inserted.append(item)
+                events[7:7] = inserted
+                if tainted:
+                    manifest_path = directory / "manifest.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest.update(status="tainted", tainted=True)
+                    manifest_path.write_bytes(canonical(manifest))
+                for index, item in enumerate(events, 1):
+                    item["sequence"] = index
+                self._rewrite_events(directory, events)
+                result = verifier.verify(directory)
+                self.assertFalse(result.passed)
+                expected = "unknown_retry" if tainted else "public_stateful_segment_order"
+                self.assertEqual(result.findings[0].code, expected)
+
+        ended = self._public_stateful_evidence("run-public-stateful-auto-after-end")
+        events = [json.loads(line) for line in (ended / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        mode = copy.deepcopy(events[0])
+        mode.update(kind="mode_changed", payload={"mode": "auto"})
+        events.append(mode)
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(ended, events)
+        result = verifier.verify(ended)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "public_stateful_segment_order")
+
+    def test_public_stateful_environment_binding_is_per_episode_and_checked_at_scoring(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+
+        # A changed admission can describe an unscored settling poll. If the
+        # current identity returns to the episode's bound identity before the
+        # next policy input, Runtime still permits the old segment to score.
+        recovered = self._public_stateful_evidence("run-public-stateful-env-recovered-before-input")
+        events = [json.loads(line) for line in (recovered / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        changed = copy.deepcopy(events[1])
+        changed["payload"]["environment"]["runtime_instance_id"] = "runtime-transient"
+        changed["payload"]["environment"]["environment_fingerprint"] = "environment-transient"
+        events[7:7] = [changed, copy.deepcopy(events[1])]
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(recovered, events)
+        result = verifier.verify(recovered)
+        self.assertTrue(result.passed, result.findings)
+
+        # A new explicit episode can bind a newly admitted Connector session.
+        rebind = self._public_stateful_evidence("run-public-stateful-new-session-after-end")
+        events = [json.loads(line) for line in (rebind / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+
+        def event(kind: str, payload: dict[str, Any], second: int) -> dict[str, Any]:
+            item = copy.deepcopy(events[0])
+            item.update(kind=kind, payload=payload,
+                        recorded_at=f"2026-08-25T00:00:{second:02d}.000Z", sequence=0)
+            return item
+
+        new_environment = copy.deepcopy(events[1])
+        new_environment["payload"]["environment"]["runtime_instance_id"] = "runtime-next"
+        new_environment["payload"]["environment"]["environment_fingerprint"] = "environment-next"
+        new_environment["recorded_at"] = "2026-08-25T00:00:06.500Z"
+        new_episode = [
+            event("mode_changed", {"mode": "human"}, 4),
+            event("public_stateful_episode_started", {
+                "scope": "single_game_episode", "episode_id": "episode-next",
+                "segment_id": "segment-next", "continuity_token_commitment": "c" * 64,
+            }, 5),
+            event("mode_changed", {"mode": "auto"}, 6),
+            new_environment,
+            event("public_stateful_decision_input", {
+                "episode_id": "episode-next", "segment_id": "segment-next",
+                "continuity_token_commitment": "c" * 64, "observation_ordinal": 1,
+                "snapshot_id": "snapshot-next", "sequence": 1,
+                "previous_action_request_id": None,
+            }, 7),
+        ]
+        next_decision = copy.deepcopy(events[8])
+        next_decision["payload"]["decision"].update(decision_id="decision-next", snapshot_id="snapshot-next")
+        new_episode.extend([
+            next_decision,
+            event("public_stateful_episode_ended", {
+                "scope": "single_game_episode", "episode_id": "episode-next",
+                "segment_id": "segment-next", "continuity_token_commitment": "c" * 64,
+                "reason": "explicit_end", "requires_explicit_begin": True,
+                "memory_continuity": False,
+            }, 8),
+            event("mode_changed", {"mode": "human"}, 9),
+        ])
+        events.extend(new_episode)
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(rebind, events)
+        result = verifier.verify(rebind)
+        self.assertTrue(result.passed, result.findings)
+
     def test_public_stateful_port4_rejects_token_drift_missing_fields_and_bad_ack(self) -> None:
         verifier = AgentRunEvidenceVerifier()
         cases = (

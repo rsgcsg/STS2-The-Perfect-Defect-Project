@@ -16,7 +16,7 @@ and private-profile digest are provenance supplied by the trusted local
 application, not independent re-attestation of installed bytes or private
 profile contents by Evidence.
 
-Evidence `0.1.0-rc.27` verifies Policy Runtime adapter protocols v1 through v4
+Evidence `0.1.0-rc.28` verifies Policy Runtime adapter protocols v1 through v4
 in the Policy Manifest and adapter attestation. The opt-in v3 interaction-memory
 port requires a declared text-menu representation, just as v2 does. Port 4 is
 model-neutral: it requires the public Snapshot-1 representation, zero Reads,
@@ -29,20 +29,27 @@ action must acknowledge that latest action, backed by its recorded successor;
 same-snapshot, same-ordinal retries keep control metadata outside the model
 fingerprint and may update their prior-action acknowledgment. Repeated polls can
 reuse the same snapshot identity and ordinal; a new snapshot advances the ordinal
-by one while Connector sequence numbers may have gaps. One admitted Runtime
-environment identity is pinned for the run. A segment can begin only before
-known autonomy, and a Human handoff requires ending the old segment before
-policy can resume in a freshly begun segment. Reset must bind the old
-segment/commitment and rotate both identities, after which the replacement is
-closing-only until episode end and a fresh explicit begin. A non-null action
-acknowledgment must identify the exact recorded successor watermark or a later,
-distinct observation. `runtime_tainted` is terminal for port 4; unknown or
-rejected delivery and tainted runs cannot start or score another segment.
-The verifier checks these recorded associations; it cannot reconstruct the raw token, observe omitted
-Snapshot fields, or prove an uninterrupted game episode from an operator-declared
-scope. It checks commitment equality/rotation but cannot independently verify
-the commitment preimage or derive its run binding. Port 4 input remains separate
-from the model-visible Snapshot. The
+by one while Connector sequence numbers may have gaps. The pair
+`(runtime_instance_id, environment_fingerprint)` is bound to an episode at its
+first recorded decision input and checked again at each later scored input.
+Later admission events update the current Runtime environment but do not end or
+rebind an episode on their own; if the identity differs when the next input is
+scored, verification fails. After an explicit episode end, a fresh begin may
+bind a new Connector session. The declared scope does not prove that the
+observed records cover an uninterrupted game episode. A Human mode change,
+one-step completion, handoff, fail-closed exit, exhausted budget, stop, unknown
+or rejected delivery, or Runtime taint makes the active segment closing-only:
+it must be explicitly ended before another policy input or segment can begin.
+Unknown or rejected delivery, stop, and taint also prevent restarting port 4 in
+that Runtime/run. Reset must bind the old segment/commitment and rotate both
+identities, after which the replacement remains closing-only until episode end
+and a fresh explicit begin. A non-null action acknowledgment must identify the
+exact recorded successor watermark or a later, distinct observation. The
+verifier checks these recorded associations; it cannot reconstruct the raw
+token or observe omitted Snapshot fields. It checks commitment
+equality/rotation but cannot independently verify the commitment preimage or
+derive its run binding. Port 4 input remains separate from the model-visible
+Snapshot. The
 verifier does not infer model memory writes, native effects or causal successors
 from a protocol version. Expected and actual adapter identities, manifest
 digests, and all existing typed event checks remain strict. Port 3
