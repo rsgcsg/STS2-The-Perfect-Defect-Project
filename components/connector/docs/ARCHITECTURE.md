@@ -73,7 +73,8 @@ Build, install and a 40-character Git revision are identity facts, not
 qualification. Native owner, operand and control legality are still
 rediscovered for every delivery after admission.
 
-The unified package also has a [production runtime seal source candidate](../../../docs/design/PRODUCTION_RUNTIME_SEAL.md).
+The unified package also has a production runtime seal source candidate; see
+repository-root `docs/design/PRODUCTION_RUNTIME_SEAL.md` for its owner contract.
 It freezes one fixed adjacent official-release identity pair before serving
 capabilities and checks the actual loaded unified artifact and current game/
 Modset tuple. A present broken pair fails closed even under an artifact canary.
