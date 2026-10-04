@@ -757,11 +757,13 @@ def _execute_run(
             and engine.completed_epochs == 5
             and checkpoint_id == stage_reuse["checkpoint_id"]
         )
-        stage = None if terminal_reuses_claim else store.get_manifest(stage_id)
-        model_id = (stage_reuse["model_id"] if terminal_reuses_claim
-                    else stage.parent("model"))
-        evaluation_id = (stage_reuse["evaluation_id"] if terminal_reuses_claim
-                         else stage.parent("offline_evaluation"))
+        if terminal_reuses_claim and stage_reuse is not None:
+            model_id = stage_reuse["model_id"]
+            evaluation_id = stage_reuse["evaluation_id"]
+        else:
+            stage = store.get_manifest(stage_id)
+            model_id = stage.parent("model")
+            evaluation_id = stage.parent("offline_evaluation")
         result = Manifest(
             "run_result", runtime,
             (Parent("run", run_id), Parent("training_input", training.artifact_id),

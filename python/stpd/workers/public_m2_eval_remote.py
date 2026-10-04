@@ -13,11 +13,14 @@ import math
 import re
 from dataclasses import asdict, dataclass
 from time import monotonic
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
 
 from . import public_m2_remote as _wire
+
+if TYPE_CHECKING:
+    from .public_m2_engine import PublicM2EngineConfig
 
 REQUEST_SCHEMA = "stpd/public-m2-eval-remote-request-v1"
 RESULT_SCHEMA = "stpd/public-m2-eval-remote-result-v1"
@@ -255,7 +258,9 @@ def _json_value(value: Any) -> Any:
     return value
 
 
-def _config_from_value(value: dict[str, Any], *, require_device_available: bool = True):
+def _config_from_value(
+    value: dict[str, Any], *, require_device_available: bool = True,
+) -> PublicM2EngineConfig:
     from ..models.token_core import ScratchShape
     from .public_m2_engine import PublicM2EngineConfig
 
