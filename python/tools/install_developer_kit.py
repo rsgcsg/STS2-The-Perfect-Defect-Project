@@ -757,6 +757,18 @@ def _check_no_symlink(path: Path, code: str) -> None:
             reject(code)
 
 
+def _effective_user_id() -> int:
+    # Windows typeshed deliberately has no os.geteuid. Unix ownership checks
+    # still fail closed if their required OS capability is missing or malformed.
+    getter = getattr(os, "geteuid", None)
+    if not callable(getter):
+        reject("launcher_ownership_unavailable")
+    result = getter()
+    if type(result) is not int or result < 0:
+        reject("launcher_ownership_unavailable")
+    return result
+
+
 def _launcher_pair(root: Path) -> tuple[Path, Path, bytes | None, int | None,
                                         bytes | None, int | None]:
     """Read the fixed launcher pair without accepting links or partial installs."""
@@ -770,7 +782,7 @@ def _launcher_pair(root: Path) -> tuple[Path, Path, bytes | None, int | None,
             continue
         file_stat = path.stat()
         if (not stat.S_ISREG(mode) or file_stat.st_nlink != 1
-                or (os.name != "nt" and file_stat.st_uid != os.geteuid())):
+                or (os.name != "nt" and file_stat.st_uid != _effective_user_id())):
             reject("launcher_path_unsafe")
         if path.stat().st_size > LAUNCHER_FILE_LIMITS[name]:
             reject("launcher_file_too_large")
@@ -791,7 +803,7 @@ def _prepare_launcher_root(root: Path, *, create: bool) -> Path:
     if not stat.S_ISDIR(root_stat.st_mode):
         reject("launcher_path_unsafe")
     if os.name != "nt":
-        if root_stat.st_uid != os.geteuid():
+        if root_stat.st_uid != _effective_user_id():
             reject("launcher_path_unsafe")
         if stat.S_IMODE(root_stat.st_mode) & 0o077:
             root.chmod(0o700)
@@ -804,7 +816,7 @@ def _prepare_launcher_root(root: Path, *, create: bool) -> Path:
     except FileNotFoundError:
         return lock_path
     if (not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_nlink != 1
-            or (os.name != "nt" and lock_stat.st_uid != os.geteuid())):
+            or (os.name != "nt" and lock_stat.st_uid != _effective_user_id())):
         reject("launcher_path_unsafe")
     return lock_path
 
@@ -1024,7 +1036,7 @@ def _publish_launcher_snapshot(snapshot_directory: Path, binding_raw: bytes,
         reject("launcher_snapshot_path_invalid")
     parent_stat = parent.stat()
     if os.name != "nt" and (
-        parent_stat.st_uid != os.geteuid() or stat.S_IMODE(parent_stat.st_mode) & 0o022
+        parent_stat.st_uid != _effective_user_id() or stat.S_IMODE(parent_stat.st_mode) & 0o022
     ):
         reject("launcher_snapshot_path_invalid")
     if any(snapshot_directory.is_relative_to(path.resolve()) for path in forbidden):
@@ -1172,7 +1184,7 @@ def _read_launcher_snapshot(snapshot_directory: Path,
     except FileNotFoundError:
         reject("launcher_snapshot_missing")
     if (not stat.S_ISDIR(directory_stat.st_mode)
-            or (os.name != "nt" and (directory_stat.st_uid != os.geteuid()
+            or (os.name != "nt" and (directory_stat.st_uid != _effective_user_id()
                                      or stat.S_IMODE(directory_stat.st_mode) & 0o077))):
         reject("launcher_snapshot_path_invalid")
     if {path.name for path in snapshot_directory.iterdir()} != {
@@ -1194,7 +1206,7 @@ def _read_launcher_snapshot(snapshot_directory: Path,
             if (not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1
                     or file_stat.st_size > limit
                     or (os.name != "nt" and (
-                        file_stat.st_uid != os.geteuid()
+                        file_stat.st_uid != _effective_user_id()
                         or stat.S_IMODE(file_stat.st_mode) != expected_mode))):
                 reject("launcher_snapshot_path_invalid")
             with os.fdopen(descriptor, "rb", closefd=False) as handle:
