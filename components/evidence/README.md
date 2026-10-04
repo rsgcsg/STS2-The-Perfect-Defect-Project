@@ -16,13 +16,28 @@ and private-profile digest are provenance supplied by the trusted local
 application, not independent re-attestation of installed bytes or private
 profile contents by Evidence.
 
-Evidence `0.1.0-rc.24` verifies Policy Runtime adapter protocols v1, v2 and v3
+Evidence `0.1.0-rc.25` verifies Policy Runtime adapter protocols v1 through v4
 in the Policy Manifest and adapter attestation. The opt-in v3 interaction-memory
-port requires a declared text-menu representation, just as v2 does. This verifier
-checks the existing immutable input/result events; it does not infer model memory
-writes, native effects or causal successors from a protocol version. Expected and actual
-adapter identities, manifest digests, and all existing typed event checks remain
-strict. Port 3 `text_decision_input` also requires exact `observation_context`
+port requires a declared text-menu representation, just as v2 does. Port 4 is
+model-neutral: it requires the public Snapshot-1 representation, zero Reads,
+and `sts2.policy-runtime/public-observation-stateful-v1`. Its existing
+`public_stateful_*` events must form explicit episode-start, decision-input,
+segment-reset, and episode-end associations. Decision inputs bind the active
+episode/segment, an opaque run-bound SHA-256 continuity-token commitment, and
+snapshot ID/sequence/ordinal. A non-null prior-action request must resolve to a
+same-segment delivered receipt and recorded successor. Repeated polls can reuse
+the same snapshot identity and ordinal; a new snapshot advances the ordinal by
+one while Connector sequence numbers may have gaps. Reset must bind the old
+segment/commitment and rotate both identities. The verifier checks these
+recorded associations; it cannot reconstruct the raw token, observe omitted
+Snapshot fields, or prove an uninterrupted game episode from an operator-declared
+scope. It checks commitment equality/rotation but cannot independently verify
+the commitment preimage or derive its run binding. Port 4 input remains separate
+from the model-visible Snapshot. The
+verifier does not infer model memory writes, native effects or causal successors
+from a protocol version. Expected and actual adapter identities, manifest
+digests, and all existing typed event checks remain strict. Port 3
+`text_decision_input` also requires exact `observation_context`
 metadata: the validated completion's `continuity_token` and nullable
 `previous_interaction_request_id`. A non-null request ID must reference one
 unused prior confirmed menu/native result in the same continuity and a different,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
@@ -70,6 +71,11 @@ function completion(decision: PublicStatefulDecisionContext, control: PublicStat
     observation_ordinal: control.observation_ordinal, snapshot_id: decision.bundle.observation.snapshot_id,
     sequence: decision.bundle.observation.sequence, previous_action_request_id: control.previous_action?.request_id ?? null };
 }
+function tokenCommitment(runId: string, token: string): string {
+  return createHash("sha256")
+    .update("sts2.policy-runtime/public-stateful-continuity-token-commitment-v1\0", "utf8")
+    .update(runId, "utf8").update("\0", "utf8").update(token, "utf8").digest("hex");
+}
 function runtime(connector: FixtureConnector, policy: (decision: PublicStatefulDecisionContext, control: PublicStatefulControlMetadata) => void | Promise<void>, opts: { timeout?: number; events?: Array<{ kind: string; payload: Record<string, unknown> }> } = {}) {
   return new PolicyRuntime({ manifest: manifest(), connector, runId: "public-run", evidence: evidence(opts.events),
     runtimeIdentity: { version: "test", code_sha256: "d".repeat(64) }, policyTimeoutMs: opts.timeout,
@@ -82,7 +88,8 @@ function runtime(connector: FixtureConnector, policy: (decision: PublicStatefulD
 describe("public Snapshot stateful protocol 4", () => {
   it("requires explicit Runtime-owned segment creation and keeps scope separate from its token", async () => {
     const connector = new FixtureConnector(), seen: Array<{ decision: PublicStatefulDecisionContext; control: PublicStatefulControlMetadata }> = [];
-    const rt = runtime(connector, async (decision, control) => { seen.push({ decision, control }); });
+    const events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    const rt = runtime(connector, async (decision, control) => { seen.push({ decision, control }); }, { events });
     expect(validatePolicyManifest(manifest()).adapter.protocol).toBe("sts2.policy-runtime/decision-only-ndjson-4");
     const bad = manifest(); bad.adapter_config = {};
     expect(() => validatePolicyManifest(bad)).toThrow(/model-neutral Runtime public observation profile/);
@@ -97,8 +104,16 @@ describe("public Snapshot stateful protocol 4", () => {
     expect(seen[0]!.control).toMatchObject({ episode_scope: "bounded_policy_segment", episode_id: begun.episode_id, segment_id: begun.segment_id, observation_ordinal: 1 });
     expect(seen[0]!.control.continuity_token).not.toBe(begun.episode_id);
     expect(seen[0]!.decision).not.toHaveProperty("control");
+    const started = events.find(event => event.kind === "public_stateful_episode_started")!;
+    expect(started.payload.continuity_token_commitment).toBe(tokenCommitment("public-run", seen[0]!.control.continuity_token));
+    const input = events.find(event => event.kind === "public_stateful_decision_input")!;
+    expect(input.payload.continuity_token_commitment).toBe(started.payload.continuity_token_commitment);
+    expect(JSON.stringify(events)).not.toContain(seen[0]!.control.continuity_token);
     const ended = await rt.endPublicStatefulSegment();
     expect(ended).toEqual(begun);
+    const endedEvent = events.find(event => event.kind === "public_stateful_episode_ended")!;
+    expect(endedEvent.payload.continuity_token_commitment).toBe(started.payload.continuity_token_commitment);
+    expect(JSON.stringify(events)).not.toContain(seen[0]!.control.continuity_token);
     await expect(rt.setMode("auto")).rejects.toThrow(/explicitly begun/);
   });
 
@@ -244,6 +259,12 @@ describe("public Snapshot stateful protocol 4", () => {
     expect((await rt.tick()).type).toBe("shadow");
     expect(events.some(event => event.kind === "public_stateful_observation_segment_reset" && event.payload.memory_continuity === false)).toBe(true);
     expect(events.some(event => event.kind === "public_stateful_episode_ended" && event.payload.requires_explicit_begin === true)).toBe(true);
+    const reset = events.find(event => event.kind === "public_stateful_observation_segment_reset")!;
+    expect(reset.payload.previous_continuity_token_commitment).toBe(tokenCommitment("late-run", old.control.continuity_token));
+    expect(reset.payload.continuity_token_commitment).not.toBe(reset.payload.previous_continuity_token_commitment);
+    const ended = events.find(event => event.kind === "public_stateful_episode_ended")!;
+    expect(ended.payload.continuity_token_commitment).toBe(reset.payload.continuity_token_commitment);
+    expect(JSON.stringify(events)).not.toContain(old.control.continuity_token);
     resolveFirst(completion(old.decision, old.control));
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(connector.submitCount).toBe(0);

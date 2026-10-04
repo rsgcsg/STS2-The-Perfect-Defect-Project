@@ -166,6 +166,17 @@ false, and continued operation requires another explicit begin. Therefore this
 protocol supports bounded observed-segment continuity only and cannot attest
 whole-game memory across a reset.
 
+The Agent-run log uses the existing `public_stateful_episode_started`,
+`public_stateful_decision_input`,
+`public_stateful_observation_segment_reset`, and
+`public_stateful_episode_ended` events. It records a domain-separated,
+run-bound SHA-256 commitment over the Runtime token instead of the raw token;
+reset records both the prior and replacement commitments. The commitment is an
+opaque equality/rotation witness and cannot be used to reconstruct the token.
+The Evidence consumer separately checks that decision watermarks match their
+decisions, and that prior-action request IDs bind to a same-segment delivered
+receipt and recorded successor.
+
 ## Confirmed interaction port (opt-in)
 
 `sts2.policy-runtime/decision-only-ndjson-3` uses `policy-port-3` with an

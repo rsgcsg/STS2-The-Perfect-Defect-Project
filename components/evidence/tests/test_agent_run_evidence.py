@@ -324,6 +324,127 @@ class AgentRunEvidenceTests(unittest.TestCase):
         self._rewrite_events(directory, events)
         return directory
 
+    def _public_stateful_evidence(self, name: str) -> Path:
+        directory = self._evidence(
+            name, adapter_protocol="sts2.policy-runtime/decision-only-ndjson-4"
+        )
+        policy_path = directory / "policy-manifest.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["policy"].update(provider="fixture", architecture="generic-stateful-fixture")
+        policy["artifact"].update(id="fixture-artifact", path="fixture-artifact.bin")
+        policy["representation"] = {
+            "id": "public-snapshot", "version": "1",
+            "input_schema": "sts2.player-environment/snapshot-1",
+        }
+        policy["requirements"] = {
+            "connector_protocol_version": "1.0.0",
+            "environment": {
+                "host_kind": "test", "connector_version": "1.2.0-rc.6",
+                "connector_source_revision": "source-fixture",
+                "connector_artifact_sha256": "d" * 64,
+                "connector_module_version_id": "mvid-fixture",
+                "modset_status": "fixture", "modset_fingerprint": "modset-fixture",
+                "loaded_mod_ids": ["fixture-mod"],
+            },
+            "reads": [], "whole_decision_admission": True,
+            "candidate_order_digest": "sha256-json-bound-action-id-order",
+            "score_count_matches_candidate_count": True, "selected_index": True,
+            "successor_required": True,
+        }
+        policy["support"] = {
+            "game_versions": ["v0.111.0"], "game_commits": ["41cef1ea"],
+            "interaction_kinds": ["combat"], "action_verbs": ["end_turn"],
+        }
+        policy["adapter_config"] = {
+            "public_stateful_profile": "sts2.policy-runtime/public-observation-stateful-v1",
+        }
+        policy["claims"] = {
+            "full_run": False, "selector": False, "catalog_filtered": False,
+            "creates_action_authority": False, "creates_native_operands": False,
+        }
+        policy_path.write_bytes(canonical(policy))
+        policy_digest = sha256(canonical(policy).rstrip(b"\n"))
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["policy_manifest_sha256"] = policy_digest
+        manifest_path.write_bytes(canonical(manifest))
+        attestation_path = directory / "adapter-attestation.json"
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+        attestation["policy_manifest_sha256"] = policy_digest
+        attestation_path.write_bytes(canonical(attestation))
+
+        base = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        environment_event = base[0]
+        commitment = "a" * 64
+        episode_id = "episode-1"
+        segment_id = "segment-1"
+
+        def event(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                "recorded_at": "2026-08-25T00:00:02.000Z", "kind": kind,
+                "payload": payload,
+            }
+
+        def decision(decision_id: str, snapshot_id: str, *, selected: bool) -> dict[str, Any]:
+            return event("decision", {
+                "decision": {
+                    "schema": "sts2.policy-runtime/decision-1", "decision_id": decision_id,
+                    "run_id": name, "manifest_id": "manifest-1", "snapshot_id": snapshot_id,
+                    "candidate_digest": "f" * 64, "candidate_count": 1,
+                    "scores": [1.0 if selected else 0.0], "selected_index": 0 if selected else None,
+                    "disposition": "admit" if selected else "abstain",
+                    "issued_at": "2026-08-25T00:00:02.000Z",
+                },
+                "resolved_bound_action_id": "action-1" if selected else None,
+            })
+
+        request_id = f"request-{name}-decision-1"
+        successor = self._snapshot("snapshot-2", 2)
+        events = [
+            event("public_stateful_episode_started", {
+                "scope": "single_game_episode", "episode_id": episode_id,
+                "segment_id": segment_id, "continuity_token_commitment": commitment,
+            }),
+            environment_event,
+            event("public_stateful_decision_input", {
+                "episode_id": episode_id, "segment_id": segment_id,
+                "continuity_token_commitment": commitment, "observation_ordinal": 1,
+                "snapshot_id": "snapshot-1", "sequence": 1,
+                "previous_action_request_id": None,
+            }),
+            decision("decision-1", "snapshot-1", selected=True),
+            event("controller_acquired", {}),
+            event("receipt", {
+                "decision_id": "decision-1",
+                "receipt": {
+                    "protocol_version": "1.0.0", "schema": "sts2.player-environment/receipt-1",
+                    "request_id": request_id, "delivery": "delivered",
+                    "action": {"bound_action_id": "action-1", "verb": "end_turn", "arguments": []},
+                    "retry": {"allowed": False, "reason": "fixture"}, "successor": successor,
+                },
+            }),
+            event("successor", {"decision_id": "decision-1", "successor": successor}),
+            event("public_stateful_decision_input", {
+                "episode_id": episode_id, "segment_id": segment_id,
+                "continuity_token_commitment": commitment, "observation_ordinal": 2,
+                "snapshot_id": "snapshot-2", "sequence": 5,
+                "previous_action_request_id": request_id,
+            }),
+            decision("decision-2", "snapshot-2", selected=False),
+            event("public_stateful_episode_ended", {
+                "scope": "single_game_episode", "episode_id": episode_id,
+                "segment_id": segment_id, "continuity_token_commitment": commitment,
+                "reason": "explicit_end", "requires_explicit_begin": True,
+                "memory_continuity": False,
+            }),
+            event("controller_released", {}),
+        ]
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(directory, events)
+        return directory
+
     def test_valid_agent_run_is_detected_and_verified(self) -> None:
         directory = self._evidence()
         result = AgentRunEvidenceVerifier().verify(directory)
@@ -334,6 +455,107 @@ class AgentRunEvidenceTests(unittest.TestCase):
     def test_adapter_protocol_v1_and_exact_v2_are_supported(self) -> None:
         legacy = AgentRunEvidenceVerifier().verify(self._evidence("run-v1"))
         self.assertTrue(legacy.passed, legacy.findings)
+
+    def test_public_stateful_port4_evidence_binds_snapshot_ack_and_segment_lifecycle(self) -> None:
+        result = AgentRunEvidenceVerifier().verify(self._public_stateful_evidence("run-public-stateful"))
+        self.assertTrue(result.passed, result.findings)
+
+    def test_public_stateful_port4_rejects_token_drift_missing_fields_and_bad_ack(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+        cases = (
+            ("token-drift", "public_stateful_token_binding", lambda events: events[2]["payload"].update(continuity_token_commitment="b" * 64)),
+            ("missing-start-commitment", "schema_keys", lambda events: events[0]["payload"].pop("continuity_token_commitment")),
+            ("missing-decision-commitment", "schema_keys", lambda events: events[2]["payload"].pop("continuity_token_commitment")),
+            ("missing-end-commitment", "schema_keys", lambda events: events[9]["payload"].pop("continuity_token_commitment")),
+            ("bad-ack", "public_stateful_ack_association", lambda events: events[7]["payload"].update(previous_action_request_id="request-unmatched")),
+        )
+        for name, expected_code, mutate in cases:
+            with self.subTest(name=name):
+                directory = self._public_stateful_evidence(name)
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+                mutate(events)
+                self._rewrite_events(directory, events)
+                result = verifier.verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, expected_code)
+
+    def test_public_stateful_port4_rejects_reset_without_token_rotation_and_old_segment_completion(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+        for name, expected_code, new_commitment, stale_input, missing_old_commitment, old_commitment in (
+            ("reset-no-token-rotation", "public_stateful_reset_binding", "a" * 64, False, False, "a" * 64),
+            ("late-old-segment-input", "public_stateful_token_binding", "b" * 64, True, False, "a" * 64),
+            ("reset-missing-old-commitment", "schema_keys", "b" * 64, False, True, "a" * 64),
+            ("reset-old-token-drift", "public_stateful_reset_binding", "b" * 64, False, False, "c" * 64),
+        ):
+            with self.subTest(name=name):
+                directory = self._public_stateful_evidence(name)
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+                ended = events.pop(-2)
+                reset = {
+                    "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                    "recorded_at": "2026-08-25T00:00:03.000Z",
+                    "kind": "public_stateful_observation_segment_reset",
+                    "payload": {
+                        "episode_id": "episode-1", "previous_segment_id": "segment-1",
+                        "segment_id": "segment-2",
+                        "previous_continuity_token_commitment": old_commitment,
+                        "continuity_token_commitment": new_commitment,
+                        "reason": "policy_completion_failed", "memory_continuity": False,
+                    },
+                }
+                if missing_old_commitment:
+                    reset["payload"].pop("previous_continuity_token_commitment")
+                events.append(reset)
+                if stale_input:
+                    events.append({
+                        "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                        "recorded_at": "2026-08-25T00:00:03.100Z",
+                        "kind": "public_stateful_decision_input",
+                        "payload": {
+                            "episode_id": "episode-1", "segment_id": "segment-1",
+                            "continuity_token_commitment": "a" * 64,
+                            "observation_ordinal": 3, "snapshot_id": "snapshot-3",
+                            "sequence": 6, "previous_action_request_id": None,
+                        },
+                    })
+                else:
+                    ended["payload"].update(segment_id="segment-2", continuity_token_commitment=new_commitment)
+                events.append(ended)
+                for index, item in enumerate(events, 1):
+                    item["sequence"] = index
+                self._rewrite_events(directory, events)
+                result = verifier.verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, expected_code)
+
+    def test_public_stateful_port4_rejects_reads_and_non_model_neutral_profile(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+        for name, field, value in (
+            ("public-stateful-reads", "reads", ["combat_state"]),
+            ("public-stateful-profile", "public_stateful_profile", "stpd/public-m2-observation-only-v1"),
+        ):
+            with self.subTest(name=name):
+                directory = self._public_stateful_evidence(name)
+                policy_path = directory / "policy-manifest.json"
+                policy = json.loads(policy_path.read_text(encoding="utf-8"))
+                if field == "reads":
+                    policy["requirements"][field] = value
+                else:
+                    policy["adapter_config"][field] = value
+                policy_path.write_bytes(canonical(policy))
+                digest = sha256(canonical(policy).rstrip(b"\n"))
+                manifest_path = directory / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["policy_manifest_sha256"] = digest
+                manifest_path.write_bytes(canonical(manifest))
+                attestation_path = directory / "adapter-attestation.json"
+                attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+                attestation["policy_manifest_sha256"] = digest
+                attestation_path.write_bytes(canonical(attestation))
+                self._rewrite_events(directory, [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()])
+                result = verifier.verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, "schema_literal")
 
     def test_v2_adapter_with_legacy_snapshot_representation_is_rejected(self) -> None:
         directory = self._evidence(

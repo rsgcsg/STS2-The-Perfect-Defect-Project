@@ -48,6 +48,8 @@ _EVIDENCE_FILES = (
 )
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([^/\\]+(?:/[^/\\]+)*)$")
+_PUBLIC_STATEFUL_PROTOCOL = "sts2.policy-runtime/decision-only-ndjson-4"
+_PUBLIC_STATEFUL_PROFILE = "sts2.policy-runtime/public-observation-stateful-v1"
 
 
 class AgentRunEvidenceError(ValueError):
@@ -296,6 +298,8 @@ def _verify_policy_provenance(directory: Path, manifest: Mapping[str, Any]) -> b
                 "stateful adapter requires a declared text-menu snapshot representation",
                 _POLICY_MANIFEST_FILE,
             )
+    elif adapter["protocol"] == _PUBLIC_STATEFUL_PROTOCOL:
+        _verify_public_stateful_policy_manifest(policy_manifest)
     elif isinstance(policy_manifest.get("representation"), dict) and policy_manifest["representation"].get("input_schema") == _TEXT_V2_SNAPSHOT_SCHEMA:
         raise AgentRunEvidenceError(
             "adapter_representation", "text-menu-snapshot-2 requires a stateful adapter", _POLICY_MANIFEST_FILE,
@@ -424,6 +428,59 @@ def _verify_v2_policy_manifest(value: Mapping[str, Any]) -> None:
         _literal(claims, key, False, path)
 
 
+def _verify_public_stateful_policy_manifest(value: Mapping[str, Any]) -> None:
+    """Verify port 4's generic Snapshot and zero-Read public profile."""
+    path = _POLICY_MANIFEST_FILE
+    _exact_keys(value, {"schema", "manifest_id", "policy", "adapter", "artifact", "representation", "requirements", "support", "adapter_config", "claims"}, "public stateful policy manifest")
+    _literal(value, "schema", POLICY_MANIFEST_SCHEMA, path)
+    policy = _object(value["policy"], "public stateful policy")
+    _exact_keys(policy, {"id", "version", "provider", "architecture"}, "public stateful policy")
+    for key in policy:
+        _text(policy, key, path)
+    adapter = _object(value["adapter"], "public stateful adapter")
+    _verify_adapter_identity(adapter, path)
+    _literal(adapter, "protocol", _PUBLIC_STATEFUL_PROTOCOL, path)
+    artifact = _object(value["artifact"], "public stateful artifact")
+    _exact_keys(artifact, {"id", "path", "sha256"}, "public stateful artifact")
+    for key in ("id", "path"):
+        _text(artifact, key, path)
+    if not _SHA256.fullmatch(_text(artifact, "sha256", path)):
+        raise AgentRunEvidenceError("invalid_digest", "public stateful artifact SHA-256 is invalid", path)
+    representation = _object(value["representation"], "public stateful representation")
+    _exact_keys(representation, {"id", "version", "input_schema"}, "public stateful representation")
+    _text(representation, "id", path)
+    _text(representation, "version", path)
+    _literal(representation, "input_schema", "sts2.player-environment/snapshot-1", path)
+    requirements = _object(value["requirements"], "public stateful requirements")
+    _exact_keys(requirements, {"connector_protocol_version", "environment", "reads", "whole_decision_admission", "candidate_order_digest", "score_count_matches_candidate_count", "selected_index", "successor_required"}, "public stateful requirements")
+    _text(requirements, "connector_protocol_version", path)
+    _literal(requirements, "reads", [], path)
+    _literal(requirements, "candidate_order_digest", "sha256-json-bound-action-id-order", path)
+    for key in ("whole_decision_admission", "score_count_matches_candidate_count", "selected_index", "successor_required"):
+        _literal(requirements, key, True, path)
+    environment = _object(requirements["environment"], "public stateful required environment")
+    _exact_keys(environment, {"host_kind", "connector_version", "connector_source_revision", "connector_artifact_sha256", "connector_module_version_id", "modset_status", "modset_fingerprint", "loaded_mod_ids"}, "public stateful required environment")
+    _enum(environment, "host_kind", {"live_ui", "headless", "replay", "test"}, path)
+    for key in ("connector_version", "connector_source_revision", "connector_module_version_id", "modset_status", "modset_fingerprint"):
+        _text(environment, key, path)
+    if not _SHA256.fullmatch(_text(environment, "connector_artifact_sha256", path)):
+        raise AgentRunEvidenceError("invalid_digest", "public stateful required Connector artifact is invalid", path)
+    _string_array(environment, "loaded_mod_ids", path)
+    _literal(adapter_config := _object(value["adapter_config"], "public stateful adapter config"), "public_stateful_profile", _PUBLIC_STATEFUL_PROFILE, path)
+    support = _object(value["support"], "public stateful support")
+    _exact_keys(support, {"game_versions", "game_commits", "interaction_kinds", "action_verbs"}, "public stateful support")
+    for key in support:
+        _string_array(support, key, path)
+        if not support[key] or len(set(support[key])) != len(support[key]):
+            raise AgentRunEvidenceError("schema_value", f"public stateful support {key} is empty or duplicated", path)
+    claims = _object(value["claims"], "public stateful claims")
+    _exact_keys(claims, {"full_run", "selector", "catalog_filtered", "creates_action_authority", "creates_native_operands"}, "public stateful claims")
+    for key in ("full_run", "selector"):
+        _boolean(claims, key, path)
+    for key in ("catalog_filtered", "creates_action_authority", "creates_native_operands"):
+        _literal(claims, key, False, path)
+
+
 def _managed_policy(value: Mapping[str, Any]) -> bool:
     requirements = value.get("requirements")
     environment = requirements.get("environment") if isinstance(requirements, dict) else None
@@ -498,6 +555,7 @@ def _verify_adapter_identity(value: Mapping[str, Any], path: str) -> None:
             "sts2.policy-runtime/decision-only-ndjson-1",
             "sts2.policy-runtime/decision-only-ndjson-2",
             "sts2.policy-runtime/decision-only-ndjson-3",
+            _PUBLIC_STATEFUL_PROTOCOL,
         },
         path,
     )
@@ -533,6 +591,10 @@ _EVENT_KINDS = {
     "text_menu_result_rejected",
     "controller_release_failed",
     "autonomy_budget_exhausted",
+    "public_stateful_episode_started",
+    "public_stateful_decision_input",
+    "public_stateful_observation_segment_reset",
+    "public_stateful_episode_ended",
 }
 _PLAYER_VERBS = {
     "activate",
@@ -570,6 +632,19 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
     text_outcomes: dict[str, str] = {}
     text_successors: set[str] = set()
     pending_text_input: str | None = None
+    public_stateful_port = adapter_protocol == _PUBLIC_STATEFUL_PROTOCOL
+    public_segment: dict[str, Any] | None = None
+    public_episode_ids: set[str] = set()
+    public_segment_ids: set[str] = set()
+    public_token_commitments: set[str] = set()
+    public_decision_watermarks: dict[str, tuple[str, int]] = {}
+    public_decision_segments: dict[str, str] = {}
+    public_observations: dict[str, tuple[str, int, int]] = {}
+    public_latest_observation: tuple[str, int, int] | None = None
+    pending_public_input: Mapping[str, Any] | None = None
+    pending_public_input_interrupted = False
+    public_abandoned_input = False
+    public_terminal_receipt = False
     context_port = adapter_protocol == "sts2.policy-runtime/decision-only-ndjson-3"
     text_contexts: dict[str, str] = {}
     context_token: str | None = None
@@ -601,6 +676,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             raise AgentRunEvidenceError("invalid_event_payload", f"event payload is not an object at line {sequence}", _EVENTS_FILE)
         if kind not in _EVENT_KINDS:
             raise AgentRunEvidenceError("unsupported_event_kind", f"unsupported event kind: {kind}", _EVENTS_FILE)
+        if kind.startswith("public_stateful_") and not public_stateful_port:
+            raise AgentRunEvidenceError("public_stateful_profile_association", "public stateful events require the exact port 4 profile", _EVENTS_FILE)
         if managed_stopped:
             raise AgentRunEvidenceError("managed_terminal_order", "Managed events cannot follow Stop", _EVENTS_FILE)
         if input_schema in _TEXT_SNAPSHOT_SCHEMAS and kind in {"receipt", "receipt_rejected", "successor"}:
@@ -610,12 +687,126 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                                         "text_menu_result_rejected", "text_observed_successor"}:
             raise AgentRunEvidenceError("unknown_retry", "v2 unknown native delivery cannot continue text decisions or delivery", _EVENTS_FILE)
         payload = value["payload"]
+        if pending_public_input is not None and kind != "decision":
+            if kind not in {"controller_released", "public_stateful_episode_ended", "fail_closed", "runtime_tainted"}:
+                raise AgentRunEvidenceError("public_stateful_decision_order", "public stateful input must immediately precede its decision", _EVENTS_FILE)
+            pending_public_input_interrupted = True
+            if kind in {"public_stateful_episode_ended", "fail_closed", "runtime_tainted"}:
+                public_abandoned_input = True
+                pending_public_input = None
+                pending_public_input_interrupted = False
         if pending_text_input is not None and kind not in {"decision", "fail_closed", "runtime_tainted"}:
             raise AgentRunEvidenceError("text_decision_order", "text input must immediately precede its decision", _EVENTS_FILE)
         if kind.startswith("text_") or kind == "menu_navigation":
             if input_schema not in _TEXT_SNAPSHOT_SCHEMAS:
                 raise AgentRunEvidenceError("text_profile_association", "text event requires a text-menu policy representation", _EVENTS_FILE)
-        if kind == "text_decision_input":
+        if kind == "public_stateful_episode_started":
+            _exact_keys(payload, {"scope", "episode_id", "segment_id", "continuity_token_commitment"}, "public_stateful_episode_started payload")
+            if public_terminal_receipt:
+                raise AgentRunEvidenceError("unknown_retry", "public stateful episode cannot restart after unknown or rejected delivery", _EVENTS_FILE)
+            if public_segment is not None:
+                raise AgentRunEvidenceError("public_stateful_segment_order", "a public stateful episode started before the current segment ended", _EVENTS_FILE)
+            _enum(payload, "scope", {"single_game_episode", "bounded_policy_segment"}, _EVENTS_FILE)
+            scope = payload["scope"]
+            episode_id = _text(payload, "episode_id", _EVENTS_FILE)
+            segment_id = _text(payload, "segment_id", _EVENTS_FILE)
+            commitment = _public_stateful_commitment(payload, "continuity_token_commitment")
+            if episode_id in public_episode_ids or segment_id in public_segment_ids or commitment in public_token_commitments:
+                raise AgentRunEvidenceError("public_stateful_identity_reuse", "public stateful episode, segment, or token commitment was reused", _EVENTS_FILE)
+            public_episode_ids.add(episode_id)
+            public_segment_ids.add(segment_id)
+            public_token_commitments.add(commitment)
+            public_segment = {"scope": scope, "episode_id": episode_id, "segment_id": segment_id, "commitment": commitment}
+            public_observations = {}
+            public_latest_observation = None
+        elif kind == "public_stateful_decision_input":
+            if public_terminal_receipt:
+                raise AgentRunEvidenceError("unknown_retry", "public stateful scoring cannot continue after unknown or rejected delivery", _EVENTS_FILE)
+            if environment is None:
+                raise AgentRunEvidenceError("environment_identity_order", "public stateful input requires environment admission", _EVENTS_FILE)
+            _exact_keys(payload, {"episode_id", "segment_id", "continuity_token_commitment", "observation_ordinal", "snapshot_id", "sequence", "previous_action_request_id"}, "public_stateful_decision_input payload")
+            if public_segment is None:
+                raise AgentRunEvidenceError("public_stateful_segment_order", "public stateful input requires an explicitly started segment", _EVENTS_FILE)
+            commitment = _public_stateful_commitment(payload, "continuity_token_commitment")
+            if (payload["episode_id"] != public_segment["episode_id"]
+                    or payload["segment_id"] != public_segment["segment_id"]
+                    or commitment != public_segment["commitment"]):
+                raise AgentRunEvidenceError("public_stateful_token_binding", "public stateful input differs from its active episode, segment, or token commitment", _EVENTS_FILE)
+            _positive_int(payload, "observation_ordinal", _EVENTS_FILE)
+            ordinal = payload["observation_ordinal"]
+            snapshot_id = _text(payload, "snapshot_id", _EVENTS_FILE)
+            _nonnegative_int(payload, "sequence", _EVENTS_FILE)
+            observed_sequence = payload["sequence"]
+            prior_identity = public_observations.get(snapshot_id)
+            if prior_identity is not None:
+                if prior_identity != (snapshot_id, observed_sequence, ordinal) or public_latest_observation != prior_identity:
+                    raise AgentRunEvidenceError("public_stateful_observation_order", "a public snapshot identity was reused with a different watermark or after a newer identity", _EVENTS_FILE)
+            elif public_latest_observation is None:
+                if ordinal != 1:
+                    raise AgentRunEvidenceError("public_stateful_observation_order", "the first public observation ordinal in a segment must be 1", _EVENTS_FILE)
+                public_latest_observation = (snapshot_id, observed_sequence, ordinal)
+                public_observations[snapshot_id] = public_latest_observation
+            else:
+                if observed_sequence <= public_latest_observation[1] or ordinal != public_latest_observation[2] + 1:
+                    raise AgentRunEvidenceError("public_stateful_observation_order", "a new public snapshot must advance sequence and exactly one observation ordinal", _EVENTS_FILE)
+                public_latest_observation = (snapshot_id, observed_sequence, ordinal)
+                public_observations[snapshot_id] = public_latest_observation
+            previous_request_id = payload["previous_action_request_id"]
+            if previous_request_id is not None:
+                if not isinstance(previous_request_id, str) or not previous_request_id:
+                    raise AgentRunEvidenceError("public_stateful_ack_association", "previous action request ID must be a non-empty string or null", _EVENTS_FILE)
+                matching = [decision_id for decision_id, receipt in receipts.items() if receipt.get("request_id") == previous_request_id]
+                if len(matching) != 1:
+                    raise AgentRunEvidenceError("public_stateful_ack_association", "previous action request does not identify one recorded receipt", _EVENTS_FILE)
+                previous_decision_id = matching[0]
+                previous_receipt = receipts[previous_decision_id]
+                previous_watermark = public_decision_watermarks.get(previous_decision_id)
+                if (previous_decision_id in rejected_receipts or previous_receipt.get("delivery") != "delivered"
+                        or previous_decision_id not in successors or previous_watermark is None
+                        or public_decision_segments.get(previous_decision_id) != public_segment["segment_id"]
+                        or snapshot_id == previous_watermark[0] or observed_sequence <= previous_watermark[1]):
+                    raise AgentRunEvidenceError("public_stateful_ack_association", "previous action lacks one delivered receipt and observed successor before a newer observation", _EVENTS_FILE)
+            pending_public_input = dict(payload)
+            pending_public_input_interrupted = False
+        elif kind == "public_stateful_observation_segment_reset":
+            _exact_keys(payload, {"episode_id", "previous_segment_id", "segment_id", "previous_continuity_token_commitment", "continuity_token_commitment", "reason", "memory_continuity"}, "public_stateful_observation_segment_reset payload")
+            if public_segment is None:
+                raise AgentRunEvidenceError("public_stateful_segment_order", "public stateful reset requires an active segment", _EVENTS_FILE)
+            old_commitment = _public_stateful_commitment(payload, "previous_continuity_token_commitment")
+            new_commitment = _public_stateful_commitment(payload, "continuity_token_commitment")
+            _literal(payload, "memory_continuity", False, _EVENTS_FILE)
+            _text(payload, "reason", _EVENTS_FILE)
+            next_segment_id = _text(payload, "segment_id", _EVENTS_FILE)
+            if (payload["episode_id"] != public_segment["episode_id"]
+                    or payload["previous_segment_id"] != public_segment["segment_id"]
+                    or old_commitment != public_segment["commitment"]):
+                raise AgentRunEvidenceError("public_stateful_reset_binding", "public stateful reset does not bind to the active episode, segment, and old token commitment", _EVENTS_FILE)
+            if next_segment_id in public_segment_ids or next_segment_id == public_segment["segment_id"]:
+                raise AgentRunEvidenceError("public_stateful_reset_binding", "public stateful reset must mint a new segment identity", _EVENTS_FILE)
+            if new_commitment == old_commitment or new_commitment in public_token_commitments:
+                raise AgentRunEvidenceError("public_stateful_reset_binding", "public stateful reset must rotate to a new token commitment", _EVENTS_FILE)
+            public_segment_ids.add(next_segment_id)
+            public_token_commitments.add(new_commitment)
+            public_segment = {**public_segment, "segment_id": next_segment_id, "commitment": new_commitment}
+            public_observations = {}
+            public_latest_observation = None
+        elif kind == "public_stateful_episode_ended":
+            _exact_keys(payload, {"scope", "episode_id", "segment_id", "continuity_token_commitment", "reason", "requires_explicit_begin", "memory_continuity"}, "public_stateful_episode_ended payload")
+            if public_segment is None:
+                raise AgentRunEvidenceError("public_stateful_segment_order", "public stateful end requires an active segment", _EVENTS_FILE)
+            commitment = _public_stateful_commitment(payload, "continuity_token_commitment")
+            _literal(payload, "requires_explicit_begin", True, _EVENTS_FILE)
+            _literal(payload, "memory_continuity", False, _EVENTS_FILE)
+            _text(payload, "reason", _EVENTS_FILE)
+            if (payload["scope"] != public_segment["scope"]
+                    or payload["episode_id"] != public_segment["episode_id"]
+                    or payload["segment_id"] != public_segment["segment_id"]
+                    or commitment != public_segment["commitment"]):
+                raise AgentRunEvidenceError("public_stateful_end_binding", "public stateful end differs from the active episode, segment, or token commitment", _EVENTS_FILE)
+            public_segment = None
+            public_observations = {}
+            public_latest_observation = None
+        elif kind == "text_decision_input":
             if environment is None:
                 raise AgentRunEvidenceError("environment_identity_order", "text input requires environment admission", _EVENTS_FILE)
             _exact_keys(payload, {"decision_id", "snapshot", "observation_context"}
@@ -714,6 +905,15 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 )
             decision, resolved_action_id = _verify_decision_event(payload, manifest)
             decision_id = str(decision["decision_id"])
+            if public_stateful_port:
+                if pending_public_input is None or pending_public_input_interrupted:
+                    raise AgentRunEvidenceError("public_stateful_decision_order", "port 4 decision has no immediately preceding public stateful input", _EVENTS_FILE)
+                if decision["snapshot_id"] != pending_public_input["snapshot_id"]:
+                    raise AgentRunEvidenceError("public_stateful_decision_order", "port 4 decision snapshot differs from its public input watermark", _EVENTS_FILE)
+                public_decision_watermarks[decision_id] = (pending_public_input["snapshot_id"], pending_public_input["sequence"])
+                public_decision_segments[decision_id] = str(pending_public_input["segment_id"])
+                pending_public_input = None
+                pending_public_input_interrupted = False
             if input_schema in _TEXT_SNAPSHOT_SCHEMAS:
                 if pending_text_input != decision_id or decision_id not in text_inputs:
                     raise AgentRunEvidenceError("text_decision_order", "text decision has no immediately preceding input", _EVENTS_FILE)
@@ -757,6 +957,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 raise AgentRunEvidenceError("duplicate_receipt", f"duplicate receipt for decision: {decision_id}", _EVENTS_FILE)
             rejected_receipts.add(decision_id)
             receipts[decision_id] = receipt
+            if public_stateful_port:
+                public_terminal_receipt = True
         elif kind == "receipt":
             if environment is None:
                 raise AgentRunEvidenceError(
@@ -768,6 +970,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             if decision_id in receipts or decision_id in rejected_receipts:
                 raise AgentRunEvidenceError("duplicate_receipt", f"duplicate receipt for decision: {decision_id}", _EVENTS_FILE)
             receipts[decision_id] = receipt
+            if public_stateful_port and receipt.get("delivery") == "unknown":
+                public_terminal_receipt = True
         elif kind == "successor":
             if environment is None:
                 raise AgentRunEvidenceError(
@@ -860,6 +1064,13 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         events.append(value)
     if pending_text_input is not None and manifest["status"] != "tainted":
         raise AgentRunEvidenceError("text_decision_order", "unmatched text input in finalized run", _EVENTS_FILE)
+    if public_stateful_port:
+        if (pending_public_input is not None or public_abandoned_input) and manifest["status"] != "tainted":
+            raise AgentRunEvidenceError("public_stateful_decision_order", "unmatched public stateful input requires a tainted run", _EVENTS_FILE)
+        if public_segment is not None and manifest["status"] != "tainted":
+            raise AgentRunEvidenceError("public_stateful_segment_order", "an untainted port 4 run must explicitly end its active segment", _EVENTS_FILE)
+        if public_terminal_receipt and manifest["status"] != "tainted":
+            raise AgentRunEvidenceError("taint_drift", "unknown or rejected port 4 delivery requires a tainted run", _EVENTS_FILE)
     if any(decision_id not in text_outcomes for decision_id in text_dispatches) and manifest["status"] != "tainted":
         raise AgentRunEvidenceError("text_result_missing", "dispatched text action has no result in untainted run", _EVENTS_FILE)
     if managed_control is not None and manifest["status"] != "tainted":
@@ -1535,6 +1746,13 @@ def _reject_constant(value: str) -> None:
 def _exact_keys(value: Mapping[str, Any], expected: set[str], label: str) -> None:
     if set(value) != expected:
         raise AgentRunEvidenceError("schema_keys", f"{label} contains unknown or missing fields")
+
+
+def _public_stateful_commitment(value: Mapping[str, Any], key: str) -> str:
+    commitment = _text(value, key, _EVENTS_FILE)
+    if not _SHA256.fullmatch(commitment):
+        raise AgentRunEvidenceError("public_stateful_token_commitment", f"{key} must be a lowercase SHA-256 commitment", _EVENTS_FILE)
+    return commitment
 
 
 def _literal(value: Mapping[str, Any], key: str, expected: object, path: str | None = None) -> None:

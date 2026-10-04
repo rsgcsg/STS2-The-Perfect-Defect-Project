@@ -49,8 +49,8 @@ interface ActivePublicStatefulSegment {
   observations: Map<string, PublicObservationIdentity>;
   previousAction: PublicPreviousAction | null;
 }
-interface ClosedPublicStatefulSegment { scope: PublicStatefulEpisodeScope; episodeId: string; segmentId: string; reason: string }
-interface ResetPublicStatefulSegment { episodeId: string; previousSegmentId: string; segmentId: string; reason: string }
+interface ClosedPublicStatefulSegment { scope: PublicStatefulEpisodeScope; episodeId: string; segmentId: string; continuityTokenCommitment: string; reason: string }
+interface ResetPublicStatefulSegment { episodeId: string; previousSegmentId: string; segmentId: string; previousContinuityTokenCommitment: string; continuityTokenCommitment: string; reason: string }
 type PublicStatefulSegmentEvent = { type: "closed"; value: ClosedPublicStatefulSegment } | { type: "reset"; value: ResetPublicStatefulSegment };
 
 export interface Admission { admitted: boolean; reason: string; candidateDigest: string; candidateCount: number }
@@ -196,6 +196,15 @@ export class PolicyRuntime {
     return this.options.manifest.adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-3";
   }
 
+  private publicStatefulTokenCommitment(token: string): string {
+    return createHash("sha256")
+      .update("sts2.policy-runtime/public-stateful-continuity-token-commitment-v1\0", "utf8")
+      .update(this.runId, "utf8")
+      .update("\0", "utf8")
+      .update(token, "utf8")
+      .digest("hex");
+  }
+
   private bindContinuity(gameId: string, snapshot: AnyDecisionBundle["observation"]): string {
     const runtimeId = snapshot.session.runtime_instance_id;
     const environment = snapshot.session.environment_fingerprint;
@@ -211,6 +220,7 @@ export class PolicyRuntime {
     if (this.publicStateful && this.publicSegment) {
       const segment = this.publicSegment;
       const previousSegmentId = segment.segmentId;
+      const previousContinuityTokenCommitment = this.publicStatefulTokenCommitment(segment.continuityToken);
       segment.segmentId = randomUUID();
       segment.continuityToken = randomUUID();
       segment.nextOrdinal = 0;
@@ -218,7 +228,11 @@ export class PolicyRuntime {
       segment.observations.clear();
       segment.previousAction = null;
       this.lastPolicySnapshotId = null;
-      this.publicSegmentEvents.push({ type: "reset", value: { episodeId: segment.episodeId, previousSegmentId, segmentId: segment.segmentId, reason } });
+      this.publicSegmentEvents.push({ type: "reset", value: {
+        episodeId: segment.episodeId, previousSegmentId, segmentId: segment.segmentId,
+        previousContinuityTokenCommitment,
+        continuityTokenCommitment: this.publicStatefulTokenCommitment(segment.continuityToken), reason
+      } });
       return;
     }
     if (this.continuity) this.continuity = { ...this.continuity, token: randomUUID() };
@@ -228,7 +242,10 @@ export class PolicyRuntime {
     if (this.publicStateful) {
       const segment = this.publicSegment;
       if (segment) {
-        this.publicSegmentEvents.push({ type: "closed", value: { scope: segment.scope, episodeId: segment.episodeId, segmentId: segment.segmentId, reason } });
+        this.publicSegmentEvents.push({ type: "closed", value: {
+          scope: segment.scope, episodeId: segment.episodeId, segmentId: segment.segmentId,
+          continuityTokenCommitment: this.publicStatefulTokenCommitment(segment.continuityToken), reason
+        } });
         this.publicSegment = null;
       }
       return;
@@ -242,8 +259,18 @@ export class PolicyRuntime {
     while (this.publicSegmentEvents.length > 0) {
       const event = this.publicSegmentEvents.shift()!;
       const recorded = event.type === "reset"
-        ? await this.appendEvidence("public_stateful_observation_segment_reset", { episode_id: event.value.episodeId, previous_segment_id: event.value.previousSegmentId, segment_id: event.value.segmentId, reason: event.value.reason, memory_continuity: false })
-        : await this.appendEvidence("public_stateful_episode_ended", { scope: event.value.scope, episode_id: event.value.episodeId, segment_id: event.value.segmentId, reason: event.value.reason, requires_explicit_begin: true, memory_continuity: false });
+        ? await this.appendEvidence("public_stateful_observation_segment_reset", {
+          episode_id: event.value.episodeId, previous_segment_id: event.value.previousSegmentId,
+          segment_id: event.value.segmentId,
+          previous_continuity_token_commitment: event.value.previousContinuityTokenCommitment,
+          continuity_token_commitment: event.value.continuityTokenCommitment,
+          reason: event.value.reason, memory_continuity: false
+        })
+        : await this.appendEvidence("public_stateful_episode_ended", {
+          scope: event.value.scope, episode_id: event.value.episodeId, segment_id: event.value.segmentId,
+          continuity_token_commitment: event.value.continuityTokenCommitment,
+          reason: event.value.reason, requires_explicit_begin: true, memory_continuity: false
+        });
       if (!recorded) {
         this.tainted = true;
         this.taintReason = "public_stateful_segment_evidence_write_failed";
@@ -376,7 +403,10 @@ export class PolicyRuntime {
       };
       this.publicSegment = segment;
       this.lastPolicySnapshotId = null;
-      if (!(await this.appendEvidence("public_stateful_episode_started", { scope, episode_id: segment.episodeId, segment_id: segment.segmentId }))) {
+      if (!(await this.appendEvidence("public_stateful_episode_started", {
+        scope, episode_id: segment.episodeId, segment_id: segment.segmentId,
+        continuity_token_commitment: this.publicStatefulTokenCommitment(segment.continuityToken)
+      }))) {
         this.publicSegment = null;
         throw new Error("public stateful segment evidence could not be recorded");
       }
@@ -709,6 +739,7 @@ export class PolicyRuntime {
     this.lastDecision = { decision_id: decision.decision_id, candidate_digest: decision.candidate_digest, candidate_count: decision.candidate_count, scores: [...decision.scores], selected_index: decision.selected_index, bound_action_id: resolvedActionId, bound_action_label: resolved?.label ?? null };
     if (this.publicStateful && !(await this.appendEvidence("public_stateful_decision_input", {
       episode_id: this.publicSegment?.episodeId ?? null, segment_id: this.publicSegment?.segmentId ?? null,
+      continuity_token_commitment: this.publicStatefulTokenCommitment(this.publicSegment!.continuityToken),
       observation_ordinal: observationOrdinal, snapshot_id: bundle.observation.snapshot_id,
       sequence: bundle.observation.sequence, previous_action_request_id: publicPreviousActionRequestId
     }))) {
