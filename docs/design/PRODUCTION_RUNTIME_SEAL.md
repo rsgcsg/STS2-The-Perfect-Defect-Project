@@ -82,6 +82,12 @@ the old artifact canary and fails closed. An absent pair retains the explicit
 development bootstrap behavior; a new ordinary unsealed artifact remains
 unqualified. A matching pair admits only the actual loaded identity/environment,
 and independent exact-game/current-Modset checks still determine execution.
+Qualification observes Host kind through a separate strict DisplayServer read:
+only the recognized OS-specific UI names admit `live_ui`; headless, missing,
+unknown, wrong-platform or throwing reads cannot satisfy that seal field. The
+names follow Godot's [DisplayServer interface](https://docs.godotengine.org/en/stable/classes/class_displayserver.html#class-displayserver-method-get-name)
+and platform implementations; this is not an observation of the installed
+game's driver or an assertion of its Godot version.
 
 HTTPS and checksums establish distribution identity within accidental drift and
 misconfiguration. They are not digital signatures and do not resist a malicious

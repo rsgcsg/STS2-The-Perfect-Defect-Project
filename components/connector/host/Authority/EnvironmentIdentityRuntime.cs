@@ -83,7 +83,9 @@ internal static class EnvironmentIdentityRuntime
                     HostArtifactIdentity.LoadedAssemblyMvid,
                     PlayerEnvironment.Protocol.PlayerEnvironmentContract.ProtocolVersion,
                     ExactGameCompatibility.CurrentPlatform(), ExactGameCompatibility.CurrentArchitecture(),
-                    HostKind(), release?.Version, release?.Commit, assemblyHash,
+                    RuntimeSealQualification.ReadObservedHostKind(
+                        () => DisplayServer.GetName(), ExactGameCompatibility.CurrentPlatform()),
+                    release?.Version, release?.Commit, assemblyHash,
                     mainAssemblySha256, mainAssemblyMvid, modset.Status,
                     LiveModsetIdentity.FingerprintScope, modset.Fingerprint));
             // A present broken pair cannot fall back to a process canary or a

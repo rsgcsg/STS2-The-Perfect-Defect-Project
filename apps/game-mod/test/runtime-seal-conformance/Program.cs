@@ -21,6 +21,23 @@ var observed = new LoadedRuntimeSealIdentity(
     "manager_state+ordered_manifest_identity+load_state+source+workshop_id+loaded_assembly_name_version_mvid", new string('5', 64));
 Require(RuntimeSealQualification.Evaluate(snapshot, observed).ActionExecutionAllowed, "Shared golden tuple rejected.");
 
+foreach (string? driver in new string?[] { null, "", "unknown", "Metal", "macOS ", "Windows" })
+{
+    string kind = RuntimeSealQualification.ReadObservedHostKind(() => driver, "darwin");
+    Require(kind == "unavailable", "Missing/unknown/wrong-platform display driver admitted as live UI.");
+    Require(!RuntimeSealQualification.Evaluate(snapshot, observed with { HostKind = kind }).ActionExecutionAllowed,
+        "Unavailable observed Host kind satisfied a live-UI seal.");
+}
+string failedKind = RuntimeSealQualification.ReadObservedHostKind(
+    () => throw new InvalidOperationException("synthetic display observation failure"), "darwin");
+Require(failedKind == "unavailable" && !RuntimeSealQualification.Evaluate(
+    snapshot, observed with { HostKind = failedKind }).ActionExecutionAllowed, "Throwing display observation qualified.");
+Require(RuntimeSealQualification.ReadObservedHostKind(() => "headless", "darwin") == "headless", "Headless classified as live UI.");
+Require(RuntimeSealQualification.ReadObservedHostKind(() => "macOS", "darwin") == "live_ui", "Known macOS UI rejected.");
+Require(RuntimeSealQualification.ReadObservedHostKind(() => "Windows", "win32") == "live_ui", "Known Windows UI rejected.");
+Require(RuntimeSealQualification.ReadObservedHostKind(() => "X11", "linux") == "live_ui", "Known X11 UI rejected.");
+Require(RuntimeSealQualification.ReadObservedHostKind(() => "Wayland", "linux") == "live_ui", "Known Wayland UI rejected.");
+
 LoadedRuntimeSealIdentity[] changed = [
     observed with { ImplementationId = "STS2_MCP" },
     observed with { PackageVersion = "0.2.0-rc.24" },

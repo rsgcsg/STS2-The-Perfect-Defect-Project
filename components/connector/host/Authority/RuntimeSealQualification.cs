@@ -23,6 +23,25 @@ internal static class RuntimeSealQualification
         @"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-rc\.(0|[1-9][0-9]*))?$",
         RegexOptions.CultureInvariant);
 
+    internal static string ReadObservedHostKind(Func<string?> readDisplayServerName, string platform)
+    {
+        try
+        {
+            string? name = readDisplayServerName();
+            if (Same(name, "headless")) return "headless";
+            // Explicit DisplayServer names, not renderer names. Missing/new
+            // drivers require review rather than inheriting live_ui fallback.
+            bool knownUi = platform == "darwin" && Same(name, "macOS")
+                || platform == "win32" && Same(name, "Windows")
+                || platform == "linux" && (Same(name, "X11") || Same(name, "Wayland"));
+            return knownUi ? "live_ui" : "unavailable";
+        }
+        catch
+        {
+            return "unavailable";
+        }
+    }
+
     internal static RuntimeSealSnapshot ReadInstalledPair(string loadedAssemblyPath)
     {
         try
