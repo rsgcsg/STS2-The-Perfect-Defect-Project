@@ -20,7 +20,7 @@ from spireagent.encoding import canonical_json, semantic_hash
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, object_fields
 
 from ..fullrun.public_inputs import COMPACT_IDENTITY, project_public_snapshot
-from ..fullrun.token_inputs import input_texts
+from ..fullrun.token_format import input_texts
 from ..light_action_codec import encode_action
 from ..workers.public_m2_engine import (
     PUBLIC_M2_FEEDBACK_PROFILE,

@@ -152,6 +152,23 @@ class SQLiteRegistry:
             ).fetchone()
         return row is not None and row[0] == 1
 
+    def dependents(self, artifact_id: str, *, kind: str) -> tuple[Manifest, ...]:
+        """Small reverse metadata projection; consumers recheck each CAS manifest."""
+        digest(artifact_id, "registry.id")
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT a.id,a.manifest FROM artifacts a JOIN edges e ON e.child=a.id "
+                "WHERE e.parent=? AND a.kind=? ORDER BY a.id LIMIT 101",
+                (artifact_id, kind),
+            ).fetchall()
+        if len(rows) > 100:
+            raise BoundaryError("registry", "dependent_limit")
+        values = tuple(Manifest.from_bytes(row[1], row[0]) for row in rows)
+        if any(m.kind != kind or not any(p.artifact_id == artifact_id for p in m.parents)
+               for m in values):
+            raise BoundaryError("registry", "corrupt_parent_index")
+        return values
+
     def lineage(self, artifact_id: str) -> tuple[Manifest, ...]:
         pending = [artifact_id]
         found: dict[str, Manifest] = {}

@@ -72,6 +72,9 @@ M2_PROFILE = "text-menu-m2-v1"
 V2_M2_PROFILE = "text-menu-m2-v2"
 PUBLIC_M0_PROFILE = "public-snapshot-m0-v1"
 PUBLIC_M0_ADAPTER = "stpd-public-m0-decision-adapter"
+PUBLIC_M2_PROFILE = "public-snapshot-m2-v1"
+PUBLIC_M2_ADAPTER = "stpd-public-m2-decision-adapter"
+PUBLIC_PROFILES = {PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE}
 RECIPE_LABELS = {"stage1a.b.s.v2": "B", "stage1a.dsimple.s.v1": "D-Simple"}
 
 
@@ -451,6 +454,12 @@ def bind_public_m0_export(*args: Any, **kwargs: Any) -> Any:
     return bind(*args, **kwargs)
 
 
+def bind_public_m2_export(*args: Any, **kwargs: Any) -> Any:
+    from stpd.public_m2_policy_installation import bind_public_m2_export as bind
+
+    return bind(*args, **kwargs)
+
+
 class LocalModelRegistration:
     def __init__(self, config: ProjectConfig, export: LocalModelExport,
                  models: LocalModelService) -> None:
@@ -472,19 +481,24 @@ class LocalModelRegistration:
     def _matching(self, model_id: str, export: Path,
                   requirements: dict[str, Any] | None = None,
                   support: dict[str, Any] | None = None, *,
-                  profile: str = PROFILE, environment_kind: str = "native"
+                  profile: str = PROFILE, environment_kind: str = "native",
+                  metadata_only: bool = False,
                   ) -> tuple[str | None, bool]:
         from stpd.token_policy_installation import code_digest, validate
 
         stale = False
         memory = profile in {M2_PROFILE, V2_M2_PROFILE}
-        public_m0 = profile == PUBLIC_M0_PROFILE
+        public_m0 = profile in PUBLIC_PROFILES
         if memory:
             from stpd.memory_policy_installation import code_digest as memory_code_digest
             from stpd.memory_policy_installation import validate as validate_memory
         if public_m0:
-            from stpd.public_m0_policy_installation import code_digest as public_code_digest
-            from stpd.public_m0_policy_installation import validate as validate_public_m0
+            from spireagent.policies import policy_support
+
+            public_owner = policy_support(PUBLIC_M2_ADAPTER if profile == PUBLIC_M2_PROFILE
+                                          else PUBLIC_M0_ADAPTER)
+            public_code_digest = public_owner.code_digest
+            validate_public_m0 = public_owner.validate
 
         current_code = (memory_code_digest(self.models.root) if memory else
                         public_code_digest(self.models.root) if public_m0 else
@@ -509,7 +523,9 @@ class LocalModelRegistration:
                 validator(self.models.root,
                           _inside(self.models.private_root, entry["config"]),
                           _inside(self.models.private_root, entry["manifest"]),
-                          binding_root=self.models.private_root)
+                          binding_root=self.models.private_root,
+                          **({"verify_payloads": False}
+                             if profile == PUBLIC_M2_PROFILE and metadata_only else {}))
                 if (requirements is not None and manifest.get("requirements") != requirements
                         or support is not None and manifest.get("support") != support):
                     continue
@@ -528,13 +544,24 @@ class LocalModelRegistration:
 
     def _status(self, model_id: object, *, environment_kind: str) -> dict[str, Any]:
         identity = digest(model_id, "local_model_registration.model_id")
-        observed = self.export.status()
+        status_for_model = getattr(self.export, "status_for_model", None)
+        observed = (status_for_model(identity) if callable(status_for_model)
+                    else self.export.status())
         operation = observed["operation"]
         memory = (operation.get("model_id") == identity
                   and operation.get("model_type") == "memory")
         public_m0 = (operation.get("model_id") == identity
                      and operation.get("model_type") == "public_m0")
-        profile = (M2_PROFILE if memory else PUBLIC_M0_PROFILE if public_m0 else PROFILE)
+        public_m2 = (operation.get("model_id") == identity
+                     and operation.get("model_type") == "public_m2")
+        profile = (PUBLIC_M2_PROFILE if public_m2 else
+                   M2_PROFILE if memory else PUBLIC_M0_PROFILE if public_m0 else PROFILE)
+        if public_m2 and (
+            observed.get("schema") != "stpd/local-model-export-operation-v4"
+            or operation.get("profile") != PUBLIC_M2_PROFILE
+        ):
+            return _public(identity, "unavailable", reason_code="registration_metadata_invalid",
+                           profile=PUBLIC_M2_PROFILE)
         if public_m0 and (
             observed.get("schema") != "stpd/local-model-export-operation-v3"
             or operation.get("profile") != PUBLIC_M0_PROFILE
@@ -553,6 +580,12 @@ class LocalModelRegistration:
             export = self.config.state_dir / "model-exports" / identity
             if memory:
                 profile = _export_memory_profile(export)
+            elif public_m2:
+                from stpd.policy.public_m2_export import validate_package
+
+                artifact, _config, _lineage = validate_package(export, check_payloads=False)
+                if artifact.artifact_id != identity:
+                    raise BoundaryError("local_model_registration", "export_identity_mismatch")
             elif public_m0:
                 from spireagent.artifact_contracts import Manifest
                 from stpd.policy.token_decision import (
@@ -584,7 +617,7 @@ class LocalModelRegistration:
                                reason_code="managed_requires_confirmed_interaction_model",
                                profile=profile)
             found, stale = self._matching(identity, export, profile=profile,
-                                          environment_kind=environment_kind)
+                                          environment_kind=environment_kind, metadata_only=True)
             if found is not None:
                 return _public(identity, "registered", selection_id=found, profile=profile)
             if stale:
@@ -678,8 +711,13 @@ class LocalModelRegistration:
         if node is None:
             raise BoundaryError("local_model_registration", "m2_runtime_contract_unavailable")
         script = ("import {readFile} from 'node:fs/promises';"
-                  "const {validatePolicyManifest}=await import(process.argv[1]);"
-                  "validatePolicyManifest(JSON.parse(await readFile(process.argv[2],'utf8')));")
+                  "const runtime=await import(process.argv[1]);"
+                  "const manifest=JSON.parse(await readFile(process.argv[2],'utf8'));"
+                  "runtime.validatePolicyManifest(manifest);"
+                  "if(manifest.adapter.protocol==='sts2.policy-runtime/decision-only-ndjson-4'"
+                  "&&runtime.PUBLIC_STATEFUL_WORKBENCH_CONTROL_PROFILE!=="
+                  "'sts2.policy-runtime/public-stateful-workbench-control-v1')"
+                  "throw new Error('public stateful workbench control unavailable');")
         environment = {key: value for key, value in os.environ.items() if key in
                        {"PATH", "SYSTEMROOT", "SystemRoot", "TMPDIR", "TEMP", "TMP"}}
         try:
@@ -706,6 +744,15 @@ class LocalModelRegistration:
             # registration is published. A storage fault must finish the POST as
             # a classified failure, rather than disconnecting the browser thread.
             raise RegistrationStorageError(error) from error
+        except BoundaryError as error:
+            cause = error.__cause__
+            for _ in range(8):
+                if isinstance(cause, sqlite3.DatabaseError):
+                    raise RegistrationStorageError(cause) from error
+                if cause is None:
+                    break
+                cause = cause.__cause__
+            raise
         if environment_kind == "managed":
             result["environment_kind"] = environment_kind
         return result
@@ -715,7 +762,9 @@ class LocalModelRegistration:
 
         deadline = monotonic() + EXPORT_VERIFICATION_SECONDS
         # Weight/scorer verification and current-store binding are explicit POST work.
-        observed = self.export.status()
+        status_for_model = getattr(self.export, "status_for_model", None)
+        observed = (status_for_model(identity) if callable(status_for_model)
+                    else self.export.status())
         operation = observed["operation"]
         memory = (observed.get("schema") == "stpd/local-model-export-operation-v2"
                   and operation.get("model_id") == identity
@@ -724,11 +773,20 @@ class LocalModelRegistration:
                      and operation.get("model_id") == identity
                      and operation.get("model_type") == "public_m0"
                      and operation.get("profile") == PUBLIC_M0_PROFILE)
+        public_m2 = (observed.get("schema") == "stpd/local-model-export-operation-v4"
+                     and operation.get("model_id") == identity
+                     and operation.get("model_type") == "public_m2"
+                     and operation.get("profile") == PUBLIC_M2_PROFILE)
         if operation.get("model_type") == "public_m0" and not public_m0:
             raise BoundaryError("local_model_registration",
                                 "public_m0_export_verification_required")
+        if operation.get("model_type") == "public_m2" and not public_m2:
+            raise BoundaryError("local_model_registration",
+                                "public_m2_export_verification_required")
         require_local_models("local_model_registration")
-        if memory:
+        if public_m2:
+            export = self.export.verified_public_m2_for_registration(identity, deadline=deadline)
+        elif memory:
             export = self.export.verified_memory_for_registration(identity, deadline=deadline)
         elif public_m0:
             verify_public = getattr(self.export, "verified_public_m0_for_registration", None)
@@ -739,7 +797,14 @@ class LocalModelRegistration:
         else:
             export = self.export.verified_for_registration(identity)
         _remaining(deadline)
-        if memory:
+        if public_m2:
+            from stpd.policy.public_m2_export import validate_package
+
+            artifact, m2_config, _lineage = validate_package(export)
+            if artifact.artifact_id != identity:
+                raise BoundaryError("local_model_registration", "export_identity_mismatch")
+            profile, recipe = PUBLIC_M2_PROFILE, "public-m2-observation-stateful-v1"
+        elif memory:
             # The isolated verification child has checked exact model/run lineage
             # and the parent has rebound the response to unchanged package bytes.
             recipe = self.export.verified_memory_recipe_for_registration(
@@ -786,7 +851,7 @@ class LocalModelRegistration:
                         != "text-menu-v2-confirmed-interaction"):
             raise BoundaryError("local_model_registration",
                                 "managed_requires_confirmed_interaction_model")
-        if profile == PUBLIC_M0_PROFILE:
+        if profile in PUBLIC_PROFILES:
             directory, pin = self.models.directory, self.models.registry()["runtime_package"]
             if not isinstance(pin, dict) or pin.get("package") != RUNTIME_PACKAGE:
                 raise BoundaryError("local_model_registration", "runtime_package_not_pinned")
@@ -803,7 +868,7 @@ class LocalModelRegistration:
             validate_runtime_install(node_modules, pin, self.models._connector_pin())
         except (BoundaryError, OSError, PackageIdentityError, ValueError) as error:
             _remaining(deadline)
-            code = ("runtime_package_not_pinned" if profile == PUBLIC_M0_PROFILE
+            code = ("runtime_package_not_pinned" if profile in PUBLIC_PROFILES
                     else "text_runtime_local_install_required")
             raise BoundaryError("local_model_registration", code) from error
         sdk = _connector_sdk_path(node_modules, pin)
@@ -811,13 +876,13 @@ class LocalModelRegistration:
             raise BoundaryError("local_model_registration", "v2_runtime_contract_unavailable")
         _remaining(deadline)
         input_profile = ("text-menu-v2" if profile == V2_M2_PROFILE else
-                         PUBLIC_M0_PROFILE if profile == PUBLIC_M0_PROFILE else PROFILE)
+                         PUBLIC_M0_PROFILE if profile in PUBLIC_PROFILES else PROFILE)
         if managed:
             requirements, support = _managed_requirements(self.models._managed_runtime_target())
         else:
             capabilities = (self._capabilities(sdk, deadline=deadline,
                                                input_profile=input_profile)
-                            if profile in {V2_M2_PROFILE, PUBLIC_M0_PROFILE} else
+                            if profile in {V2_M2_PROFILE, *PUBLIC_PROFILES} else
                             self._capabilities(sdk, deadline=deadline))
             requirements, support = _requirements(capabilities,
                                                   input_profile=input_profile)
@@ -856,6 +921,7 @@ class LocalModelRegistration:
                 else:
                     folder.mkdir(mode=0o700)
                 selection = ("local-text-m2-" if memory else
+                             "local-public-m2-" if public_m2 else
                              "local-public-m0-" if public_m0 else
                              "local-text-b-") + uuid.uuid4().hex
                 target = folder / selection
@@ -864,6 +930,7 @@ class LocalModelRegistration:
                 try:
                     binder = (bind_managed_memory_export if managed else
                               bind_memory_export if memory else
+                              bind_public_m2_export if public_m2 else
                               bind_public_m0_export if public_m0 else bind_text_menu_export)
                     binding: dict[str, Any] = {"manifest_id": selection,
                                "policy": {"id": selection, "version": "1.0.0",
@@ -874,17 +941,21 @@ class LocalModelRegistration:
                         binding["input_profile"] = input_profile_for_recipe(recipe)
                     binder(self.models.root, export, config_path, manifest_path,
                            **binding)
-                    if memory:
+                    if memory or public_m2:
                         self._m2_runtime_manifest_compatible(node_modules, manifest_path,
                                                              deadline=deadline)
                     entries = self._entries()
                     label = (MEMORY_RECIPE_LABELS[recipe] if memory else
+                             f"Public M2 carry{m2_config.slots}/window{m2_config.window_steps} "
+                             f"epoch{artifact.parameters.value()['epoch']}" if public_m2 else
                              "D-Simple public M0" if public_m0 else RECIPE_LABELS[recipe])
                     entry = {"id": selection,
                              "label": ("独立游戏环境 " if managed else
-                                       "本机公开快照 " if public_m0 else "本机文字菜单 ")
+                                       "本机公开快照 " if public_m0 or public_m2
+                                       else "本机文字菜单 ")
                                       + label + " " + identity[:8],
                              "adapter": ("stpd-m2-decision-adapter" if memory else
+                                         PUBLIC_M2_ADAPTER if public_m2 else
                                          PUBLIC_M0_ADAPTER if public_m0 else "token-v1"),
                              "runtime_profile": profile,
                              "manifest": manifest_path.relative_to(

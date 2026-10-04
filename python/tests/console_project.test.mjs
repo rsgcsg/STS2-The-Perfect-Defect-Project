@@ -101,6 +101,17 @@ const modelExportStatus = (operation, extra = {}) => ({
   csrf_token:"export-csrf",
   ...extra,
 });
+const publicM2Model = (epoch = 1) => ({
+  artifact_id:id("a"), kind:"model", parents:[], payloads:[],
+  parameters:{schema:"stpd/public-m2-model-v1",qualification:"engineering_only",epoch,
+    run_complete:epoch === 5,operation_id:"1".repeat(32),input_identity:id("b"),
+    engine_input_digest:id("c"),implementation_sha256:id("d"),
+    config:{graph:"dsimple.light-action.m2.v1",epochs:5,source_digest:id("b"),
+      state_tokenizer_sha256:id("e"),slots:8,reset_each_step:false,window_steps:4,device:"cuda:0",
+      sequence_profile:"stpd/public-m2-observation-only-v1",
+      prior_action_profile:"stpd/public-m2-no-prior-action-v1",
+      feedback_profile:"stpd/public-m2-no-feedback-v1"}},
+});
 const modelRegistrationStatus = (model, status = "not_registered", extra = {}) => ({
   schema:"stpd/local-model-registration-v1",
   model_id:model,
@@ -6797,4 +6808,58 @@ test("Managed registration response cannot reuse a Native status", async () => {
   assert.equal(walk(page).some(item => item.dataset?.action === "register-managed-model"), false);
   assert.match(text(page), /登记状态格式未知/);
   assert.equal(post(env.calls).length, 0);
+});
+
+test("public M2 stage cards consume their exact archived export and register only on click", async () => {
+  for (const epoch of [1, 3, 5]) {
+    const artifact = publicM2Model(epoch), model = artifact.artifact_id;
+    const env = setup({identity:{status:"signed_out"},view:"local-workspace",query:`&id=${model}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1",status:"ready",curation_status:"ready"};
+        if (url === `/api/local-workspace/artifacts/${model}`) return artifact;
+        if (url === `/api/local-model-exports/status?model_id=${model}`) return modelExportStatus({
+          status:"completed",model_id:model,model_type:"public_m2",profile:"public-snapshot-m2-v1",
+          payload_bytes:9000000},{schema:"stpd/local-model-export-operation-v4"});
+        if (url.startsWith("/api/local-model-registrations/status?")) return modelRegistrationStatus(
+          model,"not_registered",{runtime_profile:"public-snapshot-m2-v1"});
+        if (url === "/api/local-model-registrations/register") return modelRegistrationStatus(
+          model,"registered",{runtime_profile:"public-snapshot-m2-v1",selection_id:"local-public-m2-stage"});
+        throw new Error(`unexpected route ${url}`);
+      }});
+    const page = await env.render();
+    assert.match(text(page), /公开快照记忆模型/);
+    assert.match(text(page), /carry8/);
+    assert.equal(action(page,"register-local-model").disabled,false);
+    assert.equal(post(env.calls).length,0);
+    await action(page,"register-local-model").onclick();
+    assert.deepEqual(post(env.calls).map(call => [call.url,body(call)]),[
+      ["/api/local-model-registrations/register",{model_id:model}]]);
+  }
+});
+
+test("public M2 controls follow Runtime segment status and require explicit fresh begin", async () => {
+  for (const segment of [null,{scope:"bounded_policy_segment",episode_id:"episode",segment_id:"segment"}]) {
+    const state = {status:"loaded",loaded:true,selection_id:"audited-cpu",run_profile:"short",
+      operation:null,public_stateful_segment:segment,
+      runtime:{lifecycle:"running",mode:"human",controller:"released",tainted:false,errors:[]}};
+    const env = setup({view:"local-models",renderOnReload:true,handler:(url,options) => {
+      if (url === "/api/local-models/status") return state;
+      const data = modelHandler(url,options);
+      if (url === "/api/local-models") data.policies[0].runtime_profile = "public-snapshot-m2-v1";
+      return data;
+    }});
+    const page = await env.render();
+    assert.equal(action(page,"model-command-auto").disabled,segment === null);
+    assert.equal(action(page,"model-command-begin_segment").disabled,segment !== null);
+    assert.equal(action(page,"model-command-end_segment").disabled,segment === null);
+    assert.equal(action(page,"model-command-human").disabled,false);
+    assert.equal(post(env.calls).length,0);
+    if (segment === null) {
+      await action(page,"model-command-begin_segment").onclick();
+      assert.deepEqual(body(post(env.calls)[0]),{action:"begin_segment"});
+      assert.equal(action(env.livePage,"model-command-auto").disabled,true,
+        "a POST acknowledgement cannot fabricate a Runtime segment");
+    }
+  }
 });

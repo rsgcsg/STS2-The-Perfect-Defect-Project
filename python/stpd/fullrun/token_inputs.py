@@ -26,15 +26,11 @@ from .features import ModelSample, load_model_view
 from .public_bc import LEGACY_VIEW_SCHEMA
 from .public_bc import VIEW_SCHEMA as PUBLIC_BC_SCHEMA
 from .token_format import FORMAT as FORMAT
+from .token_format import input_texts as input_texts
 
 SCHEMA = "stpd/stage1a-token-input-v1"
 MAX_TOKENS = 8192
 MAX_PAYLOAD = 256 * 1024**2
-
-
-def input_texts(state: str, actions: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
-    """Delimit roles explicitly. Encode separately, then concatenate IDs for B."""
-    return "OBS\n" + state + "\n", tuple("ACT\n" + a + "\n" for a in actions)
 
 
 def fit_scratch(samples: tuple[ModelSample, ...], *, vocab_size: int = 8192) -> bytes:

@@ -36,6 +36,7 @@ from spireagent.workbench.research_process import private_child
 SCHEMA = "stpd/local-model-export-operation-v1"
 SCHEMA_V2 = "stpd/local-model-export-operation-v2"
 SCHEMA_V3 = "stpd/local-model-export-operation-v3"
+SCHEMA_V4 = "stpd/local-model-export-operation-v4"
 RECEIPT_SCHEMA = "stpd/local-memory-export-verification-v1"
 PUBLIC_M0_RECEIPT_SCHEMA = "stpd/local-public-m0-export-verification-v1"
 OPERATION_FILE = "local-model-export-operation.json"
@@ -55,7 +56,7 @@ def _ordinary(path: Path, *, directory: bool) -> bool:
 
 
 def _destination(config: ProjectConfig, model_id: str, *, memory: bool = False,
-                 public_m0: bool = False) -> Path:
+                 public_m0: bool = False, public_m2: bool = False) -> Path:
     state = config.state_dir
     if not _ordinary(state, directory=True):
         raise BoundaryError("local_model_export", "unsafe_export_root")
@@ -69,14 +70,19 @@ def _destination(config: ProjectConfig, model_id: str, *, memory: bool = False,
     if target.exists() or target.is_symlink():
         if not _ordinary(target, directory=True):
             raise BoundaryError("local_model_export", "unsafe_export_destination")
-        if public_m0:
+        names: tuple[str, ...]
+        if public_m2:
+            names = ("model.json", "weights.tensor-tree", "state_tokenizer.json")
+        elif public_m0:
             from stpd.policy.token_decision import LIGHT_ACTION_M0_FILES
 
             names = ("model.json", *LIGHT_ACTION_M0_FILES.values())
         else:
             names = (("model.json", "weights.tensor-tree", "tokenizer.json") if memory
                      else ("model.json", "weights.safetensors", "tokenizer.json"))
-        if (memory or public_m0) and {path.name for path in target.iterdir()} != set(names):
+        if (memory or public_m0 or public_m2) and {
+            path.name for path in target.iterdir()
+        } != set(names):
             raise BoundaryError("local_model_export", "unsafe_export_destination")
         for name in names:
             if not _ordinary(target / name, directory=False):
@@ -360,22 +366,64 @@ class LocalModelExport:
     def _path(self) -> Path:
         return self.config.state_dir / OPERATION_FILE
 
-    def _read(self) -> dict[str, Any]:
-        path = self._path()
+    def _read(self, path: Path | None = None) -> dict[str, Any]:
+        path = path or self._path()
         if not path.exists() and not path.is_symlink():
             return {"status": "idle"}
         if not _ordinary(path, directory=False):
             raise BoundaryError("local_model_export", "operation_recovery_required")
         try:
-            if path.stat().st_size > 4096:
+            if path.stat().st_size > 65536:
                 raise ValueError
             value = json.loads(path.read_bytes())
             if (not isinstance(value, dict)
-                    or value.get("schema") not in {SCHEMA, SCHEMA_V2, SCHEMA_V3}
+                    or value.get("schema") not in {SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4}
                     or value.get("status") not in {"pending", "completed", "failed"}
                     or not isinstance(value.get("store_root"), str)):
                 raise ValueError
-            if value["schema"] == SCHEMA_V3:
+            if value["schema"] == SCHEMA_V4:
+                fields = {"schema", "status", "operation_id", "model_id", "store_root",
+                          "model_type", "profile", "lineage", "training_receipt_id"}
+                if (set(value) not in (fields, fields | {"error_code"},
+                                       fields | {"verified_receipt", "payload_bytes"})
+                        or value.get("model_type") != "public_m2"
+                        or value.get("profile") != "public-snapshot-m2-v1"
+                        or not isinstance(value.get("lineage"), dict)
+                        or set(value["lineage"]) != {
+                            "run_id", "input_id", "checkpoint_id", "checkpoint_sha256",
+                            "view_id", "allocation_id", "dataset_id", "training_operation_id",
+                            "stage_id", "evaluation_id", "completion_id"}):
+                    raise ValueError
+                digest(value["training_receipt_id"], "local_model_export.training_receipt")
+                for key, identity in value["lineage"].items():
+                    if key == "completion_id" and identity is None:
+                        continue
+                    digest(identity, "local_model_export." + key,
+                           length=32 if key == "training_operation_id" else 64)
+                receipt = value.get("verified_receipt")
+                if value["status"] == "completed":
+                    from stpd.policy.public_m2_export import RECEIPT_SCHEMA as M2_RECEIPT
+
+                    if (not isinstance(receipt, dict) or set(receipt) != {
+                            "schema", "model_id", *value["lineage"], "package_sha256",
+                            "payload_sha256", "payload_sizes", "payload_bytes"}
+                            or receipt["schema"] != M2_RECEIPT
+                            or receipt["model_id"] != value["model_id"]
+                            or any(receipt[key] != identity for key, identity
+                                   in value["lineage"].items())
+                            or set(receipt["payload_sha256"]) != {"weights", "state_tokenizer"}
+                            or set(receipt["payload_sizes"]) != {"weights", "state_tokenizer"}
+                            or any(type(size) is not int or size <= 0
+                                   for size in receipt["payload_sizes"].values())
+                            or receipt["payload_bytes"] != sum(receipt["payload_sizes"].values())
+                            or value.get("payload_bytes") != receipt["payload_bytes"]):
+                        raise ValueError
+                    digest(receipt["package_sha256"], "local_model_export.package")
+                    for identity in receipt["payload_sha256"].values():
+                        digest(identity, "local_model_export.payload")
+                elif receipt is not None:
+                    raise ValueError
+            elif value["schema"] == SCHEMA_V3:
                 fields = {"schema", "status", "operation_id", "model_id", "store_root",
                           "model_type", "profile", "source_profile", "run_id", "result_id",
                           "checkpoint_id",
@@ -658,6 +706,40 @@ class LocalModelExport:
                 raise BoundaryError("local_model_registration", "registration_timeout")
             return destination
 
+    def verified_public_m2_for_registration(self, model_id: object, *,
+                                           deadline: float | None = None) -> Path:
+        from stpd.policy.public_m2_export import model_lineage, receipt
+
+        identity = digest(model_id, "local_model_export.model_id")
+        with self.lock:
+            operation = self._read()
+            if operation.get("model_id") != identity:
+                operation = self._read(self.config.state_dir / "model-export-receipts" /
+                                       (identity + ".json"))
+            if (operation.get("schema") != SCHEMA_V4
+                    or operation.get("status") != "completed"
+                    or operation.get("model_id") != identity):
+                raise BoundaryError("local_model_export", "verified_export_required")
+            workspace = self._workspace()
+            root = getattr(getattr(workspace.store, "blobs", None), "root", None)
+            if not isinstance(root, Path) or operation["store_root"] != str(root):
+                raise BoundaryError("local_model_export", "workspace_changed")
+            model = workspace.store.get_manifest(identity)
+            lineage = model_lineage(workspace.store, model,
+                                    stage_id=operation["lineage"]["stage_id"])
+            if lineage != operation["lineage"]:
+                raise BoundaryError("local_model_export", "public_m2_lineage_mismatch")
+            self._memory_owner(workspace.store).require_training_receipt(
+                workspace.store, (lineage["dataset_id"],), lineage["training_operation_id"],
+                operation["training_receipt_id"],
+            )
+            destination = _destination(self.config, identity, public_m2=True)
+            if receipt(destination) != operation["verified_receipt"]:
+                raise BoundaryError("local_model_export", "verified_export_required")
+            if deadline is not None and monotonic() >= deadline:
+                raise BoundaryError("local_model_registration", "registration_timeout")
+            return destination
+
     def verified_memory_recipe_for_registration(self, model_id: object, *,
                                                  deadline: float | None = None) -> str:
         """Read the recipe from the same verified immutable model/run lineage."""
@@ -703,7 +785,33 @@ class LocalModelExport:
         if (current.get("operation_id") != operation_id
                 or current.get("status") != "pending"):
             raise BoundaryError("local_model_export", "operation_superseded")
-        atomic_json(self._path(), {**current, **updates})
+        final = {**current, **updates}
+        if current.get("schema") == SCHEMA_V4 and updates.get("status") == "completed":
+            archive = self.config.state_dir / "model-export-receipts"
+            if archive.exists() or archive.is_symlink():
+                if not _ordinary(archive, directory=True):
+                    raise BoundaryError("local_model_export", "operation_recovery_required")
+            else:
+                archive.mkdir(mode=0o700)
+            path = archive / (current["model_id"] + ".json")
+            if path.is_symlink() or path.exists() and not _ordinary(path, directory=False):
+                raise BoundaryError("local_model_export", "operation_recovery_required")
+            atomic_json(path, final)
+        atomic_json(self._path(), final)
+
+    def status_for_model(self, model_id: str) -> dict[str, Any]:
+        identity = digest(model_id, "local_model_export.model_id")
+        with self.lock:
+            result = self.status()
+            if result["operation"].get("model_id") != identity:
+                archived = self._read(self.config.state_dir / "model-export-receipts" /
+                                      (identity + ".json"))
+                if archived.get("schema") == SCHEMA_V4:
+                    root = getattr(getattr(self._workspace().store, "blobs", None), "root", None)
+                    result = {**self._public(archived),
+                              "availability": "ready" if str(root)
+                              == archived["store_root"] else "workspace_changed"}
+            return result
 
     def start(self, model_id: object) -> dict[str, Any]:
         from spireagent.workbench.developer_server import instance_lock
@@ -711,6 +819,11 @@ class LocalModelExport:
         identity = digest(model_id, "local_model_export.model_id")
         with self.lock:
             previous = self._read()
+            if (previous.get("schema") == SCHEMA_V4
+                    and previous.get("status") == "completed"
+                    and previous.get("model_id") == identity):
+                self.verified_public_m2_for_registration(identity)
+                return self._public(previous)
             if (previous.get("schema") == SCHEMA_V3
                     and previous.get("status") == "completed"
                     and previous.get("model_id") == identity):
@@ -721,7 +834,7 @@ class LocalModelExport:
                 if previous["model_id"] == identity:
                     return self._public(previous)
                 raise BoundaryError("local_model_export", "export_in_progress")
-            if previous.get("schema") == SCHEMA_V3 and previous["status"] == "pending":
+            if previous.get("schema") in {SCHEMA_V3, SCHEMA_V4} and previous["status"] == "pending":
                 raise BoundaryError("local_model_export", "previous_export_outcome_unknown")
             if previous["status"] == "pending" and previous["model_id"] != identity:
                 raise BoundaryError("local_model_export", "previous_export_outcome_unknown")
@@ -738,10 +851,27 @@ class LocalModelExport:
             memory = model.parameters.value().get("schema") == "stpd/experimental-m2-model-v1"
             public_m0 = model.parameters.value().get("schema") == \
                 "stpd/stage1a-light-action-m0-public-model-v1"
-            owner = self._memory_owner(store) if memory or public_m0 else None
+            public_m2 = model.parameters.value().get("schema") == "stpd/public-m2-model-v1"
+            owner = self._memory_owner(store) if memory or public_m0 or public_m2 else None
             run_id = _memory_lineage(store, owner, model) if memory else None
             lineage = _public_m0_lineage(store, owner, model) if public_m0 else None
-            if not memory and not public_m0:
+            if public_m2:
+                from spireagent.storage.registry import SQLiteRegistry
+                from stpd.policy.public_m2_export import model_lineage
+
+                if not isinstance(workspace.registry, SQLiteRegistry):
+                    raise BoundaryError("local_model_export", "indexed_epoch_stage_required")
+                stages = [candidate for candidate in workspace.registry.dependents(
+                    identity, kind="analysis") if candidate.parameters.value().get("schema")
+                    == "stpd/public-m2-epoch-stage-v1"]
+                if len(stages) != 1:
+                    raise BoundaryError("local_model_export", "indexed_epoch_stage_required")
+                lineage = model_lineage(store, model, stage_id=stages[0].artifact_id)
+                assert owner is not None
+                training_receipt = owner.verified_training_receipt(
+                    store, (lineage["dataset_id"],), lineage["training_operation_id"],
+                )
+            if not memory and not public_m0 and not public_m2:
                 _eligible(model)
             lock_path = self.config.state_dir / LOCK_FILE
             if lock_path.is_symlink() or (lock_path.exists()
@@ -756,13 +886,18 @@ class LocalModelExport:
                 raise
             try:
                 destination = _destination(self.config, identity, memory=memory,
-                                           public_m0=public_m0)
-                operation = {"schema": SCHEMA_V3 if public_m0 else
+                                           public_m0=public_m0, public_m2=public_m2)
+                operation: dict[str, Any] = {
+                             "schema": SCHEMA_V4 if public_m2 else SCHEMA_V3 if public_m0 else
                              SCHEMA_V2 if memory else SCHEMA,
                              "status": "pending",
                              "operation_id": uuid.uuid4().hex, "model_id": identity,
                              "store_root": str(root)}
-                if memory:
+                if public_m2:
+                    assert lineage is not None
+                    operation.update(model_type="public_m2", profile="public-snapshot-m2-v1",
+                                     lineage=lineage, training_receipt_id=training_receipt)
+                elif memory:
                     assert run_id is not None
                     operation.update(model_type="memory", run_id=run_id)
                 elif public_m0:
@@ -880,7 +1015,47 @@ class LocalModelExport:
 
         try:
             operation = self._read()
-            if operation.get("model_type") == "public_m0":
+            if operation.get("model_type") == "public_m2":
+                from stpd.policy.public_m2_export import model_lineage
+                from stpd.policy.public_m2_export import receipt as m2_receipt
+
+                lineage = model_lineage(store, model,
+                                        stage_id=operation["lineage"]["stage_id"])
+                self._memory_owner(store).require_training_receipt(
+                    store, (lineage["dataset_id"],), lineage["training_operation_id"],
+                    operation["training_receipt_id"],
+                )
+                root = getattr(getattr(store, "blobs", None), "root", None)
+                if not isinstance(root, Path) or lineage != operation["lineage"]:
+                    raise BoundaryError("local_model_export", "public_m2_lineage_mismatch")
+                environment = dict(os.environ)
+                for name in ("STPD_HUB_ADMIN_TOKEN", "PYTHONPATH", "PYTHONHOME"):
+                    environment.pop(name, None)
+                log_path = self.config.state_dir / ("local-model-export-" + operation_id + ".log")
+                exit_code, captured = private_child(
+                    [sys.executable, "-I", "-m", "stpd.policy.public_m2_cli", "export",
+                     "--store", str(root), "--model", model.artifact_id,
+                     "--stage", lineage["stage_id"],
+                     "--destination", str(destination)], log_path, environment,
+                    on_started=mark_started,
+                )
+                mark_finished(exit_code)
+                if exit_code:
+                    raise BoundaryError("local_model_export", "public_m2_export_process_failed")
+                checked = m2_receipt(destination)
+                if _child_json_record(captured) != checked:
+                    raise BoundaryError("local_model_export", "public_m2_export_result_invalid")
+                # Recheck authority after the child, before recording completion.
+                self._memory_owner(store).require_training_receipt(
+                    store, (lineage["dataset_id"],), lineage["training_operation_id"],
+                    operation["training_receipt_id"],
+                )
+                verified = True
+                with self.lock:
+                    self._finish(operation_id, status="completed",
+                                 payload_bytes=checked["payload_bytes"], verified_receipt=checked)
+                return
+            elif operation.get("model_type") == "public_m0":
                 lineage = _public_m0_lineage(store, self._memory_owner(store), model)
                 child = self._public_m0_child(operation_id, operation["training_operation_id"],
                                               model, destination,

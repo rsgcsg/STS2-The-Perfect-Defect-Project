@@ -93,13 +93,19 @@ async function dispatch(runtime: PolicyRuntime, request: IncomingMessage, respon
     if (request.url === "/v2/stateful-segment/begin") {
       const value = strictObject(body, ["scope"]);
       if (value.scope !== "single_game_episode" && value.scope !== "bounded_policy_segment") throw new Error("stateful segment scope is invalid");
-      const segment = await runtime.beginPublicStatefulSegment(value.scope);
+      const expected = controlPreconditions(request);
+      if (expected?.gameInstanceId === undefined || expected.recoveryEpoch === undefined)
+        throw new RuntimeControlPreconditionError("runtime_recovery_precondition_required", 428);
+      const segment = await runtime.beginPublicStatefulSegment(value.scope, expected);
       json(response, 200, { schema: `${HTTP_SCHEMA}/stateful-segment-1`, segment });
       return;
     }
     if (request.url === "/v2/stateful-segment/end") {
       strictObject(body, []);
-      const segment = await runtime.endPublicStatefulSegment();
+      const expected = controlPreconditions(request);
+      if (expected?.gameInstanceId === undefined || expected.recoveryEpoch === undefined)
+        throw new RuntimeControlPreconditionError("runtime_recovery_precondition_required", 428);
+      const segment = await runtime.endPublicStatefulSegment(expected);
       json(response, 200, { schema: `${HTTP_SCHEMA}/stateful-segment-1`, segment });
       return;
     }

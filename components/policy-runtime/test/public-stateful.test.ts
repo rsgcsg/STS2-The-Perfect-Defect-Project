@@ -9,6 +9,9 @@ import type { AgentRunEvidence } from "../src/evidence.js";
 import { NdjsonPolicyPort, servePublicStatefulPolicyPort } from "../src/policy-port.js";
 import { PolicyRuntime } from "../src/runtime.js";
 import { publicDecisionFingerprint } from "../src/semantic-cycle.js";
+import { startPolicyRuntimeHttpServer } from "../src/server.js";
+// @ts-expect-error Exercise the real JavaScript Workbench status decoder.
+import { decodePolicyRuntimeStatus } from "../../../apps/workbench/src/policy-runtime-client.mjs";
 
 const action = (id: string, label = id): PlayerEnvironmentBoundAction => ({ bound_action_id: id, verb: "end_turn", interaction_id: "interaction", arguments: [], label });
 function snapshot(snapshotId = "snapshot-a", sequence = 7): PlayerEnvironmentSnapshot {
@@ -119,6 +122,77 @@ function runtime(connector: FixtureConnector, policy: (decision: PublicStatefulD
 }
 
 describe("public Snapshot stateful protocol 4", () => {
+  it("keeps old M0 status readable and rejects a private token in the new public view", async () => {
+    const rt = runtime(new FixtureConnector(), async () => {});
+    const oldStatus = { ...rt.status() };
+    delete oldStatus.public_stateful_segment;
+    expect(decodePolicyRuntimeStatus(oldStatus)).toEqual(oldStatus);
+    const segment = await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    expect(decodePolicyRuntimeStatus(rt.status()).public_stateful_segment).toEqual(segment);
+    expect(() => decodePolicyRuntimeStatus({ ...rt.status(), public_stateful_segment: {
+      ...segment, continuity_token: "private" } })).toThrow();
+    await rt.stop();
+  });
+  it("reports closure after One-Step even without a recovery-epoch change", async () => {
+    const connector = new FixtureConnector(); connector.delivery = "delivered";
+    const rt = runtime(connector, async () => {});
+    const epoch = (await rt.readEnvironment()).recovery_epoch;
+    await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    await rt.setMode("one_step");
+    expect((await rt.tick()).type).toBe("delivered");
+    expect(rt.status()).toMatchObject({ mode: "human", public_stateful_segment: null });
+    expect((await rt.readEnvironment()).recovery_epoch).toBe(epoch);
+    await expect(rt.setMode("auto")).rejects.toThrow(/explicitly begun/);
+  });
+
+  it("reports closure after the shared autonomy budget exhausts", async () => {
+    const connector = new FixtureConnector(); connector.delivery = "delivered";
+    const rt = new PolicyRuntime({ manifest: manifest(), connector, runId: "segment-budget",
+      evidence: evidence(), runtimeIdentity: { version: "test", code_sha256: "d".repeat(64) },
+      autoBudget: { maxSubmissions: 1, maxPolicyCalls: 2, deadlineMs: 10_000 },
+      publicStatefulPolicy: (decision, control) => ({
+        output: { candidate_digest: decision.candidate_digest, scores: [1], selected_index: 0 },
+        completion: completion(decision, control) }) });
+    await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    await rt.setMode("auto");
+    await rt.tick();
+    await rt.tick();
+    expect(rt.status()).toMatchObject({ mode: "human", public_stateful_segment: null,
+      autonomy_budget: { state: "exhausted" } });
+  });
+
+  it("binds HTTP segment controls to the current run, game and recovery epoch", async () => {
+    const rt = runtime(new FixtureConnector(), async () => {});
+    const service = await startPolicyRuntimeHttpServer(rt, { port: 0, autoDrive: false });
+    const environment = await rt.readEnvironment();
+    const current = { "x-sts2-game-instance-id": environment.runtime_instance_id,
+      "x-sts2-recovery-epoch": String(environment.recovery_epoch) };
+    const post = (route: string, headers: Record<string, string> = {}) => fetch(
+      `${service.address}/v2/stateful-segment/${route}`, { method: "POST", headers: {
+        "content-type": "application/json", "x-sts2-policy-run-id": "public-run", ...headers },
+        body: JSON.stringify(route === "begin" ? { scope: "bounded_policy_segment" } : {}) });
+    try {
+      expect((await post("begin")).status).toBe(428);
+      expect((await post("begin", { ...current, "x-sts2-game-instance-id": "another-game" })).status).toBe(409);
+      expect((await post("begin", { ...current, "x-sts2-recovery-epoch": "1" })).status).toBe(409);
+      expect(rt.status().public_stateful_segment).toBeNull();
+      const begun = await post("begin", current);
+      expect(begun.status).toBe(200);
+      const view = (await begun.json()).segment;
+      expect(rt.status().public_stateful_segment).toEqual(view);
+      expect((await post("end")).status).toBe(428);
+      expect((await post("end", { ...current, "x-sts2-game-instance-id": "another-game" })).status).toBe(409);
+      expect(rt.status().public_stateful_segment).toEqual(view);
+      expect((await post("end", current)).status).toBe(200);
+      expect(rt.status().public_stateful_segment).toBeNull();
+      expect((await post("begin", current)).status).toBe(409);
+      const fresh = await rt.readEnvironment();
+      expect((await post("begin", { ...current, "x-sts2-recovery-epoch": String(fresh.recovery_epoch) })).status).toBe(200);
+      await rt.stop();
+      expect(rt.status().public_stateful_segment).toBeNull();
+    } finally { await service.close(); }
+  });
+
   it("canonicalizes only declared envelope and handle IDs, preserving candidate multiplicity and business facts", () => {
     const first = cycleSnapshot("claim", 1), second = cycleSnapshot("claim", 9);
     expect(publicDecisionFingerprint(first)).toBe(publicDecisionFingerprint(second));
@@ -169,6 +243,7 @@ describe("public Snapshot stateful protocol 4", () => {
       autonomy_budget: { submissions_used: 6, policy_calls_used: 6 } });
     expect(events.some(event => event.kind === "semantic_cycle_detected")).toBe(false);
     expect(rt.status().invalidations).toContain("semantic_cycle_detected");
+    expect(rt.status().public_stateful_segment).toBeNull();
     expect(events.find(event => event.kind === "handoff_to_human")?.payload).toEqual({ reason: "semantic_cycle_detected" });
     expect(events.find(event => event.kind === "public_stateful_episode_ended")?.payload).toMatchObject({
       reason: "semantic_cycle_detected", memory_continuity: false });
@@ -313,6 +388,8 @@ describe("public Snapshot stateful protocol 4", () => {
     await expect(rt.setMode("auto")).rejects.toThrow(/explicitly begun/);
     const begun = await rt.beginPublicStatefulSegment("bounded_policy_segment");
     expect(begun.scope).toBe("bounded_policy_segment");
+    expect(rt.status().public_stateful_segment).toEqual(begun);
+    expect(Object.keys(rt.status().public_stateful_segment!).sort()).toEqual(["episode_id", "scope", "segment_id"]);
     await expect(rt.beginPublicStatefulSegment("bounded_policy_segment")).rejects.toThrow(/already active/);
     await rt.setMode("shadow");
     expect((await rt.tick()).type).toBe("shadow");
@@ -324,8 +401,10 @@ describe("public Snapshot stateful protocol 4", () => {
     const input = events.find(event => event.kind === "public_stateful_decision_input")!;
     expect(input.payload.continuity_token_commitment).toBe(started.payload.continuity_token_commitment);
     expect(JSON.stringify(events)).not.toContain(seen[0]!.control.continuity_token);
+    expect(JSON.stringify(rt.status())).not.toContain(seen[0]!.control.continuity_token);
     const ended = await rt.endPublicStatefulSegment();
     expect(ended).toEqual(begun);
+    expect(rt.status().public_stateful_segment).toBeNull();
     const endedEvent = events.find(event => event.kind === "public_stateful_episode_ended")!;
     expect(endedEvent.payload.continuity_token_commitment).toBe(started.payload.continuity_token_commitment);
     expect(JSON.stringify(events)).not.toContain(seen[0]!.control.continuity_token);

@@ -12,6 +12,7 @@
     "run_id": { "type": "string", "minLength": 1 },
     "lifecycle": { "enum": ["running", "stopped"] },
     "mode": { "enum": ["human", "shadow", "one_step", "auto"] },
+    "public_stateful_segment": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["scope", "episode_id", "segment_id"], "properties": {"scope": {"enum": ["single_game_episode", "bounded_policy_segment"]}, "episode_id": {"type": "string", "minLength": 1}, "segment_id": {"type": "string", "minLength": 1}}}]},
     "controller": { "enum": ["held", "released"] },
     "autonomy_budget": { "type": "object", "additionalProperties": false, "required": ["state", "max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms", "exhausted_reason", "ended_reason"], "properties": {
       "state": { "enum": ["inactive", "active", "exhausted"] },

@@ -129,6 +129,16 @@ complete ordered catalog; `control` contains the Runtime-minted token, declared
 scope, episode/segment IDs, observation ordinal, and optional prior-action
 receipt/successor evidence. These objects are not merged.
 
+Runtime status exposes `public_stateful_segment` as null or the safe scope,
+episode ID and segment ID. The Runtime owns this view, including One-Step,
+budget and semantic-cycle handoffs that can close a segment without changing
+the recovery epoch. It never exposes the continuity token in status.
+HTTP begin/end commands require the exact run ID, game instance ID and recovery
+epoch headers, checked by the same Runtime owner. Consumers may require
+`PUBLIC_STATEFUL_WORKBENCH_CONTROL_PROFILE` equal to
+`sts2.policy-runtime/public-stateful-workbench-control-v1` before registering
+a Public M2 selection. Legacy M0 consumers may omit the optional segment view.
+
 `servePublicStatefulPolicyPort` creates a fresh scorer instance for each control
 namespace. The scorer callback receives only `decision`; it never receives
 `control` or `previous_action`. The helper caches the result for the current
@@ -246,7 +256,7 @@ npm --prefix components/policy-runtime run check
 npm --prefix components/policy-runtime run package -- --output /absolute/package-output
 ```
 
-The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.16.tgz`,
+The last command creates `rsgcsg-sts2-policy-runtime-0.1.0-rc.22.tgz`,
 `policy-runtime-package.json` and `checksums.sha256`. It requires committed
 component source and does not publish anything. The package contains compiled
 JavaScript/declarations, CLI entries, license, a component identity record and

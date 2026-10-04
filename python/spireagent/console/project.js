@@ -2359,6 +2359,22 @@ window.SpireProject = (() => {
         "stopped",
       ].includes(data.status);
     const advanced = el("details"); advanced.dataset.preserve = "model-advanced"; advanced.append(el("summary", "高级测试方式"));
+    const publicM2 = selectedPolicy?.runtime_profile === "public-snapshot-m2-v1";
+    const segment = data.public_stateful_segment;
+    const segmentKnown = segment && typeof segment === "object" && !Array.isArray(segment)
+      && Object.keys(segment).length === 3 && segment.scope === "bounded_policy_segment"
+      && ["episode_id", "segment_id"].every(key => typeof segment[key] === "string" && segment[key]);
+    if (publicM2) {
+      box.append(el("p", segmentKnown ? "记忆片段已开始；暂停接管后需开始新片段。"
+        : "先明确开始记忆片段，再选择测试方式。每次新片段都会重置模型记忆。", "small muted"));
+      for (const [action, label] of [["begin_segment", "开始记忆片段"], ["end_segment", "结束记忆片段"]]) {
+        actions.append(command(ctx, `model-command-${action}`, label, async () => {
+          await request(ctx, "/api/local-models/command", {action});
+          note(ctx, "本机服务已接收片段操作；未知结果不会自动重发。");
+          await reload(ctx);
+        }, {disabled: !safe || (action === "begin_segment" ? !!segmentKnown : !segmentKnown)}));
+      }
+    }
     for (const [action, label] of [
       ["shadow", "只评分（不操作）"],
       ["one_step", "执行一个决策"],
@@ -2381,7 +2397,7 @@ window.SpireProject = (() => {
             await reload(ctx);
           },
           {
-            disabled: recovery ? !recoverable : !safe,
+            disabled: recovery ? !recoverable : !safe || (publicM2 && !segmentKnown),
             danger: action === "stop",
           },
         ),
@@ -3065,6 +3081,25 @@ window.SpireProject = (() => {
     return {profile, backbone};
   }
 
+  function publicM2ModelProfile(value) {
+    const p = value?.parameters, c = p?.config;
+    if (value?.kind !== "model" || !hex(value.artifact_id)
+        || p?.schema !== "stpd/public-m2-model-v1" || p.qualification !== "engineering_only"
+        || ![1, 3, 5].includes(p.epoch) || p.run_complete !== (p.epoch === 5)
+        || !hex(p.operation_id, 32) || !hex(p.input_identity)
+        || !hex(p.engine_input_digest) || !hex(p.implementation_sha256)
+        || !c || typeof c !== "object" || Array.isArray(c)
+        || c.graph !== "dsimple.light-action.m2.v1" || c.epochs !== 5
+        || c.source_digest !== p.input_identity || !hex(c.state_tokenizer_sha256)
+        || c.sequence_profile !== "stpd/public-m2-observation-only-v1"
+        || c.prior_action_profile !== "stpd/public-m2-no-prior-action-v1"
+        || c.feedback_profile !== "stpd/public-m2-no-feedback-v1"
+        || ![1, 8].includes(c.slots) || typeof c.reset_each_step !== "boolean"
+        || !Number.isSafeInteger(c.window_steps) || c.window_steps < 1 || c.window_steps > 8
+        || !(c.device === "cpu" || /^cuda:[0-9]+$/.test(c.device))) return null;
+    return c;
+  }
+
   function supportsPublicM0WorkbenchActions(value) {
     return publicM0ModelProfile(value)?.backbone === "scratch";
   }
@@ -3072,6 +3107,18 @@ window.SpireProject = (() => {
   function localModelOverview(value) {
     const parameters = value.parameters && typeof value.parameters === "object"
       && !Array.isArray(value.parameters) ? value.parameters : {};
+    if (parameters.schema === "stpd/public-m2-model-v1") {
+      const variant = publicM2ModelProfile(value);
+      const overview = panel("模型概览", "公开快照记忆模型。只使用观察输入；训练记录与导出校验不代表实战质量。");
+      overview.append(fields([
+        ["训练方式", variant ? `M2 carry${variant.slots} / window${variant.window_steps}` : "未知"],
+        ["记忆", variant?.reset_each_step === false ? "片段内连续保留" : "每步重置"],
+        ["训练阶段", variant ? `epoch ${parameters.epoch} / 5` : "未知"],
+        ["本机推理", "CPU"],
+        ["用途", "工程训练；不代表模型质量或完整游戏资格"],
+      ]));
+      return overview;
+    }
     if (parameters.schema === "stpd/stage1a-light-action-m0-public-model-v1") {
       const variant = publicM0ModelProfile(value);
       const config = parameters.config && typeof parameters.config === "object"
@@ -3175,6 +3222,8 @@ window.SpireProject = (() => {
       && !Array.isArray(parameters.backbone) ? parameters.backbone : {};
     if (parameters.schema === "stpd/experimental-m2-model-v1")
       return memoryModelVariant(value) !== null;
+    if (parameters.schema === "stpd/public-m2-model-v1")
+      return publicM2ModelProfile(value) !== null;
     if (parameters.schema === "stpd/stage1a-light-action-m0-public-model-v1")
       return supportsPublicM0WorkbenchActions(value);
     const serializerKeys = ["input_profile", "profile", "source_schema", "status", "version"];
@@ -3223,15 +3272,16 @@ window.SpireProject = (() => {
     const memory = model.parameters?.schema === "stpd/experimental-m2-model-v1";
     const publicM0Variant = publicM0ModelProfile(model);
     const publicM0 = publicM0Variant?.backbone === "scratch";
+    const publicM2 = publicM2ModelProfile(model) !== null;
     if (publicM0Variant && !publicM0) {
       return panel("公共 M0 模型", "PF/PL Public M0 暂通过研究 CLI 管理；此 Workbench 尚不提供导出或登记操作。");
     }
-    const expectedProfile = publicM0 ? "public-snapshot-m0-v1" : memory
+    const expectedProfile = publicM2 ? "public-snapshot-m2-v1" : publicM0 ? "public-snapshot-m0-v1" : memory
       ? (model.workbench_memory_recipe?.endsWith(".v2")
         ? "text-menu-m2-v2" : "text-menu-m2-v1") : "text-menu-v1";
     const card = panel(
-      managed ? "用于独立游戏环境" : publicM0 ? "登记到模型列表" : "用于原游戏",
-      publicM0
+      managed ? "用于独立游戏环境" : publicM0 || publicM2 ? "登记到模型列表" : "用于原游戏",
+      publicM0 || publicM2
         ? "登记会核对公开 Snapshot Runtime 合同与当前 Host/Connector 能力，并建立本机模型选择项；不会安装运行组件或加载模型。之后仍需在模型页单独检查条件并选择加载。"
         : "登记会依据本机文本菜单运行环境建立模型选择项；不会安装运行组件、加载模型或进入游戏。之后仍需在模型页单独检查条件并选择加载。",
     );
@@ -3319,16 +3369,20 @@ window.SpireProject = (() => {
     const memory = variant !== null;
     const publicM0Variant = publicM0ModelProfile(model);
     const publicM0 = publicM0Variant?.backbone === "scratch";
+    const publicM2 = publicM2ModelProfile(model) !== null;
     if (publicM0Variant && !publicM0) {
       return panel("公共 M0 模型", "PF/PL Public M0 暂通过研究 CLI 管理；此 Workbench 尚不提供导出或登记操作。");
     }
     const memoryName = variant?.name;
-    const card = panel("导出并校验", publicM0
+    const card = panel("导出并校验", publicM2
+      ? "导出核对精确训练来源、权重和分词器，并检查 CPU 加载。登记后需单独加载，再明确开始记忆片段；导出不执行游戏。"
+      : publicM0
       ? "导出会重新核对 Public M0 的精确模型、完整动作目录和独立评分器加载；不会登记、加载或证明策略质量。"
       : memory
       ? `导出只保存并检查实验性 ${memoryName} 训练模型；导出校验不包含评估结论。登记前需单独固定记忆模型运行包并核对环境；导出不会自动登记或加载。`
       : "导出只保存并检查本机模型文件；不会登记为游戏模型或加载，也不检查游戏兼容性。服务端会重新验证模型身份。");
-    const path = "/api/local-model-exports/status";
+    const path = "/api/local-model-exports/status" + (publicM2
+      ? "?model_id=" + encodeURIComponent(model.artifact_id) : "");
     let status;
     try {
       status = await request(ctx, path);
@@ -3342,7 +3396,8 @@ window.SpireProject = (() => {
       && !Array.isArray(status.operation) ? status.operation : null;
     if (!["stpd/local-model-export-operation-v1",
           "stpd/local-model-export-operation-v2",
-          "stpd/local-model-export-operation-v3"].includes(status?.schema)) {
+          "stpd/local-model-export-operation-v3",
+          "stpd/local-model-export-operation-v4"].includes(status?.schema)) {
       const message = "导出状态格式未知；未发起导出。";
       card.append(el("p", message, "small muted"));
       card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
@@ -3356,13 +3411,16 @@ window.SpireProject = (() => {
       ? operation?.model_type === undefined
       : status.schema === "stpd/local-model-export-operation-v2"
         ? operation?.model_type === "memory"
-        : publicM0 && operation?.model_type === "public_m0"
-          && operation?.profile === "public-snapshot-m0-v1";
+        : status.schema === "stpd/local-model-export-operation-v3"
+          ? operation?.model_type === "public_m0" && operation?.profile === "public-snapshot-m0-v1"
+          : operation?.model_type === "public_m2" && operation?.profile === "public-snapshot-m2-v1";
     if (!operation || !knownStates.includes(operation.status) || !validOwner || !validType
         || (memory && operation.status !== "idle" && operation.model_id === model.artifact_id
             && status.schema !== "stpd/local-model-export-operation-v2")
         || (publicM0 && operation.status !== "idle" && operation.model_id === model.artifact_id
-            && status.schema !== "stpd/local-model-export-operation-v3")) {
+            && status.schema !== "stpd/local-model-export-operation-v3")
+        || (publicM2 && operation.status !== "idle" && operation.model_id === model.artifact_id
+            && status.schema !== "stpd/local-model-export-operation-v4")) {
       card.append(el("p", "导出状态格式未知；未发起导出。", "small muted"));
       card.append(command(ctx, "refresh-local-model-export", "刷新导出状态", async () => reload(ctx), {type:"secondary"}));
       return card;
@@ -4897,6 +4955,7 @@ window.SpireProject = (() => {
       }
       if (value.kind === "model" && ["stpd/stage1a-model-v1",
           "stpd/experimental-m2-model-v1",
+          "stpd/public-m2-model-v1",
           "stpd/stage1a-light-action-m0-public-model-v1"].includes(value.parameters?.schema))
         box.append(localModelOverview(value));
       if (value.kind === "model" && value.parameters?.schema === "stpd/experimental-m2-model-v1"

@@ -9,6 +9,8 @@ import { SemanticCycleGuard } from "./semantic-cycle.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 
 /** A known-unapplied control request, not an uncertain gameplay delivery. */
+export const PUBLIC_STATEFUL_WORKBENCH_CONTROL_PROFILE = "sts2.policy-runtime/public-stateful-workbench-control-v1";
+
 export class RuntimeControlPreconditionError extends Error {
   constructor(readonly code: string, readonly httpStatus: number) { super(code); }
 }
@@ -342,7 +344,12 @@ export class PolicyRuntime {
 
   status(): RuntimeStatus {
     const budget = this.autonomyBudgetStatus();
-    return { schema: "sts2.policy-runtime/status-1", runtime: this.options.runtimeIdentity ?? { version: POLICY_RUNTIME_VERSION, code_sha256: null }, policy: { manifest_id: this.options.manifest.manifest_id, policy_id: this.options.manifest.policy.id, policy_version: this.options.manifest.policy.version, provider: this.options.manifest.policy.provider, architecture: this.options.manifest.policy.architecture, artifact_sha256: this.options.manifest.artifact.sha256 }, run_id: this.runId, lifecycle: this.stopped ? "stopped" : "running", mode: this.mode, controller: this.controllerStatus(), autonomy_budget: budget, tainted: this.tainted, taint_reason: this.taintReason, refreshing: this.refreshing, last_snapshot_id: this.lastSnapshotId, last_snapshot: this.lastSnapshot, last_decision: this.lastDecision, last_receipt: this.lastReceipt, reads: [...this.lastReads], invalidations: [...this.invalidations], errors: [...this.errors] , environment: this.environment };
+    return { public_stateful_segment: this.publicStatefulSegmentStatus(), schema: "sts2.policy-runtime/status-1", runtime: this.options.runtimeIdentity ?? { version: POLICY_RUNTIME_VERSION, code_sha256: null }, policy: { manifest_id: this.options.manifest.manifest_id, policy_id: this.options.manifest.policy.id, policy_version: this.options.manifest.policy.version, provider: this.options.manifest.policy.provider, architecture: this.options.manifest.policy.architecture, artifact_sha256: this.options.manifest.artifact.sha256 }, run_id: this.runId, lifecycle: this.stopped ? "stopped" : "running", mode: this.mode, controller: this.controllerStatus(), autonomy_budget: budget, tainted: this.tainted, taint_reason: this.taintReason, refreshing: this.refreshing, last_snapshot_id: this.lastSnapshotId, last_snapshot: this.lastSnapshot, last_decision: this.lastDecision, last_receipt: this.lastReceipt, reads: [...this.lastReads], invalidations: [...this.invalidations], errors: [...this.errors] , environment: this.environment };
+  }
+
+  publicStatefulSegmentStatus(): RuntimeStatus["public_stateful_segment"] {
+    const active = this.publicSegment;
+    return active ? { scope: active.scope, episode_id: active.episodeId, segment_id: active.segmentId } : null;
   }
 
   private controllerStatus(): RuntimeStatus["controller"] {
@@ -398,10 +405,12 @@ export class PolicyRuntime {
     this.checkRecoveryEpoch(expected.recoveryEpoch);
   }
 
-  async beginPublicStatefulSegment(scope: PublicStatefulEpisodeScope): Promise<{ scope: PublicStatefulEpisodeScope; episode_id: string; segment_id: string }> {
+  async beginPublicStatefulSegment(scope: PublicStatefulEpisodeScope, expected?: RuntimeControlPreconditions): Promise<{ scope: PublicStatefulEpisodeScope; episode_id: string; segment_id: string }> {
     if (!this.publicStateful) throw new Error("public stateful segments require policy port 4");
     if (scope !== "single_game_episode" && scope !== "bounded_policy_segment") throw new Error("public stateful episode scope is invalid");
     return this.serialize(async () => {
+      await this.checkControlPreconditions(expected);
+      this.checkRecoveryEpoch(expected?.recoveryEpoch);
       if (this.stopped || this.tainted) throw new Error("Runtime cannot begin a public stateful segment");
       if (this.mode !== "human") throw new Error("public stateful segment must begin in Human mode");
       if (this.publicSegment) throw new Error("a public stateful segment is already active; end it before beginning another");
@@ -419,12 +428,16 @@ export class PolicyRuntime {
         this.publicSegment = null;
         throw new Error("public stateful segment evidence could not be recorded");
       }
+      this.checkRecoveryEpoch(expected?.recoveryEpoch);
+      if (this.publicSegment !== segment) throw new Error("public stateful segment closed during begin");
       return { scope, episode_id: segment.episodeId, segment_id: segment.segmentId };
     });
   }
 
-  async endPublicStatefulSegment(): Promise<{ scope: PublicStatefulEpisodeScope; episode_id: string; segment_id: string }> {
+  async endPublicStatefulSegment(expected?: RuntimeControlPreconditions): Promise<{ scope: PublicStatefulEpisodeScope; episode_id: string; segment_id: string }> {
     if (!this.publicStateful) throw new Error("public stateful segments require policy port 4");
+    await this.checkControlPreconditions(expected);
+    this.checkRecoveryEpoch(expected?.recoveryEpoch);
     const active = this.publicSegment;
     if (!active) throw new Error("no public stateful segment is active");
     await this.setMode("human");
