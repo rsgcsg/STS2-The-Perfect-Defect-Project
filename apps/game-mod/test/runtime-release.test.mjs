@@ -401,3 +401,25 @@ test("asset bounds, API digests, versions and invalid encodings fail closed", as
     (error) => error.code === "version_invalid");
   assertCode("runtime_seal_invalid_utf8", () => parseRuntimeSeal(Buffer.from([0xff, 0xfe])));
 });
+
+test("oversize body rejects even if stream cancellation never settles", async () => {
+  const stream = new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array(contract.limits.metadata_bytes + 1)); },
+    cancel() { return new Promise(() => {}); }
+  });
+  let timer;
+  try {
+    await Promise.race([
+      assert.rejects(fetchOfficialRuntimeRelease(version, { fetchImpl: async () => new Response(stream) }),
+        (error) => error.code === "release_metadata_too_large"),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("cancellation escaped bound")), 200); })
+    ]);
+  } finally { clearTimeout(timer); }
+});
+
+test("completed and redirected requests abort unconsumed bodies at cleanup", async () => {
+  const fixture = makeFixture({ redirect: "chain" });
+  await fetchOfficialRuntimeRelease(version, { fetchImpl: fixture.fetchImpl });
+  assert.ok(fixture.calls.length > 5);
+  assert.ok(fixture.calls.every(({ options }) => options.signal.aborted));
+});

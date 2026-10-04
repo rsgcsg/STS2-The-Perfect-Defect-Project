@@ -317,7 +317,12 @@ function validateRedirect(location, expectedDownloadUrl) {
 function requestTimeout() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CONTRACT.limits.request_timeout_ms);
-  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+  return { signal: controller.signal, clear: () => {
+    clearTimeout(timer);
+    // Abort also disposes unconsumed redirect/error bodies. Clearing the
+    // deadline alone would leave those network streams outside the bound.
+    controller.abort();
+  } };
 }
 
 async function awaitRequest(promise, signal, label, cancel = null) {
@@ -357,7 +362,9 @@ async function readBody(response, maximumBytes, label, signal) {
       if (done) break;
       length += value.byteLength;
       if (length > maximumBytes) {
-        await reader.cancel().catch(() => {});
+        // A hostile source can stall cancel(), too. Cancellation is best
+        // effort; the request's finally abort owns containment.
+        void reader.cancel().catch(() => {});
         reject(`${label}_too_large`);
       }
       chunks.push(Buffer.from(value));
