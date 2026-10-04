@@ -78,10 +78,11 @@ const memoryModel = (artifactId = id("a"), resetEachStep = false, slots = 1) => 
 const publicM0Model = (artifactId = id("a"), profile = "public_lite", backbone = "scratch") => ({
   artifact_id:artifactId, kind:"model",
   parameters:{schema:"stpd/stage1a-light-action-m0-public-model-v1",
-    qualification:"engineering_only", input_schema:"stpd/stage1a-light-action-m0-public-input-v1",
+    graph:"dsimple.light-action.m0.v1", qualification:"engineering_only", input_schema:"stpd/stage1a-light-action-m0-public-input-v1",
     input_format:"stpd-token-light-action-m0-public-v1",
     recipe:`stage1a.dsimple.light-action.m0.${backbone === "scratch" ? "s" : backbone}.v1`,
-    config:{recipe:`stage1a.dsimple.light-action.m0.${backbone === "scratch" ? "s" : backbone}.v1`, public_profile:profile,
+    config:{schema:"stpd/stage1a-light-action-m0-config-v1",
+      recipe:`stage1a.dsimple.light-action.m0.${backbone === "scratch" ? "s" : backbone}.v1`, public_profile:profile,
       steps:3, device:"cpu"},
     backbone:{kind:backbone}, steps:3,
     source_renderer:profile === "public_lite"
@@ -2047,6 +2048,81 @@ test("public M0 export card accepts only the exact public renderer and binding, 
     assert.equal(walk(rejectedPage).some(element => element.dataset?.action === "start-local-model-export"), false);
     assert.equal(walk(rejectedPage).some(element => element.dataset?.action === "register-local-model"), false);
     assert.equal(rejected.calls.some(call => call.url === "/api/local-model-exports/status"), false);
+  }
+});
+
+// Anonymous metadata preserves the shape of the CUDA-trained public Compact
+// scratch model that reached the real Workbench. No weights or user data enter this fixture.
+const cudaTrainedPublicM0 = () => JSON.parse(readFileSync(
+  new URL("./fixtures/public_m0_cuda_training_metadata.json", import.meta.url), "utf8"));
+
+test("CPU, MPS and CUDA training provenance preserves explicit public M0 registration without loading", async () => {
+  for (const trainingDevice of ["cpu", "cuda", "mps"]) {
+    const artifact = cudaTrainedPublicM0();
+    artifact.parameters.config.device = trainingDevice;
+    const model = artifact.artifact_id;
+    const before = JSON.stringify(artifact);
+    const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1",status:"ready",curation_status:"ready"};
+        if (url === `/api/local-workspace/artifacts/${model}`) return artifact;
+        if (url === "/api/local-model-exports/status") return modelExportStatus({
+          status:"completed",model_id:model,model_type:"public_m0",profile:"public-snapshot-m0-v1",
+          source_profile:"public_compact",payload_bytes:32650166,
+          verified_receipt:{schema:"stpd/local-public-m0-export-verification-v1",model_id:model}},
+          {schema:"stpd/local-model-export-operation-v3"});
+        if (url === `/api/local-model-registrations/status?model_id=${model}`) return {
+          schema:"stpd/local-model-registration-v1",model_id:model,status:"not_registered",loaded:false,
+          runtime_profile:"public-snapshot-m0-v1",csrf_token:"registration-csrf"};
+        if (url === "/api/local-model-registrations/register") return {
+          schema:"stpd/local-model-registration-v1",model_id:model,status:"registered",loaded:false,
+          runtime_profile:"public-snapshot-m0-v1",selection_id:"local-public-m0-current"};
+        throw new Error(`unexpected route ${url}`);
+      }});
+    const page = await env.render();
+    assert.match(text(page), /Public Compact（兼容格式）/);
+    assert.match(text(page), /S · 从头训练/);
+    assert.match(text(page), /76,450/);
+    assert.equal(action(page, "register-local-model").disabled, false);
+    assert.equal(post(env.calls).length, 0, "reading completed export never registers or loads");
+    await action(page, "register-local-model").onclick();
+    assert.deepEqual(post(env.calls).map(call => [call.url, body(call), call.options.headers["X-CSRF-Token"]]), [
+      ["/api/local-model-registrations/register", {model_id:model}, "registration-csrf"],
+    ]);
+    assert.equal(JSON.stringify(artifact), before, "training provenance remains immutable");
+  }
+});
+
+test("public M0 real-shape metadata still rejects unknown graph, device, schema and inconsistent recipes", async () => {
+  for (const alter of [
+    value => { value.parameters.graph = "dsimple.light-action.m2.v1"; },
+    value => { delete value.parameters.graph; },
+    value => { value.parameters.config.device = "remote"; },
+    value => { value.parameters.config.device = "cuda:0"; },
+    value => { value.parameters.config.device = {kind:"cuda"}; },
+    value => { value.parameters.config.schema = "stpd/unknown-config-v1"; },
+    value => { value.parameters.schema = "stpd/unknown-model-v1"; },
+    value => { value.parameters.config.recipe = "stage1a.dsimple.light-action.m0.pf.v1"; },
+    value => { value.parameters.backbone.kind = "pf"; value.parameters.recipe =
+      value.parameters.config.recipe = "stage1a.dsimple.light-action.m0.pf.v1"; },
+  ]) {
+    const artifact = cudaTrainedPublicM0();
+    alter(artifact);
+    const model = artifact.artifact_id;
+    const env = setup({identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+      handler:async url => {
+        if (url === "/api/local-workspace/managed") return {
+          schema:"stpd/managed-local-workspace-registration-v1",status:"ready",curation_status:"ready"};
+        if (url === `/api/local-workspace/artifacts/${model}`) return artifact;
+        throw new Error(`unexpected route ${url}`);
+      }});
+    const page = await env.render();
+    assert.equal(walk(page).some(element => element.dataset?.action === "register-local-model"
+      || element.dataset?.action === "start-local-model-export"), false);
+    assert.equal(env.calls.some(call => call.url === "/api/local-model-exports/status"
+      || call.url.includes("local-model-registrations")), false);
+    assert.equal(post(env.calls).length, 0);
   }
 });
 

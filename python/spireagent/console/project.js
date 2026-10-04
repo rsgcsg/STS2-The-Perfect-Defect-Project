@@ -3011,6 +3011,7 @@ window.SpireProject = (() => {
     if (value?.kind !== "model" || !hex(value.artifact_id)
         || parameters?.schema !== "stpd/stage1a-light-action-m0-public-model-v1"
         || parameters.qualification !== "engineering_only"
+        || parameters.graph !== "dsimple.light-action.m0.v1"
         || parameters.input_schema !== "stpd/stage1a-light-action-m0-public-input-v1"
         || parameters.input_format !== "stpd-token-light-action-m0-public-v1") return null;
     const config = parameters.config && typeof parameters.config === "object"
@@ -3045,7 +3046,11 @@ window.SpireProject = (() => {
         || Object.keys(renderer).length !== 3
         || renderer.version !== expected.version || renderer.profile !== expected.profile
         || renderer.status !== expected.status
-        || !exactBinding || config.device !== "cpu"
+        || !exactBinding || config.schema !== "stpd/stage1a-light-action-m0-config-v1"
+        // Training provenance does not select the local inference device. The
+        // backend revalidates export lineage, weights and Runtime compatibility.
+        || !["cpu", "mps", "cuda"].includes(config.device)
+        || (config.device === "cuda" && backbone !== "scratch")
         || !Number.isSafeInteger(parameters.steps) || parameters.steps < 1
         || config.steps !== parameters.steps) return null;
     return {profile, backbone};

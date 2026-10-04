@@ -1,0 +1,151 @@
+{
+  "artifact_id": "0000000000000000000000000000000000000000000000000000000000000001",
+  "kind": "model",
+  "parameters": {
+    "action_codec": {
+      "action_id_input": false,
+      "bos_act": 256,
+      "eos_act": 257,
+      "mapping": "each UTF-8 byte maps to the identical token ID 0..255",
+      "normalization": "none",
+      "schema": "stpd/light-action-utf8-bytes-v1",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+      "source_renderer": {
+        "profile": "public_compact",
+        "status": "provisional",
+        "version": "stpd-public-snapshot-compact-v2"
+      },
+      "truncation": "forbidden",
+      "vocab_size": 258
+    },
+    "action_codec_sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+    "adapter_config": null,
+    "adapter_tensor_names": [],
+    "backbone": {
+      "core_fingerprint": "0000000000000000000000000000000000000000000000000000000000000003",
+      "kind": "scratch",
+      "shape": {
+        "dropout": 0.1,
+        "feedforward": 1536,
+        "heads": 6,
+        "layers": 2,
+        "max_tokens": 8192,
+        "vocab_size": 8192,
+        "width": 384
+      },
+      "state_codec": {
+        "add_special_tokens": false,
+        "family": "train-only-byte-bpe",
+        "max_tokens": 8192,
+        "renderer": "OBS\\n<public state>\\n",
+        "schema": "stpd/state-byte-bpe-v1",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+        "special_token_ids": {
+          "additional": [],
+          "bos": null,
+          "eos": null,
+          "pad": null
+        },
+        "vocab_size": 8192
+      }
+    },
+    "config": {
+      "device": "cuda",
+      "gradient_clip": 1.0,
+      "learning_rate": 0.0003,
+      "max_action_bytes": 8192,
+      "max_state_tokens": 8192,
+      "public_profile": "public_compact",
+      "recipe": "stage1a.dsimple.light-action.m0.s.v1",
+      "schema": "stpd/stage1a-light-action-m0-config-v1",
+      "seed": 1701,
+      "steps": 76450,
+      "weight_decay": 0.01
+    },
+    "dtype": "float32",
+    "graph": "dsimple.light-action.m0.v1",
+    "input_format": "stpd-token-light-action-m0-public-v1",
+    "input_schema": "stpd/stage1a-light-action-m0-public-input-v1",
+    "qualification": "engineering_only",
+    "recipe": "stage1a.dsimple.light-action.m0.s.v1",
+    "runtime_integration": "not_included_in_light_action_m0_slice",
+    "schema": "stpd/stage1a-light-action-m0-public-model-v1",
+    "source_renderer": {
+      "profile": "public_compact",
+      "status": "provisional",
+      "version": "stpd-public-snapshot-compact-v2"
+    },
+    "source_view_schema": "stpd/public-observation-bc-view-v2",
+    "state_codec": {
+      "add_special_tokens": false,
+      "family": "train-only-byte-bpe",
+      "max_tokens": 8192,
+      "renderer": "OBS\\n<public state>\\n",
+      "schema": "stpd/state-byte-bpe-v1",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+      "special_token_ids": {
+        "additional": [],
+        "bos": null,
+        "eos": null,
+        "pad": null
+      },
+      "vocab_size": 8192
+    },
+    "state_tokenizer_sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+    "steps": 76450,
+    "training_binding": {
+      "allocation_id": "0000000000000000000000000000000000000000000000000000000000000005",
+      "dataset_ids": [
+        "0000000000000000000000000000000000000000000000000000000000000006"
+      ],
+      "model_view_id": "0000000000000000000000000000000000000000000000000000000000000007",
+      "schema": "stpd/light-action-m0-training-binding-v1",
+      "training_operation_id": "00000000000000000000000000000008"
+    },
+    "weights_sha256": "0000000000000000000000000000000000000000000000000000000000000009"
+  },
+  "parents": [
+    {
+      "artifact_id": "000000000000000000000000000000000000000000000000000000000000000a",
+      "role": "checkpoint"
+    },
+    {
+      "artifact_id": "0000000000000000000000000000000000000000000000000000000000000007",
+      "role": "model_view"
+    },
+    {
+      "artifact_id": "000000000000000000000000000000000000000000000000000000000000000b",
+      "role": "run"
+    },
+    {
+      "artifact_id": "000000000000000000000000000000000000000000000000000000000000000c",
+      "role": "training_input"
+    }
+  ],
+  "payloads": [
+    {
+      "media_type": "application/json",
+      "role": "action_codec",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+      "size": 227
+    },
+    {
+      "media_type": "application/json",
+      "role": "state_tokenizer",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+      "size": 342935
+    },
+    {
+      "media_type": "application/vnd.safetensors",
+      "role": "weights",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000009",
+      "size": 32307004
+    }
+  ],
+  "producer": {
+    "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+    "source_revision": "000000000000000000000000000000000000000d",
+    "uv_lock_sha256": "000000000000000000000000000000000000000000000000000000000000000e"
+  },
+  "schema": "stpd/artifact-manifest-v1"
+}
