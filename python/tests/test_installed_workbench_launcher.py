@@ -244,8 +244,11 @@ def test_backup_launcher_snapshots_both_exact_files_as_nonlaunchable_history(
     assert manifest["restore_eligibility"] == "not_granted"
     assert (output / "launcher.json").read_bytes() == binding_raw
     assert (output / "open").read_bytes() == open_raw
-    assert (output / "launcher.json").stat().st_mode & 0o777 == 0o600
-    assert (output / "open").stat().st_mode & 0o777 == 0o700
+    # Windows stat/chmod expose read-only flags rather than POSIX permission bits.
+    # Keep byte/identity/restore-eligibility checks above on every platform.
+    if install.os.name != "nt":
+        assert (output / "launcher.json").stat().st_mode & 0o777 == 0o600
+        assert (output / "open").stat().st_mode & 0o777 == 0o700
     with pytest.raises(BoundaryError, match="launcher_snapshot_path_invalid"):
         install.backup_launcher(
             release, output, install.sha(binding_raw), install.sha(open_raw),
