@@ -60,6 +60,7 @@ ledger.
 - [ADR-0014: One observation, all B/C action readouts](0014-packed-bc-readouts.md)
 
 - [ADR-0015: Native logical observation, actions, and memory (Accepted: upper-level scope)](0015-native-logical-interaction.md)
+- [ADR-0016: Unified official-release runtime seal (Proposed)](0016-unified-official-runtime-seal.md)
 
 ## New ADR template
 
