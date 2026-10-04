@@ -743,18 +743,18 @@ def _launcher_script(directory: Path) -> str:
             f"exec {shlex.quote(str(python))} -I {shlex.quote(str(tool))} launch\n")
 
 
-def _write_executable(path: Path, contents: str) -> None:
+def _write_launcher_file(path: Path, contents: bytes, mode: int) -> None:
     if path.is_symlink():
         reject("launcher_path_unsafe")
-    descriptor, name = tempfile.mkstemp(prefix=".open-", dir=path.parent)
+    descriptor, name = tempfile.mkstemp(prefix=".launcher-", dir=path.parent)
     temporary = Path(name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+        with os.fdopen(descriptor, "wb") as handle:
             handle.write(contents)
             handle.flush()
             os.fsync(handle.fileno())
         if os.name != "nt":
-            temporary.chmod(0o700)
+            temporary.chmod(mode)
         os.replace(temporary, path)
         if os.name != "nt":
             parent = os.open(path.parent, os.O_RDONLY)
@@ -764,6 +764,10 @@ def _write_executable(path: Path, contents: str) -> None:
                 os.close(parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _write_executable(path: Path, contents: str) -> None:
+    _write_launcher_file(path, contents.encode("utf-8"), 0o700)
 
 
 def _launcher_binding(
@@ -794,7 +798,8 @@ def _launcher_binding(
 
 
 def _install_open_launcher(
-    directory: Path, config_path: Path, prepared: dict[str, Any], *, platform: str | None = None
+    directory: Path, config_path: Path, prepared: dict[str, Any], *, platform: str | None = None,
+    expected_binding_sha256: str | None = None,
 ) -> None:
     if (platform or sys.platform) != "darwin":
         reject("launcher_platform_unsupported")
@@ -807,21 +812,58 @@ def _install_open_launcher(
     _check_no_symlink(root, "launcher_path_unsafe")
     script = _launcher_script(directory.resolve())
     binding = _launcher_binding(directory, config_path.resolve(), prepared)
-    if binding_path.exists():
-        if binding_path.is_symlink() or not binding_path.is_file():
-            reject("launcher_path_unsafe")
-        try:
-            current = json.loads(binding_path.read_bytes())
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            reject("launcher_binding_invalid")
-        if not isinstance(current, dict):
-            reject("launcher_binding_invalid")
-        if current.get("config_path") != binding["config_path"]:
-            reject("launcher_config_binding_mismatch")
+    # Rebinding is an explicit installer operation against exact reviewed bytes.
+    # Both ordinary installation and replacement share this owner lock.
     from spireagent.workbench.developer import atomic_json
+    from spireagent.workbench.developer_server import instance_lock
 
-    atomic_json(binding_path, binding)
-    _write_executable(executable_path, script)
+    if expected_binding_sha256 is not None:
+        digest(expected_binding_sha256, "kit_install.launcher_binding")
+    lock_path = root / "install.lock"
+    if lock_path.is_symlink():
+        reject("launcher_path_unsafe")
+    with instance_lock(lock_path):
+        if executable_path.is_symlink():
+            reject("launcher_path_unsafe")
+        old_script = executable_path.read_bytes() if executable_path.exists() else None
+        old_mode = (stat.S_IMODE(executable_path.stat().st_mode)
+                    if old_script is not None else 0o700)
+        raw = None
+        if binding_path.exists():
+            if binding_path.is_symlink() or not binding_path.is_file():
+                reject("launcher_path_unsafe")
+            raw = binding_path.read_bytes()
+            try:
+                current = json.loads(raw)
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                reject("launcher_binding_invalid")
+            keys = {"schema", "release_directory", "kit_sha256", "source_revision",
+                    "workbench_sha256", "uv_lock_sha256", "config_path"}
+            if (not isinstance(current, dict) or set(current) != keys
+                    or current.get("schema") != LAUNCHER_SCHEMA):
+                reject("launcher_binding_invalid")
+            if expected_binding_sha256 is not None:
+                if sha(raw) != expected_binding_sha256:
+                    reject("launcher_binding_changed")
+            elif current.get("config_path") != binding["config_path"]:
+                reject("launcher_config_binding_mismatch")
+        elif expected_binding_sha256 is not None:
+            reject("launcher_not_installed")
+        try:
+            atomic_json(binding_path, binding)
+            _write_executable(executable_path, script)
+        except Exception:
+            # A write/fsync error can happen after replace. Restore both prior
+            # byte sequences, not a reserialized binding with a new digest.
+            if raw is None:
+                binding_path.unlink(missing_ok=True)
+            else:
+                _write_launcher_file(binding_path, raw, 0o600)
+            if old_script is None:
+                executable_path.unlink(missing_ok=True)
+            else:
+                _write_launcher_file(executable_path, old_script, old_mode)
+            raise
 
 
 def launch_workbench() -> dict[str, Any]:
@@ -1076,8 +1118,12 @@ def main() -> int:
     parser.add_argument("--directory", type=Path)
     parser.add_argument("--game-directory", type=Path)
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--expected-launcher-binding-sha256")
     args = parser.parse_args()
     try:
+        if (args.expected_launcher_binding_sha256 is not None
+                and args.command != "install-launcher"):
+            reject("launcher_replacement_arguments_invalid")
         if args.command == "launch":
             if any(value is not None for value in (
                 args.archive, args.sha256, args.releases, args.directory,
@@ -1093,7 +1139,10 @@ def main() -> int:
                 reject("launcher_arguments_invalid")
             directory = Path(__file__).resolve().parents[3]
             prepared = status(directory)
-            _install_open_launcher(directory, args.config, prepared)
+            _install_open_launcher(
+                directory, args.config, prepared,
+                expected_binding_sha256=args.expected_launcher_binding_sha256,
+            )
             result = {"status": "launcher_installed"}
         elif args.command in {"plan", "prepare"}:
             if args.archive is None or args.sha256 is None or args.releases is None:

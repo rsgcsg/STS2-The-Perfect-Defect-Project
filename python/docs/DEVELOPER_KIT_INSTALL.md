@@ -158,6 +158,26 @@ requires operator recovery. Older kits without the capability retain their
 existing initialization behavior and do not receive this entry. This entry is
 currently macOS-only; Windows is not qualified.
 
+To change the game entry to a different existing project, use the selected approved
+release's `install-launcher` entry with `--config /ABS/target/project.json` and
+`--expected-launcher-binding-sha256 SHA256_OF_CURRENT_LAUNCHER_JSON`. Inspect and
+retain the current `launcher.json` first. Without that exact expected digest, a
+different project remains rejected. The installer validates the selected release,
+source, lock and target project; a changed or absent prior binding stops replacement.
+Concurrent installer operations are serialized. It only changes the fixed launcher
+binding and executable; it does not migrate models, saves, queues or consent, start a
+service, or redirect a running game's already registered URL. Stop/reopen the chosen
+Workbench through its owner and verify the game button's observed URL separately.
+Rollback uses the same command with the former approved release/project and the
+newly observed current binding digest. Do not edit an old release's source or
+`launcher.json` to imitate this operation; older releases need a newly reviewed kit
+containing this installer capability.
+A caught publication exception restores the previous binding and script bytes.
+This two-file update is not a crash-atomic transaction: forced termination, power
+loss or a further rollback I/O failure can leave an identity mismatch. Preserve
+the diagnostic and re-run the reviewed installer against the observed binding;
+launcher identity checks fail closed rather than execute a mismatched release.
+
 A kit may additionally contain an independently approved `text-runtime/profile.json`
 and `text-runtime/runtime.tgz`. Its inventory and external ZIP SHA256 bind both;
 the packager verifies the archive through the ordinary bundled Runtime installer in

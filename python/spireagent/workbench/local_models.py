@@ -1386,6 +1386,13 @@ class LocalModelService:
         with self.lock:
             self._require_intent(intent)
             self.client = client if observed["lifecycle"] == "running" else None
+            # A recovered Human session is still the same bounded run. Preserve
+            # its recorded profile for the console; older sessions may omit it.
+            run_profile = previous.get("run_profile")
+            if isinstance(run_profile, str) and run_profile in RUN_PROFILES:
+                self.state["run_profile"] = run_profile
+            else:
+                self.state.pop("run_profile", None)
             self.state.update(
                 selection_id=entry["id"],
                 startup=startup,
