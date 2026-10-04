@@ -138,13 +138,21 @@ hash these on-disk files while the game is running; it does not inspect process 
 claim that the running process loaded those same bytes. This read-only snapshot has no lock
 against a concurrent process state change or local file replacement. Deploy still requires
 the game to be closed and independently rechecks native game identity before writing.
-The verified kit inventory selects the locked environment: collection-only kits
-install the `cloud` extra; a kit containing any fixed text Runtime pair also
-installs `local-models` (Torch, Tokenizers and Safetensors). It does not install
-Qwen/Transformers or download model weights. Opening the local Workbench later
-retains these installed optional dependencies. The local home, model setup and
-recorded-report reading do not require team login; team account pairing is
-optional until a member uses collection sharing or uploads.
+The immutable kit manifest may select the fixed `python_environment_profile`
+`cloud` or `cloud-local-models`. The M0 setup uses `cloud-local-models`, including
+when the kit contains no model Runtime pair. This profile controls the locked Python
+dependencies only; it does not make a model eligible, select a runtime or establish
+model qualification. Initialization and registration use the same centrally approved
+extras for the verified profile. Explicit profiles use developer-kit schema v2;
+older v1 installers reject v2 kits instead of ignoring the selection. Kits without
+an explicit profile retain v1. It does not install Qwen/Transformers or download
+model weights. Older kits that omit the field remain supported: their effective
+profile is inferred as `cloud-local-models` if any fixed text Runtime pair is bundled,
+and `cloud` otherwise. An explicit `cloud` profile cannot accompany a bundled text
+Runtime pair. Opening the local Workbench later retains these installed optional
+dependencies. The local home, model setup and recorded-report reading do not require
+team login; team account pairing is optional until a member uses collection sharing
+or uploads.
 
 For kits whose `combination.json` declares
 `workbench_launcher_schema: spireagent/workbench-launcher-v1`, successful

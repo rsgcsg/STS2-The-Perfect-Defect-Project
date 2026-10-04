@@ -30,6 +30,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sts2_platform_evidence.collection_tool import CollectionTool  # noqa: E402
 
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes  # noqa: E402
+from spireagent.workbench.kit_environment import (  # noqa: E402
+    PROFILE_FIELD,
+    extras_for_python_environment_profile,
+    resolve_python_environment_profile,
+)
 from spireagent.workbench.kit_runtime import (  # noqa: E402
     KIT_RUNTIME_PAIRS,
     M2_ARCHIVE_DESTINATION,
@@ -144,8 +149,16 @@ def verified_archive(archive: Path, expected: str) -> tuple[dict[str, Any], dict
                 reject("unsafe_or_duplicate_archive_path")
             files[name] = z.read(info)
     manifest = decode_json(files.get("combination.json", b"{}"))
-    if not isinstance(manifest, dict) or manifest.get("schema") != "spireagent/developer-kit-v1":
+    if not isinstance(manifest, dict):
         reject("unsupported_kit_schema")
+    schema = manifest.get("schema")
+    if not isinstance(schema, str) or schema not in {
+        "spireagent/developer-kit-v1", "spireagent/developer-kit-v2"
+    }:
+        reject("unsupported_kit_schema")
+    if ((schema == "spireagent/developer-kit-v1" and PROFILE_FIELD in manifest)
+            or (schema == "spireagent/developer-kit-v2" and PROFILE_FIELD not in manifest)):
+        reject("kit_schema_python_environment_profile_mismatch")
     if ("workbench_launcher_schema" in manifest
             and manifest["workbench_launcher_schema"] != LAUNCHER_SCHEMA):
         reject("unsupported_workbench_launcher")
@@ -168,6 +181,10 @@ def verified_archive(archive: Path, expected: str) -> tuple[dict[str, Any], dict
             reject("composition_identity_mismatch")
     if not set(STAGING).issubset(files):
         reject("native_installation_files_missing")
+    try:
+        resolve_python_environment_profile(manifest, files, KIT_RUNTIME_PAIRS)
+    except ValueError as error:
+        reject(str(error))
     for profile_id in KIT_RUNTIME_PAIRS:
         text_runtime_files(manifest, files, required_profile=profile_id)
     private_host_files(manifest, files, files["platform-bom.json"])
@@ -346,12 +363,18 @@ def status(directory: Path) -> dict[str, Any]:
             "derivation": private_host.get("derivation"),
         }
     CollectionTool(directory / "kit/collection-tool", manifest["collection_tool_release_id"])
+    try:
+        effective_python_profile = resolve_python_environment_profile(
+            manifest, files, KIT_RUNTIME_PAIRS)
+    except ValueError as error:  # verified_archive already validates this invariant
+        reject(str(error))
     return {
         "status": "prepared",
         "source_revision": manifest["stpd_source_revision"],
         "tool_release_id": manifest["collection_tool_release_id"],
         "mod_sha256": manifest["mod_sha256"],
         "uv_lock_sha256": manifest["uv_lock_sha256"],
+        PROFILE_FIELD: effective_python_profile,
         "workbench_launcher_schema": manifest.get("workbench_launcher_schema"),
         "directory": str(directory),
         "installed": "not_checked",
@@ -981,12 +1004,11 @@ def register(directory: Path, config: Path) -> dict[str, Any]:
 
 
 def _environment_extras(prepared: dict[str, Any]) -> list[str]:
-    """Use only the verified kit inventory to select the locked local model backend."""
-    extras = ["--extra", "cloud"]
-    if any(prepared.get(pair[4]) == "bundled_installation_not_checked"
-           for pair in KIT_RUNTIME_PAIRS.values()):
-        extras.extend(("--extra", "local-models"))
-    return extras
+    """Map the verified effective profile to the centrally approved fixed extras."""
+    try:
+        return extras_for_python_environment_profile(prepared[PROFILE_FIELD])
+    except (KeyError, ValueError):
+        reject("python_environment_profile_invalid")
 
 
 def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
@@ -1004,6 +1026,7 @@ def initialize(directory: Path, config_path: Path) -> dict[str, Any]:
         if (not config_path.exists() and
                 (any(prepared.get(pair[4]) == "bundled_installation_not_checked"
                      for pair in KIT_RUNTIME_PAIRS.values())
+                 or prepared.get(PROFILE_FIELD) == "cloud-local-models"
                  or prepared.get("private_host_runtime") == "bundled_installation_not_checked"
                  or prepared.get("workbench_launcher_schema") == LAUNCHER_SCHEMA)):
             # Let the selected release own the profile and its default private state.
