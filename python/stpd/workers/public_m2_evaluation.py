@@ -1,4 +1,4 @@
-"""Independent dev-only evaluation for a frozen one-epoch public M2 export.
+"""Independent dev-only evaluation for frozen public M2 epoch exports.
 
 The caller owns source admission and immutable artifact orchestration. This
 module binds an ordered dev-only selection to an already-read PublicM2Input,
@@ -29,12 +29,20 @@ from .public_m2_engine import (
     PublicM2EngineChain,
     PublicM2EngineConfig,
     _chain_values,
+    _tensor_digest,
     load_public_m2_weights,
 )
 
 SELECTION_SCHEMA = "stpd/public-m2-dev-eval-selection-v1"
 EVALUATION_SCHEMA = "stpd/public-m2-dev-eval-shard-v1"
 SUMMARY_SCHEMA = "stpd/public-m2-dev-eval-summary-v1"
+RUNTIME_FIELDS = frozenset({
+    "torch", "python", "platform", "default_dtype", "cpu_threads", "device_type",
+    "gpu_name", "gpu_compute_capability", "gpu_total_memory_bytes", "cuda_version",
+    "cudnn_version", "tf32_matmul", "tf32_cudnn", "float32_matmul_precision",
+    "deterministic_algorithms", "deterministic_warn_only", "cudnn_benchmark",
+    "cudnn_deterministic",
+})
 _MAX_ROWS = 100_000
 _MAX_CHAINS = 100_000
 _MAX_SELECTION_BYTES = 32 * 1024 * 1024
@@ -174,6 +182,37 @@ class PublicM2EvalChainResult:
 
 
 @dataclass(frozen=True)
+class PublicM2EvalExpectedBindings:
+    """Independently pinned model/header identity required by the reducer."""
+
+    training_input_digest: str
+    weights_sha256: str
+    weights_digest: str
+    completed_epochs: int
+    configured_epochs: int
+    run_complete: bool
+    implementation_sha256: str
+    config_digest: str
+    inference_device: str
+
+    def validate(self) -> None:
+        for name in (
+            "training_input_digest", "weights_sha256", "weights_digest",
+            "implementation_sha256", "config_digest",
+        ):
+            _sha(getattr(self, name), name)
+        if (type(self.completed_epochs) is not int or self.completed_epochs not in {1, 3, 5}
+                or type(self.configured_epochs) is not int
+                or self.configured_epochs not in {1, 3, 5}
+                or self.completed_epochs > self.configured_epochs
+                or type(self.run_complete) is not bool
+                or self.run_complete is not (self.completed_epochs == self.configured_epochs)
+                or type(self.inference_device) is not str
+                or not self.inference_device):
+            raise BoundaryError("public_m2_evaluation", "invalid_expected_model_bindings")
+
+
+@dataclass(frozen=True)
 class PublicM2EvalShardResult:
     schema: str
     selection_identity: str
@@ -182,6 +221,7 @@ class PublicM2EvalShardResult:
     weights_sha256: str
     weights_digest: str
     completed_epochs: int
+    configured_epochs: int
     run_complete: bool
     implementation_sha256: str
     config_digest: str
@@ -204,6 +244,7 @@ class PublicM2EvalSummary:
     weights_sha256: str
     weights_digest: str
     completed_epochs: int
+    configured_epochs: int
     run_complete: bool
     implementation_sha256: str
     config_digest: str
@@ -388,55 +429,197 @@ def partition_public_m2_eval_selection(
     return shard
 
 
-def _runtime() -> dict[str, Any]:
+def _runtime(device: torch.device) -> dict[str, Any]:
+    is_cuda = device.type == "cuda"
+    if is_cuda:
+        properties = torch.cuda.get_device_properties(device)
+        capability: list[int] | None = [properties.major, properties.minor]
+        gpu_name: str | None = properties.name
+        memory: int | None = int(properties.total_memory)
+        cuda_version: str | None = torch.version.cuda
+        cudnn_version: int | None = torch.backends.cudnn.version()
+    else:
+        capability = None
+        gpu_name = None
+        memory = None
+        cuda_version = None
+        cudnn_version = None
     return {
         "torch": str(torch.__version__), "python": platform.python_version(),
         "platform": platform.platform(), "default_dtype": str(torch.get_default_dtype()),
-        "cpu_threads": torch.get_num_threads(),
+        "cpu_threads": torch.get_num_threads(), "device_type": device.type,
+        "gpu_name": gpu_name, "gpu_compute_capability": capability,
+        "gpu_total_memory_bytes": memory, "cuda_version": cuda_version,
+        "cudnn_version": cudnn_version,
+        "tf32_matmul": bool(torch.backends.cuda.matmul.allow_tf32),
+        "tf32_cudnn": bool(torch.backends.cudnn.allow_tf32),
+        "float32_matmul_precision": str(torch.get_float32_matmul_precision()),
+        "deterministic_algorithms": bool(torch.are_deterministic_algorithms_enabled()),
+        "deterministic_warn_only": bool(torch.is_deterministic_algorithms_warn_only_enabled()),
+        "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
+        "cudnn_deterministic": bool(torch.backends.cudnn.deterministic),
     }
 
 
-def evaluate_public_m2_stage(
-    weights_raw: bytes, source: PublicM2Input, selection: PublicM2EvalSelection,
-    config: PublicM2EngineConfig, *, training_input_digest: str,
-    inference_device: str = "cpu", shard: PublicM2EvalShard | None = None,
-    completed_epochs: int = 1,
-) -> PublicM2EvalShardResult:
-    """Score ordered full dev chains with frozen stage weights and no grad."""
-    start_total = time.perf_counter()
-    _validate_selection(selection, source)
-    if (not isinstance(config, PublicM2EngineConfig)
-            or training_input_digest != selection.training_input_digest
-            or config.state_tokenizer_sha256 != selection.tokenizer_sha256
-            or config.action_codec_sha256 != selection.action_codec_sha256
-            or type(completed_epochs) is not int or completed_epochs not in {1, 3, 5}):
-        raise BoundaryError("public_m2_evaluation", "evaluation_input_binding_mismatch")
-    if type(weights_raw) is not bytes or not weights_raw:
-        raise BoundaryError("public_m2_evaluation", "weights_required")
-    chosen = shard or partition_public_m2_eval_selection(selection, 0, len(selection.chains))
-    chosen.validate(selection)
-    raw_sha = hashlib.sha256(weights_raw).hexdigest()
-    decode_start = time.perf_counter()
+def _validate_runtime(value: object, inference_device: str) -> None:
+    if (not isinstance(value, dict) or set(value) != RUNTIME_FIELDS
+            or any(type(value.get(key)) is not str or not value[key]
+                   for key in ("torch", "python", "platform", "default_dtype",
+                               "float32_matmul_precision"))
+            or type(value["cpu_threads"]) is not int or value["cpu_threads"] < 1
+            or type(value["device_type"]) is not str
+            or value["device_type"] not in {"cpu", "cuda"}
+            or any(type(value[key]) is not bool for key in (
+                "tf32_matmul", "tf32_cudnn", "deterministic_algorithms",
+                "deterministic_warn_only", "cudnn_benchmark", "cudnn_deterministic",
+            ))):
+        raise BoundaryError("public_m2_evaluation", "invalid_runtime_identity")
+    try:
+        device = torch.device(inference_device)
+    except (TypeError, ValueError, RuntimeError) as error:
+        raise BoundaryError("public_m2_evaluation", "invalid_inference_device") from error
+    if (str(device) != inference_device or device.type != value["device_type"]
+            or device.type not in {"cpu", "cuda"}
+            or device.type == "cpu" and device.index is not None
+            or device.type == "cuda" and device.index is None):
+        raise BoundaryError("public_m2_evaluation", "runtime_device_mismatch")
+    gpu_keys = ("gpu_name", "gpu_compute_capability", "gpu_total_memory_bytes",
+                "cuda_version", "cudnn_version")
+    if device.type == "cpu":
+        if any(value[key] is not None for key in gpu_keys):
+            raise BoundaryError("public_m2_evaluation", "cpu_runtime_gpu_fields_present")
+    else:
+        capability = value["gpu_compute_capability"]
+        if (type(value["gpu_name"]) is not str or not value["gpu_name"]
+                or not isinstance(capability, (tuple, list)) or len(capability) != 2
+                or any(type(item) is not int or item < 0 for item in capability)
+                or type(value["gpu_total_memory_bytes"]) is not int
+                or value["gpu_total_memory_bytes"] < 1
+                or type(value["cuda_version"]) is not str or not value["cuda_version"]
+                or value["cudnn_version"] is not None and (
+                    type(value["cudnn_version"]) is not int
+                    or value["cudnn_version"] < 1
+                )):
+            raise BoundaryError("public_m2_evaluation", "incomplete_cuda_runtime_identity")
+    if value["default_dtype"] != "torch.float32":
+        raise BoundaryError("public_m2_evaluation", "invalid_runtime_dtype")
+
+
+_SESSION_TOKEN = object()
+
+
+class PublicM2EvalSession:
+    """Run-scoped, validated frozen weights reusable across dev selections/shards.
+
+    Construct sessions only with ``open_public_m2_eval_session``. The session
+    owns one model load and resets memory at every selected chain boundary.
+    """
+
+    def __init__(
+        self, token: object, model: Any, config: PublicM2EngineConfig, *,
+        training_input_digest: str, completed_epochs: int, header: dict[str, Any],
+        weights_sha256: str, load_seconds: float, inference_device: str,
+    ) -> None:
+        if token is not _SESSION_TOKEN:
+            raise BoundaryError("public_m2_evaluation", "validated_session_factory_required")
+        self._model = model
+        self._config = config
+        self._training_input_digest = training_input_digest
+        self._completed_epochs = completed_epochs
+        self._configured_epochs = config.epochs
+        self._header = dict(header)
+        self._weights_sha256 = weights_sha256
+        self._weights_digest = str(header["weights_digest"])
+        self._implementation_sha256 = str(header["implementation_sha256"])
+        self._config_digest = str(semantic_hash(asdict(config)))
+        self._inference_device = inference_device
+        self._runtime = _runtime(torch.device(inference_device))
+        self._pending_load_seconds = load_seconds
+        self._factory_validated = True
+
+    @property
+    def bindings(self) -> PublicM2EvalExpectedBindings:
+        return PublicM2EvalExpectedBindings(
+            self._training_input_digest, self._weights_sha256, self._weights_digest,
+            self._completed_epochs, self._configured_epochs,
+            bool(self._header["run_complete"]), self._implementation_sha256,
+            self._config_digest, self._inference_device,
+        )
+
+    @property
+    def runtime(self) -> dict[str, Any]:
+        return dict(self._runtime)
+
+    def evaluate(
+        self, source: PublicM2Input, selection: PublicM2EvalSelection, *,
+        shard: PublicM2EvalShard | None = None,
+    ) -> PublicM2EvalShardResult:
+        return _evaluate_loaded_session(self, source, selection, shard=shard)
+
+
+def open_public_m2_eval_session(
+    weights_raw: bytes, config: PublicM2EngineConfig, *, training_input_digest: str,
+    inference_device: str = "cpu", completed_epochs: int = 1,
+) -> PublicM2EvalSession:
+    """Validate and load frozen epoch weights exactly once for this run."""
+    if (not isinstance(config, PublicM2EngineConfig) or type(weights_raw) is not bytes
+            or not weights_raw or type(completed_epochs) is not int
+            or completed_epochs not in {1, 3, 5}):
+        raise BoundaryError("public_m2_evaluation", "invalid_eval_session_input")
+    _sha(training_input_digest, "training_input_digest")
+    started = time.perf_counter()
     header = decode_checkpoint(weights_raw)
     if (not isinstance(header, dict) or header.get("schema") != PUBLIC_M2_EXPORT_SCHEMA
             or header.get("input_digest") != training_input_digest
             or header.get("completed_epochs") != completed_epochs
             or header.get("run_complete") is not (completed_epochs == config.epochs)
             or header.get("config") != asdict(config)):
-        raise BoundaryError("public_m2_evaluation", "stage1_weights_header_mismatch")
+        raise BoundaryError("public_m2_evaluation", "stage_weights_header_mismatch")
     model = load_public_m2_weights(
         weights_raw, config, input_digest=training_input_digest,
-        completed_epochs=completed_epochs,
-        inference_device=inference_device,
+        completed_epochs=completed_epochs, inference_device=inference_device,
     )
     model.eval()
     device = next(model.parameters()).device
+    if str(device) != inference_device:
+        raise BoundaryError("public_m2_evaluation", "inference_device_mismatch")
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    return PublicM2EvalSession(
+        _SESSION_TOKEN, model, config, training_input_digest=training_input_digest,
+        completed_epochs=completed_epochs, header=header,
+        weights_sha256=hashlib.sha256(weights_raw).hexdigest(),
+        load_seconds=time.perf_counter() - started, inference_device=str(device),
+    )
+
+
+def _evaluate_loaded_session(
+    session: PublicM2EvalSession, source: PublicM2Input,
+    selection: PublicM2EvalSelection, *, shard: PublicM2EvalShard | None,
+) -> PublicM2EvalShardResult:
+    started = time.perf_counter()
+    _validate_selection(selection, source)
+    config = session._config
+    if (selection.training_input_digest != session._training_input_digest
+            or selection.tokenizer_sha256 != config.state_tokenizer_sha256
+            or selection.action_codec_sha256 != config.action_codec_sha256):
+        raise BoundaryError("public_m2_evaluation", "evaluation_input_binding_mismatch")
+    if (session._model.training
+            or _tensor_digest(session._model.state_dict()) != session._weights_digest
+            or semantic_hash(asdict(config)) != session._config_digest):
+        raise BoundaryError("public_m2_evaluation", "loaded_model_binding_changed")
+    chosen = shard or partition_public_m2_eval_selection(selection, 0, len(selection.chains))
+    chosen.validate(selection)
+    device = next(session._model.parameters()).device
+    if session._inference_device != str(device):
+        raise BoundaryError("public_m2_evaluation", "inference_device_mismatch")
+    if _runtime(device) != session._runtime:
+        raise BoundaryError("public_m2_evaluation", "runtime_identity_changed")
     if device.type == "cuda":
         torch.cuda.synchronize(device)
         torch.cuda.reset_peak_memory_stats(device)
-    load_seconds = time.perf_counter() - decode_start
     dev = tuple(chain for chain in source.chains if chain.split == "dev")
-    for ref in selection.chains:
+    for ref in selection.chains[chosen.start_ordinal:chosen.stop_ordinal]:
         chain = dev[ref.ordinal]
         for step in chain.steps:
             if (len(step.page) > config.shape.max_tokens
@@ -444,20 +627,20 @@ def evaluate_public_m2_stage(
                            for action in step.byte_actions)):
                 raise BoundaryError("public_m2_evaluation", "model_input_limit_exceeded")
     chain_results: list[PublicM2EvalChainResult] = []
-    compute_start = time.perf_counter()
+    numeric_started = time.perf_counter()
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     with torch.no_grad():
         for ordinal in range(chosen.start_ordinal, chosen.stop_ordinal):
             ref, chain = selection.chains[ordinal], dev[ordinal]
-            memory = model.initial_memory()
+            memory = session._model.initial_memory()
             loss_sum = 0.0
             correct = 0
             for position, step in enumerate(chain.steps):
                 page = torch.tensor(step.page, dtype=torch.long, device=device)
                 actions = tuple(torch.tensor(action, dtype=torch.long, device=device)
                                 for action in step.byte_actions)
-                scores, memory = model.step(
+                scores, memory = session._model.step(
                     page, actions, memory,
                     previous_actual_action=None, public_feedback=None,
                     reset_before=step.reset_before,
@@ -483,45 +666,125 @@ def evaluate_public_m2_stage(
         peak_reserved = int(torch.cuda.max_memory_reserved(device))
     else:
         peak_allocated = peak_reserved = 0
-    compute_seconds = time.perf_counter() - compute_start
+    numeric_seconds = time.perf_counter() - numeric_started
+    load_seconds = session._pending_load_seconds
+    session._pending_load_seconds = 0.0
     phase_seconds = {
-        "header_and_model_load": load_seconds,
-        "numeric_evaluation": compute_seconds,
-        "total": time.perf_counter() - start_total,
+        "model_load": load_seconds,
+        "numeric_evaluation": numeric_seconds,
+        "total": time.perf_counter() - started + load_seconds,
     }
     if any(not math.isfinite(value) or value < 0 for value in phase_seconds.values()):
         raise BoundaryError("public_m2_evaluation", "invalid_phase_timing")
     return PublicM2EvalShardResult(
-        EVALUATION_SCHEMA, selection.identity, source.identity, training_input_digest,
-        raw_sha, str(header["weights_digest"]), completed_epochs,
-        bool(header["run_complete"]),
-        str(header["implementation_sha256"]), str(semantic_hash(asdict(config))),
-        _runtime(), str(device), chosen,
+        EVALUATION_SCHEMA, selection.identity, source.identity,
+        session._training_input_digest, session._weights_sha256, session._weights_digest,
+        session._completed_epochs, session._configured_epochs,
+        bool(session._header["run_complete"]), session._implementation_sha256,
+        session._config_digest, dict(session._runtime), session._inference_device, chosen,
         tuple(result.chain_id for result in chain_results), tuple(chain_results),
         phase_seconds, peak_allocated, peak_reserved,
     )
 
 
+def evaluate_public_m2_stage(
+    weights_raw: bytes, source: PublicM2Input, selection: PublicM2EvalSelection,
+    config: PublicM2EngineConfig, *, training_input_digest: str,
+    inference_device: str = "cpu", shard: PublicM2EvalShard | None = None,
+    completed_epochs: int = 1,
+) -> PublicM2EvalShardResult:
+    """Convenience one-shot evaluator; use a session when scoring stages/shards repeatedly."""
+    session = open_public_m2_eval_session(
+        weights_raw, config, training_input_digest=training_input_digest,
+        inference_device=inference_device, completed_epochs=completed_epochs,
+    )
+    return session.evaluate(source, selection, shard=shard)
+
+
 def combine_public_m2_eval_shards(
     selection: PublicM2EvalSelection, shard_results: tuple[PublicM2EvalShardResult, ...],
+    *, expected_bindings: PublicM2EvalExpectedBindings,
+    expected_runtime: dict[str, Any],
 ) -> PublicM2EvalSummary:
-    """Require exact once-only ordinal coverage and aggregate by total labels."""
+    """Verify shards against loaded weights and aggregate exact once-only coverage."""
     if (not isinstance(shard_results, tuple) or not shard_results
-            or not isinstance(selection, PublicM2EvalSelection)):
+            or not isinstance(selection, PublicM2EvalSelection)
+            or not isinstance(expected_bindings, PublicM2EvalExpectedBindings)):
         raise BoundaryError("public_m2_evaluation", "typed_shard_results_required")
+    expected_bindings.validate()
+    _validate_runtime(expected_runtime, expected_bindings.inference_device)
+    if expected_bindings.training_input_digest != selection.training_input_digest:
+        raise BoundaryError("public_m2_evaluation", "expected_input_binding_mismatch")
+    _sha(selection.identity, "selection_identity")
+    _sha(selection.source_input_identity, "source_input_identity")
+    _sha(selection.training_input_digest, "training_input_digest")
+    _sha(selection.tokenizer_sha256, "tokenizer_sha256")
+    _sha(selection.action_codec_sha256, "action_codec_sha256")
+    selection.limits.validate()
+    if (not selection.chains or len(selection.chains) > selection.limits.max_chains
+            or selection.row_count > selection.limits.max_rows
+            or len(selection.payload_bytes()) > selection.limits.max_payload_bytes
+            or any(ref.ordinal != index for index, ref in enumerate(selection.chains))):
+        raise BoundaryError("public_m2_evaluation", "invalid_selection_summary_binding")
+    for ref in selection.chains:
+        ref.validate()
     by_ordinal: dict[int, PublicM2EvalChainResult] = {}
     common: tuple[Any, ...] | None = None
     seconds: dict[str, float] = {}
     peak_allocated = peak_reserved = 0
     for result in shard_results:
         if (not isinstance(result, PublicM2EvalShardResult)
-                or result.schema != EVALUATION_SCHEMA):
+                or result.schema != EVALUATION_SCHEMA
+                or not isinstance(result.shard, PublicM2EvalShard)
+                or type(result.run_complete) is not bool
+                or type(result.completed_epochs) is not int
+                or type(result.configured_epochs) is not int
+                or result.completed_epochs not in {1, 3, 5}
+                or result.configured_epochs not in {1, 3, 5}
+                or result.completed_epochs > result.configured_epochs
+                or result.run_complete is not (
+                    result.completed_epochs == result.configured_epochs
+                )):
             raise BoundaryError("public_m2_evaluation", "invalid_shard_result")
         result.shard.validate(selection)
+        for field, value in (
+            ("selection_identity", result.selection_identity),
+            ("source_input_identity", result.source_input_identity),
+            ("training_input_digest", result.training_input_digest),
+            ("weights_sha256", result.weights_sha256),
+            ("weights_digest", result.weights_digest),
+            ("implementation_sha256", result.implementation_sha256),
+            ("config_digest", result.config_digest),
+        ):
+            _sha(value, field)
+        if (result.selection_identity != selection.identity
+                or result.source_input_identity != selection.source_input_identity
+                or result.training_input_digest != selection.training_input_digest
+                or result.weights_sha256 != expected_bindings.weights_sha256
+                or result.weights_digest != expected_bindings.weights_digest
+                or result.completed_epochs != expected_bindings.completed_epochs
+                or result.configured_epochs != expected_bindings.configured_epochs
+                or result.run_complete is not expected_bindings.run_complete
+                or result.implementation_sha256 != expected_bindings.implementation_sha256
+                or result.config_digest != expected_bindings.config_digest
+                or result.inference_device != expected_bindings.inference_device):
+            raise BoundaryError("public_m2_evaluation", "shard_expected_model_binding_mismatch")
+        _validate_runtime(result.runtime, result.inference_device)
+        if result.runtime != expected_runtime:
+            raise BoundaryError("public_m2_evaluation", "shard_expected_runtime_mismatch")
+        if (not isinstance(result.chains, tuple)
+                or not isinstance(result.ordered_chain_ids, tuple)
+                or any(type(item) is not str or not item for item in result.ordered_chain_ids)
+                or not isinstance(result.phase_seconds, dict)
+                or set(result.phase_seconds) != {
+                    "model_load", "numeric_evaluation", "total",
+                }):
+            raise BoundaryError("public_m2_evaluation", "invalid_shard_result_shape")
         identity = (
             result.selection_identity, result.source_input_identity, result.training_input_digest,
             result.weights_sha256, result.weights_digest, result.completed_epochs,
-            result.run_complete, result.implementation_sha256, result.config_digest,
+            result.configured_epochs, result.run_complete,
+            result.implementation_sha256, result.config_digest,
             tuple(sorted(result.runtime.items())), result.inference_device,
         )
         if common is None:
@@ -534,25 +797,37 @@ def combine_public_m2_eval_shards(
                 or tuple(item.chain_id for item in result.chains) != result.ordered_chain_ids):
             raise BoundaryError("public_m2_evaluation", "shard_chain_catalog_mismatch")
         for item, ref in zip(result.chains, expected_refs, strict=True):
-            if (item.ordinal != ref.ordinal or item.chain_id != ref.chain_id
+            if (not isinstance(item, PublicM2EvalChainResult)
+                    or type(item.ordinal) is not int or item.ordinal != ref.ordinal
+                    or type(item.chain_id) is not str or item.chain_id != ref.chain_id
                     or item.evidence_sha256 != ref.ordered_evidence_sha256
-                    or item.label_count != ref.row_count
+                    or type(item.label_count) is not int or item.label_count != ref.row_count
                     or type(item.correct_count) is not int
                     or not 0 <= item.correct_count <= item.label_count
-                    or not math.isfinite(item.cross_entropy_sum) or item.cross_entropy_sum < 0
+                    or type(item.cross_entropy_sum) not in {int, float}
+                    or not math.isfinite(item.cross_entropy_sum)
+                    or item.cross_entropy_sum < 0
                     or item.ordinal in by_ordinal):
                 raise BoundaryError("public_m2_evaluation", "duplicate_or_tampered_chain_metric")
             by_ordinal[item.ordinal] = item
-        for key, value in result.phase_seconds.items():
-            if not math.isfinite(value) or value < 0:
+        for key, phase_value in result.phase_seconds.items():
+            if (type(phase_value) not in {int, float}
+                    or not math.isfinite(phase_value) or phase_value < 0):
                 raise BoundaryError("public_m2_evaluation", "invalid_phase_timing")
-            seconds[key] = seconds.get(key, 0.0) + value
+            seconds[key] = seconds.get(key, 0.0) + phase_value
+        if (result.phase_seconds["total"] < result.phase_seconds["numeric_evaluation"]
+                or result.phase_seconds["model_load"] > result.phase_seconds["total"]):
+            raise BoundaryError("public_m2_evaluation", "inconsistent_phase_timing")
         if (type(result.peak_allocated_bytes) is not int or result.peak_allocated_bytes < 0
-                or type(result.peak_reserved_bytes) is not int or result.peak_reserved_bytes < 0):
+                or type(result.peak_reserved_bytes) is not int or result.peak_reserved_bytes < 0
+                or result.peak_reserved_bytes < result.peak_allocated_bytes
+                or result.runtime["device_type"] == "cpu"
+                and (result.peak_allocated_bytes != 0 or result.peak_reserved_bytes != 0)):
             raise BoundaryError("public_m2_evaluation", "invalid_memory_metrics")
         peak_allocated = max(peak_allocated, result.peak_allocated_bytes)
         peak_reserved = max(peak_reserved, result.peak_reserved_bytes)
-    if tuple(sorted(by_ordinal)) != tuple(range(len(selection.chains))) or common is None:
+    if (tuple(sorted(by_ordinal)) != tuple(range(len(selection.chains))) or common is None
+            or len(by_ordinal) != len(selection.chains)):
         raise BoundaryError("public_m2_evaluation", "incomplete_eval_coverage")
     ordered = tuple(by_ordinal[index] for index in range(len(selection.chains)))
     count = sum(item.label_count for item in ordered)
@@ -560,11 +835,13 @@ def combine_public_m2_eval_shards(
     total_loss = sum(item.cross_entropy_sum for item in ordered)
     if count < 1 or not math.isfinite(total_loss):
         raise BoundaryError("public_m2_evaluation", "empty_or_nonfinite_summary")
+    if count != selection.row_count or len(ordered) != len(selection.chains):
+        raise BoundaryError("public_m2_evaluation", "summary_selection_coverage_mismatch")
     return PublicM2EvalSummary(
         SUMMARY_SCHEMA, selection.identity, selection.source_input_identity,
         selection.training_input_digest, str(common[3]), str(common[4]),
-        int(common[5]), bool(common[6]),
-        str(common[7]), str(common[8]), dict(common[9]), str(common[10]),
+        int(common[5]), int(common[6]), bool(common[7]),
+        str(common[8]), str(common[9]), dict(common[10]), str(common[11]),
         len(ordered), count,
         total_loss, total_loss / count, correct, correct / count,
         tuple(item.chain_id for item in ordered), selection.ordered_transition_ids,

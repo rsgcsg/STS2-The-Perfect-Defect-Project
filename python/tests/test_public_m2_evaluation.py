@@ -29,6 +29,7 @@ from stpd.workers.public_m2_evaluation import (
     build_public_m2_eval_selection,
     combine_public_m2_eval_shards,
     evaluate_public_m2_stage,
+    open_public_m2_eval_session,
     partition_public_m2_eval_selection,
     public_m2_engine_input_digest,
     read_public_m2_eval_selection,
@@ -69,13 +70,14 @@ def _chain(name: str, split: str, count: int) -> PublicM2Chain:
     )
 
 
-def _source(*, binding: str = "d", long_dev: bool = True) -> PublicM2Input:
+def _source(
+    *, binding: str = "d", dev_counts: tuple[int, ...] = (15, 3),
+) -> PublicM2Input:
     tokenizer = Tokenizer(models.WordLevel(
         {f"token{i}": i for i in range(258)}, unk_token="token0",
     )).to_str().encode()
     train = _chain("parent-train", "train", 2)
-    dev = (_chain("parent-dev-long", "dev", 15), _chain("parent-dev-tail", "dev", 3)) \
-        if long_dev else (_chain("parent-dev-short", "dev", 1),)
+    dev = tuple(_chain(f"parent-dev-{count}", "dev", count) for count in dev_counts)
     return PublicM2Input(
         source_binding_digest=binding * 64,
         codec_fit_chain_ids=(train.chain_id,),
@@ -97,7 +99,7 @@ def _config(tokenizer_sha: str, source_digest: str) -> PublicM2EngineConfig:
 
 
 def _epoch_one_export():
-    source = _source(binding="c", long_dev=False)
+    source = _source(binding="c", dev_counts=(13,))
     config = _config(hashlib.sha256(source.state_tokenizer).hexdigest(), source.identity)
     train = tuple(PublicM2EngineChain(chain.chain_id, chain.steps)
                   for chain in source.chains if chain.split == "train")
@@ -125,20 +127,37 @@ def test_stage1_export_evaluates_long_full_dev_on_cpu_without_engine_or_codec_fi
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, engine, weights = _epoch_one_export()
+    pilot_source = _source(binding="c", dev_counts=(13,))
     source = _source()
-    input_digest, selection = _selection(source, engine)
+    input_digest, pilot_selection = _selection(pilot_source, engine)
+    _, selection = _selection(source, engine)
     original_bytes = bytes(weights)
     import stpd.workers.public_m2_evaluation as module
 
-    def forbid_engine(*_args, **_kwargs):
-        raise AssertionError("evaluator must not instantiate training engine")
+    loads = 0
+    original_loader = module.load_public_m2_weights
 
-    monkeypatch.setattr(module, "PublicM2Engine", forbid_engine, raising=False)
-    result = evaluate_public_m2_stage(
-        weights, source, selection, config, training_input_digest=input_digest,
-        inference_device="cpu",
+    def count_load(*args, **kwargs):
+        nonlocal loads
+        loads += 1
+        return original_loader(*args, **kwargs)
+
+    monkeypatch.setattr(module, "load_public_m2_weights", count_load)
+    session = open_public_m2_eval_session(
+        weights, config, training_input_digest=input_digest, inference_device="cpu",
     )
-    summary = combine_public_m2_eval_shards(selection, (result,))
+    old_dev = session.evaluate(pilot_source, pilot_selection)
+    result = session.evaluate(source, selection)
+    replayed_old_dev = session.evaluate(pilot_source, pilot_selection)
+    summary = combine_public_m2_eval_shards(
+        selection, (result,), expected_bindings=session.bindings,
+        expected_runtime=session.runtime,
+    )
+    assert sum(item.label_count for item in old_dev.chains) == 13
+    assert old_dev.chains == replayed_old_dev.chains
+    assert loads == 1
+    assert pilot_selection.source_input_identity == config.source_digest
+    assert selection.source_input_identity != config.source_digest
     assert result.completed_epochs == 1 and result.run_complete is False
     assert result.inference_device == "cpu"
     assert summary.chain_count == 2 and summary.label_count == 18
@@ -146,6 +165,11 @@ def test_stage1_export_evaluates_long_full_dev_on_cpu_without_engine_or_codec_fi
     assert all(item.cross_entropy_sum >= 0 for item in result.chains)
     assert summary.loss_mean == pytest.approx(summary.cross_entropy_sum / 18)
     assert summary.top1_accuracy == pytest.approx(summary.correct_count / 18)
+    assert summary.inference_device == "cpu"
+    assert all(session.runtime[key] is None for key in (
+        "gpu_name", "gpu_compute_capability", "gpu_total_memory_bytes",
+        "cuda_version", "cudnn_version",
+    ))
     assert len(selection.ordered_transition_ids) == 18
     assert selection.row_count == 18
     assert source.codec_fit_transition_ids == tuple(
@@ -154,7 +178,31 @@ def test_stage1_export_evaluates_long_full_dev_on_cpu_without_engine_or_codec_fi
     assert not set(selection.ordered_transition_ids) & set(source.codec_fit_transition_ids)
     assert weights == original_bytes
     assert result.peak_allocated_bytes == result.peak_reserved_bytes == 0
-    assert set(result.phase_seconds) == {"header_and_model_load", "numeric_evaluation", "total"}
+    assert set(result.phase_seconds) == {"model_load", "numeric_evaluation", "total"}
+
+
+def test_frozen_epoch_exports_1_3_5_load_and_score_under_their_exact_headers() -> None:
+    source = _source(binding="c", dev_counts=(13,))
+    config = _config(hashlib.sha256(source.state_tokenizer).hexdigest(), source.identity)
+    train = tuple(PublicM2EngineChain(chain.chain_id, chain.steps)
+                  for chain in source.chains if chain.split == "train")
+    dev = tuple(PublicM2EngineChain(chain.chain_id, chain.steps)
+                for chain in source.chains if chain.split == "dev")
+    engine = PublicM2Engine(train, dev, config)
+    digest = public_m2_engine_input_digest(train, dev)
+    _, selection = _selection(source, engine)
+    observed = []
+    for epoch in range(1, 6):
+        engine.advance_window()
+        if epoch in {1, 3, 5}:
+            weights = engine.export_weights()
+            session = open_public_m2_eval_session(
+                weights, config, training_input_digest=digest, completed_epochs=epoch,
+            )
+            result = session.evaluate(source, selection)
+            assert len(result.chains) == 1 and result.chains[0].label_count == 13
+            observed.append((result.completed_epochs, result.run_complete))
+    assert observed == [(1, False), (3, False), (5, True)]
 
 
 def test_selection_wire_binds_ordered_membership_and_rejects_tampering() -> None:
@@ -185,31 +233,61 @@ def test_whole_chain_partitions_recombine_once_and_reject_gap_overlap_and_catalo
     config, engine, weights = _epoch_one_export()
     source = _source()
     input_digest, selection = _selection(source, engine)
-    whole = evaluate_public_m2_stage(
-        weights, source, selection, config, training_input_digest=input_digest,
+    session = open_public_m2_eval_session(
+        weights, config, training_input_digest=input_digest,
     )
-    first = evaluate_public_m2_stage(
-        weights, source, selection, config, training_input_digest=input_digest,
+    whole = session.evaluate(source, selection)
+    first = session.evaluate(
+        source, selection,
         shard=partition_public_m2_eval_selection(selection, 0, 1),
     )
-    second = evaluate_public_m2_stage(
-        weights, source, selection, config, training_input_digest=input_digest,
+    second = session.evaluate(
+        source, selection,
         shard=partition_public_m2_eval_selection(selection, 1, 2),
     )
-    all_at_once = combine_public_m2_eval_shards(selection, (whole,))
-    split = combine_public_m2_eval_shards(selection, (first, second))
+    all_at_once = combine_public_m2_eval_shards(
+        selection, (whole,), expected_bindings=session.bindings,
+        expected_runtime=session.runtime,
+    )
+    split = combine_public_m2_eval_shards(
+        selection, (first, second), expected_bindings=session.bindings,
+        expected_runtime=session.runtime,
+    )
     assert (split.label_count, split.correct_count) == (
         all_at_once.label_count, all_at_once.correct_count,
     )
     assert split.cross_entropy_sum == pytest.approx(all_at_once.cross_entropy_sum, abs=1e-7)
     assert split.ordered_chain_ids == all_at_once.ordered_chain_ids
     with pytest.raises(BoundaryError, match="incomplete_eval_coverage"):
-        combine_public_m2_eval_shards(selection, (first,))
+        combine_public_m2_eval_shards(
+            selection, (first,), expected_bindings=session.bindings,
+            expected_runtime=session.runtime,
+        )
     with pytest.raises(BoundaryError, match="duplicate_or_tampered_chain_metric"):
-        combine_public_m2_eval_shards(selection, (first, first, second))
+        combine_public_m2_eval_shards(
+            selection, (first, first, second), expected_bindings=session.bindings,
+            expected_runtime=session.runtime,
+        )
     bad_catalog = replace(first, ordered_chain_ids=("tampered",))
     with pytest.raises(BoundaryError, match="shard_chain_catalog_mismatch"):
-        combine_public_m2_eval_shards(selection, (bad_catalog, second))
+        combine_public_m2_eval_shards(
+            selection, (bad_catalog, second), expected_bindings=session.bindings,
+            expected_runtime=session.runtime,
+        )
+    fake_hashes = replace(
+        first, weights_sha256="f" * 64, weights_digest="e" * 64,
+    )
+    with pytest.raises(BoundaryError, match="shard_expected_model_binding_mismatch"):
+        combine_public_m2_eval_shards(
+            selection, (fake_hashes, second), expected_bindings=session.bindings,
+            expected_runtime=session.runtime,
+        )
+    fake_runtime = replace(first, runtime={"torch": "same-looking"})
+    with pytest.raises(BoundaryError):
+        combine_public_m2_eval_shards(
+            selection, (fake_runtime, second), expected_bindings=session.bindings,
+            expected_runtime=session.runtime,
+        )
     with pytest.raises(BoundaryError, match="invalid_shard_range"):
         partition_public_m2_eval_selection(selection, 1, 1)
 
@@ -218,12 +296,12 @@ def test_evaluator_rejects_header_input_epoch_and_selection_identity_drift() -> 
     config, engine, weights = _epoch_one_export()
     source = _source()
     input_digest, selection = _selection(source, engine)
-    with pytest.raises(BoundaryError, match="evaluation_input_binding_mismatch"):
+    with pytest.raises(BoundaryError, match="stage_weights_header_mismatch"):
         evaluate_public_m2_stage(
             weights, source, selection, config, training_input_digest="e" * 64,
         )
     changed_config = replace(config, source_digest="f" * 64)
-    with pytest.raises(BoundaryError, match="stage1_weights_header_mismatch"):
+    with pytest.raises(BoundaryError, match="stage_weights_header_mismatch"):
         evaluate_public_m2_stage(
             weights, source, selection, changed_config, training_input_digest=input_digest,
         )
