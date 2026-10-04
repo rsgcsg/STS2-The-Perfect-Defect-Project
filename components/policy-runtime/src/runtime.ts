@@ -827,18 +827,12 @@ export class PolicyRuntime {
           && !isTextMenuSnapshot(successor)) {
         const cycle = this.semanticCycle.observeDelivered(bundle.observation as PlayerEnvironmentSnapshot, successor);
         if (cycle) {
-          if (!(await this.appendEvidence("semantic_cycle_detected", {
-            decision_id: decision.decision_id, request_id: requestId,
-            successor_snapshot_id: successor.snapshot_id, period: cycle.period,
-            repeated_deliveries: cycle.deliveries, public_fingerprint: cycle.fingerprint,
-            outcome: "safety_handoff_not_success"
-          }))) {
-            await this.taint("semantic_cycle_evidence_write_failed");
-          } else {
-            try { await this.releaseControllerAndReturnHuman("semantic_cycle_detected"); }
-            catch { /* releaseController records uncertainty and taints the run */ }
-          }
-          return { type: "not_admitted", reason: "semantic_cycle_detected", status: this.status() };
+          this.invalidations = [...this.invalidations, "semantic_cycle_detected"].slice(-20);
+          try { await this.releaseControllerAndReturnHuman("semantic_cycle_detected"); }
+          catch { /* releaseController records uncertainty and taints the run */ }
+          // The action was delivered; a safety handoff cannot erase its Receipt.
+          return { type: "delivered", decision, bound_action: resolved as PlayerEnvironmentBoundAction,
+            receipt, successor: successor as PlayerEnvironmentSnapshot, status: this.status() };
         }
       }
       if (this.mode === "one_step") await this.completeOneStep();
@@ -1071,7 +1065,7 @@ export class PolicyRuntime {
       game_continuity_id: confirmation.game_continuity_id,
       control_epoch: confirmation.control_epoch };
   }
-  private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { this.resetInteractionContinuity(reason); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.flushPublicSegmentEvents(); await this.appendEvidence("handoff_to_human", { reason }); }
+  private async releaseControllerAndReturnHuman(reason = "auto_surface_not_admitted"): Promise<void> { this.resetInteractionContinuity(reason); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.flushPublicSegmentEvents(); if (!(await this.appendEvidence("handoff_to_human", { reason }))) await this.taintWithoutEvidence("handoff_evidence_write_failed", false); }
   private async completeOneStep(): Promise<void> { this.resetInteractionContinuity("one_step_completed"); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.flushPublicSegmentEvents(); await this.appendEvidence("one_step_completed", { autonomy_budget: this.autonomyBudgetStatus() }); }
   private async failClosed(reason: string): Promise<void> { this.resetInteractionContinuity(reason); this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); this.mode = "human"; this.endAutonomyBudget("mode_changed"); await this.releaseController(); await this.flushPublicSegmentEvents(); await this.appendEvidence("fail_closed", { reason }); }
   private async taint(reason: string): Promise<void> { await this.taintWithoutEvidence(reason); await this.appendEvidence("runtime_tainted", { reason, retry: false }); }

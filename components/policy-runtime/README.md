@@ -181,6 +181,9 @@ Unknown fields, including nested IDs, are deliberately retained and may cause
 a missed cycle. This is a bounded no-progress safety signal, not evidence of
 gameplay completion. It never adds submissions, renews the authorization
 wallet, retries unknown delivery, or claims whole-game reset coverage.
+The triggering tick remains `delivered` with its correlated Receipt and stable
+successor; the status returns Human with `semantic_cycle_detected` in
+invalidations. The existing typed `handoff_to_human` event carries that reason.
 Port 1 with required Reads is excluded because the stable successor path does
 not fetch those Read contents; a Snapshot-only comparison could miss progress.
 

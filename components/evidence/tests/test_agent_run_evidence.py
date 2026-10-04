@@ -413,6 +413,23 @@ class AgentRunEvidenceTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertEqual(result.findings[0].code, "request_association")
 
+    def test_delivered_cycle_handoff_uses_existing_typed_event(self) -> None:
+        directory = self._delivered_evidence("run-cycle-handoff")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[-1]["kind"] = "handoff_to_human"
+        events[-1]["payload"] = {"reason": "semantic_cycle_detected"}
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["status"] = "stopped"
+        manifest["mode"] = "human"
+        manifest_path.write_bytes(canonical(manifest))
+        self._rewrite_events(directory, events)
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertTrue(result.passed, result.findings)
+        self.assertEqual(result.require_value().event_count, 7)
+        self.assertEqual(events[3]["payload"]["receipt"]["delivery"], "delivered")
+        self.assertEqual(events[4]["kind"], "successor")
+
     def test_snapshot_read_optional_target_matches_public_sdk(self) -> None:
         for target, passed in [("absent", True), (None, True), ("missing", False), (12, False)]:
             with self.subTest(target=target):

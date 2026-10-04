@@ -140,12 +140,15 @@ describe("public Snapshot stateful protocol 4", () => {
       expect((await rt.tick()).type).toBe("delivered");
       expect(rt.status().mode).toBe("auto");
     }
-    expect(await rt.tick()).toMatchObject({ type: "not_admitted", reason: "semantic_cycle_detected" });
+    const guarded = await rt.tick();
+    expect(guarded).toMatchObject({ type: "delivered", receipt: { delivery: "delivered" },
+      successor: { sequence: 7 }, status: { mode: "human", controller: "released" } });
+    expect(guarded.type === "delivered" && guarded.receipt.request_id).toBeTruthy();
     expect(connector.submitCount).toBe(6);
     expect(rt.status()).toMatchObject({ mode: "human", controller: "released", tainted: false,
       autonomy_budget: { submissions_used: 6, policy_calls_used: 6 } });
-    expect(events.find(event => event.kind === "semantic_cycle_detected")?.payload).toMatchObject({
-      period: 2, repeated_deliveries: 6, outcome: "safety_handoff_not_success" });
+    expect(events.some(event => event.kind === "semantic_cycle_detected")).toBe(false);
+    expect(rt.status().invalidations).toContain("semantic_cycle_detected");
     expect(events.find(event => event.kind === "handoff_to_human")?.payload).toEqual({ reason: "semantic_cycle_detected" });
     expect(events.find(event => event.kind === "public_stateful_episode_ended")?.payload).toMatchObject({
       reason: "semantic_cycle_detected", memory_continuity: false });
@@ -163,10 +166,31 @@ describe("public Snapshot stateful protocol 4", () => {
       evidence: evidence(events), runtimeIdentity: { version: "test", code_sha256: "d".repeat(64) },
       policy: decision => ({ candidate_digest: decision.candidate_digest, scores: [1], selected_index: 0 }) });
     for (let index = 0; index < 5; index += 1) expect((await rt.tick()).type).toBe("delivered");
-    expect(await rt.tick()).toMatchObject({ type: "not_admitted", reason: "semantic_cycle_detected" });
+    expect(await rt.tick()).toMatchObject({ type: "delivered", receipt: { delivery: "delivered" },
+      status: { mode: "human", controller: "released" } });
     expect(rt.status()).toMatchObject({ mode: "human", controller: "released", tainted: false,
       autonomy_budget: { submissions_used: 6, policy_calls_used: 6 } });
     expect(events.find(event => event.kind === "handoff_to_human")?.payload).toEqual({ reason: "semantic_cycle_detected" });
+    expect(connector.submitCount).toBe(6);
+    expect((await rt.tick()).type).toBe("human");
+    expect(connector.submitCount).toBe(6);
+  });
+
+  it("keeps a delivered receipt but taints the run if cycle handoff evidence cannot be written", async () => {
+    const connector = new CyclingConnector(); connector.delivery = "delivered";
+    const legacy = manifest();
+    legacy.adapter.protocol = "sts2.policy-runtime/decision-only-ndjson-1";
+    legacy.adapter_config = {};
+    const writer = { append: vi.fn(async (kind: string) => {
+      if (kind === "handoff_to_human") throw new Error("evidence disk unavailable");
+    }), finalize: vi.fn(async () => {}) } as unknown as AgentRunEvidence;
+    const rt = new PolicyRuntime({ manifest: legacy, connector, mode: "auto", runId: "port1-cycle-evidence-failure",
+      evidence: writer, runtimeIdentity: { version: "test", code_sha256: "d".repeat(64) },
+      policy: decision => ({ candidate_digest: decision.candidate_digest, scores: [1], selected_index: 0 }) });
+    for (let index = 0; index < 5; index += 1) expect((await rt.tick()).type).toBe("delivered");
+    expect(await rt.tick()).toMatchObject({ type: "delivered", receipt: { delivery: "delivered" },
+      status: { mode: "human", controller: "released", tainted: true, taint_reason: "handoff_evidence_write_failed" } });
+    expect((await rt.tick()).type).toBe("not_admitted");
     expect(connector.submitCount).toBe(6);
   });
 
@@ -236,7 +260,8 @@ describe("public Snapshot stateful protocol 4", () => {
     await rt.beginPublicStatefulSegment("bounded_policy_segment");
     await rt.setMode("auto");
     for (let index = 0; index < 5; index += 1) expect((await rt.tick()).type).toBe("delivered");
-    expect(await rt.tick()).toMatchObject({ type: "not_admitted", reason: "semantic_cycle_detected" });
+    expect(await rt.tick()).toMatchObject({ type: "delivered", receipt: { delivery: "delivered" },
+      status: { mode: "human", tainted: true, controller: "held" } });
     expect(rt.status()).toMatchObject({ mode: "human", tainted: true, controller: "held" });
     expect((await rt.tick()).type).toBe("not_admitted");
     expect(connector.submitCount).toBe(6);
@@ -254,7 +279,7 @@ describe("public Snapshot stateful protocol 4", () => {
     expect((await rt.tick()).type).toBe("not_admitted");
     expect(connector.submitCount).toBe(6);
     expect(rt.status().tainted).toBe(true);
-    expect(events.some(event => event.kind === "semantic_cycle_detected")).toBe(false);
+    expect(events.some(event => event.kind === "handoff_to_human" && event.payload.reason === "semantic_cycle_detected")).toBe(false);
   });
   it("requires explicit Runtime-owned segment creation and keeps scope separate from its token", async () => {
     const connector = new FixtureConnector(), seen: Array<{ decision: PublicStatefulDecisionContext; control: PublicStatefulControlMetadata }> = [];
