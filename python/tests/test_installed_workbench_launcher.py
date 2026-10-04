@@ -728,3 +728,15 @@ def test_launch_workbench_rejects_binding_tampering_and_opens_only_bound_profile
     with pytest.raises(BoundaryError, match="launcher_binding_invalid"):
         install.launch_workbench()
     assert opened == []
+
+
+@pytest.mark.parametrize("getter", [None, lambda: True, lambda: -1, lambda: "0"])
+def test_launcher_unix_owner_check_requires_valid_os_capability(monkeypatch, getter):
+    monkeypatch.setattr(install.os, "geteuid", getter, raising=False)
+    with pytest.raises(BoundaryError, match="launcher_ownership_unavailable"):
+        install._effective_user_id()
+
+
+def test_launcher_unix_owner_check_retains_effective_uid(monkeypatch):
+    monkeypatch.setattr(install.os, "geteuid", lambda: 42, raising=False)
+    assert install._effective_user_id() == 42
