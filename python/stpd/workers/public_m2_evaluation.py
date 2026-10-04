@@ -701,25 +701,26 @@ def evaluate_public_m2_stage(
     return session.evaluate(source, selection, shard=shard)
 
 
-def combine_public_m2_eval_shards(
-    selection: PublicM2EvalSelection, shard_results: tuple[PublicM2EvalShardResult, ...],
-    *, expected_bindings: PublicM2EvalExpectedBindings,
+def _validate_selection_for_reduction(
+    selection: PublicM2EvalSelection,
+    expected_bindings: PublicM2EvalExpectedBindings,
     expected_runtime: dict[str, Any],
-) -> PublicM2EvalSummary:
-    """Verify shards against loaded weights and aggregate exact once-only coverage."""
-    if (not isinstance(shard_results, tuple) or not shard_results
-            or not isinstance(selection, PublicM2EvalSelection)
+) -> None:
+    if (not isinstance(selection, PublicM2EvalSelection)
             or not isinstance(expected_bindings, PublicM2EvalExpectedBindings)):
         raise BoundaryError("public_m2_evaluation", "typed_shard_results_required")
     expected_bindings.validate()
     _validate_runtime(expected_runtime, expected_bindings.inference_device)
     if expected_bindings.training_input_digest != selection.training_input_digest:
         raise BoundaryError("public_m2_evaluation", "expected_input_binding_mismatch")
-    _sha(selection.identity, "selection_identity")
-    _sha(selection.source_input_identity, "source_input_identity")
-    _sha(selection.training_input_digest, "training_input_digest")
-    _sha(selection.tokenizer_sha256, "tokenizer_sha256")
-    _sha(selection.action_codec_sha256, "action_codec_sha256")
+    for field, value in (
+        ("selection_identity", selection.identity),
+        ("source_input_identity", selection.source_input_identity),
+        ("training_input_digest", selection.training_input_digest),
+        ("tokenizer_sha256", selection.tokenizer_sha256),
+        ("action_codec_sha256", selection.action_codec_sha256),
+    ):
+        _sha(value, field)
     selection.limits.validate()
     if (not selection.chains or len(selection.chains) > selection.limits.max_chains
             or selection.row_count > selection.limits.max_rows
@@ -728,58 +729,107 @@ def combine_public_m2_eval_shards(
         raise BoundaryError("public_m2_evaluation", "invalid_selection_summary_binding")
     for ref in selection.chains:
         ref.validate()
+
+
+def validate_public_m2_eval_shard(
+    selection: PublicM2EvalSelection, result: PublicM2EvalShardResult, *,
+    expected_bindings: PublicM2EvalExpectedBindings,
+    expected_runtime: dict[str, Any],
+) -> None:
+    """Validate one typed shard, including partial coverage, against external pins."""
+    _validate_selection_for_reduction(selection, expected_bindings, expected_runtime)
+    if (not isinstance(result, PublicM2EvalShardResult)
+            or result.schema != EVALUATION_SCHEMA
+            or not isinstance(result.shard, PublicM2EvalShard)
+            or type(result.run_complete) is not bool
+            or type(result.completed_epochs) is not int
+            or type(result.configured_epochs) is not int
+            or result.completed_epochs not in {1, 3, 5}
+            or result.configured_epochs not in {1, 3, 5}
+            or result.completed_epochs > result.configured_epochs
+            or result.run_complete is not (result.completed_epochs == result.configured_epochs)):
+        raise BoundaryError("public_m2_evaluation", "invalid_shard_result")
+    result.shard.validate(selection)
+    for field, value in (
+        ("selection_identity", result.selection_identity),
+        ("source_input_identity", result.source_input_identity),
+        ("training_input_digest", result.training_input_digest),
+        ("weights_sha256", result.weights_sha256),
+        ("weights_digest", result.weights_digest),
+        ("implementation_sha256", result.implementation_sha256),
+        ("config_digest", result.config_digest),
+    ):
+        _sha(value, field)
+    if (result.selection_identity != selection.identity
+            or result.source_input_identity != selection.source_input_identity
+            or result.training_input_digest != selection.training_input_digest
+            or result.weights_sha256 != expected_bindings.weights_sha256
+            or result.weights_digest != expected_bindings.weights_digest
+            or result.completed_epochs != expected_bindings.completed_epochs
+            or result.configured_epochs != expected_bindings.configured_epochs
+            or result.run_complete is not expected_bindings.run_complete
+            or result.implementation_sha256 != expected_bindings.implementation_sha256
+            or result.config_digest != expected_bindings.config_digest
+            or result.inference_device != expected_bindings.inference_device):
+        raise BoundaryError("public_m2_evaluation", "shard_expected_model_binding_mismatch")
+    _validate_runtime(result.runtime, result.inference_device)
+    if result.runtime != expected_runtime:
+        raise BoundaryError("public_m2_evaluation", "shard_expected_runtime_mismatch")
+    if (not isinstance(result.chains, tuple)
+            or not isinstance(result.ordered_chain_ids, tuple)
+            or any(type(item) is not str or not item for item in result.ordered_chain_ids)
+            or not isinstance(result.phase_seconds, dict)
+            or set(result.phase_seconds) != {"model_load", "numeric_evaluation", "total"}):
+        raise BoundaryError("public_m2_evaluation", "invalid_shard_result_shape")
+    expected_refs = selection.chains[result.shard.start_ordinal:result.shard.stop_ordinal]
+    if (len(result.chains) != len(expected_refs)
+            or result.ordered_chain_ids != tuple(ref.chain_id for ref in expected_refs)
+            or tuple(item.chain_id for item in result.chains) != result.ordered_chain_ids):
+        raise BoundaryError("public_m2_evaluation", "shard_chain_catalog_mismatch")
+    for item, ref in zip(result.chains, expected_refs, strict=True):
+        if (not isinstance(item, PublicM2EvalChainResult)
+                or type(item.ordinal) is not int or item.ordinal != ref.ordinal
+                or type(item.chain_id) is not str or item.chain_id != ref.chain_id
+                or item.evidence_sha256 != ref.ordered_evidence_sha256
+                or type(item.label_count) is not int or item.label_count != ref.row_count
+                or type(item.correct_count) is not int
+                or not 0 <= item.correct_count <= item.label_count
+                or type(item.cross_entropy_sum) not in {int, float}
+                or not math.isfinite(item.cross_entropy_sum) or item.cross_entropy_sum < 0):
+            raise BoundaryError("public_m2_evaluation", "duplicate_or_tampered_chain_metric")
+    for phase_value in result.phase_seconds.values():
+        if (type(phase_value) not in {int, float}
+                or not math.isfinite(phase_value) or phase_value < 0):
+            raise BoundaryError("public_m2_evaluation", "invalid_phase_timing")
+    if (result.phase_seconds["total"] < result.phase_seconds["numeric_evaluation"]
+            or result.phase_seconds["model_load"] > result.phase_seconds["total"]):
+        raise BoundaryError("public_m2_evaluation", "inconsistent_phase_timing")
+    if (type(result.peak_allocated_bytes) is not int or result.peak_allocated_bytes < 0
+            or type(result.peak_reserved_bytes) is not int or result.peak_reserved_bytes < 0
+            or result.peak_reserved_bytes < result.peak_allocated_bytes
+            or result.runtime["device_type"] == "cpu"
+            and (result.peak_allocated_bytes != 0 or result.peak_reserved_bytes != 0)):
+        raise BoundaryError("public_m2_evaluation", "invalid_memory_metrics")
+
+
+def combine_public_m2_eval_shards(
+    selection: PublicM2EvalSelection, shard_results: tuple[PublicM2EvalShardResult, ...],
+    *, expected_bindings: PublicM2EvalExpectedBindings,
+    expected_runtime: dict[str, Any],
+) -> PublicM2EvalSummary:
+    """Verify shards against loaded weights and aggregate exact once-only coverage."""
+    if not isinstance(shard_results, tuple) or not shard_results:
+        raise BoundaryError("public_m2_evaluation", "typed_shard_results_required")
+    _validate_selection_for_reduction(selection, expected_bindings, expected_runtime)
     by_ordinal: dict[int, PublicM2EvalChainResult] = {}
     common: tuple[Any, ...] | None = None
     seconds: dict[str, float] = {}
     peak_allocated = peak_reserved = 0
     for result in shard_results:
-        if (not isinstance(result, PublicM2EvalShardResult)
-                or result.schema != EVALUATION_SCHEMA
-                or not isinstance(result.shard, PublicM2EvalShard)
-                or type(result.run_complete) is not bool
-                or type(result.completed_epochs) is not int
-                or type(result.configured_epochs) is not int
-                or result.completed_epochs not in {1, 3, 5}
-                or result.configured_epochs not in {1, 3, 5}
-                or result.completed_epochs > result.configured_epochs
-                or result.run_complete is not (
-                    result.completed_epochs == result.configured_epochs
-                )):
-            raise BoundaryError("public_m2_evaluation", "invalid_shard_result")
-        result.shard.validate(selection)
-        for field, value in (
-            ("selection_identity", result.selection_identity),
-            ("source_input_identity", result.source_input_identity),
-            ("training_input_digest", result.training_input_digest),
-            ("weights_sha256", result.weights_sha256),
-            ("weights_digest", result.weights_digest),
-            ("implementation_sha256", result.implementation_sha256),
-            ("config_digest", result.config_digest),
-        ):
-            _sha(value, field)
-        if (result.selection_identity != selection.identity
-                or result.source_input_identity != selection.source_input_identity
-                or result.training_input_digest != selection.training_input_digest
-                or result.weights_sha256 != expected_bindings.weights_sha256
-                or result.weights_digest != expected_bindings.weights_digest
-                or result.completed_epochs != expected_bindings.completed_epochs
-                or result.configured_epochs != expected_bindings.configured_epochs
-                or result.run_complete is not expected_bindings.run_complete
-                or result.implementation_sha256 != expected_bindings.implementation_sha256
-                or result.config_digest != expected_bindings.config_digest
-                or result.inference_device != expected_bindings.inference_device):
-            raise BoundaryError("public_m2_evaluation", "shard_expected_model_binding_mismatch")
-        _validate_runtime(result.runtime, result.inference_device)
-        if result.runtime != expected_runtime:
-            raise BoundaryError("public_m2_evaluation", "shard_expected_runtime_mismatch")
-        if (not isinstance(result.chains, tuple)
-                or not isinstance(result.ordered_chain_ids, tuple)
-                or any(type(item) is not str or not item for item in result.ordered_chain_ids)
-                or not isinstance(result.phase_seconds, dict)
-                or set(result.phase_seconds) != {
-                    "model_load", "numeric_evaluation", "total",
-                }):
-            raise BoundaryError("public_m2_evaluation", "invalid_shard_result_shape")
+        validate_public_m2_eval_shard(
+            selection, result, expected_bindings=expected_bindings,
+            expected_runtime=expected_runtime,
+        )
         identity = (
             result.selection_identity, result.source_input_identity, result.training_input_digest,
             result.weights_sha256, result.weights_digest, result.completed_epochs,
@@ -791,39 +841,12 @@ def combine_public_m2_eval_shards(
             common = identity
         elif identity != common:
             raise BoundaryError("public_m2_evaluation", "shard_identity_mismatch")
-        expected_refs = selection.chains[result.shard.start_ordinal:result.shard.stop_ordinal]
-        if (len(result.chains) != len(expected_refs)
-                or result.ordered_chain_ids != tuple(ref.chain_id for ref in expected_refs)
-                or tuple(item.chain_id for item in result.chains) != result.ordered_chain_ids):
-            raise BoundaryError("public_m2_evaluation", "shard_chain_catalog_mismatch")
-        for item, ref in zip(result.chains, expected_refs, strict=True):
-            if (not isinstance(item, PublicM2EvalChainResult)
-                    or type(item.ordinal) is not int or item.ordinal != ref.ordinal
-                    or type(item.chain_id) is not str or item.chain_id != ref.chain_id
-                    or item.evidence_sha256 != ref.ordered_evidence_sha256
-                    or type(item.label_count) is not int or item.label_count != ref.row_count
-                    or type(item.correct_count) is not int
-                    or not 0 <= item.correct_count <= item.label_count
-                    or type(item.cross_entropy_sum) not in {int, float}
-                    or not math.isfinite(item.cross_entropy_sum)
-                    or item.cross_entropy_sum < 0
-                    or item.ordinal in by_ordinal):
+        for item in result.chains:
+            if item.ordinal in by_ordinal:
                 raise BoundaryError("public_m2_evaluation", "duplicate_or_tampered_chain_metric")
             by_ordinal[item.ordinal] = item
         for key, phase_value in result.phase_seconds.items():
-            if (type(phase_value) not in {int, float}
-                    or not math.isfinite(phase_value) or phase_value < 0):
-                raise BoundaryError("public_m2_evaluation", "invalid_phase_timing")
             seconds[key] = seconds.get(key, 0.0) + phase_value
-        if (result.phase_seconds["total"] < result.phase_seconds["numeric_evaluation"]
-                or result.phase_seconds["model_load"] > result.phase_seconds["total"]):
-            raise BoundaryError("public_m2_evaluation", "inconsistent_phase_timing")
-        if (type(result.peak_allocated_bytes) is not int or result.peak_allocated_bytes < 0
-                or type(result.peak_reserved_bytes) is not int or result.peak_reserved_bytes < 0
-                or result.peak_reserved_bytes < result.peak_allocated_bytes
-                or result.runtime["device_type"] == "cpu"
-                and (result.peak_allocated_bytes != 0 or result.peak_reserved_bytes != 0)):
-            raise BoundaryError("public_m2_evaluation", "invalid_memory_metrics")
         peak_allocated = max(peak_allocated, result.peak_allocated_bytes)
         peak_reserved = max(peak_reserved, result.peak_reserved_bytes)
     if (tuple(sorted(by_ordinal)) != tuple(range(len(selection.chains))) or common is None

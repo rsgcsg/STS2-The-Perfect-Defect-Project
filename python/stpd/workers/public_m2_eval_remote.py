@@ -255,7 +255,7 @@ def _json_value(value: Any) -> Any:
     return value
 
 
-def _config_from_value(value: dict[str, Any]):
+def _config_from_value(value: dict[str, Any], *, require_device_available: bool = True):
     from ..models.token_core import ScratchShape
     from .public_m2_engine import PublicM2EngineConfig
 
@@ -268,7 +268,7 @@ def _config_from_value(value: dict[str, Any]):
         config = PublicM2EngineConfig(**config_value)
     except (TypeError, ValueError) as error:
         raise BoundaryError(_STAGE, "invalid_training_config") from error
-    config.validate()
+    config.validate(require_device_available=require_device_available)
     return config
 
 
@@ -417,10 +417,12 @@ def _build_result(raw_request: bytes, request_sha256: str) -> dict[str, Any]:
                 "total": max(0.0, full_finished - started),
             },
             "peak_allocated_bytes": max(
-                (result.peak_allocated_bytes for result in full_results), default=0,
+                (pilot_result.peak_allocated_bytes,
+                 *(result.peak_allocated_bytes for result in full_results)),
             ),
             "peak_reserved_bytes": max(
-                (result.peak_reserved_bytes for result in full_results), default=0,
+                (pilot_result.peak_reserved_bytes,
+                 *(result.peak_reserved_bytes for result in full_results)),
             ),
             "bindings": _json_value(asdict(session.bindings)),
         },
@@ -449,6 +451,7 @@ def decode_public_m2_eval_result(
         PublicM2EvalShardResult,
         build_public_m2_eval_selection,
         combine_public_m2_eval_shards,
+        validate_public_m2_eval_shard,
     )
 
     request_sha = _sha(request)
@@ -491,7 +494,9 @@ def decode_public_m2_eval_result(
     selection = build_public_m2_eval_selection(
         source, training_input_digest=header["engine_input_digest"],
     )
-    config = _config_from_value(header["training_config"])
+    config = _config_from_value(
+        header["training_config"], require_device_available=False,
+    )
     weights_raw = request_blobs[header["blob_roles"]["weights"]]
     export = decode_checkpoint(weights_raw)
     if (export.get("schema") != PUBLIC_M2_EXPORT_SCHEMA
@@ -614,6 +619,11 @@ def decode_public_m2_eval_result(
                 None if full["complete"] else coverage[1])):
         raise BoundaryError(_STAGE, "result_coverage_binding_mismatch")
     shard_results = tuple(typed_shard(item, selection) for item in shards_raw)
+    for shard_result in shard_results:
+        validate_public_m2_eval_shard(
+            selection, shard_result, expected_bindings=expected_bindings,
+            expected_runtime=runtime,
+        )
     expected_ordinals = list(range(start, coverage[1]))
     actual_ordinals = [chain.ordinal for shard in shard_results for chain in shard.chains]
     if actual_ordinals != expected_ordinals:
@@ -631,9 +641,11 @@ def decode_public_m2_eval_result(
     elif full["summary"] is not None:
         raise BoundaryError(_STAGE, "partial_result_has_summary")
     if (full["peak_allocated_bytes"] != max(
-            (item.peak_allocated_bytes for item in shard_results), default=0)
+            (pilot_shard.peak_allocated_bytes,
+             *(item.peak_allocated_bytes for item in shard_results)))
             or full["peak_reserved_bytes"] != max(
-                (item.peak_reserved_bytes for item in shard_results), default=0)):
+                (pilot_shard.peak_reserved_bytes,
+                 *(item.peak_reserved_bytes for item in shard_results)))):
         raise BoundaryError(_STAGE, "result_memory_metric_mismatch")
     expected_commit = hashlib.sha256(json_bytes({
         "request_sha256": request_sha,

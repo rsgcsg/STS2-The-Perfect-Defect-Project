@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 
 import pytest
@@ -54,7 +54,7 @@ def _source(name: str, dev_rows: tuple[int, ...]) -> PublicM2Input:
                          tokenizer, (train, *dev), 16, 8)
 
 
-def _request(*, max_compute_seconds: int = 650):
+def _request(*, max_compute_seconds: int = 650, cuda_config: bool = False):
     pilot = _source("pilot", (13,))
     full = _source("full", (15, 3))
     config = PublicM2EngineConfig(
@@ -71,6 +71,13 @@ def _request(*, max_compute_seconds: int = 650):
     engine = PublicM2Engine(train_chains, dev_chains, config)
     engine.advance_window()
     weights = engine.export_weights()
+    if cuda_config:
+        from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
+
+        config = replace(config, device="cuda:0")
+        exported = decode_checkpoint(weights)
+        exported["config"] = asdict(config)
+        weights = encode_checkpoint(exported)
     engine_digest = public_m2_engine_input_digest(train_chains, dev_chains)
     evaluation_producer = {"repository": "eval", "source_revision": "3" * 40,
                            "uv_lock_sha256": "4" * 64}
@@ -251,6 +258,64 @@ def test_chain_budget_zero_progress_and_complete_result(monkeypatch):
     assert complete["full_parent"]["next_chain_ordinal"] is None
     remote.decode_public_m2_eval_result(complete_response, complete_request,
                                         expected_runtime=_runtime())
+
+
+def test_cpu_decoder_accepts_cuda_declared_training_config(monkeypatch):
+    request = _request(cuda_config=True)
+    clock = _Clock()
+    _install_fake_session(monkeypatch, clock)
+    original_config = remote._config_from_value
+    monkeypatch.setattr(
+        remote, "_config_from_value",
+        lambda value, **_kwargs: original_config(value, require_device_available=False),
+    )
+    response = remote.execute_public_m2_eval_request(
+        request, request_sha256=hashlib.sha256(request).hexdigest(),
+    )
+    accepted = remote.decode_public_m2_eval_result(
+        response, request, expected_runtime=_runtime(),
+    )
+    assert accepted["full_parent"]["bindings"]["inference_device"] == "cuda:0"
+
+
+@pytest.mark.parametrize("tamper", ["negative_loss", "invalid_correct", "foreign_weights",
+                                     "foreign_runtime"])
+def test_partial_results_validate_each_shard_against_model_and_runtime(monkeypatch, tamper):
+    request = _request(max_compute_seconds=200)
+    _install_fake_session(monkeypatch, _Clock())
+    response = remote.execute_public_m2_eval_request(
+        request, request_sha256=hashlib.sha256(request).hexdigest(),
+    )
+    header, blobs = remote._wire._unpack(
+        response, remote._RESULT_MAGIC, remote.MAX_RESULT_BYTES,
+    )
+    full = header["full_parent"]
+    shard = full["shard_results"][0]
+    metric = shard["chains"][0]
+    shown = full["chains"][0]
+    if tamper == "negative_loss":
+        metric["cross_entropy_sum"] = -1.0
+        shown["cross_entropy_sum"] = -1.0
+    elif tamper == "invalid_correct":
+        metric["correct_count"] = metric["label_count"] + 1
+        shown["correct_count"] = metric["correct_count"]
+    elif tamper == "foreign_weights":
+        shard["weights_digest"] = "f" * 64
+    else:
+        shard["runtime"]["gpu_name"] = "foreign GPU"
+    full["chain_commit_sha256"] = hashlib.sha256(json_bytes({
+        "request_sha256": header["request_sha256"],
+        "selection_identity": full["selection_identity"],
+        "start_ordinal": 0, "stop_ordinal": 1, "chains": full["chains"],
+    })).hexdigest()
+    tampered = remote._wire._pack(
+        remote._RESULT_MAGIC, {key: value for key, value in header.items() if key != "blobs"},
+        blobs, remote.MAX_RESULT_BYTES,
+    )
+    with pytest.raises(BoundaryError):
+        remote.decode_public_m2_eval_result(
+            tampered, request, expected_runtime=_runtime(),
+        )
 
 
 def test_cpu_accept_rejects_forged_chain_metrics_and_model_binding(monkeypatch):
