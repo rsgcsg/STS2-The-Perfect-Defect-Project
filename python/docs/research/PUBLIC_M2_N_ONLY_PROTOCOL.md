@@ -141,7 +141,22 @@ No provider submission follows from this source document. Builds, pilots, retrie
 CPU and RAM count toward the same budget; credits do not reduce raw usage.
 
 The first gates are synthetic train/pause/resume/dev/export parity, a verified real
-chain inventory and compilation, then one bounded CUDA pilot. Measure the largest
+chain inventory and compilation, formal-shape transport serialization, then one
+bounded CUDA pilot. Before selecting an image for paid work, run the local CPU
+capacity smoke from the repository root:
+
+```sh
+STPD_M2_ENVELOPE_RELEASE_SMOKE=1 PYTHONPATH=python \
+  python -m pytest -q python/tests/test_public_m2_envelope_release.py
+```
+
+It covers the standard vocabulary/model shape, epoch 1/3/5 deltas, resumed request
+framing and provider envelope. It uses synthetic short chains; the selected full
+input plus accumulated event history needs its own capacity check. The ordinary
+boundary/corruption test runs without the opt-in flag. See the
+[capacity correction and limit rationale](../../../docs/evidence/PUBLIC_M2_TRANSPORT_CAPACITY_2026-10-04.md).
+
+Measure the largest
 training window with backward enabled and dev windows only through no-grad evaluation;
 also check the longest individual state. The public generic Snapshot path uses the
 separate port-4 consumer candidate and requires its matching Runtime contract. It

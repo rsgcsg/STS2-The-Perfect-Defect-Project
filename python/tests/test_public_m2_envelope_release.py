@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from test_public_m2_run import _chain, _fixture
 from tokenizers import Tokenizer, models
 
 from spireagent.artifact_contracts import Manifest
@@ -27,10 +28,10 @@ from stpd.cloud_jobs.public_m2_modal import (
 )
 from stpd.models.token_core import ScratchShape
 from stpd.workers.public_m2_remote import (
-    MAX_REQUEST_BYTES,
-    MAX_RESULT_BYTES,
     _REQUEST_MAGIC,
     _RESULT_MAGIC,
+    MAX_REQUEST_BYTES,
+    MAX_RESULT_BYTES,
     _pack,
     _unpack,
     accept_public_m2_remote_result,
@@ -38,7 +39,6 @@ from stpd.workers.public_m2_remote import (
     execute_public_m2_remote_request,
 )
 from stpd.workers.public_m2_run import _load_run, prepare_public_m2_run
-from test_public_m2_run import _chain, _fixture
 
 
 def test_result_caps_and_corrupt_frame_rejection(monkeypatch):
