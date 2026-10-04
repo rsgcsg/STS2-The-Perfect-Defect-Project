@@ -22,7 +22,7 @@ def game_bridge(monkeypatch: pytest.MonkeyPatch):
         "workbench_instance_id": None,
     }
     calls: list[tuple[str, dict[str, str], dict[str, object] | None]] = []
-    registration_result = {"status": "registered"}
+    registration_result = {"status": "registered", "allow_replacement": False}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -45,6 +45,12 @@ def game_bridge(monkeypatch: pytest.MonkeyPatch):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             calls.append((self.path, dict(self.headers), body))
             assert self.path in {"/v1/workbench/register", "/v1/workbench/unregister"}
+            if (self.path == "/v1/workbench/register"
+                and observed["status"] == "registered"
+                and body["workbench_instance_id"] != observed["workbench_instance_id"]
+                and not registration_result["allow_replacement"]):
+                self.send_value({"error": "workbench_instance_conflict"}, 409)
+                return
             if (
                 self.path == "/v1/workbench/register"
                 and registration_result["status"] == "registered"
@@ -158,7 +164,20 @@ def test_different_live_workbench_registration_is_never_stolen(game_bridge):
     )
     result = NativeWorkbenchRegistrar().register("http://127.0.0.1:8787/", "e" * 32)
     assert result == {"status": "conflict", "reason": "another_workbench_registered"}
-    assert [call[0] for call in calls] == ["/v1/workbench/status"]
+    assert [call[0] for call in calls] == ["/v1/workbench/status", "/v1/workbench/register"]
+    assert calls[-1][2]["expected_workbench_instance_id"] == "d" * 32
+    assert observed["workbench_instance_id"] == "d" * 32
+
+
+def test_stale_workbench_can_be_replaced_by_exact_compare_and_set(game_bridge):
+    observed, calls, result = game_bridge
+    observed.update(status="registered", workbench_url="http://127.0.0.1:9999/",
+                    workbench_instance_id="d" * 32)
+    result["allow_replacement"] = True
+    registered = NativeWorkbenchRegistrar().register("http://127.0.0.1:8787/", "e" * 32)
+    assert registered["status"] == "registered"
+    assert calls[-1][2]["expected_workbench_instance_id"] == "d" * 32
+    assert observed["workbench_instance_id"] == "e" * 32
 
 
 def test_same_workbench_instance_refresh_uses_compare_and_set_id(game_bridge):

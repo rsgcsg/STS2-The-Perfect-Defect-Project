@@ -294,7 +294,9 @@ def test_recovered_runtime_shutdown_requires_confirmation(
         "address": "http://127.0.0.1:15527",
         "policy_manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
     }
-    service.state["previous_session"] = {"startup": exact, "selection_id": "fixture"}
+    service.state["previous_session"] = {
+        "startup": exact, "selection_id": "fixture", "run_profile": "short",
+    }
     if connector_endpoint is not None:
         service.state["previous_session"]["connector_endpoint"] = connector_endpoint
     with monkeypatch.context() as recovery:
@@ -311,6 +313,7 @@ def test_recovered_runtime_shutdown_requires_confirmation(
         recovery.setattr(local_models, "RuntimeClient", lambda *_: client)
         service._recover("human", service.intent_generation)
     assert service.client is client and service.process is None
+    assert service.state["run_profile"] == "short"
     if connector_endpoint == "http://127.0.0.1:19191":
         assert service.state["connector_endpoint"] == connector_endpoint
         assert service.state["error_code"] is None
@@ -2038,3 +2041,52 @@ def test_finalized_stop_recovery_requires_exact_evidence_and_free_port(
     assert service.state["previous_session"] == previous
     assert service.state["status"] == "recovery_required"
     assert not (service.directory / "session-archives").exists()
+
+
+@pytest.mark.parametrize("profile", ["short", "extended", "long", "invalid", None, [], {}])
+def test_orderly_owner_reopen_retains_reviewed_selection_without_runtime_authority(
+    service, profile,
+):
+    entry = service.registry()["policies"][0]
+    service.directory.mkdir(parents=True, exist_ok=True)
+    (service.directory / "session.json").write_text(json.dumps({
+        "status": "stopped", "selection_id": entry["id"], "run_profile": profile,
+        "loaded": True, "runtime": {"mode": "auto", "controller": "held"},
+        "operation": {"action": "auto", "status": "completed"},
+    }))
+    reopened = LocalModelService(service.config)
+    assert reopened.state["status"] == "stopped"
+    assert reopened.state["selection_id"] == entry["id"]
+    assert reopened.state["loaded"] is False
+    assert reopened.state["runtime"] is None and reopened.state["operation"] is None
+    assert reopened.client is None and reopened.process is None and reopened.thread is None
+    if profile == "short":
+        assert reopened.state["run_profile"] == profile
+    else:
+        assert "run_profile" not in reopened.state
+
+
+def test_orderly_owner_reopen_discards_unregistered_saved_selection(service):
+    service.directory.mkdir(parents=True, exist_ok=True)
+    (service.directory / "session.json").write_text(json.dumps({
+        "status": "stopped", "selection_id": "unregistered-old-model", "run_profile": "short",
+    }))
+    reopened = LocalModelService(service.config)
+    assert reopened.state["status"] == "idle"
+    assert "selection_id" not in reopened.state and not reopened.state["loaded"]
+
+
+def test_orderly_owner_reopen_preserves_extended_only_for_reviewed_text_selection(
+    service, monkeypatch,
+):
+    entry = {**service.registry()["policies"][0], "runtime_profile": "text-menu-v1"}
+    monkeypatch.setattr(LocalModelService, "selection", lambda self, identity: entry)
+    service.directory.mkdir(parents=True, exist_ok=True)
+    (service.directory / "session.json").write_text(json.dumps({
+        "status": "stopped", "selection_id": entry["id"], "run_profile": "extended",
+    }))
+    reopened = LocalModelService(service.config)
+    assert reopened.state["selection_id"] == entry["id"]
+    assert reopened.state["run_profile"] == "extended"
+    assert not reopened.state["loaded"] and reopened.state["runtime"] is None
+    assert reopened.client is None and reopened.process is None

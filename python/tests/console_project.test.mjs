@@ -4959,6 +4959,37 @@ test("runtime prepares one trusted selection with optional diagnosis and no impl
   assert.match(text(env.notice), /尚需完成实际加载/);
 });
 
+test("loaded model stays identifiable and a failed load has a current recovery message", async () => {
+  let status = {status:"loading", loaded:false, selection_id:"audited-cpu",
+    operation:{id:"load-1", action:"prepare-and-load", status:"pending"}};
+  const env = setup({view:"local-models", handler:(url, options) =>
+    url === "/api/local-models/status" ? status : modelHandler(url, options)});
+  let page = await env.render();
+  assert.match(text(page), /本次模型选择\s+Reviewed CPU · audited-cpu/);
+  assert.doesNotMatch(text(page), /当前已加载/);
+  assert.equal(action(page, "model-command-auto").disabled, true);
+
+  status = {...status, status:"failed", error_code:"runtime_load_or_attestation_failed",
+    operation:{...status.operation, status:"failed"}};
+  page = await env.render();
+  assert.match(text(page), /当前操作未完成/);
+  assert.match(text(env.notice), /模型加载失败/);
+  assert.doesNotMatch(text(page), /上次本机操作诊断（历史记录）/);
+  assert.equal(action(page, "model-start-audited-cpu").disabled, false);
+
+  status = {status:"loaded", loaded:true, selection_id:"audited-cpu", run_profile:"short",
+    operation:{id:"load-2", action:"prepare-and-load", status:"completed"},
+    runtime:{run_id:"run-2", lifecycle:"running", mode:"human", controller:"released",
+      tainted:false, errors:[]}};
+  page = await env.render();
+  assert.match(text(page), /本次模型选择\s+Reviewed CPU · audited-cpu/);
+  assert.match(text(page), /当前已加载/);
+  assert.match(text(env.notice), /模型已完成加载并核对身份/);
+  assert.equal(action(page, "model-start-audited-cpu").disabled, true);
+  assert.equal(action(page, "model-command-auto").disabled, false);
+  assert.equal(post(env.calls).length, 0);
+});
+
 test("model environment preparation offers fixed v1 profiles and explicit v2 check", async () => {
   let status = {status:"idle", loaded:false, operation:null};
   const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) => {

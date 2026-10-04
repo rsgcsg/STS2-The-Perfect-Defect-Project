@@ -93,6 +93,72 @@ def test_launcher_binding_is_idempotent_for_same_profile_and_rejects_another(
         install._install_open_launcher(release, other, prepared, platform="darwin")
 
 
+
+def test_explicit_launcher_rebind_checks_exact_prior_bytes_and_preserves_profiles(
+    tmp_path, monkeypatch
+):
+    release = tmp_path / ("b" * 64)
+    python_root = release / "source/python"
+    (python_root / ".venv/bin").mkdir(parents=True)
+    (python_root / ".venv/bin/python").touch()
+    (python_root / "tools").mkdir()
+    (python_root / "tools/install_developer_kit.py").touch()
+    profiles = [tmp_path / name / "project.json" for name in ("research", "game")]
+    for profile in profiles:
+        profile.parent.mkdir()
+        profile.write_text('{"preserve":"original"}')
+    root = tmp_path / "launcher"
+    monkeypatch.setattr(install, "_launcher_directory", lambda **_: root)
+    identity = {"working_tree_clean": True, "source_revision": "c" * 40,
+                "uv_lock_sha256": "e" * 64, "workbench_sha256": "d" * 64}
+    from spireagent.workbench import developer
+    monkeypatch.setattr(developer, "tool_identity", lambda: identity)
+    monkeypatch.setattr(developer.ProjectConfig, "load", lambda *_a, **_k: object())
+    prepared = {"workbench_launcher_schema": install.LAUNCHER_SCHEMA,
+                "source_revision": "c" * 40, "uv_lock_sha256": "e" * 64}
+    install._install_open_launcher(release, profiles[0], prepared, platform="darwin")
+    binding_file, script_file = install._launcher_files(root)
+    prior, script = binding_file.read_bytes(), script_file.read_bytes()
+    with pytest.raises(BoundaryError, match="launcher_config_binding_mismatch"):
+        install._install_open_launcher(release, profiles[1], prepared, platform="darwin")
+    with pytest.raises(BoundaryError, match="launcher_binding_changed"):
+        install._install_open_launcher(release, profiles[1], prepared, platform="darwin",
+                                       expected_binding_sha256="a" * 64)
+    assert binding_file.read_bytes() == prior and script_file.read_bytes() == script
+    replacement = tmp_path / ("f" * 64)
+    target_python = replacement / "source/python"
+    (target_python / ".venv/bin").mkdir(parents=True)
+    (target_python / ".venv/bin/python").touch()
+    (target_python / "tools").mkdir()
+    (target_python / "tools/install_developer_kit.py").touch()
+    original_writer = install._write_executable
+    def fail_after_replace(path, contents):
+        original_writer(path, contents)
+        raise OSError("injected fsync failure after replace")
+    with monkeypatch.context() as failing:
+        failing.setattr(install, "_write_executable", fail_after_replace)
+        with pytest.raises(OSError, match="injected fsync failure"):
+            install._install_open_launcher(replacement, profiles[1], prepared, platform="darwin",
+                                           expected_binding_sha256=install.sha(prior))
+    assert binding_file.read_bytes() == prior and script_file.read_bytes() == script
+    install._install_open_launcher(release, profiles[1], prepared, platform="darwin",
+                                   expected_binding_sha256=install.sha(prior))
+    assert json.loads(binding_file.read_bytes())["config_path"] == str(profiles[1])
+    for profile in profiles:
+        assert profile.read_text() == '{"preserve":"original"}'
+    with pytest.raises(BoundaryError, match="launcher_binding_changed"):
+        install._install_open_launcher(release, profiles[0], prepared, platform="darwin",
+                                       expected_binding_sha256=install.sha(prior))
+    # An explicit rollback uses the newly observed binding, through the same owner.
+    install._install_open_launcher(release, profiles[0], prepared, platform="darwin",
+                                   expected_binding_sha256=install.sha(binding_file.read_bytes()))
+    assert binding_file.read_bytes() == prior
+    binding_file.unlink()
+    with pytest.raises(BoundaryError, match="launcher_not_installed"):
+        install._install_open_launcher(release, profiles[1], prepared, platform="darwin",
+                                       expected_binding_sha256=install.sha(prior))
+    assert not binding_file.exists() and script_file.read_bytes() == script
+
 def test_isolated_installer_entry_imports_its_source_packages():
     tool = Path(__file__).resolve().parents[1] / "tools/install_developer_kit.py"
     result = subprocess.run(

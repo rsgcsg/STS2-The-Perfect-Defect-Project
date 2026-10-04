@@ -2244,6 +2244,11 @@ window.SpireProject = (() => {
       catalog.policies.find(item => item.selection_id === data.selection_id) : null;
     const selectedProfile = runProfiles(selectedPolicy).find(
       profile => profile.id === data.run_profile);
+    const selectionStatus = data.selection_id
+      ? selectedPolicy
+        ? `${selectedPolicy.label || selectedPolicy.selection_id} · ${selectedPolicy.selection_id}`
+        : "会话中的模型选择已不在当前目录；请先停止并核对来源"
+      : "尚未选择";
     const profileStatus = data.run_profile === undefined
       ? (data.loaded || operation?.status === "pending" ? "旧会话未记录或尚未确认" : "尚未选择")
       : selectedProfile ? runProfileTitle(selectedProfile) : "运行配置未能核对";
@@ -2251,6 +2256,7 @@ window.SpireProject = (() => {
       fields([
         ["本机服务", show(data.status)],
         ["模型加载", data.loaded === true ? "服务报告已加载" : "尚未确认加载"],
+        ["本次模型选择", selectionStatus],
         ["运行配置", profileStatus],
         ["Runtime 模式", runtime ? show(runtime.mode) : "尚无 Runtime 观测"],
         [
@@ -2276,13 +2282,18 @@ window.SpireProject = (() => {
     const currentFailure = data.error_code;
     if (currentFailure) {
       const explanation = currentFailure === "environment_modset_fingerprint_drift"
-        ? "上次本机操作曾发现游戏环境与模型绑定不一致"
+        ? "游戏环境与模型绑定不一致"
         : failure({ message: currentFailure });
+      const activeFailure = operation?.status === "failed" ||
+        operation?.status === "unknown" ||
+        data.status === "command_unknown" || data.status === "recovery_required";
       box.append(
         el(
           "p",
-          `上次本机操作诊断（历史记录）：${explanation}。它不单独决定当前操作资格；显式新操作仍会重新进行身份、epoch 和环境检查，不会自动重发或自动重绑。`,
-          "banner warning",
+          activeFailure
+            ? `当前操作未完成：${explanation}。先确认 Runtime 状态；不重复发送未知决策。可明确点击“暂停并接管”或“结束测试”恢复。`
+            : `上次本机操作诊断（历史记录）：${explanation}。它不单独决定当前操作资格；显式新操作仍会重新进行身份、epoch 和环境检查，不会自动重发或自动重绑。`,
+          activeFailure ? "banner error" : "banner warning",
         ),
       );
     }
@@ -2551,6 +2562,15 @@ window.SpireProject = (() => {
     ]);
     if (replies[0].status === "fulfilled") catalog = replies[0].value;
     if (replies[1].status === "fulfilled") state = replies[1].value;
+    if (state?.operation?.status !== "pending" &&
+        state?.operation?.action === "prepare-and-load") {
+      if (state.loaded === true && state.operation.status === "completed")
+        note(ctx, "模型已完成加载并核对身份，当前仍由人类控制。开始测试需另行明确操作。");
+      else if (state.operation.status === "failed")
+        note(ctx, "模型加载失败。查看当前操作诊断，修复条件后可重新准备并加载。", "error");
+      else if (state.operation.status === "unknown")
+        note(ctx, "模型加载结果未确认。先核对 Runtime；不要重复发送未知操作。", "error");
+    }
     let budgetHost = null;
     if (state) box.append(localStatus(ctx, state, (node) => { budgetHost = node; }, catalog));
     else
@@ -2609,6 +2629,8 @@ window.SpireProject = (() => {
         row.append(badge("刚登记的模型选择"));
         row.append(el("p", "登记不会加载模型。你仍可先检查本机加载条件，再明确选择准备并加载。", "small muted"));
       }
+      if (state?.loaded === true && state.selection_id === item.selection_id)
+        row.append(badge("当前已加载"));
       row.append(
         technical({
           selection_id: item.selection_id,

@@ -130,16 +130,14 @@ internal static class PlatformTaskBridge
 
         lock (Gate)
         {
-            PlatformWorkbenchOpenRegistration? active =
-                _workbenchRegistration?.RuntimeInstanceId == runtime ? _workbenchRegistration : null;
-            if (active is null)
-            {
-                if (registration.ExpectedWorkbenchInstanceId is not null)
-                { Reply(context, 409, new { error = "workbench_instance_conflict" }); return; }
-            }
-            else if (registration.ExpectedWorkbenchInstanceId != active.WorkbenchInstanceId
-                || registration.WorkbenchInstanceId != active.WorkbenchInstanceId
-                || registration.Url != active.Url)
+            if (!WorkbenchRegistrationOwner.CanRegister(
+                    _workbenchRegistration, registration, runtime, active =>
+                    {
+                        using var healthClient = PlatformWorkbenchOpenClient.CreateHttpClient();
+                        return PlatformWorkbenchOpenClient.IsDefinitivelyStaleAsync(
+                            healthClient, active.Url, active.WorkbenchInstanceId)
+                            .GetAwaiter().GetResult();
+                    }))
             { Reply(context, 409, new { error = "workbench_instance_conflict" }); return; }
 
             _workbenchRegistration = registration;
