@@ -67,7 +67,19 @@ def project_public_snapshot(snapshot: dict[str, Any], *, compact: bool = False) 
         if (any(not isinstance(x, str) or not x for x in [*ref_ids, *keys])
                 or len(set(ref_ids)) != len(ref_ids) or len(set(keys)) != len(keys)):
             raise BoundaryError("public_input", "unique_bindings_required")
-        persistent = snapshot["persistent"]["content"]
+        # The Connector contract permits persistent state to be unavailable at
+        # an otherwise complete public interaction (for example, character
+        # select). Keep that legal case equivalent to an empty RUN projection;
+        # a present envelope still has to contain an object payload.
+        persistent_envelope = snapshot["persistent"]
+        if persistent_envelope is None:
+            persistent = {}
+        elif isinstance(persistent_envelope, dict):
+            persistent = persistent_envelope["content"]
+            if not isinstance(persistent, dict):
+                raise BoundaryError("public_input", "persistent_content_required")
+        else:
+            raise BoundaryError("public_input", "persistent_envelope_required")
         # Null properties are valid for control referents in the public contract.
         descriptions = [{**r, "properties": r.get("properties") or {}} for r in referents]
         projector = _SemanticProjection([
