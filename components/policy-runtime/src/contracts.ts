@@ -23,7 +23,7 @@ export const POLICY_PORT_V2_SCHEMA = "sts2.policy-runtime/policy-port-2" as cons
 export const POLICY_PORT_V3_SCHEMA = "sts2.policy-runtime/policy-port-3" as const;
 export const POLICY_PORT_V4_SCHEMA = "sts2.policy-runtime/policy-port-4" as const;
 export const EVIDENCE_MANIFEST_SCHEMA = "sts2.policy-runtime/immutable-evidence-manifest-1" as const;
-export const POLICY_RUNTIME_VERSION = "0.1.0-rc.19" as const;
+export const POLICY_RUNTIME_VERSION = "0.1.0-rc.20" as const;
 export const RUNTIME_ENVIRONMENT_SCHEMA = "sts2.policy-runtime/environment-1" as const;
 
 /** Read-only observation used by control clients before preparing a command. */

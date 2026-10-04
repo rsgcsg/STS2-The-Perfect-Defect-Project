@@ -464,7 +464,9 @@ export class PolicyRuntime {
         if (isAutonomyMode(mode) && !isAutonomyMode(this.mode)) this.beginAutonomyBudget();
         else if (!isAutonomyMode(mode) && mode !== "human" && this.autonomyBudgetState.state === "active") this.endAutonomyBudget("mode_changed");
         else if (mode === "human" && this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
-        if (mode === "shadow" && this.mode !== "shadow") this.lastPolicySnapshotId = null;
+        // Port 4 resets shadow deduplication at explicit segment begin; older
+        // ports retain their mode-entry reset behavior.
+        if (mode === "shadow" && this.mode !== "shadow" && !this.publicStateful) this.lastPolicySnapshotId = null;
         this.mode = mode;
         if (mode === "auto") this.consecutiveStaleSubmissions = 0;
         await this.flushPublicSegmentEvents();
