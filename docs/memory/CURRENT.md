@@ -18,6 +18,18 @@ this candidate. [Exact branches, reviews, retained work and cleanup](../evidence
 The member repair rechecks local download completion and preserves unknown prior
 use for Gold admission after indexing. It creates no Hub/Human provenance claim.
 
+## Unified ordinary-launch source candidate, 2026-10-04
+
+[Production runtime seal source](../design/PRODUCTION_RUNTIME_SEAL.md) adds a
+fixed official-version release fetch and paired install/rollback through the
+existing unified Game Mod owner. Connector freezes the fixed adjacent pair at
+startup and compares actual loaded source/SHA/MVID/protocol and current game/
+Modset identity while keeping independent game and native action admission.
+Connector rc.9 and Game Mod rc.23 are source candidates; synthetic contract and
+recovery checks do not qualify a built or running artifact. Issuer/bootstrap
+review, publication, physical backup, install, ordinary cold-load and the full
+bounded action/crash matrix remain separate pending authorized gates.
+
 ## Running producers and latest research record
 
 The desktop source checkout remains pinned at local `develop@415e8e5a` because a

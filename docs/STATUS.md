@@ -8,6 +8,16 @@ checks and develop merge remain pending. Workshop and native-v1 M2 follow-up bra
 remain separate. Running collectors, installed artifacts and cloud services retain
 their own identities; the historical operating records below are not fresh checks.
 
+## Ordinary Workbench launch repair source, 2026-10-04
+
+The [persistent qualification source candidate](design/PRODUCTION_RUNTIME_SEAL.md)
+connects official release preparation to the existing native install/rollback
+owner and actual loaded Connector identity. It retains the independent exact
+Game/Modset gates and does not rebind M0 or change M2 training. The candidate
+has no issued runtime seal, published release, current installation or complete
+ordinary cold-start/load/run/pause/resume/stop/crash acceptance. Existing runtime
+and historical canary facts below retain their original scope.
+
 ## Dataset library — application update deployed
 
 Workbench source is `fedbed097e30fb78bf0e86efff560fd8b1263c99`. The accepted

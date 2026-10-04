@@ -90,7 +90,11 @@
         "collection-setup.mjs",
         "loaded-evidence.mjs",
         "annotator-configuration.mjs",
-        "PlatformTaskBridge.cs"
+        "PlatformTaskBridge.cs",
+        "runtime-seal-contract.json",
+        "runtime-release.mjs",
+        "runtime-installation.mjs",
+        "prepare-runtime-release.mjs"
       ]
     }
   }
