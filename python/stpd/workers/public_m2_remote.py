@@ -618,7 +618,10 @@ def _request_parts(raw: bytes) -> tuple[dict[str, Any], dict[str, Manifest],
             # Exact checkpoint progress is checked against decoded request bytes
             # by the remote executor; here bind the immutable claim to this run.
             run = next(item for item in manifests.values() if item.kind == "run")
-            _decode_reuse(reuse, run, header["resume_id"], reuse.get("epoch"))
+            reuse_epoch = reuse.get("epoch")
+            if type(reuse_epoch) is not int:
+                raise BoundaryError(_STAGE, "stage_reuse_binding_mismatch")
+            _decode_reuse(reuse, run, header["resume_id"], reuse_epoch)
             accepted_event = manifests.get(reuse["accepted_stage_event_id"])
             if (accepted_event is None or accepted_event.kind != "run_event"
                     or accepted_event.producer != run.producer
@@ -766,6 +769,8 @@ def execute_public_m2_remote_request(raw: bytes, *, request_sha256: str) -> byte
         before = set(store.manifest_ids())
         reuse = header.get("stage_reuse")
         if reuse is not None:
+            if prior_checkpoint is None:
+                raise BoundaryError(_STAGE, "stage_reuse_without_resume")
             claim = _decode_reuse(
                 reuse, run, header["resume_id"], prior_checkpoint["completed_epochs"],
             )
@@ -818,7 +823,7 @@ def execute_public_m2_remote_request(raw: bytes, *, request_sha256: str) -> byte
 
 
 def _checked_delta(
-    store: _Projection, delta: dict[str, Manifest], profile: PublicM2Preflight,
+    store: ArtifactStore, delta: dict[str, Manifest], profile: PublicM2Preflight,
     run: Manifest, training: Manifest, expected_runtime: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
     """Check every new artifact against the typed M2 run, without training."""
