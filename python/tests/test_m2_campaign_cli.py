@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import ntpath
 import os
 import shutil
 import subprocess
@@ -28,7 +29,7 @@ CAMPAIGN_SCHEMA = "stpd/m2-campaign-status-v1"
 
 _OFFLINE_CHILD = r'''
 # Test-only bootstrap: install restrictions in this actual child before APIs load.
-import hashlib, json, os, runpy, sys
+import hashlib, json, ntpath, os, runpy, subprocess, sys
 from pathlib import Path
 mode, scope_arg, worker_arg, target = sys.argv[1:5]
 scope, worker = Path(scope_arg).resolve(), Path(worker_arg).resolve()
@@ -48,7 +49,29 @@ def record(kind, argv=None, cwd=None):
 record("test_child_bootstrap", original, str(Path.cwd()))
 git_reads = {("git", "rev-parse", "HEAD"), ("git", "status", "--porcelain"),
              ("git", "rev-parse", "--show-prefix"), ("git", "show", "HEAD:uv.lock")}
+def native_windows_shell(comspec, system_root):
+    # Pin the native shell once at controlled test-child startup, not per call.
+    if not isinstance(comspec, str) or not isinstance(system_root, str):
+        return None
+    for value in (comspec, system_root):
+        normalized = ntpath.normcase(value)
+        drive, tail = ntpath.splitdrive(normalized)
+        if (len(drive) != 2 or not drive[0].isalpha() or drive[1] != ":"
+                or not tail.startswith("\\") or ntpath.normpath(normalized) != normalized):
+            return None
+    expected = ntpath.join(system_root, "System32", "cmd.exe")
+    return comspec if ntpath.normcase(comspec) == ntpath.normcase(expected) else None
+native_cmd = (native_windows_shell(os.environ.get("ComSpec"), os.environ.get("SystemRoot"))
+              if sys.platform == "win32" else None)
+if sys.platform == "win32" and mode in {"setup", "execute"} and native_cmd is None:
+    raise RuntimeError("native_windows_shell_binding_required")
+windows_git_reads = {subprocess.list2cmdline(argv): argv for argv in git_reads}
 def audit(event, args):
+    # Windows platform.uname uses this local query when os.uname is absent.
+    if (sys.platform == "win32" and mode in {"setup", "execute"}
+            and event == "socket.gethostname" and args == ()):
+        record("local_platform_hostname")
+        return
     if event.startswith("socket.") and event != "socket.__new__":
         record("network_blocked")
         raise RuntimeError("offline_child_network_denied")
@@ -59,16 +82,29 @@ def audit(event, args):
             record("import_blocked:" + name)
             raise RuntimeError("offline_child_import_denied:" + name)
     if event == "subprocess.Popen":
-        command, cwd = args[1], args[2]
+        executable, command, cwd, environment = args
         argv = tuple(os.fsdecode(x) for x in command) if isinstance(command, (list, tuple)) else ()
-        if (mode != "recover" and argv in git_reads
+        if sys.platform == "win32" and mode in {"setup", "execute"}:
+            if (native_cmd is not None and executable == native_cmd
+                    and command == native_cmd + ' /c "ver"'
+                    and cwd is None and environment is None):
+                record("local_windows_version", [native_cmd, "/c", '"ver"'])
+                return
+            if (isinstance(command, str) and command in windows_git_reads
+                    and executable is None and environment is None
+                    and cwd is not None and Path(cwd).resolve() == worker):
+                record("source_identity_local_git", list(windows_git_reads[command]), str(worker))
+                return
+        if (sys.platform != "win32" and mode != "recover" and argv in git_reads
                 and cwd is not None and Path(cwd).resolve() == worker):
             record("source_identity_local_git", list(argv), str(worker))
             return
-        if mode in {"setup", "execute"} and argv == ("uname", "-p") and cwd is None:
+        if (sys.platform != "win32" and mode in {"setup", "execute"}
+                and argv == ("uname", "-p") and cwd is None):
             record("local_platform_processor", list(argv))
             return
-        if (mode in {"setup", "execute"} and len(argv) == 3 and argv[:2] == ("file", "-b")
+        if (sys.platform != "win32" and mode in {"setup", "execute"}
+                and len(argv) == 3 and argv[:2] == ("file", "-b")
                 and cwd is None and Path(argv[2]).resolve() == Path(sys.executable).resolve()):
             record("local_platform_interpreter_architecture", list(argv))
             return
@@ -137,6 +173,7 @@ def test_offline_child_linux_linker_cache_guard(
     namespace: dict[str, Any] = {
         "os": os, "Path": Path, "mode": mode, "git_reads": set(),
         "sys": SimpleNamespace(platform=platform, executable=sys.executable),
+        "native_cmd": None, "windows_git_reads": {},
         "record": record,
     }
     exec(compile(ast.Module(body=[audit_node], type_ignores=[]),
@@ -149,6 +186,181 @@ def test_offline_child_linux_linker_cache_guard(
         with pytest.raises(RuntimeError, match="offline_child_subprocess_denied"):
             audit("subprocess.Popen", (argv[0], list(argv), cwd, None))
         assert records == [("subprocess_blocked", list(argv), cwd)]
+
+
+@pytest.mark.parametrize(("platform", "mode", "event", "args", "allowed"), [
+    ("win32", "setup", "socket.gethostname", (), True),
+    ("win32", "execute", "socket.gethostname", (), True),
+    ("win32", "recover", "socket.gethostname", (), False),
+    ("win32", "check", "socket.gethostname", (), False),
+    ("linux", "execute", "socket.gethostname", (), False),
+    ("darwin", "setup", "socket.gethostname", (), False),
+    ("win32", "execute", "socket.gethostname", ("extra",), False),
+    ("win32", "execute", "socket.gethostname", [], False),
+    ("win32", "execute", "socket.gethostbyname", ("localhost",), False),
+    ("win32", "execute", "socket.getaddrinfo", ("localhost", 80), False),
+    ("win32", "execute", "socket.connect", (), False),
+    ("win32", "execute", "socket.bind", (), False),
+    ("win32", "execute", "socket.sendto", (), False),
+    ("win32", "execute", "socket.gethostname.extra", (), False),
+])
+def test_offline_child_windows_hostname_guard(
+    platform: str, mode: str, event: str, args: object, allowed: bool,
+) -> None:
+    # Invoke the actual audit function with guard inputs only; no real socket
+    # call, platform observation, provider import, or business value is mocked.
+    audit_node = next(node for node in ast.parse(_OFFLINE_CHILD).body
+                      if isinstance(node, ast.FunctionDef) and node.name == "audit")
+    records: list[str] = []
+
+    def record(kind: str) -> None:
+        records.append(kind)
+
+    namespace: dict[str, Any] = {
+        "mode": mode, "sys": SimpleNamespace(platform=platform), "record": record,
+    }
+    exec(compile(ast.Module(body=[audit_node], type_ignores=[]),
+                 "<offline-child-audit-guard>", "exec"), namespace)
+    audit = namespace["audit"]
+    if allowed:
+        audit(event, args)
+        assert records == ["local_platform_hostname"]
+    else:
+        with pytest.raises(RuntimeError, match="offline_child_network_denied"):
+            audit(event, args)
+        assert records == ["network_blocked"]
+
+
+def _offline_guard_namespace(platform: str, mode: str, worker: Path) -> tuple[
+    dict[str, Any], list[tuple[str, object, object]],
+]:
+    records: list[tuple[str, object, object]] = []
+
+    def record(kind: str, argv: object = None, cwd: object = None) -> None:
+        records.append((kind, argv, cwd))
+
+    namespace: dict[str, Any] = {
+        "os": os, "Path": Path, "ntpath": ntpath, "subprocess": subprocess,
+        "mode": mode, "worker": worker.resolve(), "record": record,
+        "sys": SimpleNamespace(platform=platform, executable=sys.executable),
+        "native_cmd": r"C:\Windows\System32\cmd.exe",
+    }
+    # Compile only the actual guard functions and fixed Git command definitions.
+    # Do not install a hook, launch a process, or read real Windows environment.
+    nodes = [node for node in ast.parse(_OFFLINE_CHILD).body
+             if (isinstance(node, ast.FunctionDef)
+                 and node.name in {"audit", "native_windows_shell"})
+             or (isinstance(node, ast.Assign) and any(
+                 isinstance(target, ast.Name) and target.id in {"git_reads", "windows_git_reads"}
+                 for target in node.targets))]
+    exec(compile(ast.Module(body=nodes, type_ignores=[]),
+                 "<offline-child-audit-guard>", "exec"), namespace)
+    return namespace, records
+
+
+@pytest.mark.parametrize(("comspec", "system_root", "allowed"), [
+    (r"C:\Windows\System32\cmd.exe", r"C:\Windows", True),
+    (r"c:\WINDOWS\system32\CMD.EXE", r"C:\Windows", True),
+    ("C:/Windows/System32/cmd.exe", "C:/Windows", True),
+    ("cmd.exe", r"C:\Windows", False),
+    (r"C:\Other\cmd.exe", r"C:\Windows", False),
+    (r"\\host\share\System32\cmd.exe", r"\\host\share", False),
+    (r"C:\Windows\System32\cmd.exe", "Windows", False),
+    (r"C:\Windows\System32\..\System32\cmd.exe", r"C:\Windows", False),
+    (None, r"C:\Windows", False),
+    (r"C:\Windows\System32\cmd.exe", None, False),
+])
+def test_offline_child_windows_native_shell_binding(
+    tmp_path: Path, comspec: str | None, system_root: str | None, allowed: bool,
+) -> None:
+    namespace, _ = _offline_guard_namespace("win32", "setup", tmp_path)
+    bound = namespace["native_windows_shell"](comspec, system_root)
+    assert bound == (comspec if allowed else None)
+
+
+@pytest.mark.parametrize(("platform", "mode", "executable", "suffix", "cwd", "env", "allowed"), [
+    ("win32", "setup", "native", ' /c "ver"', None, None, True),
+    ("win32", "execute", "native", ' /c "ver"', None, None, True),
+    ("win32", "recover", "native", ' /c "ver"', None, None, False),
+    ("win32", "check", "native", ' /c "ver"', None, None, False),
+    ("linux", "execute", "native", ' /c "ver"', None, None, False),
+    ("win32", "execute", None, ' /c "ver"', None, None, False),
+    ("win32", "execute", "cmd.exe", ' /c "ver"', None, None, False),
+    ("win32", "execute", r"\\host\share\cmd.exe", ' /c "ver"', None, None, False),
+    ("win32", "execute", r"C:\Other\cmd.exe", ' /c "ver"', None, None, False),
+    ("win32", "execute", "native", ' /c "ver" extra', None, None, False),
+    ("win32", "execute", "native", ' /c "ver & whoami"', None, None, False),
+    ("win32", "execute", "native", ' /c "command /c ver"', None, None, False),
+    ("win32", "execute", "native", ' /c "ver"', "worker", None, False),
+    ("win32", "execute", "native", ' /c "ver"', None, {}, False),
+])
+def test_offline_child_windows_version_guard(
+    tmp_path: Path, platform: str, mode: str, executable: str | None, suffix: str,
+    cwd: str | None, env: object, allowed: bool,
+) -> None:
+    namespace, records = _offline_guard_namespace(platform, mode, tmp_path)
+    native = namespace["native_cmd"]
+    executable = native if executable == "native" else executable
+    cwd = str(tmp_path) if cwd == "worker" else cwd
+    event_args = (executable, native + suffix, cwd, env)
+    if allowed:
+        namespace["audit"]("subprocess.Popen", event_args)
+        assert records == [("local_windows_version", [native, "/c", '"ver"'], None)]
+    else:
+        with pytest.raises(RuntimeError, match="offline_child_subprocess_denied"):
+            namespace["audit"]("subprocess.Popen", event_args)
+        assert records == [("subprocess_blocked", [], cwd)]
+
+
+@pytest.mark.parametrize("mode", ["setup", "execute"])
+@pytest.mark.parametrize("argv", [
+    ("git", "rev-parse", "HEAD"), ("git", "status", "--porcelain"),
+    ("git", "rev-parse", "--show-prefix"), ("git", "show", "HEAD:uv.lock"),
+])
+def test_offline_child_windows_git_guard(tmp_path: Path, mode: str, argv: tuple[str, ...]) -> None:
+    namespace, records = _offline_guard_namespace("win32", mode, tmp_path)
+    namespace["audit"]("subprocess.Popen", (
+        None, subprocess.list2cmdline(argv), str(tmp_path), None,
+    ))
+    assert records == [("source_identity_local_git", list(argv), str(tmp_path.resolve()))]
+
+
+@pytest.mark.parametrize(("platform", "mode", "command", "executable", "cwd", "env"), [
+    ("win32", "recover", "git rev-parse HEAD", None, "worker", None),
+    ("win32", "check", "git rev-parse HEAD", None, "worker", None),
+    ("linux", "execute", "git rev-parse HEAD", None, "worker", None),
+    ("win32", "execute", "git rev-parse HEAD", "git", "worker", None),
+    ("win32", "execute", "git rev-parse HEAD", None, "worker", {}),
+    ("win32", "execute", "git rev-parse HEAD", None, None, None),
+    ("win32", "execute", "git rev-parse HEAD", None, "other", None),
+    ("win32", "execute", "git rev-parse HEAD extra", None, "worker", None),
+    ("win32", "execute", "git rev-parse HEAD & whoami", None, "worker", None),
+    ("win32", "execute", 'git rev-parse "HEAD"', None, "worker", None),
+    ("win32", "execute", "git fetch", None, "worker", None),
+    ("win32", "execute", ["git", "rev-parse", "HEAD"], None, "worker", None),
+])
+def test_offline_child_windows_git_guard_denials(
+    tmp_path: Path, platform: str, mode: str, command: object,
+    executable: str | None, cwd: str | None, env: object,
+) -> None:
+    namespace, records = _offline_guard_namespace(platform, mode, tmp_path)
+    cwd = str(tmp_path if cwd == "worker" else tmp_path / "other") if cwd else None
+    with pytest.raises(RuntimeError, match="offline_child_subprocess_denied"):
+        namespace["audit"]("subprocess.Popen", (executable, command, cwd, env))
+    assert records[0][0] == "subprocess_blocked"
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+@pytest.mark.parametrize("argv", [
+    ("git", "rev-parse", "HEAD"), ("git", "status", "--porcelain"),
+    ("git", "rev-parse", "--show-prefix"), ("git", "show", "HEAD:uv.lock"),
+])
+def test_offline_child_posix_git_guard_preserved(
+    tmp_path: Path, platform: str, argv: tuple[str, ...],
+) -> None:
+    namespace, records = _offline_guard_namespace(platform, "execute", tmp_path)
+    namespace["audit"]("subprocess.Popen", ("git", list(argv), str(tmp_path), None))
+    assert records == [("source_identity_local_git", list(argv), str(tmp_path.resolve()))]
 
 
 def _offline_argv(
