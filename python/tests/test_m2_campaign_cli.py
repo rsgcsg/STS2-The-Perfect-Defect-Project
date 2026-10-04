@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -70,6 +72,11 @@ def audit(event, args):
                 and cwd is None and Path(argv[2]).resolve() == Path(sys.executable).resolve()):
             record("local_platform_interpreter_architecture", list(argv))
             return
+        # Python 3.11 ctypes.util.find_library reads the Linux linker cache.
+        if (sys.platform == "linux" and mode in {"setup", "execute"}
+                and argv == ("/sbin/ldconfig", "-p") and cwd is None):
+            record("local_linux_linker_cache", list(argv))
+            return
         record("subprocess_blocked", list(argv), None if cwd is None else str(cwd))
         raise RuntimeError("offline_child_subprocess_denied")
 sys.addaudithook(audit)
@@ -100,6 +107,48 @@ else:
     sys.argv = [str(script)] + arguments
     runpy.run_path(str(script), run_name="__main__")
 '''
+
+
+@pytest.mark.parametrize(("platform", "mode", "argv", "cwd", "allowed"), [
+    ("linux", "setup", ("/sbin/ldconfig", "-p"), None, True),
+    ("linux", "execute", ("/sbin/ldconfig", "-p"), None, True),
+    ("linux", "recover", ("/sbin/ldconfig", "-p"), None, False),
+    ("linux", "check", ("/sbin/ldconfig", "-p"), None, False),
+    ("darwin", "execute", ("/sbin/ldconfig", "-p"), None, False),
+    ("win32", "setup", ("/sbin/ldconfig", "-p"), None, False),
+    ("linux", "execute", ("ldconfig", "-p"), None, False),
+    ("linux", "execute", ("/sbin/ldconfig",), None, False),
+    ("linux", "execute", ("/sbin/ldconfig", "-p", "extra"), None, False),
+    ("linux", "execute", ("/sbin/ldconfig", "-v"), None, False),
+    ("linux", "execute", ("/sbin/ldconfig", "-p"), "/tmp", False),
+])
+def test_offline_child_linux_linker_cache_guard(
+    platform: str, mode: str, argv: tuple[str, ...], cwd: str | None, allowed: bool,
+) -> None:
+    # Exercise the exact child audit function without launching a subprocess,
+    # registering a process-wide hook, or importing numerical/provider APIs.
+    audit_node = next(node for node in ast.parse(_OFFLINE_CHILD).body
+                      if isinstance(node, ast.FunctionDef) and node.name == "audit")
+    records: list[tuple[str, object, object]] = []
+
+    def record(kind: str, argv: object = None, cwd: object = None) -> None:
+        records.append((kind, argv, cwd))
+
+    namespace: dict[str, Any] = {
+        "os": os, "Path": Path, "mode": mode, "git_reads": set(),
+        "sys": SimpleNamespace(platform=platform, executable=sys.executable),
+        "record": record,
+    }
+    exec(compile(ast.Module(body=[audit_node], type_ignores=[]),
+                 "<offline-child-audit-guard>", "exec"), namespace)
+    audit = namespace["audit"]
+    if allowed:
+        audit("subprocess.Popen", (argv[0], list(argv), cwd, None))
+        assert records == [("local_linux_linker_cache", list(argv), None)]
+    else:
+        with pytest.raises(RuntimeError, match="offline_child_subprocess_denied"):
+            audit("subprocess.Popen", (argv[0], list(argv), cwd, None))
+        assert records == [("subprocess_blocked", list(argv), cwd)]
 
 
 def _offline_argv(
