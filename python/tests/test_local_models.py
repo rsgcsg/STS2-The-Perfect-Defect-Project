@@ -2041,3 +2041,34 @@ def test_finalized_stop_recovery_requires_exact_evidence_and_free_port(
     assert service.state["previous_session"] == previous
     assert service.state["status"] == "recovery_required"
     assert not (service.directory / "session-archives").exists()
+
+
+@pytest.mark.parametrize("profile", ["short", "long", "invalid", None])
+def test_orderly_owner_reopen_retains_reviewed_selection_without_runtime_authority(service, profile):
+    entry = service.registry()["policies"][0]
+    service.directory.mkdir(parents=True, exist_ok=True)
+    (service.directory / "session.json").write_text(json.dumps({
+        "status": "stopped", "selection_id": entry["id"], "run_profile": profile,
+        "loaded": True, "runtime": {"mode": "auto", "controller": "held"},
+        "operation": {"action": "auto", "status": "completed"},
+    }))
+    reopened = LocalModelService(service.config)
+    assert reopened.state["status"] == "stopped"
+    assert reopened.state["selection_id"] == entry["id"]
+    assert reopened.state["loaded"] is False
+    assert reopened.state["runtime"] is None and reopened.state["operation"] is None
+    assert reopened.client is None and reopened.process is None and reopened.thread is None
+    if profile in local_models.RUN_PROFILES:
+        assert reopened.state["run_profile"] == profile
+    else:
+        assert "run_profile" not in reopened.state
+
+
+def test_orderly_owner_reopen_discards_unregistered_saved_selection(service):
+    service.directory.mkdir(parents=True, exist_ok=True)
+    (service.directory / "session.json").write_text(json.dumps({
+        "status": "stopped", "selection_id": "unregistered-old-model", "run_profile": "short",
+    }))
+    reopened = LocalModelService(service.config)
+    assert reopened.state["status"] == "idle"
+    assert "selection_id" not in reopened.state and not reopened.state["loaded"]

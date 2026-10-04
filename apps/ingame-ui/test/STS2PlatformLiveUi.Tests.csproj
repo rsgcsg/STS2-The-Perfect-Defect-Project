@@ -15,6 +15,7 @@
     <Compile Include="../PlatformPolicyBinding.cs" Link="PlatformPolicyBinding.cs" />
     <Compile Include="../PlatformPolicyTransport.cs" Link="PlatformPolicyTransport.cs" />
     <Compile Include="../PlatformWorkbenchOpen.cs" Link="PlatformWorkbenchOpen.cs" />
+    <Compile Include="../../game-mod/WorkbenchRegistrationOwner.cs" Link="WorkbenchRegistrationOwner.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />

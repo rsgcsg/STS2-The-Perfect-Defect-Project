@@ -370,7 +370,19 @@ class LocalModelService:
         if previous.is_file():
             try:
                 old = _object_file(previous)
-                if old.get("status") not in {"stopped", "idle", "failed"}:
+                if old.get("status") == "stopped":
+                    # Retain a reviewed choice after an orderly owner restart,
+                    # never its Runtime, controller, operation or load claim.
+                    try:
+                        entry = self.selection(old.get("selection_id", ""))
+                    except (OSError, ValueError, BoundaryError):
+                        # A retired choice cannot invalidate confirmed shutdown.
+                        entry = None
+                    if entry is not None:
+                        self.state.update(status="stopped", selection_id=entry["id"])
+                        if old.get("run_profile") in RUN_PROFILES:
+                            self.state["run_profile"] = old["run_profile"]
+                elif old.get("status") not in {"idle", "failed"}:
                     self.state.update(
                         status="recovery_required",
                         previous_session=old.get("previous_session") or old,
