@@ -658,6 +658,7 @@ def _execute_run(
     store: ArtifactStore, reporter: RunReporter, run_id: str, runtime: Producer,
     *, resume: str | None = None, stop_after_windows: int | None = None,
     flavor: _RunFlavor = _M2_FLAVOR,
+    stage_reuse: dict[str, Any] | None = None,
 ) -> WorkerResult:
     """Execute one bounded attempt; explicit resume selects one durable checkpoint."""
     if (stop_after_windows is not None and
@@ -708,7 +709,20 @@ def _execute_run(
         initial_updates = engine.optimizer_updates
         # A crash after an epoch checkpoint but before its readout can be
         # reconciled idempotently on explicit resume of that exact checkpoint.
-        if (engine.completed_epochs in {1, 3, 5} and resume is not None
+        if stage_reuse is not None:
+            if (resume is None or stage_reuse.get("run_id") != run_id
+                    or stage_reuse.get("producer") != runtime.to_dict()
+                    or stage_reuse.get("checkpoint_id") != resume
+                    or stage_reuse.get("epoch") != engine.completed_epochs
+                    or engine.completed_epochs not in {1, 3, 5}
+                    or engine.chain_index != 0 or engine.window_cursor != 0
+                    or type(stage_reuse.get("commitment_sha256")) is not str):
+                raise BoundaryError(_BOUNDARY, "stage_reuse_binding_mismatch")
+            stage_id = stage_reuse["stage_id"]
+            event("epoch_stage_reused", epoch=engine.completed_epochs,
+                  stage_id=stage_id,
+                  commitment_sha256=stage_reuse["commitment_sha256"])
+        elif (engine.completed_epochs in {1, 3, 5} and resume is not None
                 and engine.chain_index == 0 and engine.window_cursor == 0):
             stage_id = _stage(store, run, training, engine, resume, flavor=flavor)
             event("epoch_stage", epoch=engine.completed_epochs, stage_id=stage_id)
@@ -738,13 +752,21 @@ def _execute_run(
                 return WorkerResult("paused", run_id, checkpoint_id=checkpoint_id)
         if checkpoint_id is None or stage_id is None:
             raise BoundaryError(_BOUNDARY, "missing_terminal_stage")
-        stage = store.get_manifest(stage_id)
+        terminal_reuses_claim = (
+            stage_reuse is not None and stage_id == stage_reuse["stage_id"]
+            and engine.completed_epochs == 5
+            and checkpoint_id == stage_reuse["checkpoint_id"]
+        )
+        stage = None if terminal_reuses_claim else store.get_manifest(stage_id)
+        model_id = (stage_reuse["model_id"] if terminal_reuses_claim
+                    else stage.parent("model"))
+        evaluation_id = (stage_reuse["evaluation_id"] if terminal_reuses_claim
+                         else stage.parent("offline_evaluation"))
         result = Manifest(
             "run_result", runtime,
             (Parent("run", run_id), Parent("training_input", training.artifact_id),
              Parent("checkpoint", checkpoint_id), Parent("stage", stage_id),
-             Parent("model", stage.parent("model")),
-             Parent("offline_evaluation", stage.parent("offline_evaluation"))),
+             Parent("model", model_id), Parent("offline_evaluation", evaluation_id)),
             parameters=FrozenObject.of({
                 "schema": RESULT_SCHEMA, "state": "completed", "epoch": 5,
                 "operation_id": run.parameters.value()["operation_id"],
@@ -752,7 +774,8 @@ def _execute_run(
                 "qualification": "engineering_only", **_kind(flavor),
             }),
         )
-        _verify_completed(store, result, run, training, engine, flavor=flavor)
+        if not terminal_reuses_claim:
+            _verify_completed(store, result, run, training, engine, flavor=flavor)
         result_id = reporter.complete(result)
         selected = reporter.completed(run_id)
         if selected is None or selected.artifact_id != result_id:

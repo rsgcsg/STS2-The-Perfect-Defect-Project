@@ -12,8 +12,10 @@ import torch
 from test_public_m2_run import _fixture, _prepare
 
 import stpd.workers.public_m2_remote as remote_module
+import stpd.workers.public_m2_run as run_module
 from spireagent.artifact_contracts import Manifest, Parent, Payload
-from spireagent.json_boundary import BoundaryError, FrozenObject
+from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.storage.blobs import StoreError
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
 from stpd.workers.public_m2_remote import (
@@ -125,35 +127,250 @@ def test_local_accept_then_resume_to_first_stage(tmp_path):
     run = _prepare(bundle)
     _, _, _, _, engine = _load_run(store, run.artifact_id, producer)
     prior = None
-    for index in range(3):
-        request = build_public_m2_remote_request(
-            store, reporter, run.artifact_id, producer,
-            attempt_id=f"{index + 1:032x}", expected_runtime=engine.runtime,
-            resume=prior, max_windows=1,
-        )
-        sha = hashlib.sha256(request).hexdigest()
-        result = execute_public_m2_remote_request(request, request_sha256=sha)
-        if index == 0:
-            header, _ = _unpack(result, _RESULT_MAGIC, MAX_RESULT_BYTES)
-            first = next(item for item in header["manifests"]
-                         if item["id"] == header["event_ids"][0])
-            reporter.emit(Manifest.from_bytes(first["raw"].encode(), first["id"]))
-        outcome = accept_public_m2_remote_result(
-            store, reporter, request, result, request_sha256=sha,
-            expected_runtime=engine.runtime,
-        )
-        assert outcome.state == "paused"
-        assert accept_public_m2_remote_result(
-            store, reporter, request, result, request_sha256=sha,
-            expected_runtime=engine.runtime,
-        ) == outcome
-        prior = outcome.checkpoint_id
+    with patch.object(run_module, "_stage", wraps=run_module._stage) as stage_writer:
+        for index in range(8):
+            request = build_public_m2_remote_request(
+                store, reporter, run.artifact_id, producer,
+                attempt_id=f"{index + 1:032x}", expected_runtime=engine.runtime,
+                resume=prior, max_windows=1,
+            )
+            request_header, _ = _unpack(request, remote_module._REQUEST_MAGIC,
+                                        remote_module.MAX_REQUEST_BYTES)
+            if request_header["stage_reuse"] is not None:
+                assert request_header["stage_reuse"]["epoch"] == 1
+            sha = hashlib.sha256(request).hexdigest()
+            result = execute_public_m2_remote_request(request, request_sha256=sha)
+            result_header, _ = _unpack(result, _RESULT_MAGIC, MAX_RESULT_BYTES)
+            if index == 0:
+                first = next(item for item in result_header["manifests"]
+                             if item["id"] == result_header["event_ids"][0])
+                reporter.emit(Manifest.from_bytes(first["raw"].encode(), first["id"]))
+            outcome = accept_public_m2_remote_result(
+                store, reporter, request, result, request_sha256=sha,
+                expected_runtime=engine.runtime,
+            )
+            assert outcome.state == "paused"
+            assert accept_public_m2_remote_result(
+                store, reporter, request, result, request_sha256=sha,
+                expected_runtime=engine.runtime,
+            ) == outcome
+            prior = outcome.checkpoint_id
+            if request_header["stage_reuse"] is not None:
+                break
+        assert stage_writer.call_count == 1
     assert prior is not None
     assert store.get_manifest(prior).parameters.value()["completed_epochs"] == 1
     stages = [store.get_manifest(key) for key in store.manifest_ids()
               if store.get_manifest(key).parameters.value().get("schema")
               == "stpd/public-m2-epoch-stage-v1"]
     assert len(stages) == 1 and stages[0].parameters.value()["epoch"] == 1
+
+
+def test_stage_reuse_claim_binds_run_checkpoint_and_local_closure(tmp_path):
+    bundle = _fixture(tmp_path)
+    store, reporter, producer, _, _, _, _ = bundle
+    run = _prepare(bundle)
+    _, _, _, _, engine = _load_run(store, run.artifact_id, producer)
+    prior = None
+    request = None
+    for index in range(8):
+        request = build_public_m2_remote_request(
+            store, reporter, run.artifact_id, producer,
+            attempt_id=f"{index + 1:032x}", expected_runtime=engine.runtime,
+            resume=prior, max_windows=1,
+        )
+        header, request_blobs = _unpack(request, remote_module._REQUEST_MAGIC,
+                                        remote_module.MAX_REQUEST_BYTES)
+        if header["stage_reuse"] is not None:
+            break
+        sha = hashlib.sha256(request).hexdigest()
+        result = execute_public_m2_remote_request(request, request_sha256=sha)
+        outcome = accept_public_m2_remote_result(
+            store, reporter, request, result, request_sha256=sha,
+            expected_runtime=engine.runtime,
+        )
+        prior = outcome.checkpoint_id
+    assert prior is not None and request is not None
+    claim = header["stage_reuse"]
+    assert claim["checkpoint_id"] == prior
+    accepted_events = reporter.events(run.artifact_id)
+
+    def without_stage_acceptance(_store, run_id):
+        return tuple(event for event in accepted_events
+                     if event.parameters.value().get("kind") != "epoch_stage")
+
+    with patch.object(remote_module, "_run_events", side_effect=without_stage_acceptance):
+        fallback = build_public_m2_remote_request(
+            store, reporter, run.artifact_id, producer, attempt_id="c" * 32,
+            expected_runtime=engine.runtime, resume=prior, max_windows=1,
+        )
+    fallback_header, _ = _unpack(fallback, remote_module._REQUEST_MAGIC,
+                                 remote_module.MAX_REQUEST_BYTES)
+    assert fallback_header["stage_reuse"] is None
+    get_manifest = store.get_manifest
+    for missing_id in (claim["stage_id"], claim["model_id"], claim["evaluation_id"]):
+        def missing_manifest(identity, target=missing_id):
+            if identity == target:
+                raise StoreError("object_not_found")
+            return get_manifest(identity)
+
+        with patch.object(store, "get_manifest", side_effect=missing_manifest):
+            missing = build_public_m2_remote_request(
+                store, reporter, run.artifact_id, producer, attempt_id="b" * 32,
+                expected_runtime=engine.runtime, resume=prior, max_windows=1,
+            )
+        missing_header, _ = _unpack(missing, remote_module._REQUEST_MAGIC,
+                                    remote_module.MAX_REQUEST_BYTES)
+        assert missing_header["stage_reuse"] is None
+    for field in ("run_id", "checkpoint_id"):
+        tampered_header = dict(header)
+        tampered_claim = dict(claim)
+        tampered_claim[field] = "0" * 64
+        tampered_claim["commitment_sha256"] = hashlib.sha256(json_bytes({
+            key: value for key, value in tampered_claim.items()
+            if key != "commitment_sha256"
+        })).hexdigest()
+        tampered_header["stage_reuse"] = tampered_claim
+        tampered = _pack(remote_module._REQUEST_MAGIC, tampered_header, request_blobs,
+                         remote_module.MAX_REQUEST_BYTES)
+        with pytest.raises(BoundaryError, match="stage_reuse_binding_mismatch"):
+            execute_public_m2_remote_request(
+                tampered, request_sha256=hashlib.sha256(tampered).hexdigest(),
+            )
+    sha = hashlib.sha256(request).hexdigest()
+    result = execute_public_m2_remote_request(request, request_sha256=sha)
+    before = store.manifest_ids()
+    result_header, result_blobs = _unpack(result, _RESULT_MAGIC, MAX_RESULT_BYTES)
+    wrong_binding = _pack(
+        _RESULT_MAGIC,
+        {key: value for key, value in result_header.items() if key != "blobs"}
+        | {"stage_reuse_sha256": "0" * 64},
+        result_blobs, MAX_RESULT_BYTES,
+    )
+    with pytest.raises(BoundaryError, match="result_binding_mismatch"):
+        accept_public_m2_remote_result(
+            store, reporter, request, wrong_binding, request_sha256=sha,
+            expected_runtime=engine.runtime,
+        )
+
+    read_payload = store.read_payload
+
+    def corrupt_weight(payload):
+        raw = b"".join(read_payload(payload))
+        if payload.sha256 == claim["weights"]["sha256"]:
+            raw = raw[:-1] + bytes([raw[-1] ^ 1])
+        yield raw
+
+    with patch.object(store, "read_payload", side_effect=corrupt_weight), pytest.raises(
+        BoundaryError, match="payload_integrity_mismatch",
+    ):
+        accept_public_m2_remote_result(
+            store, reporter, request, result, request_sha256=sha,
+            expected_runtime=engine.runtime,
+        )
+    assert store.manifest_ids() == before
+
+    get_manifest = store.get_manifest
+    for manifest_id, error in (
+        (claim["stage_id"], "stage_reuse_local_mismatch"),
+        (claim["evaluation_id"], "stage_reuse_local_mismatch"),
+    ):
+        def corrupt_manifest(identity, target=manifest_id):
+            item = get_manifest(identity)
+            if identity == target:
+                parameters = item.parameters.value()
+                parameters["input_identity"] = "f" * 64
+                return replace(item, parameters=FrozenObject.of(parameters))
+            return item
+
+        with patch.object(store, "get_manifest", side_effect=corrupt_manifest), pytest.raises(
+            BoundaryError, match=error,
+        ):
+            accept_public_m2_remote_result(
+                store, reporter, request, result, request_sha256=sha,
+                expected_runtime=engine.runtime,
+            )
+        assert store.manifest_ids() == before
+
+    check_result = remote_module._checked_result
+
+    def race_history(*args, **kwargs):
+        outcome = check_result(*args, **kwargs)
+        concurrent = Manifest(
+            "run_event", producer, (Parent("run", run.artifact_id),),
+            parameters=FrozenObject.of({
+                "schema": "stpd/run-event-v1", "attempt": "e" * 32,
+                "kind": "started", "completed_epochs": 1, "chain_index": 0,
+                "window_cursor": 0, "label_count": 0, "optimizer_updates": 0,
+                "details": {},
+            }),
+        )
+        reporter.emit(concurrent)
+        return outcome
+
+    with patch.object(remote_module, "_checked_result", side_effect=race_history), pytest.raises(
+        BoundaryError, match="local_history_changed_during_validation",
+    ):
+        accept_public_m2_remote_result(
+            store, reporter, request, result, request_sha256=sha,
+            expected_runtime=engine.runtime,
+        )
+
+
+def test_accepted_epoch_three_reuse_finishes_with_new_epoch_five_stage(tmp_path):
+    bundle = _fixture(tmp_path)
+    store, reporter, producer, _, _, _, _ = bundle
+    run = _prepare(bundle)
+    _, _, _, _, engine = _load_run(store, run.artifact_id, producer)
+    prior = None
+    request = None
+    for index in range(20):
+        request = build_public_m2_remote_request(
+            store, reporter, run.artifact_id, producer,
+            attempt_id=f"{index + 1:032x}", expected_runtime=engine.runtime,
+            resume=prior, max_windows=1,
+        )
+        header, _ = _unpack(request, remote_module._REQUEST_MAGIC,
+                            remote_module.MAX_REQUEST_BYTES)
+        if header["stage_reuse"] is not None and header["stage_reuse"]["epoch"] == 3:
+            break
+        sha = hashlib.sha256(request).hexdigest()
+        result = execute_public_m2_remote_request(request, request_sha256=sha)
+        outcome = accept_public_m2_remote_result(
+            store, reporter, request, result, request_sha256=sha,
+            expected_runtime=engine.runtime,
+        )
+        prior = outcome.checkpoint_id
+    assert prior is not None and request is not None
+    assert store.get_manifest(prior).parameters.value()["completed_epochs"] == 3
+    claim = header["stage_reuse"]
+    assert claim["epoch"] == 3 and claim["checkpoint_id"] == prior
+    run_manifest, training, _, _, profile = _load_run(
+        store, run.artifact_id, producer, preflight_only=True,
+    )
+    checkpoint_state = remote_module.validate_public_m2_checkpoint(
+        b"".join(store.read_payload(store.get_manifest(prior).payload("checkpoint"))),
+        profile, expected_runtime=engine.runtime,
+    )
+    checked_claim = remote_module._accepted_stage_reuse(
+        store, reporter, run_manifest, training, profile, prior,
+        checkpoint_state, engine.runtime,
+    )
+    assert checked_claim == claim
+    with patch.object(run_module, "_stage", wraps=run_module._stage) as stage_writer:
+        outcome = run_module._execute_run(
+            store, reporter, run.artifact_id, producer, resume=prior,
+            stage_reuse=checked_claim,
+        )
+    assert outcome.state == "completed"
+    assert stage_writer.call_count == 1
+    result = reporter.completed(run.artifact_id)
+    terminal_stage = store.get_manifest(result.parent("stage"))
+    assert terminal_stage.parameters.value()["epoch"] == 5
+    assert result.parent("stage") != claim["stage_id"]
+    assert result.parent("model") == terminal_stage.parent("model")
+    assert result.parent("offline_evaluation") == terminal_stage.parent("offline_evaluation")
+    assert result.parent("model") != claim["model_id"]
 
 
 def test_remote_rejects_cross_request_missing_bytes_and_size_before_local_write(tmp_path):
@@ -294,8 +511,7 @@ def test_remote_rejects_extra_stage_payload_before_local_write(tmp_path):
         )
         sha = hashlib.sha256(request).hexdigest()
         result = execute_public_m2_remote_request(request, request_sha256=sha)
-        for kind in ({2: ("offline_evaluation", "analysis"),
-                      9: ("run_result",)}.get(attempt, ())):
+        for kind in ({9: ("run_result",)}.get(attempt, ())):
             tampered = _tamper_manifest(result, kind, _extra_payload)
             before = store.manifest_ids()
             with pytest.raises(BoundaryError):
@@ -368,12 +584,20 @@ def test_remote_rejects_extra_stage_payload_before_local_write(tmp_path):
     assert outcome.state == "completed"
 
 
-def test_terminal_completion_is_selected_only_in_local_reporter(tmp_path):
+def test_terminal_completion_is_selected_only_in_local_reporter(tmp_path, monkeypatch):
     bundle = _fixture(tmp_path)
     store, reporter, producer, _, _, _, _ = bundle
     run = _prepare(bundle)
     _, _, _, _, engine = _load_run(store, run.artifact_id, producer)
     prior = None
+    stage_epochs = []
+    original_stage = run_module._stage
+
+    def count_stage(*args, **kwargs):
+        stage_epochs.append(args[3].completed_epochs)
+        return original_stage(*args, **kwargs)
+
+    monkeypatch.setattr(run_module, "_stage", count_stage)
     for attempt in range(10):
         request = build_public_m2_remote_request(
             store, reporter, run.artifact_id, producer,
@@ -394,6 +618,11 @@ def test_terminal_completion_is_selected_only_in_local_reporter(tmp_path):
         store, reporter, run.artifact_id, producer, attempt_id="b" * 32,
         expected_runtime=engine.runtime, resume=prior, max_windows=0,
     )
+    recovery_header, _ = _unpack(
+        recovery, remote_module._REQUEST_MAGIC, remote_module.MAX_REQUEST_BYTES,
+    )
+    terminal_claim = recovery_header["stage_reuse"]
+    assert terminal_claim["epoch"] == 5
     recovery_sha = hashlib.sha256(recovery).hexdigest()
     recovery_result = execute_public_m2_remote_request(
         recovery, request_sha256=recovery_sha,
@@ -403,4 +632,15 @@ def test_terminal_completion_is_selected_only_in_local_reporter(tmp_path):
         request_sha256=recovery_sha, expected_runtime=engine.runtime,
         select_completion=True,
     )
+    terminal_result = store.get_manifest(outcome.result_id)
+    assert terminal_result.parent("stage") == terminal_claim["stage_id"]
+    assert terminal_result.parent("model") == terminal_claim["model_id"]
+    assert terminal_result.parent("offline_evaluation") == terminal_claim["evaluation_id"]
     assert reporter.completed(run.artifact_id).artifact_id == outcome.result_id
+    assert stage_epochs == [1, 3, 5]
+    reused_epochs = {
+        item.parameters.value()["details"]["epoch"]
+        for item in reporter.events(run.artifact_id)
+        if item.parameters.value()["kind"] == "epoch_stage_reused"
+    }
+    assert reused_epochs >= {1, 3, 5}
