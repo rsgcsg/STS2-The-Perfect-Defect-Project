@@ -6,9 +6,11 @@ import hashlib
 import os
 import re
 import sys
+from pathlib import Path
 
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes
+from spireagent.source import source_identity
 
 from .public_m2_modal import (
     MAX_PUBLIC_M2_REQUEST_BYTES,
@@ -17,6 +19,15 @@ from .public_m2_modal import (
     PublicM2ModalResources,
     encode_modal_response,
 )
+
+_IMAGE_ROOT = Path("/opt/stpd/python")
+
+
+def _runtime_source_identity() -> Producer:
+    root = Path(__file__).resolve().parents[2]
+    if root != _IMAGE_ROOT.resolve():
+        raise BoundaryError("public_m2_eval_worker", "fixed_image_checkout_required")
+    return source_identity(root)
 
 
 def _execute_once(request: bytes, *, request_sha256: str,
@@ -33,6 +44,8 @@ def _execute_once(request: bytes, *, request_sha256: str,
             or len(request) > MAX_REQUEST_BYTES
             or hashlib.sha256(request).hexdigest() != request_sha256):
         raise BoundaryError("public_m2_eval_worker", "request_identity_or_size_mismatch")
+    if _runtime_source_identity() != producer:
+        raise BoundaryError("public_m2_eval_worker", "image_source_identity_mismatch")
     header, _ = _request_parts(request)
     if (header["attempt_id"] != attempt_id
             or header["evaluation_producer"] != producer.to_dict()

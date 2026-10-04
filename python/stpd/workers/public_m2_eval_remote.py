@@ -12,6 +12,7 @@ import hashlib
 import math
 import re
 from dataclasses import asdict, dataclass
+from time import monotonic
 from typing import Any
 
 from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
@@ -67,7 +68,7 @@ _HEADER_FIELDS = {
     "training_config", "training_source_digest", "engine_input_digest",
     "evaluation_source_ids", "evaluation_source_digests", "selection_identities",
     "chain_range", "completed_epochs", "pilot_replay", "runtime_requirement",
-    "blob_roles", "blobs",
+    "blob_roles", "max_compute_seconds", "blobs",
 }
 
 
@@ -136,6 +137,9 @@ def _request_parts(raw: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
             or not 0 <= replay["absolute_tolerance"] <= 1
             or not 0 <= replay["relative_tolerance"] <= 1):
         raise BoundaryError(_STAGE, "invalid_pilot_replay_contract")
+    if (type(header["max_compute_seconds"]) is not int
+            or not 1 <= header["max_compute_seconds"] <= 650):
+        raise BoundaryError(_STAGE, "invalid_compute_budget")
     return header, blobs
 
 
@@ -176,13 +180,16 @@ def build_public_m2_eval_request(
     engine_input_digest: str, pilot_input: bytes, full_parent_input: bytes,
     tokenizer: bytes, weights: bytes, pilot_source_id: str, full_parent_source_id: str,
     runtime_requirement: InferenceRuntimeRequirement | dict[str, Any],
-    chain_range: tuple[int, int], expected_pilot_loss: float = 1.854619842,
+    chain_range: tuple[int, int], max_compute_seconds: int = 650,
+    expected_pilot_loss: float = 1.854619842,
     pilot_absolute_tolerance: float = 0.02, pilot_relative_tolerance: float = 0.02,
 ) -> bytes:
     """Build a binary request from caller-admitted, already-read source payloads."""
     runtime = (runtime_requirement if isinstance(runtime_requirement, InferenceRuntimeRequirement)
                else InferenceRuntimeRequirement.from_value(runtime_requirement))
     runtime.validate()
+    if type(max_compute_seconds) is not int or not 1 <= max_compute_seconds <= 650:
+        raise BoundaryError(_STAGE, "invalid_compute_budget")
     payloads = {"pilot_input": pilot_input, "full_parent_input": full_parent_input,
                 "tokenizer": tokenizer, "weights": weights}
     if any(type(raw) is not bytes or not raw for raw in payloads.values()):
@@ -227,6 +234,7 @@ def build_public_m2_eval_request(
         "selection_identities": {"pilot": pilot_selection.identity,
                                  "full_parent": full_selection.identity},
         "chain_range": list(chain_range),
+        "max_compute_seconds": max_compute_seconds,
         "completed_epochs": 1,
         "pilot_replay": {"expected_count": 13, "expected_correct": 4,
                          "expected_loss": expected_pilot_loss,
@@ -265,6 +273,7 @@ def _config_from_value(value: dict[str, Any]):
 
 
 def _build_result(raw_request: bytes, request_sha256: str) -> dict[str, Any]:
+    started = monotonic()
     header, blobs = _request_parts(raw_request)
     validate_public_m2_eval_request(raw_request)
     from ..fullrun.public_m2_input_storage import read_public_m2_input
@@ -301,6 +310,7 @@ def _build_result(raw_request: bytes, request_sha256: str) -> dict[str, Any]:
         training_input_digest=engine_digest, inference_device="cuda:0",
         completed_epochs=header["completed_epochs"],
     )
+    model_ready = monotonic()
     runtime = session.runtime
     req = InferenceRuntimeRequirement.from_value(header["runtime_requirement"])
     if (not isinstance(runtime, dict) or runtime.get("device_type") != "cuda"
@@ -320,6 +330,7 @@ def _build_result(raw_request: bytes, request_sha256: str) -> dict[str, Any]:
         pilot_selection, 0, len(pilot_selection.chains),
     )
     pilot_result = session.evaluate(pilot, pilot_selection, shard=pilot_shard)
+    pilot_finished = monotonic()
     pilot_summary = combine_public_m2_eval_shards(
         pilot_selection, (pilot_result,), expected_bindings=session.bindings,
         expected_runtime=session.runtime,
@@ -333,16 +344,27 @@ def _build_result(raw_request: bytes, request_sha256: str) -> dict[str, Any]:
         raise BoundaryError(_STAGE, "pilot_aggregate_replay_failed")
 
     start, stop = header["chain_range"]
-    full_shard = partition_public_m2_eval_selection(full_selection, start, stop)
-    full_result = session.evaluate(full, full_selection, shard=full_shard)
-    full_complete = start == 0 and stop == len(full_selection.chains)
+    full_results = []
+    next_ordinal = start
+    budget = header["max_compute_seconds"]
+    for ordinal in range(start, stop):
+        if monotonic() - started >= budget:
+            break
+        one_chain = partition_public_m2_eval_selection(
+            full_selection, ordinal, ordinal + 1,
+        )
+        full_results.append(session.evaluate(full, full_selection, shard=one_chain))
+        next_ordinal = ordinal + 1
+    full_finished = monotonic()
+    range_complete = next_ordinal == stop
+    full_complete = range_complete and start == 0 and stop == len(full_selection.chains)
     summary = combine_public_m2_eval_shards(
-        full_selection, (full_result,), expected_bindings=session.bindings,
+        full_selection, tuple(full_results), expected_bindings=session.bindings,
         expected_runtime=session.runtime,
-    ) \
-        if full_complete else None
+    ) if full_complete else None
+    chain_results = tuple(item for result in full_results for item in result.chains)
     chain_values = []
-    for item in full_result.chains:
+    for item in chain_results:
         value = _json_value(asdict(item))
         value["ordered_transition_ids"] = list(
             full_selection.chains[item.ordinal].ordered_transition_ids,
@@ -351,7 +373,7 @@ def _build_result(raw_request: bytes, request_sha256: str) -> dict[str, Any]:
     chain_commit = hashlib.sha256(json_bytes({
         "request_sha256": request_sha256,
         "selection_identity": full_selection.identity,
-        "start_ordinal": start, "stop_ordinal": stop,
+        "start_ordinal": start, "stop_ordinal": next_ordinal,
         "chains": chain_values,
     })).hexdigest()
     return {
@@ -362,19 +384,44 @@ def _build_result(raw_request: bytes, request_sha256: str) -> dict[str, Any]:
         "training_producer": header["training_producer"],
         "model_id": header["model_id"], "stage_id": header["stage_id"],
         "checkpoint_id": header["checkpoint_id"],
-        "pilot": _json_value(asdict(pilot_summary)),
+        "pilot": {
+            "summary": _json_value(asdict(pilot_summary)),
+            "shard_result": _json_value(asdict(pilot_result)),
+            "chains": [
+                {**_json_value(asdict(item)), "ordered_transition_ids": list(
+                    pilot_selection.chains[item.ordinal].ordered_transition_ids,
+                )}
+                for item in pilot_result.chains
+            ],
+        },
         "full_parent": {
             "source_digest": full.identity,
             "selection_identity": full_selection.identity,
-            "chain_range": [start, stop], "complete": full_complete,
-            "next_chain_ordinal": None if full_complete else stop,
-            "chains": chain_values, "chain_commit_sha256": chain_commit,
+            "chain_range": [start, stop],
+            "max_compute_seconds": budget,
+            "coverage_range": [start, next_ordinal],
+            "range_complete": range_complete,
+            "complete": full_complete,
+            "partial_reason": None if range_complete else "compute_budget_exhausted",
+            "next_chain_ordinal": None if full_complete else next_ordinal,
+            "chains": chain_values,
+            "shard_results": [_json_value(asdict(item)) for item in full_results],
+            "chain_commit_sha256": chain_commit,
             "summary": None if summary is None else _json_value(asdict(summary)),
             "runtime": _json_value(runtime),
-            "inference_device": full_result.inference_device,
-            "phase_seconds": _json_value(full_result.phase_seconds),
-            "peak_allocated_bytes": full_result.peak_allocated_bytes,
-            "peak_reserved_bytes": full_result.peak_reserved_bytes,
+            "inference_device": session.bindings.inference_device,
+            "phase_seconds": {
+                "request_and_model_load": max(0.0, model_ready - started),
+                "pilot_replay": max(0.0, pilot_finished - model_ready),
+                "full_parent_evaluation": max(0.0, full_finished - pilot_finished),
+                "total": max(0.0, full_finished - started),
+            },
+            "peak_allocated_bytes": max(
+                (result.peak_allocated_bytes for result in full_results), default=0,
+            ),
+            "peak_reserved_bytes": max(
+                (result.peak_reserved_bytes for result in full_results), default=0,
+            ),
             "bindings": _json_value(asdict(session.bindings)),
         },
     }
@@ -387,97 +434,221 @@ def execute_public_m2_eval_request(raw: bytes, *, request_sha256: str) -> bytes:
     return _wire._pack(_RESULT_MAGIC, value, {}, MAX_RESULT_BYTES)
 
 
-def decode_public_m2_eval_result(raw: bytes, request: bytes) -> dict[str, Any]:
-    """Strict CPU-side result binding check before owner admission/commit."""
+def decode_public_m2_eval_result(
+    raw: bytes, request: bytes, *, expected_runtime: dict[str, Any],
+) -> dict[str, Any]:
+    """Strict CPU-side numerical/result binding check before owner admission."""
+    from ..canonical import semantic_hash
+    from ..fullrun.public_m2_input_storage import read_public_m2_input
+    from .checkpoint_codec import decode_checkpoint
+    from .public_m2_engine import PUBLIC_M2_EXPORT_SCHEMA
+    from .public_m2_evaluation import (
+        PublicM2EvalChainResult,
+        PublicM2EvalExpectedBindings,
+        PublicM2EvalShard,
+        PublicM2EvalShardResult,
+        build_public_m2_eval_selection,
+        combine_public_m2_eval_shards,
+    )
+
     request_sha = _sha(request)
-    header, _ = _request_parts(request)
+    header, request_blobs = _request_parts(request)
     result, blobs = _wire._unpack(raw, _RESULT_MAGIC, MAX_RESULT_BYTES)
-    if (blobs or result.get("schema") != RESULT_SCHEMA
-            or result.get("request_sha256") != request_sha):
+    top_fields = {
+        "schema", "request_sha256", "evaluation_operation_id", "attempt_id",
+        "evaluation_producer", "training_producer", "model_id", "stage_id",
+        "checkpoint_id", "pilot", "full_parent", "blobs",
+    }
+    if (blobs or not isinstance(result, dict) or set(result) != top_fields
+            or result["blobs"] != [] or result["schema"] != RESULT_SCHEMA
+            or result["request_sha256"] != request_sha):
         raise BoundaryError(_STAGE, "result_request_binding_mismatch")
     for key in ("evaluation_operation_id", "attempt_id", "evaluation_producer",
                 "training_producer", "model_id", "stage_id", "checkpoint_id"):
-        if result.get(key) != header[key]:
+        if result[key] != header[key]:
             raise BoundaryError(_STAGE, "result_exact_pin_mismatch")
-    full = result.get("full_parent")
-    if (not isinstance(full, dict) or full.get("source_digest")
-            != header["evaluation_source_digests"]["full_parent"]
-            or full.get("selection_identity") != header["selection_identities"]["full_parent"]
-            or full.get("chain_range") != header["chain_range"]
-            or type(full.get("complete")) is not bool
-            or full.get("next_chain_ordinal")
-            != (None if full["complete"] else header["chain_range"][1])):
+    full = result["full_parent"]
+    full_fields = {
+        "source_digest", "selection_identity", "chain_range", "coverage_range",
+        "max_compute_seconds",
+        "range_complete", "complete", "partial_reason", "next_chain_ordinal",
+        "chains", "shard_results", "chain_commit_sha256", "summary", "runtime",
+        "inference_device", "phase_seconds", "peak_allocated_bytes",
+        "peak_reserved_bytes", "bindings",
+    }
+    if not isinstance(full, dict) or set(full) != full_fields:
+        raise BoundaryError(_STAGE, "result_fieldset")
+    if (full["source_digest"] != header["evaluation_source_digests"]["full_parent"]
+            or full["selection_identity"] != header["selection_identities"]["full_parent"]
+            or full["chain_range"] != header["chain_range"]
+            or full["max_compute_seconds"] != header["max_compute_seconds"]):
         raise BoundaryError(_STAGE, "result_selection_binding_mismatch")
-    chains = full.get("chains")
-    if not isinstance(chains, list) or any(not isinstance(item, dict) for item in chains):
-        raise BoundaryError(_STAGE, "result_chain_inventory_invalid")
-    ordinals = [item.get("ordinal") for item in chains]
-    if ordinals != list(range(*header["chain_range"])):
-        raise BoundaryError(_STAGE, "result_chain_range_mismatch")
-    request_header, request_blobs = _request_parts(request)
-    from ..fullrun.public_m2_input_storage import read_public_m2_input
-    from .public_m2_evaluation import build_public_m2_eval_selection
+
     source = read_public_m2_input(
-        request_blobs[request_header["blob_roles"]["full_parent_input"]],
-        request_blobs[request_header["blob_roles"]["tokenizer"]],
+        request_blobs[header["blob_roles"]["full_parent_input"]],
+        request_blobs[header["blob_roles"]["tokenizer"]],
     )
     selection = build_public_m2_eval_selection(
-        source, training_input_digest=request_header["engine_input_digest"],
+        source, training_input_digest=header["engine_input_digest"],
     )
-    for item, ordinal in zip(chains, ordinals, strict=True):
-        reference = selection.chains[ordinal]
-        if (item.get("chain_id") != reference.chain_id
-                or item.get("label_count") != reference.row_count
-                or item.get("evidence_sha256") != list(reference.ordered_evidence_sha256)
-                or item.get("ordered_transition_ids")
-                != list(reference.ordered_transition_ids)):
-            raise BoundaryError(_STAGE, "result_chain_selection_mismatch")
-    bindings = full.get("bindings")
-    from ..canonical import semantic_hash
-    if (not isinstance(bindings, dict)
-            or bindings.get("training_input_digest") != header["engine_input_digest"]
-            or bindings.get("weights_sha256")
-            != _sha(request_blobs[request_header["blob_roles"]["weights"]])
-            or bindings.get("completed_epochs") != 1
-            or bindings.get("run_complete") is not False
-            or bindings.get("config_digest") != str(semantic_hash(header["training_config"]))
-            or bindings.get("implementation_sha256")
-            != header["runtime_requirement"]["implementation_sha256"]):
-        raise BoundaryError(_STAGE, "result_model_binding_mismatch")
-    runtime = full.get("runtime")
+    config = _config_from_value(header["training_config"])
+    weights_raw = request_blobs[header["blob_roles"]["weights"]]
+    export = decode_checkpoint(weights_raw)
+    if (export.get("schema") != PUBLIC_M2_EXPORT_SCHEMA
+            or export.get("input_digest") != header["engine_input_digest"]
+            or export.get("config") != header["training_config"]
+            or export.get("completed_epochs") != 1
+            or export.get("run_complete") is not (config.epochs == 1)):
+        raise BoundaryError(_STAGE, "request_frozen_weights_mismatch")
+    expected_bindings = PublicM2EvalExpectedBindings(
+        header["engine_input_digest"], _sha(weights_raw), export["weights_digest"],
+        1, config.epochs, bool(export["run_complete"]),
+        export["implementation_sha256"], str(semantic_hash(header["training_config"])),
+        "cuda:0",
+    )
+    expected_bindings.validate()
+    runtime = _json_value(expected_runtime)
     requirement = InferenceRuntimeRequirement.from_value(header["runtime_requirement"])
-    if (not isinstance(runtime, dict) or runtime.get("device_type") != "cuda"
+    if (runtime != full["runtime"] or runtime.get("device_type") != "cuda"
             or requirement.gpu_name_contains not in str(runtime.get("gpu_name", ""))
-            or runtime.get("default_dtype") != {
-                "float32": "torch.float32", "float16": "torch.float16",
-                "bfloat16": "torch.bfloat16",
-            }[requirement.precision]
             or runtime.get("torch") != requirement.torch
             or runtime.get("python") != requirement.python
-            or full.get("inference_device") != "cuda:0"):
+            or runtime.get("default_dtype") != "torch.float32"
+            or requirement.implementation_sha256 != export["implementation_sha256"]
+            or full["inference_device"] != "cuda:0"):
         raise BoundaryError(_STAGE, "result_runtime_binding_mismatch")
-    timings = full.get("phase_seconds")
-    if (not isinstance(timings, dict) or not timings
-            or any(type(value) not in {int, float} or not math.isfinite(value) or value < 0
-                   for value in timings.values())
-            or any(type(full.get(key)) is not int or full[key] < 0 for key in (
-                "peak_allocated_bytes", "peak_reserved_bytes"))):
-        raise BoundaryError(_STAGE, "result_runtime_metrics_invalid")
-    expected_commit = hashlib.sha256(json_bytes({
-        "request_sha256": request_sha,
-        "selection_identity": full["selection_identity"],
-        "start_ordinal": header["chain_range"][0],
-        "stop_ordinal": header["chain_range"][1], "chains": chains,
-    })).hexdigest()
-    if full.get("chain_commit_sha256") != expected_commit:
-        raise BoundaryError(_STAGE, "result_chain_commit_mismatch")
-    pilot = result.get("pilot")
+    if full["bindings"] != _json_value(asdict(expected_bindings)):
+        raise BoundaryError(_STAGE, "result_model_binding_mismatch")
+
+    def typed_shard(value: object, chosen_selection: Any) -> PublicM2EvalShardResult:
+        fields = {
+            "schema", "selection_identity", "source_input_identity", "training_input_digest",
+            "weights_sha256", "weights_digest", "completed_epochs", "configured_epochs",
+            "run_complete", "implementation_sha256", "config_digest", "runtime",
+            "inference_device", "shard", "ordered_chain_ids", "chains", "phase_seconds",
+            "peak_allocated_bytes", "peak_reserved_bytes",
+        }
+        if not isinstance(value, dict) or set(value) != fields:
+            raise BoundaryError(_STAGE, "result_shard_fieldset")
+        shard_data = value["shard"]
+        if not isinstance(shard_data, dict) or set(shard_data) != {
+                "selection_identity", "start_ordinal", "stop_ordinal"}:
+            raise BoundaryError(_STAGE, "result_shard_range_invalid")
+        shard = PublicM2EvalShard(**shard_data)
+        parsed_chains = []
+        for item in value["chains"]:
+            if not isinstance(item, dict) or set(item) != {
+                    "ordinal", "chain_id", "evidence_sha256", "label_count",
+                    "cross_entropy_sum", "correct_count"}:
+                raise BoundaryError(_STAGE, "result_chain_metric_fieldset")
+            item = dict(item)
+            item["evidence_sha256"] = tuple(item["evidence_sha256"])
+            parsed_chains.append(PublicM2EvalChainResult(**item))
+        return PublicM2EvalShardResult(
+            **{**value, "shard": shard, "chains": tuple(parsed_chains),
+               "ordered_chain_ids": tuple(value["ordered_chain_ids"])},
+        )
+
+    def validate_display_chains(
+        display: object, chain_results: tuple[PublicM2EvalChainResult, ...], selected: Any,
+    ) -> None:
+        if not isinstance(display, list) or len(display) != len(chain_results):
+            raise BoundaryError(_STAGE, "result_chain_inventory_invalid")
+        for shown, metric in zip(display, chain_results, strict=True):
+            if not isinstance(shown, dict) or set(shown) != {
+                    "ordinal", "chain_id", "evidence_sha256", "label_count",
+                    "cross_entropy_sum", "correct_count", "ordered_transition_ids"}:
+                raise BoundaryError(_STAGE, "result_chain_metric_fieldset")
+            ref = selected.chains[metric.ordinal]
+            if (shown["ordinal"] != metric.ordinal or shown["chain_id"] != metric.chain_id
+                    or shown["evidence_sha256"] != list(metric.evidence_sha256)
+                    or shown["label_count"] != metric.label_count
+                    or shown["cross_entropy_sum"] != metric.cross_entropy_sum
+                    or shown["correct_count"] != metric.correct_count
+                    or shown["ordered_transition_ids"] != list(ref.ordered_transition_ids)):
+                raise BoundaryError(_STAGE, "result_chain_selection_mismatch")
+
+    pilot = result["pilot"]
+    if not isinstance(pilot, dict) or set(pilot) != {"summary", "shard_result", "chains"}:
+        raise BoundaryError(_STAGE, "result_pilot_fieldset")
+    pilot_source = read_public_m2_input(
+        request_blobs[header["blob_roles"]["pilot_input"]],
+        request_blobs[header["blob_roles"]["tokenizer"]],
+    )
+    pilot_selection = build_public_m2_eval_selection(
+        pilot_source, training_input_digest=header["engine_input_digest"],
+    )
+    pilot_shard = typed_shard(pilot["shard_result"], pilot_selection)
+    validate_display_chains(pilot["chains"], pilot_shard.chains, pilot_selection)
+    pilot_summary = combine_public_m2_eval_shards(
+        pilot_selection, (pilot_shard,), expected_bindings=expected_bindings,
+        expected_runtime=runtime,
+    )
     replay = header["pilot_replay"]
     tolerance = max(replay["absolute_tolerance"],
                     abs(replay["expected_loss"]) * replay["relative_tolerance"])
-    if (not isinstance(pilot, dict) or pilot.get("label_count") != replay["expected_count"]
-            or pilot.get("correct_count") != replay["expected_correct"]
-            or not isinstance(pilot.get("loss_mean"), (int, float))
-            or abs(pilot["loss_mean"] - replay["expected_loss"]) > tolerance):
+    if (pilot["summary"] != _json_value(asdict(pilot_summary))
+            or pilot_summary.label_count != replay["expected_count"]
+            or pilot_summary.correct_count != replay["expected_correct"]
+            or not math.isfinite(pilot_summary.loss_mean)
+            or abs(pilot_summary.loss_mean - replay["expected_loss"]) > tolerance):
         raise BoundaryError(_STAGE, "result_pilot_replay_mismatch")
+
+    start, requested_stop = header["chain_range"]
+    coverage = full["coverage_range"]
+    shards_raw = full["shard_results"]
+    if (not isinstance(coverage, list) or len(coverage) != 2
+            or any(type(value) is not int for value in coverage)
+            or coverage[0] != start or not start <= coverage[1] <= requested_stop
+            or not isinstance(shards_raw, list)
+            or len(shards_raw) != coverage[1] - start
+            or type(full["range_complete"]) is not bool
+            or full["range_complete"] is not (coverage[1] == requested_stop)
+            or type(full["complete"]) is not bool
+            or full["complete"] is not (
+                full["range_complete"] and start == 0
+                and requested_stop == len(selection.chains))
+            or full["partial_reason"] != (
+                None if full["range_complete"] else "compute_budget_exhausted")
+            or full["next_chain_ordinal"] != (
+                None if full["complete"] else coverage[1])):
+        raise BoundaryError(_STAGE, "result_coverage_binding_mismatch")
+    shard_results = tuple(typed_shard(item, selection) for item in shards_raw)
+    expected_ordinals = list(range(start, coverage[1]))
+    actual_ordinals = [chain.ordinal for shard in shard_results for chain in shard.chains]
+    if actual_ordinals != expected_ordinals:
+        raise BoundaryError(_STAGE, "result_chain_range_mismatch")
+    displayed = full["chains"]
+    flattened = tuple(chain for shard in shard_results for chain in shard.chains)
+    validate_display_chains(displayed, flattened, selection)
+    if full["complete"]:
+        summary = combine_public_m2_eval_shards(
+            selection, shard_results, expected_bindings=expected_bindings,
+            expected_runtime=runtime,
+        )
+        if full["summary"] != _json_value(asdict(summary)):
+            raise BoundaryError(_STAGE, "result_full_summary_mismatch")
+    elif full["summary"] is not None:
+        raise BoundaryError(_STAGE, "partial_result_has_summary")
+    if (full["peak_allocated_bytes"] != max(
+            (item.peak_allocated_bytes for item in shard_results), default=0)
+            or full["peak_reserved_bytes"] != max(
+                (item.peak_reserved_bytes for item in shard_results), default=0)):
+        raise BoundaryError(_STAGE, "result_memory_metric_mismatch")
+    expected_commit = hashlib.sha256(json_bytes({
+        "request_sha256": request_sha,
+        "selection_identity": full["selection_identity"],
+        "start_ordinal": start, "stop_ordinal": coverage[1], "chains": displayed,
+    })).hexdigest()
+    if full["chain_commit_sha256"] != expected_commit:
+        raise BoundaryError(_STAGE, "result_chain_commit_mismatch")
+    timings = full["phase_seconds"]
+    if (not isinstance(timings, dict) or set(timings) != {
+            "request_and_model_load", "pilot_replay", "full_parent_evaluation", "total"}
+            or any(type(value) not in {int, float} or not math.isfinite(value) or value < 0
+                   for value in timings.values())
+            or any(type(full.get(key)) is not int or full[key] < 0 for key in (
+                "peak_allocated_bytes", "peak_reserved_bytes"))
+            or full["peak_reserved_bytes"] < full["peak_allocated_bytes"]):
+        raise BoundaryError(_STAGE, "result_runtime_metrics_invalid")
     return result
