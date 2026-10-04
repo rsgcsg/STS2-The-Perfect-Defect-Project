@@ -380,12 +380,14 @@ class LocalModelService:
                         pass
                     else:
                         self.state.update(status="stopped", selection_id=entry["id"])
-                        try:
-                            self._run_profile(entry["id"], old.get("run_profile"))
-                        except BoundaryError:
-                            pass
-                        else:
-                            self.state["run_profile"] = old["run_profile"]
+                        profile = old.get("run_profile")
+                        if isinstance(profile, str):
+                            try:
+                                self._run_profile(entry["id"], profile)
+                            except BoundaryError:
+                                pass
+                            else:
+                                self.state["run_profile"] = profile
                 elif old.get("status") not in {"idle", "failed"}:
                     self.state.update(
                         status="recovery_required",
