@@ -1,0 +1,49 @@
+{
+  "schema": "sts2.platform/runtime-seal-contract-1",
+  "status": "source_candidate_not_published",
+  "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+  "tag_template": "game-mod/v{version}",
+  "asset_templates": {
+    "archive": "STS2-Platform-{version}-developer-kit.zip",
+    "seal": "STS2-Platform-{version}-runtime-seal.json",
+    "evidence": "STS2-Platform-{version}-runtime-evidence.json",
+    "checksums": "checksums.sha256"
+  },
+  "seal_schema": "sts2.platform/runtime-seal-1",
+  "seal_fields": {
+    "root": ["schema", "release", "host", "environment", "evidence"],
+    "release": ["repository", "tag", "version", "archive_asset", "archive_sha256"],
+    "host": ["implementation_id", "connector_source_revision", "platform_source_revision", "compiled_source_digest_sha256", "artifact_sha256", "artifact_mvid", "protocol"],
+    "environment": ["platform", "architecture", "host_kind", "game_version", "game_commit", "main_assembly_hash", "main_assembly_sha256", "main_assembly_mvid", "modset_status", "modset_fingerprint_scope", "modset_fingerprint"],
+    "evidence": ["scope", "record_asset", "record_sha256"]
+  },
+  "provenance_schema": "sts2.platform/official-release-provenance-1",
+  "provenance_fields": ["schema", "repository", "tag", "version", "release_id", "archive_asset", "archive_sha256", "seal_asset", "seal_sha256", "evidence_asset", "evidence_sha256"],
+  "implementation_id": "STS2_PLATFORM",
+  "protocol": "1.0.0",
+  "host_kind": "live_ui",
+  "modset_status": "exact_platform_modset",
+  "modset_fingerprint_scope": "manager_state+ordered_manifest_identity+load_state+source+workshop_id+loaded_assembly_name_version_mvid",
+  "evidence_scope": "bootstrap_exact_bounded_lifecycle",
+  "limits": {
+    "metadata_bytes": 1048576,
+    "seal_bytes": 65536,
+    "provenance_bytes": 65536,
+    "evidence_bytes": 262144,
+    "checksums_bytes": 65536,
+    "archive_bytes": 268435456,
+    "json_depth": 16,
+    "redirects": 3,
+    "request_timeout_ms": 20000
+  },
+  "download_hosts": ["api.github.com", "github.com", "release-assets.githubusercontent.com"],
+  "non_claims": [
+    "draft_namespace_not_a_created_release",
+    "checksums_are_not_digital_signatures",
+    "does_not_resist_same_account_local_modification",
+    "environment_fields_do_not_include_clr_version",
+    "modset_fingerprint_is_observed_from_connector_not_rederived",
+    "evidence_hash_is_an_audit_attachment_not_ordinary_launch_acceptance",
+    "bootstrap_canary_does_not_complete_post_seal_ordinary_steam_matrix"
+  ]
+}
