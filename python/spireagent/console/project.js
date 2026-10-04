@@ -308,6 +308,7 @@ window.SpireProject = (() => {
       verified_export_required: "此模型当前没有可用的已校验导出；请先完成导出校验。",
       verified_export_receipt_required: "这份较早的记忆模型导出缺少校验回执；请点击“重新核验导出”，完成后再明确登记。",
       registration_timeout: "本次登记校验已超时；请先刷新状态核对结果，再按需明确重试。不会自动加载模型。",
+      registration_verification_storage_failed: "登记校验的临时存储写入失败；请先检查工作台运行环境，再明确重试。原导出和登记保留。",
       workspace_changed: "导出来自其他资料空间；请切回原资料空间再登记。",
       source_binding_changed: "先前登记绑定的运行源码已变化；旧选择保留。可明确重新登记并生成新选择，不会改写旧登记。",
       request_unavailable: "暂时无法读取服务，请刷新重试。",
@@ -331,12 +332,14 @@ window.SpireProject = (() => {
       quality_annotations_changed: "预览后操作标记发生了变化，请重新预览再确认生成。",
       held_out_data_cannot_train: "测试集和 Gold 不能作为训练输入。",
     };
-    return (
+    const message = (
       known[error?.message] ||
       (/^[a-z0-9_:.\/-]{1,120}$/.test(error?.message || "")
         ? `服务未完成请求（${error.message}）。`
         : "服务暂时不可用，请刷新状态。")
     );
+    return error?.message === "registration_verification_storage_failed" && hex(error?.errorId, 32)
+      ? `${message} 日志编号：${error.errorId}` : message;
   };
   async function request(ctx, path, body, localCsrfToken, requestTimeoutMs) {
     if (!live(ctx)) throw new Error("context_changed");
@@ -382,8 +385,14 @@ window.SpireProject = (() => {
     }
     const flowDiagnostic = !mutation && path === member("collection-flow") && value?.schema === "stpd/local-collection-flow-v1";
     const taskDiagnostic = !mutation && hex(value?.id,32) && path === member(`datasets/${value.id}`) && value.state === "failed";
-    if (!response.ok || (value?.error && !flowDiagnostic && !taskDiagnostic))
-      throw new Error(value?.error || "request_unavailable");
+    if (!response.ok || (value?.error && !flowDiagnostic && !taskDiagnostic)) {
+      const error = new Error(value?.error || "request_unavailable");
+      if (value?.error === "registration_verification_storage_failed"
+          && value?.category === "storage" && value?.status === "failed"
+          && value?.stage === "local_model_registration" && hex(value?.error_id, 32))
+        error.errorId = value.error_id;
+      throw error;
+    }
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw new Error("request_unavailable");
     return value;
@@ -3190,6 +3199,7 @@ window.SpireProject = (() => {
       verified_export_required: "此模型当前没有可用的已校验导出；请先完成导出校验。",
       verified_export_receipt_required: "这份较早的记忆模型导出缺少校验回执；请点击“重新核验导出”，完成后再明确登记。",
       registration_timeout: "本次登记校验已超时；请先刷新状态核对结果，再按需明确重试。不会自动加载模型。",
+      registration_verification_storage_failed: "登记校验的临时存储写入失败；请先检查工作台运行环境，再明确重试。原导出和登记保留。",
       workspace_changed: "导出来自其他资料空间；请切回原资料空间再登记。",
       registration_metadata_invalid: "本机模型登记资料无法安全确认；请检查恢复状态。",
       source_binding_changed: "先前登记绑定的运行源码已变化；旧选择保留。可明确重新登记并生成新选择，不会改写旧登记。",

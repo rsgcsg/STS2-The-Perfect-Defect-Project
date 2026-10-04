@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -705,7 +706,7 @@ def test_unsafe_registry_does_not_authorize_registration(registration, tmp_path:
 
 
 def test_http_exact_body_browser_guard_and_live_instance(
-    registration, tmp_path: Path, monkeypatch,
+    registration, tmp_path: Path, monkeypatch, caplog,
 ):
     service, config, model_id, model_root, _ = registration
     config_path = tmp_path / "project.json"
@@ -767,6 +768,36 @@ def test_http_exact_body_browser_guard_and_live_instance(
         assert json.load(missing.value)["error"] == "text_runtime_local_install_required"
         assert not (service.models.private_root / REGISTRY).exists()
         monkeypatch.setattr(registration_module, "validate_runtime_install", original_validate)
+        original_verify = service.export.verified_for_registration
+
+        storage_path = tmp_path / "verification-rows.sqlite"
+        with sqlite3.connect(storage_path) as database:
+            database.execute("CREATE TABLE rows(body TEXT)")
+
+        def storage_failure(*_args):
+            # An actual temporary SQLite failure, without touching a real store.
+            with sqlite3.connect(storage_path.as_uri() + "?mode=ro", uri=True) as database:
+                database.execute("INSERT INTO rows VALUES ('synthetic')")
+
+        monkeypatch.setattr(service.export, "verified_for_registration", storage_failure)
+        with pytest.raises(HTTPError) as storage:
+            post({"model_id": model_id}, csrf=before["csrf_token"])
+        assert storage.value.code == 500
+        failure = json.load(storage.value)
+        assert failure["error"] == "registration_verification_storage_failed"
+        assert failure["category"] == "storage" and failure["status"] == "failed"
+        assert failure["stage"] == "local_model_registration"
+        assert len(failure["error_id"]) == 32
+        assert str(tmp_path) not in json.dumps(failure)
+        assert "sqlite" not in json.dumps(failure)
+        assert failure["error_id"] in caplog.text
+        assert "sqlite_errorcode=8" in caplog.text
+        assert "sqlite_errorname=SQLITE_READONLY" in caplog.text
+        assert not (service.models.private_root / REGISTRY).exists()
+        # A failed verification does not tear down the service or silently replay.
+        with client.open(status_url) as response:
+            assert json.load(response)["status"] == "not_registered"
+        monkeypatch.setattr(service.export, "verified_for_registration", original_verify)
         with post({"model_id": model_id}, csrf=before["csrf_token"]) as response:
             registered = json.load(response)
         assert registered["status"] == "registered"

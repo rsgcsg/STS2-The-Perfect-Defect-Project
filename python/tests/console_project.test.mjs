@@ -2819,6 +2819,41 @@ test("current registration integrity blockers are reconciled by GET and disable 
   assert.equal(post(env.calls).length, 1, "reconciliation does not replay the rejected POST");
 });
 
+test("terminal registration storage failure releases pending and shows only safe log ID", async () => {
+  const model = id("d"), errorId = "b".repeat(32);
+  let attempts = 0;
+  const env = setup({
+    identity:{status:"signed_out"}, view:"local-workspace", query:`&id=${model}`,
+    handler:async url => {
+      if (url === "/api/local-workspace/managed") return {
+        schema:"stpd/managed-local-workspace-registration-v1", status:"ready", curation_status:"ready",
+      };
+      if (url === `/api/local-workspace/artifacts/${model}`) return textMenuScratchModel(model);
+      if (url === "/api/local-model-exports/status")
+        return modelExportStatus({status:"completed", model_id:model});
+      if (url === `/api/local-model-registrations/status?model_id=${model}`)
+        return modelRegistrationStatus(model);
+      if (url === "/api/local-model-registrations/register") {
+        attempts++;
+        return {httpStatus:500, error:"registration_verification_storage_failed",
+          stage:"local_model_registration", category:"storage", status:"failed", error_id:errorId,
+          internal_path:"/private/synthetic/rows.sqlite", traceback:"must not display"};
+      }
+      throw new Error(`unexpected route ${url}`);
+    },
+  });
+  const page = await env.render(), register = action(page, "register-local-model");
+  await register.onclick();
+  assert.equal(register.disabled, false);
+  assert.equal(attempts, 1);
+  assert.equal(post(env.calls).length, 1, "a terminal failure is never automatically replayed");
+  assert.match(text(env.notice), /临时存储写入失败/);
+  assert.match(text(env.notice), new RegExp(errorId));
+  assert.doesNotMatch(text(env.notice), /private|sqlite|must not display/);
+  await register.onclick();
+  assert.equal(attempts, 2, "another attempt requires an explicit click");
+});
+
 test("registration only appears for the matching completed export and unavailable reasons stay bounded", async () => {
   const model = id("a"), other = id("b");
   const cases = [
