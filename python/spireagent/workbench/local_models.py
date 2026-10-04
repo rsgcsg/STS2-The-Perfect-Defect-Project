@@ -377,10 +377,11 @@ class LocalModelService:
                         entry = self.selection(old.get("selection_id", ""))
                     except (OSError, ValueError, BoundaryError):
                         # A retired choice cannot invalidate confirmed shutdown.
-                        entry = None
-                    if entry is not None:
+                        pass
+                    else:
                         self.state.update(status="stopped", selection_id=entry["id"])
-                        if old.get("run_profile") in RUN_PROFILES:
+                        if (isinstance(old.get("run_profile"), str)
+                                and old["run_profile"] in RUN_PROFILES):
                             self.state["run_profile"] = old["run_profile"]
                 elif old.get("status") not in {"idle", "failed"}:
                     self.state.update(
