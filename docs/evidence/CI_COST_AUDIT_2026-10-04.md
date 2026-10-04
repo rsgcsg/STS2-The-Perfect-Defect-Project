@@ -37,6 +37,23 @@ PR source head 与默认 PR merge checkout 分开记录；不能把二者混写�
 候选实现；审计新候选源码为只读，未改 M2/Product writer 的 checkout 或脚本。
 本候选不据历史 run 宣称新 head 已过 CI。
 
+在首轮候选执行期间又核对到直接 base 的同树基线：develop9556 的
+[push run36832341761](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36832341761)
+仅 reuse，不能当新 full；其 plan 指向
+[executed run36828240491](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/36828240491)。
+原 PR source550c5b8d50eb861ad3ed3318aa8b300a9645463a、实际 checkout
+01bef8d1e8b6f858a6d1076f3a34703872bd73d2、tree
+d5b01593b3419c3fd92ba7bb744f424bb94880d2，与本候选 base tree 完全相同；
+workflow26be7843a750d11925eb33ff145250cbeae1394a 也与 base 完全相同。
+三个 artifact 均下载并核对 SHA256：Windows11147995396
+4345c28fb9c11c7ec386a918a2a677b36116617e53a719ec9f636ad88d73519a；
+Linux11147170173
+102e2db7396e421207a89db2e6c49ffe4f38d871d2729c64428e76fe5f351e28；
+receipt11147376197
+f4d0c469a9701076fedde82adcd760e4f70f53138e229ace9414df6f1e954526。
+两 OS JUnit 均2249条，errors/failures=0，Windows/Linux skip41/4。
+这是更接近的源树 before；仍不是相同日期、同一 runner 的受控重复试验。
+
 ## 墙钟与阶段分解
 
 单位秒。安装取 job steps；Python 细项取已有 portable_duration JSON。
@@ -62,6 +79,20 @@ Windows selected gate 占 job 的 97.2% / 96.5%，Pytest 占 selected gate
 run 创建到 plan 开始约 3 秒，plan 完成到叶 job 开始约 2–4 秒。
 这些 run 没有长队列证据。全 run 墙钟分别约 55:30 和 37:53，不能把
 Linux 与 Windows 墙钟相加解释开发等待时间。
+
+直接 base 的 executed run36828240491 阶段秒数如下：
+
+| 阶段 | Windows | Linux |
+|---|---:|---:|
+| job / selected gate | 2406 / 2308 | 743 / 698 |
+| uv / SDK+npm安装 | 44 / 9 | 15 / 6 |
+| Pytest子进程 / JUnit suite | 1900.000 / 1896.595 | 496.275 / 493.316 |
+| Mypy / Workbench E2E | 52.907 / 71.406 | 48.518 / 31.814 |
+| cloud smoke / Python build | 30.766 / 4.422 | 19.292 / 2.550 |
+| 其他 gate（差值） | 246.515 | 98.469 |
+
+base runner image 为 Windows20260922.246.2、Ubuntu20260920.314.1；
+后续候选必须记录自身 image，不能只因为源树相近便忽略 runner 差异。
 
 另外 fresh job 元数据：[PR150 run37175286478](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/37175286478)
 Windows/Linux gate 为 2424/1053 秒；
@@ -194,7 +225,7 @@ Python 静态预检加 --platform win32；先核对条件分支、依赖 stubs �
 
 | 优先级 | 动作 | 基线/预计收益证据 | 风险与验证 |
 |---|---|---|---|
-| P1，本候选 | 已存在 blob 先 bounded get/精确比字节，缺失走原 durable 原子路径 | macOS 合成重复发布 median13.398ms ->2.702ms/20次；每20次临时写20->0、fsync20->0 | 新 key 多一次缺失读取；需要双 OS 跟踪热点，不能外推整 CI |
+| P1，本候选 | 已存在 blob 先明确 lstat存在再 bounded get/精确比字节，缺失走原 durable 原子路径 | consumer安全修复后 macOS重复发布 median12.299ms ->3.037ms/20次；每20次临时写20->0、fsync20->0 | 新 key 多一次metadata检查；需要双 OS 跟踪热点，不能外推整 CI |
 | P1，下一有界试验 | 对 M0remote/budget 相同输入共享 immutable producer、每用例独立 owner/store | remote 累计311–479s Win；五 budget setup约56–73s Win，已是真实热区 | 不能共享可写 ledger/roster或伪造 provenance；未试验，节省未知 |
 | P2，本候选 | plan 阶段检查实际 PR/push committed range | clean CI 裸 git diff --check漏已提交错误；负例在新预检失败 | 质量与早失败改进；成功 run 不承诺提速 |
 | P2 | 在保留独立 package 语义下减少重复 TS rebuild；最早跑 Game Mod metadata check | 组件区间几十秒；metadata源码检查<1s | 不省 installed consumer/build验证，不另建版本表 |
@@ -205,16 +236,18 @@ Python 静态预检加 --platform win32；先核对条件分支、依赖 stubs �
 
 微实验用 Python3.11.15，强制被测模块路径指向本任务 clone；210000 bytes纯合成数据，
 3 组 ×20次首次/同字节重发布，基线路径直接从 develop 原源码加载，
-未改 checkout 或关闭 fsync。首次发布 median11.972->11.351ms/20次，
-两者均40次 fsync和20次临时写；该微小差异视为噪声。重复路径约4.96倍，
-绝对中位数节省10.696ms/20次，仅描述本机热路径。
-峰值 RSS27.9MB。时间 wrapper 最后因 kern.clockrate sysctl权限拒绝退出1；
-主脚本已成功写计数/时间 JSON，不能把 wrapper称为全PASS，未重试该拒绝动作。
+未改 checkout 或关闭 fsync。consumer安全修复后重新执行 probe：首次发布
+median12.369->11.635ms/20次，两者均40次 fsync和20次临时写，差异视为噪声。
+重复路径约4.05倍，绝对中位数节省9.261ms/20次，仅描述本机热路径。
+峰值 RSS27.5MB，主脚本正常exit0。最初8bdafba0候选的4.96倍只对应当时
+热路径；该候选随后在真实consumer负例失败，不能将其成绩沿用给修复后源码。
+最初时间 wrapper 因 kern.clockrate sysctl权限拒绝退出1，未重试该拒绝动作。
 
-46 个有界存储回归通过（含原实现负例复核的脚本总时0.514s，峰值71.9MB），含首次文件/目录 fsync、并发同字节、
+55 个有界 storage/backup回归通过（含两版旧实现负例复核的脚本总时0.595s，峰值86.7MB），含首次文件/目录 fsync、并发同字节、
 冲突/partial winner、删除竞争 winner fail-closed、bounds/type/只读、
 原路径验证（含模拟 Windows reparse point）和 payload完整性。新增“相同对象不得再写临时文件”回归在
-原方法上确实失败，新方法通过。独立静态审查核对了生产语义和这些约束。
+base原方法上确实失败，新方法通过；首次publication不读未创建key以及原backup
+负例均在8bdafba0方法上失败，修复后通过。backup原七个用例全部保留并通过。
 存储协议仍要求外部不要改已发布对象；读后被外部 hardlink writer 删除/替换的
 保证不属于此协议，旧方法也没有该保证。此候选没有声称抵御不受控目录攻击者。
 
@@ -222,13 +255,45 @@ Python 静态预检加 --platform win32；先核对条件分支、依赖 stubs �
 commit 的 PR范围、无/zero base、无效和选项形 ref、早预检顺序、双 OS aggregate。
 新增预检失败直接使 plan失败、portable失败，未选叶 job跳过不会变成PASS。
 初始 push 的 zero-base fallback 仅检查 tip commit；后续 PR 检查完整 base-to-merge 范围。
-首次候选只发一次 draft PR，由新 head 的实际双 OS/portable终态决定是否可集成。
+候选保持draft，由最终新 head 的实际双 OS/portable终态决定是否可集成。
+
+首轮 [PR155 run37186725916](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/37186725916)
+head8bdafba0d63bbf2a0c4eab443110108439243ff8、actualcheckout
+30b666882f99dcd088a88b54295ff39c56c1e424，在Linux失败。
+pytest459.315s；JUnit2259条、1failure、4skip，唯一失败为
+deploy/hub/test_backup.py::BackupTests::test_failed_remote_readback_does_not_publish_commit_manifest。
+失败日志和JUnit11297476891均保存，ZIP SHA256为
+bdfde8a55c2896a29fc5540b9a777a460d7b5582edf5128a658ef8a4c031be5b。
+准确调用栈为 upload_snapshot -> put_verified -> LocalBlobStore.put_if_absent
+-> 新快路self.get -> immutable_key_collision。该负例用真实SQLite输入，
+get fault注入固定wrong，原合同是先durable首次发布，再由put_verified显式get
+读回触发BackupError(remote_readback_mismatch)，禁止发布receipts/commit manifest。
+不能改期望错误或删除负例来隐藏阶段回归。
+
+修复仅在lstat明确存在时进入读取快路；只吞FileNotFoundError，其他metadata
+错误传播。缺失新key不提前触发consumer readback hook；既存对象仍逐字节校验。
+stat之后删除对象仍走原publication，stat之后出现竞争对象仍由原atomic link收敛。
+这也说明isolated storage回归不足，低成本真实consumer fault边界应加入最早回归。
+在保存上述失败证据和Windows当前phase后，parent已授权仅取消本任务的已失败run
+剩余工作，再推修复源码的一次新CI；旧failure/cancelled绝不计为PASS。
+本任务不取消、rerun或修改任何其他PR/run，不为同一旧head盲重跑。
 
 ## 复用操作与协调边界
 
 开发时先跑 lowest-cost faithful owning 回归，稳定后用
 npm run check:plan -- --base origin/develop；不要每改一行重跑 full。
 源/test树稳定后 batch一次候选 push。Hosted正在执行 full时，不重复开同树本地full。
+
+改 LocalBlobStore 时，最早的低成本 faithful 回归应包含真实 backup consumer，
+不能只测 storage类。在已完成锁定bootstrap的 Python工作目录运行：
+
+```bash
+uv run --locked python -m pytest -q tests/test_local_blob_publication.py \
+  tests/test_local_store_paths.py tests/test_artifact_store_v1.py deploy/hub/test_backup.py
+```
+
+这些用例使用合成字节/临时SQLite，无生产store或模型；本轮55例只需0.41s。
+性能机制负例单独校验不创建临时文件/fsync次数，避免用易抖动的墙钟阈值作为测试。
 
 审计下一 run：只读该 run 的 jobs/steps，下载其 pytest-OS-attempt artifacts，
 核对 ZIP digest，再按 classname 累加 testcase time；用已有 portable_duration

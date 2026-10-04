@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 
@@ -47,15 +48,37 @@ def test_first_publication_still_syncs_and_cleans_pending_file(tmp_path, monkeyp
     assert not list(tmp_path.rglob(".pending-*"))
 
 
+def test_first_publication_does_not_read_an_uncreated_key(tmp_path, monkeypatch):
+    store = LocalBlobStore(tmp_path)
+    monkeypatch.setattr(store, "get", lambda _: pytest.fail("read before publication"))
+    assert store.put_if_absent("objects/item", b"exact") is True
+    assert (tmp_path / "objects/item").read_bytes() == b"exact"
+
+
+def test_precheck_metadata_error_is_not_absence(tmp_path, monkeypatch):
+    store = LocalBlobStore(tmp_path)
+    assert store.put_if_absent("objects/item", b"exact")
+    path = tmp_path / "objects/item"
+    monkeypatch.setattr(store, "_path", lambda _: path)
+
+    def unavailable(_path):
+        raise OSError(errno.ELOOP, "synthetic metadata failure")
+
+    monkeypatch.setattr(local.os, "lstat", unavailable)
+    with pytest.raises(OSError, match="synthetic metadata failure"):
+        store.put_if_absent("objects/item", b"exact")
+    assert path.read_bytes() == b"exact"
+
+
 @pytest.mark.parametrize("winner", [b"exact", b"different", b"ex"])
-def test_publisher_after_missing_read_is_reconciled_by_atomic_link(
+def test_publisher_after_absent_precheck_is_reconciled_by_atomic_link(
     tmp_path, monkeypatch, winner,
 ):
     store = LocalBlobStore(tmp_path)
     original = local.tempfile.mkstemp
 
     def concurrent_publication(**kwargs):
-        # Insert a competing winner after the early absent read. Even a partial
+        # Insert a competing winner after the early absent precheck. Even a partial
         # out-of-contract external write must not be accepted as matching bytes.
         (tmp_path / "objects/item").write_bytes(winner)
         return original(**kwargs)
@@ -108,6 +131,7 @@ def test_missing_after_existing_path_read_uses_durable_publication(tmp_path, mon
 
 def test_observation_error_is_not_treated_as_a_missing_object(tmp_path, monkeypatch):
     store = LocalBlobStore(tmp_path)
+    assert store.put_if_absent("objects/item", b"exact")
 
     def unreadable(_key):
         raise StoreError("synthetic_read_failure")
@@ -115,7 +139,8 @@ def test_observation_error_is_not_treated_as_a_missing_object(tmp_path, monkeypa
     monkeypatch.setattr(store, "get", unreadable)
     with pytest.raises(StoreError, match="synthetic_read_failure"):
         store.put_if_absent("objects/item", b"exact")
-    assert list(tmp_path.iterdir()) == []
+    assert (tmp_path / "objects/item").read_bytes() == b"exact"
+    assert not list(tmp_path.rglob(".pending-*"))
 
 
 def test_existing_path_retains_incoming_and_observed_size_bounds(tmp_path, monkeypatch):
