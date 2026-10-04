@@ -75,7 +75,7 @@ async function dispatch(runtime: PolicyRuntime, request: IncomingMessage, respon
       if (denied) { json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
       json(response, 200, await runtime.readEnvironment()); return;
     }
-    if (request.method !== "POST" || !["/v2/mode", "/v2/tick", "/v2/stop"].includes(request.url ?? "")) { json(response, 404, { schema: HTTP_SCHEMA, error: "not_found" }); return; }
+    if (request.method !== "POST" || !["/v2/mode", "/v2/tick", "/v2/stop", "/v2/stateful-segment/begin", "/v2/stateful-segment/end"].includes(request.url ?? "")) { json(response, 404, { schema: HTTP_SCHEMA, error: "not_found" }); return; }
     const denied = mutationRequestError(request);
     if (denied) { request.resume(); json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
     const runHeader = "x-sts2-policy-run-id";
@@ -90,6 +90,19 @@ async function dispatch(runtime: PolicyRuntime, request: IncomingMessage, respon
       request.resume(); json(response, 409, { schema: HTTP_SCHEMA, error: "runtime_run_mismatch" }); return;
     }
     const body = await readBody(request, maxBodyBytes);
+    if (request.url === "/v2/stateful-segment/begin") {
+      const value = strictObject(body, ["scope"]);
+      if (value.scope !== "single_game_episode" && value.scope !== "bounded_policy_segment") throw new Error("stateful segment scope is invalid");
+      const segment = await runtime.beginPublicStatefulSegment(value.scope);
+      json(response, 200, { schema: `${HTTP_SCHEMA}/stateful-segment-1`, segment });
+      return;
+    }
+    if (request.url === "/v2/stateful-segment/end") {
+      strictObject(body, []);
+      const segment = await runtime.endPublicStatefulSegment();
+      json(response, 200, { schema: `${HTTP_SCHEMA}/stateful-segment-1`, segment });
+      return;
+    }
     if (request.url === "/v2/mode") {
       const value = strictObject(body, ["mode"]);
       if (value.mode !== "human" && value.mode !== "shadow" && value.mode !== "one_step" && value.mode !== "auto") throw new Error("mode is invalid");
