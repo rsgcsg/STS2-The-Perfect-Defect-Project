@@ -130,6 +130,20 @@ describe("public Snapshot stateful protocol 4", () => {
     expect(publicDecisionFingerprint(first)).not.toBe(publicDecisionFingerprint(selected));
   });
 
+  it("preserves duplicate candidate identity with every catalog count held fixed", () => {
+    const base = cycleSnapshot("claim", 1);
+    const first = base.bound_actions.actions[0]!;
+    const other = { ...first, bound_action_id: "other-handle", label: "other choice" };
+    const duplicate = { ...first, bound_action_id: "other-handle" };
+    const catalog = { ...base.bound_actions, materialized_count: 2, total_count: 2, limit: 2 };
+    const distinct = { ...base, bound_actions: { ...catalog, actions: [first, other] } };
+    const repeated = { ...base, bound_actions: { ...catalog, actions: [first, duplicate] } };
+    expect(publicDecisionFingerprint(distinct)).not.toBe(publicDecisionFingerprint(repeated));
+    expect(publicDecisionFingerprint(repeated)).toBe(publicDecisionFingerprint({
+      ...repeated, bound_actions: { ...catalog, actions: [duplicate, first] }
+    }));
+  });
+
   it("allows one public A→B→A return, then hands a repeated semantic cycle to Human under the same wallet", async () => {
     const connector = new CyclingConnector(), events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
     connector.delivery = "delivered";

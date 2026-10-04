@@ -177,6 +177,9 @@ Connector's explicit interaction, referent, Read and BoundAction handles;
 candidate order is normalized while multiplicity remains. Persistent player
 facts and opaque surface/context/referent facts are retained. Thus changing
 HP, energy, deck, selection, rewards or progress prevents a cycle match.
+Referents with identical public facts share a normalized reference value, but
+their count remains in the fingerprint. This visible-state signal does not
+prove that those native entities, hidden outcomes or model inputs are equal.
 Unknown fields, including nested IDs, are deliberately retained and may cause
 a missed cycle. This is a bounded no-progress safety signal, not evidence of
 gameplay completion. It never adds submissions, renews the authorization
