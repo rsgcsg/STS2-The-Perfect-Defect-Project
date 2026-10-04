@@ -27,16 +27,16 @@
       "component_source_digest_sha256": "d9fa3fad167355bd77f877d2a0b1fcd4f125afee9a54d0a53daaa9b1d2a660ac"
     },
     "evidence": {
-      "version": "0.1.0-rc.25",
-      "source_revision": "01b831493d23cb8941ee51087fae14bc2527b39a",
-      "component_tree_revision": "869a7c588fd18d56fc3ca29d3e7b8163f34fc013",
-      "component_source_digest_sha256": "3d3b440b04b2af2822c5747871c0dc19cbd3eb6078ad316155d8e694dae613c0"
+      "version": "0.1.0-rc.26",
+      "source_revision": "fbd337e7f8c2c639904f0acdf11e43e6db3c7ddf",
+      "component_tree_revision": "6ac8cea79e7013d6e712c55e4282452c71113039",
+      "component_source_digest_sha256": "c735d85a190161a2ba7f58e44fd77470bbe07622f7e09b60ea4d50a50c361f59"
     },
     "policy_runtime": {
-      "version": "0.1.0-rc.18",
-      "source_revision": "01b831493d23cb8941ee51087fae14bc2527b39a",
-      "component_tree_revision": "6308f7ef461229a4c1018614a7e572fdcee7ff2a",
-      "component_source_digest_sha256": "badbba25a42bcdf9f0d0ab05c355b1bd7cd5fa2f51eb04986fed60124859260b"
+      "version": "0.1.0-rc.19",
+      "source_revision": "fbd337e7f8c2c639904f0acdf11e43e6db3c7ddf",
+      "component_tree_revision": "56271d663d4a68bbfe2f5f2763272ac5d910f67c",
+      "component_source_digest_sha256": "f6408e8428468d0766f217ad67915b2aa551da31afc22ad86d4149f80a2d06bb"
     },
     "workbench": {
       "version": "0.1.0-rc.3",
@@ -269,9 +269,9 @@
       "source_revision": "e19b30315015664a5647ab351cdcefb09417f275",
       "source_digest_sha256": "d227321727d07edd2d4c67928edec439c26f156494dd9cfab98d2bac4debf346",
       "version": "0.1.0-rc.1",
-      "current_component_source_revision": "01b831493d23cb8941ee51087fae14bc2527b39a",
-      "current_component_source_digest_sha256": "badbba25a42bcdf9f0d0ab05c355b1bd7cd5fa2f51eb04986fed60124859260b",
-      "current_component_version": "0.1.0-rc.18",
+      "current_component_source_revision": "fbd337e7f8c2c639904f0acdf11e43e6db3c7ddf",
+      "current_component_source_digest_sha256": "f6408e8428468d0766f217ad67915b2aa551da31afc22ad86d4149f80a2d06bb",
+      "current_component_version": "0.1.0-rc.19",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
     "annotator": {
