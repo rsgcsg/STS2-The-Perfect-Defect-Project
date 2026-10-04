@@ -49,6 +49,10 @@ classes are defined in [Engineering Governance](ENGINEERING_GOVERNANCE.md).
 
 ## Evidence, decisions and memory
 
+Current Stage 1a light-action M0 train/model/export, bounded registration, one-step
+native canary, and separate nine-action profile-3 canary: [2026-10-03 bounded-chain
+closure](research/evidence/STAGE1A_LIGHT_ACTION_M0_CLOSURE_2026-10-03.md).
+
 [AgenticSTS Audit](evidence/AGENTICSTS_DATA_ADMISSION_AUDIT_2026-08-22.md) and
 [Data Lifecycle Closeout](evidence/DATA_LIFECYCLE_ENGINEERING_CLOSEOUT_2026-08-29.md)
 remain scoped historical records. The Platform Annotator schema is externally owned;

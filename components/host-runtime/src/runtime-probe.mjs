@@ -18,12 +18,24 @@ import { evaluateRuntimeCompatibility } from "./compatibility.mjs";
 import { readProjectIdentity } from "./project-identity.mjs";
 import { publicProfileDescriptor, resolveLaunchProfile } from "./profile-isolation.mjs";
 import {
+  CONNECTOR_PORT_ENVIRONMENT_VARIABLE,
   GAME_CANARY_ENVIRONMENT_VARIABLE,
   HOST_CONTROL_TOKEN_ENVIRONMENT_VARIABLE,
   resolveConnectorEndpoint,
   SOURCE_CANARY_ENVIRONMENT_VARIABLE
 } from "./connector-endpoint.mjs";
 import { validateRequestedHostExecutionProfile } from "./host-execution-profile.mjs";
+
+const NATIVE_LIFECYCLE_ENVIRONMENT_NAMES = Object.freeze([
+  CONNECTOR_PORT_ENVIRONMENT_VARIABLE,
+  HOST_CONTROL_TOKEN_ENVIRONMENT_VARIABLE,
+  GAME_CANARY_ENVIRONMENT_VARIABLE,
+  SOURCE_CANARY_ENVIRONMENT_VARIABLE,
+  "STS2_CONNECTOR_RUN_SEED",
+  "STS2_CONNECTOR_HOST_EXECUTION_PROFILE",
+  "SteamAppId",
+  "SteamGameId"
+]);
 
 export function resolveExperimentalConnectorCanary({
   installation,
@@ -68,6 +80,90 @@ export function withExplicitConnectorCanary(environment, connectorCanary) {
 }
 
 export { listGameProcesses } from "./game-processes.mjs";
+
+export const HOST_DISPLAY_MODES = Object.freeze(["headless", "native_window"]);
+
+export function validateHostDisplayMode(displayMode = "headless") {
+  if (!HOST_DISPLAY_MODES.includes(displayMode)) {
+    throw new Error(`Host display mode must be ${HOST_DISPLAY_MODES.join(" or ")}.`);
+  }
+  return displayMode;
+}
+
+function environmentNameKey(name) {
+  return process.platform === "win32" ? name.toUpperCase() : name;
+}
+
+function nativeWindowProfileEnvironment(launchProfile) {
+  const profileRoot = launchProfile?.profile_root;
+  const profileHome = path.join(profileRoot ?? "", "home");
+  const expected = {
+    HOME: path.resolve(profileHome),
+    USERPROFILE: path.resolve(profileHome)
+  };
+  if (process.platform === "win32") {
+    expected.APPDATA = path.resolve(profileHome, "AppData", "Roaming");
+    expected.LOCALAPPDATA = path.resolve(profileHome, "AppData", "Local");
+  } else if (process.platform === "linux") {
+    expected.XDG_DATA_HOME = path.resolve(profileHome, ".local", "share");
+  }
+  const expectedByName = new Map(Object.entries(expected)
+    .map(([name, value]) => [environmentNameKey(name), value]));
+  const profileEnvironment = launchProfile?.environment;
+  const environmentMatches = profileEnvironment != null
+    && Object.entries(profileEnvironment).every(([name, value]) => {
+      const requiredValue = expectedByName.get(environmentNameKey(name));
+      return requiredValue == null || value === requiredValue;
+    })
+    && Object.entries(expected).every(([name, value]) => profileEnvironment[name] === value);
+  if (launchProfile?.mode !== "isolated_local_profile"
+      || launchProfile?.isolation_status !== "source_backed_experimental"
+      || !/^[a-z0-9][a-z0-9._-]{0,63}$/u.test(launchProfile?.profile_id ?? "")
+      || typeof launchProfile?.generation_id !== "string"
+      || launchProfile.generation_id.length < 1
+      || launchProfile?.steam !== "disabled_before_platform_initialization"
+      || JSON.stringify(launchProfile?.args) !== JSON.stringify(["--force-steam=off", "--clientId=1"])
+      || !environmentMatches) {
+    throw new Error("Native-window Host launches require an exact Host-owned isolated profile.");
+  }
+  return expected;
+}
+
+function removeEnvironmentNames(environment, names) {
+  const normalized = new Set(names.map(environmentNameKey));
+  for (const name of Object.keys(environment)) {
+    if (normalized.has(environmentNameKey(name))) delete environment[name];
+  }
+}
+
+function validateComposedNativeEnvironment(environment, expectedProfileEnvironment, expectedLifecycleEnvironment) {
+  const expectedValues = {
+    ...expectedProfileEnvironment,
+    ...expectedLifecycleEnvironment
+  };
+  const protectedNames = new Set([
+    ...Object.keys(expectedProfileEnvironment),
+    ...NATIVE_LIFECYCLE_ENVIRONMENT_NAMES
+  ].map(environmentNameKey));
+  const expected = new Map(Object.entries(expectedValues)
+    .map(([name, value]) => [environmentNameKey(name), value]));
+  for (const [name, value] of Object.entries(environment)) {
+    const normalizedName = environmentNameKey(name);
+    if (!protectedNames.has(normalizedName)) continue;
+    const required = expected.get(environmentNameKey(name));
+    if (required == null) {
+      throw new Error(`Native-window launch environment added protected lifecycle variable ${name}.`);
+    }
+    if (required != null && value !== required) {
+      throw new Error(`Native-window launch environment overrides isolated profile path ${name}.`);
+    }
+  }
+  for (const [name, value] of Object.entries(expectedValues)) {
+    if (environment[name] !== value) {
+      throw new Error(`Native-window launch environment lost Host-owned value ${name}.`);
+    }
+  }
+}
 
 export async function readJson(endpoint, route, timeoutMs = 2500) {
   try {
@@ -285,7 +381,8 @@ export async function requestHostProvenance({
 export async function stopChild(child, {
   endpoint = null,
   hostControlToken = null,
-  expectedRuntimeInstanceId = null
+  expectedRuntimeInstanceId = null,
+  beforeSignal = () => true
 } = {}) {
   const hostShutdown = await requestHostShutdown({
     endpoint,
@@ -296,12 +393,15 @@ export async function stopChild(child, {
     const gracefulExit = await waitForExit(child, 10_000);
     if (gracefulExit != null) return { ...gracefulExit, host_shutdown: hostShutdown, forced: false };
   }
+  if (!beforeSignal("SIGINT")) return null;
   child.kill("SIGINT");
   let exit = await waitForExit(child, 5_000);
   if (exit != null) return { ...exit, host_shutdown: hostShutdown, forced: true };
+  if (!beforeSignal("SIGTERM")) return null;
   child.kill("SIGTERM");
   exit = await waitForExit(child, 5_000);
   if (exit != null) return { ...exit, host_shutdown: hostShutdown, forced: true };
+  if (!beforeSignal("SIGKILL")) return null;
   child.kill("SIGKILL");
   exit = await waitForExit(child, 3_000);
   return exit == null ? null : { ...exit, host_shutdown: hostShutdown, forced: true };
@@ -316,19 +416,59 @@ export function shippedRuntimeLaunch(installation, {
   stderr = "pipe",
   extraEnvironment = {},
   launchProfile = null,
+  displayMode = "headless",
   connectorEndpoint = null,
   runSeed = null,
   connectorCanary = null,
-  hostExecutionProfile = null
+  hostExecutionProfile = null,
+  spawnProcess = spawn
 } = {}) {
+  validateHostDisplayMode(displayMode);
+  const expectedProfileEnvironment = displayMode === "native_window"
+    ? nativeWindowProfileEnvironment(launchProfile)
+    : null;
+  if (expectedProfileEnvironment != null) {
+    const protectedNames = new Set([
+      ...Object.keys(expectedProfileEnvironment),
+      ...NATIVE_LIFECYCLE_ENVIRONMENT_NAMES
+    ].map(environmentNameKey));
+    const extraProfileOverride = Object.keys(extraEnvironment)
+      .find((name) => protectedNames.has(environmentNameKey(name)));
+    if (extraProfileOverride != null) {
+      throw new Error(`Extra environment cannot override protected native Host variable ${extraProfileOverride}.`);
+    }
+  }
   const requestedHostExecutionProfile = validateRequestedHostExecutionProfile(hostExecutionProfile);
   const connector = connectorEndpoint == null
     ? null
     : resolveConnectorEndpoint(connectorEndpoint);
   const hostControlToken = connector == null ? null : randomBytes(32).toString("hex");
-  const args = ["--headless", "--verbose", ...(launchProfile?.args ?? [])];
+  const args = [
+    ...(displayMode === "headless" ? ["--headless"] : []),
+    "--verbose",
+    ...(launchProfile?.args ?? [])
+  ];
+  const inheritedEnvironment = { ...process.env };
+  if (expectedProfileEnvironment != null) {
+    removeEnvironmentNames(inheritedEnvironment, [
+      ...Object.keys(expectedProfileEnvironment),
+      ...NATIVE_LIFECYCLE_ENVIRONMENT_NAMES
+    ]);
+  }
+  const expectedLifecycleEnvironment = {
+    ...(connector?.process_environment ?? {}),
+    ...(hostControlToken == null ? {} : { [HOST_CONTROL_TOKEN_ENVIRONMENT_VARIABLE]: hostControlToken }),
+    ...(runSeed == null ? {} : { STS2_CONNECTOR_RUN_SEED: runSeed }),
+    ...(requestedHostExecutionProfile == null
+      ? {}
+      : { STS2_CONNECTOR_HOST_EXECUTION_PROFILE: requestedHostExecutionProfile }),
+    ...(connectorCanary?.game_id == null ? {} : { [GAME_CANARY_ENVIRONMENT_VARIABLE]: connectorCanary.game_id }),
+    ...(connectorCanary?.source_revision == null
+      ? {}
+      : { [SOURCE_CANARY_ENVIRONMENT_VARIABLE]: connectorCanary.source_revision })
+  };
   const environment = withExplicitConnectorCanary({
-    ...process.env,
+    ...inheritedEnvironment,
     SteamAppId: process.env.SteamAppId ?? STS2_APP_ID,
     SteamGameId: process.env.SteamGameId ?? STS2_APP_ID,
     ...(launchProfile?.environment ?? {}),
@@ -343,10 +483,17 @@ export function shippedRuntimeLaunch(installation, {
     ...extraEnvironment
   }, connectorCanary);
   if (launchProfile?.steam === "disabled_before_platform_initialization") {
-    delete environment.SteamAppId;
-    delete environment.SteamGameId;
+    if (expectedProfileEnvironment != null) {
+      removeEnvironmentNames(environment, ["SteamAppId", "SteamGameId"]);
+    } else {
+      delete environment.SteamAppId;
+      delete environment.SteamGameId;
+    }
   }
-  const child = spawn(installation.executable, args, {
+  if (expectedProfileEnvironment != null) {
+    validateComposedNativeEnvironment(environment, expectedProfileEnvironment, expectedLifecycleEnvironment);
+  }
+  const child = spawnProcess(installation.executable, args, {
     cwd: installation.executable_cwd,
     env: environment,
     stdio: ["ignore", stdout, stderr]
@@ -358,8 +505,9 @@ export function shippedRuntimeLaunch(installation, {
     connector,
     hostControlToken,
     hostConfiguration: {
-      display_driver: "headless",
-      audio_driver: "Dummy",
+      ...(displayMode === "headless"
+        ? { display_driver: "headless", audio_driver: "Dummy" }
+        : { requested_display_mode: displayMode }),
       scene_thread_mode: "default",
       authority_profile: connectorCanary == null
         ? "sealed_only"
