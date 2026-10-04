@@ -5,6 +5,7 @@ import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { candidateOrderDigest } from "./digest.js";
 import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type ConfirmedInteraction, type DecisionAction, type ManagedCapabilities, type ManagedControlConfirmation, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type PublicPreviousAction, type PublicStatefulAdapterDecision, type PublicStatefulCompletion, type PublicStatefulControlMetadata, type PublicStatefulEpisodeScope, type PublicStatefulPolicy, type PublicStatefulDecisionContext, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
 import { StaleWholeBundleError } from "./connector.js";
+import { SemanticCycleGuard } from "./semantic-cycle.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 
 /** A known-unapplied control request, not an uncertain gameplay delivery. */
@@ -105,6 +106,7 @@ export class PolicyRuntime {
   private submittedRequestIds = new Set<string>();
   private tickActive = false;
   private consecutiveStaleSubmissions = 0;
+  private readonly semanticCycle = new SemanticCycleGuard();
   private nativeSubmissionsUsed = 0;
   private menuNavigationsUsed = 0;
   private operation: Promise<unknown> = Promise.resolve();
@@ -434,6 +436,7 @@ export class PolicyRuntime {
         if (isAutonomyMode(mode) && !isAutonomyMode(this.mode)) this.beginAutonomyBudget();
         else if (!isAutonomyMode(mode) && mode !== "human" && this.autonomyBudgetState.state === "active") this.endAutonomyBudget("mode_changed");
         else if (mode === "human" && this.autonomyBudgetState.state === "active") this.endAutonomyBudget("human_recovery");
+        if (mode !== this.mode) this.semanticCycle.reset();
         if (mode === "shadow" && this.mode !== "shadow") this.lastPolicySnapshotId = null;
         this.mode = mode;
         if (mode === "auto") this.consecutiveStaleSubmissions = 0;
@@ -813,6 +816,24 @@ export class PolicyRuntime {
           successor: { snapshot_id: successor.snapshot_id, sequence: successor.sequence }
         };
       }
+      if (this.publicStateful && this.mode === "auto" && !this.tainted && !this.mutationCancellationRequested()
+          && !isTextMenuSnapshot(successor)) {
+        const cycle = this.semanticCycle.observeDelivered(bundle.observation as PlayerEnvironmentSnapshot, successor);
+        if (cycle) {
+          if (!(await this.appendEvidence("semantic_cycle_detected", {
+            decision_id: decision.decision_id, request_id: requestId,
+            successor_snapshot_id: successor.snapshot_id, period: cycle.period,
+            repeated_deliveries: cycle.deliveries, public_fingerprint: cycle.fingerprint,
+            outcome: "safety_handoff_not_success"
+          }))) {
+            await this.taint("semantic_cycle_evidence_write_failed");
+          } else {
+            try { await this.releaseControllerAndReturnHuman("semantic_cycle_detected"); }
+            catch { /* releaseController records uncertainty and taints the run */ }
+          }
+          return { type: "not_admitted", reason: "semantic_cycle_detected", status: this.status() };
+        }
+      }
       if (this.mode === "one_step") await this.completeOneStep();
       return { type: "delivered", decision, bound_action: resolved as PlayerEnvironmentBoundAction, receipt, successor: successor as PlayerEnvironmentSnapshot, status: this.status() };
     } catch (error) {
@@ -1051,6 +1072,7 @@ export class PolicyRuntime {
   private async appendEvidence(kind: string, payload: Record<string, unknown>): Promise<boolean> { try { await this.options.evidence?.append(kind, payload, this.now()); return true; } catch (error) { const reason = `agent_evidence_write_failed:${message(error)}`; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); return false; } }
 
   private beginAutonomyBudget(): void {
+    this.semanticCycle.reset();
     this.clearAutonomyBudgetDeadline();
     this.nativeSubmissionsUsed = 0;
     this.menuNavigationsUsed = 0;
@@ -1071,6 +1093,7 @@ export class PolicyRuntime {
   }
 
   private endAutonomyBudget(reason: AutonomyBudgetEndReason): void {
+    this.semanticCycle.reset();
     if (this.autonomyBudgetState.state === "active") {
       this.autonomyBudgetState.elapsedMs = this.budgetElapsedMs();
       this.autonomyBudgetState.startedAt = null;

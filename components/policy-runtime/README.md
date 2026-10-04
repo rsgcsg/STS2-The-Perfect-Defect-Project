@@ -166,6 +166,21 @@ false, and continued operation requires another explicit begin. Therefore this
 protocol supports bounded observed-segment continuity only and cannot attest
 whole-game memory across a reset.
 
+For Auto under this public stateful profile, Runtime keeps at most seven
+fingerprints from correlated delivered Receipts with stable, recorded
+successors. Three consecutive deliveries returning to the identical public
+decision, or six alternating between two identical public decisions, trigger
+`semantic_cycle_detected` and the existing Human handoff. One A→B→A visit is
+allowed. The fingerprint removes only Snapshot envelope fields and the
+Connector's explicit interaction, referent, Read and BoundAction handles;
+candidate order is normalized while multiplicity remains. Persistent player
+facts and opaque surface/context/referent facts are retained. Thus changing
+HP, energy, deck, selection, rewards or progress prevents a cycle match.
+Unknown fields, including nested IDs, are deliberately retained and may cause
+a missed cycle. This is a bounded no-progress safety signal, not evidence of
+gameplay completion. It never adds submissions, renews the authorization
+wallet, retries unknown delivery, or claims whole-game reset coverage.
+
 ## Confirmed interaction port (opt-in)
 
 `sts2.policy-runtime/decision-only-ndjson-3` uses `policy-port-3` with an

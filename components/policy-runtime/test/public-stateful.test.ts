@@ -7,6 +7,7 @@ import { POLICY_PORT_V4_SCHEMA, validatePolicyManifest, type PolicyManifest, typ
 import type { AgentRunEvidence } from "../src/evidence.js";
 import { NdjsonPolicyPort, servePublicStatefulPolicyPort } from "../src/policy-port.js";
 import { PolicyRuntime } from "../src/runtime.js";
+import { publicDecisionFingerprint } from "../src/semantic-cycle.js";
 
 const action = (id: string, label = id): PlayerEnvironmentBoundAction => ({ bound_action_id: id, verb: "end_turn", interaction_id: "interaction", arguments: [], label });
 function snapshot(snapshotId = "snapshot-a", sequence = 7): PlayerEnvironmentSnapshot {
@@ -62,6 +63,38 @@ class FixtureConnector implements PolicyConnector {
   }
 }
 
+function cycleSnapshot(page: "claim" | "select", sequence: number): PlayerEnvironmentSnapshot {
+  const value = snapshot(`snapshot-${sequence}`, sequence);
+  const referentId = `referent-${sequence}`;
+  const interactionId = `interaction-${sequence}`;
+  const actionId = `action-${sequence}`;
+  return { ...value, observed_at: `2026-10-03T00:00:${String(sequence).padStart(2, "0")}.000Z`,
+    interaction: { ...value.interaction, interaction_id: interactionId,
+      content: { surface: { kind: "test", page }, context: { kind: "test" } } },
+    referents: [{ referent_id: referentId, role: "choice", kind: "entity", label: "same choice",
+      state: { visible: true, enabled: true, observation_basis: "native_visible_fact" } }],
+    bound_actions: { ...value.bound_actions, actions: [{ ...action(actionId), interaction_id: interactionId,
+      subject_referent_id: referentId, label: "same choice" }] } };
+}
+
+class CyclingConnector extends FixtureConnector {
+  current = cycleSnapshot("claim", 1);
+  releaseFails = false;
+  override async releaseController() { if (this.releaseFails) throw new Error("release unconfirmed"); }
+  override async submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string }): Promise<PlayerEnvironmentReceipt> {
+    this.submitCount += 1;
+    const prior = this.current;
+    if (this.delivery === "delivered") this.current = cycleSnapshot(
+      prior.interaction.content.surface.page === "claim" ? "select" : "claim", prior.sequence + 1);
+    return { protocol_version: "1.0.0", schema: "sts2.player-environment/receipt-1",
+      request_id: input.requestId, delivery: this.delivery,
+      action: { bound_action_id: input.boundActionId, verb: "end_turn", subject_referent_id: prior.referents[0]!.referent_id, arguments: [] },
+      reason_code: this.delivery === "not_delivered" ? "stale_snapshot" : null,
+      retry: { allowed: this.delivery === "not_delivered", reason: this.delivery === "not_delivered" ? "fresh_snapshot_required" : "never" },
+      successor: this.delivery === "delivered" ? this.current : null };
+  }
+}
+
 function evidence(events: Array<{ kind: string; payload: Record<string, unknown> }> = []): AgentRunEvidence {
   return { append: vi.fn(async (kind: string, payload: Record<string, unknown>) => { events.push({ kind, payload }); }), finalize: vi.fn(async () => {}) } as unknown as AgentRunEvidence;
 }
@@ -80,6 +113,119 @@ function runtime(connector: FixtureConnector, policy: (decision: PublicStatefulD
 }
 
 describe("public Snapshot stateful protocol 4", () => {
+  it("canonicalizes only declared envelope and handle IDs, preserving candidate multiplicity and business facts", () => {
+    const first = cycleSnapshot("claim", 1), second = cycleSnapshot("claim", 9);
+    expect(publicDecisionFingerprint(first)).toBe(publicDecisionFingerprint(second));
+    const one = first.bound_actions.actions[0]!;
+    const two = { ...one, bound_action_id: "other-handle" };
+    const reordered = { ...first, bound_actions: { ...first.bound_actions,
+      materialized_count: 2, total_count: 2, limit: 2, actions: [two, one] } };
+    const swapped = { ...reordered, bound_actions: { ...reordered.bound_actions, actions: [one, two] } };
+    expect(publicDecisionFingerprint(reordered)).toBe(publicDecisionFingerprint(swapped));
+    expect(publicDecisionFingerprint(first)).not.toBe(publicDecisionFingerprint(reordered));
+    const progressed = { ...second, persistent: { content_schema: "sts2.player-environment/persistent/run-player-1" as const,
+      content: { hp: 20, energy: 1, deck: ["card"], reward: "taken" } } };
+    expect(publicDecisionFingerprint(first)).not.toBe(publicDecisionFingerprint(progressed));
+    const selected = { ...second, referents: [{ ...second.referents[0]!, state: { ...second.referents[0]!.state, selected: true } }] };
+    expect(publicDecisionFingerprint(first)).not.toBe(publicDecisionFingerprint(selected));
+  });
+
+  it("allows one public A→B→A return, then hands a repeated semantic cycle to Human under the same wallet", async () => {
+    const connector = new CyclingConnector(), events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    connector.delivery = "delivered";
+    const rt = runtime(connector, async () => {}, { events });
+    await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    await rt.setMode("auto");
+    for (let index = 0; index < 5; index += 1) {
+      expect((await rt.tick()).type).toBe("delivered");
+      expect(rt.status().mode).toBe("auto");
+    }
+    expect(await rt.tick()).toMatchObject({ type: "not_admitted", reason: "semantic_cycle_detected" });
+    expect(connector.submitCount).toBe(6);
+    expect(rt.status()).toMatchObject({ mode: "human", controller: "released", tainted: false,
+      autonomy_budget: { submissions_used: 6, policy_calls_used: 6 } });
+    expect(events.find(event => event.kind === "semantic_cycle_detected")?.payload).toMatchObject({
+      period: 2, repeated_deliveries: 6, outcome: "safety_handoff_not_success" });
+    expect(events.find(event => event.kind === "handoff_to_human")?.payload).toEqual({ reason: "semantic_cycle_detected" });
+    expect(events.find(event => event.kind === "public_stateful_episode_ended")?.payload).toMatchObject({
+      reason: "semantic_cycle_detected", memory_continuity: false });
+    expect((await rt.tick()).type).toBe("human");
+    expect(connector.submitCount).toBe(6);
+  });
+
+  it("resets cycle history at Human handoff and explicit segment begin", async () => {
+    const connector = new CyclingConnector(); connector.delivery = "delivered";
+    const rt = runtime(connector, async () => {});
+    await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    await rt.setMode("auto");
+    expect((await rt.tick()).type).toBe("delivered");
+    expect((await rt.tick()).type).toBe("delivered");
+    await rt.setMode("human");
+    await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    await rt.setMode("auto");
+    for (let index = 0; index < 4; index += 1) expect((await rt.tick()).type).toBe("delivered");
+    expect(rt.status().mode).toBe("auto");
+    await rt.setMode("human");
+  });
+
+  it("clears partial Auto history when control changes to Shadow and back", async () => {
+    const connector = new CyclingConnector(); connector.delivery = "delivered";
+    const rt = runtime(connector, async () => {});
+    await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    await rt.setMode("auto");
+    expect((await rt.tick()).type).toBe("delivered");
+    expect((await rt.tick()).type).toBe("delivered");
+    await rt.setMode("shadow");
+    expect((await rt.tick()).type).toBe("shadow");
+    await rt.setMode("auto");
+    for (let index = 0; index < 4; index += 1) expect((await rt.tick()).type).toBe("delivered");
+    expect(rt.status().mode).toBe("auto");
+    await rt.setMode("human");
+  });
+
+  it("keeps changing public progress out of the no-progress latch", async () => {
+    const connector = new CyclingConnector(); connector.delivery = "delivered";
+    const original = connector.submit.bind(connector);
+    connector.submit = async (input) => {
+      const result = await original(input);
+      connector.current = { ...connector.current, persistent: { content_schema: "sts2.player-environment/persistent/run-player-1",
+        content: { hp: 40 - connector.submitCount, energy: 2, deck: ["card"] } } };
+      return { ...result, successor: connector.current };
+    };
+    const rt = runtime(connector, async () => {});
+    await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    await rt.setMode("auto");
+    for (let index = 0; index < 7; index += 1) expect((await rt.tick()).type).toBe("delivered");
+    expect(rt.status().mode).toBe("auto");
+    await rt.setMode("human");
+  });
+
+  it("does not turn a failed cycle release into confirmed control or another submission", async () => {
+    const connector = new CyclingConnector(); connector.delivery = "delivered"; connector.releaseFails = true;
+    const rt = runtime(connector, async () => {});
+    await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    await rt.setMode("auto");
+    for (let index = 0; index < 5; index += 1) expect((await rt.tick()).type).toBe("delivered");
+    expect(await rt.tick()).toMatchObject({ type: "not_admitted", reason: "semantic_cycle_detected" });
+    expect(rt.status()).toMatchObject({ mode: "human", tainted: true, controller: "held" });
+    expect((await rt.tick()).type).toBe("not_admitted");
+    expect(connector.submitCount).toBe(6);
+  });
+
+  it("never interprets an unknown receipt after partial repetition as a cycle or retries it", async () => {
+    const connector = new CyclingConnector(), events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    connector.delivery = "delivered";
+    const rt = runtime(connector, async () => {}, { events });
+    await rt.beginPublicStatefulSegment("bounded_policy_segment");
+    await rt.setMode("auto");
+    for (let index = 0; index < 5; index += 1) expect((await rt.tick()).type).toBe("delivered");
+    connector.delivery = "unknown";
+    expect((await rt.tick()).type).toBe("unknown");
+    expect((await rt.tick()).type).toBe("not_admitted");
+    expect(connector.submitCount).toBe(6);
+    expect(rt.status().tainted).toBe(true);
+    expect(events.some(event => event.kind === "semantic_cycle_detected")).toBe(false);
+  });
   it("requires explicit Runtime-owned segment creation and keeps scope separate from its token", async () => {
     const connector = new FixtureConnector(), seen: Array<{ decision: PublicStatefulDecisionContext; control: PublicStatefulControlMetadata }> = [];
     const rt = runtime(connector, async (decision, control) => { seen.push({ decision, control }); });
