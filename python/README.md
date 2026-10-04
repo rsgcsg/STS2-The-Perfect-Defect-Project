@@ -57,6 +57,11 @@ three different results.
 
 ## Develop and research the data pipeline
 
+For already prepared PublicM2 runs, use the
+[configuration-driven campaign command](docs/PUBLIC_M2_CAMPAIGN.md). It owns
+bounded execution and checkpoint recovery; source preparation and cloud spending
+remain separately admitted operations.
+
 The Local-First Full-Run lane is separate from historical combat-v0. Platform owns semantic
 state, complete `A_sem(S)`, Human choice/Commit and causal successor; STPD consumes that
 contract without reconstructing native authority. The pinned Platform bundle3 adapter preserves first-class occurrences, exact parent/root lineage,
