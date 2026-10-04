@@ -180,7 +180,14 @@ def test_launcher_probe_script_consumes_verified_status_evidence_revision(tmp_pa
     evidence_requests = []
     monkeypatch.setattr(developer, "evidence_identity", lambda revision: (
         evidence_requests.append(revision) or {"status": "PASS"}))
-    monkeypatch.setattr(runpy, "run_path", lambda *_a, **_k: {"status": install.status})
+    def legacy_status(target):
+        report = install.status(target)
+        report.pop("evidence_source_revision")
+        return report
+
+    monkeypatch.setattr(runpy, "run_path", lambda *_a, **_k: {
+        "status": legacy_status, "verified_archive": install.verified_archive,
+    })
     monkeypatch.setattr(importlib.metadata, "distribution", lambda _: SimpleNamespace(
         locate_file=lambda _: installed))
     monkeypatch.setattr(sts2_platform_evidence, "__file__", str(
