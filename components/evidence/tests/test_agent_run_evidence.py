@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -324,6 +325,127 @@ class AgentRunEvidenceTests(unittest.TestCase):
         self._rewrite_events(directory, events)
         return directory
 
+    def _public_stateful_evidence(self, name: str) -> Path:
+        directory = self._evidence(
+            name, adapter_protocol="sts2.policy-runtime/decision-only-ndjson-4"
+        )
+        policy_path = directory / "policy-manifest.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["policy"].update(provider="fixture", architecture="generic-stateful-fixture")
+        policy["artifact"].update(id="fixture-artifact", path="fixture-artifact.bin")
+        policy["representation"] = {
+            "id": "public-snapshot", "version": "1",
+            "input_schema": "sts2.player-environment/snapshot-1",
+        }
+        policy["requirements"] = {
+            "connector_protocol_version": "1.0.0",
+            "environment": {
+                "host_kind": "test", "connector_version": "1.2.0-rc.6",
+                "connector_source_revision": "source-fixture",
+                "connector_artifact_sha256": "d" * 64,
+                "connector_module_version_id": "mvid-fixture",
+                "modset_status": "fixture", "modset_fingerprint": "modset-fixture",
+                "loaded_mod_ids": ["fixture-mod"],
+            },
+            "reads": [], "whole_decision_admission": True,
+            "candidate_order_digest": "sha256-json-bound-action-id-order",
+            "score_count_matches_candidate_count": True, "selected_index": True,
+            "successor_required": True,
+        }
+        policy["support"] = {
+            "game_versions": ["v0.111.0"], "game_commits": ["41cef1ea"],
+            "interaction_kinds": ["combat"], "action_verbs": ["end_turn"],
+        }
+        policy["adapter_config"] = {
+            "public_stateful_profile": "sts2.policy-runtime/public-observation-stateful-v1",
+        }
+        policy["claims"] = {
+            "full_run": False, "selector": False, "catalog_filtered": False,
+            "creates_action_authority": False, "creates_native_operands": False,
+        }
+        policy_path.write_bytes(canonical(policy))
+        policy_digest = sha256(canonical(policy).rstrip(b"\n"))
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["policy_manifest_sha256"] = policy_digest
+        manifest_path.write_bytes(canonical(manifest))
+        attestation_path = directory / "adapter-attestation.json"
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+        attestation["policy_manifest_sha256"] = policy_digest
+        attestation_path.write_bytes(canonical(attestation))
+
+        base = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        environment_event = base[0]
+        commitment = "a" * 64
+        episode_id = "episode-1"
+        segment_id = "segment-1"
+
+        def event(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                "recorded_at": "2026-08-25T00:00:02.000Z", "kind": kind,
+                "payload": payload,
+            }
+
+        def decision(decision_id: str, snapshot_id: str, *, selected: bool) -> dict[str, Any]:
+            return event("decision", {
+                "decision": {
+                    "schema": "sts2.policy-runtime/decision-1", "decision_id": decision_id,
+                    "run_id": name, "manifest_id": "manifest-1", "snapshot_id": snapshot_id,
+                    "candidate_digest": "f" * 64, "candidate_count": 1,
+                    "scores": [1.0 if selected else 0.0], "selected_index": 0 if selected else None,
+                    "disposition": "admit" if selected else "abstain",
+                    "issued_at": "2026-08-25T00:00:02.000Z",
+                },
+                "resolved_bound_action_id": "action-1" if selected else None,
+            })
+
+        request_id = f"request-{name}-decision-1"
+        successor = self._snapshot("snapshot-2", 2)
+        events = [
+            event("public_stateful_episode_started", {
+                "scope": "single_game_episode", "episode_id": episode_id,
+                "segment_id": segment_id, "continuity_token_commitment": commitment,
+            }),
+            environment_event,
+            event("public_stateful_decision_input", {
+                "episode_id": episode_id, "segment_id": segment_id,
+                "continuity_token_commitment": commitment, "observation_ordinal": 1,
+                "snapshot_id": "snapshot-1", "sequence": 1,
+                "previous_action_request_id": None,
+            }),
+            decision("decision-1", "snapshot-1", selected=True),
+            event("controller_acquired", {}),
+            event("receipt", {
+                "decision_id": "decision-1",
+                "receipt": {
+                    "protocol_version": "1.0.0", "schema": "sts2.player-environment/receipt-1",
+                    "request_id": request_id, "delivery": "delivered",
+                    "action": {"bound_action_id": "action-1", "verb": "end_turn", "arguments": []},
+                    "retry": {"allowed": False, "reason": "fixture"}, "successor": successor,
+                },
+            }),
+            event("successor", {"decision_id": "decision-1", "successor": successor}),
+            event("public_stateful_decision_input", {
+                "episode_id": episode_id, "segment_id": segment_id,
+                "continuity_token_commitment": commitment, "observation_ordinal": 2,
+                "snapshot_id": "snapshot-5", "sequence": 5,
+                "previous_action_request_id": request_id,
+            }),
+            decision("decision-2", "snapshot-5", selected=False),
+            event("controller_released", {}),
+            event("public_stateful_episode_ended", {
+                "scope": "single_game_episode", "episode_id": episode_id,
+                "segment_id": segment_id, "continuity_token_commitment": commitment,
+                "reason": "explicit_end", "requires_explicit_begin": True,
+                "memory_continuity": False,
+            }),
+        ]
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(directory, events)
+        return directory
+
     def test_valid_agent_run_is_detected_and_verified(self) -> None:
         directory = self._evidence()
         result = AgentRunEvidenceVerifier().verify(directory)
@@ -334,6 +456,435 @@ class AgentRunEvidenceTests(unittest.TestCase):
     def test_adapter_protocol_v1_and_exact_v2_are_supported(self) -> None:
         legacy = AgentRunEvidenceVerifier().verify(self._evidence("run-v1"))
         self.assertTrue(legacy.passed, legacy.findings)
+
+    def test_public_stateful_port4_evidence_binds_snapshot_ack_and_segment_lifecycle(self) -> None:
+        result = AgentRunEvidenceVerifier().verify(self._public_stateful_evidence("run-public-stateful"))
+        self.assertTrue(result.passed, result.findings)
+
+        exact_successor = self._public_stateful_evidence("run-public-stateful-exact-successor")
+        events = [json.loads(line) for line in (exact_successor / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        events[7]["payload"].update(snapshot_id="snapshot-2", sequence=2)
+        events[8]["payload"]["decision"].update(snapshot_id="snapshot-2")
+        self._rewrite_events(exact_successor, events)
+        result = AgentRunEvidenceVerifier().verify(exact_successor)
+        self.assertTrue(result.passed, result.findings)
+
+    def test_public_stateful_port4_rejects_missing_ack_environment_drift_and_invalid_segment_lifecycle(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+
+        def add_auto_before_start(events: list[dict[str, Any]]) -> None:
+            mode = copy.deepcopy(events[0])
+            mode.update(kind="mode_changed", payload={"mode": "auto"})
+            events.insert(0, mode)
+
+        def change_runtime_identity(events: list[dict[str, Any]]) -> None:
+            admitted = copy.deepcopy(events[1])
+            admitted["payload"]["environment"]["runtime_instance_id"] = "runtime-other"
+            events.insert(7, admitted)
+
+        def reuse_handed_off_segment(events: list[dict[str, Any]]) -> None:
+            handoff = copy.deepcopy(events[0])
+            handoff.update(kind="handoff_to_human", payload={"reason": "auto_surface_not_admitted"})
+            mode = copy.deepcopy(events[0])
+            mode.update(kind="mode_changed", payload={"mode": "auto"})
+            events[7:7] = [handoff, mode]
+
+        cases = (
+            ("new-observation-missing-ack", "public_stateful_ack_association",
+             lambda events: events[7]["payload"].update(previous_action_request_id=None)),
+            ("runtime-identity-drift", "public_stateful_environment_drift", change_runtime_identity),
+            ("start-while-auto", "public_stateful_segment_order", add_auto_before_start),
+            ("resume-after-handoff-without-end", "public_stateful_segment_order", reuse_handed_off_segment),
+        )
+        for name, expected_code, mutate in cases:
+            with self.subTest(name=name):
+                directory = self._public_stateful_evidence("run-public-stateful-" + name)
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+                mutate(events)
+                for index, item in enumerate(events, 1):
+                    item["sequence"] = index
+                self._rewrite_events(directory, events)
+                result = verifier.verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, expected_code)
+
+    def test_public_stateful_port4_accepts_explicit_human_start_stable_environment_and_fresh_episode_after_handoff(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+
+        explicit_human = self._public_stateful_evidence("run-public-stateful-explicit-human")
+        events = [json.loads(line) for line in (explicit_human / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        mode = copy.deepcopy(events[0])
+        mode.update(kind="mode_changed", payload={"mode": "human"})
+        events.insert(0, mode)
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(explicit_human, events)
+        result = verifier.verify(explicit_human)
+        self.assertTrue(result.passed, result.findings)
+
+        stable_environment = self._public_stateful_evidence("run-public-stateful-stable-environment")
+        events = [json.loads(line) for line in (stable_environment / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        events.insert(7, copy.deepcopy(events[1]))
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(stable_environment, events)
+        result = verifier.verify(stable_environment)
+        self.assertTrue(result.passed, result.findings)
+
+        rebegin = self._public_stateful_evidence("run-public-stateful-rebegin-after-handoff")
+        events = [json.loads(line) for line in (rebegin / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        end_index = next(index for index, item in enumerate(events) if item["kind"] == "public_stateful_episode_ended")
+        handoff = copy.deepcopy(events[0])
+        handoff.update(kind="handoff_to_human", payload={"reason": "auto_surface_not_admitted"})
+        mode_human = copy.deepcopy(events[0])
+        mode_human.update(kind="mode_changed", payload={"mode": "human"})
+        events[end_index:end_index] = [handoff, mode_human]
+
+        def event(kind: str, payload: dict[str, Any], timestamp: str) -> dict[str, Any]:
+            item = copy.deepcopy(events[0])
+            item.update(kind=kind, payload=payload, recorded_at=timestamp, sequence=0)
+            return item
+
+        events.extend([
+            event("public_stateful_episode_started", {
+                "scope": "single_game_episode", "episode_id": "episode-2", "segment_id": "segment-2",
+                "continuity_token_commitment": "c" * 64,
+            }, "2026-08-25T00:00:04.000Z"),
+            event("mode_changed", {"mode": "auto"}, "2026-08-25T00:00:04.100Z"),
+            event("public_stateful_decision_input", {
+                "episode_id": "episode-2", "segment_id": "segment-2",
+                "continuity_token_commitment": "c" * 64, "observation_ordinal": 1,
+                "snapshot_id": "snapshot-5", "sequence": 5, "previous_action_request_id": None,
+            }, "2026-08-25T00:00:04.200Z"),
+        ])
+        decision = copy.deepcopy(events[8])
+        decision["payload"]["decision"]["decision_id"] = "decision-3"
+        events.append(decision)
+        events.extend([
+            event("mode_changed", {"mode": "human"}, "2026-08-25T00:00:04.300Z"),
+            event("public_stateful_episode_ended", {
+                "scope": "single_game_episode", "episode_id": "episode-2", "segment_id": "segment-2",
+                "continuity_token_commitment": "c" * 64, "reason": "explicit_end",
+                "requires_explicit_begin": True, "memory_continuity": False,
+            }, "2026-08-25T00:00:04.400Z"),
+        ])
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(rebegin, events)
+        result = verifier.verify(rebegin)
+        self.assertTrue(result.passed, result.findings)
+
+        tainted_close = self._public_stateful_evidence("run-public-stateful-taint-close")
+        events = [json.loads(line) for line in (tainted_close / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        end_index = next(index for index, item in enumerate(events) if item["kind"] == "public_stateful_episode_ended")
+        taint = copy.deepcopy(events[0])
+        taint.update(kind="runtime_tainted", payload={"reason": "fixture_failure", "retry": False},
+                     recorded_at="2026-08-25T00:00:05.000Z")
+        mode_human = copy.deepcopy(events[0])
+        mode_human.update(kind="mode_changed", payload={"mode": "human"},
+                          recorded_at="2026-08-25T00:00:05.100Z")
+        events[end_index:end_index] = [taint, mode_human]
+        manifest_path = tainted_close / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update(status="tainted", tainted=True)
+        manifest_path.write_bytes(canonical(manifest))
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(tainted_close, events)
+        result = verifier.verify(tainted_close)
+        self.assertTrue(result.passed, result.findings)
+
+    def test_public_stateful_recovery_transitions_close_old_segments(self) -> None:
+        exhausted_budget = {
+            "state": "exhausted", "max_submissions": 1, "submissions_used": 0,
+            "max_policy_calls": 1, "policy_calls_used": 0, "deadline_ms": 1000,
+            "elapsed_ms": 1000, "remaining_ms": 0, "exhausted_reason": "deadline",
+            "ended_reason": None,
+        }
+        cases = (
+            ("human-then-auto", [("mode_changed", {"mode": "human"}),
+                                  ("mode_changed", {"mode": "auto"})], False),
+            ("one-step", [("one_step_completed", {})], False),
+            ("handoff", [("handoff_to_human", {"reason": "auto_surface_not_admitted"})], False),
+            ("fail-closed", [("fail_closed", {"reason": "policy_unavailable"})], False),
+            ("budget-exhausted", [("autonomy_budget_exhausted", {
+                "reason": "deadline", "budget": exhausted_budget, "controller": "released",
+            })], False),
+            ("stopped", [("stopped", {})], False),
+            ("tainted", [("runtime_tainted", {"reason": "unknown_delivery", "retry": False})], True),
+        )
+        verifier = AgentRunEvidenceVerifier()
+        for name, recovery_events, tainted in cases:
+            with self.subTest(name=name):
+                directory = self._public_stateful_evidence("run-public-stateful-terminal-" + name)
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+                inserted = []
+                for kind, payload in recovery_events:
+                    item = copy.deepcopy(events[0])
+                    item.update(kind=kind, payload=payload)
+                    inserted.append(item)
+                events[7:7] = inserted
+                if tainted:
+                    manifest_path = directory / "manifest.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest.update(status="tainted", tainted=True)
+                    manifest_path.write_bytes(canonical(manifest))
+                for index, item in enumerate(events, 1):
+                    item["sequence"] = index
+                self._rewrite_events(directory, events)
+                result = verifier.verify(directory)
+                self.assertFalse(result.passed)
+                expected = "unknown_retry" if tainted else "public_stateful_segment_order"
+                self.assertEqual(result.findings[0].code, expected)
+
+        ended = self._public_stateful_evidence("run-public-stateful-auto-after-end")
+        events = [json.loads(line) for line in (ended / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        mode = copy.deepcopy(events[0])
+        mode.update(kind="mode_changed", payload={"mode": "auto"})
+        events.append(mode)
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(ended, events)
+        result = verifier.verify(ended)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "public_stateful_segment_order")
+
+    def test_public_stateful_environment_binding_is_per_episode_and_checked_at_scoring(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+
+        # A changed admission can describe an unscored settling poll. If the
+        # current identity returns to the episode's bound identity before the
+        # next policy input, Runtime still permits the old segment to score.
+        recovered = self._public_stateful_evidence("run-public-stateful-env-recovered-before-input")
+        events = [json.loads(line) for line in (recovered / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        changed = copy.deepcopy(events[1])
+        changed["payload"]["environment"]["runtime_instance_id"] = "runtime-transient"
+        changed["payload"]["environment"]["environment_fingerprint"] = "environment-transient"
+        events[7:7] = [changed, copy.deepcopy(events[1])]
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(recovered, events)
+        result = verifier.verify(recovered)
+        self.assertTrue(result.passed, result.findings)
+
+        # A new explicit episode can bind a newly admitted Connector session.
+        rebind = self._public_stateful_evidence("run-public-stateful-new-session-after-end")
+        events = [json.loads(line) for line in (rebind / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+
+        def event(kind: str, payload: dict[str, Any], second: int) -> dict[str, Any]:
+            item = copy.deepcopy(events[0])
+            item.update(kind=kind, payload=payload,
+                        recorded_at=f"2026-08-25T00:00:{second:02d}.000Z", sequence=0)
+            return item
+
+        new_environment = copy.deepcopy(events[1])
+        new_environment["payload"]["environment"]["runtime_instance_id"] = "runtime-next"
+        new_environment["payload"]["environment"]["environment_fingerprint"] = "environment-next"
+        new_environment["recorded_at"] = "2026-08-25T00:00:06.500Z"
+        new_episode = [
+            event("mode_changed", {"mode": "human"}, 4),
+            event("public_stateful_episode_started", {
+                "scope": "single_game_episode", "episode_id": "episode-next",
+                "segment_id": "segment-next", "continuity_token_commitment": "c" * 64,
+            }, 5),
+            event("mode_changed", {"mode": "auto"}, 6),
+            new_environment,
+            event("public_stateful_decision_input", {
+                "episode_id": "episode-next", "segment_id": "segment-next",
+                "continuity_token_commitment": "c" * 64, "observation_ordinal": 1,
+                "snapshot_id": "snapshot-next", "sequence": 1,
+                "previous_action_request_id": None,
+            }, 7),
+        ]
+        next_decision = copy.deepcopy(events[8])
+        next_decision["payload"]["decision"].update(decision_id="decision-next", snapshot_id="snapshot-next")
+        new_episode.extend([
+            next_decision,
+            event("public_stateful_episode_ended", {
+                "scope": "single_game_episode", "episode_id": "episode-next",
+                "segment_id": "segment-next", "continuity_token_commitment": "c" * 64,
+                "reason": "explicit_end", "requires_explicit_begin": True,
+                "memory_continuity": False,
+            }, 8),
+            event("mode_changed", {"mode": "human"}, 9),
+        ])
+        events.extend(new_episode)
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(rebind, events)
+        result = verifier.verify(rebind)
+        self.assertTrue(result.passed, result.findings)
+
+    def test_public_stateful_port4_rejects_token_drift_missing_fields_and_bad_ack(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+        cases = (
+            ("token-drift", "public_stateful_token_binding", lambda events: events[2]["payload"].update(continuity_token_commitment="b" * 64)),
+            ("missing-start-commitment", "schema_keys", lambda events: events[0]["payload"].pop("continuity_token_commitment")),
+            ("missing-decision-commitment", "schema_keys", lambda events: events[2]["payload"].pop("continuity_token_commitment")),
+            ("missing-end-commitment", "schema_keys", lambda events: events[10]["payload"].pop("continuity_token_commitment")),
+            ("bad-ack", "public_stateful_ack_association", lambda events: events[7]["payload"].update(previous_action_request_id="request-unmatched")),
+            ("ack-before-successor", "public_stateful_ack_association", lambda events: (
+                events[7]["payload"].update(snapshot_id="snapshot-between", sequence=2),
+                events[8]["payload"]["decision"].update(snapshot_id="snapshot-between"),
+            )),
+            ("ack-successor-identity-watermark-conflict", "public_stateful_ack_association", lambda events: (
+                events[7]["payload"].update(snapshot_id="snapshot-2", sequence=5),
+                events[8]["payload"]["decision"].update(snapshot_id="snapshot-2"),
+            )),
+        )
+        for name, expected_code, mutate in cases:
+            with self.subTest(name=name):
+                directory = self._public_stateful_evidence(name)
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+                mutate(events)
+                self._rewrite_events(directory, events)
+                result = verifier.verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, expected_code)
+
+    def test_public_stateful_port4_rejects_reset_without_token_rotation_and_old_segment_completion(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+        for name, expected_code, new_commitment, stale_input, missing_old_commitment, old_commitment in (
+            ("reset-no-token-rotation", "public_stateful_reset_binding", "a" * 64, False, False, "a" * 64),
+            ("late-old-segment-input", "public_stateful_token_binding", "b" * 64, True, False, "a" * 64),
+            ("reset-missing-old-commitment", "schema_keys", "b" * 64, False, True, "a" * 64),
+            ("reset-old-token-drift", "public_stateful_reset_binding", "b" * 64, False, False, "c" * 64),
+        ):
+            with self.subTest(name=name):
+                directory = self._public_stateful_evidence(name)
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+                ended = events.pop(-1)
+                reset = {
+                    "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                    "recorded_at": "2026-08-25T00:00:03.000Z",
+                    "kind": "public_stateful_observation_segment_reset",
+                    "payload": {
+                        "episode_id": "episode-1", "previous_segment_id": "segment-1",
+                        "segment_id": "segment-2",
+                        "previous_continuity_token_commitment": old_commitment,
+                        "continuity_token_commitment": new_commitment,
+                        "reason": "policy_completion_failed", "memory_continuity": False,
+                    },
+                }
+                if missing_old_commitment:
+                    reset["payload"].pop("previous_continuity_token_commitment")
+                events.append(reset)
+                if stale_input:
+                    events.append({
+                        "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                        "recorded_at": "2026-08-25T00:00:03.100Z",
+                        "kind": "public_stateful_decision_input",
+                        "payload": {
+                            "episode_id": "episode-1", "segment_id": "segment-1",
+                            "continuity_token_commitment": "a" * 64,
+                            "observation_ordinal": 3, "snapshot_id": "snapshot-3",
+                            "sequence": 6, "previous_action_request_id": None,
+                        },
+                    })
+                else:
+                    ended["payload"].update(segment_id="segment-2", continuity_token_commitment=new_commitment)
+                events.append(ended)
+                for index, item in enumerate(events, 1):
+                    item["sequence"] = index
+                self._rewrite_events(directory, events)
+                result = verifier.verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, expected_code)
+
+    def test_public_stateful_port4_rejects_scoring_after_rotating_reset_before_explicit_begin(self) -> None:
+        directory = self._public_stateful_evidence("run-public-stateful-reset-continues")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        events = events[:7]
+        events.extend([
+            {
+                "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                "recorded_at": "2026-08-25T00:00:03.000Z", "kind": "controller_released", "payload": {},
+            },
+            {
+                "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                "recorded_at": "2026-08-25T00:00:03.100Z",
+                "kind": "public_stateful_observation_segment_reset",
+                "payload": {
+                    "episode_id": "episode-1", "previous_segment_id": "segment-1",
+                    "segment_id": "segment-2", "previous_continuity_token_commitment": "a" * 64,
+                    "continuity_token_commitment": "b" * 64,
+                    "reason": "policy_completion_failed", "memory_continuity": False,
+                },
+            },
+            {
+                "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                "recorded_at": "2026-08-25T00:00:03.200Z", "kind": "public_stateful_decision_input",
+                "payload": {
+                    "episode_id": "episode-1", "segment_id": "segment-2",
+                    "continuity_token_commitment": "b" * 64, "observation_ordinal": 1,
+                    "snapshot_id": "snapshot-5", "sequence": 5, "previous_action_request_id": None,
+                },
+            },
+        ])
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(directory, events)
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "public_stateful_segment_order")
+
+    def test_public_stateful_runtime_taint_is_terminal_even_without_a_receipt(self) -> None:
+        directory = self._public_stateful_evidence("run-public-stateful-taint-terminal")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        events.extend([
+            {
+                "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                "recorded_at": "2026-08-25T00:00:04.000Z", "kind": "runtime_tainted",
+                "payload": {"reason": "unknown_delivery_after_submit", "retry": False},
+            },
+            {
+                "schema": AGENT_RUN_EVENT_SCHEMA, "sequence": 0,
+                "recorded_at": "2026-08-25T00:00:05.000Z", "kind": "public_stateful_episode_started",
+                "payload": {
+                    "scope": "single_game_episode", "episode_id": "episode-2", "segment_id": "segment-2",
+                    "continuity_token_commitment": "c" * 64,
+                },
+            },
+        ])
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update(status="tainted", tainted=True)
+        manifest_path.write_bytes(canonical(manifest))
+        self._rewrite_events(directory, events)
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.findings[0].code, "unknown_retry")
+
+    def test_public_stateful_port4_rejects_reads_and_non_model_neutral_profile(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+        for name, field, value in (
+            ("public-stateful-reads", "reads", ["combat_state"]),
+            ("public-stateful-profile", "public_stateful_profile", "stpd/public-m2-observation-only-v1"),
+        ):
+            with self.subTest(name=name):
+                directory = self._public_stateful_evidence(name)
+                policy_path = directory / "policy-manifest.json"
+                policy = json.loads(policy_path.read_text(encoding="utf-8"))
+                if field == "reads":
+                    policy["requirements"][field] = value
+                else:
+                    policy["adapter_config"][field] = value
+                policy_path.write_bytes(canonical(policy))
+                digest = sha256(canonical(policy).rstrip(b"\n"))
+                manifest_path = directory / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["policy_manifest_sha256"] = digest
+                manifest_path.write_bytes(canonical(manifest))
+                attestation_path = directory / "adapter-attestation.json"
+                attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+                attestation["policy_manifest_sha256"] = digest
+                attestation_path.write_bytes(canonical(attestation))
+                self._rewrite_events(directory, [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()])
+                result = verifier.verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, "schema_literal")
 
     def test_v2_adapter_with_legacy_snapshot_representation_is_rejected(self) -> None:
         directory = self._evidence(
@@ -412,6 +963,23 @@ class AgentRunEvidenceTests(unittest.TestCase):
         result = AgentRunEvidenceVerifier().verify(directory)
         self.assertFalse(result.passed)
         self.assertEqual(result.findings[0].code, "request_association")
+
+    def test_delivered_cycle_handoff_uses_existing_typed_event(self) -> None:
+        directory = self._delivered_evidence("run-cycle-handoff")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events[-1]["kind"] = "handoff_to_human"
+        events[-1]["payload"] = {"reason": "semantic_cycle_detected"}
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["status"] = "stopped"
+        manifest["mode"] = "human"
+        manifest_path.write_bytes(canonical(manifest))
+        self._rewrite_events(directory, events)
+        result = AgentRunEvidenceVerifier().verify(directory)
+        self.assertTrue(result.passed, result.findings)
+        self.assertEqual(result.require_value().event_count, 7)
+        self.assertEqual(events[3]["payload"]["receipt"]["delivery"], "delivered")
+        self.assertEqual(events[4]["kind"], "successor")
 
     def test_snapshot_read_optional_target_matches_public_sdk(self) -> None:
         for target, passed in [("absent", True), (None, True), ("missing", False), (12, False)]:

@@ -118,6 +118,93 @@ child computation. After too many outstanding cancelled request IDs the port
 closes and kills that child rather than forgetting old IDs. This contract does
 not claim native action execution, actual-action feedback, or model quality.
 
+## Public Snapshot stateful port (generic, opt-in)
+
+`decision-only-ndjson-4` is a model-neutral Runtime protocol for a policy that
+keeps opaque state over explicitly observed public Snapshots. Its manifest uses
+`public_stateful_profile=sts2.policy-runtime/public-observation-stateful-v1`, a
+generic `snapshot-1` representation, and zero Reads. The wire request has two
+sibling objects: `decision` contains the existing Policy Decision context and
+complete ordered catalog; `control` contains the Runtime-minted token, declared
+scope, episode/segment IDs, observation ordinal, and optional prior-action
+receipt/successor evidence. These objects are not merged.
+
+`servePublicStatefulPolicyPort` creates a fresh scorer instance for each control
+namespace. The scorer callback receives only `decision`; it never receives
+`control` or `previous_action`. The helper caches the result for the current
+namespace and ordinal. The cache identity covers the complete decision context
+and namespace watermark, ignoring only Connector-declared `observed_at`; a
+valid `previous_action` control acknowledgment may be updated on a same-ordinal
+retry. Such a retry returns the cached scores and refreshes the completion
+acknowledgment without calling the scorer or advancing hidden state again.
+Conflicting decision or namespace-watermark reuse, ordinal gaps, or backward
+ordinals fail closed. A new Runtime token and segment create a fresh scorer
+instance. A consumer adapter must project its permitted current-observation/
+candidate features explicitly; it must not serialize control metadata into
+features.
+
+`previous_action` is protocol execution metadata only. It binds the last
+delivered Connector receipt to the stable successor Snapshot and may repeat
+unchanged on same-observation retries. Its `request_id` is an idempotency key
+for execution association; receipt, action, and successor are not scorer input,
+M2 prior-action features, or model feedback. Completion echoes the associated
+request ID for protocol validation. Any STPD consumer must independently
+validate its own training profile, including observation-only and no-prior-
+action/no-feedback requirements; Policy Runtime does not require or assert an
+STPD profile. This source contains no numeric M2 adapter and does not establish
+M2 runtime readiness.
+
+The operator starts with `POST /v2/stateful-segment/begin` and
+`{"scope":"single_game_episode|bounded_policy_segment"}` while Runtime is in
+Human mode. Runtime mints the episode/segment IDs and continuity token; the
+operator declaration is not proof that the generic Snapshot stream identifies
+game boundaries. Runtime binds the segment to the first Snapshot's declared
+Connector runtime and environment identity and fails closed on detected drift.
+`POST /v2/stateful-segment/end` with `{}` closes it. Failure, timeout, unknown
+delivery, or Human handoff fences the segment; evidence marks memory continuity
+false, and continued operation requires another explicit begin. Therefore this
+protocol supports bounded observed-segment continuity only and cannot attest
+whole-game memory across a reset.
+
+The Agent-run log uses the existing `public_stateful_episode_started`,
+`public_stateful_decision_input`,
+`public_stateful_observation_segment_reset`, and
+`public_stateful_episode_ended` events. It records a domain-separated,
+run-bound SHA-256 commitment over the Runtime token instead of the raw token;
+reset records both the prior and replacement commitments. The commitment is an
+opaque equality/rotation witness and cannot be used to reconstruct the token.
+After a reset, the replacement segment is closing-only: Runtime ends it before
+any further scoring, and another policy segment requires a fresh explicit begin.
+Port 4 evidence-write failure after a public input taints the run because the
+scored output can no longer be fully represented. The Evidence consumer checks
+that decision watermarks match their decisions, and that prior-action request
+IDs bind to a same-segment delivered receipt and an observed Snapshot at or
+beyond its recorded successor.
+
+For Auto with a generic `snapshot-1` and zero required Reads (port 1 or port
+4), Runtime keeps at most seven
+fingerprints from correlated delivered Receipts with stable, recorded
+successors. Three consecutive deliveries returning to the identical public
+decision, or six alternating between two identical public decisions, trigger
+`semantic_cycle_detected` and the existing Human handoff. One A→B→A visit is
+allowed. The fingerprint removes only Snapshot envelope fields and the
+Connector's explicit interaction, referent, Read and BoundAction handles;
+candidate order is normalized while multiplicity remains. Persistent player
+facts and opaque surface/context/referent facts are retained. Thus changing
+HP, energy, deck, selection, rewards or progress prevents a cycle match.
+Referents with identical public facts share a normalized reference value, but
+their count remains in the fingerprint. This visible-state signal does not
+prove that those native entities, hidden outcomes or model inputs are equal.
+Unknown fields, including nested IDs, are deliberately retained and may cause
+a missed cycle. This is a bounded no-progress safety signal, not evidence of
+gameplay completion. It never adds submissions, renews the authorization
+wallet, retries unknown delivery, or claims whole-game reset coverage.
+The triggering tick remains `delivered` with its correlated Receipt and stable
+successor; the status returns Human with `semantic_cycle_detected` in
+invalidations. The existing typed `handoff_to_human` event carries that reason.
+Port 1 with required Reads is excluded because the stable successor path does
+not fetch those Read contents; a Snapshot-only comparison could miss progress.
+
 ## Confirmed interaction port (opt-in)
 
 `sts2.policy-runtime/decision-only-ndjson-3` uses `policy-port-3` with an

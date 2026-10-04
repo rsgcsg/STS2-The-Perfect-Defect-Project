@@ -26,7 +26,20 @@ let resolveSlowEntered;
 const slowEntered = new Promise((resolve) => { resolveSlowEntered = resolve; });
 let resolveSlowDecision;
 const slowDecision = new Promise((resolve) => { resolveSlowDecision = resolve; });
-const snapshot = () => ({ schema: "sts2.player-environment/snapshot-1", snapshot_id: `snapshot-${sequence}`, sequence, status: "interactive", session: { runtime_instance_id: "fixture-runtime", environment_fingerprint: "fixture-env" }, completeness: { status: "complete" }, interaction: { kind: "test" }, bound_actions: { status: "complete", total_count: 1, materialized_count: 1, actions: [{ bound_action_id: `action-${sequence}`, verb: "end_turn", label: "End turn" }] } });
+const snapshot = () => ({
+  protocol_version: "1.0.0", schema: "sts2.player-environment/snapshot-1",
+  snapshot_id: `snapshot-${sequence}`, sequence, observed_at: "2026-10-04T00:00:00.000Z", status: "interactive",
+  persistent: { content_schema: "sts2.player-environment/persistent/run-player-1", content: { hp: 100 - sequence, energy: 3, deck: ["card"] } },
+  interaction: { interaction_id: `interaction-${sequence}`, kind: "test", stage: "ready",
+    content_schema: "sts2.player-environment/surface/test-1", content: { surface: { kind: "test" }, context: { kind: "test" } }, capabilities: [] },
+  referents: [],
+  bound_actions: { schema: "sts2.player-environment/bound-actions-1", status: "complete", materialized_count: 1,
+    total_count: 1, limit: 1, ordering_semantics: "connector_order",
+    actions: [{ bound_action_id: `action-${sequence}`, verb: "end_turn", interaction_id: `interaction-${sequence}`, arguments: [], label: "End turn" }] },
+  reads: [], completeness: { status: "complete", visible_information: "fixture", interaction_discovery: "fixture", missing: [], hidden_by_policy: [] },
+  session: { runtime_instance_id: "fixture-runtime", environment_fingerprint: "fixture-env" },
+  information_policy: { id: "test", scope: "test", includes_hidden_information: false, unknown_field_behavior: "reject" }
+});
 const connector = {
   async capabilities() { return { protocol_version: "1.0.0", snapshot_schema: "sts2.player-environment/snapshot-1", receipt_schema: "sts2.player-environment/receipt-1", host: { host_kind: "test", version: "fixture", runtime_instance_id: "fixture-runtime", implementation: { source_revision: "source", artifact_sha256: "b".repeat(64), module_version_id: "mvid" } }, game: { version: "fixture", commit: "fixture", modset: { status: "exact", fingerprint: "modset", loaded_mod_ids: [] } }, environment_fingerprint: "fixture-env", execution_available: true, single_controller: true }; },
   async observeBundle() { return { observation: snapshot(), reads: [] }; },
@@ -92,7 +105,20 @@ let expirySequence = 1;
 let expiryHeld = false;
 let expiryReleaseResolve;
 const expiryReleased = new Promise((resolve) => { expiryReleaseResolve = resolve; });
-const expirySnapshot = () => ({ schema: "sts2.player-environment/snapshot-1", snapshot_id: `expiry-${expirySequence}`, sequence: expirySequence, status: "interactive", session: { runtime_instance_id: "fixture-runtime", environment_fingerprint: "fixture-env" }, completeness: { status: "complete" }, interaction: { kind: "test" }, bound_actions: { status: "complete", total_count: 1, materialized_count: 1, actions: [{ bound_action_id: `expiry-action-${expirySequence}`, verb: "end_turn", label: "End turn" }] } });
+const expirySnapshot = () => ({
+  protocol_version: "1.0.0", schema: "sts2.player-environment/snapshot-1",
+  snapshot_id: `expiry-${expirySequence}`, sequence: expirySequence, observed_at: "2026-10-04T00:00:00.000Z",
+  status: "interactive", persistent: null,
+  interaction: { interaction_id: `expiry-interaction-${expirySequence}`, kind: "test", stage: "ready",
+    content_schema: "sts2.player-environment/surface/test-1", content: { surface: { kind: "test" }, context: { kind: "test" } }, capabilities: [] },
+  referents: [],
+  bound_actions: { schema: "sts2.player-environment/bound-actions-1", status: "complete", materialized_count: 1,
+    total_count: 1, limit: 1, ordering_semantics: "connector_order",
+    actions: [{ bound_action_id: `expiry-action-${expirySequence}`, verb: "end_turn", interaction_id: `expiry-interaction-${expirySequence}`, arguments: [], label: "End turn" }] },
+  reads: [], completeness: { status: "complete", visible_information: "fixture", interaction_discovery: "fixture", missing: [], hidden_by_policy: [] },
+  session: { runtime_instance_id: "fixture-runtime", environment_fingerprint: "fixture-env" },
+  information_policy: { id: "test", scope: "test", includes_hidden_information: false, unknown_field_behavior: "reject" }
+});
 const expiryConnector = {
   async capabilities() { return connector.capabilities(); },
   async observeBundle() { return { observation: expirySnapshot(), reads: [] }; },
