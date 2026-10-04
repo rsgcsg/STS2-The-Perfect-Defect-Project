@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
@@ -173,6 +174,8 @@ def verified_archive(archive: Path, expected: str) -> tuple[dict[str, Any], dict
     digest(manifest.get("stpd_source_revision"), "kit_install.source", length=40)
     digest(manifest.get("uv_lock_sha256"), "kit_install.lock")
     digest(manifest.get("collection_tool_release_id"), "kit_install.tool")
+    if "evidence_source_revision" in manifest:
+        digest(manifest["evidence_source_revision"], "kit_install.evidence", length=40)
     for field, name in (
         ("mod_sha256", "mod/STS2_PLATFORM.dll"),
         ("mod_manifest_sha256", "mod/STS2_PLATFORM.json"),
@@ -373,6 +376,7 @@ def status(directory: Path) -> dict[str, Any]:
     return {
         "status": "prepared",
         "source_revision": manifest["stpd_source_revision"],
+        "evidence_source_revision": manifest.get("evidence_source_revision"),
         "tool_release_id": manifest["collection_tool_release_id"],
         "mod_sha256": manifest["mod_sha256"],
         "uv_lock_sha256": manifest["uv_lock_sha256"],
@@ -911,6 +915,44 @@ def _workbench_identity_for_source(source: Path) -> dict[str, Any]:
     }
 
 
+def _run_launcher_probe(args: list[str], *, cwd: Path,
+                         env: dict[str, str], timeout: float = 20) -> str:
+    """Read one bounded response, killing a noisy or stalled probe."""
+    with subprocess.Popen(args, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT) as process:
+        assert process.stdout is not None
+        stream = process.stdout
+        chunks: list[bytes] = []
+        failed = threading.Event()
+
+        def read_output() -> None:
+            size = 0
+            try:
+                while chunk := stream.read(4096):
+                    size += len(chunk)
+                    if size > 64 * 1024:
+                        failed.set()
+                        process.kill()
+                        return
+                    chunks.append(chunk)
+            except OSError:
+                failed.set()
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+            raise
+        finally:
+            reader.join(timeout=5)
+        if reader.is_alive() or failed.is_set() or process.returncode != 0:
+            raise ValueError("launcher probe failed or exceeded output bound")
+        return b"".join(chunks).decode("utf-8")
+
+
 def _probe_launcher_target(directory: Path, binding: dict[str, Any]) -> None:
     """Verify the target's isolated interpreter and locked imports without launching it."""
     source = directory / "source"
@@ -938,14 +980,11 @@ def _probe_launcher_target(directory: Path, binding: dict[str, Any]) -> None:
                  "UV_PYTHON", "UV_CONFIG_FILE", "UV_ENV_FILE"):
         environment.pop(name, None)
     try:
-        observed = subprocess.run(
+        observed = _run_launcher_probe(
             [str(interpreter), "-I", "-c", script, str(tool), str(directory)],
-            cwd=python_root, env=environment, capture_output=True, text=True,
-            timeout=20, check=True,
+            cwd=python_root, env=environment,
         )
-        if len(observed.stdout.encode("utf-8")) > 64 * 1024:
-            reject("launcher_environment_unverified")
-        result = json.loads(observed.stdout)
+        result = json.loads(observed)
         identity = result["identity"]
         version = result["python_version"]
         prefix = Path(result["prefix"]).resolve()
@@ -1079,6 +1118,16 @@ def backup_launcher(owner_directory: Path, snapshot_directory: Path,
 
 def prepare_launcher_target(directory: Path, config_path: Path,
                             snapshot_directory: Path) -> dict[str, Any]:
+    from spireagent.workbench.developer_server import instance_lock
+
+    # Validate the immutable release before creating its existing owner lock.
+    status(directory)
+    with instance_lock(directory / "initialize.lock"):
+        return _prepare_launcher_target_locked(directory, config_path, snapshot_directory)
+
+
+def _prepare_launcher_target_locked(directory: Path, config_path: Path,
+                                    snapshot_directory: Path) -> dict[str, Any]:
     prepared = status(directory)
     if prepared.get("workbench_launcher_schema") != LAUNCHER_SCHEMA:
         reject("workbench_launcher_not_in_kit")
@@ -1225,6 +1274,20 @@ def restore_launcher(snapshot_directory: Path, expected_manifest_sha256: str,
     if (not directory.is_absolute() or directory.resolve() != directory
             or directory.name != manifest.get("kit_sha256")):
         reject("launcher_release_mismatch")
+    from spireagent.workbench.developer_server import instance_lock
+
+    status(directory)
+    with instance_lock(directory / "initialize.lock"):
+        return _restore_launcher_locked(
+            directory, manifest, binding_raw, open_raw,
+            expected_binding_sha256, expected_open_sha256,
+        )
+
+
+def _restore_launcher_locked(directory: Path, manifest: dict[str, Any],
+                             binding_raw: bytes, open_raw: bytes,
+                             expected_binding_sha256: str,
+                             expected_open_sha256: str) -> dict[str, Any]:
     prepared = status(directory)
     if prepared.get("workbench_launcher_schema") != LAUNCHER_SCHEMA:
         reject("workbench_launcher_not_in_kit")

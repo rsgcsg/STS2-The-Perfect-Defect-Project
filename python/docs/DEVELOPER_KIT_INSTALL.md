@@ -204,7 +204,7 @@ source, lock and Workbench identity, and records the pair without granting launc
 To make a restore target, first prepare the pair from a verified prepared release and a
 private project config. This validates that config against that release's archived
 combination and probes its selected `.venv/bin/python` with isolated imports and a
-20-second timeout. The read-only probe checks the clean Workbench source identity,
+20-second timeout and a 64-KiB combined-output limit. The read-only probe checks the clean Workbench source identity,
 locked Evidence distribution and import origin; it neither synchronizes dependencies
 nor starts Workbench or the game. Only then does it record the exact owner-generated
 binding and executable without publishing them globally:
@@ -231,6 +231,11 @@ uv run --locked --extra cloud python tools/install_developer_kit.py restore-laun
   --expected-launcher-binding-sha256 CURRENT_BINDING_SHA256 \
   --expected-open-sha256 CURRENT_OPEN_SHA256
 ```
+
+Target preparation and restoration hold the selected release's `initialize.lock`
+through environment verification and publication. Restoration acquires that lock before
+the global launcher lock, matching initialization's lock order. A concurrent environment
+initialization fails closed instead of invalidating a just-verified target.
 
 A caught publication exception attempts to restore both prior file byte sequences and
 modes. If either rollback write fails, the owner reports `launcher_recovery_required` and

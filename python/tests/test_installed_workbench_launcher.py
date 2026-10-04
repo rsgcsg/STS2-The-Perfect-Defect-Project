@@ -296,11 +296,22 @@ def test_prepare_target_restore_revalidates_release_config_and_both_current_hash
     monkeypatch.setattr(developer.ProjectConfig, "load", lambda *_a, **_k: SimpleNamespace(
         combination=combination))
     probes = []
-    monkeypatch.setattr(install, "_probe_launcher_target", lambda directory, binding: (
-        probes.append((directory, binding["config_path"]))))
+    from spireagent.workbench.developer_server import instance_lock
+
+    def probe(directory, binding):
+        with (pytest.raises(BoundaryError, match="already_running"),
+              instance_lock(directory / "initialize.lock")):
+            pytest.fail("probe did not hold the selected release initialization lock")
+        probes.append((directory, binding["config_path"]))
+
+    monkeypatch.setattr(install, "_probe_launcher_target", probe)
 
     target_snapshot = tmp_path / "target-snapshot"
     target = install.prepare_launcher_target(release, config, target_snapshot)
+    with (instance_lock(release / "initialize.lock"),
+          pytest.raises(BoundaryError, match="already_running")):
+        install.prepare_launcher_target(release, config, tmp_path / "concurrent-target")
+    assert not (tmp_path / "concurrent-target").exists()
     current_binding, current_open = install._launcher_files(root)
     current_binding.write_bytes(b"reviewed current binding")
     current_open.write_bytes(b"reviewed current open")
@@ -332,10 +343,23 @@ def test_launcher_target_probe_rejects_empty_interpreter(tmp_path):
         install._probe_launcher_target(release, {})
 
 
+def test_launcher_probe_runner_bounds_output_and_timeout(tmp_path):
+    import os
+
+    with pytest.raises(ValueError, match="output bound"):
+        install._run_launcher_probe(
+            [sys.executable, "-I", "-c", "print('x' * 100000)"], cwd=tmp_path,
+            env=dict(os.environ),
+        )
+    with pytest.raises(subprocess.TimeoutExpired):
+        install._run_launcher_probe(
+            [sys.executable, "-I", "-c", "import time; time.sleep(10)"], cwd=tmp_path,
+            env=dict(os.environ), timeout=0.1,
+        )
+
+
 def test_launcher_target_probe_rejects_foreign_evidence_and_cleans_environment(
         tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
     release = tmp_path / ("a" * 64)
     python_root = release / "source/python"
     python_root.mkdir(parents=True)
@@ -355,16 +379,15 @@ def test_launcher_target_probe_rejects_foreign_evidence_and_cleans_environment(
 
     def run(args, **kwargs):
         captured.append((args, kwargs))
-        return SimpleNamespace(stdout=json.dumps(report))
+        return json.dumps(report)
 
-    monkeypatch.setattr(install.subprocess, "run", run)
+    monkeypatch.setattr(install, "_run_launcher_probe", run)
     monkeypatch.setenv("PYTHONPATH", str(tmp_path / "foreign"))
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "other-venv"))
     with pytest.raises(BoundaryError, match="launcher_environment_unverified"):
         install._probe_launcher_target(release, binding)
     args, options = captured[0]
     assert args[:3] == [str(prefix / "bin/python"), "-I", "-c"]
-    assert options["timeout"] == 20
     assert "PYTHONPATH" not in options["env"]
     assert "UV_PROJECT_ENVIRONMENT" not in options["env"]
 
