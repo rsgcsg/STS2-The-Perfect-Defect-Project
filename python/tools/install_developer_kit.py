@@ -1374,7 +1374,6 @@ def _install_open_launcher(
     binding = _launcher_binding(directory, config_path.resolve(), prepared)
     # Rebinding is an explicit installer operation against exact reviewed bytes.
     # Both ordinary installation and replacement share this owner lock.
-    from spireagent.workbench.developer import atomic_json
     from spireagent.workbench.developer_server import instance_lock
 
     if expected_binding_sha256 is not None:
@@ -1397,7 +1396,8 @@ def _install_open_launcher(
         elif expected_binding_sha256 is not None:
             reject("launcher_not_installed")
         try:
-            atomic_json(binding_path, binding)
+            # Prepared target, restore and publication share exact canonical bytes.
+            _write_launcher_file(binding_path, json_bytes(binding), 0o600)
             _write_executable(executable_path, script)
         except Exception:
             rollback_errors = []

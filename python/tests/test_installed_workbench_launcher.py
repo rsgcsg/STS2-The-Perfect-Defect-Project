@@ -311,6 +311,17 @@ def test_prepare_target_restore_revalidates_release_config_and_both_current_hash
 
     target_snapshot = tmp_path / "target-snapshot"
     target = install.prepare_launcher_target(release, config, target_snapshot)
+    # Exercise the actual file publication owner after preparation. Equal parsed
+    # JSON is insufficient: reviewed snapshot hashes must match installed bytes.
+    install._install_open_launcher(release, config, prepared, platform="darwin")
+    installed_binding, installed_open = install._launcher_files(root)
+    assert installed_binding.read_bytes() == (target_snapshot / "launcher.json").read_bytes()
+    assert installed_open.read_bytes() == (target_snapshot / "open").read_bytes()
+    target_manifest = json.loads((target_snapshot / "snapshot.json").read_bytes())
+    for name, path in (("launcher.json", installed_binding), ("open", installed_open)):
+        assert install.sha(path.read_bytes()) == target_manifest["files"][name]["sha256"]
+        if install.os.name != "nt":
+            assert path.stat().st_mode & 0o777 == target_manifest["files"][name]["mode"]
     with (instance_lock(release / "initialize.lock"),
           pytest.raises(BoundaryError, match="already_running")):
         install.prepare_launcher_target(release, config, tmp_path / "concurrent-target")
