@@ -153,6 +153,36 @@ describe("public Snapshot stateful protocol 4", () => {
     expect(connector.submitCount).toBe(6);
   });
 
+  it("also guards generic Snapshot port 1 Auto without requiring a stateful segment", async () => {
+    const connector = new CyclingConnector(), events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    connector.delivery = "delivered";
+    const legacy = manifest();
+    legacy.adapter.protocol = "sts2.policy-runtime/decision-only-ndjson-1";
+    legacy.adapter_config = {};
+    const rt = new PolicyRuntime({ manifest: legacy, connector, mode: "auto", runId: "port1-cycle",
+      evidence: evidence(events), runtimeIdentity: { version: "test", code_sha256: "d".repeat(64) },
+      policy: decision => ({ candidate_digest: decision.candidate_digest, scores: [1], selected_index: 0 }) });
+    for (let index = 0; index < 5; index += 1) expect((await rt.tick()).type).toBe("delivered");
+    expect(await rt.tick()).toMatchObject({ type: "not_admitted", reason: "semantic_cycle_detected" });
+    expect(rt.status()).toMatchObject({ mode: "human", controller: "released", tainted: false,
+      autonomy_budget: { submissions_used: 6, policy_calls_used: 6 } });
+    expect(events.find(event => event.kind === "handoff_to_human")?.payload).toEqual({ reason: "semantic_cycle_detected" });
+    expect(connector.submitCount).toBe(6);
+  });
+
+  it("does not infer no progress when port 1 requires Read contents absent from stable successor", async () => {
+    const connector = new CyclingConnector(); connector.delivery = "delivered";
+    const legacy = manifest();
+    legacy.adapter.protocol = "sts2.policy-runtime/decision-only-ndjson-1";
+    legacy.adapter_config = {};
+    legacy.requirements.reads = ["run_deck"];
+    const rt = new PolicyRuntime({ manifest: legacy, connector, mode: "auto", runId: "port1-with-reads",
+      policy: decision => ({ candidate_digest: decision.candidate_digest, scores: [1], selected_index: 0 }) });
+    for (let index = 0; index < 7; index += 1) expect((await rt.tick()).type).toBe("delivered");
+    expect(rt.status().mode).toBe("auto");
+    await rt.setMode("human");
+  });
+
   it("resets cycle history at Human handoff and explicit segment begin", async () => {
     const connector = new CyclingConnector(); connector.delivery = "delivered";
     const rt = runtime(connector, async () => {});

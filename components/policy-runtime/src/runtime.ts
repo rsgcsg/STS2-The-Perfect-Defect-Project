@@ -198,6 +198,13 @@ export class PolicyRuntime {
     return this.options.manifest.adapter.protocol === "sts2.policy-runtime/decision-only-ndjson-3";
   }
 
+  private get semanticCycleEligible(): boolean {
+    // Port 1 may require Reads. The successor path observes only the Snapshot,
+    // so it cannot safely compare Read-backed business progress in that case.
+    return this.options.manifest.representation.input_schema === "sts2.player-environment/snapshot-1"
+      && this.options.manifest.requirements.reads.length === 0;
+  }
+
   private bindContinuity(gameId: string, snapshot: AnyDecisionBundle["observation"]): string {
     const runtimeId = snapshot.session.runtime_instance_id;
     const environment = snapshot.session.environment_fingerprint;
@@ -816,7 +823,7 @@ export class PolicyRuntime {
           successor: { snapshot_id: successor.snapshot_id, sequence: successor.sequence }
         };
       }
-      if (this.publicStateful && this.mode === "auto" && !this.tainted && !this.mutationCancellationRequested()
+      if (this.semanticCycleEligible && this.mode === "auto" && !this.tainted && !this.mutationCancellationRequested()
           && !isTextMenuSnapshot(successor)) {
         const cycle = this.semanticCycle.observeDelivered(bundle.observation as PlayerEnvironmentSnapshot, successor);
         if (cycle) {

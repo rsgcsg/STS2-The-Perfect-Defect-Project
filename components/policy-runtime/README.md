@@ -166,7 +166,8 @@ false, and continued operation requires another explicit begin. Therefore this
 protocol supports bounded observed-segment continuity only and cannot attest
 whole-game memory across a reset.
 
-For Auto under this public stateful profile, Runtime keeps at most seven
+For Auto with a generic `snapshot-1` and zero required Reads (port 1 or port
+4), Runtime keeps at most seven
 fingerprints from correlated delivered Receipts with stable, recorded
 successors. Three consecutive deliveries returning to the identical public
 decision, or six alternating between two identical public decisions, trigger
@@ -180,6 +181,8 @@ Unknown fields, including nested IDs, are deliberately retained and may cause
 a missed cycle. This is a bounded no-progress safety signal, not evidence of
 gameplay completion. It never adds submissions, renews the authorization
 wallet, retries unknown delivery, or claims whole-game reset coverage.
+Port 1 with required Reads is excluded because the stable successor path does
+not fetch those Read contents; a Snapshot-only comparison could miss progress.
 
 ## Confirmed interaction port (opt-in)
 
