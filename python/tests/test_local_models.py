@@ -294,7 +294,9 @@ def test_recovered_runtime_shutdown_requires_confirmation(
         "address": "http://127.0.0.1:15527",
         "policy_manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
     }
-    service.state["previous_session"] = {"startup": exact, "selection_id": "fixture"}
+    service.state["previous_session"] = {
+        "startup": exact, "selection_id": "fixture", "run_profile": "short",
+    }
     if connector_endpoint is not None:
         service.state["previous_session"]["connector_endpoint"] = connector_endpoint
     with monkeypatch.context() as recovery:
@@ -311,6 +313,7 @@ def test_recovered_runtime_shutdown_requires_confirmation(
         recovery.setattr(local_models, "RuntimeClient", lambda *_: client)
         service._recover("human", service.intent_generation)
     assert service.client is client and service.process is None
+    assert service.state["run_profile"] == "short"
     if connector_endpoint == "http://127.0.0.1:19191":
         assert service.state["connector_endpoint"] == connector_endpoint
         assert service.state["error_code"] is None

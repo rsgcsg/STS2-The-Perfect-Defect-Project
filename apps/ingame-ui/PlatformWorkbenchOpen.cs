@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -151,6 +152,39 @@ public static class PlatformWorkbenchOpenClient
     public static bool IsWorkbenchInstanceId(string? value) =>
         value is not null && InstancePattern.IsMatch(value);
 
+    /// <summary>Only a refused connection or a different exact health identity
+    /// permits replacing a dead registration. Timeouts and malformed responses
+    /// leave the current owner untouched.</summary>
+    public static async Task<bool> IsDefinitivelyStaleAsync(
+        HttpClient client, string url, string instanceId)
+    {
+        if (!IsSafeWorkbenchRoot(url) || !IsWorkbenchInstanceId(instanceId))
+            return false;
+        try
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            using HttpResponseMessage response = await client.GetAsync(
+                new Uri(new Uri(url, UriKind.Absolute), "health"),
+                HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+            if (response.StatusCode != HttpStatusCode.OK)
+                return false;
+            using JsonDocument document = await ReadJsonAsync(response.Content, deadline.Token);
+            JsonElement health = document.RootElement;
+            return HasExactNames(health, "instance_id")
+                && TryGetString(health, "instance_id", out string observed)
+                && IsWorkbenchInstanceId(observed)
+                && observed != instanceId;
+        }
+        catch (HttpRequestException exception)
+        {
+            return exception.InnerException is SocketException socket
+                && socket.SocketErrorCode == SocketError.ConnectionRefused;
+        }
+        catch (OperationCanceledException) { return false; }
+        catch (JsonException) { return false; }
+        catch (IOException) { return false; }
+    }
+
     public static bool TryReadRegistration(
         JsonElement body,
         string expectedRuntimeInstanceId,
@@ -178,7 +212,7 @@ public static class PlatformWorkbenchOpenClient
             return false;
 
         if (expectedWorkbenchInstanceId is not null
-            && (!IsWorkbenchInstanceId(expectedWorkbenchInstanceId) || expectedWorkbenchInstanceId != workbenchInstanceId))
+            && !IsWorkbenchInstanceId(expectedWorkbenchInstanceId))
             return false;
 
         registration = new PlatformWorkbenchOpenRegistration(

@@ -80,6 +80,7 @@ class NativeWorkbenchRegistrar:
         if not self._valid_url(url) or not self._valid_instance_id(instance_id):
             return {"status": "unavailable", "reason": "invalid_workbench_identity"}
         registration_sent = False
+        replacement_requested = False
         try:
             current = self._request("GET", "/v1/workbench/status")
             if (
@@ -106,9 +107,10 @@ class NativeWorkbenchRegistrar:
                     current_url
                 ):
                     return {"status": "unavailable", "reason": "invalid_game_status"}
-                if current_instance != instance_id or current_url != url:
-                    return {"status": "conflict", "reason": "another_workbench_registered"}
-                expected_workbench_instance_id = str(instance_id)
+                # The game bridge owns the health check and compare-and-set.
+                # A replacement request cannot clear or overwrite a live owner.
+                expected_workbench_instance_id = str(current_instance)
+                replacement_requested = current_instance != instance_id or current_url != url
             elif (
                 current.get("workbench_instance_id") is not None
                 or current.get("workbench_url") is not None
@@ -137,6 +139,8 @@ class NativeWorkbenchRegistrar:
                 "workbench_instance_id": instance_id,
             }
         except HTTPError as error:
+            if registration_sent and replacement_requested and error.code == 409:
+                return {"status": "conflict", "reason": "another_workbench_registered"}
             reason = (
                 "registration_rejected"
                 if registration_sent and error.code in {400, 409}

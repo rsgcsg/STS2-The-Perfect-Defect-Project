@@ -137,10 +137,19 @@ internal static class PlatformTaskBridge
                 if (registration.ExpectedWorkbenchInstanceId is not null)
                 { Reply(context, 409, new { error = "workbench_instance_conflict" }); return; }
             }
-            else if (registration.ExpectedWorkbenchInstanceId != active.WorkbenchInstanceId
-                || registration.WorkbenchInstanceId != active.WorkbenchInstanceId
-                || registration.Url != active.Url)
+            else if (registration.ExpectedWorkbenchInstanceId != active.WorkbenchInstanceId)
             { Reply(context, 409, new { error = "workbench_instance_conflict" }); return; }
+            else if (registration.WorkbenchInstanceId != active.WorkbenchInstanceId
+                || registration.Url != active.Url)
+            {
+                // A new Workbench may replace only the exact previous owner,
+                // and only after the game itself verifies that owner is gone.
+                using var healthClient = PlatformWorkbenchOpenClient.CreateHttpClient();
+                if (!PlatformWorkbenchOpenClient.IsDefinitivelyStaleAsync(
+                        healthClient, active.Url, active.WorkbenchInstanceId)
+                    .GetAwaiter().GetResult())
+                { Reply(context, 409, new { error = "workbench_instance_conflict" }); return; }
+            }
 
             _workbenchRegistration = registration;
         }
