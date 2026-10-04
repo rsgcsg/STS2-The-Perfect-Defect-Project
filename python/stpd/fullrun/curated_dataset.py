@@ -190,6 +190,38 @@ def load_selection(
     memo: dict[str, DecisionDataset] | None = None,
     visited: set[str] | None = None,
 ) -> DecisionDataset:
+    from .selection_session import _load_selection as reuse_selection
+
+    # Recursive lineage keeps the existing memo and depth checks. Only the outer
+    # curated selection can reuse a complete, previously verified immutable result.
+    if depth == 0:
+        def owning_load(fresh: bool) -> DecisionDataset:
+            selected_memo = {} if fresh else memo
+            try:
+                return _load_selection(
+                    store, manifest, cache=cache, depth=depth,
+                    memo=selected_memo, visited=visited,
+                )
+            finally:
+                if fresh and memo is not None and selected_memo is not None:
+                    memo.update(selected_memo)
+
+        selected = reuse_selection(store, manifest, owning_load)
+        if memo is not None:
+            memo[manifest.artifact_id] = selected
+        return selected
+    return _load_selection(store, manifest, cache=cache, depth=depth, memo=memo, visited=visited)
+
+
+def _load_selection(
+    store: ArtifactStore,
+    manifest: Manifest,
+    *,
+    cache: VerifiedSourceCache | None,
+    depth: int = 0,
+    memo: dict[str, DecisionDataset] | None = None,
+    visited: set[str] | None = None,
+) -> DecisionDataset:
     from .decision_store import load, preview
     from .decision_union import union_decisions
 

@@ -3,19 +3,38 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
+import stat
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 from urllib.request import Request
 
-from spireagent.json_boundary import BoundaryError, digest, json_bytes
+from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes
 from spireagent.workbench.developer import atomic_json
 from spireagent.workbench.identity import LocalIdentity
 
 DOWNLOAD_TIMEOUT = 30
+EXPORT_INVENTORY_LIMIT = 2 * 1024 * 1024
+DOWNLOAD_RECEIPT_LIMIT = 32 * 1024
+SAVED_EXPORT_SCAN_LIMIT = 200
+
+
+@dataclass(frozen=True)
+class VerifiedMemberCollectionArchive:
+    export_id: str
+    file_id: str
+    artifact_id: str
+    upload_id: str
+    policy: str
+    inventory_sha256: str
+    archive_sha256: str
+    archive_bytes: int
+    archive: bytes
 
 
 class MemberClient:
@@ -92,6 +111,151 @@ class MemberClient:
                 return {"status": "idle"}
             return dict(self.operation)
 
+    @staticmethod
+    def _selected_collection_ids(value: object, files: list[dict[str, Any]]) -> set[str]:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {
+                "schema", "policy", "selection", "files", "total_bytes", "files_count",
+                "scope", "non_claims", "export_id", "created_at",
+            }
+            or value.get("policy") not in {
+                "stpd/project-sharing-v1", "stpd/project-sharing-v2",
+            }
+            or value.get("scope") != "selected_own_payloads"
+            or type(value.get("files_count")) is not int
+            or value.get("files_count") != len(files)
+        ):
+            raise BoundaryError("member", "collection_archive_not_selected")
+        selection = value.get("selection")
+        collections = selection.get("collections") if isinstance(selection, dict) else None
+        artifacts = selection.get("artifacts") if isinstance(selection, dict) else None
+        if (
+            not isinstance(selection, dict)
+            or set(selection) != {"collections", "artifacts"}
+            or not isinstance(collections, list)
+            or not all(isinstance(item, str) for item in collections)
+            or not isinstance(artifacts, list)
+        ):
+            raise BoundaryError("member", "collection_archive_not_selected")
+        try:
+            collection_ids = {digest(item, "export.upload_id", length=32) for item in collections}
+        except BoundaryError as error:
+            raise BoundaryError("member", "invalid_export_inventory") from error
+        if len(collection_ids) != len(collections):
+            raise BoundaryError("member", "invalid_export_inventory")
+        return collection_ids
+
+    @staticmethod
+    def _collection_archive_metadata(
+        item: dict[str, Any], collection_ids: set[str],
+    ) -> dict[str, Any] | None:
+        """Return identity-only metadata for one selected collection archive."""
+        if item.get("upload_id") not in collection_ids:
+            return None
+        if set(item) != {
+            "file_id", "artifact_id", "type", "role", "sha256", "size",
+            "media_type", "filename", "upload_id",
+        }:
+            return None
+        try:
+            artifact_id = digest(item.get("artifact_id"), "export.artifact_id")
+            file_id = digest(item.get("file_id"), "export.file_id")
+            upload_id = digest(item.get("upload_id"), "export.upload_id", length=32)
+            digest(item.get("sha256"), "export.sha256")
+            canonical_file_id = hashlib.sha256(
+                json_bytes([artifact_id, "payload", "archive"])
+            ).hexdigest()
+        except BoundaryError:
+            return None
+        size = item.get("size")
+        if (
+            item.get("type") != "payload"
+            or item.get("role") != "archive"
+            or item.get("media_type") != "application/gzip"
+            or item.get("filename") != file_id + ".bin"
+            or file_id != canonical_file_id
+            or type(size) is not int
+            or size <= 0
+        ):
+            return None
+        return {
+            "name": "项目成员集合归档",
+            "file_id": file_id,
+            "artifact_id": artifact_id,
+            "upload_id": upload_id,
+            "size": size,
+        }
+
+    def verified_collection_archive_catalog(self) -> dict[str, Any]:
+        """Project safe metadata for saved, fully verified member downloads.
+
+        This is a local read only projection. It neither contacts the Hub nor exposes
+        saved paths or archive bytes; the import command rechecks the selected bytes.
+        """
+        from spireagent.hub.uploads import MAX_ARCHIVE
+
+        root = self.account.config.state_dir
+        downloads = root / "downloads"
+        if root.is_symlink() or downloads.is_symlink():
+            raise BoundaryError("member", "download_symlink_rejected")
+        if not downloads.exists():
+            return {
+                "schema": "stpd/local-member-collection-archive-catalog-v1",
+                "status": "empty", "items": [], "excluded_count": 0, "truncated": False,
+            }
+        if not downloads.is_dir():
+            raise BoundaryError("member", "download_directory_required")
+
+        items: list[dict[str, Any]] = []
+        excluded = 0
+        scanned = 0
+        truncated = False
+        try:
+            with os.scandir(downloads) as entries:
+                for entry in entries:
+                    if not re.fullmatch(r"[a-f0-9]{64}", entry.name):
+                        continue
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                    if scanned >= SAVED_EXPORT_SCAN_LIMIT:
+                        truncated = True
+                        break
+                    scanned += 1
+                    directory = downloads / entry.name
+                    try:
+                        if directory.is_symlink():
+                            excluded += 1
+                            continue
+                        inventory_raw = self._read_regular_file(
+                            directory / "inventory.json", maximum=EXPORT_INVENTORY_LIMIT,
+                            error_code="download_inventory_unavailable",
+                        )
+                        inventory = decode_json(inventory_raw)
+                        files, total = self._validate_export_inventory(inventory, entry.name)
+                        collection_ids = self._selected_collection_ids(inventory, files)
+                        self._require_verified_download_receipt(
+                            directory, entry.name, len(files), total,
+                        )
+                        for file in files:
+                            metadata = self._collection_archive_metadata(file, collection_ids)
+                            if metadata is None or metadata["size"] > MAX_ARCHIVE:
+                                continue
+                            items.append({"export_id": entry.name, **metadata})
+                    except (BoundaryError, OSError, ValueError, TypeError):
+                        excluded += 1
+        except OSError as error:
+            raise BoundaryError("member", "download_directory_required") from error
+
+        items.sort(key=lambda item: (item["export_id"], item["upload_id"], item["file_id"]))
+        return {
+            "schema": "stpd/local-member-collection-archive-catalog-v1",
+            "status": "ready" if items else "empty",
+            "items": items,
+            "excluded_count": excluded,
+            "truncated": truncated,
+        }
+
     def download(self, export_id: str) -> dict[str, Any]:
         identity = digest(export_id, "member.export_id")
         token = self.token()
@@ -111,6 +275,171 @@ class MemberClient:
             )
             self.thread.start()
             return dict(self.operation)
+
+    @staticmethod
+    def _validate_export_inventory(
+        value: object, export_id: str,
+    ) -> tuple[list[dict[str, Any]], int]:
+        identity = digest(export_id, "member.export_id")
+        if not isinstance(value, dict):
+            raise BoundaryError("member", "invalid_export_inventory")
+        files = value.get("files")
+        content = {key: item for key, item in value.items()
+                   if key not in {"export_id", "created_at"}}
+        if (
+            value.get("schema") != "stpd/project-export-v1"
+            or value.get("export_id") != identity
+            or not isinstance(files, list)
+            or not 1 <= len(files) <= 1000
+            or hashlib.sha256(json_bytes(content)).hexdigest() != identity
+        ):
+            raise BoundaryError("member", "invalid_export_inventory")
+        total = 0
+        identities: set[str] = set()
+        for item in files:
+            if not isinstance(item, dict):
+                raise BoundaryError("member", "invalid_export_inventory")
+            file_id = digest(item.get("file_id"), "export.file_id")
+            digest(item.get("sha256"), "export.sha256")
+            size = item.get("size")
+            if file_id in identities or type(size) is not int or size < 0:
+                raise BoundaryError("member", "invalid_export_inventory")
+            identities.add(file_id)
+            total += size
+        if total != value.get("total_bytes") or total > 20 * 1024**3:
+            raise BoundaryError("member", "export_size_limit")
+        return files, total
+
+    @staticmethod
+    def _read_regular_file(path: Path, *, maximum: int, error_code: str) -> bytes:
+        if path.is_symlink() or not path.is_file():
+            raise BoundaryError("member", error_code)
+        descriptor = -1
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(descriptor, "rb") as handle:
+                descriptor = -1
+                details = os.fstat(handle.fileno())
+                if not stat.S_ISREG(details.st_mode) or details.st_size > maximum:
+                    raise BoundaryError("member", error_code)
+                content = handle.read(maximum + 1)
+                if len(content) != details.st_size or len(content) > maximum:
+                    raise BoundaryError("member", error_code)
+                return content
+        except OSError as error:
+            raise BoundaryError("member", error_code) from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def verified_collection_archive(
+        self, export_id: str, file_id: str, *, maximum_archive_bytes: int,
+    ) -> VerifiedMemberCollectionArchive:
+        """Recheck the saved receipt, inventory and exact selected collection bytes.
+
+        The local receipt records download completion, not cryptographic Hub provenance
+        or historical research-use admission.
+        """
+        export = digest(export_id, "member.export_id")
+        selected_file = digest(file_id, "member.file_id")
+        if type(maximum_archive_bytes) is not int or maximum_archive_bytes <= 0:
+            raise BoundaryError("member", "archive_size_limit")
+
+        root = self.account.config.state_dir
+        downloads = root / "downloads"
+        directory = downloads / export
+        for path in (root, downloads, directory):
+            if path.is_symlink():
+                raise BoundaryError("member", "download_symlink_rejected")
+            if not path.is_dir():
+                raise BoundaryError("member", "download_directory_required")
+
+        inventory_path = directory / "inventory.json"
+        raw_inventory = self._read_regular_file(
+            inventory_path, maximum=EXPORT_INVENTORY_LIMIT,
+            error_code="download_inventory_unavailable",
+        )
+        try:
+            value = decode_json(raw_inventory)
+        except BoundaryError as error:
+            raise BoundaryError("member", "invalid_export_inventory") from error
+        files, total = self._validate_export_inventory(value, export)
+        self._require_verified_download_receipt(directory, export, len(files), total)
+        collection_ids = self._selected_collection_ids(value, files)
+        item = next((row for row in files if row.get("file_id") == selected_file), None)
+        if item is None:
+            raise BoundaryError("member", "file_not_selected")
+        if set(item) != {
+            "file_id", "artifact_id", "type", "role", "sha256", "size",
+            "media_type", "filename", "upload_id",
+        }:
+            raise BoundaryError("member", "invalid_export_inventory")
+        try:
+            artifact_id = digest(item.get("artifact_id"), "export.artifact_id")
+            upload_id = digest(item.get("upload_id"), "export.upload_id", length=32)
+            archive_sha256 = digest(item.get("sha256"), "export.sha256")
+            archive_bytes = item.get("size")
+            canonical_file_id = hashlib.sha256(
+                json_bytes([artifact_id, "payload", "archive"])
+            ).hexdigest()
+        except BoundaryError as error:
+            raise BoundaryError("member", "invalid_export_inventory") from error
+        if (
+            item.get("type") != "payload"
+            or item.get("role") != "archive"
+            or item.get("media_type") != "application/gzip"
+            or item.get("filename") != selected_file + ".bin"
+            or selected_file != canonical_file_id
+            or upload_id not in collection_ids
+            or type(archive_bytes) is not int
+            or not 0 < archive_bytes <= maximum_archive_bytes
+        ):
+            raise BoundaryError("member", "collection_archive_not_selected")
+
+        archive_path = directory / selected_file
+        archive = self._read_regular_file(
+            archive_path, maximum=maximum_archive_bytes,
+            error_code="download_file_unavailable",
+        )
+        if len(archive) != archive_bytes or hashlib.sha256(archive).hexdigest() != archive_sha256:
+            raise BoundaryError("member", "download_checksum_mismatch")
+        return VerifiedMemberCollectionArchive(
+            export_id=export,
+            file_id=selected_file,
+            artifact_id=artifact_id,
+            upload_id=upload_id,
+            policy=str(value.get("policy", "")),
+            inventory_sha256=hashlib.sha256(raw_inventory).hexdigest(),
+            archive_sha256=archive_sha256,
+            archive_bytes=archive_bytes,
+            archive=archive,
+        )
+
+    def _require_verified_download_receipt(
+        self, directory: Path, export_id: str, files: int, total: int,
+    ) -> None:
+        """One bounded, no-follow completion gate for both catalog and execution."""
+        raw = self._read_regular_file(
+            directory / "download.json", maximum=DOWNLOAD_RECEIPT_LIMIT,
+            error_code="download_receipt_unavailable",
+        )
+        try:
+            receipt = decode_json(raw)
+        except BoundaryError as error:
+            raise BoundaryError("member", "download_receipt_unavailable") from error
+        expected = {
+            "verified_files": files, "verified_bytes": total,
+            "total_files": files, "total_bytes": total,
+        }
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("status") != "verified"
+            or receipt.get("export_id") != export_id
+            or receipt.get("training_admitted") is not False
+            or any(type(receipt.get(key)) is not int or receipt[key] != count
+                   for key, count in expected.items())
+        ):
+            raise BoundaryError("member", "download_receipt_unavailable")
 
     def _update(self, **values: Any) -> None:
         with self.lock:
@@ -134,29 +463,7 @@ class MemberClient:
                 "/v1/identity/member/exports/" + export_id, token=token,
                 timeout=DOWNLOAD_TIMEOUT,
             )
-            files = value.get("files")
-            content = {
-                key: item for key, item in value.items() if key not in {"export_id", "created_at"}
-            }
-            if (
-                value.get("schema") != "stpd/project-export-v1"
-                or value.get("export_id") != export_id
-                or not isinstance(files, list)
-                or not 1 <= len(files) <= 1000
-                or hashlib.sha256(json_bytes(content)).hexdigest() != export_id
-            ):
-                raise BoundaryError("member", "invalid_export_inventory")
-            total = 0
-            identities: set[str] = set()
-            for item in files:
-                file_id = digest(item["file_id"], "export.file_id")
-                digest(item["sha256"], "export.sha256")
-                if file_id in identities or type(item["size"]) is not int or item["size"] < 0:
-                    raise BoundaryError("member", "invalid_export_inventory")
-                identities.add(file_id)
-                total += item["size"]
-            if total != value.get("total_bytes") or total > 20 * 1024**3:
-                raise BoundaryError("member", "export_size_limit")
+            files, total = self._validate_export_inventory(value, export_id)
             root = self.account.config.state_dir
             for part in (root, root / "downloads", root / "downloads" / export_id):
                 self._directory(part)

@@ -94,6 +94,28 @@ def _selected_curation_owner(config: ProjectConfig) -> LocalCurationOwner | None
     return owner
 
 
+def _reconcile_published_source(owner: LocalCurationOwner, candidate: str,
+                                artifact: str) -> None:
+    """Finish the owner publication edge after a crash between store and owner writes."""
+    with owner.transaction() as db:
+        pending = db.execute(
+            "SELECT artifact FROM local_source_pending WHERE candidate=?", (candidate,),
+        ).fetchone()
+    if pending is not None:
+        try:
+            owner.published_source(candidate, artifact)
+        except BoundaryError as error:
+            if error.code != "source_pending_identity_conflict":
+                raise
+            with owner.transaction() as db:
+                pending = db.execute(
+                    "SELECT artifact FROM local_source_pending WHERE candidate=?",
+                    (candidate,),
+                ).fetchone()
+            if pending is not None:
+                raise
+
+
 def _labels(config: ProjectConfig) -> dict[str, str]:
     path = config.state_dir / IDENTITY_FILE
     if path.exists():
@@ -139,8 +161,9 @@ def _archive_verified_bundle(bundle: Path, archive: Path,
 class LocalRecordingImporter:
     """One serial background import, with durable status and no automatic retry."""
 
-    def __init__(self, config: ProjectConfig, catalog: LocalRecordingCatalog) -> None:
-        self.config, self.catalog = config, catalog
+    def __init__(self, config: ProjectConfig, catalog: LocalRecordingCatalog,
+                 members: Any | None = None) -> None:
+        self.config, self.catalog, self.members = config, catalog, members
         self.lock = threading.RLock()
         self.thread: threading.Thread | None = None
         self.path = config.state_dir / OPERATION_FILE
@@ -229,9 +252,74 @@ class LocalRecordingImporter:
             self.thread.start()
             return self.status()
 
-    def _run(self, candidate_id: str, candidate: dict[str, Any]) -> None:
+    @staticmethod
+    def _member_source_identity(export_id: str, file_id: str) -> str:
+        return hashlib.sha256(json_bytes({
+            "schema": "stpd/member-collection-archive-source-v1",
+            "export_id": export_id,
+            "file_id": file_id,
+        })).hexdigest()
+
+    def start_member_archive(self, export_id: object, file_id: object,
+                             human_origin_attested: object) -> dict[str, Any]:
+        if human_origin_attested is not True:
+            raise BoundaryError("local_import", "explicit_human_origin_attestation_required")
+        if self.members is None:
+            raise BoundaryError("local_import", "member_download_unavailable")
+        export = digest(export_id, "local_import.export_id")
+        selected_file = digest(file_id, "local_import.file_id")
+        identity = self._member_source_identity(export, selected_file)
+        with self.lock:
+            if self.operation["status"] == "unavailable":
+                raise BoundaryError("local_import", "operation_file_invalid")
+            if self.thread is not None and self.thread.is_alive():
+                if self.operation.get("candidate_id") == identity:
+                    return self.status()
+                raise BoundaryError("local_import", "operation_in_progress")
+            # Revalidate the production inventory and full archive hash before the
+            # existing owner gate is committed. The worker repeats this immediately
+            # before typed verification and publication to close the TOCTOU window.
+            self.members.verified_collection_archive(
+                export, selected_file, maximum_archive_bytes=MAX_ARCHIVE,
+            )
+            store, registry = _selected_store(self.config)
+            existing = self._existing(store, identity)
+            if existing is not None:
+                owner = _selected_curation_owner(self.config)
+                if owner is not None:
+                    _reconcile_published_source(owner, identity, existing)
+                _sync(store, registry)
+                self.operation = {
+                    "schema": SCHEMA, "status": "completed", "candidate_id": identity,
+                    "source_kind": "member_archive", "export_id": export,
+                    "file_id": selected_file, "artifact_id": existing, "finished_at": _now(),
+                }
+                self._save()
+                return self.status()
+            owner = _selected_curation_owner(self.config)
+            if owner is not None:
+                owner.begin_source(identity)
+            self.operation = {
+                "schema": SCHEMA, "status": "pending", "candidate_id": identity,
+                "source_kind": "member_archive", "export_id": export,
+                "file_id": selected_file, "started_at": _now(),
+            }
+            self._save()
+            self.thread = threading.Thread(
+                target=self._run, args=(identity, None, export, selected_file), daemon=True,
+            )
+            self.thread.start()
+            return self.status()
+
+    def _run(self, candidate_id: str, candidate: dict[str, Any] | None,
+             export_id: str | None = None, file_id: str | None = None) -> None:
         try:
-            artifact_id = self._import(candidate_id, candidate)
+            if candidate is None:
+                if export_id is None or file_id is None:
+                    raise BoundaryError("local_import", "member_source_identity_missing")
+                artifact_id = self._import_member_archive(candidate_id, export_id, file_id)
+            else:
+                artifact_id = self._import(candidate_id, candidate)
             with self.lock:
                 self.operation = {**self.operation, "status": "completed",
                                   "artifact_id": artifact_id, "finished_at": _now()}
@@ -255,6 +343,64 @@ class LocalRecordingImporter:
                                   "finished_at": _now(),
                                   **({"artifact_id": published} if published else {})}
                 self._save()
+
+    def _import_member_archive(self, candidate_id: str, export_id: str, file_id: str) -> str:
+        if self.members is None:
+            raise BoundaryError("local_import", "member_download_unavailable")
+        source = self.members.verified_collection_archive(
+            export_id, file_id, maximum_archive_bytes=MAX_ARCHIVE,
+        )
+        if self._member_source_identity(source.export_id, source.file_id) != candidate_id:
+            raise BoundaryError("local_import", "member_source_identity_changed")
+        store, registry = _selected_store(self.config)
+        existing = self._existing(store, candidate_id)
+        if existing is not None:
+            owner = _selected_curation_owner(self.config)
+            if owner is not None:
+                _reconcile_published_source(owner, candidate_id, existing)
+            _sync(store, registry)
+            return existing
+        from stpd.fullrun.platform_bundle3 import PlatformBundle3SourceAdapter
+
+        verified = PlatformBundle3SourceAdapter().verify_with_transfer(source.archive)
+        transfer = transfer_from_json(verified.transfer.to_dict())
+        archive_payload = store.put_bytes("archive", source.archive, "application/gzip")
+        transfer_payload = store.put_bytes("transfer", json_bytes(transfer.to_dict()))
+        evidence = Manifest(
+            "evidence", source_identity(ROOT),
+            payloads=(archive_payload, transfer_payload),
+            parameters=FrozenObject.of({
+                "schema": EVIDENCE_SCHEMA,
+                "candidate_id": candidate_id,
+                "session_id": verified.session_id,
+                "timeline_id": verified.timeline_id,
+                "manifest_sha256": verified.manifest_sha256,
+                "close_sha256": verified.close_sha256,
+                "content_id": transfer.content_id,
+                "transfer_manifest_sha256": transfer.manifest_sha256,
+                "worker_id": verified.worker_id,
+                "campaign_id": verified.campaign_id,
+                "human_origin_attested": True,
+                "disposition": "locally_verified",
+                "research_admission": "not_evaluated",
+                "hub_receipt": None,
+                "source_kind": "member_collection_archive",
+                "member_export_id": source.export_id,
+                "member_file_id": source.file_id,
+                "member_artifact_id": source.artifact_id,
+                "member_upload_id": source.upload_id,
+                "member_policy": source.policy,
+                "member_inventory_sha256": source.inventory_sha256,
+                "original_archive_sha256": source.archive_sha256,
+                "original_archive_bytes": source.archive_bytes,
+            }),
+        )
+        artifact_id = store.publish(evidence)
+        owner = _selected_curation_owner(self.config)
+        if owner is not None:
+            owner.published_source(candidate_id, artifact_id)
+        _sync(store, registry)
+        return artifact_id
 
     def _import(self, candidate_id: str, candidate: dict[str, Any]) -> str:
         fresh = self._fresh_candidate(candidate_id)
