@@ -2043,7 +2043,7 @@ def test_finalized_stop_recovery_requires_exact_evidence_and_free_port(
     assert not (service.directory / "session-archives").exists()
 
 
-@pytest.mark.parametrize("profile", ["short", "long", "invalid", None, [], {}])
+@pytest.mark.parametrize("profile", ["short", "extended", "long", "invalid", None, [], {}])
 def test_orderly_owner_reopen_retains_reviewed_selection_without_runtime_authority(
     service, profile,
 ):
@@ -2060,7 +2060,7 @@ def test_orderly_owner_reopen_retains_reviewed_selection_without_runtime_authori
     assert reopened.state["loaded"] is False
     assert reopened.state["runtime"] is None and reopened.state["operation"] is None
     assert reopened.client is None and reopened.process is None and reopened.thread is None
-    if isinstance(profile, str) and profile in local_models.RUN_PROFILES:
+    if profile == "short":
         assert reopened.state["run_profile"] == profile
     else:
         assert "run_profile" not in reopened.state
@@ -2074,3 +2074,19 @@ def test_orderly_owner_reopen_discards_unregistered_saved_selection(service):
     reopened = LocalModelService(service.config)
     assert reopened.state["status"] == "idle"
     assert "selection_id" not in reopened.state and not reopened.state["loaded"]
+
+
+def test_orderly_owner_reopen_preserves_extended_only_for_reviewed_text_selection(
+    service, monkeypatch,
+):
+    entry = {**service.registry()["policies"][0], "runtime_profile": "text-menu-v1"}
+    monkeypatch.setattr(LocalModelService, "selection", lambda self, identity: entry)
+    service.directory.mkdir(parents=True, exist_ok=True)
+    (service.directory / "session.json").write_text(json.dumps({
+        "status": "stopped", "selection_id": entry["id"], "run_profile": "extended",
+    }))
+    reopened = LocalModelService(service.config)
+    assert reopened.state["selection_id"] == entry["id"]
+    assert reopened.state["run_profile"] == "extended"
+    assert not reopened.state["loaded"] and reopened.state["runtime"] is None
+    assert reopened.client is None and reopened.process is None

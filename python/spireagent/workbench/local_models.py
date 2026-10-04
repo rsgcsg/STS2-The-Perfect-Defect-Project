@@ -380,8 +380,11 @@ class LocalModelService:
                         pass
                     else:
                         self.state.update(status="stopped", selection_id=entry["id"])
-                        if (isinstance(old.get("run_profile"), str)
-                                and old["run_profile"] in RUN_PROFILES):
+                        try:
+                            self._run_profile(entry["id"], old.get("run_profile"))
+                        except BoundaryError:
+                            pass
+                        else:
                             self.state["run_profile"] = old["run_profile"]
                 elif old.get("status") not in {"idle", "failed"}:
                     self.state.update(
