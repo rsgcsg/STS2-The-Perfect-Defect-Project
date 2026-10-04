@@ -59,6 +59,13 @@ filter, and retain the visible search term and selected recording IDs. **录制*
 local-verified and received-bundle evidence; a quarantined received bundle remains
 visible. Category membership never grants Human origin, training use or model readiness.
 Only the existing eligible local-verified sources expose the Human-input selection control.
+
+A supported scratch Public M0 model can expose its explicit export and registration
+controls with CPU, MPS or CUDA training provenance. Training device metadata remains
+unchanged and does not choose the inference device on this computer. The model's exact
+graph, schema, recipe, renderer and training binding still gate the UI; export receipt,
+weights, current Host/Connector requirements and Runtime identity are independently
+revalidated by the backend. Reading a completed export does not register or load it.
 The GET category filter combines with kind/search before total counts and pagination;
 unknown categories are rejected. Switching categories does not publish, import or train.
 
