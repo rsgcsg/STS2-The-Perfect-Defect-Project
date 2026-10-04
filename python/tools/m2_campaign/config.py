@@ -91,7 +91,12 @@ class Settings:
 
     @classmethod
     def load(cls, location: Path) -> Settings:
-        raw = bounded_file(location, 1024 * 1024)
+        return cls.decode(bounded_file(location, 1024 * 1024))
+
+    @classmethod
+    def decode(cls, raw: bytes) -> Settings:
+        if type(raw) is not bytes or not 0 < len(raw) <= 1024 * 1024:
+            raise ValueError("configuration_size_limit")
         value = fields(json.loads(raw), {
             "schema", "worker_python_root", "producer", "project_config", "store_root",
             "store_lock", "journal_root", "approval_dir", "provider_adapter", "runtime",

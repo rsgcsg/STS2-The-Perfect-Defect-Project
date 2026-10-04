@@ -151,25 +151,31 @@ class Campaign:
         backend: Backend,
         provider: Provider,
         authority: Authority,
+        *, execution_settings: bytes | None = None,
     ) -> None:
         self.config, self.journal = config, journal
         self.backend, self.provider, self.authority = backend, provider, authority
         self._active = False
         self._session_accepted = 0
+        self.execution_settings = execution_settings
 
     @contextmanager
     def session(self) -> Iterator[Campaign]:
         """Retain command-scoped immutable verification and the cross-run writer lock."""
         if self._active:
             raise CampaignError("session_already_active")
-        with self.journal.session(asdict(self.config)), self.backend.session():
-            self._active = True
-            self._session_accepted = 0
-            try:
-                self._records()
-                yield self
-            finally:
-                self._active = False
+        with self.journal.session(asdict(self.config), settings_bytes=self.execution_settings):
+            if self.execution_settings is not None:
+                from .recovery import validate_execution
+                validate_execution(self.journal)
+            with self.backend.session():
+                self._active = True
+                self._session_accepted = 0
+                try:
+                    self._records()
+                    yield self
+                finally:
+                    self._active = False
 
     def _slice(self, value: object) -> NextSlice:
         if isinstance(value, NextSlice):
@@ -238,12 +244,13 @@ class Campaign:
         records = self.journal.records()
         specs = {spec.run_id: spec for spec in self.config.runs}
         counts: dict[str, int] = {}
+        logical: dict[str, int] = {}
         previous: dict[str, Accepted] = {}
         unresolved = False
         last_run_index = -1
         for record in records:
             if (
-                set(record) != _FIELDS
+                set(record) not in (_FIELDS, _FIELDS | {"replacement_for"})
                 or record["phase"] not in _PHASES
                 or type(record["run_id"]) is not str
                 or record["run_id"] not in specs
@@ -260,10 +267,10 @@ class Campaign:
                         raise CampaignError("run_order_invalid")
                 last_run_index = run_index
             counts[attempt.run_id] = counts.get(attempt.run_id, 0) + 1
-            if (
-                counts[attempt.run_id] != attempt.ordinal
-                or attempt.ordinal > specs[attempt.run_id].max_requests
-            ):
+            resolved = self.journal.resolution(record) is not None
+            logical[attempt.run_id] = logical.get(attempt.run_id, 0) + (0 if resolved else 1)
+            if (counts[attempt.run_id] != attempt.ordinal
+                    or logical[attempt.run_id] > specs[attempt.run_id].max_requests):
                 raise CampaignError("request_limit_or_ordinal_invalid")
             phase = _PHASES.index(record["phase"])
             required = {
@@ -298,7 +305,7 @@ class Campaign:
                 raise CampaignError("same_run_resume_invalid")
             marker = self.journal.accepted(record)
             if marker is None:
-                unresolved = True
+                unresolved = not resolved
             else:
                 accepted = self._accepted(marker, attempt.slice)
                 if prior is not None and accepted.optimizer_updates <= prior.optimizer_updates:
@@ -362,30 +369,39 @@ class Campaign:
         if pause_after_accepted is not None and self._session_accepted >= pause_after_accepted:
             return TickResult("paused")
         records = self._records()
-        record = next((item for item in records if self.journal.accepted(item) is None), None)
+        record = next((item for item in records if self.journal.accepted(item) is None
+                       and self.journal.resolution(item) is None), None)
         if record is None:
             for spec in self.config.runs:
                 owned = [item for item in records if item["run_id"] == spec.run_id]
-                if owned:
+                accepted_rows = [item for item in owned if self.journal.accepted(item) is not None]
+                if accepted_rows:
                     latest = self._accepted(
-                        self.journal.accepted(owned[-1]), self._slice(owned[-1]["slice"])
+                        self.journal.accepted(accepted_rows[-1]),
+                        self._slice(accepted_rows[-1]["slice"]),
                     )
                     if latest.completed:
                         continue
                 slice = self.backend.plan_next(spec.run_id)
                 if slice is None:
-                    if owned:
+                    if accepted_rows:
                         raise CampaignError("backend_completed_without_campaign_acceptance")
                     continue  # An already-completed prepared run belongs to the backend.
-                if len(owned) >= spec.max_requests:
+                logical_count = sum(self.journal.resolution(item) is None for item in owned)
+                if logical_count >= spec.max_requests:
                     return TickResult("blocked", reason="request_limit")
                 slice = self._slice(slice)
-                if owned and (
+                if accepted_rows and (
                     slice.resume_id != latest.checkpoint_id
                     or slice.expected_epoch != latest.completed_epochs + 1
                 ):
                     raise CampaignError("same_run_resume_invalid")
                 attempt = Attempt(uuid.uuid4().hex, spec.run_id, len(owned) + 1, slice)
+                replacement = self.journal.replacement_for(spec.run_id, records)
+                if replacement is not None:
+                    old = next(item for item in owned if item["attempt_id"] == replacement)
+                    if asdict(slice) != old["slice"]:
+                        raise CampaignError("replacement_must_repeat_same_slice")
                 self.backend.admit(spec.run_id)
                 request = self.backend.build(spec.run_id, attempt.attempt_id, slice)
                 record = {
@@ -398,6 +414,8 @@ class Campaign:
                     "result": None,
                     "stop": None,
                 }
+                if replacement is not None:
+                    record["replacement_for"] = replacement
                 records.append(record)
                 self.journal.save(records)
                 break
@@ -502,7 +520,8 @@ class Campaign:
             self.backend.accept(attempt.run_id, request, self.journal.read(record["result"])),
             attempt.slice,
         )
-        prior_records = [item for item in records[:-1] if item["run_id"] == attempt.run_id]
+        prior_records = [item for item in records[:-1] if item["run_id"] == attempt.run_id
+                         and self.journal.accepted(item) is not None]
         if prior_records:
             prior = self._accepted(
                 self.journal.accepted(prior_records[-1]), self._slice(prior_records[-1]["slice"])
@@ -526,7 +545,8 @@ class Campaign:
         if not self._active:
             raise CampaignError("campaign_session_required")
         records = self._records()
-        record = next((item for item in records if self.journal.accepted(item) is None), None)
+        record = next((item for item in records if self.journal.accepted(item) is None
+                       and self.journal.resolution(item) is None), None)
         if record is None:
             return TickResult("paused", reason="no_active_attempt")
         attempt = self._attempt(record)

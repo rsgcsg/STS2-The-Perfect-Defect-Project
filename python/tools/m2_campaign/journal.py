@@ -156,7 +156,8 @@ class CampaignJournal:
         self._config_sha: str | None = None
 
     @contextmanager
-    def session(self, config: dict[str, Any]) -> Iterator[CampaignJournal]:
+    def session(self, config: dict[str, Any], *, settings_bytes: bytes | None = None,
+                recovery: bool = False) -> Iterator[CampaignJournal]:
         if self._active:
             raise JournalError("session_already_active")
         _mkdir(self.root)
@@ -182,7 +183,16 @@ class CampaignJournal:
                     if self._history():
                         raise JournalError("state_missing_with_history")
                     self.save([])
-                self.records()
+                if settings_bytes is not None:
+                    origin = self.root / "settings.json"
+                    if not origin.exists():
+                        if recovery or self.records(verify_objects=False):
+                            raise JournalError("origin_settings_missing")
+                        _write(origin, settings_bytes, immutable=True)
+                    current = self.current_settings_bytes()
+                    if not recovery and settings_bytes != current:
+                        raise JournalError("execution_settings_not_current")
+                self.records(verify_objects=not recovery)
                 yield self
             finally:
                 self._active = False
@@ -233,7 +243,7 @@ class CampaignJournal:
             raise JournalError("object_corrupt")
         return raw
 
-    def records(self) -> list[dict[str, Any]]:
+    def records(self, *, verify_objects: bool = True) -> list[dict[str, Any]]:
         self._require_session()
         state = _json(self.root / "state.json")
         history = self._history()
@@ -262,10 +272,91 @@ class CampaignJournal:
             # Objects are checked before any recovery action, including accepted records.
             for key in ("request", "approval", "target", "handle", "result", "stop"):
                 reference = record.get(key)
-                if reference is not None:
+                if reference is not None and verify_objects:
                     self.read(reference)
             self.accepted(record)
+        events = self.recoveries()
+        resolved: set[str] = set()
+        for event in events:
+            failed = event["failed_attempt"]
+            if failed not in records or failed["attempt_id"] in resolved:
+                raise JournalError("resolved_attempt_changed")
+            resolved.add(failed["attempt_id"])
+            index = records.index(failed)
+            if (index + 1 < len(records)
+                    and records[index + 1].get("replacement_for") != failed["attempt_id"]):
+                raise JournalError("replacement_permit_required")
+        replacements: set[str] = set()
+        for record in records:
+            old_id = record.get("replacement_for")
+            if old_id is None:
+                continue
+            failed = next((event["failed_attempt"] for event in events
+                           if event["failed_attempt"]["attempt_id"] == old_id), None)
+            if (failed is None or old_id in replacements
+                    or failed["run_id"] != record["run_id"]
+                    or failed["slice"] != record["slice"]
+                    or record["ordinal"] != failed["ordinal"] + 1):
+                raise JournalError("replacement_permit_invalid_or_used")
+            replacements.add(old_id)
         return records
+
+    def recoveries(self) -> list[dict[str, Any]]:
+        """Validate committed version/resolution events without operator-file rereads."""
+        self._require_session()
+        directory = self.root / "recoveries"
+        if not directory.exists() and not directory.is_symlink():
+            return []
+        if directory.is_symlink() or not directory.is_dir():
+            raise JournalError("recovery_directory_unsafe")
+        from .recovery import validate_event
+        events = []
+        current = _read(self.root / "settings.json", MAX_METADATA_BYTES)
+        for index, location in enumerate(sorted(directory.iterdir())):
+            if location.name != f"{index:012d}.json":
+                raise JournalError("recovery_history_unsafe")
+            event = _json(location)
+            validate_event(self, event, current)
+            current = self.read(event["settings"], limit=MAX_METADATA_BYTES)
+            events.append(event)
+        return events
+
+    def current_settings_bytes(self) -> bytes:
+        self._require_session()
+        events = self.recoveries()
+        return (self.read(events[-1]["settings"], limit=MAX_METADATA_BYTES) if events
+                else _read(self.root / "settings.json", MAX_METADATA_BYTES))
+
+    @property
+    def origin_settings_sha256(self) -> str:
+        self._require_session()
+        return sha256(_read(self.root / "settings.json", MAX_METADATA_BYTES))
+
+    def settings_for(self, record: dict[str, Any]) -> bytes | None:
+        """Immutable issuing version, including historical reserved grants."""
+        self._require_session()
+        if not (self.root / "settings.json").exists():
+            return None  # Generic protocol-only journal, without application settings.
+        current = _read(self.root / "settings.json", MAX_METADATA_BYTES)
+        for event in self.recoveries():
+            before = json.loads(self.read(event["before_state"], limit=MAX_METADATA_BYTES))
+            if any(row["attempt_id"] == record["attempt_id"] for row in before["attempts"]):
+                return current
+            current = self.read(event["settings"], limit=MAX_METADATA_BYTES)
+        return current
+
+    def resolution(self, record: dict[str, Any]) -> dict[str, Any] | None:
+        return next((event for event in self.recoveries()
+                     if event["failed_attempt"] == record), None)
+
+    def replacement_for(self, run_id: str, records: list[dict[str, Any]]) -> str | None:
+        used = {row.get("replacement_for") for row in records}
+        pending = [event["failed_attempt"]["attempt_id"] for event in self.recoveries()
+                   if event["failed_attempt"]["run_id"] == run_id
+                   and event["failed_attempt"]["attempt_id"] not in used]
+        if len(pending) > 1:
+            raise JournalError("ambiguous_replacement_permit")
+        return pending[0] if pending else None
 
     def save(self, records: list[dict[str, Any]]) -> None:
         self._require_session()

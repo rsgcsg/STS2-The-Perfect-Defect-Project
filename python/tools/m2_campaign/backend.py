@@ -32,12 +32,13 @@ from stpd.workers.public_m2_run import MAX_CHECKPOINT_BYTES, _load_run, _read
 
 from .config import RunBinding, Settings, canonical, sha
 from .core import Accepted, NextSlice
-from .journal import JournalError, _mkdir, _write
+from .journal import CampaignJournal, JournalError, _mkdir, _write
 
 
 class PublicM2Backend:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, journal: CampaignJournal | None = None):
         self.settings = settings
+        self.journal = journal
         value = settings.value
         self.producer = Producer.decode(value["producer"])
         self.worker_root = Path(value["worker_python_root"])
@@ -84,8 +85,13 @@ class PublicM2Backend:
             raise ValueError("budget_scope_directory_unsafe")
         _mkdir(directory)
         location = directory / (self.settings.value["budget_scope_id"] + ".json")
+        origin = self.settings.identity
+        if self.journal is not None:
+            if self.journal.current_settings_bytes() != self.settings.raw:
+                raise ValueError("execution_settings_not_current")
+            origin = self.journal.origin_settings_sha256
         raw = canonical({"schema": "stpd/m2-campaign-budget-scope-v1",
-                         "config_sha256": self.settings.identity,
+                         "config_sha256": origin,
                          "journal_root": self.settings.value["journal_root"]})
         if location.is_symlink():
             raise ValueError("budget_scope_unsafe")

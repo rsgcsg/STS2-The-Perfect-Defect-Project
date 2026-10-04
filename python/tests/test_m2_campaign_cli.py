@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,100 @@ import pytest
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parent
 CAMPAIGN_SCHEMA = "stpd/m2-campaign-status-v1"
+
+
+_OFFLINE_CHILD = r'''
+# Test-only bootstrap: install restrictions in this actual child before APIs load.
+import hashlib, json, os, runpy, sys
+from pathlib import Path
+mode, scope_arg, worker_arg, target = sys.argv[1:5]
+scope, worker = Path(scope_arg).resolve(), Path(worker_arg).resolve()
+temporary = Path(os.environ["TMPDIR"]).resolve()
+if mode not in {"setup", "execute", "check", "recover"} or not scope.is_relative_to(temporary):
+    raise RuntimeError("non_synthetic_child_scope")
+if not worker.is_relative_to(temporary):
+    raise RuntimeError("non_synthetic_worker")
+original = ([sys.executable, "-I", "-c", target] + sys.argv[5:] if mode == "setup"
+            else [sys.executable, "-I", target] + sys.argv[5:])
+log_path = os.environ.get("M2_CLI_CHILD_CALL_LOG")
+def record(kind, argv=None, cwd=None):
+    if log_path:
+        with open(log_path, "a") as stream:
+            row = {"kind": kind, "argv": argv, "cwd": cwd}
+            stream.write(json.dumps(row, sort_keys=True) + "\n")
+record("test_child_bootstrap", original, str(Path.cwd()))
+git_reads = {("git", "rev-parse", "HEAD"), ("git", "status", "--porcelain"),
+             ("git", "rev-parse", "--show-prefix"), ("git", "show", "HEAD:uv.lock")}
+def audit(event, args):
+    if event.startswith("socket.") and event != "socket.__new__":
+        record("network_blocked")
+        raise RuntimeError("offline_child_network_denied")
+    if event == "import":
+        name = args[0].split(".", 1)[0]
+        forbidden = {"modal"} if mode != "recover" else {"modal", "torch", "stpd", "spireagent"}
+        if name in forbidden:
+            record("import_blocked:" + name)
+            raise RuntimeError("offline_child_import_denied:" + name)
+    if event == "subprocess.Popen":
+        command, cwd = args[1], args[2]
+        argv = tuple(os.fsdecode(x) for x in command) if isinstance(command, (list, tuple)) else ()
+        if (mode != "recover" and argv in git_reads
+                and cwd is not None and Path(cwd).resolve() == worker):
+            record("source_identity_local_git", list(argv), str(worker))
+            return
+        if mode in {"setup", "execute"} and argv == ("uname", "-p") and cwd is None:
+            record("local_platform_processor", list(argv))
+            return
+        if (mode in {"setup", "execute"} and len(argv) == 3 and argv[:2] == ("file", "-b")
+                and cwd is None and Path(argv[2]).resolve() == Path(sys.executable).resolve()):
+            record("local_platform_interpreter_architecture", list(argv))
+            return
+        record("subprocess_blocked", list(argv), None if cwd is None else str(cwd))
+        raise RuntimeError("offline_child_subprocess_denied")
+sys.addaudithook(audit)
+if mode == "setup":
+    if (len(sys.argv) != 7 or Path(sys.argv[5]).resolve() != worker
+            or not Path(sys.argv[6]).resolve().is_relative_to(scope)):
+        raise RuntimeError("synthetic_setup_paths_required")
+    sys.argv = ["-c"] + sys.argv[5:]
+    exec(compile(target, "<synthetic-fixture-setup>", "exec"), {"__name__": "__main__"})
+else:
+    arguments = sys.argv[5:]
+    if arguments[:1] != ["--config"] or arguments[2] != mode:
+        raise RuntimeError("exact_cli_arguments_required")
+    config = Path(arguments[1]).resolve()
+    if not config.is_relative_to(scope):
+        raise RuntimeError("synthetic_config_required")
+    value = json.loads(config.read_bytes())
+    if Path(value["worker_python_root"]).resolve() != worker:
+        raise RuntimeError("synthetic_worker_binding_required")
+    for key in ("project_config", "store_root", "store_lock", "journal_root", "approval_dir"):
+        if not Path(value[key]).resolve().is_relative_to(scope):
+            raise RuntimeError("synthetic_owner_store_paths_required")
+    if not Path(value["provider_adapter"]["path"]).resolve().is_relative_to(scope):
+        raise RuntimeError("synthetic_provider_path_required")
+    script = Path(target).resolve()
+    if script.name != "public_m2_campaign.py" or script.parent.name != "tools":
+        raise RuntimeError("actual_cli_entrypoint_required")
+    sys.argv = [str(script)] + arguments
+    runpy.run_path(str(script), run_name="__main__")
+'''
+
+
+def _offline_argv(
+    scope: Path, worker: Path, mode: str, target: str, arguments: list[str],
+) -> list[str]:
+    return [sys.executable, "-I", "-c", _OFFLINE_CHILD,
+            mode, str(scope), str(worker), target, *arguments]
+
+
+def _offline_env(scope: Path) -> dict[str, str]:
+    environment = _subprocess_env()
+    # Both the synthetic worker and workspace are children of this case root.
+    # Set the child's environment explicitly on Linux/Windows as well as macOS.
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        environment[name] = str(scope.parent.resolve())
+    return environment
 
 
 def _sha(raw: bytes) -> str:
@@ -259,7 +354,9 @@ def _receipt(root: Path, name: str, content: dict[str, Any]) -> dict[str, str]:
     return {"path": str(path), "sha256": _sha(raw)}
 
 
-def _operator_once(approval_dir: Path, provider_sha: str, *, raw_ceiling: str = "0.01") -> None:
+def _operator_once(
+    approval_dir: Path, provider_sha: str, *, raw_ceiling: str = "0.01", runtime: dict,
+) -> None:
     for request_path in approval_dir.glob("*.request.json"):
         attempt_id = request_path.name.removesuffix(".request.json")
         grant_path = approval_dir / f"{attempt_id}.grant.json"
@@ -268,6 +365,7 @@ def _operator_once(approval_dir: Path, provider_sha: str, *, raw_ceiling: str = 
             continue
         request = json.loads(request_path.read_bytes())
         now = datetime.now(UTC)
+        runtime_reference = _receipt(approval_dir, f"{attempt_id}.runtime.json", runtime)
         grant = {
             "schema": "stpd/m2-campaign-attempt-grant-v1",
             "config_sha256": request["config_sha256"],
@@ -277,7 +375,8 @@ def _operator_once(approval_dir: Path, provider_sha: str, *, raw_ceiling: str = 
             "provider_adapter_sha256": provider_sha,
             "raw_ceiling_usd": raw_ceiling,
             "expires_at_utc": (now + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
-            "provider": {"adapter": "test-local-cpu-remote", "external_network": False},
+            "provider": {"adapter": "test-local-cpu-remote", "external_network": False,
+                         "runtime_receipt": runtime_reference},
         }
         grant_raw = _canonical(grant)
         grant_path.write_bytes(grant_raw)
@@ -305,13 +404,18 @@ def _operator_once(approval_dir: Path, provider_sha: str, *, raw_ceiling: str = 
 
 def _run_cli(
     config_path: Path, command: str, *, pause: int | None = None,
-    operator: bool = False, timeout: int = 900,
+    operator: bool = False, timeout: int = 900, offline: bool = False,
+    raw_ceiling: str = "0.01",
 ) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
     script = PYTHON_ROOT / "tools" / "public_m2_campaign.py"
     args = [sys.executable, "-I", str(script), "--config", str(config_path), command]
     if pause is not None:
         args.extend(["--pause-after-accepted", str(pause)])
-    env = _subprocess_env()
+    if offline:
+        value = json.loads(config_path.read_bytes())
+        args = _offline_argv(config_path.parent, Path(value["worker_python_root"]), command,
+                             str(script), args[3:])
+    env = _offline_env(config_path.parent) if offline else _subprocess_env()
     process = subprocess.Popen(args, cwd=PYTHON_ROOT, env=env, text=True,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1)
     errors: list[str] = []
@@ -323,7 +427,8 @@ def _run_cli(
             if operator:
                 try:
                     _operator_once(Path(settings["approval_dir"]),
-                                   settings["provider_adapter"]["sha256"])
+                                   settings["provider_adapter"]["sha256"], raw_ceiling=raw_ceiling,
+                                   runtime=settings["runtime"])
                 except Exception as error:  # surfaced after process exit for useful test output
                     errors.append(repr(error))
                     return
@@ -354,13 +459,17 @@ def _run_cli(
     return completed, status
 
 
-def _campaign_files(tmp_path: Path) -> tuple[Path, dict[str, Any], Path]:
+def _campaign_files(tmp_path: Path, *, offline: bool = False) -> tuple[Path, dict[str, Any], Path]:
     worker = _frozen_python(tmp_path)
     workspace = tmp_path / "campaign-workspace"
     workspace.mkdir()
-    env = _subprocess_env()
+    env = _offline_env(workspace) if offline else _subprocess_env()
+    setup_args = [sys.executable, "-I", "-c", _FIXTURE_SETUP, str(worker), str(workspace / "data")]
+    if offline:
+        setup_args = _offline_argv(workspace, worker, "setup", _FIXTURE_SETUP,
+                                   [str(worker), str(workspace / "data")])
     setup = subprocess.run(
-        [sys.executable, "-I", "-c", _FIXTURE_SETUP, str(worker), str(workspace / "data")],
+        setup_args,
         cwd=worker, env=env, text=True, capture_output=True, check=False, timeout=240,
     )
     assert setup.returncode == 0, f"fixture setup failed\n{setup.stdout}\n{setup.stderr}"
@@ -415,6 +524,11 @@ def _subprocess_env() -> dict[str, str]:
         environment.pop(key, None)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONNOUSERSITE"] = "1"
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment.setdefault("TMPDIR", tempfile.gettempdir())
+    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        environment[name] = "1"
     return environment
 
 
@@ -474,6 +588,99 @@ def test_public_m2_campaign_cli_frozen_source_owner_and_cpu_remote_restart(tmp_p
     calls = json.loads(calls_path.read_bytes())
     assert len([row for row in calls if row["action"] == "submit"]) == 10
     assert len([row for row in calls if row["action"] == "stop"]) == 10
+
+
+def test_public_m2_campaign_cli_adapter_recovery_same_owner_store_and_run(tmp_path: Path) -> None:
+    """Actual numerical APIs; only transport and external operator receipts are fake."""
+    from m2_recovery_fixture import packet
+
+    from tools.m2_campaign.config import Settings
+
+    _, artifacts, config_path = _campaign_files(tmp_path, offline=True)
+    value = json.loads(config_path.read_bytes())
+    value["runs"][0]["max_requests"] = 10  # Exactly the nominal 5-epoch slice count.
+    adapter = Path(value["provider_adapter"]["path"])
+    broken = _FAKE_PROVIDER.replace(
+        'return json.dumps({"attempt_id": attempt.attempt_id,',
+        'raise FileNotFoundError("synthetic_missing_absolute_cli")\n'
+        '            return json.dumps({"attempt_id": attempt.attempt_id,',
+        1,
+    )
+    adapter.write_text(broken)
+    value["provider_adapter"]["sha256"] = _sha(adapter.read_bytes())
+    config_path.write_bytes(_canonical(value))
+    original_config = config_path.read_bytes()
+    failed, statuses = _run_cli(
+        config_path, "execute", operator=True, offline=True, raw_ceiling="0.50",
+    )
+    assert failed.returncode == 2, f"{failed.stdout}\n{failed.stderr}"
+    assert any(row.get("reason") == "prepare_unknown:FileNotFoundError" for row in statuses)
+    journal = Path(value["journal_root"])
+    original_state = (journal / "state.json").read_bytes()
+    old_row = json.loads(original_state)["attempts"][0]
+    assert old_row["phase"] == "deploy_intent"
+    assert all(old_row[key] is None for key in ("target", "handle", "result", "stop"))
+    scope_path = (Path(value["store_root"]).parent / ".public-m2-budget-scopes"
+                  / (value["budget_scope_id"] + ".json"))
+    scope_raw = scope_path.read_bytes()
+    old_history = {item.name: item.read_bytes() for item in (journal / "history").iterdir()}
+
+    new_adapter = adapter.with_name("fixed_provider.py")
+    new_adapter.write_text(_FAKE_PROVIDER)
+    value["provider_adapter"] = {"path": str(new_adapter), "sha256": _sha(new_adapter.read_bytes())}
+    after = Settings.decode(_canonical(value))
+    new_config = config_path.with_name("repaired-config.json")
+    new_config.write_bytes(after.raw)
+    receipt_path, _ = packet(after, config_path.parent / "repair")
+    args = _offline_argv(config_path.parent, Path(value["worker_python_root"]), "recover",
+                         str(PYTHON_ROOT / "tools" / "public_m2_campaign.py"),
+                         ["--config", str(new_config), "recover", "--receipt", str(receipt_path),
+                          "--receipt-sha256", _sha(receipt_path.read_bytes())])
+    for _ in range(2):  # Replay is metadata-only and does not mint another permit.
+        repaired = subprocess.run(args, cwd=PYTHON_ROOT, env=_offline_env(config_path.parent),
+                                  text=True, capture_output=True, timeout=30)
+        assert repaired.returncode == 0, f"{repaired.stdout}\n{repaired.stderr}"
+    assert len(list((journal / "recoveries").iterdir())) == 1
+    assert (journal / "state.json").read_bytes() == original_state
+    assert (journal / "settings.json").read_bytes() == original_config
+    assert scope_path.read_bytes() == scope_raw
+    for name, raw in old_history.items():
+        assert (journal / "history" / name).read_bytes() == raw
+    calls_path = config_path.parent / "fake-transport-state" / "calls.json"
+    old_calls = calls_path.read_bytes()
+    rejected, _ = _run_cli(config_path, "execute", offline=True)
+    assert rejected.returncode == 1 and "execution_settings_not_current" in rejected.stderr
+    assert calls_path.read_bytes() == old_calls
+
+    first, statuses = _run_cli(new_config, "execute", pause=1, operator=True, offline=True)
+    assert first.returncode == 0, f"{first.stdout}\n{first.stderr}"
+    accepted = next(row["accepted"] for row in reversed(statuses) if row.get("accepted"))
+    assert accepted["completed_epochs"] == 0
+    intermediate = json.loads((journal / "state.json").read_bytes())["attempts"]
+    assert intermediate[0] == old_row
+    assert intermediate[1]["replacement_for"] == old_row["attempt_id"]
+    assert intermediate[1]["attempt_id"] != old_row["attempt_id"]
+    assert intermediate[1]["ordinal"] == 2
+    assert intermediate[1]["slice"] == old_row["slice"]
+    final, statuses = _run_cli(new_config, "execute", operator=True, offline=True)
+    assert final.returncode == 0, f"{final.stdout}\n{final.stderr}"
+    assert statuses[-1]["status"] == "completed"
+    summary = json.loads(Path(statuses[-1]["summary_path"]).read_bytes())
+    assert summary["origin_settings_sha256"] == _sha(original_config)
+    assert summary["config_sha256"] == after.identity
+    assert summary["reserved_raw_usd"] == "0.60"  # Failed .50 hold + 10 numerical requests at .01.
+    assert [row["epoch"] for row in summary["runs"][0]["stages"]] == [1, 3, 5]
+    rows = json.loads((journal / "state.json").read_bytes())["attempts"]
+    assert len(rows) == 11 and [row["ordinal"] for row in rows] == list(range(1, 12))
+    assert rows[0] == old_row and rows[2]["slice"]["resume_id"] == accepted["checkpoint_id"]
+    assert all(row["run_id"] == artifacts["binding"]["run_id"] for row in rows)
+    assert sum("replacement_for" in row for row in rows) == 1
+    assert scope_path.read_bytes() == scope_raw
+    calls = json.loads(calls_path.read_bytes())
+    old_actions = [row["action"] for row in calls if row["attempt_id"] == old_row["attempt_id"]]
+    assert old_actions == ["prepare"]
+    submitted = [row["attempt_id"] for row in calls if row["action"] == "submit"]
+    assert len(submitted) == len(set(submitted)) == 10
 
 
 @pytest.mark.parametrize(

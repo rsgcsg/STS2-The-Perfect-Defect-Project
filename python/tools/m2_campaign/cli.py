@@ -126,8 +126,12 @@ def _resources(settings: Settings, started: float) -> None:
 
 
 def _emit(settings: Settings, status: str, **values: Any) -> None:
+    origin_file = path(settings.value["journal_root"]) / "settings.json"
+    origin = (sha(bounded_file(origin_file, 1024 * 1024))
+              if origin_file.exists() else settings.identity)
     print(canonical({"schema": "stpd/m2-campaign-status-v1", "status": status,
-                     "config_sha256": settings.identity, **values}).decode().strip(), flush=True)
+                     "config_sha256": settings.identity, "origin_settings_sha256": origin,
+                     **values}).decode().strip(), flush=True)
 
 
 def execute(settings: Settings, pause: int | None) -> int:
@@ -139,15 +143,14 @@ def execute(settings: Settings, pause: int | None) -> int:
     started = time.monotonic()
     root = path(settings.value["journal_root"])
     path(settings.value["approval_dir"]).mkdir(parents=True, exist_ok=True)
-    _publish(root / "settings.json", settings.raw)
     journal = CampaignJournal(root)
-    backend = PublicM2Backend(settings)
+    backend = PublicM2Backend(settings, journal=journal)
     provider = _provider(settings)
     authority = FileAuthority(settings, journal)
     campaign = Campaign(CampaignConfig(
         tuple(RunSpec(row.run_id, row.max_requests) for row in settings.runs),
         settings.value["max_windows"], settings.value["goal_epochs"],
-    ), journal, backend, provider, authority)
+    ), journal, backend, provider, authority, execution_settings=settings.raw)
     waiting_since: float | None = None
     previous_status: tuple[Any, ...] | None = None
     with campaign.session():
@@ -181,6 +184,7 @@ def execute(settings: Settings, pause: int | None) -> int:
                     summary = {
                         "schema": "stpd/m2-campaign-summary-v1", "status": outcome.status,
                         "config_sha256": settings.identity,
+                        "origin_settings_sha256": journal.origin_settings_sha256,
                         "observed_at_utc": dt.datetime.now(dt.UTC).isoformat(),
                         "producer": settings.value["producer"],
                         "qualification": "engineering_only",
@@ -212,9 +216,28 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("check", help="Validate source/config without reading run payloads")
     run = commands.add_parser("execute", help="Verify, wait for exact approval, execute and accept")
     run.add_argument("--pause-after-accepted", type=int)
+    repair = commands.add_parser(
+        "recover", help="Apply exact root-approved tooling/prepare recovery",
+    )
+    repair.add_argument("--receipt", required=True, type=Path)
+    repair.add_argument("--receipt-sha256", required=True)
     args = parser.parse_args(argv)
     try:
         settings = Settings.load(args.config)
+        from .journal import CampaignJournal
+        from .recovery import core_config, recover, validate_execution
+        journal = CampaignJournal(path(settings.value["journal_root"]))
+        if args.command == "recover":
+            event = recover(settings, journal, bounded_file(args.receipt, 1024 * 1024),
+                            args.receipt_sha256)
+            _emit(settings, "reconciled", attempt=event["failed_attempt"]["attempt_id"],
+                  receipt_sha256=event["receipt"]["sha256"], disposition=event["disposition"],
+                  historical_cost="unknown", hold_retained=True)
+            return 0
+        if args.command == "execute" or (journal.root / "settings.json").exists():
+            # Reject unauthorized settings/source changes before worker imports or warm.
+            with journal.session(core_config(settings), settings_bytes=settings.raw):
+                validate_execution(journal)
         _bootstrap(settings)
         if args.command == "check":
             item = settings.value["provider_adapter"]

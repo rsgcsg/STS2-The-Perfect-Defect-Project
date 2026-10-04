@@ -45,6 +45,7 @@ def _operator_files(
     settings: Settings, attempt: Attempt, request_sha256: str, *,
     ceiling: str = "0.60", expires_at: datetime | None = None,
     observed_at: datetime | None = None,
+    provider: dict | None = None,
 ) -> bytes:
     root = Path(settings.value["approval_dir"])
     root.mkdir(parents=True, exist_ok=True)
@@ -59,7 +60,7 @@ def _operator_files(
         "raw_ceiling_usd": ceiling,
         "expires_at_utc": (expires_at or now + timedelta(hours=1)).isoformat().replace(
             "+00:00", "Z"),
-        "provider": {"synthetic": True},
+        "provider": {"synthetic": True} if provider is None else provider,
     }
     raw = _canonical(grant)
     (root / f"{attempt.attempt_id}.grant.json").write_bytes(raw)

@@ -86,8 +86,14 @@ class FileAuthority:
             if record["approval"] is None:
                 continue
             grant = json.loads(self.journal.read(record["approval"], limit=1024 * 1024))
-            if (grant["config_sha256"] != self.settings.identity
-                    or grant["attempt"]["attempt_id"] != record["attempt_id"]
+            version_raw = self.journal.settings_for(record)
+            version = self.settings if version_raw is None else Settings.decode(version_raw)
+            attempt = {key: record[key] for key in ("attempt_id", "run_id", "ordinal", "slice")}
+            if (grant["config_sha256"] != version.identity
+                    or grant["attempt"] != attempt
+                    or grant["producer"] != version.value["producer"]
+                    or grant["provider_adapter_sha256"]
+                    != version.value["provider_adapter"]["sha256"]
                     or grant["request_sha256"] != record["request"]["sha256"]):
                 raise ValueError("durable_reservation_binding_mismatch")
             result[digest(record["attempt_id"], 32)] = money(grant["raw_ceiling_usd"])
