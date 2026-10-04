@@ -203,8 +203,11 @@ source, lock and Workbench identity, and records the pair without granting launc
 
 To make a restore target, first prepare the pair from a verified prepared release and a
 private project config. This validates that config against that release's archived
-combination, then records the exact owner-generated binding and executable without
-publishing them globally:
+combination and probes its selected `.venv/bin/python` with isolated imports and a
+20-second timeout. The read-only probe checks the clean Workbench source identity,
+locked Evidence distribution and import origin; it neither synchronizes dependencies
+nor starts Workbench or the game. Only then does it record the exact owner-generated
+binding and executable without publishing them globally:
 
 ```bash
 uv run --locked --extra cloud python tools/install_developer_kit.py prepare-launcher-target \
@@ -214,8 +217,12 @@ uv run --locked --extra cloud python tools/install_developer_kit.py prepare-laun
 ```
 
 Only a `launchable: true` target snapshot passes restore validation. Restore rechecks the
-target kit archive, source, lock, Workbench digest and config combination, then compares
-both currently installed file hashes under the owner lock:
+target kit archive, source, lock, Workbench digest and config combination, repeats the
+isolated environment probe, then compares both currently installed file hashes under
+the owner lock. Snapshot members must have exact integer modes and be private,
+single-link regular files owned by the current user. `launchable` qualifies this
+launcher environment only; game execution and model compatibility retain their own
+qualification gates:
 
 ```bash
 uv run --locked --extra cloud python tools/install_developer_kit.py restore-launcher \

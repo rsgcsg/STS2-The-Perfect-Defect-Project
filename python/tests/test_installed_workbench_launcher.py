@@ -295,6 +295,9 @@ def test_prepare_target_restore_revalidates_release_config_and_both_current_hash
     })
     monkeypatch.setattr(developer.ProjectConfig, "load", lambda *_a, **_k: SimpleNamespace(
         combination=combination))
+    probes = []
+    monkeypatch.setattr(install, "_probe_launcher_target", lambda directory, binding: (
+        probes.append((directory, binding["config_path"]))))
 
     target_snapshot = tmp_path / "target-snapshot"
     target = install.prepare_launcher_target(release, config, target_snapshot)
@@ -312,10 +315,93 @@ def test_prepare_target_restore_revalidates_release_config_and_both_current_hash
     assert restored["status"] == "launcher_restored"
     assert json.loads(current_binding.read_bytes())["release_directory"] == str(release)
     assert current_open.read_bytes() == install._launcher_script(release).encode()
+    assert probes == [(release, str(config)), (release, str(config))]
     with pytest.raises(BoundaryError, match="launcher_pair_changed"):
         install.restore_launcher(
             target_snapshot, target["snapshot_manifest_sha256"], binding_sha, open_sha,
         )
+
+
+def test_launcher_target_probe_rejects_empty_interpreter(tmp_path):
+    release = tmp_path / ("a" * 64)
+    interpreter = release / "source/python/.venv/bin/python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.touch()
+    interpreter.chmod(0o700)
+    with pytest.raises(BoundaryError, match="launcher_environment_unverified"):
+        install._probe_launcher_target(release, {})
+
+
+def test_launcher_target_probe_rejects_foreign_evidence_and_cleans_environment(
+        tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    release = tmp_path / ("a" * 64)
+    python_root = release / "source/python"
+    python_root.mkdir(parents=True)
+    prefix = python_root / ".venv"
+    binding = {"source_revision": "a" * 40, "uv_lock_sha256": "b" * 64,
+               "workbench_sha256": "c" * 64}
+    report = {
+        "identity": {**binding, "working_tree_clean": True, "python": "3.11.11"},
+        "prefix": str(prefix), "python_version": [3, 11, 11],
+        "source_revision": binding["source_revision"],
+        "uv_lock_sha256": binding["uv_lock_sha256"],
+        "evidence": {"status": "PASS"},
+        "installed_root": str(prefix / "lib/python3.11/site-packages"),
+        "import_file": str(tmp_path / "foreign/sts2_platform_evidence/__init__.py"),
+    }
+    captured = []
+
+    def run(args, **kwargs):
+        captured.append((args, kwargs))
+        return SimpleNamespace(stdout=json.dumps(report))
+
+    monkeypatch.setattr(install.subprocess, "run", run)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "foreign"))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "other-venv"))
+    with pytest.raises(BoundaryError, match="launcher_environment_unverified"):
+        install._probe_launcher_target(release, binding)
+    args, options = captured[0]
+    assert args[:3] == [str(prefix / "bin/python"), "-I", "-c"]
+    assert options["timeout"] == 20
+    assert "PYTHONPATH" not in options["env"]
+    assert "UV_PROJECT_ENVIRONMENT" not in options["env"]
+
+
+@pytest.mark.parametrize("malformed", ["float_mode", "hardlink", "symlink"])
+def test_launcher_snapshot_reader_rejects_typed_mode_and_unsafe_members(tmp_path, malformed):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir(mode=0o700)
+    binding, script = b"binding", b"script"
+    (snapshot / "launcher.json").write_bytes(binding)
+    (snapshot / "launcher.json").chmod(0o600)
+    (snapshot / "open").write_bytes(script)
+    (snapshot / "open").chmod(0o700)
+    manifest = {
+        "schema": install.LAUNCHER_SNAPSHOT_SCHEMA, "launchable": True,
+        "restore_eligibility": "validated_prepared_target",
+        "release_directory": str(tmp_path / ("a" * 64)), "kit_sha256": "a" * 64,
+        "source_revision": "b" * 40, "workbench_sha256": "c" * 64,
+        "uv_lock_sha256": "d" * 64, "config_path": str(tmp_path / "project.json"),
+        "files": {"launcher.json": {"sha256": install.sha(binding), "mode": 0o600},
+                  "open": {"sha256": install.sha(script), "mode": 0o700}},
+    }
+    if malformed == "float_mode":
+        manifest["files"]["launcher.json"]["mode"] = float(0o600)
+    elif malformed == "hardlink":
+        (tmp_path / "outside").hardlink_to(snapshot / "open")
+    else:
+        (snapshot / "open").rename(tmp_path / "outside")
+        try:
+            (snapshot / "open").symlink_to(tmp_path / "outside")
+        except OSError:
+            pytest.skip("symlink creation is unavailable")
+    raw = json.dumps(manifest).encode()
+    (snapshot / "snapshot.json").write_bytes(raw)
+    (snapshot / "snapshot.json").chmod(0o600)
+    with pytest.raises(BoundaryError):
+        install._read_launcher_snapshot(snapshot, install.sha(raw))
 
 
 def test_prepare_target_rejects_prior_config_combination_drift(tmp_path, monkeypatch):

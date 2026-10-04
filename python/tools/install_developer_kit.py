@@ -911,6 +911,65 @@ def _workbench_identity_for_source(source: Path) -> dict[str, Any]:
     }
 
 
+def _probe_launcher_target(directory: Path, binding: dict[str, Any]) -> None:
+    """Verify the target's isolated interpreter and locked imports without launching it."""
+    source = directory / "source"
+    python_root = source / "python"
+    interpreter = python_root / ".venv/bin/python"
+    tool = python_root / "tools/install_developer_kit.py"
+    script = "\n".join((
+        "import importlib.metadata, json, pathlib, runpy, sys",
+        "namespace = runpy.run_path(sys.argv[1], run_name='launcher_target_probe')",
+        "import sts2_platform_evidence",
+        "from spireagent.workbench.developer import tool_identity, evidence_identity",
+        "prepared = namespace['status'](pathlib.Path(sys.argv[2]))",
+        "distribution = importlib.metadata.distribution('rsgcsg-sts2-platform-evidence')",
+        "print(json.dumps({'identity': tool_identity(), 'prefix': sys.prefix,",
+        " 'python_version': list(sys.version_info[:3]),",
+        " 'source_revision': prepared['source_revision'],",
+        " 'uv_lock_sha256': prepared['uv_lock_sha256'],",
+        " 'evidence': evidence_identity(prepared['evidence_source_revision']),",
+        " 'installed_root': str(distribution.locate_file('')),",
+        " 'import_file': sts2_platform_evidence.__file__}))",
+    ))
+    environment = dict(os.environ)
+    for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE", "VIRTUAL_ENV",
+                 "UV_PROJECT_ENVIRONMENT", "UV_WORKING_DIR", "UV_PROJECT",
+                 "UV_PYTHON", "UV_CONFIG_FILE", "UV_ENV_FILE"):
+        environment.pop(name, None)
+    try:
+        observed = subprocess.run(
+            [str(interpreter), "-I", "-c", script, str(tool), str(directory)],
+            cwd=python_root, env=environment, capture_output=True, text=True,
+            timeout=20, check=True,
+        )
+        if len(observed.stdout.encode("utf-8")) > 64 * 1024:
+            reject("launcher_environment_unverified")
+        result = json.loads(observed.stdout)
+        identity = result["identity"]
+        version = result["python_version"]
+        prefix = Path(result["prefix"]).resolve()
+        installed_root = Path(result["installed_root"]).resolve()
+        imported = Path(result["import_file"]).resolve()
+        if (not isinstance(identity, dict) or identity.get("working_tree_clean") is not True
+                or any(identity.get(key) != binding[key] for key in
+                       ("source_revision", "workbench_sha256", "uv_lock_sha256"))
+                or result.get("source_revision") != binding["source_revision"]
+                or result.get("uv_lock_sha256") != binding["uv_lock_sha256"]
+                or not isinstance(version, list) or len(version) != 3
+                or any(type(part) is not int for part in version)
+                or version[:2] != [3, 11]
+                or identity.get("python") != ".".join(map(str, version))
+                or prefix != (python_root / ".venv").resolve()
+                or not installed_root.is_relative_to(prefix)
+                or not imported.is_relative_to(installed_root)
+                or not isinstance(result.get("evidence"), dict)
+                or result["evidence"].get("status") != "PASS"):
+            reject("launcher_environment_unverified")
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        reject("launcher_environment_unverified")
+
+
 def _publish_launcher_snapshot(snapshot_directory: Path, binding_raw: bytes,
                               open_raw: bytes, binding_mode: int, open_mode: int,
                               manifest: dict[str, Any], forbidden: tuple[Path, ...]) -> str:
@@ -921,6 +980,11 @@ def _publish_launcher_snapshot(snapshot_directory: Path, binding_raw: bytes,
     parent = snapshot_directory.parent
     _check_no_symlink(parent, "launcher_snapshot_path_invalid")
     if not parent.is_dir():
+        reject("launcher_snapshot_path_invalid")
+    parent_stat = parent.stat()
+    if os.name != "nt" and (
+        parent_stat.st_uid != os.geteuid() or stat.S_IMODE(parent_stat.st_mode) & 0o022
+    ):
         reject("launcher_snapshot_path_invalid")
     if any(snapshot_directory.is_relative_to(path.resolve()) for path in forbidden):
         reject("launcher_snapshot_path_invalid")
@@ -1021,6 +1085,7 @@ def prepare_launcher_target(directory: Path, config_path: Path,
     binding = _launcher_binding(directory, config_path, prepared)
     binding_raw = json_bytes(binding)
     open_raw = _launcher_script(directory.resolve()).encode("utf-8")
+    _probe_launcher_target(directory, binding)
     manifest = {
         "schema": LAUNCHER_SNAPSHOT_SCHEMA,
         "launchable": True,
@@ -1066,17 +1131,29 @@ def _read_launcher_snapshot(snapshot_directory: Path,
     values = {}
     for name, limit in {**LAUNCHER_FILE_LIMITS, "snapshot.json": 64 * 1024}.items():
         path = snapshot_directory / name
-        try:
-            mode = path.lstat().st_mode
-        except FileNotFoundError:
-            reject("launcher_snapshot_inventory_invalid")
-        if not stat.S_ISREG(mode) or path.stat().st_size > limit:
+        if path.is_symlink():
             reject("launcher_snapshot_path_invalid")
-        values[name] = path.read_bytes()
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            reject("launcher_snapshot_inventory_invalid")
+        try:
+            file_stat = os.fstat(descriptor)
+            expected_mode = 0o700 if name == "open" else 0o600
+            if (not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1
+                    or file_stat.st_size > limit
+                    or (os.name != "nt" and (
+                        file_stat.st_uid != os.geteuid()
+                        or stat.S_IMODE(file_stat.st_mode) != expected_mode))):
+                reject("launcher_snapshot_path_invalid")
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                raw = handle.read(limit + 1)
+            if len(raw) > limit:
+                reject("launcher_snapshot_path_invalid")
+            values[name] = raw
+        finally:
+            os.close(descriptor)
     manifest_raw = values["snapshot.json"]
-    if (os.name != "nt"
-            and stat.S_IMODE((snapshot_directory / "snapshot.json").stat().st_mode) != 0o600):
-        reject("launcher_snapshot_path_invalid")
     if sha(manifest_raw) != expected_manifest_sha256:
         reject("launcher_snapshot_changed")
     try:
@@ -1091,6 +1168,12 @@ def _read_launcher_snapshot(snapshot_directory: Path,
             or manifest.get("launchable") is not True
             or manifest.get("restore_eligibility") != "validated_prepared_target"):
         reject("launcher_snapshot_not_launchable")
+    for key in ("release_directory", "config_path"):
+        if not isinstance(manifest.get(key), str) or not manifest[key]:
+            reject("launcher_snapshot_invalid")
+    for key, length in (("kit_sha256", 64), ("source_revision", 40),
+                        ("workbench_sha256", 64), ("uv_lock_sha256", 64)):
+        digest(manifest.get(key), "kit_install.launcher_snapshot", length=length)
     files = manifest.get("files")
     if not isinstance(files, dict) or set(files) != {"launcher.json", "open"}:
         reject("launcher_snapshot_invalid")
@@ -1098,9 +1181,8 @@ def _read_launcher_snapshot(snapshot_directory: Path,
         record = files[name]
         expected_mode = 0o600 if name == "launcher.json" else 0o700
         if (not isinstance(record, dict) or set(record) != {"sha256", "mode"}
+                or type(record.get("mode")) is not int
                 or record.get("mode") != expected_mode
-                or (os.name != "nt" and stat.S_IMODE(
-                    (snapshot_directory / name).stat().st_mode) != expected_mode)
                 or sha(values[name]) != record.get("sha256")):
             reject("launcher_snapshot_changed")
     return manifest, values["launcher.json"], values["open"]
@@ -1163,6 +1245,7 @@ def restore_launcher(snapshot_directory: Path, expected_manifest_sha256: str,
     if (binding_raw != json_bytes(binding)
             or open_raw != _launcher_script(directory).encode("utf-8")):
         reject("launcher_snapshot_target_mismatch")
+    _probe_launcher_target(directory, binding)
     root = _launcher_directory()
     lock_path = _prepare_launcher_root(root, create=False)
     from spireagent.workbench.developer_server import instance_lock
