@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -466,6 +467,131 @@ class AgentRunEvidenceTests(unittest.TestCase):
         events[8]["payload"]["decision"].update(snapshot_id="snapshot-2")
         self._rewrite_events(exact_successor, events)
         result = AgentRunEvidenceVerifier().verify(exact_successor)
+        self.assertTrue(result.passed, result.findings)
+
+    def test_public_stateful_port4_rejects_missing_ack_environment_drift_and_invalid_segment_lifecycle(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+
+        def add_auto_before_start(events: list[dict[str, Any]]) -> None:
+            mode = copy.deepcopy(events[0])
+            mode.update(kind="mode_changed", payload={"mode": "auto"})
+            events.insert(0, mode)
+
+        def change_runtime_identity(events: list[dict[str, Any]]) -> None:
+            admitted = copy.deepcopy(events[1])
+            admitted["payload"]["environment"]["runtime_instance_id"] = "runtime-other"
+            events.insert(7, admitted)
+
+        def reuse_handed_off_segment(events: list[dict[str, Any]]) -> None:
+            handoff = copy.deepcopy(events[0])
+            handoff.update(kind="handoff_to_human", payload={"reason": "auto_surface_not_admitted"})
+            mode = copy.deepcopy(events[0])
+            mode.update(kind="mode_changed", payload={"mode": "auto"})
+            events[7:7] = [handoff, mode]
+
+        cases = (
+            ("new-observation-missing-ack", "public_stateful_ack_association",
+             lambda events: events[7]["payload"].update(previous_action_request_id=None)),
+            ("runtime-identity-drift", "public_stateful_environment_drift", change_runtime_identity),
+            ("start-while-auto", "public_stateful_segment_order", add_auto_before_start),
+            ("resume-after-handoff-without-end", "public_stateful_segment_order", reuse_handed_off_segment),
+        )
+        for name, expected_code, mutate in cases:
+            with self.subTest(name=name):
+                directory = self._public_stateful_evidence("run-public-stateful-" + name)
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+                mutate(events)
+                for index, item in enumerate(events, 1):
+                    item["sequence"] = index
+                self._rewrite_events(directory, events)
+                result = verifier.verify(directory)
+                self.assertFalse(result.passed)
+                self.assertEqual(result.findings[0].code, expected_code)
+
+    def test_public_stateful_port4_accepts_explicit_human_start_stable_environment_and_fresh_episode_after_handoff(self) -> None:
+        verifier = AgentRunEvidenceVerifier()
+
+        explicit_human = self._public_stateful_evidence("run-public-stateful-explicit-human")
+        events = [json.loads(line) for line in (explicit_human / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        mode = copy.deepcopy(events[0])
+        mode.update(kind="mode_changed", payload={"mode": "human"})
+        events.insert(0, mode)
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(explicit_human, events)
+        result = verifier.verify(explicit_human)
+        self.assertTrue(result.passed, result.findings)
+
+        stable_environment = self._public_stateful_evidence("run-public-stateful-stable-environment")
+        events = [json.loads(line) for line in (stable_environment / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        events.insert(7, copy.deepcopy(events[1]))
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(stable_environment, events)
+        result = verifier.verify(stable_environment)
+        self.assertTrue(result.passed, result.findings)
+
+        rebegin = self._public_stateful_evidence("run-public-stateful-rebegin-after-handoff")
+        events = [json.loads(line) for line in (rebegin / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        end_index = next(index for index, item in enumerate(events) if item["kind"] == "public_stateful_episode_ended")
+        handoff = copy.deepcopy(events[0])
+        handoff.update(kind="handoff_to_human", payload={"reason": "auto_surface_not_admitted"})
+        mode_human = copy.deepcopy(events[0])
+        mode_human.update(kind="mode_changed", payload={"mode": "human"})
+        events[end_index:end_index] = [handoff, mode_human]
+
+        def event(kind: str, payload: dict[str, Any], timestamp: str) -> dict[str, Any]:
+            item = copy.deepcopy(events[0])
+            item.update(kind=kind, payload=payload, recorded_at=timestamp, sequence=0)
+            return item
+
+        events.extend([
+            event("public_stateful_episode_started", {
+                "scope": "single_game_episode", "episode_id": "episode-2", "segment_id": "segment-2",
+                "continuity_token_commitment": "c" * 64,
+            }, "2026-08-25T00:00:04.000Z"),
+            event("mode_changed", {"mode": "auto"}, "2026-08-25T00:00:04.100Z"),
+            event("public_stateful_decision_input", {
+                "episode_id": "episode-2", "segment_id": "segment-2",
+                "continuity_token_commitment": "c" * 64, "observation_ordinal": 1,
+                "snapshot_id": "snapshot-5", "sequence": 5, "previous_action_request_id": None,
+            }, "2026-08-25T00:00:04.200Z"),
+        ])
+        decision = copy.deepcopy(events[8])
+        decision["payload"]["decision"]["decision_id"] = "decision-3"
+        events.append(decision)
+        events.extend([
+            event("mode_changed", {"mode": "human"}, "2026-08-25T00:00:04.300Z"),
+            event("public_stateful_episode_ended", {
+                "scope": "single_game_episode", "episode_id": "episode-2", "segment_id": "segment-2",
+                "continuity_token_commitment": "c" * 64, "reason": "explicit_end",
+                "requires_explicit_begin": True, "memory_continuity": False,
+            }, "2026-08-25T00:00:04.400Z"),
+        ])
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(rebegin, events)
+        result = verifier.verify(rebegin)
+        self.assertTrue(result.passed, result.findings)
+
+        tainted_close = self._public_stateful_evidence("run-public-stateful-taint-close")
+        events = [json.loads(line) for line in (tainted_close / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        end_index = next(index for index, item in enumerate(events) if item["kind"] == "public_stateful_episode_ended")
+        taint = copy.deepcopy(events[0])
+        taint.update(kind="runtime_tainted", payload={"reason": "fixture_failure", "retry": False},
+                     recorded_at="2026-08-25T00:00:05.000Z")
+        mode_human = copy.deepcopy(events[0])
+        mode_human.update(kind="mode_changed", payload={"mode": "human"},
+                          recorded_at="2026-08-25T00:00:05.100Z")
+        events[end_index:end_index] = [taint, mode_human]
+        manifest_path = tainted_close / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update(status="tainted", tainted=True)
+        manifest_path.write_bytes(canonical(manifest))
+        for index, item in enumerate(events, 1):
+            item["sequence"] = index
+        self._rewrite_events(tainted_close, events)
+        result = verifier.verify(tainted_close)
         self.assertTrue(result.passed, result.findings)
 
     def test_public_stateful_port4_rejects_token_drift_missing_fields_and_bad_ack(self) -> None:

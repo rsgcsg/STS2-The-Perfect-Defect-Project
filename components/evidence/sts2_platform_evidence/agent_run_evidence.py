@@ -641,6 +641,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
     public_decision_segments: dict[str, str] = {}
     public_observations: dict[str, tuple[str, int, int]] = {}
     public_latest_observation: tuple[str, int, int] | None = None
+    public_latest_ack_request_id: str | None = None
+    public_environment: Mapping[str, Any] | None = None
     pending_public_input: Mapping[str, Any] | None = None
     pending_public_input_interrupted = False
     public_abandoned_input = False
@@ -704,6 +706,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _exact_keys(payload, {"scope", "episode_id", "segment_id", "continuity_token_commitment"}, "public_stateful_episode_started payload")
             if public_terminal_receipt:
                 raise AgentRunEvidenceError("unknown_retry", "public stateful episode cannot restart after unknown or rejected delivery", _EVENTS_FILE)
+            if autonomy_mode is True:
+                raise AgentRunEvidenceError("public_stateful_segment_order", "a public stateful episode must begin while Runtime is in Human mode", _EVENTS_FILE)
             if public_segment is not None:
                 raise AgentRunEvidenceError("public_stateful_segment_order", "a public stateful episode started before the current segment ended", _EVENTS_FILE)
             _enum(payload, "scope", {"single_game_episode", "bounded_policy_segment"}, _EVENTS_FILE)
@@ -719,6 +723,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             public_segment = {"scope": scope, "episode_id": episode_id, "segment_id": segment_id, "commitment": commitment}
             public_observations = {}
             public_latest_observation = None
+            public_latest_ack_request_id = None
         elif kind == "public_stateful_decision_input":
             if public_terminal_receipt:
                 raise AgentRunEvidenceError("unknown_retry", "public stateful scoring cannot continue after unknown or rejected delivery", _EVENTS_FILE)
@@ -740,6 +745,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _nonnegative_int(payload, "sequence", _EVENTS_FILE)
             observed_sequence = payload["sequence"]
             prior_identity = public_observations.get(snapshot_id)
+            same_ordinal_retry = prior_identity is not None
             if prior_identity is not None:
                 if prior_identity != (snapshot_id, observed_sequence, ordinal) or public_latest_observation != prior_identity:
                     raise AgentRunEvidenceError("public_stateful_observation_order", "a public snapshot identity was reused with a different watermark or after a newer identity", _EVENTS_FILE)
@@ -754,6 +760,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 public_latest_observation = (snapshot_id, observed_sequence, ordinal)
                 public_observations[snapshot_id] = public_latest_observation
             previous_request_id = payload["previous_action_request_id"]
+            if not same_ordinal_retry and previous_request_id != public_latest_ack_request_id:
+                raise AgentRunEvidenceError("public_stateful_ack_association", "a new public observation must acknowledge the latest delivered action with its recorded successor", _EVENTS_FILE)
             if previous_request_id is not None:
                 if not isinstance(previous_request_id, str) or not previous_request_id:
                     raise AgentRunEvidenceError("public_stateful_ack_association", "previous action request ID must be a non-empty string or null", _EVENTS_FILE)
@@ -801,6 +809,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             public_segment = {**public_segment, "segment_id": next_segment_id, "commitment": new_commitment, "closing_only": True}
             public_observations = {}
             public_latest_observation = None
+            public_latest_ack_request_id = None
         elif kind == "public_stateful_episode_ended":
             _exact_keys(payload, {"scope", "episode_id", "segment_id", "continuity_token_commitment", "reason", "requires_explicit_begin", "memory_continuity"}, "public_stateful_episode_ended payload")
             if public_segment is None:
@@ -817,6 +826,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             public_segment = None
             public_observations = {}
             public_latest_observation = None
+            public_latest_ack_request_id = None
         elif kind == "text_decision_input":
             if environment is None:
                 raise AgentRunEvidenceError("environment_identity_order", "text input requires environment admission", _EVENTS_FILE)
@@ -873,7 +883,12 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         elif kind == "environment_admitted":
             if managed_control is not None:
                 raise AgentRunEvidenceError("managed_control", "environment changed while Managed control was held", _EVENTS_FILE)
-            environment = _verify_environment_admission(payload, manifest)
+            admitted_environment = _verify_environment_admission(payload, manifest)
+            if public_stateful_port:
+                if public_environment is not None and admitted_environment != public_environment:
+                    raise AgentRunEvidenceError("public_stateful_environment_drift", "port 4 Runtime environment identity changed after admission", _EVENTS_FILE)
+                public_environment = admitted_environment
+            environment = admitted_environment
         elif kind == "stale_whole_bundle_discarded":
             _verify_stale_event(payload)
         elif kind == "mode_changed":
@@ -884,6 +899,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                 _verify_autonomy_budget(payload["autonomy_budget"])
             observed_mode = payload["mode"]
             next_autonomy_mode = observed_mode in {"one_step", "auto", "shadow"}
+            if public_stateful_port and next_autonomy_mode and public_segment is not None and public_segment.get("closing_only"):
+                raise AgentRunEvidenceError("public_stateful_segment_order", "a handed-off public stateful segment must end before policy can resume", _EVENTS_FILE)
             if next_autonomy_mode and not autonomy_mode:
                 if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA and (
                     "autonomy_budget" not in payload or payload["autonomy_budget"]["state"] != "active"
@@ -1000,6 +1017,12 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             if decision_id in successors:
                 raise AgentRunEvidenceError("duplicate_successor", f"duplicate successor for decision: {decision_id}", _EVENTS_FILE)
             successors[decision_id] = successor
+            if (public_stateful_port and public_segment is not None
+                    and not public_segment.get("closing_only")
+                    and public_decision_segments.get(decision_id) == public_segment["segment_id"]):
+                receipt = receipts.get(decision_id)
+                if receipt is not None and receipt.get("delivery") == "delivered":
+                    public_latest_ack_request_id = str(receipt["request_id"])
         elif kind == "text_menu_dispatch_attempt":
             if "environment_binding" in manifest and managed_control is None:
                 raise AgentRunEvidenceError("managed_control", "Managed dispatch lacks a confirmed controller claim", _EVENTS_FILE)
@@ -1043,6 +1066,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         elif kind == "handoff_to_human":
             _exact_keys(payload, {"reason"}, "handoff_to_human payload")
             _text(payload, "reason", _EVENTS_FILE)
+            if public_stateful_port and public_segment is not None:
+                public_segment["closing_only"] = True
             autonomy_mode = False
         elif kind == "one_step_completed":
             if set(payload) not in (set(), {"autonomy_budget"}):
