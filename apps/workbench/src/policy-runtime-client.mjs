@@ -33,6 +33,7 @@ export function decodePolicyRuntimeStatus(value) {
     "last_receipt", "reads", "invalidations", "errors", "environment"
   ];
   if (Object.hasOwn(status, "autonomy_budget")) keys.push("autonomy_budget");
+  if (Object.hasOwn(status, "public_stateful_segment")) keys.push("public_stateful_segment");
   exactKeys(status, keys, "Policy Runtime status");
   if (status.schema !== POLICY_RUNTIME_STATUS_SCHEMA) invalid("Policy Runtime status schema is unsupported");
   const runtime = object(status.runtime, "Policy Runtime runtime");
@@ -44,6 +45,13 @@ export function decodePolicyRuntimeStatus(value) {
   if (!new Set(["running", "stopped"]).has(status.lifecycle)) invalid("Policy Runtime lifecycle is unsupported");
   if (typeof status.tainted !== "boolean" || typeof status.refreshing !== "boolean") invalid("Policy Runtime status flags are invalid");
   if (status.autonomy_budget !== undefined) validateAutonomyBudget(status.autonomy_budget);
+  if (status.public_stateful_segment !== undefined && status.public_stateful_segment !== null) {
+    const segment = object(status.public_stateful_segment, "Policy Runtime public_stateful_segment");
+    exactKeys(segment, ["scope", "episode_id", "segment_id"], "Policy Runtime public_stateful_segment");
+    if (!["single_game_episode", "bounded_policy_segment"].includes(segment.scope)) invalid("public_stateful_segment.scope is invalid");
+    nonEmpty(segment.episode_id, "public_stateful_segment.episode_id");
+    nonEmpty(segment.segment_id, "public_stateful_segment.segment_id");
+  }
   stringOrNull(status.taint_reason, "taint_reason");
   stringOrNull(status.last_snapshot_id, "last_snapshot_id");
   const policy = object(status.policy, "Policy Runtime policy");

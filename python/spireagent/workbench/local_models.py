@@ -73,8 +73,12 @@ TEXT_PROFILES = {"text-menu-v1": ("token-v1", ".local/text-menu-runtime-v1.json"
                                      "stpd/local-text-m2-runtime-v2", "text-menu-m2-v2")}
 PUBLIC_M0_PROFILE = "public-snapshot-m0-v1"
 PUBLIC_M0_ADAPTER = "stpd-public-m0-decision-adapter"
+PUBLIC_M2_PROFILE = "public-snapshot-m2-v1"
+PUBLIC_M2_ADAPTER = "stpd-public-m2-decision-adapter"
+PUBLIC_ADAPTERS = {PUBLIC_M0_ADAPTER, PUBLIC_M2_ADAPTER}
 PROFILE_ADAPTERS = {**{profile: values[0] for profile, values in TEXT_PROFILES.items()},
-                    PUBLIC_M0_PROFILE: PUBLIC_M0_ADAPTER}
+                    PUBLIC_M0_PROFILE: PUBLIC_M0_ADAPTER,
+                    PUBLIC_M2_PROFILE: PUBLIC_M2_ADAPTER}
 
 
 def _validate_text_profile(profile: dict[str, Any], schema: str,
@@ -231,9 +235,12 @@ class RuntimeClient:
         *, binding: RuntimeControlBinding | None = None,
     ) -> dict[str, Any]:
         if (
-            route not in {"/status", "/environment", "/mode", "/tick", "/stop"}
+            route not in {"/status", "/environment", "/mode", "/tick", "/stop",
+                          "/stateful-segment/begin", "/stateful-segment/end"}
             or (route == "/environment" and body is not None)
-            or (binding is not None and (body is None or route not in {"/mode", "/tick"}))
+            or (route.startswith("/stateful-segment/") and body is None)
+            or (binding is not None and (body is None or route not in {
+                "/mode", "/tick", "/stateful-segment/begin", "/stateful-segment/end"}))
         ):
             raise BoundaryError("local_model", "invalid_runtime_route")
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
@@ -262,6 +269,17 @@ class RuntimeClient:
             if route == "/environment":
                 RuntimeControlBinding.from_environment(value, self.startup["run_id"])
                 return cast(dict[str, Any], value)
+            if route.startswith("/stateful-segment/"):
+                segment = value.get("segment") if isinstance(value, dict) else None
+                if (not isinstance(value, dict) or set(value) != {"schema", "segment"}
+                        or value["schema"] != "sts2.policy-runtime/http-2/stateful-segment-1"
+                        or not isinstance(segment, dict)
+                        or set(segment) != {"scope", "episode_id", "segment_id"}
+                        or segment["scope"] not in {"single_game_episode", "bounded_policy_segment"}
+                        or any(not isinstance(segment[key], str) or not segment[key]
+                               for key in ("episode_id", "segment_id"))):
+                    raise ValueError
+                return value
             expected = "sts2.policy-runtime/http-2" + ("/tick-1" if route == "/tick" else "")
             if not isinstance(value, dict) or value.get("schema") != expected:
                 raise ValueError
@@ -303,6 +321,15 @@ class RuntimeClient:
 
     def validate_status(self, status: object) -> None:
         if not isinstance(status, dict):
+            raise ValueError
+        segment = status.get("public_stateful_segment")
+        if segment is not None and (
+            not isinstance(segment, dict)
+            or set(segment) != {"scope", "episode_id", "segment_id"}
+            or segment["scope"] not in {"single_game_episode", "bounded_policy_segment"}
+            or any(not isinstance(segment[key], str) or not segment[key]
+                   for key in ("episode_id", "segment_id"))
+        ):
             raise ValueError
         policy, runtime = status.get("policy"), status.get("runtime")
         if (
@@ -419,12 +446,14 @@ class LocalModelService:
                     or any(not isinstance(entry, dict)
                            or entry.get("adapter") not in {"token-v1",
                                                             "stpd-m2-decision-adapter",
-                                                            PUBLIC_M0_ADAPTER}
+                                                            *PUBLIC_ADAPTERS}
                            or (entry.get("adapter") == "stpd-m2-decision-adapter"
                                and entry.get("runtime_profile") not in
                                {"text-menu-m2-v1", "text-menu-m2-v2"})
                            or (entry.get("adapter") == PUBLIC_M0_ADAPTER
                                and entry.get("runtime_profile") != PUBLIC_M0_PROFILE)
+                           or (entry.get("adapter") == PUBLIC_M2_ADAPTER
+                               and entry.get("runtime_profile") != PUBLIC_M2_PROFILE)
                            for entry in local["policies"])):
                 raise BoundaryError("local_model", "invalid_local_token_registry")
             value["policies"] = [*shipped, *local["policies"]]
@@ -440,6 +469,8 @@ class LocalModelService:
             ):
                 raise BoundaryError("local_model", "unsupported_runtime_profile")
             if entry.get("adapter") == PUBLIC_M0_ADAPTER and profile != PUBLIC_M0_PROFILE:
+                raise BoundaryError("local_model", "unsupported_runtime_profile")
+            if entry.get("adapter") == PUBLIC_M2_ADAPTER and profile != PUBLIC_M2_PROFILE:
                 raise BoundaryError("local_model", "unsupported_runtime_profile")
             object_fields(
                 {key: item for key, item in entry.items() if key != "runtime_profile"},
@@ -469,6 +500,11 @@ class LocalModelService:
         return _inside(self.entry_root(entry), entry[key])
 
     def adapter_arguments(self, entry: dict[str, Any]) -> list[str]:
+        if entry["adapter"] == PUBLIC_M2_ADAPTER:
+            return ["-m", "stpd.policy.public_m2_cli", "serve", "--config",
+                    str(self.entry_path(entry, "config")), "--manifest",
+                    str(self.entry_path(entry, "manifest")), "--binding-root",
+                    str(self.entry_root(entry))]
         if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter",
                                  PUBLIC_M0_ADAPTER}:
             module = {"token-v1": "stpd.policy.token_port",
@@ -499,10 +535,12 @@ class LocalModelService:
                     or representation.get("input_schema") != expected_schema):
                 raise BoundaryError("local_model", "text_runtime_requires_text_model")
             directory, pin = self.text_runtime_profile(entry["runtime_profile"])
-        elif entry is not None and entry.get("runtime_profile") == PUBLIC_M0_PROFILE:
-            if entry.get("adapter") != PUBLIC_M0_ADAPTER:
+        elif entry is not None and entry.get("runtime_profile") in {
+            PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE,
+        }:
+            if entry.get("adapter") != PROFILE_ADAPTERS[entry["runtime_profile"]]:
                 raise BoundaryError("local_model", "unsupported_runtime_profile")
-            adapter = policy_support(PUBLIC_M0_ADAPTER)
+            adapter = policy_support(entry["adapter"])
             adapter.validate(self.root, self.entry_path(entry, "config"),
                              self.entry_path(entry, "manifest"),
                              binding_root=self.entry_root(entry))
@@ -742,7 +780,8 @@ class LocalModelService:
         entries = []
         for entry in self.registry()["policies"]:
             manifest = _object_file(self.entry_path(entry, "manifest"))
-            text_menu = entry.get("runtime_profile") in TEXT_PROFILES
+            text_menu = (entry.get("runtime_profile") in TEXT_PROFILES
+                         or entry.get("runtime_profile") == PUBLIC_M2_PROFILE)
             profiles = [{"id": "short", "label": "短时检查" if text_menu else "默认运行",
                          "limits": RUN_PROFILES["short"] if text_menu else None}]
             if text_menu:
@@ -752,6 +791,7 @@ class LocalModelService:
             entries.append(
                 {
                     "selection_id": entry["id"],
+                    "runtime_profile": entry.get("runtime_profile"),
                     "label": entry["label"],
                     "support": manifest.get("support"),
                     "claims": manifest.get("claims"),
@@ -841,7 +881,7 @@ class LocalModelService:
                 }
 
         if entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter",
-                                 PUBLIC_M0_ADAPTER}:
+                                 *PUBLIC_ADAPTERS}:
             from spireagent.workbench.local_model_dependencies import local_models_available
 
             if local_models_available():
@@ -977,7 +1017,8 @@ class LocalModelService:
     def _run_profile(self, identity: str, profile: str) -> bool:
         if not isinstance(profile, str) or profile not in RUN_PROFILES:
             raise BoundaryError("local_model", "unsupported_run_profile")
-        text_menu = self.selection(identity).get("runtime_profile") in TEXT_PROFILES
+        selected_profile = self.selection(identity).get("runtime_profile")
+        text_menu = selected_profile in TEXT_PROFILES or selected_profile == PUBLIC_M2_PROFILE
         if profile == "extended" and not text_menu:
             raise BoundaryError("local_model", "extended_requires_text_menu_runtime")
         return text_menu
@@ -1071,7 +1112,8 @@ class LocalModelService:
         recovery = route == "/stop" or (route == "/mode" and body.get("mode") == "human")
         with nullcontext() if recovery else self.control_send_lock:
             self._require_intent(intent)
-            if binding is None and (route == "/tick" or (
+            if binding is None and (route in {"/tick", "/stateful-segment/begin",
+                                             "/stateful-segment/end"} or (
                 route == "/mode" and body.get("mode") != "human"
             )):
                 raise BoundaryError("local_model", "runtime_recovery_precondition_required")
@@ -1154,7 +1196,8 @@ class LocalModelService:
             self.process = process
             # A new Human-mode child must not inherit a prior run's attestation
             # or evaluation if its own startup fails.
-            for key in ("startup", "runtime", "evaluation", "recovery_evidence"):
+            for key in ("startup", "runtime", "evaluation", "recovery_evidence",
+                        "public_stateful_segment"):
                 self.state.pop(key, None)
             self.state.update(status="loading", loaded=False, connector_endpoint=connector)
             if selected_target is None:
@@ -1199,6 +1242,9 @@ class LocalModelService:
                 raise ValueError
             client = RuntimeClient(startup["address"], startup)
             runtime = client.request("/status")["status"]
+            if (entry.get("runtime_profile") == PUBLIC_M2_PROFILE
+                    and "public_stateful_segment" not in runtime):
+                raise ValueError
             if text_menu and (not isinstance(runtime.get("autonomy_budget"), dict)
                               or any(runtime["autonomy_budget"].get(key) != value
                                      for key, value in limits.items())):
@@ -1250,16 +1296,21 @@ class LocalModelService:
                 with self.lock:
                     if current_observation():
                         self.state["runtime"] = runtime
+                        # Runtime owns every reset, including handoffs that do not
+                        # advance the shared recovery epoch. No Workbench guess.
+                        self.state["public_stateful_segment"] = runtime.get(
+                            "public_stateful_segment")
                         self.state.pop("observation_error", None)
             except BoundaryError as error:
                 with self.lock:
                     if current_observation():
                         self.state["observation_error"] = error.code
+                        self.state.pop("public_stateful_segment", None)
         with self.lock:
             return cast(dict[str, Any], json.loads(json.dumps(self.state)))
 
     def command(self, action: str) -> dict[str, Any]:
-        if action not in MODES | {"stop"}:
+        if action not in MODES | {"stop", "begin_segment", "end_segment"}:
             raise BoundaryError("local_model", "unsupported_local_command")
         with self.lock:
             recovery = action in {"human", "stop"}
@@ -1282,6 +1333,13 @@ class LocalModelService:
                         action, lambda: self._cancel_loading(intent), recovery=True
                     )
                 raise BoundaryError("local_model", "model_not_loaded")
+            if action in {"begin_segment", "end_segment"}:
+                selection_id = self.state.get("selection_id")
+                if not isinstance(selection_id, str):
+                    raise BoundaryError("local_model", "public_m2_selection_required")
+                selected = self.selection(selection_id)
+                if selected.get("runtime_profile") != PUBLIC_M2_PROFILE:
+                    raise BoundaryError("local_model", "public_m2_selection_required")
             self.intent_generation += 1
             intent = self.intent_generation
             client = self.client
@@ -1294,6 +1352,36 @@ class LocalModelService:
             # Observe exact instance before every mutation; never address a new
             # process that reused the same port after our owned process exited.
             observation = client.request("/status")["status"]
+            if action in {"begin_segment", "end_segment"}:
+                if observation["mode"] != "human" or observation.get("tainted"):
+                    raise BoundaryError("local_model", "public_segment_requires_human")
+                before = client.request("/environment")
+                segment_control = RuntimeControlBinding.from_environment(
+                    before, observation["run_id"])
+                route = "/stateful-segment/" + ("begin" if action == "begin_segment" else "end")
+                try:
+                    result = self._send_control(
+                        client, route,
+                        {"scope": "bounded_policy_segment"} if action == "begin_segment" else {},
+                        intent, segment_control,
+                    )
+                    after = client.request("/environment")
+                    if action == "begin_segment" and before != after:
+                        raise BoundaryError("local_model", "runtime_command_unknown")
+                    runtime = client.request("/status")["status"]
+                    with self.lock:
+                        self._require_intent(intent)
+                        self.state.update(runtime=runtime, error_code=None)
+                        self.state["public_stateful_segment"] = runtime.get(
+                            "public_stateful_segment")
+                        if (action == "begin_segment" and
+                                runtime.get("public_stateful_segment") != result["segment"]):
+                            raise BoundaryError("local_model", "runtime_command_unknown")
+                    return
+                except BoundaryError:
+                    with self.lock:
+                        self.state.pop("public_stateful_segment", None)
+                    raise
             binding = None
             if action in {"shadow", "one_step", "auto"}:
                 self._require_intent(intent)
@@ -1338,6 +1426,8 @@ class LocalModelService:
                 self._require_intent(intent)
                 if not self.closed and self.state["status"] != "stopped":
                     self.state.update(runtime=runtime, status="loaded", error_code=None)
+                    if action in {"human", "stop"}:
+                        self.state.pop("public_stateful_segment", None)
             if action == "stop":
                 self._stop_process()
                 self._evaluation_handoff()
