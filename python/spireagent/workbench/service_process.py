@@ -41,9 +41,11 @@ def service_environment(state_dir: Path) -> dict[str, str]:
         raise BoundaryError("project", "workbench_temp_directory_invalid")
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     metadata = directory.stat()
+    geteuid = getattr(os, "geteuid", None)
     if (not stat.S_ISDIR(metadata.st_mode)
             or os.name != "nt" and (
-                metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) & 0o077
+                not callable(geteuid) or metadata.st_uid != geteuid()
+                or stat.S_IMODE(metadata.st_mode) & 0o077
             )):
         raise BoundaryError("project", "workbench_temp_directory_invalid")
     # Resolve once so children share the same physical profile-owned location.
