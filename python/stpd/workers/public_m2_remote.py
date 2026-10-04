@@ -48,7 +48,7 @@ from .worker import WorkerResult
 REQUEST_SCHEMA = "stpd/public-m2-remote-request-v1"
 RESULT_SCHEMA_REMOTE = "stpd/public-m2-remote-result-v1"
 MAX_REQUEST_BYTES = 256 * 1024 * 1024
-MAX_RESULT_BYTES = 128 * 1024 * 1024
+MAX_RESULT_BYTES = 192 * 1024 * 1024
 _MAX_HEADER_BYTES = 32 * 1024 * 1024
 _REQUEST_MAGIC = b"STPD-M2-REQUEST\x00"
 _RESULT_MAGIC = b"STPD-M2-RESULT\x00"
