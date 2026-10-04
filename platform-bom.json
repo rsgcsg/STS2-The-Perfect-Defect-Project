@@ -28,15 +28,15 @@
     },
     "evidence": {
       "version": "0.1.0-rc.24",
-      "source_revision": "77e52d6c40d6c1f3c2caba9c29e029f0ffc94a37",
-      "component_tree_revision": "fa8bb8eaa594d6fe2614af1631771cfface83efa",
-      "component_source_digest_sha256": "27f1242d80dba9be9ed6e6a6bfdaee7537befbaf3805d03f443ee27df9e3df5f"
+      "source_revision": "50d803452a4d1178269d0ae7ecbe02f39ea63051",
+      "component_tree_revision": "46a349fbd4e8c2e18a52dc2e03ea57eb0b72f3a7",
+      "component_source_digest_sha256": "a2e341f19f66a57f730b3b1f345d7ac1edf2db9bdb7d949bd72a918bd4c2616b"
     },
     "policy_runtime": {
       "version": "0.1.0-rc.17",
-      "source_revision": "d336a69e4906b2e9a58bc0604716c5669a168862",
-      "component_tree_revision": "3bd9d5162a0e1a86d78dd01e43a5ecacd3454023",
-      "component_source_digest_sha256": "bf1d4a6d807fe4e3fb58dc2a603e5ccec936e38667f7d032146fb8810610d78e"
+      "source_revision": "50d803452a4d1178269d0ae7ecbe02f39ea63051",
+      "component_tree_revision": "acda818e4485db911a7ecdb13fb88aa53f4cd12f",
+      "component_source_digest_sha256": "24216fc978ebcb35f008f2dfab3445fec157b796a5ee44a80e026ffd96cb38b1"
     },
     "workbench": {
       "version": "0.1.0-rc.3",
@@ -269,8 +269,8 @@
       "source_revision": "e19b30315015664a5647ab351cdcefb09417f275",
       "source_digest_sha256": "d227321727d07edd2d4c67928edec439c26f156494dd9cfab98d2bac4debf346",
       "version": "0.1.0-rc.1",
-      "current_component_source_revision": "d336a69e4906b2e9a58bc0604716c5669a168862",
-      "current_component_source_digest_sha256": "bf1d4a6d807fe4e3fb58dc2a603e5ccec936e38667f7d032146fb8810610d78e",
+      "current_component_source_revision": "50d803452a4d1178269d0ae7ecbe02f39ea63051",
+      "current_component_source_digest_sha256": "24216fc978ebcb35f008f2dfab3445fec157b796a5ee44a80e026ffd96cb38b1",
       "current_component_version": "0.1.0-rc.17",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
