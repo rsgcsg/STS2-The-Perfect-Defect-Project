@@ -32,6 +32,7 @@ def archive(tmp_path: Path, *, extra: str | None = None,
     manifest = {
         "schema": schema,
         "stpd_source_revision": "a" * 40,
+        "evidence_source_revision": "d" * 40,
         "uv_lock_sha256": "b" * 64,
         "collection_tool_release_id": "c" * 64,
         "mod_sha256": install.sha(files["mod/STS2_PLATFORM.dll"]),
@@ -86,6 +87,7 @@ def prepared_status_fixture(tmp_path: Path, monkeypatch, *, include_text_runtime
         files[runtime_pair[1]] = b"synthetic archive"
     manifest = {
         "stpd_source_revision": "a" * 40,
+        "evidence_source_revision": "d" * 40,
         "uv_lock_sha256": "b" * 64,
         "collection_tool_release_id": "c" * 64,
         "mod_sha256": install.sha(files["mod/STS2_PLATFORM.dll"]),
@@ -150,6 +152,58 @@ def prepared_status_fixture(tmp_path: Path, monkeypatch, *, include_text_runtime
     if include_text_runtime:
         monkeypatch.setattr(install, "text_runtime_pin", lambda *_args, **_kwargs: {})
     return directory, source, kit, files
+
+
+def test_launcher_probe_script_consumes_verified_status_evidence_revision(tmp_path, monkeypatch):
+    import contextlib
+    import importlib.metadata
+    import io
+    import runpy
+    import sys
+    from types import SimpleNamespace
+
+    import sts2_platform_evidence
+
+    from spireagent.workbench import developer
+
+    directory, source, _, _ = prepared_status_fixture(tmp_path, monkeypatch)
+    prepared = install.status(directory)
+    assert prepared["evidence_source_revision"] == "d" * 40
+    prefix = source / "python/.venv"
+    installed = prefix / "lib/python3.11/site-packages"
+    binding = {"source_revision": prepared["source_revision"],
+               "uv_lock_sha256": prepared["uv_lock_sha256"], "workbench_sha256": "e" * 64}
+    monkeypatch.setattr(developer, "tool_identity", lambda: {
+        **binding, "working_tree_clean": True,
+        "python": ".".join(map(str, sys.version_info[:3])),
+    })
+    evidence_requests = []
+    monkeypatch.setattr(developer, "evidence_identity", lambda revision: (
+        evidence_requests.append(revision) or {"status": "PASS"}))
+    def legacy_status(target):
+        report = install.status(target)
+        report.pop("evidence_source_revision")
+        return report
+
+    monkeypatch.setattr(runpy, "run_path", lambda *_a, **_k: {
+        "status": legacy_status, "verified_archive": install.verified_archive,
+    })
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda _: SimpleNamespace(
+        locate_file=lambda _: installed))
+    monkeypatch.setattr(sts2_platform_evidence, "__file__", str(
+        installed / "sts2_platform_evidence/__init__.py"))
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+
+    def execute_script(args, **_kwargs):
+        monkeypatch.setattr(sys, "argv", ["-c", *args[4:]])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exec(compile(args[3], "launcher_target_probe", "exec"), {})
+        return output.getvalue()
+
+    monkeypatch.setattr(install, "_run_launcher_probe", execute_script)
+    install._probe_launcher_target(directory, binding)
+    assert evidence_requests == ["d" * 40]
 
 
 def package_tuple_fixture():
@@ -926,6 +980,39 @@ def test_initialize_refuses_a_running_profile_before_changing_dependencies(tmp_p
     assert calls[1] == ["npm", "ci", "--prefix", "python"]
     assert "--locked" in calls[2]
     assert selected.to_dict() == json.loads(profile.read_bytes())
+
+
+def test_initialize_defer_launcher_completes_environment_without_global_write(
+        tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from spireagent.workbench import developer, developer_server
+
+    profile = tmp_path / "project.json"
+    profile.write_text("{}")
+    release = tmp_path / ("d" * 64)
+    prepared = {
+        "status": "prepared", "workbench_launcher_schema": install.LAUNCHER_SCHEMA,
+        "python_environment_profile": "cloud", "private_host_runtime": "not_bundled",
+        "text_runtime": "not_bundled", "m2_runtime": "not_bundled",
+        "m2_v2_runtime": "not_bundled",
+    }
+    monkeypatch.setattr(install, "status", lambda _: dict(prepared))
+    monkeypatch.setattr(developer.ProjectConfig, "load",
+                        lambda *_a, **_k: SimpleNamespace(state_dir=tmp_path / "state"))
+    monkeypatch.setattr(developer_server, "instance_lock", lambda *_a, **_k: nullcontext())
+    commands = []
+    monkeypatch.setattr(install, "run", lambda args, _: commands.append(args) or "")
+    monkeypatch.setattr(install.sys, "platform", "darwin")
+    monkeypatch.setattr(install.subprocess, "run", lambda *_a, **_k: pytest.fail(
+        "deferred initialization must not invoke the global launcher owner"))
+
+    result = install.initialize(release, profile, defer_launcher=True)
+
+    assert result["environment"] == "initialized"
+    assert result["workbench_launcher"] == "deferred"
+    assert [command[:2] for command in commands] == [["npm", "ci"], ["npm", "ci"], ["uv", "sync"]]
 
 
 def test_initialize_text_runtime_releases_instance_lock_before_owner_cli(tmp_path, monkeypatch):
