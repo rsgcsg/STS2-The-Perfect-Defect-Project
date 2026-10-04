@@ -150,7 +150,7 @@ def test_entry_rejects_bad_plan_or_request_before_worker(
 
 
 def test_serialized_wrapper_runs_without_importing_stpd(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     cloudpickle = pytest.importorskip("modal._vendor.cloudpickle")
     _env(monkeypatch)
@@ -185,7 +185,7 @@ sys.stdout.write("serialized-stdlib-only")
 '''
     completed = subprocess.run(
         [sys.executable, "-I", "-c", isolated], input=serialized, capture_output=True,
-        cwd="/tmp", env={**os.environ, "PYTHONPATH": ""}, timeout=10, check=False,
+        cwd=tmp_path, env={**os.environ, "PYTHONPATH": ""}, timeout=10, check=False,
     )
     assert completed.returncode == 0, completed.stderr.decode(errors="replace")
     assert completed.stdout == b"serialized-stdlib-only"
