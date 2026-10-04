@@ -11,14 +11,62 @@
   },
   "seal_schema": "sts2.platform/runtime-seal-1",
   "seal_fields": {
-    "root": ["schema", "release", "host", "environment", "evidence"],
-    "release": ["repository", "tag", "version", "archive_asset", "archive_sha256"],
-    "host": ["implementation_id", "connector_source_revision", "platform_source_revision", "compiled_source_digest_sha256", "artifact_sha256", "artifact_mvid", "protocol"],
-    "environment": ["platform", "architecture", "host_kind", "game_version", "game_commit", "main_assembly_hash", "main_assembly_sha256", "main_assembly_mvid", "modset_status", "modset_fingerprint_scope", "modset_fingerprint"],
-    "evidence": ["scope", "record_asset", "record_sha256"]
+    "root": [
+      "schema",
+      "release",
+      "host",
+      "environment",
+      "evidence"
+    ],
+    "release": [
+      "repository",
+      "tag",
+      "version",
+      "archive_asset",
+      "archive_sha256"
+    ],
+    "host": [
+      "implementation_id",
+      "connector_source_revision",
+      "platform_source_revision",
+      "compiled_source_digest_sha256",
+      "artifact_sha256",
+      "artifact_mvid",
+      "protocol"
+    ],
+    "environment": [
+      "platform",
+      "architecture",
+      "host_kind",
+      "game_version",
+      "game_commit",
+      "main_assembly_hash",
+      "main_assembly_sha256",
+      "main_assembly_mvid",
+      "modset_status",
+      "modset_fingerprint_scope",
+      "modset_fingerprint"
+    ],
+    "evidence": [
+      "scope",
+      "record_asset",
+      "record_sha256"
+    ]
   },
   "provenance_schema": "sts2.platform/official-release-provenance-1",
-  "provenance_fields": ["schema", "repository", "tag", "version", "release_id", "archive_asset", "archive_sha256", "seal_asset", "seal_sha256", "evidence_asset", "evidence_sha256"],
+  "provenance_fields": [
+    "schema",
+    "repository",
+    "tag",
+    "version",
+    "release_id",
+    "archive_asset",
+    "archive_sha256",
+    "seal_asset",
+    "seal_sha256",
+    "evidence_asset",
+    "evidence_sha256"
+  ],
   "implementation_id": "STS2_PLATFORM",
   "protocol": "1.0.0",
   "host_kind": "live_ui",
@@ -36,7 +84,11 @@
     "redirects": 3,
     "request_timeout_ms": 20000
   },
-  "download_hosts": ["api.github.com", "github.com", "release-assets.githubusercontent.com"],
+  "download_hosts": [
+    "api.github.com",
+    "github.com",
+    "release-assets.githubusercontent.com"
+  ],
   "non_claims": [
     "draft_namespace_not_a_created_release",
     "checksums_are_not_digital_signatures",
@@ -45,5 +97,18 @@
     "modset_fingerprint_is_observed_from_connector_not_rederived",
     "evidence_hash_is_an_audit_attachment_not_ordinary_launch_acceptance",
     "bootstrap_canary_does_not_complete_post_seal_ordinary_steam_matrix"
-  ]
+  ],
+  "version_pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-rc\\.(0|[1-9][0-9]*))?$",
+  "version_max_chars": 64,
+  "platform_values": [
+    "darwin",
+    "win32",
+    "linux"
+  ],
+  "architecture_values": [
+    "arm64",
+    "x64"
+  ],
+  "game_version_pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$",
+  "game_commit_pattern": "^[0-9a-f]{8,40}$"
 }

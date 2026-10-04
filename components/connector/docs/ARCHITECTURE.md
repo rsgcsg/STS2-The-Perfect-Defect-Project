@@ -73,6 +73,15 @@ Build, install and a 40-character Git revision are identity facts, not
 qualification. Native owner, operand and control legality are still
 rediscovered for every delivery after admission.
 
+The unified package also has a [production runtime seal source candidate](../../../docs/design/PRODUCTION_RUNTIME_SEAL.md).
+It freezes one fixed adjacent official-release identity pair before serving
+capabilities and checks the actual loaded unified artifact and current game/
+Modset tuple. A present broken pair fails closed even under an artifact canary.
+This remains independent of exact-game admission and native action legality.
+HTTPS/checksum provenance covers accidental drift, without a signature or
+same-account local-writer security claim. No artifact is qualified by this
+source implementation alone.
+
 ## Observe, Read, Interact
 
 **Observe** returns stable current facts, the current Interaction, Referents,

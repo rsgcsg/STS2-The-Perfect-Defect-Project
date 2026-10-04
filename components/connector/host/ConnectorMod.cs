@@ -21,7 +21,7 @@ namespace STS2Connector;
 #endif
 public static partial class ConnectorMod
 {
-    public const string Version = "1.3.0-rc.6";
+    public const string Version = "1.3.0-rc.9";
     public const int DefaultPort = 15526;
     internal const string ConfigFileName = "STS2_MCP.conf";
     internal const string PortEnvironmentVariable = "STS2_CONNECTOR_PORT";
@@ -167,6 +167,7 @@ public static partial class ConnectorMod
     {
         try
         {
+            EnvironmentIdentityRuntime.FreezeInstalledRuntimeSeal();
             // Connect to main thread process frame for action execution
             var tree = (SceneTree)Engine.GetMainLoop();
             tree.Connect(SceneTree.SignalName.ProcessFrame, Callable.From(ProcessMainThreadQueue));

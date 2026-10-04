@@ -1,6 +1,6 @@
 # Game Workbench launch and persistent qualification — design candidate
 
-Status: investigation and proposed owner boundaries. No runtime seal, signing authority,
+Status: investigation plus a separate source candidate; see [the implementation and remaining gates](PRODUCTION_RUNTIME_SEAL.md). No runtime seal, signing authority,
 Steam setting, permanent environment variable or execution allowlist has been changed.
 The current game has active progress; all production packaging, initialization, backup,
 loading, stopping, restarting and installation are held by the supervisor.
@@ -54,8 +54,9 @@ cold-loaded and Live exercised. It explicitly avoids the circularity of embeddin
 final artifact's own hash and later evidence into that artifact. The current
 [release manifest](../../components/connector/release-manifest.json) has no runtime-seal
 asset and marks qualification pending. Current package, install and verify tools carry
-the payload, source/build identity, contracts and checksums, but do not generate, install
-or consume such a seal. Host Runtime also has no durable qualification store to reuse.
+the payload, source/build identity, contracts and checksums, but the observed production installation does not generate, install
+or consume such a seal. The separate source candidate adds the fixed official-fetch
+and native-owner path without changing that observed production state. Host Runtime also has no durable qualification store to reuse.
 Historical source/artifact qualification does not transfer to the current artifact.
 
 Workbench owns selection and lifecycle presentation. It must not manufacture Connector

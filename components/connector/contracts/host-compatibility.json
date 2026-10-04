@@ -34,5 +34,19 @@
       "main_assembly_sha256": "0861bfa1df347538d932f22d580e75420f08082792eb914e53b4882764acdbe9",
       "main_assembly_mvid": "73b63ee0-6c0a-47bb-b0d1-b21f6d94222e"
     }
-  ]
+  ],
+  "production_runtime_seal": {
+    "status": "source_candidate_not_published",
+    "implementation_id": "STS2_PLATFORM",
+    "contract": "apps/game-mod/runtime-seal-contract.json",
+    "installed_pair": [
+      "STS2_PLATFORM.runtime-seal.json",
+      "STS2_PLATFORM.release-provenance.json"
+    ],
+    "installation_owner": "apps/game-mod/lifecycle.mjs",
+    "permission": "exact artifact and environment pair only; independent game and Modset admission remain required",
+    "origin": "fixed official repository release fetch with HTTPS and checksum cross-binding",
+    "threat_model": "accidental drift; no digital signatures or resistance to same-account local modification",
+    "contract_path_base": "repository_root"
+  }
 }

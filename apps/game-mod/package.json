@@ -1,11 +1,13 @@
 {
   "name": "@rsgcsg/sts2-platform-game-mod",
-  "version": "0.2.0-rc.22",
+  "version": "0.2.0-rc.23",
   "private": true,
   "description": "Single production STS2 Mod packaging the Platform Connector, Annotator and Live UI",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "check": "node --test",
     "build": "node build.mjs",
@@ -13,6 +15,7 @@
     "deploy": "node lifecycle.mjs deploy",
     "launch": "node lifecycle.mjs launch",
     "verify:loaded": "node lifecycle.mjs verify-loaded",
-    "rollback": "node lifecycle.mjs rollback"
+    "rollback": "node lifecycle.mjs rollback",
+    "prepare:official": "node prepare-runtime-release.mjs"
   }
 }

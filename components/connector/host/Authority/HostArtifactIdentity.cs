@@ -20,6 +20,11 @@ internal static class HostArtifactIdentity
     public static string? SourceRevision => EmbeddedSourceRevision.Value;
     public static string LoadedAssemblyMvid =>
         typeof(ConnectorMod).Assembly.ManifestModule.ModuleVersionId.ToString("D");
+    public static string? LoadedImplementationId => typeof(ConnectorMod).Assembly.GetName().Name;
+    public static string? LoadedPackageVersion => typeof(ConnectorMod).Assembly
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0];
+    public static string? PlatformSourceRevision => ReadMetadata("PlatformSourceRevision");
+    public static string? CompiledSourceDigestSha256 => ReadMetadata("PlatformSourceDigestSha256");
 
     internal static string? HashFile(string path)
     {
@@ -57,4 +62,8 @@ internal static class HostArtifactIdentity
             ?.Value;
         return string.IsNullOrWhiteSpace(revision) ? null : revision;
     }
+
+    private static string? ReadMetadata(string key) => typeof(ConnectorMod).Assembly
+        .GetCustomAttributes<AssemblyMetadataAttribute>()
+        .FirstOrDefault(attribute => string.Equals(attribute.Key, key, StringComparison.Ordinal))?.Value;
 }

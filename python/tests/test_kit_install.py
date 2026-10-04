@@ -1153,3 +1153,41 @@ def test_selected_source_uv_subprocess_ignores_foreign_python_and_uv_targets(
     assert install.run(command, source).strip() == str(source / "python")
     assert sentinel.read_text() == "unchanged"
     assert sorted(p.name for p in foreign_environment.iterdir()) == ["sentinel"]
+
+
+@pytest.mark.parametrize("drift", [None, "artifact", "owner", "duplicate"])
+def test_runtime_archive_bridge_reuses_full_inventory_before_native_tuple(tmp_path, drift):
+    original, _ = archive(tmp_path)
+    with zipfile.ZipFile(original) as source:
+        files = {name: source.read(name) for name in source.namelist()}
+    manifest = json.loads(files["combination.json"])
+    native = {"schema": "sts2.platform/game-mod-build-provenance-1",
+              "artifact": {"sha256": install.sha(files["mod/STS2_PLATFORM.dll"]),
+                           "module_version_id": "11111111-2222-3333-4444-555555555555"},
+              "source": {"platform": {"source_revision": "a" * 40}}}
+    if drift == "artifact":
+        native["artifact"]["sha256"] = "b" * 64
+    files["collection-tool/game-mod/build-provenance.json"] = json.dumps(native).encode()
+    mod = {"id": "STS2_MCP" if drift == "owner" else "STS2_PLATFORM", "version": "0.2.0-rc.23"}
+    files["mod/STS2_PLATFORM.json"] = json.dumps(mod).encode()
+    if drift == "duplicate":
+        files["mod/STS2_PLATFORM.json"] = b'{"id":"STS2_MCP","id":"STS2_PLATFORM"}'
+    manifest["mod_manifest_sha256"] = install.sha(files["mod/STS2_PLATFORM.json"])
+    manifest["files"] = {name: install.sha(raw) for name, raw in files.items()
+                         if name != "combination.json"}
+    files["combination.json"] = json.dumps(manifest).encode()
+    with zipfile.ZipFile(original, "w") as target:
+        for name, raw in files.items():
+            target.writestr(name, raw)
+    expected = install.sha(original.read_bytes())
+    if drift:
+        with pytest.raises(BoundaryError):
+            install.runtime_archive_identity(original, expected)
+    else:
+        result = install.runtime_archive_identity(original, expected)
+        assert result["status"] == "verified_runtime_archive_identity"
+        assert result["archive_sha256"] == expected
+        assert result["provenance"] == native
+        assert result["manifest"] == mod
+        with pytest.raises(BoundaryError, match="archive_checksum_mismatch"):
+            install.runtime_archive_identity(original, "f" * 64)

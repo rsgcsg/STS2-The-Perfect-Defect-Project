@@ -54,6 +54,13 @@ Mod builds do not generate those callbacks.
 `installed`, `loaded`, `launcher-visible`, Human action evidence and Policy evidence
 are separate claims.
 
+The [production runtime seal source candidate](../../docs/design/PRODUCTION_RUNTIME_SEAL.md)
+adds fixed official-release preparation and paired qualification sidecars to
+this same deployment/rollback owner. It supports ordinary-launch admission for
+an issuer-reviewed exact artifact and environment; it does not issue a seal or
+claim that the final ordinary lifecycle matrix has passed. Bootstrap canaries
+remain explicit development evidence.
+
 The Connector's optional card-reward canary diagnostic is enabled only for a
 deliberate local launch with `STS2_CONNECTOR_CARD_REWARD_CANARY_DIAGNOSTICS=1`.
 Its bounded private `[STS2 Platform] card-reward-canary` log lines join actual

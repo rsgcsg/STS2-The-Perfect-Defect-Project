@@ -15,7 +15,7 @@ internal static class LiveModsetIdentity
     internal const string PlatformModId = "STS2_PLATFORM";
     internal const string ExperimentalFingerprintEnvironmentVariable =
         "STS2_CONNECTOR_EXPERIMENTAL_MODSET_FINGERPRINT";
-    private const string FingerprintScope =
+    internal const string FingerprintScope =
         "manager_state+ordered_manifest_identity+load_state+source+workshop_id+loaded_assembly_name_version_mvid";
 
     public static ModsetIdentity Read()

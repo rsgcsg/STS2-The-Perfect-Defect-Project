@@ -19,6 +19,12 @@ internal static class EnvironmentIdentityRuntime
     private static readonly string RuntimeInstanceId = Guid.NewGuid().ToString("N");
     private static readonly ProcessImmutableValue<LoadedMainAssemblyIdentity>
         MainAssemblyIdentity = new(ReadLoadedMainAssemblyIdentity);
+    private static readonly ProcessImmutableValue<RuntimeSealSnapshot> LoadedRuntimeSeal =
+        new(() => RuntimeSealQualification.ReadInstalledPair(typeof(ConnectorMod).Assembly.Location));
+
+    // Capture installed documents once before serving capabilities. A later
+    // sidecar write cannot qualify an already running process in place.
+    internal static void FreezeInstalledRuntimeSeal() => LoadedRuntimeSeal.Read();
 
     internal static GameBuildIdentity ReadGame()
     {
@@ -63,6 +69,29 @@ internal static class EnvironmentIdentityRuntime
             System.Environment.GetEnvironmentVariable(
                 ExactArtifactCompatibility.CanarySourceRevisionEnvironmentVariable));
         ModsetIdentity modset = LiveModsetIdentity.Read();
+        RuntimeSealSnapshot runtimeSeal = LoadedRuntimeSeal.Read();
+        if (runtimeSeal.Present)
+        {
+            RuntimeSealPermission sealPermission = RuntimeSealQualification.Evaluate(runtimeSeal,
+                new LoadedRuntimeSealIdentity(
+                    HostArtifactIdentity.LoadedImplementationId,
+                    HostArtifactIdentity.LoadedPackageVersion,
+                    HostArtifactIdentity.SourceRevision,
+                    HostArtifactIdentity.PlatformSourceRevision,
+                    HostArtifactIdentity.CompiledSourceDigestSha256,
+                    HostArtifactIdentity.LoadedAssemblySha256,
+                    HostArtifactIdentity.LoadedAssemblyMvid,
+                    PlayerEnvironment.Protocol.PlayerEnvironmentContract.ProtocolVersion,
+                    ExactGameCompatibility.CurrentPlatform(), ExactGameCompatibility.CurrentArchitecture(),
+                    HostKind(), release?.Version, release?.Commit, assemblyHash,
+                    mainAssemblySha256, mainAssemblyMvid, modset.Status,
+                    LiveModsetIdentity.FingerprintScope, modset.Fingerprint));
+            // A present broken pair cannot fall back to a process canary or a
+            // predecessor seal. Only the exact current pair owns admission.
+            artifactPermission = new ExactArtifactPermission(
+                sealPermission.ActionExecutionAllowed ? "supported_exact" : "artifact_unqualified",
+                sealPermission.ActionExecutionAllowed, sealPermission.Detail);
+        }
         bool executionIdentityComplete = gamePermission.ActionExecutionAllowed
                                          && artifactPermission.ActionExecutionAllowed
                                          && IsExactSupportedModset(modset);

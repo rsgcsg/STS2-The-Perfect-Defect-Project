@@ -17,6 +17,7 @@ import { evaluateLoadedEvidence, extractGameProcessIds } from "./loaded-evidence
 import { waitForLoadedReadiness } from "./loaded-readiness.mjs";
 import { sourceSetIdentity, sourceSetMatches } from "./source-identity.mjs";
 import { readAnnotatorConfiguration, effectiveAnnotatorConfiguration } from "./annotator-configuration.mjs";
+import { readPreparedRuntimeSeal, runtimeSidecarNames, verifyInstalledRuntimePair } from "./runtime-installation.mjs";
 
 const appRoot = import.meta.dirname;
 const platformRoot = path.resolve(appRoot, "../..");
@@ -51,6 +52,7 @@ const managedModFiles = [
   "STS2_PLATFORM.dll",
   "STS2_PLATFORM.json",
   "STS2_PLATFORM.identity",
+  ...runtimeSidecarNames,
   ...retiredProductionFiles
 ];
 const managedConfigFiles = ["STS2_MCP.conf", "STS2_HUMAN_ANNOTATOR.conf"];
@@ -122,7 +124,8 @@ function requireBuild() {
   if (!sameIdentity(built, provenance.artifact)) {
     throw new Error("Built Game Mod differs from build provenance.");
   }
-  return { provenance, built };
+  const runtimeSeal = readPreparedRuntimeSeal(platformRoot, provenance);
+  return { provenance, built, runtimeSeal };
 }
 
 function archiveTarget(backup, location, file) {
@@ -241,6 +244,11 @@ function deploy() {
     }
     fs.copyFileSync(builtDll, installedDll);
     fs.copyFileSync(manifestSource, installedManifest);
+    if (exact.runtimeSeal) {
+      fs.writeFileSync(path.join(installation.mods_dir, runtimeSidecarNames[0]), exact.runtimeSeal.sealBytes);
+      fs.writeFileSync(path.join(installation.mods_dir, runtimeSidecarNames[1]), exact.runtimeSeal.provenanceBytes);
+    }
+    verifyInstalledRuntimePair(installation.mods_dir, exact.runtimeSeal);
     writeJson(installedIdentity, {
       schema: "sts2.platform/game-mod-installed-identity-1",
       source_revision: exact.provenance.source.components.connector.source_revision,
@@ -304,7 +312,11 @@ function launch() {
   if (!sameIdentity(currentInstalled, installed.artifact)) {
     throw new Error("Installed Game Mod drifted from installed provenance.");
   }
-  const connectorCanary = resolveConnectorCanaryEnvironment({
+  const runtimeSeal = readPreparedRuntimeSeal(platformRoot, installed);
+  verifyInstalledRuntimePair(installation.mods_dir, runtimeSeal);
+  const connectorCanary = runtimeSeal ? {
+    runtime: "official_release_ordinary_launch_pending_verification", environment: {}
+  } : resolveConnectorCanaryEnvironment({
     compatibility: readJson(path.join(
       platformRoot,
       "components/connector/contracts/host-compatibility.json"
@@ -317,6 +329,10 @@ function launch() {
     ...process.env,
     ...connectorCanary.environment
   };
+  if (runtimeSeal) {
+    delete env.STS2_CONNECTOR_EXPERIMENTAL_SOURCE_REVISION;
+    delete env.STS2_CONNECTOR_EXPERIMENTAL_GAME_ID;
+  }
   env.SteamAppId ??= "2868840";
   env.SteamGameId ??= "2868840";
   const child = spawn(installation.executable, [], {
@@ -367,6 +383,8 @@ async function verifyLoaded() {
   if (!fs.existsSync(installedProvenance)) throw new Error("Game Mod installed provenance is unavailable.");
   if (!installation.log_file || !fs.existsSync(installation.log_file)) throw new Error("STS2 runtime log is unavailable.");
   const installed = readJson(installedProvenance);
+  const runtimeSeal = readPreparedRuntimeSeal(platformRoot, installed);
+  verifyInstalledRuntimePair(installation.mods_dir, runtimeSeal);
   const expected = installed.artifact;
   const processIds = extractGameProcessIds(gameProcesses(), process.platform);
   const statusPath = effectiveAnnotatorConfiguration(annotatorConfiguration(), process.env).runtime_status_path;
@@ -374,6 +392,10 @@ async function verifyLoaded() {
     if (!fs.existsSync(statusPath)) throw new Error("Annotator runtime status is unavailable.");
     const status = readJson(statusPath);
     const capabilities = await fetchJson("api/player-environment/capabilities");
+    if (runtimeSeal && (capabilities?.game?.compatibility?.status !== "supported_exact"
+        || capabilities?.execution_available !== true)) {
+      throw new Error("Official runtime seal has not qualified this ordinary loaded process.");
+    }
     const log = fs.readFileSync(installation.log_file, "utf8");
     const platformIdentity = latestIdentity(log, "[STS2 Platform] identity ");
     const liveUiIdentity = latestIdentity(log, "[STS2 Platform Live UI] identity ");

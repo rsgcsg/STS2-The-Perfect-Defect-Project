@@ -196,6 +196,22 @@ def verified_archive(archive: Path, expected: str) -> tuple[dict[str, Any], dict
     return manifest, files
 
 
+def runtime_archive_identity(archive: Path, expected: str) -> dict[str, Any]:
+    """Read-only bridge: reuse the complete kit verifier, never unpack or prepare."""
+    _manifest, files = verified_archive(archive, expected)
+    provenance = decode_json(files["collection-tool/game-mod/build-provenance.json"])
+    mod_manifest = decode_json(files["mod/STS2_PLATFORM.json"])
+    if (not isinstance(provenance, dict)
+            or provenance.get("schema") != "sts2.platform/game-mod-build-provenance-1"
+            or not isinstance(provenance.get("artifact"), dict)
+            or provenance["artifact"].get("sha256") != sha(files["mod/STS2_PLATFORM.dll"])
+            or not isinstance(mod_manifest, dict)
+            or mod_manifest.get("id") != "STS2_PLATFORM"):
+        reject("runtime_archive_native_identity_invalid")
+    return {"status": "verified_runtime_archive_identity", "archive_sha256": expected,
+            "provenance": provenance, "manifest": mod_manifest}
+
+
 def run(command: list[str], cwd: Path, *, environment: dict[str, str] | None = None) -> str:
     executable = shutil.which(command[0])
     if executable is None:
@@ -1648,7 +1664,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command", choices=(
-            "plan", "prepare", "status", "preflight", "initialize", "deploy", "register",
+            "plan", "prepare", "verify-runtime-archive", "status", "preflight",
+            "initialize", "deploy", "register",
             "launch", "install-launcher", "backup-launcher", "prepare-launcher-target",
             "restore-launcher",
         )
@@ -1738,6 +1755,13 @@ def main() -> int:
                 args.snapshot_directory, args.snapshot_manifest_sha256,
                 args.expected_launcher_binding_sha256, args.expected_open_sha256,
             )
+        elif args.command == "verify-runtime-archive":
+            if (args.archive is None or args.sha256 is None
+                    or any(value is not None for value in (
+                        args.releases, args.directory, args.game_directory, args.config,
+                    ))):
+                reject("runtime_archive_verification_arguments_invalid")
+            result = runtime_archive_identity(args.archive, args.sha256)
         elif args.command in {"plan", "prepare"}:
             if args.archive is None or args.sha256 is None or args.releases is None:
                 reject("archive_hash_release_root_required")
