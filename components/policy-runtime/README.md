@@ -181,6 +181,30 @@ that decision watermarks match their decisions, and that prior-action request
 IDs bind to a same-segment delivered receipt and an observed Snapshot at or
 beyond its recorded successor.
 
+For Auto with a generic `snapshot-1` and zero required Reads (port 1 or port
+4), Runtime keeps at most seven
+fingerprints from correlated delivered Receipts with stable, recorded
+successors. Three consecutive deliveries returning to the identical public
+decision, or six alternating between two identical public decisions, trigger
+`semantic_cycle_detected` and the existing Human handoff. One A→B→A visit is
+allowed. The fingerprint removes only Snapshot envelope fields and the
+Connector's explicit interaction, referent, Read and BoundAction handles;
+candidate order is normalized while multiplicity remains. Persistent player
+facts and opaque surface/context/referent facts are retained. Thus changing
+HP, energy, deck, selection, rewards or progress prevents a cycle match.
+Referents with identical public facts share a normalized reference value, but
+their count remains in the fingerprint. This visible-state signal does not
+prove that those native entities, hidden outcomes or model inputs are equal.
+Unknown fields, including nested IDs, are deliberately retained and may cause
+a missed cycle. This is a bounded no-progress safety signal, not evidence of
+gameplay completion. It never adds submissions, renews the authorization
+wallet, retries unknown delivery, or claims whole-game reset coverage.
+The triggering tick remains `delivered` with its correlated Receipt and stable
+successor; the status returns Human with `semantic_cycle_detected` in
+invalidations. The existing typed `handoff_to_human` event carries that reason.
+Port 1 with required Reads is excluded because the stable successor path does
+not fetch those Read contents; a Snapshot-only comparison could miss progress.
+
 ## Confirmed interaction port (opt-in)
 
 `sts2.policy-runtime/decision-only-ndjson-3` uses `policy-port-3` with an
