@@ -39,6 +39,15 @@ function option(args, name, fallback) {
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 }
 
+function uniqueOption(args, name, fallback) {
+  const indices = args.flatMap((argument, index) => argument === name ? [index] : []);
+  if (indices.length > 1) throw new Error(`${name} may be supplied only once.`);
+  if (indices.length === 0) return fallback;
+  const value = args[indices[0] + 1];
+  if (!value || value.startsWith("--")) throw new Error(`${name} requires a value.`);
+  return value;
+}
+
 function resolveCurrentInstallation() {
   const gameDir = discoverGameDirectory();
   if (!gameDir) throw new Error("Could not locate the Steam installation; set STS2_GAME_DIR.");
@@ -86,6 +95,15 @@ async function main() {
     return;
   }
   if (command === "start") {
+    const displayMode = option(args, "--display-mode", "headless");
+    const expectedExperimentalConnectorSource = uniqueOption(args, "--experimental-connector-source", null);
+    if (expectedExperimentalConnectorSource != null && displayMode !== "native_window") {
+      throw new Error("--experimental-connector-source requires --display-mode native_window.");
+    }
+    if (expectedExperimentalConnectorSource != null
+        && !/^[a-f0-9]{40}$/u.test(expectedExperimentalConnectorSource)) {
+      throw new Error("--experimental-connector-source requires one exact lowercase 40-character Git revision.");
+    }
     const installation = resolveCurrentInstallation();
     await runHeadlessHost({
       installation,
@@ -94,7 +112,9 @@ async function main() {
       timeoutMs: Number(option(args, "--timeout-ms", "90000")),
       mirrorLogs: args.includes("--verbose"),
       sharedProfileAcknowledged: args.includes("--shared-profile"),
-      isolatedProfileId: option(args, "--isolated-profile", null)
+      isolatedProfileId: option(args, "--isolated-profile", null),
+      displayMode,
+      expectedExperimentalConnectorSource
     });
     return;
   }
@@ -348,7 +368,7 @@ async function main() {
   node tools/headless.mjs setup
   node tools/headless.mjs rollback --backup DIRECTORY
   node tools/headless.mjs doctor
-  node tools/headless.mjs start (--isolated-profile ID | --shared-profile) [--timeout-ms 90000] [--endpoint URL] [--verbose]
+  node tools/headless.mjs start (--isolated-profile ID | --shared-profile) [--display-mode headless|native_window] [--experimental-connector-source REVISION] [--timeout-ms 90000] [--endpoint URL] [--verbose]
   node tools/headless.mjs status [--endpoint URL]
   node tools/headless.mjs stop [--endpoint URL]
   node tools/headless.mjs reset-profile --isolated-profile ID
