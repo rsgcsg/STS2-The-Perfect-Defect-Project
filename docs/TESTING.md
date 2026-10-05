@@ -22,6 +22,25 @@ path-based review signals and never rewrites semantic truth.
 
 ## Hosted CI contract
 
+### Fast feedback without repeated assurance work
+
+Before changing behavior, state the risky claim and the normal/negative examples
+that would falsify it. Develop with the smallest faithful check, then run the
+selected component/root gates on a stable candidate. Do not run the whole suite
+after each edit or add tests that only mirror implementation/prose. A minor change
+with exact existing coverage names that coverage rather than inventing a new suite.
+
+Broaden or repeat checks only for a new change, failure, uncovered risk or a required
+gate. Repeated failures call for diagnosis of the owning fact and test fidelity,
+not assertion weakening or unrelated fixes. Existing selection, exact-tree receipt
+reuse and higher evidence gates below remain mandatory; this rule does not permit
+skips, copied green results or changing CI routing to make a task cheaper.
+
+Parallelize independent cheap checks when useful. Avoid duplicate heavy local and
+hosted runs that prove the same thing; retain the required local native/runtime
+checks. The [passive-wait checkpoint](AI_COLLABORATION.md#five-minute-passive-wait-checkpoint)
+changes how the engineer waits, not the execution or acceptance status of a job.
+
 GitHub-hosted CI is intentionally a **source/test portability gate**, not an
 exact-game or runtime qualification environment.
 

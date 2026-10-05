@@ -63,6 +63,40 @@ exact current code and machine-readable contracts
 
 Fix the weaker stale source. Never rewrite stronger evidence to preserve a plan.
 
+### Investigate before placement; iterate after the boundary is clear
+
+Owner refinement, 2026-10-06: real needs and actual evidence lead the work.
+Establish upper-level responsibilities before detailed protocols; use concrete
+end-to-end examples, counterexamples and acceptance/test design before production
+implementation. A test can encode a mistaken assumption and existing code can
+violate a requirement: neither silently changes the intended task. Resolve the
+disagreement explicitly and version the affected decision.
+
+For each substantive packet, identify the user/consumer need, current source and
+relevant runtime facts, historical decisions and failures, producers/callers/
+consumers, reusable mechanisms and the first owning correction. Consult exact
+native behavior or external primary documentation where an actual unknown needs
+it. Preserve a compact evidence map; do not repeatedly rescan the whole repository
+or private history for a local change. Refresh drift-prone facts before use.
+
+Explain why the change belongs in this owner before editing. Repeated wrappers,
+consumer-side workarounds, duplicated state machines or frequent repairs to one
+boundary require revisiting that boundary, not another silent patch. Reuse is
+preferred when it satisfies the requirements; replacing an old abstraction is
+allowed with explicit migration, consumer and evidence impacts. Do not create a
+general framework for hypothetical use or choose a whole protocol from one example.
+
+Material choices about requirements, information exposure, protocol meaning,
+experiment conditions or authority require a bounded decision packet: evidence,
+options, consequences and a recommendation. Pause dependent work for the user or
+design owner; continue independent authorized work. Routine implementation within
+an accepted contract does not require repeated human confirmation.
+
+Review readiness means the outcome, owner, dependencies, failure semantics and
+falsifiable examples are clear enough for the packet, not that every future detail
+is frozen. A time-bounded exploratory prototype can answer a design question when
+explicitly scoped; it is not production acceptance or a reason to lower the target.
+
 ## 2. Change classes and required confidence
 
 Classify by the strongest risk or claim, not line count. The required gate is the

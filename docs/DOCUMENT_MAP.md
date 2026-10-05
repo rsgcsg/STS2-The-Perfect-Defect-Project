@@ -2,6 +2,13 @@
 
 Use the smallest route that answers the task.
 
+## Current baseline design packet
+
+- [P0 needs and P2 foundations](design/BASELINE_FOUNDATION.zh-CN.md): continuous reading, definitions, responsibility boundaries, examples and unresolved choices.
+- [P1 audit](evidence/BASELINE_P1_AUDIT_2026-10-06.md): exact source/candidate/history scope and reuse limits.
+- [Baseline task index](plans/BASELINE_TASKS.zh-CN.md): the only new P/E/G/V/R task IDs, dependencies and gates; not dispatch or execution permission.
+- [Task and delivery format](AI_COLLABORATION.md#task-packet-and-delivery-format): bounded investigation, implementation, independent review and usable handoff.
+
 ## New here
 
 - [README](../README.md): zero-context product boundary and next steps.
@@ -25,7 +32,7 @@ Use the smallest route that answers the task.
 
 ## Finding technical truth
 
-- [Native logical observation, actions and memory (ADR-0015, Proposed)](adr/0015-native-logical-interaction.md):
+- [Native logical observation, actions and memory (ADR-0015, Accepted: upper-level scope)](adr/0015-native-logical-interaction.md):
   WEB-01 definitions, single-selector versus multi-reward examples, logical-list
   scope, old-mode compatibility and local refinement boundaries; not runtime proof.
 

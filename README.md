@@ -38,6 +38,11 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
+- [New baseline foundations: P0 needs and P2 upper design](docs/design/BASELINE_FOUNDATION.zh-CN.md),
+  [P1 source/evidence audit](docs/evidence/BASELINE_P1_AUDIT_2026-10-06.md), and
+  [stable task IDs and gates](docs/plans/BASELINE_TASKS.zh-CN.md). These are a
+  reviewable design packet, not an accepted new gameplay protocol or runtime release.
+
 - [Current work and next gate](docs/memory/CURRENT.md); [Stage 1a product delivery](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md).
 - [New member and Agent handoff (中文)](docs/NEW_MEMBER_HANDOFF.zh-CN.md): accounts,
   first installation, collection, development/PRs, operations and incident reporting.

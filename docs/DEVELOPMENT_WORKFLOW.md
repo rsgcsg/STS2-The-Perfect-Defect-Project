@@ -54,6 +54,15 @@ second governance system. A PR may cross components when one causal change requi
 
 ## Normal change and release sequence
 
+Before implementation, use the [governance investigation and placement rule](ENGINEERING_GOVERNANCE.md#investigate-before-placement-iterate-after-the-boundary-is-clear)
+and a [bounded task packet](AI_COLLABORATION.md#task-packet-and-delivery-format).
+Design, protocol examples and acceptance precede production code; repeated small
+consumer workarounds are a signal to revisit the owner. No new process requires
+re-auditing all history for every edit or asking the human to relay routine repairs.
+Integrate reviewed increments regularly; do not stockpile all work until the final
+baseline gate. The baseline task index coordinates future work, not authority to
+merge, run or publish it.
+
 1. Create a topic branch from current origin/develop; record exact base/head and owner.
    Implement the first owning correction, add the cheapest faithful regression, run the
    relevant component/root gates, closeout and diff review. Open a PR to develop.

@@ -21,6 +21,17 @@ When sources disagree, use this order:
 Fix the weaker stale source. Never create a second version, component identity,
 or artifact registry to make prose easier to query.
 
+For operational facts, current evidence describes what happened; accepted needs
+and contracts describe what should happen. Do not turn a source bug into a new
+requirement or declare a proposed design implemented. Label unresolved conflicts
+and route them to the owner before dependent work.
+
+The short newcomer/Agent route is README -> CURRENT -> task packet -> owning
+specification/component guide -> exact code/tests/evidence. The packet retains
+the useful history and call-path map so the next engineer need not repeat broad
+discovery. Refresh changing refs and runtime facts; do not assume a copied handoff
+is still current.
+
 ## Documentation classes and triggers
 
 | Owner | Contains | Update when |
@@ -36,6 +47,13 @@ or artifact registry to make prose easier to query.
 Durable docs do not list current topic branches or reproduce evidence
 timelines. CURRENT points to the PR/report instead of copying it. Historical
 evidence remains searchable but is outside default newcomer/Codex context.
+
+The [baseline task index](plans/BASELINE_TASKS.zh-CN.md) owns its stable IDs and
+dependencies; CURRENT owns only the active packet and next gate. Design proposals,
+accepted norms, implementation status and historical evidence have separate labels.
+Update affected routes/consumer documentation with the change and link to the fact
+owner instead of copying status strings. Existing project checks catch mechanical
+drift; semantic freshness and truthful status remain review responsibilities.
 
 ## Code, naming, and formatting authority
 

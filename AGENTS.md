@@ -12,8 +12,11 @@ One repository and workflow do not merge game, evidence, operational or research
 3. `docs/ARCHITECTURE.md` and `docs/COMPONENTS.md`
 4. the relevant component `AGENTS.md` or guide and exact code/tests
 
-For current product work, Stage 1a is the mainline: read
-[Stage 1a product delivery](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md) and its narrow task plan.
+For current design work, follow the stable IDs and scope in
+[baseline tasks](docs/plans/BASELINE_TASKS.zh-CN.md). P0/P1/P2 delivery does not accept
+a new gameplay protocol or authorize implementation. Existing
+[Stage 1a product requirements](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md) retain their
+meaning until explicitly reconciled; do not silently cancel their milestones.
 All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md). The local
 supervisor owns planning, delegation and integration coordination; implementation and
 the supervisor's own changes receive independent review. Authorized bounded packets
