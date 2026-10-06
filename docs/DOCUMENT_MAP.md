@@ -5,6 +5,7 @@ Use the smallest route that answers the task.
 ## Current baseline design packet
 
 - [P0–P5 full delivery](design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md): D-M2 closure, candidate cost comparison, REQ verification matrix and next acceptance.
+- [Concrete protocol options](design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md): three Agent contracts and four Host mappings, public details, failure/recovery, D-M2 and matched evaluation.
 - [Scene specification](design/BASELINE_SCENARIO_SPEC.zh-CN.md): 21 mechanism cards and 60 examples with native/protocol/Agent/management distinctions.
 - [P5 evidence and bounded probe](evidence/BASELINE_P5_EVIDENCE_2026-10-06.md): exact source/DLL findings, categorized reference checks, JSON costs and unmeasured scope.
 - [Discussion history and corrections](design/BASELINE_DESIGN_HISTORY.zh-CN.md): requirements versus hypotheses/options; not raw private chat.

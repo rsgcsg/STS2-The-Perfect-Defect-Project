@@ -15,8 +15,10 @@ merge, release or old branch cleanup.
 
 ## Read and review
 
-1. [P0–P5 complete delivery](../design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md):
-   recommendation, D-M2 journeys, cost comparison, acceptance matrix and next work.
+1. [Concrete protocol options](../design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md):
+   three Agent contracts, four Host/mapping combinations, object details and failure semantics;
+   [P0–P5 complete delivery](../design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md):
+   corrected candidate comparison, D-M2 journeys, cost comparison, acceptance matrix and next work.
 2. [Detailed scene design](../design/BASELINE_SCENARIO_SPEC.zh-CN.md):
    native versus protocol/Agent/management facts, 21 scene cards and 60 examples.
 3. [P5 evidence](../evidence/BASELINE_P5_EVIDENCE_2026-10-06.md):
@@ -29,8 +31,9 @@ merge, release or old branch cleanup.
 5. [Stable task index](../plans/BASELINE_TASKS.zh-CN.md): only 19 P/E/G/V/R IDs.
    P5 has a bounded delivery candidate; G1/E/R remain unaccepted/unstarted.
 
-The next step is G1 review, not automatic implementation. C-H is a reasoned
-candidate recommendation, not an accepted default. Required additional evidence
+The next step is G1 review, not automatic implementation. C-H is an automatic-view configuration of the query contract, not a separate
+protocol. Its previous priority recommendation is withdrawn; the old probe assumed
+different automatic information and policy-call programs. New options select no default. Required additional evidence
 is a scoped P5/E/V packet; material decisions go to the user/design owner.
 
 ## Anchors and working rules

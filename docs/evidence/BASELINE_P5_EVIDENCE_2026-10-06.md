@@ -46,15 +46,21 @@
 
 回执：[BASELINE_DESIGN_PROBE_2026-10-06.json](BASELINE_DESIGN_PROBE_2026-10-06.json)。首次提交版本 script SHA256 为 fda63641804c9d918f72c8d710664d66325809355dece4c0e72b882b622943ea；回执自身 SHA256 为 177b17667f5190e80836576c253bd93f7f0d1a3b743ae5001363b48589cfcb3c。重跑的计时可不同，不能要求回执字节恒等；须核 source digest 和 fixtureVersion，再比较不依赖计时的字段。
 
-38 项分别为 15 项 reference_transition、4 项 binding_guard、16 项静态 design_counterexample、3 项 cost_fixture，通过只具有各自的验证范围；另有 24 条固定场景/协议成本行，Node v20.20.2 / darwin / arm64。计时是 reference JSON projection；字节、模型调用假设、原生导航假设、Read 数分别报告。fixture 无真实玩家数据、权重或 proprietary card 内容。
+38 项分别为 15 项 reference_transition、4 项 binding_guard、16 项静态 design_counterexample、3 项 cost_fixture，通过只具有各自的验证范围；另有 24 条固定场景/信息配置成本行，Node v20.20.2 / darwin / arm64。计时是 reference JSON projection；字节、模型调用假设、原生导航假设、Read 数分别报告。fixture 无真实玩家数据、权重或 proprietary card 内容。
 
 referenceAgent 是手写区分历史的见证，不是学出来的 D-M2。状态边界的简单字段拒绝不构成真实代码/OS 沙箱的安全证明。一些 native/O case 是设计反例断言，不是 production 单元测试；它们不能声称已修复当前 adapter 差异。
+
+### 本轮对旧成本解读的修正
+
+原始 script/JSON 不改写。C-H 只是 query 的自动附带信息配置，旧表让它与 query 有不同基础信息，并假定 C-L 原生导航各产生额外 policy 调用。Agent 完全可以用固定程序浏览而不逐步调用神经模型。因此该表只能说明这些 fixture/执行假设的差异，不能证明独立协议优劣或支持 C-H 默认推荐；此前推荐撤回。新比较方法见[详细候选第 11 节](../design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md)。
+
+本轮另核对 535b39f4 的 VisibleEntityFacts、BuildCard、NativeTextMenuInformation、ReadService 和 SnapshotBuilder：原生 inspect 文案与 HUD 动态详情来源不同；BuildCard 尚不提供同样的完整 tooltip 关系；Read catalog 只有四 kind，surface_card 不是全场景详情接口；Snapshot signature 未覆盖 materialized Read payload。新通用 Inspect 和一致资料包均为后续设计要求，不能从现有 Snapshot 绑定推导已经实现。
 
 ## 5. 未成功执行的可选内核检查
 
 尝试从已有 Python 3.11.15 本地环境运行 test_light_action_m2.py 中 6 个选定 CPU case：候选排列/只读、完整目录预检、writer 输入、reset、在线与前缀重放。预检 import torch 即 ModuleNotFoundError，所以 **0 个此项测试实际执行**。没有安装 ML 依赖，没有下载权重，没有回退到其他源码来制造通过。补齐合格测试环境属于 E3 前置，历史 CI 只保留其原范围。
 
-本轮没有 D-M2 forward/backward 延迟、BPE tokens、真实 GPU/云费用、网络延迟、实际记录开销或 native transition runtime 测量。合成报告不能代替这些值。P5 对设计的建议基于明确的控制流/字节/源码依据；生产预算和运行承诺仍需后续实测。
+本轮没有 D-M2 forward/backward 延迟、BPE tokens、真实 GPU/云费用、网络延迟、实际记录开销或 native transition runtime 测量。合成报告不能代替这些值。旧优先推荐已撤回；控制流/字节/源码依据保留各自范围；生产预算和运行承诺仍需后续实测。
 
 ## 6. 交付边界
 

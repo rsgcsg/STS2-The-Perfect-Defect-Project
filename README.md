@@ -41,8 +41,9 @@ restrictions; local and cloud views do not create separate copies of authority.
 - [P0–P5 complete design and acceptance delivery](docs/design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md),
   [detailed native/abstract scene specification](docs/design/BASELINE_SCENARIO_SPEC.zh-CN.md),
   and [bounded P5 evidence](docs/evidence/BASELINE_P5_EVIDENCE_2026-10-06.md).
-  D-M2 sequence-N is the reference journey; C-H is a candidate recommendation,
-  not a deployed protocol or G1 acceptance.
+  [Three Agent contracts and four concrete Host combinations](docs/design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md)
+  now define the detailed choices. D-M2 sequence-N is the reference journey;
+  no protocol default has been selected or deployed, and G1 is unaccepted.
 
 - [New baseline foundations: P0 needs and P2 upper design](docs/design/BASELINE_FOUNDATION.zh-CN.md),
   [P1 source/evidence audit](docs/evidence/BASELINE_P1_AUDIT_2026-10-06.md), and
