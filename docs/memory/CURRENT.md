@@ -19,7 +19,13 @@ Read in order:
 2. [P1 audit](../evidence/BASELINE_P1_AUDIT_2026-10-06.md): exact baseline,
    candidates, facts, source links and historical/private-evidence limits.
 3. [Baseline tasks](../plans/BASELINE_TASKS.zh-CN.md): the only new task IDs and
-   dependencies. P0/P1/P2 are delivery candidates; later tasks remain unstarted.
+   dependencies, gate acceptance materials, filled proposed P3/P4/P5 cards and
+   integration milestones. P0/P1/P2 are delivery candidates; later tasks remain unstarted.
+
+Foundation revision 0.2 adds explicit P0/P1/P2 ownership, requirement-source mapping
+and the target scenario inventory after independent handoff review. P1 now also
+maps native reuse entrypoints, historical failures and the governing team/environment
+plans. Review scope/unknowns remain explicit; this is not an exhaustive runtime audit.
 
 The next gate is review of these deliverables, then an explicitly scoped P3/P4
 packet with early P5 falsification. Draft documentation is not G1 design acceptance.

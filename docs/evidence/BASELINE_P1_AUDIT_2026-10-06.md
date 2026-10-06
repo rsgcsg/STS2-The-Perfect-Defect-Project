@@ -65,6 +65,40 @@ main 与 develop 的共同祖先为 7c4f5deb1062d1b57701230fef8b63cf9b7aa521。m
 
 ## 4. 历史失败与当前非声明
 
+### 原生与平台机制的复用入口
+
+下表均指 develop 9556d21188b2deea027192567827a339a0ce50f7 的 source，不从 README 的历史资格或文件名推导新运行保证。与 FACT-01–12 一起构成有边界的组件地图；不是全部方法审计。
+
+| 机制 / 具体入口 | 可复用的责任 | 已知边界与下一消费者 |
+| --- | --- | --- |
+| Native Foundation：[NativeActionLifecycleObserver](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/components/native-foundation/src/NativeActionLifecycleObserver.cs#L17)、[NativeDecisionOwnerReadyProvider](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/components/native-foundation/src/NativeDecisionOwnerReadyProvider.cs#L46) | 观察确切原生生命周期和 owner-ready 边界；共享事实，不执行策略 | 原生机制有范围，Finished 不自动是目标协议后继；P3/E1/E2 核对需要的语义 |
+| Host Runtime：[managed-host-service](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/components/host-runtime/src/managed-host-service.mjs#L155)、[profile-isolation](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/components/host-runtime/src/profile-isolation.mjs) | 一服务持有 driver，实例身份，客户端/管理权限与隔离 | 当前服务限 loopback；不能当通用远端 Host 或任意存档恢复；E1/E5/E6 消费 |
+| Connector：[ActionSubmission](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/components/connector/host/PlayerEnvironment/Execution/ActionSubmission.cs#L17)、[ReadService](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/components/connector/host/PlayerEnvironment/Reads/ReadService.cs#L24) | 当前目录绑定、请求指纹/回执、执行前检查、状态绑定读取 | generic/text-menu 入口不同；复用机制不等于新 Profile 已实现；P3/E1/E3 消费 |
+| Annotator：[RecorderRuntime](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/components/annotator/src/STS2HumanAnnotator.Mod/RecorderRuntime.cs#L24)、[CurrentSessionBundle](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/components/annotator/src/STS2HumanAnnotator.Core/CurrentSessionBundle.cs#L7) | 原生见证入口、记录生命周期、不可变封包与来源 | 不代表 Human 心智或目标协议全事件覆盖；P4/E2 要逐类资格化 |
+| Evidence：[human_session_bundle_v3](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/components/evidence/sts2_platform_evidence/human_session_bundle_v3.py)、[transfer](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/components/evidence/sts2_platform_evidence/transfer.py)、[delivery](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/components/evidence/sts2_platform_evidence/delivery.py#L169) | typed 验证、内容摘要、封存传输和 outbox 身份 | 验证不创造 Human 来源/研究准入；传输重试不等于游戏或 compute 重试；E2/E5 消费 |
+| Policy Runtime：[runtime](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/components/policy-runtime/src/runtime.ts#L578) | 控制权、模式、预算、提交/反馈、unknown 和交还控制 | 即时后续观察不是自动成立的因果转换，安全交还不是策略成功；E3/E6/V1 消费 |
+| Game Mod 与 identity：[lifecycle](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/apps/game-mod/lifecycle.mjs)、[component identity](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/tools/component-identity.mjs)、[BOM](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/platform-bom.json) | 单包生命周期、安装/加载证据、配对回退、路径级来源身份 | source/tree/package/installed/loaded 分开；E0/E6/R1 不改写旧身份 |
+
+### 失败、能力限制和工程接缝不是同一种东西
+
+本表覆盖本轮设计所依赖的典型问题；没有声称所有历史 incident 都已重跑。历史修复不自动表示新候选仍有原 defect，也不证明新候选已取得原资格。
+
+| 问题与依据 | 已知与未知 | 新基线必须承接的经验 / 位置 |
+| --- | --- | --- |
+| 记录重复 Started 与错误执行边界：[queued-carrier repair](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/docs/evidence/PR25_QUEUED_CARRIER_REPAIR_2026-09-10.md) | 历史报告明确：只修重复事件不能修复错误 pre-state，legacy valid 计数不能覆盖 trace audit failure | 修正首个 owning fact，保留不同统计/证据口径；P3/P4/E2 |
+| Recorder hot path：[measured source closeout](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/docs/evidence/PLATFORM_RECORDING_HOTPATH_PERFORMANCE_SOURCE_CLOSEOUT_2026-09-01.md) | 历史测量指向 witness capture 与重复 immutable assembly hash；不是当前性能重测 | 先定位真实开销，只缓存可证明不变的内容，不缓存游戏语义来伪装提速；P5/E1/E2 |
+| 信息导航循环与奖励重访循环 | 前者有公开报告，后者为下述私有历史局部诊断；投递成功不等于有效策略 | 信息能力、模型状态、监督保护、任务结果分开验收；P3/P4/P5/V1 |
+| 训练准备重复工作、临时空间/RSS 超限 | 私有交接区分失败准备与后来准备成功；不是完成训练 | 复用不可变结果，记录资源上界，真实入口而非内部 fake 检查；P5/E4/E5 |
+| prepare_unknown 与不足的诊断 | 异常具体文件未知；缺 target/handle，不推断外部零成本 | 预检实际可执行入口，保存有界诊断，按原 attempt reconciliation；E5 |
+| 授权/新鲜证据窗口在跨 owner 往返中耗尽 | 历史最后窗口未执行，不是一次新的训练失败或批准继续 | 稳定准备前置，短时证据临近执行取得，不能自动延期；E4/E5 |
+| launcher prepare/publish 字节不同：[PR159](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/159) | 字段相同但序列化字节不同导致 SHA 后置条件失败 | 同一 owning serializer 和真实文件系统回归，保留双文件 CAS；E0/E6/R1 |
+| Workbench 生命周期资源与 SQLite：[PR160](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/160) | 源码修复隔离安装阶段资源与长期服务；历史 SQLite 唯一现场根因仍未证明 | 服务寿命、scratch、限额和错误回执独立；不能每个页面补重试；E0/E5/E6 |
+| Public M2 专用路径与普通训练/评估页未贯通 | FACT-09；不是没有数值训练或评估实现 | 共同应用服务＋受信任结果投影，避免每模型新流程；E3/E4/E6 |
+| 保存场景与任意恢复、独立游戏与多个文件 ID 混淆 | FACT-05/06 和环境规划；属于能力/资格边界 | 标明新局、恢复、分叉、来源共同祖先和曝光；P3/P4/V1 |
+| 多层文档/分支/运行状态被压成完成 | PR164 的历史 CI 状态已过期；候选、安装和正式训练各不同 | 每个结论绑定其 owner/版本/证据，发布与主干不等于部署；全任务 |
+
+这些经验落入具体 owner 和验收，不能只保留一条“避免打补丁”的口号。尚未重跑的历史事件仍按原报告范围引用。
+
 公开的 [9 月 28 日有界尝试](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/docs/evidence/BOUNDED_GAME_ATTEMPT_2026-09-28.md#L99) 记录信息导航循环：16 次尝试中 15 次内部导航、1 次原生返回。这证明工程链可执行但行为没有有效推进，不证明所有后来模型仍有同样失败。
 
 在本聊天前续审计中，另一个旧 Public M0 Agent-run 原始日志存在“奖励列表→卡牌奖励→跳过→奖励列表→重入”，输入均 delivered。使用 e302 公共投影对六个历史帧的局部重放，重复列表/选牌页分别得到相同模型内容（按动作语义忽略候选排列）。这只是历史记录的表示诊断，不是新模型推理、当前运行或全部语料统计。本次未重新操作游戏；原始日志留在私有存储。
@@ -101,11 +135,15 @@ main 与 develop 的共同祖先为 7c4f5deb1062d1b57701230fef8b63cf9b7aa521。m
 | --- | --- | --- |
 | [ADR0015](../adr/0015-native-logical-interaction.md) | Accepted 仅覆盖上层方向与条件例子；当前页面、牌堆打开/返回及模型记忆路线均有具体约束 | 最新需求允许重新评估更一般的模型/信息方案；P3–P5 提出 superseding/amendment，不在 P2 偷改旧结论 |
 | [产品交付](../STAGE1A_PRODUCT_DELIVERY.zh-CN.md) | 包含真实训练、完整旅程、Qwen/LoRA、N/Z/O 和记忆对照等里程碑 | 新 task ID 不自动取消旧目标；G1/E0 明确保留、替代、延期或退出 |
+| [团队操作约定](../STAGE1A_TEAM_OPERATIONS.zh-CN.md) | 一次清楚配置与范围说明、已有成员/设备/用途 owner；本地独立、授权同步、推荐组合，登录不自动启动或上传历史 | P2/E5/E6 保留能力和权限关系；如何简化入口需协调，不能退回每页通用重复授权，也不能造万能密钥 |
+| [环境与场景](../plans/ENVIRONMENT_AND_SCENARIOS.zh-CN.md) | 一份 Host 服务拥有一局，管理与策略分离，观察不干扰同一实例；新局/原生保存/重放/精确 checkpoint 分级 | P2/E1/E5 保留实例与管理边界；协议内信息策略可重评估，恢复能力仍按实证，不能合并成含糊 save/load |
 | [旧 Stage1a 排程](../plans/STAGE1A_TASKS.zh-CN.md) | 历史数字 ID 和四条并行线 | 保留历史映射；新派发只用 P/E/G/V/R，不把两套 ID 混用 |
 | 文档索引 | 曾将 ADR0015 标为 Proposed，而 ADR 已限定 Accepted | 本轮修正入口标签，不改变 ADR 内容或扩大接受范围 |
 
 ## 7. P1 结论
 
 现有系统有可复用的原生绑定、公开目录、记录验证、不可变产物、用途和恢复机制。主要风险是信息能力在多层被裁剪、历史语义不统一、专用实验与共同应用服务未完整衔接，以及 source/候选/运行/研究状态容易被压成一个“完成”。
+
+审计覆盖是分层的：关键源文件/规范已读并给固定引用；相关历史报告只按其当时事实复核；私有 metadata 的身份与局部记录已作有限检查；当前生产进程、全语料和 provider/billing 未核验。新工程师可从入口继续定位，而不能把本报告解释为所有历史缺陷和所有功能已经穷尽。若后续发现未列机制，追加证据与需求影响，不改写旧快照。
 
 因此 P2 应确定责任和连接，P3/P4 再定义具体协议与数据转换。不是整体推倒，也不是先把全部候选合入来迫使新设计服从旧实现。当前 P0/P1/P2 的交付不能称新工程基线完成。
