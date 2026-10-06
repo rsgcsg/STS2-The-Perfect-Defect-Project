@@ -7,10 +7,11 @@ Source, proposed design, installed/runtime, Human and scientific claims are sepa
 
 ## Current authorized packet
 
-The owner authorized P0 (needs), P1 (facts/history) and P2 (upper design), plus
-engineering/handoff documentation and a Draft PR. This packet does not authorize
-P3 implementation, training, paid compute, installation, deployment, merging,
-publication or old PR/branch cleanup. No default gameplay protocol is selected.
+The owner authorized P2 learning-chain refinement and completion of P3/P4 design,
+following the P0/P1/P2 documentation and engineering handoff. This packet does not
+authorize protocol implementation, training, paid compute, installation, deployment,
+merging, publication or old PR/branch cleanup. Candidate recommendations are not
+an accepted default gameplay protocol or a new experiment authorization.
 
 Read in order:
 
@@ -18,19 +19,18 @@ Read in order:
    design document, requirements, boundaries, examples and unresolved choices.
 2. [P1 audit](../evidence/BASELINE_P1_AUDIT_2026-10-06.md): exact baseline,
    candidates, facts, source links and historical/private-evidence limits.
-3. [Baseline tasks](../plans/BASELINE_TASKS.zh-CN.md): the only new task IDs and
+3. [P3 interaction candidates](../design/BASELINE_INTERACTION_CANDIDATES.zh-CN.md)
+   and [P4 data/Agent/learning/execution design](../design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md):
+   complete candidate semantics, model axes, M2, N/Z/O and engineering connections.
+4. [Learning/history audit](../evidence/BASELINE_LEARNING_AUDIT_2026-10-06.md):
+   exact prior model definitions and source/training limitations.
+5. [Baseline tasks](../plans/BASELINE_TASKS.zh-CN.md): the only new task IDs and
    dependencies, gate acceptance materials, filled proposed P3/P4/P5 cards and
-   integration milestones. P0/P1/P2 are delivery candidates; later tasks remain unstarted.
+   integration milestones. P3/P4 are design delivery candidates; P5/G1/E/R remain pending.
 
-Foundation revision 0.2 adds explicit P0/P1/P2 ownership, requirement-source mapping
-and the target scenario inventory after independent handoff review. P1 now also
-maps native reuse entrypoints, historical failures and the governing team/environment
-plans. Review scope/unknowns remain explicit; this is not an exhaustive runtime audit.
-
-The next gate is review of these deliverables, then an explicitly scoped P3/P4
-packet with early P5 falsification. Draft documentation is not G1 design acceptance.
-Material protocol choices require evidence/options and the user's or designated
-owner's decision; independent authorized work can continue while that part waits.
+The next gate is review of P2/P3/P4, then explicitly scoped P5 feasibility and
+acceptance work before G1. Draft documentation is not G1 design acceptance.
+Material choices require evidence/options and the user's or designated owner's decision.
 
 ## Source and candidate anchors
 
@@ -40,17 +40,12 @@ Product candidate `e30247defd859dfc75708fea4612c668e93cdbd2` and recovery candid
 relationship and CI are in P1, not evidence that either is installed or trained.
 Current installed/service/provider state was not requalified for this document task.
 
-The [previous context snapshot](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/9556d21188b2deea027192567827a339a0ce50f7/docs/memory/CURRENT.md)
-retains its historical installation and execution claims. Do not reuse them as
-current observations or restart stopped work from their old instructions.
-
 ## Working rules
 
 Use the [task/delivery format](../AI_COLLABORATION.md#task-packet-and-delivery-format),
 [governance](../ENGINEERING_GOVERNANCE.md), [testing](../TESTING.md) and
 [development workflow](../DEVELOPMENT_WORKFLOW.md). Investigate needs, history,
-native facts, connections and reuse before substantive changes; implement with
-short faithful feedback, not repeated whole-project audits or unnecessary tests.
+native facts, connections and reuse before changes; use short faithful feedback.
 After about five minutes of only passive waiting, switch to independent work or
 handoff; do not cancel a real job or claim it passed merely to end the wait.
 

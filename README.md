@@ -42,6 +42,10 @@ restrictions; local and cloud views do not create separate copies of authority.
   [P1 source/evidence audit](docs/evidence/BASELINE_P1_AUDIT_2026-10-06.md), and
   [stable task IDs and gates](docs/plans/BASELINE_TASKS.zh-CN.md). These are a
   reviewable design packet, not an accepted new gameplay protocol or runtime release.
+- [P3 interaction candidates](docs/design/BASELINE_INTERACTION_CANDIDATES.zh-CN.md)
+  and [P4 Agent, learning and execution contracts](docs/design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md)
+  extend the packet with full candidate semantics, model axes and N/Z/O design;
+  implementation, experiments and G1 acceptance remain separate.
 
 - [Current work and next gate](docs/memory/CURRENT.md); [Stage 1a product delivery](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md).
 - [New member and Agent handoff (中文)](docs/NEW_MEMBER_HANDOFF.zh-CN.md): accounts,

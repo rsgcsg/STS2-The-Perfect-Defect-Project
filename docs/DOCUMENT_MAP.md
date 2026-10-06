@@ -6,6 +6,9 @@ Use the smallest route that answers the task.
 
 - [P0 needs and P2 foundations](design/BASELINE_FOUNDATION.zh-CN.md): continuous reading, definitions, responsibility boundaries, examples and unresolved choices.
 - [P1 audit](evidence/BASELINE_P1_AUDIT_2026-10-06.md): exact source/candidate/history scope and reuse limits.
+- [P3 interaction candidates](design/BASELINE_INTERACTION_CANDIDATES.zh-CN.md): full-game candidates, message/time/recording semantics and G1 choices.
+- [P4 data, Agent, learning and execution contracts](design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md): model axes, M2, N/Z/O, experiment/evaluation and local/cloud/product connections.
+- [Learning and interaction design evidence](evidence/BASELINE_LEARNING_AUDIT_2026-10-06.md): exact historical model/target definitions and bounded implementation status.
 - [Baseline task index](plans/BASELINE_TASKS.zh-CN.md): the only new P/E/G/V/R task IDs, dependencies and gates; not dispatch or execution permission.
 - [Task and delivery format](AI_COLLABORATION.md#task-packet-and-delivery-format): bounded investigation, implementation, independent review and usable handoff.
 
