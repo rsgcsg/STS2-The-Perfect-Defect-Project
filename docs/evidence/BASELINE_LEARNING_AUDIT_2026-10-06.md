@@ -1,5 +1,7 @@
 # P2 补充与 P3/P4：模型、横轴、Z/O 和交互设计依据
 
+后续说明：本文保留 P3/P4 当轮的检查范围；新的 P5 有界原生/合成检查见 [P5 证据](BASELINE_P5_EVIDENCE_2026-10-06.md)。不要把下文“P5 尚未执行”当成后续任务的实时状态。
+
 日期：2026-10-06。范围：本轮用户授权的设计工作。只读核对相关历史文件、确切源码和设计报告；没有执行模型训练、私有语料迁移、游戏、安装或 provider 操作。新设计见 [P3](../design/BASELINE_INTERACTION_CANDIDATES.zh-CN.md)和 [P4](../design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md)。
 
 本轮写作基点为 6c1a5227c086a6714881b2654ec8932b2a14dcf7；该文档分支原始 develop 基点为 9556d21188b2deea027192567827a339a0ce50f7。产品 e30247defd859dfc75708fea4612c668e93cdbd2、恢复 762907a641f603e1db32155058a70efbf3b11ee5 仍为独立候选。下列源链接明确使用各自版本，历史小样不是当前新协议资格。

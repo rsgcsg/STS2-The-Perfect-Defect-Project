@@ -14,7 +14,8 @@ One repository and workflow do not merge game, evidence, operational or research
 
 For current design work, follow the stable IDs and scope in
 [baseline tasks](docs/plans/BASELINE_TASKS.zh-CN.md). Current authorization includes
-P2 learning-chain refinement and P3/P4 design, not gameplay implementation or G1 acceptance. Existing
+P5 design and bounded verification with an encapsulated D-M2 reference chain,
+not production implementation, training, live operations or G1 acceptance. Existing
 [Stage 1a product requirements](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md) retain their
 meaning until explicitly reconciled; do not silently cancel their milestones.
 All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md). The local
