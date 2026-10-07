@@ -5,16 +5,12 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
-import { PublicMenuTeacher, TEACHER_ID, TEACHER_VERSION, INPUT_SPEC } from "./baseline-s0-teacher.mjs";
+import { PublicMenuTeacher, TEACHER_ID, TEACHER_VERSION, INPUT_SPEC, S0_TEXT_V2_KINDS } from "./baseline-s0-teacher.mjs";
 import { S0RawRecords, sha256 } from "./baseline-s0-records.mjs";
 import { resolveInstallation } from "../components/host-runtime/src/game-installation.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA = "sts2.player-environment/text-menu-snapshot-2";
-const KINDS = ["map_navigation", "combat_turn", "reward_claim", "card_reward_selection",
-  "event_option", "rest_site", "treasure_room", "shop_room", "shop_inventory",
-  "deck_upgrade_selection", "card_selection", "card_remove_selection", "card_transform_selection",
-  "game_over", "run_summary"];
 
 export function makeS0Manifest(capabilities, artifact, adapter, { learned = false } = {}) {
   if (capabilities.input_profile !== "text-menu-v2" || capabilities.snapshot_schema !== SCHEMA)
@@ -23,7 +19,7 @@ export function makeS0Manifest(capabilities, artifact, adapter, { learned = fals
   const game = capabilities.game;
   return {
     schema: "sts2.policy-runtime/policy-manifest-1", manifest_id: `s0-${artifact.sha256.slice(0, 16)}`,
-    policy: { id: learned ? "s0-structured-m2" : TEACHER_ID, version: "1.0.0", provider: "local",
+    policy: { id: learned ? "s0-structured-m2" : TEACHER_ID, version: learned ? "1.0.0" : TEACHER_VERSION, provider: "local",
       architecture: learned ? "stpd.structured-observation-only.s-m2-0.v1" : "public-catalog-heuristic" },
     adapter, artifact,
     representation: { id: learned ? "stpd-structured-observation-only-v1" : INPUT_SPEC,
@@ -40,7 +36,7 @@ export function makeS0Manifest(capabilities, artifact, adapter, { learned = fals
     support: { game_versions: [game.version], game_commits: [game.commit],
       // Native text-v2 advertises verbs, not Managed interaction_kinds/action_verbs.
       // This bounded declared consumer scope is checked against each actual observation.
-      interaction_kinds: [...KINDS], action_verbs: [...capabilities.verbs] },
+      interaction_kinds: [...S0_TEXT_V2_KINDS], action_verbs: [...capabilities.verbs] },
     adapter_config: {}, claims: { full_run: false, selector: false, catalog_filtered: false,
       creates_action_authority: false, creates_native_operands: false }
   };
