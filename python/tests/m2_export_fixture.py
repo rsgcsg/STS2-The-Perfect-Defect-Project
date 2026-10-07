@@ -102,13 +102,14 @@ def completed_m2_recipes(tmp_path_factory: pytest.TempPathFactory) -> CompletedM
 
 def clone_completed_m2(source: CompletedM2, root: Path) -> M2Fixture:
     library = root / "library"
-    store = ManifestArtifactStore(LocalBlobStore(library / "store"))
+    blobs = LocalBlobStore(library / "store")
+    store = ManifestArtifactStore(blobs)
     registry = SQLiteRegistry(library / "registry.sqlite")
     state = root / "state"
     state.mkdir(parents=True)
     config = replace(source.config, state_dir=state,
                      research_workspace=LocalResearchWorkspaceConfig(
-                         store.blobs.root, registry.path))
+                         blobs.root, registry.path))
     # Preserve the original pre-owner evidence and historical-use classification.
     for identity in source.store.manifest_ids():
         manifest = source.store.get_manifest(identity)
