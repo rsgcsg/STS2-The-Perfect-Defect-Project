@@ -138,26 +138,40 @@ test("manifest binds actual host/game/modset and limits interaction support", ()
 test("control release must be freshly confirmed with exact runtime and null owner", async () => {
   const control = { schema: "sts2.player-environment/control-1", protocol_version: "1.0.0",
     runtime_instance_id: "runtime-1", clients: [], controller: null };
-  assert.equal((await confirmControlReleased("http://fixture", "runtime-1", async () => ({ ok: true,
-    json: async () => control }))).confirmed, true);
+  const fetchControl = value => async (url, options) => {
+    // Literal production route, reached through the actual built SDK/client and its decoder.
+    assert.equal(String(url), "http://fixture/api/player-environment/controller");
+    assert.equal(options.method, "GET");
+    return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const confirmed = await confirmControlReleased("http://fixture", "runtime-1", fetchControl(control));
+  assert.equal(confirmed.confirmed, true);
+  assert.equal(confirmed.read_route, "/api/player-environment/controller");
   const omitted = { ...control };
   delete omitted.controller; // Actual C# WhenWritingNull serialization.
-  assert.equal((await confirmControlReleased("http://fixture", "runtime-1", async () => ({ ok: true,
-    json: async () => omitted }))).confirmed, true);
-  await assert.rejects(confirmControlReleased("http://fixture", "other", async () => ({ ok: true,
-    json: async () => control })), /unconfirmed/u);
-  await assert.rejects(confirmControlReleased("http://fixture", "runtime-1", async () => ({ ok: true,
-    json: async () => ({ ...control, controller: { held: true } }) })), /unconfirmed/u);
-  await assert.rejects(confirmControlReleased("http://fixture", "runtime-1", async () => ({ ok: true,
-    json: async () => ({ schema: control.schema, protocol_version: "1.0.0", runtime_instance_id: "runtime-1" }) })), /unconfirmed/u);
+  assert.equal((await confirmControlReleased("http://fixture", "runtime-1", fetchControl(omitted))).confirmed, true);
+  await assert.rejects(confirmControlReleased("http://fixture", "other", fetchControl(control)), /unconfirmed/u);
+  await assert.rejects(confirmControlReleased("http://fixture", "runtime-1", fetchControl({ ...control,
+    controller: { controller_lease_id: "lease", controller_generation: 1, client_session_id: "client",
+      expires_at: "2026-10-08T00:00:00Z" } })), /unconfirmed/u);
+  await assert.rejects(confirmControlReleased("http://fixture", "runtime-1", fetchControl({
+    schema: control.schema, protocol_version: "1.0.0", runtime_instance_id: "runtime-1" })));
   for (const malformed of [{ ...control, clients: [{}] }, { ...control, clients: [null] },
     { ...control, unexpected: true }, null, []]) {
-    await assert.rejects(confirmControlReleased("http://fixture", "runtime-1", async () => ({ ok: true,
-      json: async () => malformed })), /unconfirmed/u);
+    await assert.rejects(confirmControlReleased("http://fixture", "runtime-1", fetchControl(malformed)));
   }
-  assert.equal((await confirmControlReleased("http://fixture", "runtime-1", async () => ({ ok: true,
-    json: async () => ({ ...omitted, clients: [{ client_session_id: "client", client_instance_id: "instance",
-      product_id: "product", product_name: "name" }] }) }))).confirmed, true);
+  assert.equal((await confirmControlReleased("http://fixture", "runtime-1", fetchControl({ ...omitted,
+    clients: [{ client_session_id: "client", client_instance_id: "instance", product_id: "product",
+      product_name: "name", product_version: "1", registered_at: "2026-10-08T00:00:00Z",
+      last_seen_at: "2026-10-08T00:00:00Z" }] }))).confirmed, true);
+  let failedRequests = 0;
+  await assert.rejects(confirmControlReleased("http://fixture", "runtime-1", async (url, options) => {
+    failedRequests += 1;
+    assert.equal(String(url), "http://fixture/api/player-environment/controller");
+    assert.equal(options.method, "GET");
+    return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+  }), /HTTP 404/u);
+  assert.equal(failedRequests, 1);
 });
 
 function lifecycleDependencies(trace, { failStop = false, unknown = true } = {}) {

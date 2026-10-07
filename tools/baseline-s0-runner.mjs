@@ -55,23 +55,14 @@ export async function compiledRuntimeDigest(directory) {
 }
 
 export async function confirmControlReleased(endpoint, runtimeInstanceId, fetchImpl = fetch) {
-  const response = await fetchImpl(`${endpoint}/api/player-environment/control`,
-    { signal: AbortSignal.timeout(10_000) });
-  if (!response.ok) throw new Error(`stop_control_http_${response.status}`);
-  const control = await response.json();
-  // SDK has no GET ControlSnapshot decoder. Match its client registration
-  // minimum fields/passthrough clients and the native GET record's exact envelope.
-  const validClient = client => client && typeof client === "object" && !Array.isArray(client)
-    && typeof client.client_session_id === "string" && client.client_session_id.length > 0
-    && typeof client.client_instance_id === "string" && client.client_instance_id.length > 0;
-  const validEnvelope = control && typeof control === "object" && !Array.isArray(control)
-    && Object.keys(control).every(key => ["schema", "protocol_version", "runtime_instance_id", "clients", "controller"].includes(key));
-  if (!validEnvelope || control.schema !== "sts2.player-environment/control-1" || control.protocol_version !== "1.0.0"
-    || control.runtime_instance_id !== runtimeInstanceId || !Array.isArray(control.clients)
-    || !control.clients.every(validClient)
-    || control.controller != null) // Native WhenWritingNull omits the unheld controller; SDK agrees.
+  // The SDK owns the production route and strict wire decoder; no parallel GET schema here.
+  const sdk = await import(pathToFileURL(path.join(ROOT, "components/connector/sdk/typescript/dist/index.js")));
+  const client = new sdk.PlayerEnvironmentRestClient(endpoint, 10_000, fetchImpl);
+  const control = (await client.controlSnapshot()).data;
+  if (control.runtime_instance_id !== runtimeInstanceId || control.controller != null)
     throw new Error("stop_control_release_unconfirmed");
-  return { confirmed: true, basis: "fresh_control_observation_after_runtime_stop", control };
+  return { confirmed: true, basis: "fresh_control_observation_after_runtime_stop",
+    read_route: sdk.PLAYER_ENVIRONMENT_CONTROL_ROUTE, control };
 }
 
 async function defaultDependencies() {

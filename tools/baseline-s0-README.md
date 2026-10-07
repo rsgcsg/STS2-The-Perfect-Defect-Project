@@ -60,5 +60,9 @@ release but remains unknown; it is not a successful native action claim.
 
 Tests exercise public choice/browse, exact capsule joins, corrupt/over-budget
 capsules, capability binding, unknown no-retry, Stop release and failure cleanup.
+The Stop check uses the SDK's `controlSnapshot()` strict decoder and canonical
+GET `/api/player-environment/controller` route. Build the SDK before these tests;
+the production helper is exercised through the actual SDK with a fetch fixture
+that asserts this route, not a duplicated mock control implementation.
 They are portable source tests; real installed/load/game/training qualification
 belongs to the lead's exact native execution packet.
