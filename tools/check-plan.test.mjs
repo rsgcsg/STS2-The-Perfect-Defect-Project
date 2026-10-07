@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
-import { classifyChanges, parseDiff, makePlan, aggregatePassed, scopeCommands } from "./check-plan.mjs";
+import { classifyChanges, parseDiff, makePlan, aggregatePassed, scopeCommands, parseRawDiff } from "./check-plan.mjs";
 
 test("only modified editorial surfaces select docs; additions, deletion and rename stay full", () => {
-  assert.equal(classifyChanges([{ status: "M", file: "README.md" }]).scope, "docs");
+  assert.equal(classifyChanges([{ status: "M", file: "README.md", oldMode: "100644", newMode: "100644" }]).scope, "docs");
   for (const file of ["AGENTS.md", "docs/TESTING.md", "docs/adr/example.md", "components/annotator/docs/DATA_CONTRACT.md", "python/uv.lock", ".github/workflows/ci.yml", "tools/check-plan.mjs", "new.md"]) {
     assert.equal(classifyChanges([{ status: "M", file }]).scope, "full", file);
   }
@@ -73,4 +73,68 @@ test("real repair-shaped reports do not force unrelated Platform suites", () => 
     {file:"docs/adr/new.md",status:"A"}, {file:"python/spireagent/AGENTS.md",status:"M"},
     {file:"python/docs/adr/new.md",status:"A"}, {file:"docs/evidence/subdir/code.js",status:"A"}])
     assert.equal(classifyChanges([source,entry]).scope,"full");
+});
+
+const proseEntry = (file, status = "M") => ({file, status,
+  oldMode: status === "A" ? "000000" : "100644", newMode: "100644"});
+
+test("explicit regular prose additions and modifications retain fresh repository guards", () => {
+  for (const file of ["docs/design/new.md", "docs/plans/new.md", "docs/evidence/new.md", "docs/memory/CURRENT.md"])
+    for (const status of ["A", "M"]) assert.equal(classifyChanges([proseEntry(file,status)]).scope,"docs");
+  const scripts = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url))).scripts;
+  assert.deepEqual(scopeCommands("docs"), ["check:docs"]);
+  assert.equal(scripts["check:docs"], "npm run check:repository && git diff --check");
+  for (const guard of ["project:check", "check:governance", "check:ci", "check:identity", "check:bom", "check:boundaries", "check:history"])
+    assert.ok(scripts["check:repository"].includes(`npm run ${guard}`), guard);
+});
+
+test("extension, missing modes, deletion, protected prose and executable mixtures stay full", () => {
+  for (const file of ["docs/design/tool.js", "docs/evidence/manifest.json", "docs/design/AGENTS.md", "docs/plans/SKILL.md", "docs/adr/new.md", "docs/TESTING.md", "python/docs/new.md", "components/connector/docs/new.md", "docs/design/nested/new.md"])
+    assert.equal(classifyChanges([proseEntry(file,"A")]).scope,"full",file);
+  assert.equal(classifyChanges([{file:"docs/design/new.md",status:"A"}]).scope,"full");
+  assert.equal(classifyChanges([{...proseEntry("docs/design/new.md"),status:"D",newMode:"000000"}]).scope,"full");
+  for(const file of ["tools/new.py", "contracts/new.json", "python/uv.lock", "tools/check-plan.mjs"])
+    assert.equal(classifyChanges([proseEntry("docs/design/new.md"),proseEntry(file)]).scope,"full");
+  for(const newMode of ["120000","100755","160000"])
+    assert.equal(classifyChanges([{...proseEntry("docs/design/new.md","A"),newMode}]).scope,"full");
+});
+
+test("raw committed modes prevent a Markdown symlink, type replacement and cross-scope rename from taking docs", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "check-plan-mode-"));
+  const git = (...args) => execFileSync("git", args, {cwd,encoding:"utf8",stdio:"pipe"}).trim();
+  try {
+    git("init"); git("config","user.email","test@example.invalid"); git("config","user.name","Test");
+    fs.mkdirSync(path.join(cwd,"docs/design"),{recursive:true});
+    fs.writeFileSync(path.join(cwd,"docs/design/base.md"),"base\n");
+    git("add","."); git("commit","-m","base"); const base=git("rev-parse","HEAD");
+    fs.writeFileSync(path.join(cwd,"docs/design/new.md"),"new\n");
+    git("add","."); git("commit","-m","added prose");
+    assert.equal(makePlan({base,cwd}).scope,"docs");
+    fs.appendFileSync(path.join(cwd,"docs/design/new.md"),"edit\n");
+    git("commit","-am","modified prose");
+    assert.equal(makePlan({base,cwd}).scope,"docs");
+    git("reset","--hard",base);
+    // Git index construction also works on Windows without symlink privileges.
+    fs.writeFileSync(path.join(cwd,"target"),"target\n");
+    const blob=git("hash-object","-w","target"); fs.unlinkSync(path.join(cwd,"target"));
+    git("update-index","--add","--cacheinfo",`120000,${blob},docs/design/link.md`);
+    git("commit","-m","symlink");
+    git("checkout-index","-f","-a");
+    assert.equal(makePlan({base,cwd}).reason,"non_regular_or_executable_change");
+    git("reset","--hard",base);
+    fs.renameSync(path.join(cwd,"docs/design/base.md"),path.join(cwd,"renamed.md"));
+    git("add","-A"); git("commit","-m","cross-scope rename");
+    assert.equal(makePlan({base,cwd}).scope,"full");
+    git("reset","--hard",base);
+    git("update-index","--cacheinfo",`120000,${blob},docs/design/base.md`);
+    git("commit","-m","type replacement"); git("checkout-index","-f","-a");
+    assert.equal(makePlan({base,cwd}).reason,"non_regular_or_executable_change");
+  } finally {fs.rmSync(cwd,{recursive:true,force:true});}
+});
+
+test("raw parser rejects ambiguous modes and preserves unusual file names", () => {
+  const sha="a".repeat(40);
+  assert.deepEqual(parseRawDiff(`:000000 100644 ${sha} ${sha} A\0docs/design/a\n b.md\0`),[proseEntry("docs/design/a\n b.md","A")]);
+  for(const raw of [`:0 100644 ${sha} ${sha} A\0a\0`,`:100644 100644 ${sha} ${sha} R100\0a\0b\0`,":bad\0a\0"])
+    assert.throws(()=>parseRawDiff(raw));
 });

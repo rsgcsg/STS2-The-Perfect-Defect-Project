@@ -76,7 +76,7 @@
     "setup:python": "uv sync --project python --locked --all-extras",
     "workbench:diagnostics": "npm --prefix apps/workbench run start",
     "check:plan": "node tools/check-plan.mjs",
-    "check:docs": "npm run project:check && npm run check:governance && git diff --check",
+    "check:docs": "npm run check:repository && git diff --check",
     "check:repository": "npm run project:check && npm run check:governance && npm run check:ci && npm run check:identity && npm run check:entrypoints && npm run check:bom && npm run check:boundaries && npm run check:history",
     "check:python-scope": "npm run check:repository && npm run check:python"
   }
