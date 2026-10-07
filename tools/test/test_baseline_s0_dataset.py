@@ -26,7 +26,9 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def create_run(root, seed="1", suffix="one", *, extra_capture=True, continuity_change=False):
+def create_run(
+    root, seed="1", suffix="one", *, extra_capture=True, continuity_change=False, navigation=False
+):
     root = root.resolve()
     directory = root / suffix
     directory.mkdir()
@@ -167,6 +169,18 @@ def create_run(root, seed="1", suffix="one", *, extra_capture=True, continuity_c
         "manifest_sha256": sha(manifest_raw),
     }
     rows = []
+    events = []
+
+    def event(kind, payload):
+        events.append(
+            {
+                "schema": "sts2.policy-runtime/agent-run-event-1",
+                "sequence": len(events) + 1,
+                "recorded_at": "2026-10-08T00:00:00Z",
+                "kind": kind,
+                "payload": copy.deepcopy(payload),
+            }
+        )
 
     def record(kind, payload):
         rows.append(
@@ -256,6 +270,21 @@ def create_run(root, seed="1", suffix="one", *, extra_capture=True, continuity_c
     for position in range(2):
         current = copy.deepcopy(base)
         current.update(sequence=20 + position, snapshot_id="snapshot-" + str(position))
+        if navigation and position == 1:
+            current["interaction"].update(
+                kind="combat_turn", content_schema="sts2.player-environment/surface/combat_turn-1"
+            )
+            current["interaction"]["content"] = {
+                "surface": {"kind": "combat_turn"},
+                "context": {"kind": "combat"},
+            }
+            current["menu_actions"]["actions"][0].update(
+                action_id="select-card",
+                kind="system_selection",
+                verb="select_card",
+                label="Select Strike",
+                effect_domain="text_menu",
+            )
         envelope, filename = capture(current)
         frame = converter.project_structured_snapshot(current)
         token = "segment-2" if continuity_change and position else "segment-1"
@@ -289,7 +318,7 @@ def create_run(root, seed="1", suffix="one", *, extra_capture=True, continuity_c
                     "snapshot_id": current["snapshot_id"],
                     "sequence": current["sequence"],
                 },
-                "chosen_action_id": "travel-1",
+                "chosen_action_id": current["menu_actions"]["actions"][0]["action_id"],
             },
         )
         action = current["menu_actions"]["actions"][0]
@@ -299,21 +328,67 @@ def create_run(root, seed="1", suffix="one", *, extra_capture=True, continuity_c
             "manifest_id": manifest["manifest_id"],
             "snapshot_id": current["snapshot_id"],
             "candidate_count": 1,
+            "decision_id": f"decision-{position + 1}",
+            "disposition": "admit",
+            "issued_at": "2026-10-08T00:00:00Z",
             **output,
         }
+        successor = copy.deepcopy(current)
+        successor.update(sequence=current["sequence"] + 1, snapshot_id=f"successor-{position}")
+        if navigation and position == 1:
+            successor["menu"].update(
+                cursor="card_targets",
+                revision=1,
+                selection=[{"role": "card", "referent_id": "card-C"}],
+            )
+        result = {
+            "status": "applied",
+            "effect_domain": action["effect_domain"],
+            "request_id": f"request-{run_id}-{decision['decision_id']}",
+            "native_delivery": None if action["effect_domain"] == "text_menu" else "delivered",
+            "action": action,
+            "retry": "never",
+            "successor": successor,
+        }
+        event("text_decision_input", {"decision_id": decision["decision_id"], "snapshot": current})
+        event("decision", {"decision": decision, "resolved_bound_action_id": action["action_id"]})
+        event(
+            "text_menu_dispatch_attempt",
+            {
+                "decision_id": decision["decision_id"],
+                "action_id": action["action_id"],
+                "effect_domain": action["effect_domain"],
+                "native_submissions_used": 1 if navigation and position == 1 else position + 1,
+                "menu_navigations_used": 1 if navigation and position == 1 else 0,
+            },
+        )
+        if action["effect_domain"] == "text_menu":
+            event(
+                "menu_navigation",
+                {
+                    "decision_id": decision["decision_id"],
+                    "action_id": action["action_id"],
+                    "result": result,
+                },
+            )
+        else:
+            event(
+                "text_native_delivery", {"decision_id": decision["decision_id"], "result": result}
+            )
+            event(
+                "text_observed_successor",
+                {"decision_id": decision["decision_id"], "successor": successor},
+            )
         record(
             "tick",
             {
-                "type": "text_native_delivered",
+                "type": "navigated"
+                if action["effect_domain"] == "text_menu"
+                else "text_native_delivered",
                 "decision": decision,
                 "action": action,
-                "result": {
-                    "status": "applied",
-                    "effect_domain": "native_input",
-                    "request_id": f"request-{position + 1}",
-                    "native_delivery": "delivered",
-                    "action": action,
-                },
+                "result": result,
+                "successor": successor,
                 "status": {"tainted": False, "errors": []},
             },
         )
@@ -349,7 +424,7 @@ def create_run(root, seed="1", suffix="one", *, extra_capture=True, continuity_c
         "offers": 2,
         "captures": captures,
         "capture_bytes": total_bytes,
-        "native_deliveries": 2,
+        "native_deliveries": 1 if navigation else 2,
         "stop_confirmed": True,
         "termination": "runtime_handoff_or_budget",
         "errors": [],
@@ -375,10 +450,7 @@ def create_run(root, seed="1", suffix="one", *, extra_capture=True, continuity_c
                 "expected": manifest["adapter"],
             }
         ),
-        "events.jsonl": encode(
-            {"schema": "sts2.policy-runtime/agent-run-event-1", "sequence": 1, "kind": "stopped"}
-        )
-        + b"\n",
+        "events.jsonl": b"",
         "manifest.json": encode(
             {
                 "schema": "sts2.policy-runtime/agent-run-1",
@@ -395,6 +467,8 @@ def create_run(root, seed="1", suffix="one", *, extra_capture=True, continuity_c
         ),
         "policy-manifest.json": encode(manifest),
     }
+    event("stopped", {"controller": "released", "autonomy_budget": {"state": "ended"}})
+    runtime_files["events.jsonl"] = b"".join(encode(row) + b"\n" for row in events)
     entries = [
         {"path": name, "bytes": len(raw), "sha256": sha(raw)}
         for name, raw in sorted(runtime_files.items())
@@ -482,7 +556,7 @@ def test_explicit_continuity_change_resets_and_preserves_actual_rows(tmp_path):
         (lambda rows: payload(rows, "tick").update(type="unknown"), "unknown_or_error"),
         (
             lambda rows: payload(rows, "tick")["result"].update(action={}),
-            "native_delivery_choice_join",
+            "runtime_action_request_result_join",
         ),
     ],
 )
@@ -595,7 +669,7 @@ def test_duplicate_native_request_and_unsafe_run_id_are_rejected(tmp_path):
     directory, rows = create_run(tmp_path)
     payload(rows, "tick", 1)["result"]["request_id"] = payload(rows, "tick")["result"]["request_id"]
     write_rows(directory, rows)
-    with pytest.raises(ValueError, match="duplicate_native_delivery_request"):
+    with pytest.raises(ValueError, match="runtime_action_request_result_join"):
         converter.convert_runs([("train", directory)])
     for row in rows:
         row["run_id"] = "/tmp/outside"
@@ -615,4 +689,114 @@ def test_capture_runtime_environment_and_summary_error_reject_whole_run(tmp_path
     summary["errors"] = ["unknown"]
     summary_path.write_bytes(encode(summary))
     with pytest.raises(ValueError, match="clean_collect_summary"):
+        converter.convert_runs([("train", directory)])
+
+
+def runtime_events(directory):
+    run_id = json.loads((directory / "summary.json").read_bytes())["run_id"]
+    folder = directory / "runtime" / run_id
+    return folder, [
+        json.loads(line) for line in (folder / "events.jsonl").read_bytes().splitlines()
+    ]
+
+
+def rewrite_runtime_events(directory, events):
+    """Re-sign all file checksums so tests reach semantic joins, not corruption guards."""
+    folder, _ = runtime_events(directory)
+    for index, event in enumerate(events, 1):
+        event["sequence"] = index
+    (folder / "events.jsonl").write_bytes(b"".join(encode(event) + b"\n" for event in events))
+    names = ["adapter-attestation.json", "events.jsonl", "manifest.json", "policy-manifest.json"]
+    entries = [
+        {
+            "path": name,
+            "bytes": (folder / name).stat().st_size,
+            "sha256": sha((folder / name).read_bytes()),
+        }
+        for name in names
+    ]
+    descriptor = json.loads((folder / "evidence-manifest.json").read_bytes())
+    descriptor["files"] = entries
+    descriptor["manifest_sha256"] = converter.semantic_hash(
+        {"run_id": descriptor["run_id"], "files": entries}
+    )
+    (folder / "evidence-manifest.json").write_bytes(encode(descriptor))
+    (folder / "checksums.sha256").write_text(
+        "".join(
+            f"{sha((folder / name).read_bytes())}  {name}\n"
+            for name in sorted(names + ["evidence-manifest.json"])
+        )
+    )
+
+
+def test_stop_only_rechecksummed_runtime_evidence_cannot_admit_raw_decisions(tmp_path):
+    directory, _ = create_run(tmp_path)
+    _folder, events = runtime_events(directory)
+    rewrite_runtime_events(directory, [events[-1]])
+    with pytest.raises(ValueError, match="raw_offer_has_no_runtime_decision"):
+        converter.convert_runs([("train", directory)])
+
+
+@pytest.mark.parametrize(
+    "mutation,code",
+    [
+        (lambda events: events.__delitem__(0), "orphan_or_duplicate"),
+        (lambda events: events.insert(1, copy.deepcopy(events[0])), "input_duplicate"),
+        (
+            lambda events: events[0]["payload"]["snapshot"].update(snapshot_id="wrong"),
+            "offer_result_decision_join",
+        ),
+        (
+            lambda events: events[1]["payload"]["decision"].update(selected_index=None),
+            "offer_result_decision_join",
+        ),
+        (lambda events: events[2]["payload"].update(action_id="wrong"), "dispatch_choice_join"),
+        (
+            lambda events: events[3]["payload"]["result"].update(request_id="wrong"),
+            "action_request_result_join",
+        ),
+        (lambda events: events.__delitem__(4), "missing_or_orphan_result"),
+        (
+            lambda events: events[3].update(kind="text_native_unknown"),
+            "unknown_error_or_unsupported",
+        ),
+        (
+            lambda events: events.insert(
+                -1, {"kind": "fail_closed", "payload": {"reason": "failed"}}
+            ),
+            "unknown_error_or_unsupported",
+        ),
+    ],
+)
+def test_resigned_runtime_decision_stream_tampering_is_rejected(tmp_path, mutation, code):
+    directory, _ = create_run(tmp_path)
+    _folder, events = runtime_events(directory)
+    mutation(events)
+    for event in events:
+        event.setdefault("schema", "sts2.policy-runtime/agent-run-event-1")
+    rewrite_runtime_events(directory, events)
+    with pytest.raises(ValueError, match=code):
+        converter.convert_runs([("train", directory)])
+
+
+def test_production_shaped_nonnative_navigation_has_its_own_result_join(tmp_path):
+    directory, _ = create_run(tmp_path, navigation=True)
+    dataset = converter.convert_runs([("train", directory)])
+    assert dataset["runs"][0]["steps"][1]["chosen_action_id"] == "select-card"
+    assert dataset["runs"][0]["identity"]["counts"]["native_deliveries"] == 1
+    _folder, events = runtime_events(directory)
+    navigation = next(event for event in events if event["kind"] == "menu_navigation")
+    navigation["payload"]["action_id"] = "unrelated-action"
+    rewrite_runtime_events(directory, events)
+    with pytest.raises(ValueError, match="navigation_join"):
+        converter.convert_runs([("train", directory)])
+
+
+def test_same_length_template_edit_rejects_old_inventory_hash(tmp_path):
+    directory, _ = create_run(tmp_path)
+    settings = tmp_path / "host/profile-templates/defect-a0-s0/user-data/default/1/settings.save"
+    before = settings.read_bytes()
+    settings.write_bytes(b"X" + before[1:])
+    assert settings.stat().st_size == len(before)
+    with pytest.raises(ValueError, match="template_file_checksum_drift"):
         converter.convert_runs([("train", directory)])

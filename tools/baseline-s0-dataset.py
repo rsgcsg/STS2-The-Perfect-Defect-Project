@@ -202,6 +202,16 @@ def verify_template(episode: dict[str, Any], run_start: dict[str, Any]) -> dict[
         file = relative_file(user_data, entry["path"])
         if file.stat().st_size != entry["size"]:
             fail("template_file_size_drift")
+        actual_sha = hashlib.sha256()
+        actual_size = 0
+        with os.fdopen(os.open(file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)), "rb") as handle:
+            while chunk := handle.read(65536):
+                actual_size += len(chunk)
+                if actual_size > entry["size"]:
+                    fail("template_file_changed_during_verification")
+                actual_sha.update(chunk)
+        if actual_size != entry["size"] or actual_sha.hexdigest() != entry["sha256"]:
+            fail("template_file_checksum_drift")
     payload_sha = digest(manifest["payload_sha256"], "s0_dataset.template_payload")
     if whole.hexdigest() != payload_sha or profile.get("template_payload_sha256") != payload_sha:
         fail("template_payload_binding")
@@ -217,7 +227,7 @@ def verify_template(episode: dict[str, Any], run_start: dict[str, Any]) -> dict[
 
 def runtime_lineage(
     directory: Path, run_id: str, runtime: dict[str, Any], policy_manifest: dict[str, Any]
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Verify byte joins of the existing Runtime's immutable output inventory.
 
     This does not establish origin or re-author native/causal evidence. The
@@ -297,7 +307,7 @@ def runtime_lineage(
             or event["sequence"] != index
         ):
             fail("runtime_event_sequence_gap")
-    return [
+    lineage = [
         {
             "path": f"runtime/{run_id}/{name}",
             "sha256": sha(content[name]),
@@ -305,6 +315,202 @@ def runtime_lineage(
         }
         for name in sorted(names)
     ]
+    return lineage, events
+
+
+def runtime_decision_joins(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Join the production text-v2 events, without inferring missing decisions.
+
+    Port 2 has no separate durable adapter-completion event: Runtime emits its
+    text_decision_input and decision only after validating completion/output.
+    The raw completion is independently checked against the exact capsule.
+    """
+    joined_kinds = {
+        "text_decision_input",
+        "decision",
+        "text_menu_dispatch_attempt",
+        "menu_navigation",
+        "text_native_delivery",
+        "text_observed_successor",
+        "text_menu_not_applied",
+    }
+    passive_kinds = {
+        "environment_admitted",
+        "text_observation_not_admitted",
+        "stale_whole_bundle_discarded",
+        "controller_acquired",
+        "controller_released",
+        "handoff_to_human",
+        "autonomy_budget_exhausted",
+        "one_step_completed",
+        "mode_changed",
+        "stopped",
+    }
+    groups: dict[str, dict[str, Any]] = {}
+    ordered_ids = []
+    decision_ids = []
+    for event in events:
+        kind = event.get("kind")
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            fail("runtime_event_payload_required")
+        if kind in passive_kinds:
+            if "decision_id" in payload or kind == "stopped" and event is not events[-1]:
+                fail("runtime_passive_event_correlation")
+            continue
+        if kind not in joined_kinds:
+            fail("runtime_unknown_error_or_unsupported_event")
+        decision_id = text(
+            payload.get("decision", {}).get("decision_id")
+            if kind == "decision"
+            else payload.get("decision_id"),
+            "runtime_decision_id",
+        )
+        if kind == "text_decision_input":
+            if decision_id in groups or set(payload) != {"decision_id", "snapshot"}:
+                fail("runtime_input_duplicate_or_wrong_port")
+            groups[decision_id] = {}
+            ordered_ids.append(decision_id)
+        if decision_id not in groups or kind in groups[decision_id]:
+            fail("runtime_orphan_or_duplicate_decision_event")
+        groups[decision_id][kind] = event
+        if kind == "decision":
+            decision_ids.append(decision_id)
+    if ordered_ids != decision_ids:
+        fail("runtime_decision_order_or_inventory")
+    previous_end = 0
+    for identifier in ordered_ids:
+        group = groups[identifier]
+        if group["text_decision_input"]["sequence"] <= previous_end:
+            fail("runtime_interleaved_or_reordered_decisions")
+        previous_end = max(event["sequence"] for event in group.values())
+    return [groups[identifier] for identifier in ordered_ids]
+
+
+def bind_runtime_choice(
+    group: dict[str, Any],
+    snapshot: dict[str, Any],
+    output: dict[str, Any],
+    chosen: str | None,
+    run_id: str,
+    manifest_id: str,
+) -> dict[str, Any]:
+    if not {"text_decision_input", "decision"} <= set(group):
+        fail("runtime_decision_missing_input_or_output")
+    input_event, decision_event = group["text_decision_input"], group["decision"]
+    payload = decision_event["payload"]
+    decision = object_fields(
+        payload["decision"],
+        {
+            "schema",
+            "decision_id",
+            "run_id",
+            "manifest_id",
+            "snapshot_id",
+            "candidate_digest",
+            "candidate_count",
+            "scores",
+            "selected_index",
+            "disposition",
+            "issued_at",
+        },
+        "s0_dataset.runtime_decision",
+    )
+    if (
+        set(payload) != {"decision", "resolved_bound_action_id"}
+        or input_event["payload"]["snapshot"] != snapshot
+        or input_event["payload"]["decision_id"] != decision.get("decision_id")
+        or input_event["sequence"] >= decision_event["sequence"]
+        or decision.get("schema") != "sts2.policy-runtime/decision-1"
+        or decision.get("run_id") != run_id
+        or decision.get("manifest_id") != manifest_id
+        or decision.get("snapshot_id") != snapshot["snapshot_id"]
+        or decision.get("candidate_digest") != output["candidate_digest"]
+        or decision.get("candidate_count") != len(output["scores"])
+        or decision.get("scores") != output["scores"]
+        or decision.get("selected_index") != output["selected_index"]
+        or decision.get("disposition") != ("abstain" if chosen is None else "admit")
+        or payload.get("resolved_bound_action_id") != chosen
+    ):
+        fail("runtime_offer_result_decision_join")
+    return decision
+
+
+def bind_runtime_tick(
+    group: dict[str, Any],
+    tick: dict[str, Any],
+    snapshot: dict[str, Any],
+    output: dict[str, Any],
+    run_id: str,
+) -> tuple[str | None, str | None]:
+    decision_event = group["decision"]
+    decision = decision_event["payload"]["decision"]
+    if tick.get("decision") != decision:
+        fail("runtime_raw_tick_decision_join")
+    selected = output["selected_index"]
+    if selected is None or tick.get("type") == "shadow":
+        if tick.get("type") not in {"not_executed", "shadow"} or set(group) != {
+            "text_decision_input",
+            "decision",
+        }:
+            fail("runtime_unexecuted_decision_has_action_events")
+        return None, None
+    if "text_menu_dispatch_attempt" not in group:
+        fail("runtime_dispatch_attempt_missing")
+    action = snapshot["menu_actions"]["actions"][selected]
+    dispatch = group["text_menu_dispatch_attempt"]
+    if (
+        dispatch["sequence"] <= decision_event["sequence"]
+        or dispatch["payload"].get("action_id") != action["action_id"]
+        or dispatch["payload"].get("effect_domain") != action["effect_domain"]
+    ):
+        fail("runtime_dispatch_choice_join")
+    kind = {
+        "navigated": "menu_navigation",
+        "text_native_delivered": "text_native_delivery",
+        "text_not_applied": "text_menu_not_applied",
+    }.get(text(tick.get("type"), "runtime_tick_type"))
+    expected = {"text_decision_input", "decision", "text_menu_dispatch_attempt", kind}
+    if kind == "text_native_delivery":
+        expected.add("text_observed_successor")
+    if kind is None or set(group) != expected:
+        fail("runtime_missing_or_orphan_result_event")
+    result_event = group[kind]
+    result = tick.get("result")
+    request_id = f"request-{run_id}-{decision['decision_id']}"
+    if (
+        result_event["sequence"] <= dispatch["sequence"]
+        or result_event["payload"].get("result") != result
+        or not isinstance(result, dict)
+        or result.get("request_id") != request_id
+        or result.get("status") == "unknown"
+        or result.get("native_delivery") == "unknown"
+    ):
+        fail("runtime_action_request_result_join")
+    if kind == "text_menu_not_applied" and result.get("status") != "not_applied":
+        fail("runtime_not_applied_result_join")
+    if kind != "text_menu_not_applied" and (
+        tick.get("action") != action
+        or result.get("action") != action
+        or result.get("status") != "applied"
+        or result.get("retry") != "never"
+    ):
+        fail("runtime_applied_action_join")
+    if kind == "menu_navigation" and (
+        action["effect_domain"] != "text_menu"
+        or result.get("effect_domain") != "text_menu"
+        or result.get("native_delivery") is not None
+        or result_event["payload"].get("action_id") != action["action_id"]
+        or result.get("successor") != tick.get("successor")
+    ):
+        fail("runtime_navigation_join")
+    if kind == "text_native_delivery":
+        successor = group["text_observed_successor"]
+        if successor["sequence"] <= result_event["sequence"] or successor["payload"].get(
+            "successor"
+        ) != tick.get("successor"):
+            fail("runtime_observed_successor_join")
+    return action["effect_domain"], request_id
 
 
 def verify_run(directory: Path, split: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -523,7 +729,9 @@ def verify_run(directory: Path, split: str) -> tuple[dict[str, Any], dict[str, A
         {"path": "summary.json", "sha256": sha(summary_raw), "bytes": len(summary_raw)},
         {"path": "policy-manifest.json", "sha256": sha(manifest_raw), "bytes": len(manifest_raw)},
     ]
-    lineage += runtime_lineage(directory, run_id, runtime, manifest)
+    runtime_files, runtime_events = runtime_lineage(directory, run_id, runtime, manifest)
+    lineage += runtime_files
+    runtime_groups = runtime_decision_joins(runtime_events)
     capture_bytes = ticks = native_deliveries = 0
     offered_captures: set[str] = set()
     steps: list[dict[str, Any]] = []
@@ -535,6 +743,8 @@ def verify_run(directory: Path, split: str) -> tuple[dict[str, Any], dict[str, A
     last_generation: str | None = None
     latest_result: dict[str, Any] | None = None
     seen_native_requests: set[str] = set()
+    tick_decision_ids: set[str] = set()
+    dispatch_native = dispatch_navigation = 0
     for row in records:
         kind, payload = row["type"], row["payload"]
         if kind == "capture":
@@ -675,6 +885,12 @@ def verify_run(directory: Path, split: str) -> tuple[dict[str, Any], dict[str, A
             chosen = None if selected is None else frame.action_ids[selected]
             if payload.get("chosen_action_id") != chosen:
                 fail("selected_member_mismatch")
+            if len(steps) >= len(runtime_groups):
+                fail("raw_offer_has_no_runtime_decision")
+            runtime_group = runtime_groups[len(steps)]
+            runtime_decision = bind_runtime_choice(
+                runtime_group, snapshot, output, chosen, run_id, manifest["manifest_id"]
+            )
             steps.append(
                 {
                     "position": len(steps),
@@ -698,6 +914,8 @@ def verify_run(directory: Path, split: str) -> tuple[dict[str, Any], dict[str, A
                 "frame": frame,
                 "output": output,
                 "chosen_action_id": chosen,
+                "runtime_group": runtime_group,
+                "runtime_decision": runtime_decision,
             }
             pending = None
         elif kind == "tick":
@@ -712,6 +930,31 @@ def verify_run(directory: Path, split: str) -> tuple[dict[str, Any], dict[str, A
             result = payload.get("result", {})
             if result.get("status") == "unknown" or result.get("native_delivery") == "unknown":
                 fail("unknown_native_result")
+            if "decision" in payload:
+                if latest_result is None:
+                    fail("raw_tick_without_policy_result")
+                decision_id = latest_result["runtime_decision"]["decision_id"]
+                if decision_id in tick_decision_ids:
+                    fail("runtime_decision_has_duplicate_raw_tick")
+                tick_decision_ids.add(decision_id)
+                domain, _request = bind_runtime_tick(
+                    latest_result["runtime_group"],
+                    payload,
+                    latest_result["snapshot"],
+                    latest_result["output"],
+                    run_id,
+                )
+                if domain is not None:
+                    dispatch_native += domain == "native_input"
+                    dispatch_navigation += domain == "text_menu"
+                    dispatch_payload = latest_result["runtime_group"]["text_menu_dispatch_attempt"][
+                        "payload"
+                    ]
+                    if (
+                        dispatch_payload.get("native_submissions_used") != dispatch_native
+                        or dispatch_payload.get("menu_navigations_used") != dispatch_navigation
+                    ):
+                        fail("runtime_dispatch_counter_join")
             if payload.get("type") == "text_native_delivered":
                 request_id = text(result.get("request_id"), "native_request_id")
                 if request_id in seen_native_requests:
@@ -747,6 +990,8 @@ def verify_run(directory: Path, split: str) -> tuple[dict[str, Any], dict[str, A
                 native_deliveries += 1
     if pending is not None or not steps or native_deliveries < 1:
         fail("completed_offers_and_native_receipt_required")
+    if len(runtime_groups) != len(steps) or len(tick_decision_ids) != len(steps):
+        fail("runtime_raw_offer_tick_inventory_mismatch")
     if {path.name for path in (directory / "captures").iterdir()} != {
         PurePosixPath(item["path"]).name for item in captures.values()
     }:
