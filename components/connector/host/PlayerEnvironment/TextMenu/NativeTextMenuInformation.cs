@@ -109,11 +109,12 @@ internal static class NativeTextMenuInformation
         AddPileOpen(legacy, PileType.Discard, leaves);
         AddPileOpen(legacy, PileType.Exhaust, leaves);
         AddMapOpen(leaves);
-        AddRelicInspectOpen(entities, leaves);
-        AddRelicTipsOpen(entities, leaves);
-        AddOtherTipLeaves(entities, leaves);
+        var bindings = new PublicInformationBindings(legacy.Snapshot);
+        AddRelicInspectOpen(entities, leaves, bindings);
+        AddRelicTipsOpen(entities, leaves, bindings);
+        AddOtherTipLeaves(entities, leaves, bindings);
         return new NativeTextMenuInformationCapture(
-            legacy.Snapshot,
+            bindings.Page,
             RootOwnerKey(legacy),
             leaves);
     }
@@ -578,7 +579,7 @@ internal static class NativeTextMenuInformation
 
     private static void AddRelicInspectOpen(
         NativeEntityRegistry entities,
-        List<NativeTextMenuInformationLeaf> leaves)
+        List<NativeTextMenuInformationLeaf> leaves, PublicInformationBindings bindings)
     {
         NRelicInventory? inventory = NRun.Instance?.GlobalUi.RelicInventory;
         if (inventory == null || !ConnectorMod.IsNodeVisible(inventory)
@@ -591,16 +592,17 @@ internal static class NativeTextMenuInformation
                 || holder.Relic?.Model == null
                 || !holder.IsEnabled || !ConnectorMod.IsNodeVisible(holder)) continue;
             string id = entities.GetId(holder, "relic_holder");
-            string label = holder.Relic.Model.Title.GetFormattedText();
-            leaves.Add(Leaf($"inspect_relic:{id}", "relic_inspect",
-                "inspect_relic", $"Inspect {label}",
-                () => OpenRelic(holder, inventory)));
+            PlayerEnvironmentReferent? subject = bindings.Relic(entities.GetId(holder.Relic.Model, "relic"));
+            if (subject != null)
+                leaves.Add(new NativeTextMenuInformationLeaf($"inspect_relic:{id}", "relic_inspect",
+                    "inspect_relic", $"Inspect {subject.Label}", subject.ReferentId,
+                    Array.Empty<PlayerEnvironmentBoundActionArgument>(), () => OpenRelic(holder, inventory)));
         }
     }
 
     private static void AddRelicTipsOpen(
         NativeEntityRegistry entities,
-        List<NativeTextMenuInformationLeaf> leaves)
+        List<NativeTextMenuInformationLeaf> leaves, PublicInformationBindings bindings)
     {
         NRelicInventory? inventory = NRun.Instance?.GlobalUi.RelicInventory;
         if (inventory == null || !ConnectorMod.IsNodeVisible(inventory)
@@ -615,9 +617,10 @@ internal static class NativeTextMenuInformation
             IHoverTip[] tips = holder.Relic.Model.HoverTips.ToArray();
             if (tips.Length == 0) continue;
             string id = entities.GetId(holder, "relic_holder");
-            leaves.Add(Leaf($"show_relic_tips:{id}", "relic_tips",
-                "show_relic_tips", $"Show {holder.Relic.Model.Title.GetFormattedText()} tips",
-                () => OpenRelicTips(holder, inventory)));
+            PlayerEnvironmentReferent? subject = bindings.Relic(entities.GetId(holder.Relic.Model, "relic"));
+            if (subject != null)
+                leaves.Add(PublicInformationBindings.Leaf($"show_relic_tips:{id}", "relic_tips",
+                    "show_relic_tips", subject, () => OpenRelicTips(holder, inventory)));
         }
     }
 
@@ -683,55 +686,85 @@ internal static class NativeTextMenuInformation
     }
 
     private static void AddOtherTipLeaves(
-        NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves)
+        NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves,
+        PublicInformationBindings bindings)
     {
         if (ActiveHoverTipsField == null || NMapScreen.Instance?.IsOpen == true) return;
         bool noOverlay = NOverlayStack.Instance?.Peek() == null;
         NCombatRoom? room = NCombatRoom.Instance;
-        Node? cardRoot = NCapstoneContainer.Instance?.CurrentCapstoneScreen as Node
-            ?? room;
+        Node? cardRoot = NCapstoneContainer.Instance?.CurrentCapstoneScreen as Node ?? room;
         if (noOverlay && cardRoot != null)
-        {
             foreach (NCardHolder holder in VisibleNodes<NCardHolder>(cardRoot))
             {
-                if (holder.CardNode?.Visibility != ModelVisibility.Visible
-                    || holder.CardModel == null)
-                    continue;
-                AddSignalTipLeaf(entities, leaves, holder, "card_tips",
-                    Control.SignalName.FocusEntered, "Card tips");
+                if (holder.CardNode?.Visibility != ModelVisibility.Visible || holder.CardModel == null) continue;
+                AddSignalTipLeaf(entities, leaves, holder, "card_tips", Control.SignalName.FocusEntered,
+                    bindings.Card(entities.GetId(holder.CardModel, "card")));
             }
-        }
         if (noOverlay && room != null && ConnectorMod.IsNodeVisible(room)
             && NCapstoneContainer.Instance is not { InUse: true })
         {
             foreach (NPower power in VisibleNodes<NPower>(room))
             {
-                AddSignalTipLeaf(entities, leaves, power, "power_tips",
-                    Control.SignalName.MouseEntered, "Power tips");
+                PowerModel model = power.Model;
+                if (!entities.TryGetExistingId(model.Owner, out string? owner))
+                { bindings.Missing("power_owner"); continue; }
+                AddSignalTipLeaf(entities, leaves, power, "power_tips", Control.SignalName.MouseEntered,
+                    bindings.Power(entities.GetId(model, "power"), owner!, model.Id.Entry,
+                        model.DisplayAmount, model.Owner.Powers.Contains(model)), owner, bindings.OwnerLabel(owner!));
             }
+            NCreature[] creatures = VisibleNodes<NCreature>(room).ToArray();
             foreach (NIntent intent in VisibleNodes<NIntent>(room))
-                AddSignalTipLeaf(entities, leaves, intent, "intent_tips",
-                    Control.SignalName.MouseEntered, "Intent tips");
+            {
+                NCreature[] owners = creatures.Where(creature => creature.IntentContainer != null
+                    && ReferenceEquals(intent.GetParent(), creature.IntentContainer)).ToArray();
+                if (owners.Length != 1 || !entities.TryGetExistingId(owners[0].Entity, out string? owner))
+                { bindings.Missing("intent_owner"); continue; }
+                NIntent[] current = owners[0].IntentContainer.GetChildren().OfType<NIntent>().ToArray();
+                int nativeOrder = Array.FindIndex(current, value => ReferenceEquals(value, intent));
+                AddSignalTipLeaf(entities, leaves, intent, "intent_tips", Control.SignalName.MouseEntered,
+                    bindings.Intent(entities.GetId(intent, "intent"), owner!, nativeOrder,
+                        current.Length, nativeOrder >= 0), owner, bindings.OwnerLabel(owner!));
+            }
             foreach (NOrb orb in VisibleNodes<NOrb>(room))
             {
-                AddSignalTipLeaf(entities, leaves, orb, "orb_tips",
-                    Control.SignalName.FocusEntered, "Orb tips");
+                NCreature? ownerNode = VisibleAncestor<NCreature>(orb);
+                NOrbManager? manager = VisibleAncestor<NOrbManager>(orb);
+                if (ownerNode == null || manager == null || !ReferenceEquals(ownerNode.OrbManager, manager)
+                    || !entities.TryGetExistingId(ownerNode.Entity, out string? owner))
+                { bindings.Missing("orb_owner"); continue; }
+                PlayerEnvironmentReferent? subject;
+                if (orb.Model is { } model)
+                    subject = bindings.Orb(entities.GetId(model, "orb"), owner!);
+                else
+                {
+                    NOrb[] slots = orb.GetParent().GetChildren().OfType<NOrb>().ToArray();
+                    int slot = Array.FindIndex(slots, value => ReferenceEquals(value, orb));
+                    subject = bindings.EmptyOrb(entities.GetId(orb, "orb_slot"), owner!, slot, slots.Length);
+                }
+                AddSignalTipLeaf(entities, leaves, orb, "orb_tips", Control.SignalName.FocusEntered,
+                    subject, owner, bindings.OwnerLabel(owner!));
             }
         }
         NTopBar? topbar = NRun.Instance?.GlobalUi.TopBar;
-        if (topbar != null && ConnectorMod.IsNodeVisible(topbar)
-            && CanUseTopBarWithCurrentOverlay()
+        if (topbar != null && ConnectorMod.IsNodeVisible(topbar) && CanUseTopBarWithCurrentOverlay()
             && NCapstoneContainer.Instance is not { InUse: true })
-        {
-            foreach (Control control in new Control[]
-                     { topbar.Deck, topbar.Map, topbar.FloorIcon,
-                         topbar.BossIcon, topbar.Gold, topbar.Hp })
+            foreach (var (control, role) in new (Control, string)[]
+                { (topbar.Deck, "deck"), (topbar.Map, "map"), (topbar.FloorIcon, "floor"),
+                  (topbar.BossIcon, "boss"), (topbar.Gold, "gold"), (topbar.Hp, "hp") })
+            {
+                if (!ConnectorMod.IsNodeVisible(control) || control is NClickableControl { IsEnabled: false }) continue;
                 AddSignalTipLeaf(entities, leaves, control, "topbar_tips",
-                    control is NClickableControl
-                        ? Control.SignalName.FocusEntered
-                        : Control.SignalName.MouseEntered,
-                    "Top bar tips", allowRewardOverlay: true);
-        }
+                    control is NClickableControl ? Control.SignalName.FocusEntered : Control.SignalName.MouseEntered,
+                    bindings.Topbar(entities.GetId(control, "topbar_control"), role), allowRewardOverlay: true);
+            }
+    }
+
+    private static T? VisibleAncestor<T>(Node source) where T : Control
+    {
+        Node? current = source.GetParent();
+        for (int depth = 0; current != null && depth < 64; depth++, current = current.GetParent())
+            if (current is T result && ConnectorMod.IsNodeVisible(result)) return result;
+        return null;
     }
 
     private static IEnumerable<T> VisibleNodes<T>(Node root) where T : Control
@@ -753,14 +786,15 @@ internal static class NativeTextMenuInformation
 
     private static void AddSignalTipLeaf(
         NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves,
-        Control source, string group, StringName signal, string label,
-        bool allowRewardOverlay = false)
+        Control source, string group, StringName signal, PlayerEnvironmentReferent? subject,
+        string? owner = null, string? ownerLabel = null, bool allowRewardOverlay = false)
     {
         if (!ConnectorMod.IsNodeVisible(source)) return;
         if (source is NClickableControl clickable && !clickable.IsEnabled) return;
+        if (subject == null) return; // Binding owner marked the required catalog partial.
         string id = entities.GetId(source, "tip_source");
-        leaves.Add(Leaf($"show_{group}:{id}", group, $"show_{group}", label,
-            () => OpenSignalTip(source, group, signal, allowRewardOverlay)));
+        leaves.Add(PublicInformationBindings.Leaf($"show_{group}:{id}", group, $"show_{group}", subject,
+            () => OpenSignalTip(source, group, signal, allowRewardOverlay), owner, ownerLabel));
     }
 
     private static NativeInputResult OpenSignalTip(

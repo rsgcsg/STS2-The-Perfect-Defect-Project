@@ -49,6 +49,9 @@ internal static class NativeTextMenuFrameBuilder
         PlayerEnvironmentSnapshot page = information.Page;
         string owner = information.OwnerKey;
 
+        if (page.Completeness.Missing.Any(value => value.StartsWith("public_information_binding_", StringComparison.Ordinal)))
+            return new TextMenuFrame(page with { Status = "visible_unsupported" }, owner, Array.Empty<TextMenuLeaf>());
+
         // A native information screen opened from a linked reward still owns
         // input. Otherwise retain reward children and add only the currently
         // enabled top-bar information controls discovered from that screen.
@@ -57,10 +60,15 @@ internal static class NativeTextMenuFrameBuilder
             if (page.Interaction.Stage == "native_information_page"
                 || page.Interaction.Kind == "native_information_unresolved")
                 return new TextMenuFrame(page, owner, leaves);
+            PlayerEnvironmentSnapshot rewardPublic = PublicInformationBindings.MergeRequired(
+                NativeTextMenuInformation.SanitizePage(rewardPage.Page), page,
+                information.Leaves.Where(leaf => leaf.Group != "root"));
+            bool missingPublicBinding = rewardPublic.Completeness.Missing.Any(value =>
+                value.StartsWith("public_information_binding_", StringComparison.Ordinal));
             return rewardPage with
             {
-                Page = NativeTextMenuInformation.SanitizePage(rewardPage.Page),
-                Leaves = rewardPage.Leaves.Concat(leaves.Where(leaf =>
+                Page = missingPublicBinding ? rewardPublic with { Status = "visible_unsupported" } : rewardPublic,
+                Leaves = missingPublicBinding ? Array.Empty<TextMenuLeaf>() : rewardPage.Leaves.Concat(leaves.Where(leaf =>
                     leaf.Group != "root")).ToArray()
             };
         }
