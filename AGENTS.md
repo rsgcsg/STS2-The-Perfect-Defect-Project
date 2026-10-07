@@ -14,8 +14,10 @@ One repository and workflow do not merge game, evidence, operational or research
 
 For current design work, follow the stable IDs and scope in
 [baseline tasks](docs/plans/BASELINE_TASKS.zh-CN.md). Current authorization includes
-P5 design and bounded verification with an encapsulated D-M2 reference chain,
-not production implementation, training, live operations or G1 acceptance. Existing
+P5 design/bounded verification and complete G1 preparation with independent audit.
+Read the [G1 packet](docs/design/BASELINE_G1_REVIEW_PACKET.zh-CN.md). Only explicit
+owner approval after understanding passes G1; no production implementation,
+training, live operations or automatic G1 acceptance is authorized. Existing
 [Stage 1a product requirements](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md) retain their
 meaning until explicitly reconciled; do not silently cancel their milestones.
 All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md). The local

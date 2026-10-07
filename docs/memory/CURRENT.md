@@ -1,61 +1,56 @@
 # Current project context, 2026-10-07
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
-Resolve live GitHub refs, writers and relevant producer facts before work;
-current authorities override this file. Design, source, runtime and research
-qualification are separate.
+Resolve live GitHub refs, owners and exact producer facts before work; current
+authorities override this file. Design, source,
+runtime and research qualification remain separate.
 
 ## Current authorized packet
 
-The owner authorized P5 detailed design and bounded verification, using an
-encapsulated D-M2 sequence-N Agent (later qualified Z/O) as the first vertical
-example. The owner selected Scheme A as the main system direction; complete G1
-acceptance remains pending. Cases now evaluate all three chains and may revise
-the protocol. Production implementation, real-data training/use changes, game/Human actions, cloud spending, installation, deployment, merge, release and
-old branch cleanup remain outside this packet.
+The owner requested complete G1 design preparation and independent audit,
+including history, existing source, external references and the downstream plan.
+Scheme A is selected. G1 passes only after the owner reads, understands and
+explicitly approves the candidate. No response, review PASS, CI or merge is approval.
+Production implementation, real-data use/training, game/Human actions, spending,
+installation, deployment, merge, release and old branch cleanup are not authorized.
 
 ## Read and review
 
-1. [A system journeys](../design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md): 14 full
-   consumer journeys, data requirements, joint stress tests and G1 decisions.
-   [Agent blueprint](../design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md) owns
-   detailed event semantics and the bounded synthetic reference.
-2. [Capture/abstraction synthesis](../design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md),
-   [operation inventory](../design/BASELINE_LN_V1_SPEC.zh-CN.md),
-   [queued timing](../design/BASELINE_LN_QUEUED_TIMING.zh-CN.md) and
-   [Human learning](../design/BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md).
-3. [P0–P5 delivery](../design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md),
-   [foundations](../design/BASELINE_FOUNDATION.zh-CN.md),
-   [P3](../design/BASELINE_INTERACTION_CANDIDATES.zh-CN.md),
-   [P4](../design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md),
-   [history](../design/BASELINE_DESIGN_HISTORY.zh-CN.md) and
-   [stable tasks](../plans/BASELINE_TASKS.zh-CN.md): 19 IDs unchanged.
+1. [G1 review packet](../design/BASELINE_G1_REVIEW_PACKET.zh-CN.md): plain-language
+   guide, proposed decisions, complete incorporated materials and owner approval.
+2. [G1 contracts](../design/BASELINE_G1_CONTRACTS.zh-CN.md): A/Host/capture/data/
+   Agent/workload/use/distribution semantics. Proposed, not production schema.
+3. [Execution roadmap](../design/BASELINE_G1_EXECUTION_ROADMAP.zh-CN.md): first
+   packages, parallel work, G2 closure, V1 autonomy/product, G3 freeze and research.
+4. [G1 audit](../evidence/BASELINE_G1_AUDIT_2026-10-07.md) and
+   [manifest](../evidence/BASELINE_G1_MANIFEST_2026-10-07.json): evidence and content.
+   [A journeys](../design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md) and
+   [blueprint](../design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md) remain detailed
+   consumer/interaction references. [Task IDs](../plans/BASELINE_TASKS.zh-CN.md)
+   remain the same 19 IDs.
 
-Timing belongs to the encapsulated Agent, not necessarily one model. A boundary
-scheduler inside an E Agent is not a second protocol; an external boundary view
-changes the contract. H remains a capture-seam projection, not complete Human
-knowledge or stable GUI. A is selected; detailed scope and contracts are proposals.
-No production implementation or training has started; bounded synthetic references are separate.
+## Key distinctions
 
-## Anchors and working rules
+A timing belongs to the whole Agent. H is a capture-seam projection. Publication,
+capture attempts, exposure, consumption and append are different facts. Delivery
+and outcome are separate; unknown delivery is never automatically retried.
+DSimple already has unlabeled-event sequence training; new A/LightAction adapters
+still require work. Do not conflate kernels or old/new model/data qualification.
+G2 proves a small real chain, V1 validates complete scope and default Agent flow,
+G3 freezes an engineering closure; research quality is independently evaluated.
+Bounded pilots can follow G2 on qualified scope. Historical Stage1a research and
+product duties are explicitly reconciled in the candidate, not silently dropped.
+
+## Anchors and rules
 
 Original develop base: `9556d21188b2deea027192567827a339a0ce50f7`.
-P5 source inspection base: `c5ddc26789376a5d230ca06d096d5b80fbf8b17c`.
-Distinct unmerged product/recovery sources and old work are in the
-[P1 audit](../evidence/BASELINE_P1_AUDIT_2026-10-06.md) and
-[learning audit](../evidence/BASELINE_LEARNING_AUDIT_2026-10-06.md).
-
-Follow [task/handoff](../AI_COLLABORATION.md#task-packet-and-delivery-format),
-[governance](../ENGINEERING_GOVERNANCE.md), [testing](../TESTING.md) and
-[workflow](../DEVELOPMENT_WORKFLOW.md). Investigate facts/reuse before code,
-parallelize independent work, use faithful targeted checks. About five minutes
-of only passive waiting ends the wait cycle, not an external job.
+G1 source audit base: `04d4b3d4836fa029771edb99e1e08528f6e70429`.
+Product/recovery reuse facts remain in the [P1 audit](../evidence/BASELINE_P1_AUDIT_2026-10-06.md).
+Follow [collaboration](../AI_COLLABORATION.md), [governance](../ENGINEERING_GOVERNANCE.md),
+[testing](../TESTING.md) and [workflow](../DEVELOPMENT_WORKFLOW.md).
 
 ## Remaining Platform non-claims
 
-Native code inspection is not live qualification. JSON bytes/reference checks
-are not BPE tokens, D-M2 inference or policy improvement. Optional Torch tests
-were not executed because the inspected local environment lacked Torch. No new
-installed/loaded/Human/GPU/cloud/scientific claim, old-data admission or resumed
-campaign follows from these documents. Existing milestones retain their meaning
-until explicitly reconciled.
+No new installed/loaded/Human/training/GPU/cloud/scientific qualification follows
+from this design packet. About five minutes of only passive waiting ends the wait
+cycle, not another task or external job.

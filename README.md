@@ -38,7 +38,9 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
-- [A system journeys and joint evaluation](docs/design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md): selected main direction, 14 complete consumer/data journeys, Host and three-chain stress tests, and remaining G1 decisions. Start here for the latest design.
+- [G1 complete review packet](docs/design/BASELINE_G1_REVIEW_PACKET.zh-CN.md): plain-language guide, detailed contracts, independent audit, and G2/V1/G3/research roadmap. G1 awaits the owner’s understanding and explicit approval. Start here.
+
+- [A system journeys and joint evaluation](docs/design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md): selected main direction, 14 complete consumer/data journeys, Host and three-chain stress tests, and remaining G1 decisions.
 
 - [Agent/protocol blueprint](docs/design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md): detailed event contract, optional boundary facade, four Agent designs, full interaction/data/runtime examples and bounded executable reference.
 

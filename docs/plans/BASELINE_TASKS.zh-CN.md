@@ -4,6 +4,8 @@
 
 阅读 [P0/P2 基础设计](../design/BASELINE_FOUNDATION.zh-CN.md)了解目标与边界；阅读 [P1 审计](../evidence/BASELINE_P1_AUDIT_2026-10-06.md)了解当前真实依据。执行遵循 [协作规范](../AI_COLLABORATION.md)和[开发流程](../DEVELOPMENT_WORKFLOW.md)。
 
+最新授权为完整G1准备和独立审计；[G1总册](../design/BASELINE_G1_REVIEW_PACKET.zh-CN.md)、[合同](../design/BASELINE_G1_CONTRACTS.zh-CN.md)和[路线](../design/BASELINE_G1_EXECUTION_ROADMAP.zh-CN.md)收敛推荐决定。用户阅读理解并明确批准后才通过G1；source/test/独立review均不能代批。
+
 ## 1. 唯一编号与当前状态
 
 只用以下 19 个 ID。六大块或九个口头分组不是另一套任务 ID；旧 D/I 编号退出新派发。细分用 P3.1、E2.1，改变目标要记录变更和影响，不能整表重新编号。任务 gate G1/G2/G3 与工程变更等级 G0–G6 分别注明，不互相替代。
@@ -16,7 +18,7 @@
 | P3 | 完整交互候选：信息、动作、时序、反馈、嵌套、历史、恢复及例子 | P2 基本边界明确后；与 P4 协调 | [设计交付候选](../design/BASELINE_INTERACTION_CANDIDATES.zh-CN.md) |
 | P4 | 记录/转换、完整 Agent/模型/横轴/N-Z-O/训练/实验评价，以及任务/资源/权限/恢复/分发接口 | 与 P3 迭代；不同领域 owner 共同审查 | [设计交付候选](../design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md) |
 | P5 | 可行性、成本、贯穿反例、验收/测试设计及必要原型 | 原生只读机制＋合成 reference probe；实际神经/游戏/云资格另计 | [有界评估交付候选](../design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md) |
-| G1 | 接受第一版范围、具体设计、迁移与验收矩阵 | P0–P5 汇合；实质取舍由用户/指定 owner 审定 | 未通过 |
+| G1 | 接受第一版范围、具体设计、迁移与验收矩阵 | P0–P5 汇合；本次由用户阅读理解后明确审定 | 待用户批准，未通过 |
 | E0 | 旧组件/PR 吸收、改造、替代、延期及共同开发基础 | 盘点在 P1；处置依据 G1；不盲合全部候选 | 未启动 |
 | E1 | Host 能力与目标交互、事件、生命周期 | 共享契约稳定后与 E2/E3 并行 | 未启动 |
 | E2 | 记录、验证、轨迹转换、缺口、用途及迁移工具 | 与 E1/E3 使用同一版样例与契约 | 未启动 |
@@ -28,7 +30,7 @@
 | V1 | 声明范围的场景、历史、失败、恢复、成本、数据与产品验收 | G2 后扩展；组件和组合分别评价 | 未启动 |
 | G3 | 固定源码、契约、依赖、数据视图、Agent 与证据的工程基线 | V1 满足所声明范围 | 未通过 |
 | R1 | release/main、原样产物、安装回退、旧 PR/入口收口 | G3 后选定发行批次；运行授权另按范围 | 未启动 |
-| R2 | 新基线上的规模训练、模型比较与其他实验 | G3 稳定后按具体研究计划执行 | 未启动 |
+| R2 | 新基线上的规模训练、模型比较与其他实验 | G3后稳定规模研究；G2后可按E4/V1授权先做合格子范围pilot | 未启动 |
 
 “设计交付候选”表示材料及注明范围的验证已形成，不是 production 已实现、G1 已接受或运行已切换。P5 的 JSON/次数、原生代码与静态反例有明确界限，不能代替神经性能、Live/Human/云实测。G1 对协议/范围/资源及实施计划作接受或退回；任务回执不由本表伪造。
 
@@ -93,7 +95,7 @@ G2 可以使用已有合格来源补足训练需要，不要求一段新录制�
 
 ## 6. 当前下一步和任务交接
 
-下一步按 G1 审查 [P0–P5 完整包](../design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md)、[场景册](../design/BASELINE_SCENARIO_SPEC.zh-CN.md)和[本轮证据](../evidence/BASELINE_P5_EVIDENCE_2026-10-06.md)：三条链是否都服务封装 D-M2 实例、信息/动作/目标及已知缺口是否清楚。G1 可接受、退回或要求特定 P5 补充，不从文档完成推导费用、真实数据处理、安装、运行或 merge 许可。
+下一步按 G1 审查 [P0–P5 完整包](../design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md)、[场景册](../design/BASELINE_SCENARIO_SPEC.zh-CN.md)和[本轮证据](../evidence/BASELINE_P5_EVIDENCE_2026-10-06.md)：三条链是否都服务封装 D-M2 实例、信息/动作/目标及已知缺口是否清楚。G1完整候选见新总册；本次只能由用户理解并明确接受，亦可退回或要求特定补充。不从文档完成推导费用、真实数据处理、安装、运行或 merge 许可。
 
 派发与返回使用 [AI_COLLABORATION 的统一模板](../AI_COLLABORATION.md#task-packet-and-delivery-format)。不要再把解释性分组转成新 ID，不依赖未整理聊天补全关键输入。CURRENT 只保存当前任务、阻塞和下一门槛；本表保存目标/依赖，PR/issue 和不可变证据保存实际交付事实。
 

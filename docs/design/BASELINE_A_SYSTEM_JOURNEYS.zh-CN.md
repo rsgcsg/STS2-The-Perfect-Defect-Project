@@ -125,7 +125,7 @@ SDK：传输/分页/重连/解析；不代替策略
 
 **记录→整理：** 捕获事件和Human选择来源，验证source/exposure顺序；转换时保留无N事件与重访；先按run及共同来源分组划分，再拟合train词表。对AG01的边界输入，若原Human恰在该边界按该信息选择，可标对应N；否则作为经验证的D重表达样本单独评，不称原Human在该边界作了选择。离线编译与在线采用相同事件筛选、renderer、请求反馈和reset合同。
 
-**训练：** 从e1到e8顺序推进W。合格consume更新一次；候选只读同一W。当前选择只用于当前N loss，实际选择按声明可用位置进入后续历史。没有N的事件仍可更新记忆；这需要新trainer接缝，当前Public M2训练循环逐step算N且feedback=None，不能直接宣称支持。TBPTT切段detach梯度而不等于新局reset；checkpoint含参数、optimizer、RNG、数据位置及配置。carry与独立训练reset对照，K1/K8等为待封存实验参数。
+**训练：** 从e1到e8顺序推进W。合格consume更新一次；候选只读同一W。当前选择只用于当前N loss，实际选择按声明可用位置进入后续历史。没有N的事件仍可更新记忆；这需要新A到LightAction的trainer接缝；当前LightAction训练循环逐step算N且feedback=None。另一路dsimple_sequence_training已支持无N advance、burn-in和episode TBPTT，应核对复用，不能称全仓没有此能力。TBPTT切段detach梯度而不等于新局reset；checkpoint含参数、optimizer、RNG、数据位置及配置。carry与独立训练reset对照，K1/K8等为待封存实验参数。
 
 **产物→使用：** 输出ModelArtifact，加上encoder/词表、history policy、固定TimingPolicy、renderer、状态格式和端口版本组成Agent包。加载先验证兼容和用途，再从新segment或可证明连续的cursor初始化。收到事件消费历史，TimingPolicy在可决策边界调用M2，读取完整C，选出当前handle，提交并记录结果。失联和未知请求走各自恢复，不自动出第二次牌。
 
@@ -151,7 +151,7 @@ SDK：传输/分页/重连/解析；不代替策略
 
 **整理：** run/来源组先划分；生成ProtocolTrace→AG01组件输入→序列张量，分别标choice/history masks；没有标签的合格事件保留。固定等待是程序策略，不伪造Human Wait。
 
-**训练：** 复用候选LightActionM2内核，新增A输入和无N consume接缝；listwise N、TBPTT、carry/reset与K配置固定；训练/导出分别验收。**运行：** 固定时机模块选择Await或评分，M2只读全C选择；按新事件实际更新W。
+**训练：** 复用候选LightActionM2内核，新增A输入和LightAction无N consume接缝，复用已存在的DSimple序列机制；listwise N、TBPTT、carry/reset与K配置固定；训练/导出分别验收。**运行：** 固定时机模块选择Await或评分，M2只读全C选择；按新事件实际更新W。
 
 **评价/修订：** 离线N与真实任务结果、历史一致性、选择器/重访覆盖、时间/内存成本分开。迫使A提供稳定事件身份和可重放消费规则；若边界检测缺child-ready，先修环境合同，不训练模型绕死锁。
 
@@ -423,7 +423,7 @@ G1是**接受可实施设计**，不是要求先完成E1–E6和真实训练。�
 
 不能留到实现者随便决定的是语义、信息/来源、责任和失败/恢复承诺；可以在具体实验前冻结的是batch size、learning rate、样本预算等实验配置。性能绝对值在没有测量时可接受有界测量/回退计划，但不能用“以后再说”掩盖内存无上限或丢记录才跑得动的设计。
 
-建议下一最小设计收敛包是GD02–05和GD07–09的合同/失败矩阵，随后完整G1审查。实施先共享底座＋AJ01一条真实链，并用不评分的AG03 stub检验端口和AJ14检验解耦；案例矩阵用于验设计，不强制第一版训练14种Agent。Z/O按各自数据资格增加，RL/视觉/模拟扩展按真实需求进入后续包。
+本轮后续[G1完整候选](BASELINE_G1_REVIEW_PACKET.zh-CN.md)已把GD02–10收敛为具体推荐决定、C合同与分阶段验收，等待用户理解批准。实施先共享底座＋AJ01一条真实链，并用不评分的AG03 stub检验端口和AJ14检验解耦；案例矩阵用于验设计，不强制第一版训练14种Agent。Z/O按各自数据资格增加，RL/视觉/模拟扩展按真实需求进入后续包。
 
 ## 10. 外部方法依据与本轮证据界限
 
