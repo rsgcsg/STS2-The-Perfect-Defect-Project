@@ -252,3 +252,9 @@ A valid native hover-tip set with both required containers and zero children now
 returns typed empty `text_tips`/`card_previews` arrays. Some ordinary cards have no
 additional native tips. Missing containers or any malformed, hidden or unready
 actual child remain unresolved; no card statistics fabricate a tooltip body.
+
+Incomplete information bindings retain a native capture's already-declared
+`settling` status, partial diagnostics and zero action leaves. Other statuses with
+the same missing bindings remain `visible_unsupported`; missing facts never infer
+settling or authorize Model consumption. This preserves the native startup/readiness
+owner and existing bounded Runtime observation behavior without changing Runtime.
