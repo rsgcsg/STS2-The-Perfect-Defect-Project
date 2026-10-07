@@ -69,6 +69,7 @@ internal static class NativeTextMenuInformation
     private static JsonNode? _tipContent;
     private static Control? _nativeTipOwner;
     private static Control? _nativeTipSource;
+    private static NativeTipEntry? _nativeTipEntry;
     private static string? _nativeTipGroup;
     private static bool _unresolvedTipSignal;
     private static readonly FieldInfo? ActiveHoverTipsField = typeof(NHoverTipSet)
@@ -776,6 +777,11 @@ internal static class NativeTextMenuInformation
             || NMapScreen.Instance?.IsOpen == true)
             return NativeInputResult.Rejected("native_tip_owner_changed",
                 "The exact visible tip source or native tip registry is unavailable.");
+        NativeTipEntry? entry = signal == Control.SignalName.FocusEntered ? NativeTipEntry.Focus
+            : signal == Control.SignalName.MouseEntered ? NativeTipEntry.Mouse : null;
+        if (entry == null)
+            return NativeInputResult.Rejected("native_tip_signal_unsupported",
+                "Only the declared native focus or mouse entry may open tips.");
         var before = active.ToDictionary(pair => pair.Key, pair => pair.Value);
         source.EmitSignal(signal);
         var changed = active.Where(pair =>
@@ -799,6 +805,7 @@ internal static class NativeTextMenuInformation
         _ownedKind = group;
         _nativeTipOwner = owner;
         _nativeTipSource = source;
+        _nativeTipEntry = entry;
         _nativeTipGroup = group;
         _tipContent = ReadRenderedTips(set);
         return NativeInputResult.Delivered("native focus/hover signal; exact rendered tip set");
@@ -1225,9 +1232,16 @@ internal static class NativeTextMenuInformation
         }
         if (screen is NHoverTipSet && (_nativeTipOwner ?? _tipOwner) is { } tipOwner)
         {
-            NHoverTipSet.Remove(tipOwner);
-            ClearOwner();
-            return NativeInputResult.Delivered("NHoverTipSet.Remove; exact relic tip closed");
+            Control? source = _nativeTipSource;
+            NativeTipEntry? entry = _nativeTipEntry;
+            return NativeTipReturn.Close(source != null || entry != null,
+                () => ReferenceEquals(_ownedScreen, screen) && IsExactOwner(screen, kind),
+                () => source != null && entry != null
+                    && ReferenceEquals(_nativeTipSource, source) && _nativeTipEntry == entry
+                    && ConnectorMod.IsLiveNode(source) && ConnectorMod.IsNodeVisible(source),
+                () => source!.EmitSignal(entry == NativeTipEntry.Focus
+                    ? Control.SignalName.FocusExited : Control.SignalName.MouseExited),
+                () => NHoverTipSet.Remove(tipOwner), ClearOwner);
         }
         NCapstoneContainer.Instance!.Close();
         if (ReferenceEquals(NCapstoneContainer.Instance?.CurrentCapstoneScreen, screen))
@@ -1274,6 +1288,7 @@ internal static class NativeTextMenuInformation
         _tipContent = null;
         _nativeTipOwner = null;
         _nativeTipSource = null;
+        _nativeTipEntry = null;
         _nativeTipGroup = null;
         _unresolvedTipSignal = false;
     }
