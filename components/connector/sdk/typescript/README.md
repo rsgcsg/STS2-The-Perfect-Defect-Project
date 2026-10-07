@@ -31,3 +31,10 @@ releases retention. Direct chunk callers manage their own release. A settling or
 partial Snapshot is still an operational observation: consumers gate their Model's
 readiness and completeness themselves. Capture metadata is not Model input or
 mutation authority. See the [S0 contract](../../docs/TEXT_MENU_PROFILE.md#s0-immutable-observation-reads-additive-source-candidate).
+
+`controlSnapshot()` reads the canonical `PLAYER_ENVIRONMENT_CONTROL_ROUTE`
+(`/api/player-environment/controller`) and uses `decodePlayerControlSnapshot`.
+The strict status envelope validates runtime identity, registered clients and
+any held lease. Native serialization can omit a null `controller`; omitted and
+explicit null both mean no current controller. A malformed response fails decoding
+and must never be treated as successful controller release.
