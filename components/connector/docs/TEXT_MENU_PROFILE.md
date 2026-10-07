@@ -188,3 +188,36 @@ A native callback exception remains an unknown delivery through the existing
 executor; there is no automatic retry. Exact-game regression tests establish
 source behavior only; same-holder open → return → reopen requires a fresh built,
 installed and cold-loaded runtime canary for each new artifact.
+
+## Public subjects for native information choices
+
+Each native information choice now carries a visible public subject. The original
+Host-private native control closure still dispatches it; public references neither
+construct native operands nor grant action authority. Card choices reuse their
+card ID and already frozen same-card hand facts, so equal titles can retain different
+cost/upgrade data. Relic inspect/tip choices reuse the displayed inventory relic ID,
+title and counter, with no newly exposed unopened description/preview.
+
+Orb choices reuse the current orb ID and shown queue values; empty slots have an
+explicit visible slot subject, occupancy and native slot order. Orb, power and
+intent choices carry their current visible creature as an `owner` argument.
+Power membership must match its typed native model/owner and the frozen public
+status definition/amount. Intent membership uses the exact public creature's
+`IntentContainer` child order and the already frozen intent type/value. It reads
+no private intent fields and adds no unopened hover body. Slot/intent order is a
+native display relation used to bind facts, never a candidate ordinal or operand.
+
+Top-bar choices have separate `topbar_deck`, `topbar_map`, `topbar_floor`,
+`topbar_boss`, `topbar_gold` and `topbar_hp` control roles. Their properties contain
+only the role and already captured shown HUD values/icons; a boss icon is not
+expanded into a hidden boss definition or unopened text. Action labels use these
+public subjects/roles. Identical public instances may remain observationally
+symmetric; neither labels nor Model features embed opaque IDs to force distinction.
+
+Missing or inconsistent required public bindings explicitly mark completeness
+partial and make the menu unavailable. Reward projections merge only the subjects
+and owners of appended information choices, not unrelated underlying room objects.
+Changes in public leaf or card-play labels now participate in the v2 source
+signature and invalidate old selections/action IDs even if the native token stays
+unchanged. Wire schema and exact native submission checks remain the existing v2
+contract. New source tests do not qualify every native mechanism or old datasets.

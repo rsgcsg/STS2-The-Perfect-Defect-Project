@@ -257,6 +257,24 @@ public sealed class TextMenuV2Tests
             snapshot.MenuActions.Actions.Single(action => action.Verb == verb).ActionId,
             "client", "lease", 1, TextMenuV2Contract.Profile);
 
+    [Fact]
+    public void ChangedCardPlayLabelInvalidatesThePrivateSelectionBasis()
+    {
+        TextMenuFrame frame = Frame(targeted: false);
+        var session = new TextMenuV2Session();
+        TextMenuV2Snapshot root = session.Observe(frame).Snapshot;
+        TextMenuV2Snapshot selected = session.Apply(frame, root.SnapshotId,
+            root.MenuActions.Actions.Single(value => value.Verb == "select_card").ActionId);
+        TextMenuFrame changed = frame with
+        {
+            CardPlays = frame.CardPlays.Select(value => value with { Label = "Changed public play label" }).ToArray()
+        };
+        TextMenuV2Snapshot current = session.Observe(changed).Snapshot;
+        Assert.NotEqual(selected.SnapshotId, current.SnapshotId);
+        Assert.Equal("root", current.Menu.Cursor);
+        Assert.Empty(current.Menu.Selection);
+    }
+
     private static TextMenuFrame Frame(bool targeted, Func<NativeInputResult>? dispatch = null)
     {
         dispatch ??= () => NativeInputResult.Delivered("fixture");
