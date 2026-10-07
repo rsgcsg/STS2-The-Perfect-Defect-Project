@@ -222,6 +222,42 @@ public sealed class PublicInformationBindingsTests
         Assert.Empty(observed.MenuActions.Actions);
     }
 
+    [Theory]
+    [InlineData("settling", "settling")]
+    [InlineData("interactive", "visible_unsupported")]
+    [InlineData("observed", "visible_unsupported")]
+    [InlineData("visible_unsupported", "visible_unsupported")]
+    public void IncompleteBindingsPreserveOnlyAlreadyDeclaredNativeSettling(
+        string nativeStatus, string expectedStatus)
+    {
+        var page = Page();
+        page = page with
+        {
+            Status = nativeStatus,
+            Interaction = page.Interaction with { Stage = nativeStatus == "settling" ? "settling" : "ready" },
+            Completeness = page.Completeness with { Status = "partial",
+                Missing = new[] { "public_information_binding_orb_capture_inconsistent" } }
+        };
+        var closed = NativeTextMenuFrameBuilder.CloseIncompleteInformationBindings(page, "owner");
+        Assert.NotNull(closed);
+        Assert.Equal(expectedStatus, closed!.Page.Status);
+        Assert.Equal("partial", closed.Page.Completeness.Status);
+        Assert.Equal(page.Completeness.Missing, closed.Page.Completeness.Missing);
+        Assert.Empty(closed.Leaves);
+        var published = new TextMenuV2Session().Observe(closed).Snapshot;
+        Assert.Equal(expectedStatus, published.Status);
+        Assert.Equal("partial", published.Completeness.Status);
+        Assert.Equal("unavailable", published.MenuActions.Status);
+        Assert.Empty(published.MenuActions.Actions);
+    }
+
+    [Fact]
+    public void CompleteInformationMappingDoesNotChangeNativeReadiness()
+    {
+        var page = Page() with { Status = "settling" };
+        Assert.Null(NativeTextMenuFrameBuilder.CloseIncompleteInformationBindings(page, "owner"));
+    }
+
     [Fact]
     public void DyingVisualIsNotARequiredIntentButMissingFactsForCurrentNativeOwnerStillFailClosed()
     {

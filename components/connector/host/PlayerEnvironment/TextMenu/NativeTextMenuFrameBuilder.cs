@@ -36,6 +36,19 @@ internal static class NativeTextMenuFrameBuilder
         };
     }
 
+    internal static TextMenuFrame? CloseIncompleteInformationBindings(
+        PlayerEnvironmentSnapshot page, string owner)
+    {
+        if (!page.Completeness.Missing.Any(value => value.StartsWith("public_information_binding_", StringComparison.Ordinal)))
+            return null;
+        // Preserve only readiness already established by the native capture.
+        // Missing data never supplies a new settling claim or any action leaves.
+        return new TextMenuFrame(page with
+        {
+            Status = page.Status == "settling" ? "settling" : "visible_unsupported"
+        }, owner, Array.Empty<TextMenuLeaf>());
+    }
+
     private static TextMenuFrame CaptureCore(
         SnapshotBuildResult legacy,
         NativeEntityRegistry entities,
@@ -49,8 +62,8 @@ internal static class NativeTextMenuFrameBuilder
         PlayerEnvironmentSnapshot page = information.Page;
         string owner = information.OwnerKey;
 
-        if (page.Completeness.Missing.Any(value => value.StartsWith("public_information_binding_", StringComparison.Ordinal)))
-            return new TextMenuFrame(page with { Status = "visible_unsupported" }, owner, Array.Empty<TextMenuLeaf>());
+        if (CloseIncompleteInformationBindings(page, owner) is { } incomplete)
+            return incomplete;
 
         // A native information screen opened from a linked reward still owns
         // input. Otherwise retain reward children and add only the currently
@@ -63,13 +76,12 @@ internal static class NativeTextMenuFrameBuilder
             PlayerEnvironmentSnapshot rewardPublic = PublicInformationBindings.MergeRequired(
                 NativeTextMenuInformation.SanitizePage(rewardPage.Page), page,
                 information.Leaves.Where(leaf => leaf.Group != "root"));
-            bool missingPublicBinding = rewardPublic.Completeness.Missing.Any(value =>
-                value.StartsWith("public_information_binding_", StringComparison.Ordinal));
+            if (CloseIncompleteInformationBindings(rewardPublic, rewardPage.OwnerKey) is { } rewardIncomplete)
+                return rewardPage with { Page = rewardIncomplete.Page, Leaves = rewardIncomplete.Leaves };
             return rewardPage with
             {
-                Page = missingPublicBinding ? rewardPublic with { Status = "visible_unsupported" } : rewardPublic,
-                Leaves = missingPublicBinding ? Array.Empty<TextMenuLeaf>() : rewardPage.Leaves.Concat(leaves.Where(leaf =>
-                    leaf.Group != "root")).ToArray()
+                Page = rewardPublic,
+                Leaves = rewardPage.Leaves.Concat(leaves.Where(leaf => leaf.Group != "root")).ToArray()
             };
         }
 
