@@ -223,3 +223,15 @@ Changes in public leaf or card-play labels now participate in the v2 source
 signature and invalidate old selections/action IDs even if the native token stays
 unchanged. Wire schema and exact native submission checks remain the existing v2
 contract. New source tests do not qualify every native mechanism or old datasets.
+
+Creature-owned tips require an exact current room UI owner, not merely a visible
+scene descendant. Native death/removal moves a creature from `CreatureNodes` to
+`RemovingCreatureNodes` while its rendered subtree can remain during animation;
+intent hover resolves through the current `GetCreatureNode` lookup. Such positively
+retired controls are excluded from current information choices. An unregistered
+or ambiguous owner with no native retirement fact remains unresolved and marks
+required completeness partial; missing public facts for a current owner are never
+ignored. No HP inference, blanket settling conversion or guessed timeout supplies
+retirement. Queued-for-deletion ancestors also retire their full subtree before
+individual descendants disappear. These are native UI ownership/lifetime facts,
+not causal successor proof or a new gameplay legality engine.
