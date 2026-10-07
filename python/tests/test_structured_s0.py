@@ -693,6 +693,88 @@ def test_program_receipt_action_history_fields_never_update_model_memory():
     assert torch.equal(memory, new_memory)
 
 
+@pytest.mark.parametrize("metadata_key", ["receipt", "control", "history"])
+@pytest.mark.parametrize(
+    "declaration_key", ["entity_id", "referent_id", "slot_entity_id", "interaction_id"]
+)
+@pytest.mark.parametrize("identifier", ["receipt-only-id", "card-C", "Deal 6 damage."])
+def test_excluded_subtree_declarations_cannot_create_or_override_entity_bindings(
+    metadata_key, declaration_key, identifier
+):
+    first = sample()
+    second = sample()
+    # Covers new anchors, a collision with a visible referent and a collision
+    # with legitimate public text that must not become a registry reference.
+    excluded = {
+        "nested": [
+            {
+                declaration_key: identifier,
+                "delivery": "delivered",
+                "extra_public_like_fields": "ignored" * 100,
+            }
+        ]
+    }
+    second["interaction"]["content"][metadata_key] = excluded
+    model = StructuredM2()
+    before = project_structured_snapshot(first)
+    after = project_structured_snapshot(second)
+    assert before == after
+    encoded_before, encoded_after = model.encode(before), model.encode(after)
+    assert torch.equal(encoded_before, encoded_after)
+    assert torch.equal(
+        model.advance(encoded_before, model.initial_memory()),
+        model.advance(encoded_after, model.initial_memory()),
+    )
+
+
+@pytest.mark.parametrize("location", ["persistent", "page", "properties", "state"])
+def test_excluded_declarations_are_filtered_at_every_authorized_scope_path(location):
+    first = sample()
+    second = sample()
+    destination = {
+        "persistent": second["persistent"]["content"],
+        "page": second["interaction"]["content"],
+        "properties": second["referents"][0]["properties"],
+        "state": second["referents"][0]["state"],
+    }[location]
+    destination["receipt"] = {
+        "entity_id": "card-C",
+        "hp": 999,
+        "extra_public_like_fields": "ignored" * 100,
+    }
+    before, after = project_structured_snapshot(first), project_structured_snapshot(second)
+    assert before == after
+    model = StructuredM2()
+    assert torch.equal(model.encode(before), model.encode(after))
+
+
+def test_authorized_public_declarations_still_bind_relations_and_candidates():
+    current = sample()
+    current["interaction"]["content"]["map"] = {
+        "nodes": [{"entity_id": "node-public", "kind": "shop"}],
+        "current_entity_id": "node-public",
+    }
+    frame = project_structured_snapshot(current)
+    bindings = dict(frame.ref_rows)
+    assert {"node-public", "card-C", "enemy-E"} <= set(bindings)
+    assert frame.candidates[0].roles == (
+        ("subject", bindings["card-C"]),
+        ("argument:target", bindings["enemy-E"]),
+    )
+    assert any(
+        target == bindings["node-public"] and relation == 2
+        for _source, target, relation in frame.edges
+    )
+
+
+@pytest.mark.parametrize("key", ["entity_id", "referent_id", "slot_entity_id", "interaction_id"])
+def test_declaration_values_are_scalar_bindings_not_nested_discovery_paths(key):
+    current = sample()
+    current["interaction"]["content"][key] = {"entity_id": "nested-id"}
+    with pytest.raises(BoundaryError, match="invalid_public_declaration"):
+        project_structured_snapshot(current)
+
+
 def test_referent_wrapper_extras_are_not_model_features():
     first = sample()
     second = sample()

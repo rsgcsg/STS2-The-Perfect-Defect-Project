@@ -177,6 +177,33 @@ def project_structured_snapshot(snapshot: dict[str, Any]) -> StructuredFrame:
             "selection": snapshot["menu"]["selection"],
         },
     }
+
+    def public_scope(value: Any, depth: int = 0) -> Any:
+        """Exclude whole program-metadata subtrees before declaration discovery.
+
+        Declaration keys survive only as binding data in an authorized public
+        object. Dropped receipts/history/control can neither introduce anchors
+        nor change which public description wins an existing ID collision.
+        """
+        if depth > MAX_DEPTH:
+            raise BoundaryError("structured_input", "depth_limit")
+        if isinstance(value, dict):
+            output: dict[str, Any] = {}
+            for key, item in value.items():
+                if key in IDENTIFIERS:
+                    if item is not None and (not isinstance(item, str) or not item):
+                        raise BoundaryError("structured_input", "invalid_public_declaration")
+                    # Never discover declarations inside a declaration value.
+                    output[key] = item
+                elif key not in METADATA:
+                    output[key] = public_scope(item, depth + 1)
+            return output
+        if isinstance(value, list):
+            return [public_scope(item, depth + 1) for item in value]
+        return value
+
+    roots = public_scope(roots)
+    visible = public_scope(visible)
     registry: dict[str, dict[str, Any]] = {}
 
     def collect(value: Any, depth: int = 0) -> None:
