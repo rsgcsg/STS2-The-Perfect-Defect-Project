@@ -2,66 +2,47 @@
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
 Resolve live GitHub refs, owners and exact producer facts before work; current
-authorities override this file. Design, source,
-runtime and research qualification remain separate.
+authorities override this file. Design, source, runtime and research evidence differ.
 
 ## Current authorized packet
 
-The owner requested complete G1 design preparation and independent audit,
-including history, existing source, external references and the downstream plan.
-BND-2 is the owner’s tentative responsibility-allocation choice. Full D01,
-information/action/timing and exact Model designs remain under discussion.
-The owner requires structured M2 in the early implementation plan. G1 passes only after the owner reads, understands and
-explicitly approves the candidate. No response, review PASS, CI or merge is approval.
-Production implementation, real-data use/training, game/Human actions, spending,
-installation, deployment, merge, release and old branch cleanup are not authorized.
+G1 design preparation/revision and independent audit. BND-2 is tentative; full
+D01 remains under discussion. Structured M2 belongs in the early implementation
+plan. First-Model I/F are now OFF by owner direction: do not repackage historical
+own-action/receipt features into P/E/W. Keep controller records and current
+public observations; persistent W still consumes qualified observations.
+G1 requires explicit owner understanding and approval. No production code,
+real-data use/training, game/Human/save/unlock, spending, installation, deployment,
+merge, release or branch cleanup is authorized by this design packet.
 
 ## Read and review
 
-1. [Large views and query protocol](../design/BASELINE_LARGE_VIEWS_AND_QUERY_PROTOCOL.zh-CN.md):
-   push/pull/hybrid delivery, 200–10000-card stress sizing, I/F source audit,
-   emergency behavior and early structured M2 plan.
-   [BND-2 and two M2 models](../design/BASELINE_BND2_TWO_M2_MODELS.zh-CN.md):
-   complete Agent wiring, scoped information completeness, Text-M2 and a proposed
-   structured Object-M2 with all-scene inputs and training.
-   [RC2 boundary and input budget](../design/BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md):
-   pending protocol/role placement, all-character A0–A10 design target, tutorial
-   preparation, lossy data projection, concrete Model inputs and synthetic sizing.
-   [G1 review packet](../design/BASELINE_G1_REVIEW_PACKET.zh-CN.md): plain-language
-   guide, proposed decisions, complete incorporated materials and owner approval.
-2. [G1 contracts](../design/BASELINE_G1_CONTRACTS.zh-CN.md): A/Host/capture/data/
-   Agent/workload/use/distribution semantics. Proposed, not production schema.
-3. [Execution roadmap](../design/BASELINE_G1_EXECUTION_ROADMAP.zh-CN.md): first
-   packages, parallel work, G2 closure, V1 autonomy/product, G3 freeze and research.
-4. [G1 audit](../evidence/BASELINE_G1_REVISION_AUDIT_2026-10-08.md) and
-   [manifest](../evidence/BASELINE_G1_MANIFEST_2026-10-08.json): evidence and content.
-   [A journeys](../design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md) and
-   [blueprint](../design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md) remain detailed
-   consumer/interaction references. [Task IDs](../plans/BASELINE_TASKS.zh-CN.md)
-   remain the same 19 IDs.
-
-## Key distinctions
-
-Timing strategy and mechanisms are explicitly allocated in candidate boundary variants. H is a capture-seam projection. Publication,
-capture attempts, exposure, consumption and append are different facts. Delivery
-and outcome are separate; unknown delivery is never automatically retried.
-DSimple already has unlabeled-event sequence training; new A/LightAction adapters
-still require work. Do not conflate kernels or old/new model/data qualification.
-G2 proves a small real chain, V1 validates complete scope and default Agent flow,
-G3 freezes an engineering closure; research quality is independently evaluated.
-Bounded pilots can follow G2 on qualified scope. Historical Stage1a research and
-product duties are explicitly reconciled in the candidate, not silently dropped.
+1. [Capture/cache defaults](../design/BASELINE_CAPTURE_CACHE_DEFAULT.zh-CN.md):
+   capture necessary facts/transient history promptly; deferred large ReadCurrent
+   captures on demand; ReadSealed reuses frozen scope. Full input must be coherent.
+   [Review](../evidence/BASELINE_CAPTURE_CACHE_REVIEW_2026-10-08.md) and
+   [manifest](../evidence/BASELINE_CAPTURE_CACHE_MANIFEST_2026-10-08.json).
+2. [Large views](../design/BASELINE_LARGE_VIEWS_AND_QUERY_PROTOCOL.zh-CN.md):
+   200–10000 synthetic sizing, query exposure and early structured M2.
+3. [Two models](../design/BASELINE_BND2_TWO_M2_MODELS.zh-CN.md) and
+   [G1 packet](../design/BASELINE_G1_REVIEW_PACKET.zh-CN.md): complete Agent,
+   text/object model designs and inherited contracts. New defaults take precedence.
+4. [Tasks](../plans/BASELINE_TASKS.zh-CN.md): same 19 IDs; G2 real small closure,
+   V1 scoped autonomous/product acceptance, G3 engineering closure, separate research.
 
 ## Anchors and rules
 
 Original develop base: `9556d21188b2deea027192567827a339a0ce50f7`.
-Model elaboration source base: `7df97961bb14cb26638308f6dbd8e21f1812e425`.
-Product/recovery reuse facts remain in the [P1 audit](../evidence/BASELINE_P1_AUDIT_2026-10-06.md).
+Capture audit source base: `9786ba2d9373c9797e5981b8aa5ce6202a99498a`.
+Current Observe/Read/text-menu captures reread native state before identity checks;
+new shared-cache semantics are proposed, not deployed. No reliable dirty/version
+means no claim that native scanning is skipped. Unknown delivery never auto-retries.
 Follow [collaboration](../AI_COLLABORATION.md), [governance](../ENGINEERING_GOVERNANCE.md),
 [testing](../TESTING.md) and [workflow](../DEVELOPMENT_WORKFLOW.md).
 
 ## Remaining Platform non-claims
 
-No new installed/loaded/Human/training/GPU/cloud/scientific qualification follows
-from this design packet. About five minutes of only passive waiting ends the wait
-cycle, not another task or external job.
+No new installed/loaded/Human/training/GPU/cloud/scientific qualification follows.
+Synthetic token/byte counts are not native maxima or neural performance. Old
+artifacts retain original input/history identity. About five minutes of only
+passive waiting ends the wait cycle, not another task or external job.
