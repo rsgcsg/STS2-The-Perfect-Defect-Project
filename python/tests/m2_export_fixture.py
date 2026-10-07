@@ -21,12 +21,16 @@ from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ManifestArtifactStore, copy_artifact
 from spireagent.workbench.developer import LocalResearchWorkspaceConfig, ProjectConfig, atomic_json
 from spireagent.workbench.inplace_curation import InplaceCurationPreparation, configured_owner
+from spireagent.workbench.local_curation import LocalCurationOwner
 from spireagent.workbench.memory_training import prepare_workbench_memory
 from stpd.fullrun.contracts import SourceProjection
 from stpd.fullrun.decision_dataset import SelectionRules
 from stpd.fullrun.decision_store import preview
 from stpd.fullrun.text_menu_human_import import load_verified_human_text_bundle
 from stpd.workers.memory_run import execute_memory_run
+
+M2Fixture = tuple[ProjectConfig, LocalCurationOwner, ManifestArtifactStore, str,
+                  list[str], set[str], str, str]
 
 
 @dataclass(frozen=True)
@@ -87,13 +91,16 @@ class CompletedM2Recipes:
             self._recipes[recipe] = _produce(root, recipe)
         return self._recipes[recipe]
 
+    def clone(self, recipe: str, root: Path) -> M2Fixture:
+        return clone_completed_m2(self.get(recipe), root)
+
 
 @pytest.fixture(scope="session")
 def completed_m2_recipes(tmp_path_factory: pytest.TempPathFactory) -> CompletedM2Recipes:
     return CompletedM2Recipes(tmp_path_factory.mktemp("completed-m2-recipes"))
 
 
-def clone_completed_m2(source: CompletedM2, root: Path):
+def clone_completed_m2(source: CompletedM2, root: Path) -> M2Fixture:
     library = root / "library"
     store = ManifestArtifactStore(LocalBlobStore(library / "store"))
     registry = SQLiteRegistry(library / "registry.sqlite")

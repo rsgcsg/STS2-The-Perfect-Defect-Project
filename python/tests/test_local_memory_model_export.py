@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 import pytest
 import torch
-from m2_export_fixture import clone_completed_m2
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.blobs import StoreError
@@ -35,7 +34,7 @@ pytest_plugins = ("m2_export_fixture",)
 
 
 def _fixture(tmp_path: Path, completed_m2_recipes, *, recipe: str = M2_K1_RECIPE):
-    return clone_completed_m2(completed_m2_recipes.get(recipe), tmp_path)
+    return completed_m2_recipes.clone(recipe, tmp_path)
 
 
 def _settle(service: LocalModelExport) -> dict:
@@ -228,8 +227,8 @@ def test_completed_recipe_clones_preserve_lineage_and_isolate_payloads_and_ledge
     prefixes = ("objects/", "payload-indexes/", "manifests/", "run-events/", "run-completions/")
     original = {key: source.store.blobs.get(key)
                 for prefix in prefixes for key in source.store.blobs.keys(prefix)}
-    first = clone_completed_m2(source, tmp_path / "first")
-    second = clone_completed_m2(source, tmp_path / "second")
+    first = completed_m2_recipes.clone(M2_K1_RECIPE, tmp_path / "first")
+    second = completed_m2_recipes.clone(M2_K1_RECIPE, tmp_path / "second")
     _, first_owner, first_store, dataset, sources, runs, run_id, _ = first
     _, second_owner, second_store, _, _, _, _, _ = second
     assert first_owner.identity != second_owner.identity
@@ -263,7 +262,7 @@ def test_completed_recipe_clones_preserve_lineage_and_isolate_payloads_and_ledge
 def test_cloned_owner_still_rejects_foreign_ledger_path(
         tmp_path: Path, completed_m2_recipes) -> None:
     source = completed_m2_recipes.get(M2_K1_RECIPE)
-    config, owner, _, _, _, _, _, _ = clone_completed_m2(source, tmp_path)
+    config, owner, _, _, _, _, _, _ = completed_m2_recipes.clone(M2_K1_RECIPE, tmp_path)
     marker_path = owner.store_dir / OWNER_NAME
     marker = json.loads(marker_path.read_bytes())
     marker["ledger_path"] = str(source.config.research_workspace.store_dir / ".curation.sqlite")
