@@ -8,6 +8,8 @@ L-N 的最新首版细则见[L-N v1 规格](BASELINE_LN_V1_SPEC.zh-CN.md)：64 �
 
 阅读路径：先看第 1 节四个组合，再读第 3–8 节的具体规则；第 9 节用完整轨迹比较；第 10–13 节说明学习、成本、实现和验收。相关原生行为见[场景册](BASELINE_SCENARIO_SPEC.zh-CN.md)，基础需求见[P0/P2](BASELINE_FOUNDATION.zh-CN.md)，模型和任务合同见[P4](BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md)。
 
+最新[第一版综合方案](BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)将交互时序独立为LN-B1边界版/LN-E1自主时序版，明确capture质量和有假设的数据投影。本文的旧候选比较是来源材料；不因原生异步存在就排除合理的稳定边界设计。
+
 ## 1. 我们实际在比较什么
 
 ```text

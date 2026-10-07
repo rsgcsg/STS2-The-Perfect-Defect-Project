@@ -6,6 +6,8 @@
 
 最重要的时序案例另见[排队出牌专题](BASELINE_LN_QUEUED_TIMING.zh-CN.md)：Human输入B可发生在A未结算时，H_B不是B执行时的S_B。本文的序列是实际曝光/输入序列，不默认每步等完整结算。
 
+[第一版综合方案](BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)进一步限定H是seam-specific契约投影，不保证稳定GUI；明确保真Human模仿与有假设的重表达监督均可成为研究数据，LN-B1投影需核队列归一化和目标目录。本文关于禁止未来回填的规则约束保真历史/目标时点合法信息，不禁止另立有身份的目标决策时点。
+
 ## 1. 必须补上的闭环，而非只让 Agent 能操作
 
 ```text

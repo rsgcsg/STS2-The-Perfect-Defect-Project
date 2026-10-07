@@ -15,27 +15,28 @@ merge, release or old branch cleanup.
 
 ## Read and review
 
-1. [L-N v1](../design/BASELINE_LN_V1_SPEC.zh-CN.md): 64 operation commitments,
-   native previews, public inputs and model-neutral catalog access; unimplemented.
-2. [Queued timing](../design/BASELINE_LN_QUEUED_TIMING.zh-CN.md): native overlap,
-   Human H versus execution S, cancellation and event-driven interaction;
-   [Human learning](../design/BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md): actual
-   partial Human capture, M2 variants and six IL/structured/generative/RL cases.
+1. [Protocol v1 synthesis](../design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md):
+   latest upper abstraction, capture limits, LN-B1/LN-E1, explicit projection
+   assumptions and model-controlled action/wait timing. No profile is accepted.
+2. [L-N operation inventory](../design/BASELINE_LN_V1_SPEC.zh-CN.md),
+   [queued timing](../design/BASELINE_LN_QUEUED_TIMING.zh-CN.md), and
+   [Human learning](../design/BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md):
+   concrete mechanisms, exact source findings and learning examples.
 3. [P0–P5 delivery](../design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md),
-   [protocol options](../design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md) and
-   [scene book](../design/BASELINE_SCENARIO_SPEC.zh-CN.md): scope, choices and mechanisms.
-4. [P5 evidence](../evidence/BASELINE_P5_EVIDENCE_2026-10-06.md),
-   [foundations](../design/BASELINE_FOUNDATION.zh-CN.md),
+   [options](../design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md),
+   [scene book](../design/BASELINE_SCENARIO_SPEC.zh-CN.md) and
+   [P5 evidence](../evidence/BASELINE_P5_EVIDENCE_2026-10-06.md).
+4. [Foundations](../design/BASELINE_FOUNDATION.zh-CN.md),
    [P3](../design/BASELINE_INTERACTION_CANDIDATES.zh-CN.md),
-   [P4](../design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md) and
-   [history](../design/BASELINE_DESIGN_HISTORY.zh-CN.md): sources, roles and corrections.
-5. [Stable tasks](../plans/BASELINE_TASKS.zh-CN.md): 19 P/E/G/V/R IDs unchanged.
+   [P4](../design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md),
+   [history](../design/BASELINE_DESIGN_HISTORY.zh-CN.md) and
+   [stable tasks](../plans/BASELINE_TASKS.zh-CN.md): 19 IDs unchanged.
 
-The owner prefers L-N; compromises need concrete evidence. Defect single-player
-standard Ascension-0 and the new Choice port are proposals, not G1 acceptance.
-C-H is a query information configuration; its independent classification and
-priority recommendation were withdrawn. The next step is G1 review, not automatic
-implementation. P5 is a bounded design candidate; E/R remain unstarted.
+The latest owner request permits well-defined native abstractions and stated
+assumptions, including settled decisions. Native timing fidelity is not the only
+valid goal. H is a seam-specific projection, not a stable complete Human GUI.
+Defect/A0, the old asynchronous default suggestion and all new profile/model
+choices remain proposals. Next is G1 review; E/R implementation is unstarted.
 
 ## Anchors and working rules
 

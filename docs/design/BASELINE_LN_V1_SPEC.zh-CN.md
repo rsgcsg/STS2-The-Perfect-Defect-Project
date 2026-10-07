@@ -1,12 +1,14 @@
 # L-N 第一版：操作范围、完整合法目录与模型无关的 Agent 接口
 
-日期：2026-10-07。版本：0.1。状态：**首选方向的详细设计候选；未接受为 G1 默认，未实现、未运行资格化。** 用户倾向 L-N，仅在有具体工程依据时考虑妥协。本文件把上一版的方向收敛为第一版承诺、明确暂缓项、接口和验收，不把源码存在写成已安装/Live/Human 支持。
+日期：2026-10-07。版本：0.1。状态：**首选方向的详细设计候选；未接受为 G1 默认，未实现、未运行资格化。** 用户早期倾向 L-N；最新要求允许稳定边界与声明合理假设的原生抽象，按[第一版综合方案](BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)比较LN-B1/LN-E1，不把最接近原生作为唯一标准。本文件把上一版的方向收敛为第一版承诺、明确暂缓项、接口和验收，不把源码存在写成已安装/Live/Human 支持。
 
 源码基点 cf65def910f1c2475a7c938d814e3cd49789f2fe；本轮原生核对的 DLL SHA256 为 9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4（此前登记 v0.111.0 / 41cef1ea）。原生源码只在本机合法安装和临时目录中核查，不入库。本文与[完整候选](BASELINE_PROTOCOL_OPTIONS.zh-CN.md)、[机制场景册](BASELINE_SCENARIO_SPEC.zh-CN.md)、[P4](BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md)共同阅读；对 L-N v1 粒度和 Agent 接口的进一步约束以本文为准，旧运行 schema 不因此改变。
 
 Human学习配套：[Annotator、M2、生成模型与RL](BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md)。当前text Human side stream只有五类输入verb；环境动作可执行不等于已有完整Human示范。L01–L64必须另验被动capture/曝光/连续历史与各用途资格。
 
 关键时序补充：[排队出牌与异步时序](BASELINE_LN_QUEUED_TIMING.zh-CN.md)。原生输入可在先前效果未结束时恢复；一次提交一个输入不等于最多一张native效果在途。Human输入H与执行S分开记录，不能默认转换为结算后才决策的示范。
+
+本文件64行是可复用原生逻辑机制承诺库。LN-B1按稳定/子选择边界提供机会，LN-E1允许模型自主Act/Await；下面原生input-ready即可连续输入的规则适用于LN-E1，不禁止LN-B1明示限制提前排队。Await游标、edge/level和时钟语义由综合方案拥有。
 
 ## 1. 目标、理念与明确范围
 

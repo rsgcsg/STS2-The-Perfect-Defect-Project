@@ -4,6 +4,8 @@
 
 L-N 首版进一步收敛见[具体规格](BASELINE_LN_V1_SPEC.zh-CN.md)：合法集合由 Connector 完整持有，不强制每个模型全量打分；新增模型无关端口是提案，不改变现有 scorer schema。
 
+最高层的当前收敛见[第一版综合方案](BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)：capture guarantee、实现R/投影Π、LN-B1与LN-E1、模型Act/Await及假设验收。旧源码/此前助手推荐不替代最新用户目标。
+
 入口：[上层基础](BASELINE_FOUNDATION.zh-CN.md)、[P4 学习与工程连接](BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md)、[任务表](../plans/BASELINE_TASKS.zh-CN.md)。本文的候选名称只用于本次设计比较，不替换原生协议、text-menu 或已训练模型的身份。
 
 ## 1. 服务对象、范围和设计空间

@@ -2,7 +2,7 @@
 
 日期：2026-10-07。设计/只读审查基点：40cc4e02632f274faf3691943bb34c84a5183b64；确切原生DLL SHA256：9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4。没有启动游戏、运行新Human、训练或改生产实现。本文补充[L-N v1](BASELINE_LN_V1_SPEC.zh-CN.md)和[Human学习闭环](BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md)，明确修正“一步提交→必须等完整结算→下一决定”的过强理解。
 
-**结论：原生允许输入/排队与先前效果执行重叠；事件形式仍可离散，但不能强加每步结算完毕的栅栏。** 保留原生时序应作为L-N的默认语义方向。首发实现可先使用选择等待的保守Agent，但不能把串行化强写成原生合法性，或把并发提交的Human轨迹无说明改成串行示范。
+**结论：原生允许输入/排队与先前效果执行重叠；事件形式仍可离散，但不能强加每步结算完毕的栅栏。** 最新[第一版综合设计](BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)将稳定边界LN-B1与模型自主时序LN-E1作为同一底座的两个正当profile；原生时间保真不是唯一设计目标。串行化可以是明确协议选择，数据可按公开假设重表达，但不冒称原生本来只能串行或Human当时看到目标新输入。
 
 ## 1. 确切原生行为：是队列，不是后进先出堆栈
 
@@ -41,7 +41,7 @@ H_B可能缺少A稍后产生的新牌、伤害、资源变化；S_B已经含有�
 
 当前source已将H与执行S分开：
 
-- H来自Human输入的确切作用域，原始帧保留；acceptance明确不绑定semantic pre。
+- H来自某个Human输入capture seam，原始投影保留；可能是StartCardPlay staged或后续fallback，不保证完整稳定GUI或最终确认前视野。acceptance明确不绑定semantic pre。
 - RequestEnqueue Prefix关联确切native对象；OnEnqueued在原生赋ID后、通知执行前登记，保留action witness/native queue ID和原始H。
 - `BeforeActionExecuted`重新捕获S及Native Foundation的执行动作空间，不能沿用admission目录当执行合法性证明。
 - Started有独立execution sequence；Finished在相应已登记Commit seam记录完成事实，不自动捕获S'。

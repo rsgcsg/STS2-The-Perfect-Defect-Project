@@ -264,3 +264,7 @@ G1 需接受：P3 profile 与首发范围；新历史/数据资格；首个 Agen
 ## 排队Human输入与执行时间
 
 [异步时序专题](BASELINE_LN_QUEUED_TIMING.zh-CN.md)固定H输入顺序与execution S顺序的区别、排队后原生复验/取消、event-driven L-N与串行profile的转换条件。M2/BC按真实可用历史训练；执行Z/RL后继按自己的资格处理。普通更新观察、输入ready、native完成和canonical S'不合并，模型推理延迟进入运行与评价条件。
+
+## 第一版统一模型时序与重表达监督
+
+[综合方案](BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)明确LN-B1稳定边界与LN-E1模型自主Act/Await。协议实现、目标轨迹、真实replay、保真Human时机与derived监督分别声明；execution状态归一化不是改时间戳。生成式模型可联合动作/等待输出，等待时间标签需要可行动区间与censor依据。外层只执行时钟/合法性/预算，不代模型判断“现在策略上应该等”。
