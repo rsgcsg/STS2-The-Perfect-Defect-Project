@@ -2,9 +2,11 @@
 
 Four identities are intentionally separate:
 
-1. **Connector source candidate** (`1.3.0-rc.6`; published package identity is
-   recorded separately in the Platform BOM): source/product packaging and
-   native implementation version.
+1. **Connector source candidate**: the current version is declared by the
+   Connector package, release manifest, Mod manifest and `ConnectorMod.Version`;
+   all four agree. This is source/product packaging and native implementation
+   identity. Published artifact selection remains separately recorded in the
+   Platform BOM.
 2. **Player Environment protocol** (`1.0.0`): wire compatibility.
 3. **Capabilities**: loaded features, exact game/Modset and observation/input
    availability.
@@ -35,6 +37,11 @@ itself establish installed-game compatibility or change Annotator's minimum.
   an exact process-local source canary; this never becomes release support.
 - The Mod implementation ID `STS2_MCP` remains stable through major 1 so update
   and rollback find one installation.
+
+`npm run check:versions` validates those four product declarations during the
+portable gate. Release packaging uses the same side-effect-free validator before
+building an archive. SDK and Player Environment protocol versions remain independent;
+a native component version must not be treated as an immutable wire compatibility ID.
 
 ## Release Gate
 
