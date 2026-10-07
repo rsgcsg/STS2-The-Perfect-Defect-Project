@@ -236,7 +236,7 @@ class StructuredM2(nn.Module):
                 )
                 messages.index_add_(0, targets, transform(base[sources]))
                 degrees.index_add_(0, targets, base.new_ones((len(targets), 1)))
-        encoded = self.relation_norm(base + messages / degrees.clamp_min(1))
+        encoded: Tensor = self.relation_norm(base + messages / degrees.clamp_min(1))
         if not bool(torch.isfinite(encoded).all()):
             raise BoundaryError("structured_model", "nonfinite_encoding")
         return encoded
@@ -261,7 +261,7 @@ class StructuredM2(nn.Module):
         attention = torch.softmax(query @ self.write_key(source).T / math.sqrt(WIDTH), dim=-1)
         proposal = self.write_norm(attention @ self.write_value(source))
         gate = torch.sigmoid(self.gate(torch.cat((memory, proposal), dim=-1)))
-        updated = gate * memory + (1 - gate) * proposal
+        updated: Tensor = gate * memory + (1 - gate) * proposal
         self._memory(updated)
         return updated
 
