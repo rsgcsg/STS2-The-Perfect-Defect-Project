@@ -1,69 +1,53 @@
 # Current project context, 2026-10-08
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
-Resolve live GitHub refs and producer facts; current authorities override this file.
+Live refs and exact producer records override this navigation summary.
 
-## Current authorized packet
+## Authority and entry
 
-The owner delegates project leadership: reconverge G1 with independent audits,
-repair design, then implement and verify a real minimal loop. Needed game start/
-stop, install, GitHub integration and deployment are authorized examples, not a
-whitelist. Aggregate paid model/training budget is USD 20; start local CPU at $0.
-Stop only for important ambiguity, inaccessible authority, unrecoverable risk or
-unbounded cost. Preserve data/use/Gold and truthful Human versus Agent origin.
+The owner delegates G1 convergence, independent review and real implementation
+through a minimal learning loop. Necessary game lifecycle, isolated preparation,
+installation and GitHub integration are authorized; paid model/train/API/GPU spend
+has one USD 20 ceiling. AI-operated steps remain Agent/admin evidence, never Human.
 
-## Read and review
+Read [the sole v1 specification](../BASELINE_V1_SPEC.zh-CN.md),
+[execution packet](../plans/BASELINE_V1_EXECUTION_2026-10-08.md), then
+[testing](../TESTING.md), [workflow](../DEVELOPMENT_WORKFLOW.md) and
+[governance](../ENGINEERING_GOVERNANCE.md). Historical BASELINE design documents
+are alternatives/evidence, not competing current specifications.
 
-1. [Current v1 specification](../BASELINE_V1_SPEC.zh-CN.md): one normative candidate,
-   H/P/A layers, exact S0 compatibility profile, acquisition/consume and I/F OFF.
-2. [Execution packet](../plans/BASELINE_V1_EXECUTION_2026-10-08.md): G1 review,
-   disjoint source packets, resources, budget and stop criteria.
-3. [Testing](../TESTING.md), [workflow](../DEVELOPMENT_WORKFLOW.md),
-   [collaboration](../AI_COLLABORATION.md), [governance](../ENGINEERING_GOVERNANCE.md).
-   [Old design history](../design/BASELINE_DESIGN_HISTORY.zh-CN.md) is evidence and
-   alternatives, not another active contract. Formal 19 task IDs remain unchanged.
+## Integrated and in progress
 
-## Current findings
+G1-v1 was independently accepted and merged through PR165. PR166 integrated
+bounded prose check routing; PR167 integrated isolated training-fixture reuse.
+Current develop integration anchor is `8b4ff5e6caba620a0100b39f998e8140fb93bc64`.
+Both OS gates passed for those exact PR heads; their results do not qualify S0.
 
-Cold reviews found overlapping specs, deferred-capture/consume ambiguity and
-I/F-off overrides inconsistent with old recipes. v1 selects one concrete first
-instance rather than stacking more caveats. Connector sealed read store plus
-shared acquisition, S-M2-0 and its actual training/export/live adapter are the
-first packages; generic cloud scheduling/full UI do not block the local loop.
-S0 uses existing text-menu-v2 exact submit; complete current cursor is not full
-native-flat relation. Agent-source rollout can prove a real learning loop but
-never Human validation. I/F remains OFF and receipt/control never drives W.
+S0 implementation is on `codex/g1-s0-integration`: immutable public text-v2
+capsules and SDK acquisition, isolated Host lifecycle, opt-in Runtime acquisition,
+180545-parameter structured S-M2-0, safe training/export/port, and bounded raw
+collection/conversion tools. Independent review repaired metadata-reference
+leakage, public-position/entity association, public information action subjects,
+native hover exit and retiring-creature ownership. S0 consumer tests are now
+registered in full and Python gates rather than omitted by test discovery.
 
-## Anchors and evidence
+Local current-source receipts include 355 exact-game C# tests, 160 structured/
+legacy-input tests, and the runner/converter regressions. These are distinct from
+build, installation, loaded behavior and model quality.
 
-Design audit base: `bb87e35a02b715e82ba3fbfb373d8aee094c12d0`.
-Initial develop was `9556d21188b2deea027192567827a339a0ce50f7`. G1 specification PR165 merged normally as `a9d22fe327332610715a2deaa6862061e16747b8` after fresh Linux/Windows portable CI.
-G1-v1 is independently reviewed and accepted for the bounded S0 implementation.
-S0 source implementation is active on `codex/g1-s0-integration`. Sealed public
-capsules, Runtime opt-in acquisition, a structured S-M2-0, export/port and a
-bounded teacher runner are implemented; independent reviews found and repaired
-metadata-reference leakage and real dependency/protocol integration mistakes.
-New source does not inherit earlier loaded qualification.
+The installed local candidate is Connector 1.3.0-rc.11 / Game Mod 0.2.0-rc.25,
+artifact `2fd1e4a3aa95cb56629e4f7f23a9ec4ca84e99190632f8ac2516ba83c618d6bb`.
+An isolated AI native-console setup unlocked only DEFECT1_EPOCH; original shared
+saves and previous artifacts are preserved. A predecessor candidate produced a
+verified 57-offer bounded teacher prefix, including same-card tip revisits and
+14 native play-input deliveries; its terminal partial view remains explicit.
+Fresh final-candidate cohort collection and learned-model execution are pending.
+No real training or paid task has started; cumulative paid spend is USD 0.
 
-An isolated native UI setup unlocked only `DEFECT1_EPOCH`, with the AI as actor.
-The current installed candidate advertises Connector `1.3.0-rc.10`, artifact SHA
-`f7cebe5c10521159c7a5610f2313579a0766f01e89757b2d28ae9482a6052445`.
-Its fresh read canary proved Defect A0 bootstrap, repeated/paged sealed reads,
-control handoff and clean native shutdown. A subsequent teacher run stopped on
-same-card tip revisit: delivery was known, but the public successor never changed.
-That failed run is preserved and excluded from the first training recipe.
+## Scope boundary
 
-The native focus lifecycle repair has exact-game source/test evidence but is not
-yet installed. A second concrete correction is underway: information actions must
-bind their visible public objects instead of exposing several indistinguishable
-labels with only opaque IDs. The sole specification now states that requirement.
-No real model training or paid job has begun; spend remains USD 0. PR166 separately
-optimizes pure-prose check routing; another test-only packet removes repeated
-fixture training without changing production assertions or eligibility.
-
-
-## Remaining Platform non-claims
-
-Source/test, build, installed, loaded, runtime, Human and research remain distinct.
-Historical probes and receipts do not qualify new source. S0 is bounded and does
-not prove all scenes, all characters, complete Human histories or strategy quality.
+S0 means sampled admitted text-menu-v2 offers and complete current cursor C, with
+I/F OFF. It is not native-flat L, complete transient Human exposure, all scenes,
+all characters, a strong policy, a full product release or scientific qualification.
+The next lead gate is final native collection → verified source/use reservation →
+small training/export → learned native input → confirmed Stop and final evidence.
