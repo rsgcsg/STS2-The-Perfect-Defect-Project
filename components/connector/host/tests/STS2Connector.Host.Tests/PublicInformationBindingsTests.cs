@@ -82,6 +82,81 @@ public sealed class PublicInformationBindingsTests
         Assert.DoesNotContain("source-b", choice.Label);
     }
 
+    [Theory]
+    [InlineData("native_combat_pile_selection", "Discard strike")]
+    [InlineData("native_generated_card_choice", "Generated strike")]
+    [InlineData("native_simple_card_selection", "Simple selector strike")]
+    public void NonHandSelectorCardsRetainCurrentPageFactsWithCombatHandContext(
+        string kind, string title)
+    {
+        PlayerEnvironmentSnapshot page = Page(); // Combat context contains two unrelated hand cards.
+        var card = JsonNode.Parse("""
+        {"entity_id":"page-card","definition_id":"SELECTOR_STRIKE","name":"replace-title",
+          "type":"Attack","cost":"2","description":"Already shown selector card body",
+          "rarity":"Common","is_upgraded":true,"is_selected":false}
+        """)!.AsObject();
+        card["name"] = title;
+        var surface = new JsonObject { ["kind"] = kind,
+            ["cards"] = new JsonArray(card), ["selectable_card_entity_ids"] = new JsonArray("page-card") };
+        // The actual production projection supplies the visible selector card's
+        // typed role/label/full properties; it is not an invented generic entity.
+        PlayerEnvironmentReferent[] selectorRefs = PlayerEnvironmentService.ProjectFactReferents(surface).Values.ToArray();
+        page = page with
+        {
+            Interaction = page.Interaction with { Kind = kind, Stage = kind == "native_generated_card_choice" ? "choosing" : "selecting",
+                ContentSchema = $"sts2.player-environment/surface/{kind}-1",
+                Content = new(surface, page.Interaction.Content.Context) },
+            Referents = page.Referents.Concat(selectorRefs).ToArray()
+        };
+        var bindings = new PublicInformationBindings(page);
+        var subject = bindings.Card("page-card");
+        Assert.NotNull(subject);
+        Assert.Equal("card", subject!.Role);
+        Assert.Equal(title, subject.Label);
+        Assert.Equal("2", subject.Properties!["cost"]!.GetValue<string>());
+        Assert.Equal("Already shown selector card body", subject.Properties["description"]!.GetValue<string>());
+        Assert.True(bindings.Complete);
+        var tip = PublicInformationBindings.Leaf("page-tip", "card_tips", "show_card_tips", subject,
+            () => NativeInputResult.Delivered("same selector holder"));
+        var frame = Frame(bindings.Page, tip) with
+        {
+            Leaves = Frame(bindings.Page, tip).Leaves.Append(new TextMenuLeaf("select-page-card", "root",
+                "select", "Select " + title, "page-card", Array.Empty<PlayerEnvironmentBoundActionArgument>(),
+                () => NativeInputResult.Delivered("same native selector"))).ToArray()
+        };
+        var session = new TextMenuV2Session();
+        var root = session.Observe(frame).Snapshot;
+        Assert.Equal("complete", root.MenuActions.Status);
+        Assert.Contains(root.MenuActions.Actions, action => action.Verb == "select" && action.SubjectReferentId == "page-card");
+        var tips = Browse(session, frame, "card_tips");
+        Assert.Contains(tips.MenuActions.Actions, action => action.Verb == "show_card_tips"
+            && action.SubjectReferentId == "page-card" && action.Label == "Show " + title + " tips");
+    }
+
+    [Fact]
+    public void FullPageCardFactsTakePrecedenceOverContextualHandEnrichment()
+    {
+        var page = Page();
+        page = page with { Referents = page.Referents.Select(value => value.ReferentId == "card-a"
+            ? value with { Role = "card", PropertiesSchema = "sts2.player-environment/referent/card-1",
+                Properties = JsonNode.Parse("""{"definition_id":"STRIKE","cost":"2","is_upgraded":true}""") }
+            : value).ToArray() };
+        var bindings = new PublicInformationBindings(page);
+        var card = bindings.Card("card-a")!;
+        Assert.Equal("2", card.Properties!["cost"]!.GetValue<string>());
+        Assert.True(card.Properties["is_upgraded"]!.GetValue<bool>());
+        Assert.True(bindings.Complete);
+    }
+
+    [Fact]
+    public void NonCardPublicRolesCannotBecomeTipCardSubjects()
+    {
+        var bindings = new PublicInformationBindings(Page());
+        Assert.Null(bindings.Card("enemy"));
+        Assert.Equal("partial", bindings.Page.Completeness.Status);
+        Assert.Contains("public_information_binding_card_subject", bindings.Page.Completeness.Missing);
+    }
+
     [Fact]
     public void EveryTipFamilyPublishesVisibleSubjectsAndExactPublicOwnersWithoutUnopenedBodies()
     {

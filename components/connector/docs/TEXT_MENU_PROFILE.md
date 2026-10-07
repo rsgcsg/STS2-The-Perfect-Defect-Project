@@ -194,8 +194,10 @@ installed and cold-loaded runtime canary for each new artifact.
 Each native information choice now carries a visible public subject. The original
 Host-private native control closure still dispatches it; public references neither
 construct native operands nor grant action authority. Card choices reuse their
-card ID and already frozen same-card hand facts, so equal titles can retain different
-cost/upgrade data. Relic inspect/tip choices reuse the displayed inventory relic ID,
+card ID and full current-page facts, so equal titles can retain different
+cost/upgrade data. Same-ID hand facts can enrich a sparse referent; contextual hand
+membership does not restrict pile/generated/other selector cards and does not
+replace their already full page-specific representation. Relic inspect/tip choices reuse the displayed inventory relic ID,
 title and counter, with no newly exposed unopened description/preview.
 
 Orb choices reuse the current orb ID and shown queue values; empty slots have an

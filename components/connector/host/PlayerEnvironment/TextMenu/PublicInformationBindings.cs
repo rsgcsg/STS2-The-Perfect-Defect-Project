@@ -89,9 +89,13 @@ internal sealed class PublicInformationBindings
         // Playable-card referents may hold only a name/target relation; attach the
         // already frozen same-ID hand card so duplicate names retain cost/upgrade facts.
         JsonObject? facts = Find(Context?["player"]?["hand"], "entity_id", id);
-        if (Context?["player"]?["hand"] is JsonArray && facts == null)
-        { Missing("card_membership"); return null; }
-        if (facts != null)
+        // Hand is an optional source of richer same-ID facts, not a membership
+        // requirement: pile/generated/other selectors also carry combat context.
+        // Preserve an already full current-page card instead of replacing its
+        // owner-specific display with the contextual hand's representation.
+        bool fullPageCard = card.Properties is JsonObject shown
+            && shown["definition_id"] != null && shown["cost"] != null;
+        if (facts != null && !fullPageCard)
             visible[id] = card = card with
             {
                 PropertiesSchema = $"sts2.player-environment/referent/{card.Role}-1",
