@@ -751,30 +751,38 @@ internal static class NativeTextMenuInformation
                     || !ReferenceEquals(room.GetCreatureNode(ownerNode.Entity), ownerNode)
                     || !entities.TryGetExistingId(ownerNode.Entity, out string? owner))
                 { bindings.Missing("orb_owner"); continue; }
-                if (!bindings.TryOrbBasis(owner!, out int capacity, out IReadOnlyList<string> ids)) continue;
                 Control focus = manager.DefaultFocusOwner;
                 NOrb? anchor = focus as NOrb;
                 Node? container = anchor?.GetParent();
                 NativeOrbRosterResult<NOrb> roster = NativeOrbRoster.Capture(anchor,
-                    ReferenceEquals(focus, ownerNode.Hitbox), capacity, ids,
+                    ReferenceEquals(focus, ownerNode.Hitbox),
                     node => ConnectorMod.IsLiveNode(node) && ReferenceEquals(node.GetParent(), container)
                         && ReferenceEquals(VisibleAncestor<NOrbManager>(node), manager),
                     node => node.GetNodeOrNull<NOrb>(node.FocusNeighborLeft),
-                    node => node.GetNodeOrNull<NOrb>(node.FocusNeighborRight),
-                    node => node.Model == null ? null : entities.GetId(node.Model, "orb"));
+                    node => node.GetNodeOrNull<NOrb>(node.FocusNeighborRight));
                 if (roster.Error != null)
                 {
-                    bindings.Missing(roster.Error == NativeOrbRosterError.CaptureInconsistent
-                        ? "orb_capture_inconsistent" : "orb_navigation_unresolved");
+                    bindings.Missing("orb_navigation_unresolved");
                     continue;
                 }
                 for (int slot = 0; slot < roster.Nodes.Count; slot++)
                 {
                     NOrb orb = roster.Nodes[slot];
                     if (!ConnectorMod.IsNodeVisible(orb) || !orb.IsEnabled) continue;
-                    PlayerEnvironmentReferent? subject = orb.Model is { } model
-                        ? bindings.Orb(entities.GetId(model, "orb"), owner!)
-                        : bindings.EmptyOrb(entities.GetId(orb, "orb_slot"), owner!, slot, roster.Nodes.Count);
+                    PlayerEnvironmentReferent? subject;
+                    if (orb.Model is { } model)
+                    {
+                        var passive = orb.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%PassiveAmount");
+                        var evoke = orb.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%EvokeAmount");
+                        bool passiveVisible = passive != null && ConnectorMod.IsNodeVisible(passive);
+                        bool evokeVisible = evoke != null && ConnectorMod.IsNodeVisible(evoke);
+                        subject = bindings.OrbPresentation(entities.GetId(orb, "orb_slot"), owner!, model.Id.Entry,
+                            ConnectorMod.SafeGetText(() => model.Title), slot, roster.Nodes.Count,
+                            passive != null && evoke != null, passiveVisible, passiveVisible ? passive!.Text : null,
+                            evokeVisible, evokeVisible ? evoke!.Text : null);
+                    }
+                    else
+                        subject = bindings.EmptyOrb(entities.GetId(orb, "orb_slot"), owner!, slot, roster.Nodes.Count);
                     AddSignalTipLeaf(entities, leaves, orb, "orb_tips", Control.SignalName.FocusEntered,
                         subject, owner, bindings.OwnerLabel(owner!));
                 }

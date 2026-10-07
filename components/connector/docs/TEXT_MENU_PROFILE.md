@@ -200,9 +200,14 @@ membership does not restrict pile/generated/other selector cards and does not
 replace their already full page-specific representation. Relic inspect/tip choices reuse the displayed inventory relic ID,
 title and counter, with no newly exposed unopened description/preview.
 
-Orb choices reuse the current orb ID and shown queue values; empty slots have an
-explicit visible slot subject, occupancy and native slot order. Orb, power and
-intent choices carry their current visible creature as an `owner` argument.
+Orb choices use independent current UI-control IDs for occupied and empty slots,
+with explicit presentation basis, occupancy and native slot order/count. Occupied
+UI controls expose their public model identity/name and only actually visible
+amount-label text; they do not replace existing logical orb referents or context.
+Hidden labels are explicitly marked hidden; missing required label nodes remain
+unresolved. This bounded profile declares only the visible creature `owner`
+relation, with no inferred UI-to-logical-model relation. Orb, power and intent
+choices carry their current visible creature as an `owner` argument.
 Power membership must match its typed native model/owner and the frozen public
 status definition/amount. Intent membership uses the exact public creature's
 `IntentContainer` child order and the already frozen intent type/value. It reads
@@ -239,14 +244,17 @@ not causal successor proof or a new gameplay legality engine.
 Orb information sources use the native manager's current navigation roster rather
 than all rendered children. `DefaultFocusOwner` anchors that roster; forward
 `FocusNeighborLeft` links and inverse right links must form a bounded unique ring
-under the same live manager/container. The result must match the same capture's
-logical orb IDs/order, capacity and empty-slot tail. Evoked orbs can remain as
-fading scene children after native retirement; they are excluded only after a
-valid current ring is established. Zero slots require the exact creature-hitbox
-anchor plus actual zero capacity/empty logical queue; one slot permits both
-self-links. Broken navigation or inconsistent current facts remain explicitly
-partial. No private roster reflection, cached historical facts or guessed waits
-supply the missing evidence.
+under the same live manager/container. Membership, order and slot count come from
+this UI ring independently of the logical OrbQueue. Native `TryEnqueue` adds the
+logical orb before awaiting `SmallWait`; `Channel` creates its UI control after
+that wait. Input can already be ready during this legitimate difference, so the
+previous strict logical/UI equality requirement was invalid and is replaced here.
+Evoked orbs can remain as fading scene children after native retirement; they are
+excluded only after a valid current ring is established. The exact creature-hitbox
+anchor proves no current UI orb controls even if logical capacity differs; one
+slot permits both self-links. Broken navigation or missing required UI facts remain
+explicitly partial. No private roster reflection, cached historical facts, hidden
+hover bodies, logical-value copying or guessed waits supply the missing evidence.
 
 A valid native hover-tip set with both required containers and zero children now
 returns typed empty `text_tips`/`card_previews` arrays. Some ordinary cards have no
@@ -258,3 +266,11 @@ Incomplete information bindings retain a native capture's already-declared
 the same missing bindings remain `visible_unsupported`; missing facts never infer
 settling or authorize Model consumption. This preserves the native startup/readiness
 owner and existing bounded Runtime observation behavior without changing Runtime.
+
+The v2-only exposure projection clones combat context and referent properties,
+removing unopened orb descriptions, intent titles/descriptions and player/enemy/
+companion status descriptions on their declared collection paths. It preserves
+public names/types/amounts/order, visible hand-card descriptions and bodies read
+from an actually entered native tip surface. Existing legacy producers and v1
+inputs are unchanged. Historical captures keep their original exposure identity;
+this source correction does not relabel them as conforming new data.
