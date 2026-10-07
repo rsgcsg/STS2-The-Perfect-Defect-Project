@@ -38,6 +38,9 @@ import {
   type TextMenuV2ActionResult, type TextMenuV2ObservationContext
 } from "./textMenuV2.js";
 import {
+  PLAYER_ENVIRONMENT_CONTROL_ROUTE,
+  decodePlayerControlSnapshot,
+  type PlayerEnvironmentControlSnapshot,
   decodePlayerClientRegistration,
   decodePlayerCapabilities,
   decodePlayerControllerLeaseResponse,
@@ -285,6 +288,11 @@ export class PlayerEnvironmentRestClient {
   async textMenuV2Result(requestId: string): Promise<DecodedPlayerPayload<TextMenuV2ActionResult>> {
     return decodeTextMenuV2ActionResult(await this.get(
       `/api/player-environment/actions/${encodeURIComponent(requestId)}?input_profile=${TEXT_MENU_V2_PROFILE}`));
+  }
+
+  /** Read current ownership; omitted/null controller means no held lease. */
+  async controlSnapshot(): Promise<DecodedPlayerPayload<PlayerEnvironmentControlSnapshot>> {
+    return decodePlayerControlSnapshot(await this.get(PLAYER_ENVIRONMENT_CONTROL_ROUTE));
   }
 
   async registerClient(input: {
