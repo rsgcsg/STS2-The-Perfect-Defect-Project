@@ -8,9 +8,11 @@
 
 新增[Human学习闭环审查](BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md)：现有Annotator text输入白名单与L-N浏览范围有缺口，M2/结构化/生成/RL各有数据资格要求。它将E2被动Human采集和数据投影提升为与E1执行同等必要的首版依赖，未声称已补齐。
 
-最新协议详案：[三套 Agent 契约、四个 Host 组合](BASELINE_PROTOCOL_OPTIONS.zh-CN.md)。它修正了本包早期 C-H 分类及优先推荐：C-H 是查询信息配置，不是独立协议；当前不选默认。
+最新协议详案：[三套 Agent 契约、四个 Host 组合](BASELINE_PROTOCOL_OPTIONS.zh-CN.md)。它修正了本包早期 C-H 分类及优先推荐：C-H 是查询信息配置，不是独立协议；当时未选默认；用户现已选择A事件主方向，详细G1仍未接受。
 
-**最新交付入口：**[Agent—协议完整蓝图](BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md)：一个事件协议的推荐主线、可选边界接口、四种Agent设计与可执行合成接线、16个完整例子、数据/训练/评估/运行合同。独立审查在本轮材料与验证完成后进行；不代表G1通过。
+**最新联合评估：**[A主系统完整旅程](BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md)：用户选定A方向；14类消费者用于检验和修订Host、记录、学习及执行三链，明确各类数据来源及GD01–10设计决定。
+
+**详细交互与参考入口：**[Agent—协议完整蓝图](BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md)：一个事件协议的推荐主线、可选边界接口、四种Agent设计与可执行合成接线、16个完整例子、数据/训练/评估/运行合同。独立审查在本轮材料与验证完成后进行；不代表G1通过。
 
 **捕获与抽象依据：**[第一版综合方案](BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)。它重新核对历史上层目标和H捕获保证，给出统一Core、LN-B1边界版/LN-E1模型自主时序、假设化数据转换和15个例子；旧“异步必须默认”表述已收窄，不因文档完成而自动接受某profile。
 

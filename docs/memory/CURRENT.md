@@ -9,15 +9,17 @@ qualification are separate.
 
 The owner authorized P5 detailed design and bounded verification, using an
 encapsulated D-M2 sequence-N Agent (later qualified Z/O) as the first vertical
-example. The packet does not authorize production implementation, real-data
-training/use changes, game/Human actions, cloud spending, installation, deployment,
-merge, release or old branch cleanup.
+example. The owner selected Scheme A as the main system direction; complete G1
+acceptance remains pending. Cases now evaluate all three chains and may revise
+the protocol. Production implementation, real-data training/use changes, game/Human actions, cloud spending, installation, deployment, merge, release and
+old branch cleanup remain outside this packet.
 
 ## Read and review
 
-1. [Agent/protocol blueprint](../design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md):
-   latest complete design, one event contract, optional boundary facade,
-   four Agent compositions and synthetic reference. G1 remains unaccepted.
+1. [A system journeys](../design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md): 14 full
+   consumer journeys, data requirements, joint stress tests and G1 decisions.
+   [Agent blueprint](../design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md) owns
+   detailed event semantics and the bounded synthetic reference.
 2. [Capture/abstraction synthesis](../design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md),
    [operation inventory](../design/BASELINE_LN_V1_SPEC.zh-CN.md),
    [queued timing](../design/BASELINE_LN_QUEUED_TIMING.zh-CN.md) and
@@ -32,8 +34,8 @@ merge, release or old branch cleanup.
 Timing belongs to the encapsulated Agent, not necessarily one model. A boundary
 scheduler inside an E Agent is not a second protocol; an external boundary view
 changes the contract. H remains a capture-seam projection, not complete Human
-knowledge or stable GUI. Scope/profile/model choices are proposals. No production
-implementation or training has started; bounded synthetic references are separate.
+knowledge or stable GUI. A is selected; detailed scope and contracts are proposals.
+No production implementation or training has started; bounded synthetic references are separate.
 
 ## Anchors and working rules
 

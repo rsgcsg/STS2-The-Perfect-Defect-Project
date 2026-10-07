@@ -38,7 +38,9 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
-- [Agent/protocol blueprint](docs/design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md): current recommended event contract, optional boundary facade, four Agent designs, full interaction/data/runtime examples and bounded executable reference. Start here for the latest design.
+- [A system journeys and joint evaluation](docs/design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md): selected main direction, 14 complete consumer/data journeys, Host and three-chain stress tests, and remaining G1 decisions. Start here for the latest design.
+
+- [Agent/protocol blueprint](docs/design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md): detailed event contract, optional boundary facade, four Agent designs, full interaction/data/runtime examples and bounded executable reference.
 
 - [First-version protocol synthesis](docs/design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md): precise capture guarantees, native realization/data projection, boundary and model-timed profiles, explicit assumptions and acceptance. Supporting capture and abstraction detail.
 
@@ -53,7 +55,8 @@ restrictions; local and cloud views do not create separate copies of authority.
   and [bounded P5 evidence](docs/evidence/BASELINE_P5_EVIDENCE_2026-10-06.md).
   [Three Agent contracts and four concrete Host combinations](docs/design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md)
   now define the detailed choices. D-M2 sequence-N is the reference journey;
-  no protocol default has been selected or deployed, and G1 is unaccepted.
+  A is now the selected main direction; detailed G1 acceptance and deployment
+  remain pending.
 
 - [New baseline foundations: P0 needs and P2 upper design](docs/design/BASELINE_FOUNDATION.zh-CN.md),
   [P1 source/evidence audit](docs/evidence/BASELINE_P1_AUDIT_2026-10-06.md), and

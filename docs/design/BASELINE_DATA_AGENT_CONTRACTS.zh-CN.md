@@ -1,5 +1,7 @@
 # P4：记录、Agent、学习评估与执行连接设计
 
+最新收敛：[A主系统完整旅程与联合评估](BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md)。用户已选A主方向；案例可反向修改协议/Host/记录/学习/执行设计，不要求所有Agent都用Human数据或训练。详细G1仍未接受。
+
 日期：2026-10-06。版本：0.2。状态：**设计交付候选；已按 P5 的封装 D-M2 参考闭环细化，不是新数值实现、训练或 G1 接受。** 三条链的具体旅程见 [P5](BASELINE_ACCEPTANCE_PLAN.zh-CN.md)，场景语义见[设计册](BASELINE_SCENARIO_SPEC.zh-CN.md)；精确模型历史见 [依据审计](../evidence/BASELINE_LEARNING_AUDIT_2026-10-06.md)。
 
 当前具体实现组合以[Agent—协议完整蓝图](BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md)为准：P1边界调度＋M2、P2时机/动作模块、P3生成式、P4检索重排，共用事件协议；四个参考接线使用脚本模型，非训练产物。
