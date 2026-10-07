@@ -76,6 +76,9 @@ and evidence deletions still use full. ADR/governance and unknown docs are not c
 
 The full and Python scopes also run `npm run check:s0`: the small shared SDK
 build, bounded runner lifecycle tests and offline capsule/Runtime dataset joins.
+They run before the long Python suite so a local consumer/fixture failure does
+not wait behind unrelated training and application regressions. Both gates still
+run in full; this ordering grants no test skip or previous-head reuse.
 These use synthetic protocol fixtures and never start a game or train on real
 records. The S0 consumer tests live under `tools/test`, so Python's normal
 `tests/` discovery alone does not cover this cross-owner seam.
