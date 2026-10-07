@@ -256,3 +256,7 @@ G1 需接受：P3 profile 与首发范围；新历史/数据资格；首个 Agen
 最低反例集合：缺序仍当 M2；当前标签提前写入；候选假设污染状态；未知胜负填失败；用当前层冒充失败层；跨战斗借 HP；早死因出牌少得高分；给未执行候选复制终点；同终点复制样本当独立；旧 checkpoint 接新输入仍叫续训；取消请求当已停；GUI 重试未知操作；资料撤销政策不一致；新包加载而模型不具备声明能力。
 
 外部研究仅支持方法边界，不作为本项目实验证据：[Ng、Harada、Russell 的 reward shaping 研究](https://ai.stanford.edu/~ang/papers/shaping-icml99.pdf)说明额外奖励的策略不变性需要条件，不能将一般 HP/进度/步数加权直接称为原目标的等价优化。这里没有假定 STS2 的公开观察满足完整 MDP，也没有采用某个 reward shaping 公式。
+
+## L-N Human学习接缝的具体核对
+
+[Human学习闭环审查](BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md)核对当前五verb Human text side stream、canonical主链、observed-input M2与另候选Public M2的不同范围。局部N、M2连续prefix、生成式派生标签、Z/O和RL分别资格化；六个经典例子不能仅靠Agent端能执行就宣称可从Human学习。当前没有新corpus统计或完整L-N数据资格结论。

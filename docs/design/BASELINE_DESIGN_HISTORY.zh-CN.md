@@ -44,6 +44,8 @@
 
 原生target focus改变渲染卡牌说明及升级inspect控件已有源码依据；缺星费/焦点投影、holder完整可达、open-Peek/potion-hover、部分mouse续接及终局路由均作为实施缺口，不用这些缺口默认淘汰L-N。game outcome与包含summary导航的Agent task complete分开，防止过早结束承诺旅程。
 
+用户随后明确“记录”重点是Annotator能否支撑学人类，而非API日志。新[Human学习闭环](BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md)据当前源码确认text Human机制只有五类verb，不能把更广canonical主链当完整L-N展示/选择历史；输入前观察、Human选择、连续prefix与后继/结果逐层资格化。已存在的不同M2路径分别保留原义，生成式动作JSON可派生，Human工具调用/思维不可虚构。
+
 ## 怎样维护这份沿革
 
 1. 新决定写入当前 owning 规范，沿革只记录来源、修正与替代关系，不复制全部当前状态。

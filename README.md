@@ -38,6 +38,8 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
+- [L-N Human learning integration](docs/design/BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md): the actual partial Human input stream, M2 variants and learning requirements; interface support is not dataset qualification.
+
 - [L-N v1 scope and Agent contract](docs/design/BASELINE_LN_V1_SPEC.zh-CN.md): detailed operation commitments, native target/upgrade previews, model-neutral catalog access and loop ownership; proposal, not an implemented profile.
 
 - [P0–P5 complete design and acceptance delivery](docs/design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md),

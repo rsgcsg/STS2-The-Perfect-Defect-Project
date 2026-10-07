@@ -4,6 +4,8 @@
 
 源码基点 cf65def910f1c2475a7c938d814e3cd49789f2fe；本轮原生核对的 DLL SHA256 为 9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4（此前登记 v0.111.0 / 41cef1ea）。原生源码只在本机合法安装和临时目录中核查，不入库。本文与[完整候选](BASELINE_PROTOCOL_OPTIONS.zh-CN.md)、[机制场景册](BASELINE_SCENARIO_SPEC.zh-CN.md)、[P4](BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md)共同阅读；对 L-N v1 粒度和 Agent 接口的进一步约束以本文为准，旧运行 schema 不因此改变。
 
+Human学习配套：[Annotator、M2、生成模型与RL](BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md)。当前text Human side stream只有五类输入verb；环境动作可执行不等于已有完整Human示范。L01–L64必须另验被动capture/曝光/连续历史与各用途资格。
+
 ## 1. 目标、理念与明确范围
 
 真实目标是：让封装 Agent 在公开玩家信息边界内完成游戏，拥有策略所需的原生查看、预览、选择、取消和推进能力，形成可记录、可学习、可评价的经历；在这个前提下降低无意义交互和计算成本。不是模仿每个鼠标轨迹，不是最少 API 次数，也不是把所有 Agent 限定成一个全目录 scorer。
@@ -376,7 +378,7 @@ Agent收到完整目录引用和当前公开对象；轻量模块提出“查看
 | Agent通用接口 | 全量scorer、确定性非scorer生成stub、prefix chooser、abstain/yield均能绑定同一C；旧端口不变 | 不用假scores伪装新Agent支持；无需先训练所有模型 |
 | 规模与成本 | 合成10/100/1000/10000目录；实际局面尺寸分布；Host/传输/编码/W/scorer/落盘分测 | 找实际瓶颈；合成不充当实机延迟/策略证据 |
 | 连续性/恢复 | 打开/返回失败、目标消失、stale、接管、重复运输、loop stop、断线/原attempt核对 | 保留失败原件，未知不重发，必要时新segment |
-| 学习接入 | 真实输入曝光→合格prefix→相应N目标→在线离线一致；无标签事件仍消费 | 不伪造Human查看、未来信息或未执行分支标签 |
+| 学习接入 | 逐项关联L01–L64的Human capture、输入前页/目录/实际选择/曝光顺序；再验合格prefix→相应N目标→在线离线一致；无标签事件仍消费 | 不伪造Human查看、未来信息或未执行分支标签 |
 | 任务有效性 | 目标选择、升级对比、嵌套selector、奖励回访、商店移除、终局；之后固定范围完整局 | 同时报成功、loop、介入/未知/删失、信息取得和资源成本，不只报动作投递率 |
 
 比较模型时固定L-N语义、信息曝光规则、任务范围与数据划分；Agent获取策略不同可评价整个Agent，但不能叫纯模型架构消融。是否使用原生文本/typed输入、预训练、缓存、固定浏览程序、shortlist和额外loop提示，均入AgentSpec/ExperimentPlan。

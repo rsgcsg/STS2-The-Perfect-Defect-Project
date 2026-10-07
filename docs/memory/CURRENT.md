@@ -15,32 +15,25 @@ merge, release or old branch cleanup.
 
 ## Read and review
 
-1. [L-N v1 scope and Agent contract](../design/BASELINE_LN_V1_SPEC.zh-CN.md):
-   owner-preferred direction, 64 operation commitment rows, native target/upgrade previews,
-   typed public inputs and model-neutral catalog access. The proposal is not implemented;
-   [Concrete protocol options](../design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md):
-   three Agent contracts, four Host/mapping combinations, object details and failure semantics;
-   [P0–P5 complete delivery](../design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md):
-   corrected candidate comparison, D-M2 journeys, cost comparison, acceptance matrix and next work.
-2. [Detailed scene design](../design/BASELINE_SCENARIO_SPEC.zh-CN.md):
-   native versus protocol/Agent/management facts, 21 scene cards and 60 examples.
-3. [P5 evidence](../evidence/BASELINE_P5_EVIDENCE_2026-10-06.md):
-   exact native DLL/source observations, reproducible synthetic probe and limits.
-4. [Foundations](../design/BASELINE_FOUNDATION.zh-CN.md),
+1. [L-N v1](../design/BASELINE_LN_V1_SPEC.zh-CN.md): 64 operation commitments,
+   native previews, public inputs and model-neutral catalog access; unimplemented.
+2. [Human learning](../design/BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md): actual
+   partial Human capture, M2 variants and six IL/structured/generative/RL cases.
+3. [P0–P5 delivery](../design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md),
+   [protocol options](../design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md) and
+   [scene book](../design/BASELINE_SCENARIO_SPEC.zh-CN.md): scope, choices and mechanisms.
+4. [P5 evidence](../evidence/BASELINE_P5_EVIDENCE_2026-10-06.md),
+   [foundations](../design/BASELINE_FOUNDATION.zh-CN.md),
    [P3](../design/BASELINE_INTERACTION_CANDIDATES.zh-CN.md),
-   [P4](../design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md), and
-   [discussion history](../design/BASELINE_DESIGN_HISTORY.zh-CN.md): needs,
-   upper roles, full candidates, model axes/N-Z-O and corrected assumptions.
-5. [Stable task index](../plans/BASELINE_TASKS.zh-CN.md): only 19 P/E/G/V/R IDs.
-   P5 has a bounded delivery candidate; G1/E/R remain unaccepted/unstarted.
+   [P4](../design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md) and
+   [history](../design/BASELINE_DESIGN_HISTORY.zh-CN.md): sources, roles and corrections.
+5. [Stable tasks](../plans/BASELINE_TASKS.zh-CN.md): 19 P/E/G/V/R IDs unchanged.
 
-The owner prefers L-N and requests explicit, evidence-based compromises only.
-The new spec proposes a single-player Defect standard Ascension-0 qualification scope
-and a model-neutral Choice port; G1 has not accepted that scope or protocol.
-The next step is G1 review, not automatic implementation. C-H is an automatic-view configuration of the query contract, not a separate
-protocol. Its previous priority recommendation is withdrawn; the old probe assumed
-different automatic information and policy-call programs. New options select no default. Required additional evidence
-is a scoped P5/E/V packet; material decisions go to the user/design owner.
+The owner prefers L-N; compromises need concrete evidence. Defect single-player
+standard Ascension-0 and the new Choice port are proposals, not G1 acceptance.
+C-H is a query information configuration; its independent classification and
+priority recommendation were withdrawn. The next step is G1 review, not automatic
+implementation. P5 is a bounded design candidate; E/R remain unstarted.
 
 ## Anchors and working rules
 

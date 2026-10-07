@@ -4,6 +4,8 @@
 
 用户现倾向 L-N，[L-N 第一版具体规格](BASELINE_LN_V1_SPEC.zh-CN.md)进一步明确动作承诺、表示、目标预览、模型无关端口与loop责任；仍待G1范围接受。
 
+新增[Human学习闭环审查](BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md)：现有Annotator text输入白名单与L-N浏览范围有缺口，M2/结构化/生成/RL各有数据资格要求。它将E2被动Human采集和数据投影提升为与E1执行同等必要的首版依赖，未声称已补齐。
+
 最新协议详案：[三套 Agent 契约、四个 Host 组合](BASELINE_PROTOCOL_OPTIONS.zh-CN.md)。它修正了本包早期 C-H 分类及优先推荐：C-H 是查询信息配置，不是独立协议；当前不选默认。
 
 推荐阅读：本文→[逐场景设计册](BASELINE_SCENARIO_SPEC.zh-CN.md)→[P4 学习与工程合同](BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md)。[基础设计](BASELINE_FOUNDATION.zh-CN.md)保留 P0/P2；[P3](BASELINE_INTERACTION_CANDIDATES.zh-CN.md)保留候选；[P1](../evidence/BASELINE_P1_AUDIT_2026-10-06.md)及[学习审计](../evidence/BASELINE_LEARNING_AUDIT_2026-10-06.md)提供历史；[本轮证据](../evidence/BASELINE_P5_EVIDENCE_2026-10-06.md)说明真正检查了什么。
