@@ -150,7 +150,20 @@ def project_text_menu_v2_snapshot(snapshot: dict[str, Any]) -> TextMenuInput:
     return _project_text_menu_snapshot(snapshot, v2=True)
 
 
-def _project_text_menu_snapshot(snapshot: dict[str, Any], *, v2: bool) -> TextMenuInput:
+def validate_text_menu_v2_snapshot(snapshot: dict[str, Any], *,
+                                 allow_observation_only: bool = False) -> None:
+    """Validate the public source directly, without creating or parsing renderer text.
+
+    Structured consumers extract the authorized source fields after this common
+    complete-menu validation. This does not validate native legality anew.
+    """
+    _project_text_menu_snapshot(snapshot, v2=True, render=False,
+                                allow_observation_only=allow_observation_only)
+
+
+def _project_text_menu_snapshot(snapshot: dict[str, Any], *, v2: bool,
+                                render: bool = True,
+                                allow_observation_only: bool = False) -> TextMenuInput:
     """Project one complete current menu; keep opaque bindings outside text."""
     profile = V2_INPUT_PROFILE if v2 else INPUT_PROFILE
     schema = V2_SNAPSHOT_SCHEMA if v2 else SNAPSHOT_SCHEMA
@@ -164,7 +177,8 @@ def _project_text_menu_snapshot(snapshot: dict[str, Any], *, v2: bool) -> TextMe
         if (v2 and snapshot.get("protocol_version") != "1.0.0"
                 or snapshot.get("schema") != schema
                 or snapshot.get("input_profile") != profile
-                or snapshot.get("status") != "interactive"
+                or snapshot.get("status") not in ({"interactive", "observed"}
+                    if allow_observation_only else {"interactive"})
                 or snapshot["information_policy"]["includes_hidden_information"] is not False
                 or snapshot["completeness"]["status"] != "complete"
                 or "bound_actions" in snapshot or "reads" in snapshot):
@@ -183,7 +197,9 @@ def _project_text_menu_snapshot(snapshot: dict[str, Any], *, v2: bool) -> TextMe
                                   "ordering_semantics", "actions"}:
             raise BoundaryError("text_menu_input", "malformed_v2_catalog")
         values = catalog.get("actions")
-        if (catalog.get("status") != "complete" or not isinstance(values, list) or not values
+        if (catalog.get("status") != "complete" or not isinstance(values, list)
+                or not values and not allow_observation_only
+                or snapshot.get("status") == "observed" and bool(values)
                 or type(catalog.get("total_count")) is not int
                 or type(catalog.get("materialized_count")) is not int
                 or catalog["total_count"] != len(values)
@@ -313,13 +329,15 @@ def _project_text_menu_snapshot(snapshot: dict[str, Any], *, v2: bool) -> TextMe
             reject_leakage(fact)
             keys.append(key)
             kinds.append(kind)
-            action_texts.append(f"[STPD_ACTION version={version}]\n{_render(fact)}\n[/STPD_ACTION]")
+            if render:
+                action_texts.append(
+                    f"[STPD_ACTION version={version}]\n{_render(fact)}\n[/STPD_ACTION]")
         if v2:
             _validate_v2_catalog(cursor, selection, selection_actions, native_actions, menu,
                                  interaction, content)
         reject_leakage(state)
-        state_text = (f"[STPD_STATE version={version} profile=text_menu]\n"
-                      f"{_render(state)}\n[/STPD_STATE]")
+        state_text = ((f"[STPD_STATE version={version} profile=text_menu]\n"
+                       f"{_render(state)}\n[/STPD_STATE]") if render else "")
         return TextMenuInput(state_text, tuple(action_texts), tuple(keys), tuple(kinds),
                              semantic_hash(keys))
     except (KeyError, TypeError, AttributeError) as error:
