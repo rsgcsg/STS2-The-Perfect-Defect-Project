@@ -1,8 +1,8 @@
 # P3：完整交互候选与 Host/Agent 合同设计
 
-最新收敛：[A主系统完整旅程与联合评估](BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md)。用户已选A主方向；案例可反向修改协议/Host/记录/学习/执行设计，不要求所有Agent都用Human数据或训练。详细G1仍未接受。
+最新收敛：[A主系统完整旅程与联合评估](BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md)。用户澄清A及具体协议仍待确定；案例可反向修改协议/Host/记录/学习/执行设计，不要求所有Agent都用Human数据或训练。详细G1仍未接受。
 
-日期：2026-10-06。版本：0.3。状态：**设计交付候选；P5 有界源码/合成评估已交付，G1 未接受，未注册新运行 schema。** 历史候选详细定义见[三套契约与四个组合](BASELINE_PROTOCOL_OPTIONS.zh-CN.md)：AP-L/AP-Q/AP-B，配 L-N/Q-N/Q-D/B-D；当时尚未选择默认，现已选择A事件主方向。本文件保留早期候选的需求分析，发生冲突时新候选规范优先。详细原生依据见 [P5 完整包](BASELINE_ACCEPTANCE_PLAN.zh-CN.md)和[逐场景册](BASELINE_SCENARIO_SPEC.zh-CN.md)。本文件不授权生产实现、游戏、录制、训练、安装、云执行或合并。
+日期：2026-10-06。版本：0.3。状态：**设计交付候选；P5 有界源码/合成评估已交付，G1 未接受，未注册新运行 schema。** 历史候选详细定义见[三套契约与四个组合](BASELINE_PROTOCOL_OPTIONS.zh-CN.md)：AP-L/AP-Q/AP-B，配 L-N/Q-N/Q-D/B-D；当时尚未选择默认，现将A事件方向保留为待确定候选。本文件保留早期候选的需求分析，发生冲突时新候选规范优先。详细原生依据见 [P5 完整包](BASELINE_ACCEPTANCE_PLAN.zh-CN.md)和[逐场景册](BASELINE_SCENARIO_SPEC.zh-CN.md)。本文件不授权生产实现、游戏、录制、训练、安装、云执行或合并。
 
 L-N 首版进一步收敛见[具体规格](BASELINE_LN_V1_SPEC.zh-CN.md)：合法集合由 Connector 完整持有，不强制每个模型全量打分；新增模型无关端口是提案，不改变现有 scorer schema。
 

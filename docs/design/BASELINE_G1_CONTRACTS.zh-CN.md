@@ -1,14 +1,16 @@
 # G1 待批准合同：A 主系统、记录、Agent 与执行
 
-日期：2026-10-07。版本：G1-RC1。状态：完整设计候选，**未经用户批准，不是已生效生产协议**。配套[审阅总册](BASELINE_G1_REVIEW_PACKET.zh-CN.md)、[实施与验收路线](BASELINE_G1_EXECUTION_ROADMAP.zh-CN.md)、[独立审计](../evidence/BASELINE_G1_AUDIT_2026-10-07.md)。本文件将GD待决项收敛为可接受或退回的具体建议；非继续把关键语义留给实施者猜。
+最新澄清以[RC2交互边界、模型输入与预算](BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md)为准：D01与具体协议仍待确定；比较Host侧、协议核心与Agent侧的职责分配，不预先固定Agent管理能力边界。全角色A0–A10为设计目标，Defect A0为首个验收切片；教程默认由任务准备关闭。
+
+日期：2026-10-08。版本：G1-RC2。状态：完整设计候选，**未经用户批准，不是已生效生产协议**。配套[审阅总册](BASELINE_G1_REVIEW_PACKET.zh-CN.md)、[实施与验收路线](BASELINE_G1_EXECUTION_ROADMAP.zh-CN.md)、[独立审计](../evidence/BASELINE_G1_REVISION_AUDIT_2026-10-08.md)。本文件将GD待决项收敛为可接受或退回的具体建议；非继续把关键语义留给实施者猜。
 
 “必须”表示接受本版本后实施所需满足的语义；不是声称当前实现已满足。字段为规范级数据模型，生产schema/SDK在E1–E4按此实现、生成与验证，不在本轮注册wire版本。已有实现/外部方法只作为明确标注的复用依据。
 
 ## C01 首发任务与信息范围
 
-推荐资格范围：单人、基础游戏Defect、标准A0、固定游戏构建与允许modset，从第一个局内选择到原生胜负结果及summary退出；用户管理侧负责启动/继续/场景准备。支持平台先本机macOS原生Host，Linux/Windows继续portable源码检查；其他实际Host/平台单独资格，不假称都能加载游戏。游戏版本不是永久固定，变更按受影响机制重新资格。
+推荐设计范围：单人基础游戏全部角色A0–A10，Defect A0作为首个资格切片，固定游戏构建与允许modset，从第一个局内选择到原生胜负结果及summary退出；用户管理侧负责启动/继续/场景准备。支持平台先本机macOS原生Host，Linux/Windows继续portable源码检查；其他实际Host/平台单独资格，不假称都能加载游戏。游戏版本不是永久固定，变更按受影响机制重新资格。
 
-范围内可达的基础游戏卡牌/药水/遗物Hook、特殊事件与教程弹窗仍在分母；不能为了早交付标成扩展后删掉。不在首版承诺内：多人、任意玩法Mod、其他角色/难度的完整资格、像素坐标控制、真实视觉输入、可克隆模拟器、自动通用集群调度。它们可以复用底座扩展，不能借未覆盖证明泛化。
+范围内可达的基础游戏卡牌/药水/遗物Hook与特殊事件仍在分母；教程默认由管理/任务准备关闭，显式教程profile另验；不能为了早交付标成扩展后删掉。不在首版承诺内：多人、任意玩法Mod、像素坐标控制、真实视觉输入、可克隆模拟器、自动通用集群调度。它们可以复用底座扩展，不能借未覆盖证明泛化。
 
 信息默认是**当前已进入逻辑页的完整公开内容、实际揭示的提示/预览及公开历史**。typed对象/关系为主合同，确定性可读renderer按对象展开正文；紧凑传输/缓存不改变信息曝光时间。向量、token、模型摘要属于Agent表示，不是唯一环境格式。资料操作依当前原生能力进入/退出页面，不默认把未打开牌堆/奖励组/商店的内容聚合进输入。
 
@@ -24,7 +26,8 @@
 | Annotator | 原生Human行为及捕获质量、exact causal关系 | RawEvidence，不自行授予训练资格 |
 | Evidence | 不可变原件完整性/来源验证、封包与传输 | VerificationReport，不制造Human来源或科研资格 |
 | Policy Runtime | 授权窗口、唯一控制出口、执行账本、停止与恢复、AgentRun | 消费封装Agent输出，不负责推理/过滤C |
-| Agent / STPD | 表示、记忆、时机/查询/动作策略、训练目标和评价 | AgentSpec、Projection/Input/TargetSpec、数据/模型/报告 |
+| 封装Agent / Model | Agent直接对接声明协议；Model执行具体计算；组件及职责分配可调整 | AgentSpec、模型输入输出/状态与运行产物 |
+| 研究实现（当前STPD） | 数据投影、目标、训练与评价，不等于所有Agent | Projection/Input/TargetSpec、数据/模型/报告 |
 | 项目应用 | 用途/资源/作业/产物/共享/分发，统一入口 | typed应用用例；不代签游戏或研究结果 |
 
 数据面承载公开信息/请求/产物；控制面承载授权/生命周期/作业；证据面保存已经发生的事实和关系。逻辑隔离不要求三个进程、三个仓库或三套存储。一个实例只有一个native写入owner；旁观/管理/录制不私建第二局或抢同一stdin。
@@ -35,7 +38,7 @@
 
 能力至少区分：realtime/paused/stepped；当前信息字段与事件范围；capture/render质量；List/Prefix/Resolve；request retention/reconcile；state恢复；管理seed/save/restore；视觉/分支/多玩家。required缺失或unknown即启动失败；不得自动换一个信息更少或游戏暂停的profile。
 
-连接、游戏控制、录制、训练用途是四种不同许可。Agent包不得获得管理回档、游戏文件、凭据或私有queue identity。允许的控制元数据保存在客户端审计侧，只有AgentInputSpec明确列入的公共特征进入模型。协议控制版本变化不自动重训，输入/时机含义变化必须新profile或新AgentSpec并重验。
+连接、游戏控制、录制、训练用途是四种不同许可。Agent权限按角色与任务合同决定。普通局内策略不获得任意底层操作；获授权的完整实验Agent/Runner可持有限Prepare/Reset/Save等任务能力，独立于gameplay目录并记录预算/起点/干预。管理凭据、私有queue identity和游戏隐藏状态不得作为普通策略特征。允许的控制元数据保存在客户端审计侧，只有AgentInputSpec明确列入的公共特征进入模型。协议控制版本变化不自动重训，输入/时机含义变化必须新profile或新AgentSpec并重验。
 
 ## C04 Frame、事件与时间
 
@@ -102,7 +105,7 @@ Stop：先使新增mutation授权无效和取消未提交推理，再核对在�
 
 原生Human不是API客户端。拟捕获：公开view/focus/preview/choice/进入退出、输入可用性、Human输入seam H、exact admission/execution/Commit/successor、run/combat/actor/terminal边界及gap；不录每个像素抖动，不声明人实际理解所有曝光内容。原件与派生内容分开存储，事件/输入/append时序分别保留。
 
-`RawEvidence → VerificationReport → ProtocolTrace → AgentInputTrace → SequenceInput + TargetBundle`保留父来源和转换版本。T目标协议有效、R实际实现/replay、H保真Human时机、D假设性重表达独立标记；稳定重表达必须证明目标状态/目录可实现，不能把queued牌的execution S直接改成再次可提交的H。
+`RawEvidence → VerificationReport → ProtocolTrace → AgentInputTrace → SequenceInput + TargetBundle`保留父来源和转换版本。T目标协议有效、R实际实现/replay、H保真Human时机、D假设性重表达独立标记；稳定重表达可基于明确假设生成探索性D监督，保留丢弃/推断字段和验证状态；不必先证明全轨迹等价才允许研究。若宣称真实目标轨迹可实现或Human时机保真，则需相应证据；不能将queued牌execution S直接冒充原Human H。
 
 | 用途 | 必需证据/准入 | 缺失处理 |
 | --- | --- | --- |

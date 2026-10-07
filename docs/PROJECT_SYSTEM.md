@@ -77,8 +77,46 @@ line endings in Connector do not authorize new drift and are not a reason for a
 mass-format change. A formatter or linter earns machine enforcement only after
 it catches a demonstrated recurring defect, can enter without a mass rewrite,
 has low false-positive/CI cost, and does not duplicate compiler/type checks.
-V1 retains `.editorconfig`, compiler/type checking, and tests as style
-enforcement.
+Retain existing language gates, including Python Ruff/mypy; do not add a new
+blanket linter/formatter suite or mass rewrite merely for consistency.
+
+| Language / material | Current authority and enforcement | Boundary |
+| --- | --- | --- |
+| All source | root `.editorconfig`: UTF-8, LF, final newline, whitespace and indentation | Editor configuration is not proof every historical file is formatted |
+| Python | `python/pyproject.toml`: Ruff E/F/I/UP/B/SIM, line length 100, mypy; executed by `python/tools/project.py` | No claim that `ruff format` is a current mandatory whole-repo gate |
+| TypeScript | owning `tsconfig.json`: strict types, unchecked indexing and filename-case checks where configured | No claim an ESLint suite is configured |
+| C# | owning project/Directory.Build.props and compiler checks | Nullable, language version and warnings-as-errors differ by project; do not claim global uniformity |
+| Documentation | project-system links, commands, routing and instruction budgets | Semantic freshness, clear naming and evidence scope require review |
+
+### Terms and writing
+
+Use Agent for the complete entity speaking a declared interaction contract; Model
+for a concrete computational structure with explicit inputs/outputs, optionally
+including state. One model call is not necessarily one Agent decision or one
+game action. STPD names the current research implementation, not every Agent.
+Clarify game Agent, engineering collaborator and Human actor when ambiguous.
+Interface placement and task-management capabilities remain design decisions,
+not consequences of the word Agent. Logical roles can map to reusable current
+components without freezing their names or deployment topology.
+
+Lead prose with what a user or consumer can do and what happens. Explain acronyms
+on first use; prefer one precise claim per sentence. Label proposal, accepted
+contract, source implementation, executed evidence and unknown separately. Give
+scope, conditions and failure behavior for words such as supported, complete,
+automatic and default. Keep normal, stale/rejected and unknown examples distinct.
+Preserve exact wire identifiers and historical producer/schema IDs rather than
+renaming them for style. Link to the owning rule, command or evidence instead of
+copying status into several documents.
+
+### Incremental adoption
+
+The existing baseline E0 inventory maps configuration, terms, compatibility and
+real drift. Each E1–E6 owning change follows current standards for new/modified
+code; no unrelated formatting sweep. Module moves require a reason, consumer and
+identity map, migration/rollback and scoped checks. V1/G3 review current routing,
+terminology and contract consistency; release preserves archival readability.
+Component-guide wording is repaired within its owning identity-aware packet.
+These are activities within existing tasks, not a second set of stage IDs.
 
 ## Agent and Codex path
 

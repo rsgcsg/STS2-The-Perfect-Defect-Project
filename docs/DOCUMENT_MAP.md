@@ -5,8 +5,9 @@ Use the smallest route that answers the task.
 ## Current baseline design packet
 
 - [P0–P5 full delivery](design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md): D-M2 closure, candidate cost comparison, REQ verification matrix and next acceptance.
+- [G1-RC2 boundary and budget](design/BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md), [revision audit](evidence/BASELINE_G1_REVISION_AUDIT_2026-10-08.md), [budget receipt](evidence/BASELINE_G1_INPUT_BUDGET_2026-10-08.json), and [current manifest](evidence/BASELINE_G1_MANIFEST_2026-10-08.json): unaccepted interface alternatives and measured synthetic sizing; prior dated review remains historical.
 - [G1 review packet](design/BASELINE_G1_REVIEW_PACKET.zh-CN.md), [contracts](design/BASELINE_G1_CONTRACTS.zh-CN.md), [execution roadmap](design/BASELINE_G1_EXECUTION_ROADMAP.zh-CN.md), [audit](evidence/BASELINE_G1_AUDIT_2026-10-07.md), and [manifest](evidence/BASELINE_G1_MANIFEST_2026-10-07.json): complete candidate awaiting owner approval; later runtime and scientific gates remain separate.
-- [A system journeys](design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md): selected main direction, 14 complete consumer/data journeys, joint Host/recording/learning/operations evaluation and G1 decisions.
+- [A system journeys](design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md): proposed direction, not approved, 14 complete consumer/data journeys, joint Host/recording/learning/operations evaluation and G1 decisions.
 - [Agent/protocol blueprint](design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md): current complete design, Agent-owned timing, optional boundary facade, four reference compositions and end-to-end learning/runtime cases.
 - [Protocol v1 synthesis](design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md): current consolidated protocol proposal, capture limits, scoped mappings, LN-B1/LN-E1 and learned timing.
 - [L-N queued timing](design/BASELINE_LN_QUEUED_TIMING.zh-CN.md): Human input versus execution time, native queues, conversion assumptions, latency and qualification.

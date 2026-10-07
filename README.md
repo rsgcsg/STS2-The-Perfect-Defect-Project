@@ -38,9 +38,11 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
+- [G1-RC2 boundary, Agent/Model and input budget](docs/design/BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md): three protocol parts, alternative responsibility placements, explicit model inputs, all-character scope and measured synthetic sizing. D01 remains undecided.
+
 - [G1 complete review packet](docs/design/BASELINE_G1_REVIEW_PACKET.zh-CN.md): plain-language guide, detailed contracts, independent audit, and G2/V1/G3/research roadmap. G1 awaits the owner’s understanding and explicit approval. Start here.
 
-- [A system journeys and joint evaluation](docs/design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md): selected main direction, 14 complete consumer/data journeys, Host and three-chain stress tests, and remaining G1 decisions.
+- [A system journeys and joint evaluation](docs/design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md): proposed main direction, 14 complete consumer/data journeys, Host and three-chain stress tests, and remaining G1 decisions.
 
 - [Agent/protocol blueprint](docs/design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md): detailed event contract, optional boundary facade, four Agent designs, full interaction/data/runtime examples and bounded executable reference.
 
@@ -57,7 +59,7 @@ restrictions; local and cloud views do not create separate copies of authority.
   and [bounded P5 evidence](docs/evidence/BASELINE_P5_EVIDENCE_2026-10-06.md).
   [Three Agent contracts and four concrete Host combinations](docs/design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md)
   now define the detailed choices. D-M2 sequence-N is the reference journey;
-  A is now the selected main direction; detailed G1 acceptance and deployment
+  A and its detailed interface remain under discussion; detailed G1 acceptance and deployment
   remain pending.
 
 - [New baseline foundations: P0 needs and P2 upper design](docs/design/BASELINE_FOUNDATION.zh-CN.md),
