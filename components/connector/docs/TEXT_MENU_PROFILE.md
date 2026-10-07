@@ -166,3 +166,25 @@ a Model consumer must require its own complete input/menu scope before inference
 Source, exact-game tests, build, install, loaded identity and actual live repeat-read
 validation remain separate. This additive source path does not qualify all scenes,
 all characters, the final native-flat relation or Human exposure history.
+
+## Native tip entry/return lifecycle
+
+Signal-opened card/orb/top-bar tips retain the exact visible source and whether
+entry used native `FocusEntered` or `MouseEntered`. Returning from that owned tip
+emits the corresponding `FocusExited` or `MouseExited` on the same current source
+before idempotent removal of the exact tip owner. Direct relic tips are created
+without such a signal entry and retain removal-only return.
+
+This pairing follows the native control lifecycle. On the exact supported macOS
+`9cb4f1ad` game assembly, card focus is latched: removing the rendered hover tip
+alone does not unfocus its holder, so another entry on that same holder cannot
+create a new tip. Native hand-card unfocus also clears the hand's focused-holder
+and hover-tracker state and refreshes presentation layout. The adapter therefore
+uses the declared exit signal; it never patches private focus fields or bypasses
+native behavior by directly rebuilding another card's tips.
+
+Changed/dead/hidden sources or changed tip owners fail before exit/removal.
+A native callback exception remains an unknown delivery through the existing
+executor; there is no automatic retry. Exact-game regression tests establish
+source behavior only; same-holder open → return → reopen requires a fresh built,
+installed and cold-loaded runtime canary for each new artifact.
