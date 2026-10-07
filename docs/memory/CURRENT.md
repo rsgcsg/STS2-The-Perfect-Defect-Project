@@ -10,14 +10,18 @@ runtime and research qualification remain separate.
 The owner requested complete G1 design preparation and independent audit,
 including history, existing source, external references and the downstream plan.
 BND-2 is the owner’s tentative responsibility-allocation choice. Full D01,
-information/action/timing and the first Model remain under discussion. G1 passes only after the owner reads, understands and
+information/action/timing and exact Model designs remain under discussion.
+The owner requires structured M2 in the early implementation plan. G1 passes only after the owner reads, understands and
 explicitly approves the candidate. No response, review PASS, CI or merge is approval.
 Production implementation, real-data use/training, game/Human actions, spending,
 installation, deployment, merge, release and old branch cleanup are not authorized.
 
 ## Read and review
 
-1. [BND-2 and two M2 models](../design/BASELINE_BND2_TWO_M2_MODELS.zh-CN.md):
+1. [Large views and query protocol](../design/BASELINE_LARGE_VIEWS_AND_QUERY_PROTOCOL.zh-CN.md):
+   push/pull/hybrid delivery, 200–10000-card stress sizing, I/F source audit,
+   emergency behavior and early structured M2 plan.
+   [BND-2 and two M2 models](../design/BASELINE_BND2_TWO_M2_MODELS.zh-CN.md):
    complete Agent wiring, scoped information completeness, Text-M2 and a proposed
    structured Object-M2 with all-scene inputs and training.
    [RC2 boundary and input budget](../design/BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md):
@@ -51,7 +55,7 @@ product duties are explicitly reconciled in the candidate, not silently dropped.
 ## Anchors and rules
 
 Original develop base: `9556d21188b2deea027192567827a339a0ce50f7`.
-Model elaboration source base: `638b7698a9279788f9a83e2e2971ba0cf86969bc`.
+Model elaboration source base: `7df97961bb14cb26638308f6dbd8e21f1812e425`.
 Product/recovery reuse facts remain in the [P1 audit](../evidence/BASELINE_P1_AUDIT_2026-10-06.md).
 Follow [collaboration](../AI_COLLABORATION.md), [governance](../ENGINEERING_GOVERNANCE.md),
 [testing](../TESTING.md) and [workflow](../DEVELOPMENT_WORKFLOW.md).

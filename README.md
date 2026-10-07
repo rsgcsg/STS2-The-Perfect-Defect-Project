@@ -38,6 +38,8 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
+- [Large views and query protocol](docs/design/BASELINE_LARGE_VIEWS_AND_QUERY_PROTOCOL.zh-CN.md): push/pull/hybrid tradeoffs, 200–10000-card sizing, I/F source facts, and structured M2 in the early plan. BND-2 is tentative; G1 remains unapproved.
+
 - [Tentative BND-2 and two M2 models](docs/design/BASELINE_BND2_TWO_M2_MODELS.zh-CN.md): protocol data/completeness, the complete Agent, concrete text and structured model inputs, full-scene mapping and learning. Model choices and G1 remain unaccepted.
 
 - [G1-RC2 boundary, Agent/Model and input budget](docs/design/BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md): three protocol parts, alternative responsibility placements, explicit model inputs, all-character scope and measured synthetic sizing. D01 remains undecided.

@@ -1,0 +1,142 @@
+{
+  "candidate": "LargeView-0.1",
+  "bnd2_choice": "tentative",
+  "g1_approval": "pending",
+  "structured_m2_early_plan": "owner_required",
+  "files": [
+    {
+      "path": "CONTRIBUTING.md",
+      "sha256": "c18e8f2d6b6a3a5cf3c6c04923029b5006abbf00bb7c560656793a0123d96b86"
+    },
+    {
+      "path": "docs/PROJECT_SYSTEM.md",
+      "sha256": "a5c5da1791c1adf3fe48fc2f2ef9fa49a54b0e41b3934e14cb4f5263ed0be779"
+    },
+    {
+      "path": "docs/design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md",
+      "sha256": "ed0317cd5f69bb4ba6bad62d0bd6c495bf9145aefb297fe06ffac3e8613deb93"
+    },
+    {
+      "path": "docs/design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md",
+      "sha256": "9c800011cf8637529a5702b72bfd8bdfe1e207c8ee4e9f6803781071dd35b6a7"
+    },
+    {
+      "path": "docs/design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md",
+      "sha256": "41cd428facf58050e250821b335a64ebdb6f69e9a5b205f1f570d3cd67b01759"
+    },
+    {
+      "path": "docs/design/BASELINE_BND2_TWO_M2_MODELS.zh-CN.md",
+      "sha256": "8875fc7f656b4452f5ca5dd78ac36884afac13783894fec4ea92d9575f9e29d0"
+    },
+    {
+      "path": "docs/design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md",
+      "sha256": "f8d74135ba56ab4967ec546cb0fcafda9fdce194a37e0bf63b595ceb73b450c2"
+    },
+    {
+      "path": "docs/design/BASELINE_DESIGN_HISTORY.zh-CN.md",
+      "sha256": "097ec7e074be20a5e4c3dc67e0d94e91cc3f341b7bd12da4cf830d435808b913"
+    },
+    {
+      "path": "docs/design/BASELINE_FOUNDATION.zh-CN.md",
+      "sha256": "97a6037782f04ffc02fda97e2c5e1e4ed73bae29a9abd564e734f51aa49611a1"
+    },
+    {
+      "path": "docs/design/BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md",
+      "sha256": "cf0148ef90e33640a454e8c2fedaf4f6322089740a95c73ae09ddc56c52ab5dd"
+    },
+    {
+      "path": "docs/design/BASELINE_G1_CONTRACTS.zh-CN.md",
+      "sha256": "ec3bc5d45207235770b316626c59a8e271e11be1de57eda14554aa31c70a70bb"
+    },
+    {
+      "path": "docs/design/BASELINE_G1_EXECUTION_ROADMAP.zh-CN.md",
+      "sha256": "ae3050b7789b2070afebdb3807e6d41db5e02ce0f7d4d7b0becd49dac8c85a19"
+    },
+    {
+      "path": "docs/design/BASELINE_G1_REVIEW_PACKET.zh-CN.md",
+      "sha256": "9060dda0abb5211eaff3a3a8386fb66db7af936c8b8e0389310d83cd75f415c3"
+    },
+    {
+      "path": "docs/design/BASELINE_INTERACTION_CANDIDATES.zh-CN.md",
+      "sha256": "58337ba32a39ac5199101d822d9f8ac094d8927c911ca7273097186eb23231c8"
+    },
+    {
+      "path": "docs/design/BASELINE_LARGE_VIEWS_AND_QUERY_PROTOCOL.zh-CN.md",
+      "sha256": "b8873dbb3e258bea175cd9aa0389676812551d392396e96b6051277651577f52"
+    },
+    {
+      "path": "docs/design/BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md",
+      "sha256": "044d69303fed312676dd7dab98796aa6205bc20c04c86f7fc58d4a35e74e6f78"
+    },
+    {
+      "path": "docs/design/BASELINE_LN_QUEUED_TIMING.zh-CN.md",
+      "sha256": "aa004ef02a8748117accf4bb58206c9bf3b8dea6e71ac8c3bf950776cf1033ca"
+    },
+    {
+      "path": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md",
+      "sha256": "feb818a2782ef1686098173375bc1ea24f9aae0193bc3db13fec19ff9ca10857"
+    },
+    {
+      "path": "docs/design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md",
+      "sha256": "3e3b7f2d5c7f919ef8e6def1d323b9e093dc727f7cbece052690a0f89af058ff"
+    },
+    {
+      "path": "docs/design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md",
+      "sha256": "f72fba7a74e14a4ca490b31e6d211c03ae40def0bfee08c0ba3df3285c942dc9"
+    },
+    {
+      "path": "docs/design/BASELINE_SCENARIO_SPEC.zh-CN.md",
+      "sha256": "ab349cd8e7d0da5e1f715e6bd9ad3cadc38796ff1962a0aaacf801314cd9d65a"
+    },
+    {
+      "path": "docs/evidence/BASELINE_BND2_MODEL_REVIEW_2026-10-08.md",
+      "sha256": "2bc04eb5365a2cd4fcc8c089f348137d92e60a09e6be8017dc9ea5106c1a1ffe"
+    },
+    {
+      "path": "docs/evidence/BASELINE_G1_AUDIT_2026-10-07.md",
+      "sha256": "d7ae3881c2014310c0b5b7516cf4f1a74dce9099c8ca8d3cdc44b65f65449c75"
+    },
+    {
+      "path": "docs/evidence/BASELINE_G1_INPUT_BUDGET_2026-10-08.json",
+      "sha256": "ce78ef54f448fce23868d65d23202c1e7e2cde802da8ee065e1c5bb9816092d9"
+    },
+    {
+      "path": "docs/evidence/BASELINE_G1_REVISION_AUDIT_2026-10-08.md",
+      "sha256": "0d505ee4f3033ac49447fce15878106cb881d235c2bfdc8dabde3536d9f6e0d8"
+    },
+    {
+      "path": "docs/evidence/BASELINE_LARGE_VIEW_BUDGET_2026-10-08.json",
+      "sha256": "bca042a8f58e5e5c4cd24ec2d31ff72f6fbd4c04f70597bab36d25222d7e36ff"
+    },
+    {
+      "path": "docs/evidence/BASELINE_LARGE_VIEW_REVIEW_2026-10-08.md",
+      "sha256": "59d51536350485ed2b6389ad947656e87714035d0e9856d4d98578389e22e2b5"
+    },
+    {
+      "path": "docs/evidence/BASELINE_LEARNING_AUDIT_2026-10-06.md",
+      "sha256": "0b60c4f4212e846226a40a87ba39f42be7598e1519545195d473d0b878f12371"
+    },
+    {
+      "path": "docs/evidence/BASELINE_P1_AUDIT_2026-10-06.md",
+      "sha256": "ff6d9b9206cf238686066723363d8d40a8098f39beed9a275bf68bd7d87ccc7a"
+    },
+    {
+      "path": "docs/evidence/BASELINE_P5_EVIDENCE_2026-10-06.md",
+      "sha256": "2eaddcd1a38e6613e53eb3332b7efb774e33ac75c5bfc01c249227c9f8c2dd1f"
+    },
+    {
+      "path": "docs/plans/BASELINE_TASKS.zh-CN.md",
+      "sha256": "54bde3e78a2cd3e0c1a2660d63a0941054ddb01f206e023d9ff8a6cbddff35c4"
+    },
+    {
+      "path": "tools/g1_input_budget_probe.py",
+      "sha256": "c8576bad64df9466cedd85e199f8c5b36790589706920c6dd946985531afd990"
+    },
+    {
+      "path": "tools/g1_large_view_budget_probe.py",
+      "sha256": "9cc0e1cf10342be97e5450e71b771e6a4349b67da3e76394ab2a99df3de7746d"
+    }
+  ],
+  "content_set_sha256": "712a37d86fb767158b8ec511b73adc93805671b8dbd2417e0d145fd75f6f8fe8",
+  "scope": "design/source and synthetic sizing only"
+}

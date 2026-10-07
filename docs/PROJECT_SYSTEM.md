@@ -118,6 +118,18 @@ terminology and contract consistency; release preserves archival readability.
 Component-guide wording is repaired within its owning identity-aware packet.
 These are activities within existing tasks, not a second set of stage IDs.
 
+### Performance as part of interface design
+
+For each substantive data, interaction or model change, state the relevant scale,
+time and space costs: objects, candidates, tokens, relations, payloads, retained
+versions, round trips, native-thread work, queues and model/training activations.
+Separate measured results, arithmetic estimates and untested assumptions. Define
+normal, rare-normal and stress behavior, including cancellation and honest limits.
+Caching, batching, pagination and chunking must preserve the declared semantics;
+information loss, changed exposure or approximate selection needs an explicit
+input/Agent contract. Use targeted profiling where it answers a real unknown;
+this is not a requirement to benchmark trivial edits or repeat full tests.
+
 ## Agent and Codex path
 
 Root `AGENTS.md` contains the common hard shell and map. Connector, Host
