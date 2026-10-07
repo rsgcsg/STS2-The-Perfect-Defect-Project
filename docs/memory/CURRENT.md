@@ -9,14 +9,18 @@ runtime and research qualification remain separate.
 
 The owner requested complete G1 design preparation and independent audit,
 including history, existing source, external references and the downstream plan.
-Scheme A and its concrete boundaries remain under discussion. G1 passes only after the owner reads, understands and
+BND-2 is the owner’s tentative responsibility-allocation choice. Full D01,
+information/action/timing and the first Model remain under discussion. G1 passes only after the owner reads, understands and
 explicitly approves the candidate. No response, review PASS, CI or merge is approval.
 Production implementation, real-data use/training, game/Human actions, spending,
 installation, deployment, merge, release and old branch cleanup are not authorized.
 
 ## Read and review
 
-1. [RC2 boundary and input budget](../design/BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md):
+1. [BND-2 and two M2 models](../design/BASELINE_BND2_TWO_M2_MODELS.zh-CN.md):
+   complete Agent wiring, scoped information completeness, Text-M2 and a proposed
+   structured Object-M2 with all-scene inputs and training.
+   [RC2 boundary and input budget](../design/BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md):
    pending protocol/role placement, all-character A0–A10 design target, tutorial
    preparation, lossy data projection, concrete Model inputs and synthetic sizing.
    [G1 review packet](../design/BASELINE_G1_REVIEW_PACKET.zh-CN.md): plain-language
@@ -47,7 +51,7 @@ product duties are explicitly reconciled in the candidate, not silently dropped.
 ## Anchors and rules
 
 Original develop base: `9556d21188b2deea027192567827a339a0ce50f7`.
-RC2 source audit base: `b1875e9744b858d756897c6f46071df20362ab52`.
+Model elaboration source base: `638b7698a9279788f9a83e2e2971ba0cf86969bc`.
 Product/recovery reuse facts remain in the [P1 audit](../evidence/BASELINE_P1_AUDIT_2026-10-06.md).
 Follow [collaboration](../AI_COLLABORATION.md), [governance](../ENGINEERING_GOVERNANCE.md),
 [testing](../TESTING.md) and [workflow](../DEVELOPMENT_WORKFLOW.md).
