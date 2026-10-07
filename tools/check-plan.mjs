@@ -7,22 +7,42 @@ import { fileURLToPath } from "node:url";
 import { eligibleEvent, findReceipt } from "./check-receipt.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
-// Explicit editorial surfaces only. Governance, contracts, component docs and
+// Explicit prose surfaces only. Governance, contracts, component docs and
 // unknown paths retain the complete suite. Python owners have a separate full consumer gate.
 const editorial = new Set([
   "README.md", "CONTRIBUTING.md", "docs/NEW_MEMBER_HANDOFF.zh-CN.md",
   "docs/NEW_ENGINEER_GUIDE.md", "docs/DOCUMENT_MAP.md", "docs/STATUS.md",
 ]);
 
+function prose({status, file, oldMode, newMode}) {
+  // Mode comes from the committed raw Git diff, not extension or worktree bytes.
+  // Executable files, symlinks and type changes cannot masquerade as prose.
+  const regular = newMode === "100644" &&
+    ((status === "A" && oldMode === "000000") || (status === "M" && oldMode === "100644"));
+  const surface = (status === "M" && editorial.has(file)) ||
+    file === "docs/memory/CURRENT.md" || /^docs\/(?:design|plans|evidence)\/[^/]+\.md$/.test(file);
+  return regular && surface;
+}
+
 export function classifyChanges(entries) {
   if (!entries.length) return { scope: "full", reason: "empty_or_unknown_diff" };
-  if (entries.every(({ status, file }) => status === "M" && editorial.has(file))) {
-    return { scope: "docs", reason: "modified_editorial_allowlist_only" };
+  // Protected instructions cannot enter the Python report-companion route either.
+  // Case variants stay protected on case-insensitive supported workstations.
+  if (entries.some(({file}) => /(?:^|\/)(?:AGENTS|SKILL)\.md$/i.test(file))) {
+    return {scope: "full", reason: "protected_instruction_change"};
+  }
+  if (entries.some(({oldMode, newMode}) =>
+    (oldMode !== undefined && !["000000", "100644"].includes(oldMode)) ||
+    (newMode !== undefined && !["000000", "100644"].includes(newMode)))) {
+    return {scope: "full", reason: "non_regular_or_executable_change"};
+  }
+  if (entries.every(prose)) {
+    return { scope: "docs", reason: "regular_prose_surfaces_only" };
   }
   const pythonOwner = ({file, status}) => ["M", "A", "D"].includes(status) &&
     /^python\/(spireagent|stpd|tests)\//.test(file) && !/(^|\/)AGENTS\.md$/.test(file);
   // Reports accompany a Python fix; they do not introduce another executable owner.
-  // Standalone evidence/governance edits still use full, as do evidence deletions.
+  // Eligible standalone prose uses docs; governance and evidence deletions stay full.
   const companion = ({file, status}) =>
     (status === "M" && (editorial.has(file) || ["docs/memory/CURRENT.md", "python/docs/PROJECT_CONSOLE.md"].includes(file))) ||
     (["A", "M"].includes(status) && /^docs\/evidence\/[^/]+\.md$/.test(file));
@@ -45,13 +65,26 @@ export function parseDiff(raw) {
   return entries;
 }
 
+export function parseRawDiff(raw) {
+  const parts = raw.split("\0");
+  if (parts.pop() !== "") throw new Error("unterminated_diff");
+  const entries = [];
+  while (parts.length) {
+    const match = parts.shift().match(/^:(\d{6}) (\d{6}) [0-9a-f]{40} [0-9a-f]{40} ([AMDTUXB])$/);
+    const file = parts.shift();
+    if (!match || !file) throw new Error("unsupported_raw_diff_record");
+    entries.push({status: match[3], file, oldMode: match[1], newMode: match[2]});
+  }
+  return entries;
+}
+
 export function makePlan({ base, head = "HEAD", forceFull = false, cwd = root } = {}) {
   const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   try {
     // Resolve options as revisions, never interpolate them into a shell.
     const exactHead = git("rev-parse", "--verify", "--end-of-options", `${head}^{commit}`).trim();
     const exactBase = git("rev-parse", "--verify", "--end-of-options", `${base}^{commit}`).trim();
-    const entries = parseDiff(git("diff", "--no-renames", "--name-status", "-z", exactBase, exactHead, "--"));
+    const entries = parseRawDiff(git("diff", "--no-renames", "--raw", "--no-abbrev", "-z", exactBase, exactHead, "--"));
     const dirty = git("status", "--porcelain", "--untracked-files=normal").trim().length > 0;
     const route = forceFull || dirty ? { scope: "full", reason: forceFull ? "explicit_full" : "dirty_worktree" } : classifyChanges(entries);
     return { ...route, base: exactBase, head: exactHead, files: entries };
