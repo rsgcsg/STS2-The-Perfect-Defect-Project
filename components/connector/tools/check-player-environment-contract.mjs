@@ -98,6 +98,34 @@ requireIn(textContextHost, textContext.response_schema, "text menu context Host 
 requireIn(textContextHost, "ReferenceEquals(before, currentRun())", "whole-capture run reference check");
 requireIn(textContextHost, "Entities.GetId(run, \"run\")", "process-local run identity");
 
+// S0 is additive: its read profile never replaces text-v2 submission authority.
+const sealed = JSON.parse(read("contracts/sealed-observation.json"));
+const sealedHost = read("host/PlayerEnvironment/Protocol/SealedObservationContracts.cs");
+const sealedSdk = read("sdk/typescript/src/sealedObservation.ts");
+const sealedService = read("host/PlayerEnvironment/Reads/SealedObservationService.cs");
+const sealedTransport = read("host/PlayerEnvironment/Transport/ConnectorMod.SealedObservation.cs");
+for (const schema of Object.values(sealed.schemas)) {
+  requireIn(sealedHost, schema, "C# sealed read schema");
+  requireIn(sealedSdk, schema, "SDK sealed read schema");
+}
+requireIn(sealedHost, sealed.read_profile, "C# sealed read profile");
+requireIn(sealedSdk, sealed.read_profile, "SDK sealed read profile");
+for (const [operation, route] of Object.entries(sealed.routes)) {
+  const [method, endpoint] = route.split(" ");
+  requireIn(sealedTransport, `case "${operation}" when request.HttpMethod == "${method}"`, "sealed transport operation");
+  requireIn(sealedHost, endpoint.slice(0, endpoint.lastIndexOf("/")), "sealed route prefix");
+  requireIn(sealedSdk, endpoint.slice(0, endpoint.lastIndexOf("/")), "sealed SDK route prefix");
+}
+for (const field of [...sealed.capture_fields, ...sealed.chunk_fields, ...sealed.release_fields])
+  requireIn(sealedSdk, `${field}:`, "sealed strict wire field");
+requireIn(sealedService, "FreezePublicTextMenuV2(ObserveTextMenuV2Context(), ConnectorMod._jsonOptions)",
+  "sealed synchronous capture and freeze");
+requireIn(sealedTransport, "RunOnMainThread(() => PlayerEnvironmentService.ReadCurrentSealedObservation(expected))",
+  "sealed capture game-thread dispatch");
+requireIn(sealedService, "JsonSerializer.Serialize(stream, context.Snapshot, options)", "sealed public Snapshot only");
+requireIn(client, "getFullTextMenuV2", "sealed full acquisition SDK");
+requireIn(sealedSdk, "decodeTextMenuV2Snapshot(JSON.parse(serializedSnapshot))", "sealed strict inner schema");
+
 if (failures.length > 0) {
   console.error(["Player Environment contract checks failed:", ...failures.map((item) => `- ${item}`)].join("\n"));
   process.exitCode = 1;

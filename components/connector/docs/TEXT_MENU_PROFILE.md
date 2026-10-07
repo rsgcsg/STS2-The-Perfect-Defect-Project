@@ -95,3 +95,74 @@ mechanism's allowed public verb; STPD consumes the verified semantic choice,
 without reproducing the game's input-method whitelist or placing that metadata
 in model text. Begin, confirm, cancel and target confirmation remain input
 observations, not proof of card Commit or a causal successor.
+
+## S0 immutable observation reads (additive source candidate)
+
+The `text-menu-v2-sealed-1` read profile retains a complete serialized public
+`text-menu-v2` Snapshot. Completeness still means every action at the current
+cursor, not a flattened catalog across deeper menus. Capture ID grants no input
+authority; `submitTextMenuV2` retains its exact expected snapshot, controller,
+fingerprint and native execute-time checks.
+
+Routes below share the existing loopback listener/origin policy. They publish the
+same fair-player public observation scope as the existing v2 Snapshot endpoint;
+no additional controller or registered-client authority is needed for reads.
+Capture handles are unguessable process-local retention references, not credentials.
+No private native frame, callback, hidden content or action result enters a capsule.
+
+| Operation | Route / request | Response schema |
+| --- | --- | --- |
+| Capabilities | `GET /api/player-environment/sealed-observation/capabilities` | `sts2.player-environment/sealed-observation-capabilities-1` |
+| ReadCurrent | `GET /api/player-environment/sealed-observation/current?input_profile=text-menu-v2&expected_snapshot_id=OPTIONAL` | `sts2.player-environment/sealed-observation-1` |
+| ReadSealed | `GET /api/player-environment/sealed-observation/read?capture_id=ID&cursor=TOKEN&max_bytes=OPTIONAL` | `sts2.player-environment/sealed-observation-chunk-1` |
+| Release | `POST /api/player-environment/sealed-observation/release` with `{"capture_id":"ID"}` | `sts2.player-environment/sealed-observation-release-1` |
+
+ReadCurrent calls `ObserveTextMenuV2Context` once and synchronously serializes its
+public Snapshot in the same game-main-thread call. The retained byte array is
+independent of mutable JSON/native source objects. It does not claim a global
+render/world fence, lossless transient exposure history or dirty-based skipped
+scans. A new ReadCurrent still performs a new capture. Missing/partial current
+state retains its truthful Snapshot status; consumers must gate Model readiness.
+
+The capture envelope contains `schema`, `read_profile`, `input_profile`,
+`capture_id`, `source_snapshot_id`, existing `session` (runtime/environment),
+`generation_id`, nullable `game_continuity_id`, `captured_at`, `expires_at`,
+`total_bytes`, `sha256`, `first_cursor`, and `capture_ordinal`. `generation_id`
+is the store's opaque process-local generation, not a native state epoch or a
+controller generation. `capture_ordinal` counts only sealed capture attempts,
+including failed attempts; it does not count all game/Connector observations.
+Continuity and this envelope are scheduling/diagnostic metadata, not Model input.
+
+Capsules are bounded to 8 MiB each, 64 MiB total and 32 objects, with 120-second
+monotonic retention. Wall-clock expiration is diagnostic; actual expiry uses the
+monotonic deadline. Live capsules are never silently evicted for capacity. Expired
+ones may be reclaimed. A stale expected snapshot, capture/serialization failure,
+oversize or capacity failure publishes no successful handle. Responses use
+`stale_snapshot`/409, `capture_failed`/500, `too_large`/413, `capacity`/429.
+Run continuity changes retain `run_continuity_changed_during_capture`/409.
+
+ReadSealed never enters the native/main-thread queue. Chunks contain `schema`,
+`capture_id`, `sha256`, byte `offset`, `total_bytes`, `data_base64`, nullable
+`next_cursor` and `end`. Cursors bind capsule, digest and offset with a process-local
+MAC; clients cannot forge skipped offsets or cross-capsule cursors. Requested
+chunk sizes are 1024–1048576 bytes, default 65536. Every nonterminal chunk fills
+the requested size; the terminal chunk contains the remaining bytes. A valid
+cursor can be replayed or read with a different valid size while the capsule lives.
+`expired`/410, `not_found`/404, `cursor_mismatch`/400 and `invalid_limit`/400
+fail explicitly. Release returns `released:true` even after expiration/release;
+it affects retention only, never controller or submitted-input state.
+
+The SDK `getFullTextMenuV2` verifies identity, contiguous byte offsets, full chunk
+coverage, terminality, complete SHA256, fatal UTF-8 decoding, strict v2 schema and
+snapshot/session agreement. It returns `{context,capture,serializedSnapshot}`;
+`serializedSnapshot` is the exact original public JSON text, whose UTF-8 SHA matches
+the capture, rather than a reserialization. It releases the retained capsule in
+`finally` without replacing the acquisition error if cleanup fails; TTL bounds
+failed cleanup. Direct ReadCurrent/ReadSealed users release their own handles.
+Repeated sealed reads neither capture native state nor update Model memory.
+A reconstructed settling/partial Snapshot remains available for operational wait;
+a Model consumer must require its own complete input/menu scope before inference.
+
+Source, exact-game tests, build, install, loaded identity and actual live repeat-read
+validation remain separate. This additive source path does not qualify all scenes,
+all characters, the final native-flat relation or Human exposure history.
