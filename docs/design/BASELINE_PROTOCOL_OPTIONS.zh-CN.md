@@ -22,6 +22,8 @@ AP 是 Agent 可以表达什么操作、怎样接收信息。HC 是 Host 能做�
 
 完整配置身份必须包含 AP/IP/OP/HC/MP 的版本和内容摘要；Host 实例、游戏/组件/构建另有身份。任一语义变更都形成不同完整配置。HC 或 MP 改变时，只有经一致性验证，才可保持 AP 兼容。相同 JSON 形状、同样拿到几张牌不构成行为等价。
 
+[排队时序补充](BASELINE_LN_QUEUED_TIMING.zh-CN.md)明确输入机会与效果完成分离；下面所有“一次请求”的表述均不把native队列改造成必须逐动作结算的世界。串行等待可作为Agent策略或独立profile，不能无说明重排Human观察。
+
 ### 三种 Agent 侧契约
 
 | 契约 | Agent 怎样取得额外资料 | Agent 必须维护的交互位置 | 真正不同之处 |
@@ -88,7 +90,7 @@ AP-L 也可以在 Agent 内用固定程序执行“打开→读取→返回”�
 
 ### 3.3 请求、反馈与副作用
 
-Agent 一次提交一个目录内请求，带 observation/context/catalog 绑定和 request ID。相同 ID 相同内容只查原记录；同 ID 不同内容拒绝。提交前旧绑定失效则不投递；投递后 unknown 只核对原尝试，不能换 ID 重试。当前实现是否已经满足每条能力须单独核对，本段是新设计要求。
+Agent 每次原子提交一个目录内请求，带 observation/context/catalog 绑定和 request ID；输入写入串行，已知接受的native效果可以多个在途。原生恢复input-ready即可提供下一机会，不要求前一个效果或canonical因果后继已经结束。相同 ID 相同内容只查原记录；同 ID 不同内容拒绝。提交前旧绑定失效则不投递；投递后 unknown 只核对原尝试，不能换 ID 重试。当前实现是否已经满足每条能力须单独核对，本段是新设计要求。
 
 反馈至少分开：请求是否接收、是否投递、实际公开后续状态、是否还等待子选择/续执行、观察绑定是否仍有效。法证通道另存 Commit/parent-await/因果证明，不把私有证明自动送给模型。`delivered` 不等于 `committed`，也不等于 `settled_successor_proved`。合法之后观察只是之后观察，除非 owning 因果证据支持更强结论。
 

@@ -17,7 +17,9 @@ merge, release or old branch cleanup.
 
 1. [L-N v1](../design/BASELINE_LN_V1_SPEC.zh-CN.md): 64 operation commitments,
    native previews, public inputs and model-neutral catalog access; unimplemented.
-2. [Human learning](../design/BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md): actual
+2. [Queued timing](../design/BASELINE_LN_QUEUED_TIMING.zh-CN.md): native overlap,
+   Human H versus execution S, cancellation and event-driven interaction;
+   [Human learning](../design/BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md): actual
    partial Human capture, M2 variants and six IL/structured/generative/RL cases.
 3. [P0–P5 delivery](../design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md),
    [protocol options](../design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md) and

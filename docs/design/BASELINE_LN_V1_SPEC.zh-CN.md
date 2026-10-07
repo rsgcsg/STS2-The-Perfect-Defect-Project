@@ -6,6 +6,8 @@
 
 Human学习配套：[Annotator、M2、生成模型与RL](BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md)。当前text Human side stream只有五类输入verb；环境动作可执行不等于已有完整Human示范。L01–L64必须另验被动capture/曝光/连续历史与各用途资格。
 
+关键时序补充：[排队出牌与异步时序](BASELINE_LN_QUEUED_TIMING.zh-CN.md)。原生输入可在先前效果未结束时恢复；一次提交一个输入不等于最多一张native效果在途。Human输入H与执行S分开记录，不能默认转换为结算后才决策的示范。
+
 ## 1. 目标、理念与明确范围
 
 真实目标是：让封装 Agent 在公开玩家信息边界内完成游戏，拥有策略所需的原生查看、预览、选择、取消和推进能力，形成可记录、可学习、可评价的经历；在这个前提下降低无意义交互和计算成本。不是模仿每个鼠标轨迹，不是最少 API 次数，也不是把所有 Agent 限定成一个全目录 scorer。
@@ -88,7 +90,7 @@ C(o) 不是所有游戏对象上的所有动词乘积，也不是全局所有按
 | L31 | 药水目标的焦点/预览、确认、取消 | 条件必需：按该原生目标机制实际提供的机会 | 当前 select/cancel 已登记，独立 focus 是否有新公开内容需逐机制核对；不从卡牌推断所有药水行为 |
 | L32 | 丢弃药水 | 必需，原生允许，走其确认阶段（若有） | 已有 discard_potion；不把丢弃当查看 |
 | L33 | 关闭药水弹窗 | 必需，原生可关闭 | 已有 close；不等于已使用/丢弃 |
-| L34 | 接收公开自动效果、敌人行动、新回合 | 事件；没有选择就不发 native no-op | 需要连续公开事件/ready 语义；Task finished 不自动证明最终后继 |
+| L34 | 接收公开自动效果、敌人行动、新回合、原生排队/取消的公开表现 | 事件；原生重新input-ready即可决定，不必等先前效果全部结束；没有选择不造native no-op | 输入、入队、执行、取消/Commit与因果后继分开；参见异步时序规格 |
 
 **“拖到敌人身上看数值”具体包含：**BeginCard→FocusTarget→读取原生当前卡显示→可换目标/移开/确认/取消。第一版必需提供，不要求模型控制像素路径。原生链 NTargetManager.CreatureHovered→NCardPlay.OnCreatureHover→NCard.SetPreviewTarget→UpdateVisuals 使用 target 更新动态显示，包括代码明确提及的 Vulnerable 条件。Host 应读取 actual rendered title/energy/star/enchantment/description 和已绑定 focus；不自行模拟最终伤害、敌人剩余 HP、隐藏抽牌或整段战斗。
 
@@ -191,6 +193,8 @@ Choice = SubmitOne(current_bound_action)
        | Yield(wait_for_public_event)
        | Abstain(public_reason)
 ```
+
+SubmitOne只约束一次输入写入；已知接受的原生动作效果可以多个在途。后续是否可输入由当前native owner/controls决定，不能等canonical S'才放行。结果未知的输入仍须核对，不能重发。
 
 `Resolve` 属提交前的非 mutation 绑定步骤；`scores`、token 概率、候选 shortlist、推理文字可选记录为模型诊断，不是授权必需字段。不能把 abstain 当游戏 skip，不能把 yield 当无限重复 no-op。Runtime 控制信息与策略输入分开。
 

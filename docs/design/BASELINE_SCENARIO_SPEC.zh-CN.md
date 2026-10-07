@@ -6,6 +6,8 @@
 
 L-N首版动作范围、缺口和完整合法关系详见[具体规格](BASELINE_LN_V1_SPEC.zh-CN.md)。原生目标focus引起的渲染数值变化、卡牌inspect升级切换属于首版要求；64行承诺不是当前已运行支持数量。
 
+排队出牌和延迟取消按[异步时序专题](BASELINE_LN_QUEUED_TIMING.zh-CN.md)解释。场景中的“反馈后继续”不要求前一效果完全结算；保留原生input-ready和Human输入时点，不用执行S重写Human看到的H。
+
 ## 1. 哪些是原生，哪些是我们的抽象
 
 | 标记 | 含义 | 例子 |

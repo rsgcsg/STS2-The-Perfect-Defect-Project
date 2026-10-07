@@ -5,6 +5,7 @@ Use the smallest route that answers the task.
 ## Current baseline design packet
 
 - [P0–P5 full delivery](design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md): D-M2 closure, candidate cost comparison, REQ verification matrix and next acceptance.
+- [L-N queued timing](design/BASELINE_LN_QUEUED_TIMING.zh-CN.md): Human input versus execution time, native queues, conversion assumptions, latency and qualification.
 - [L-N Human learning integration](design/BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md): actual Annotator and M2 seams, six classic cases, IL/generative/structured/RL data requirements.
 - [L-N v1 specification](design/BASELINE_LN_V1_SPEC.zh-CN.md): detailed operation scope, native previews, complete catalog authority with non-scoring Agents, failure ownership and acceptance.
 - [Concrete protocol options](design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md): three Agent contracts and four Host mappings, public details, failure/recovery, D-M2 and matched evaluation.

@@ -4,6 +4,8 @@
 
 本文纠正讨论重心：用户所说“记录”主要是 **Annotator 原生 Human 示范能否支持模型学习 L-N**，并非需要多少 API 调试日志。目标依[REQ-04–08](BASELINE_FOUNDATION.zh-CN.md)：封装 Agent、真实低干扰记录、可解释转换、训练/运行一致、可归因评价；首条优先链仍为 D-M2＋时序 N，之后再按资格加入 Z/O。RL、生成式、结构化输入等是保留的扩展能力，不因可表达就称已实现。
 
+最重要的时序案例另见[排队出牌专题](BASELINE_LN_QUEUED_TIMING.zh-CN.md)：Human输入B可发生在A未结算时，H_B不是B执行时的S_B。本文的序列是实际曝光/输入序列，不默认每步等完整结算。
+
 ## 1. 必须补上的闭环，而非只让 Agent 能操作
 
 ```text
@@ -212,7 +214,7 @@ Human动作是N训练target。它不作为同一步writer输入；真正发生�
 
 ### 在线RL
 
-RL环境adapter在合法控制窗口内把同一L-N语义映射为观察和动作。`step`提交一个原生语义动作，等待其已知反馈/所定义的下一观察；native child选择保持后续step。Obs不是完整Markov世界，递归策略需要自己的历史/state。
+RL环境adapter在合法控制窗口内把同一L-N语义映射为观察和动作。`step`提交一个原生语义动作并取得已知输入反馈/下一声明决策机会；不自动等该牌所有效果结算。原生队列可能有先前动作，native child选择保持后续step，输入与执行的时间关系见排队专题。Obs不是完整Markov世界，递归策略需要自己的历史/state。
 
 奖励/目标由任务与研究定义；Connector不提供“应该得几分”。learner reset请求由有授权的Host管理执行，不能从普通gameplay接口任意改存档或绕过任务。只读目录查询是Agent计算，不是获得新游戏资料；Inspect/Focus/Back则是实际L-N交互。
 

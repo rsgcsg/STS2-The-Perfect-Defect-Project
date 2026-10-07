@@ -4,6 +4,8 @@
 
 用户现倾向 L-N，[L-N 第一版具体规格](BASELINE_LN_V1_SPEC.zh-CN.md)进一步明确动作承诺、表示、目标预览、模型无关端口与loop责任；仍待G1范围接受。
 
+新增[排队出牌与异步时序](BASELINE_LN_QUEUED_TIMING.zh-CN.md)：输入可与先前效果重叠，不能默认逐牌结算串行化；H与执行S、input-ready与causal后继分别验收。
+
 新增[Human学习闭环审查](BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md)：现有Annotator text输入白名单与L-N浏览范围有缺口，M2/结构化/生成/RL各有数据资格要求。它将E2被动Human采集和数据投影提升为与E1执行同等必要的首版依赖，未声称已补齐。
 
 最新协议详案：[三套 Agent 契约、四个 Host 组合](BASELINE_PROTOCOL_OPTIONS.zh-CN.md)。它修正了本包早期 C-H 分类及优先推荐：C-H 是查询信息配置，不是独立协议；当前不选默认。

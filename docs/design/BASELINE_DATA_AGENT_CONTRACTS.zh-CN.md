@@ -260,3 +260,7 @@ G1 需接受：P3 profile 与首发范围；新历史/数据资格；首个 Agen
 ## L-N Human学习接缝的具体核对
 
 [Human学习闭环审查](BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md)核对当前五verb Human text side stream、canonical主链、observed-input M2与另候选Public M2的不同范围。局部N、M2连续prefix、生成式派生标签、Z/O和RL分别资格化；六个经典例子不能仅靠Agent端能执行就宣称可从Human学习。当前没有新corpus统计或完整L-N数据资格结论。
+
+## 排队Human输入与执行时间
+
+[异步时序专题](BASELINE_LN_QUEUED_TIMING.zh-CN.md)固定H输入顺序与execution S顺序的区别、排队后原生复验/取消、event-driven L-N与串行profile的转换条件。M2/BC按真实可用历史训练；执行Z/RL后继按自己的资格处理。普通更新观察、输入ready、native完成和canonical S'不合并，模型推理延迟进入运行与评价条件。

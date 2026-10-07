@@ -46,6 +46,8 @@
 
 用户随后明确“记录”重点是Annotator能否支撑学人类，而非API日志。新[Human学习闭环](BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md)据当前源码确认text Human机制只有五类verb，不能把更广canonical主链当完整L-N展示/选择历史；输入前观察、Human选择、连续prefix与后继/结果逐层资格化。已存在的不同M2路径分别保留原义，生成式动作JSON可派生，Human工具调用/思维不可虚构。
 
+用户指出快速连出、入队后复验/取消是历史核心问题。新[排队时序专题](BASELINE_LN_QUEUED_TIMING.zh-CN.md)核对原生FIFO队列、持牌UI先释放、执行时重验和条件回手；当前Annotator已有H与execution S分离及精确边界保护，不能继续沿用旧overlap数字。离散事件可以表达异步原生过程；强制全结算是额外profile/策略限制，不默认无损转换Human示范。Runtime的stableSuccessor当前并不证明全结算或canonical后继。
+
 ## 怎样维护这份沿革
 
 1. 新决定写入当前 owning 规范，沿革只记录来源、修正与替代关系，不复制全部当前状态。
