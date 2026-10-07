@@ -38,7 +38,9 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
-- [First-version protocol synthesis](docs/design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md): precise capture guarantees, native realization/data projection, boundary and model-timed profiles, explicit assumptions and acceptance. Start here for current protocol design.
+- [Agent/protocol blueprint](docs/design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md): current recommended event contract, optional boundary facade, four Agent designs, full interaction/data/runtime examples and bounded executable reference. Start here for the latest design.
+
+- [First-version protocol synthesis](docs/design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md): precise capture guarantees, native realization/data projection, boundary and model-timed profiles, explicit assumptions and acceptance. Supporting capture and abstraction detail.
 
 - [L-N queued-action timing](docs/design/BASELINE_LN_QUEUED_TIMING.zh-CN.md): native input/effect overlap, separate Human and execution histories, late cancellation and event-driven Agent design.
 

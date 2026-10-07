@@ -2,6 +2,8 @@
 
 日期：2026-10-06。版本：0.2。状态：**设计交付候选；已按 P5 的封装 D-M2 参考闭环细化，不是新数值实现、训练或 G1 接受。** 三条链的具体旅程见 [P5](BASELINE_ACCEPTANCE_PLAN.zh-CN.md)，场景语义见[设计册](BASELINE_SCENARIO_SPEC.zh-CN.md)；精确模型历史见 [依据审计](../evidence/BASELINE_LEARNING_AUDIT_2026-10-06.md)。
 
+当前具体实现组合以[Agent—协议完整蓝图](BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md)为准：P1边界调度＋M2、P2时机/动作模块、P3生成式、P4检索重排，共用事件协议；四个参考接线使用脚本模型，非训练产物。
+
 ## 1. 从完整 Agent 出发，而不只定义一个评分器
 
 任务规定目标、环境能力、起点/分布、预算、结束/接管和评价。AgentSpec 规定实现该任务的组件图、模型/编码器/配置身份、信息获取策略、状态机制、选择方式及资源需要。AgentRun 才是特定环境中的实际执行。相同权重换状态管理、查询策略或控制器，会形成不同 AgentSpec，不能只按模型文件比较。

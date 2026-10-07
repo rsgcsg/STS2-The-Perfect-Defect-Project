@@ -8,6 +8,8 @@
 
 [第一版综合方案](BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)进一步限定H是seam-specific契约投影，不保证稳定GUI；明确保真Human模仿与有假设的重表达监督均可成为研究数据，LN-B1投影需核队列归一化和目标目录。本文关于禁止未来回填的规则约束保真历史/目标时点合法信息，不禁止另立有身份的目标决策时点。
 
+最新[完整Agent蓝图](BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md)进一步加入ProtocolTrace→AgentInputTrace→ModelTrainingInput层：整个Agent收到事件与内部模型消费的事件可不同，固定调度/多模型/联合模型都需要各自输入与标签合同，不能强制所有E Agent训练一个等待头。
+
 ## 1. 必须补上的闭环，而非只让 Agent 能操作
 
 ```text

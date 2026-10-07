@@ -10,6 +10,8 @@ L-N 的最新首版细则见[L-N v1 规格](BASELINE_LN_V1_SPEC.zh-CN.md)：64 �
 
 最新[第一版综合方案](BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)将交互时序独立为LN-B1边界版/LN-E1自主时序版，明确capture质量和有假设的数据投影。本文的旧候选比较是来源材料；不因原生异步存在就排除合理的稳定边界设计。
 
+最新[完整蓝图](BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md)推荐一个事件合同＋多种Agent，按需保留外部B-view。内部稳定等待不另算协议；接口自主能力不要求单模型全部学会。
+
 ## 1. 我们实际在比较什么
 
 ```text

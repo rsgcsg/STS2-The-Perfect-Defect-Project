@@ -10,7 +10,9 @@
 
 最新协议详案：[三套 Agent 契约、四个 Host 组合](BASELINE_PROTOCOL_OPTIONS.zh-CN.md)。它修正了本包早期 C-H 分类及优先推荐：C-H 是查询信息配置，不是独立协议；当前不选默认。
 
-**当前协议总入口：**[第一版综合方案](BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)。它重新核对历史上层目标和H捕获保证，给出统一Core、LN-B1边界版/LN-E1模型自主时序、假设化数据转换和15个例子；旧“异步必须默认”表述已收窄，不因文档完成而自动接受某profile。
+**最新交付入口：**[Agent—协议完整蓝图](BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md)：一个事件协议的推荐主线、可选边界接口、四种Agent设计与可执行合成接线、16个完整例子、数据/训练/评估/运行合同。独立审查在本轮材料与验证完成后进行；不代表G1通过。
+
+**捕获与抽象依据：**[第一版综合方案](BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)。它重新核对历史上层目标和H捕获保证，给出统一Core、LN-B1边界版/LN-E1模型自主时序、假设化数据转换和15个例子；旧“异步必须默认”表述已收窄，不因文档完成而自动接受某profile。
 
 推荐阅读：本文→[逐场景设计册](BASELINE_SCENARIO_SPEC.zh-CN.md)→[P4 学习与工程合同](BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md)。[基础设计](BASELINE_FOUNDATION.zh-CN.md)保留 P0/P2；[P3](BASELINE_INTERACTION_CANDIDATES.zh-CN.md)保留候选；[P1](../evidence/BASELINE_P1_AUDIT_2026-10-06.md)及[学习审计](../evidence/BASELINE_LEARNING_AUDIT_2026-10-06.md)提供历史；[本轮证据](../evidence/BASELINE_P5_EVIDENCE_2026-10-06.md)说明真正检查了什么。
 
