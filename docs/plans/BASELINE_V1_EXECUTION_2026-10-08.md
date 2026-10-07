@@ -11,10 +11,10 @@
 | 包 | owning修改 | 验收 | 状态 |
 | --- | --- | --- | --- |
 | G1-v1 | lead收敛规范、当前授权/路由/旧文档定位，独立review | 明确source/capture/consume、S0关系scope、I/Foff、S最小图、真实闭环及限制 | G1-v1限定S0已接受 |
-| E1-S0 | Connector public capsule store/routes、SDK读取/组装、schema/文档 | 深冻结、chunk覆盖/expiry/cursor、零native sealed读、旧提交不变 | 待分派source |
-| E3/E4-S0 | S张量化/图、序列训练、导出和可信adapter | I/Foff、无身份泄漏、候选/实体绑定与顺序、无标签推进、真实小训练/导出一致 | 待分派source |
-| E0-checks | 精确纯prose路由＋repository cheapguards，必要反例 | CI自身完整检查与独立review，不回溯跳当前PRfull | 待分派独立source包 |
-| Lead闭环 | Runtime shared acquisition、isolated原生qualification、采集/训练/learned运行/Stop/报告 | exact源码→产物→加载→真实行为；$ ledger；局部范围结论 | 准备中 |
+| E1-S0 | Connector public capsule store/routes、SDK读取/组装、schema/文档 | 深冻结、chunk覆盖/expiry/cursor、零native sealed读、旧提交不变 | 已实现sealed capsule/SDK；真实read canary通过；信息页对象绑定与focus repair待新产物复验 |
+| E3/E4-S0 | S张量化/图、序列训练、导出和可信adapter | I/Foff、无身份泄漏、候选/实体绑定与顺序、无标签推进、真实小训练/导出一致 | 图/训练/导出/端口已有独立source接受与140项针对性测试；真实数据和训练待闭环 |
+| E0-checks | 精确纯prose路由＋repository cheapguards，必要反例 | CI自身完整检查与独立review，不回溯跳当前PRfull | PR166独立review通过，更新develop后等当前head CI |
+| Lead闭环 | Runtime shared acquisition、isolated原生qualification、采集/训练/learned运行/Stop/报告 | exact源码→产物→加载→真实行为；$ ledger；局部范围结论 | 已安装/读取/关闭canary；真实teacher暴露tip重访缺陷，修owning Connector后继续 |
 
 实施writer各有独立worktree/branch，公共wire只有E1 writer；model读取已封存contract。允许并行开发，实际安装/控制只有lead一位，重本地build/train各一slot。G1规范合入前的依赖topic须显式引用规范exact commit，不改其他旧writer分支。
 

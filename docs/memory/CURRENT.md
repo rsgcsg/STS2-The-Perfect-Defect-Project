@@ -37,10 +37,30 @@ never Human validation. I/F remains OFF and receipt/control never drives W.
 ## Anchors and evidence
 
 Design audit base: `bb87e35a02b715e82ba3fbfb373d8aee094c12d0`.
-Live develop was `9556d21188b2deea027192567827a339a0ce50f7` at initial refresh.
+Initial develop was `9556d21188b2deea027192567827a339a0ce50f7`. G1 specification PR165 merged normally as `a9d22fe327332610715a2deaa6862061e16747b8` after fresh Linux/Windows portable CI.
 G1-v1 is independently reviewed and accepted for the bounded S0 implementation.
-Source packets are being assigned; no source behavior has changed yet. No paid
-job submitted; no game or installation changed in this packet so far.
+S0 source implementation is active on `codex/g1-s0-integration`. Sealed public
+capsules, Runtime opt-in acquisition, a structured S-M2-0, export/port and a
+bounded teacher runner are implemented; independent reviews found and repaired
+metadata-reference leakage and real dependency/protocol integration mistakes.
+New source does not inherit earlier loaded qualification.
+
+An isolated native UI setup unlocked only `DEFECT1_EPOCH`, with the AI as actor.
+The current installed candidate advertises Connector `1.3.0-rc.10`, artifact SHA
+`f7cebe5c10521159c7a5610f2313579a0766f01e89757b2d28ae9482a6052445`.
+Its fresh read canary proved Defect A0 bootstrap, repeated/paged sealed reads,
+control handoff and clean native shutdown. A subsequent teacher run stopped on
+same-card tip revisit: delivery was known, but the public successor never changed.
+That failed run is preserved and excluded from the first training recipe.
+
+The native focus lifecycle repair has exact-game source/test evidence but is not
+yet installed. A second concrete correction is underway: information actions must
+bind their visible public objects instead of exposing several indistinguishable
+labels with only opaque IDs. The sole specification now states that requirement.
+No real model training or paid job has begun; spend remains USD 0. PR166 separately
+optimizes pure-prose check routing; another test-only packet removes repeated
+fixture training without changing production assertions or eligibility.
+
 
 ## Remaining Platform non-claims
 
