@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { componentGitState } from "../../../tools/component-git.mjs";
 import { createDeterministicTarGzip } from "./deterministic-archive.mjs";
+import { assertConnectorVersions } from "./connector-versions.mjs";
 
 const root = process.cwd();
 function npmExecFileSync(args, options) {
@@ -20,18 +21,10 @@ function npmExecFileSync(args, options) {
 const workspace = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const release = JSON.parse(fs.readFileSync(path.join(root, "release-manifest.json"), "utf8"));
 const version = workspace.version;
-if (release.release.version !== version) {
-  throw new Error(`release-manifest version ${release.release.version} does not match package version ${version}`);
-}
 const modManifest = JSON.parse(fs.readFileSync(path.join(root, "host", "mod_manifest.json"), "utf8"));
 const connectorMod = fs.readFileSync(path.join(root, "host", "ConnectorMod.cs"), "utf8");
-const nativeVersion = connectorMod.match(/public const string Version = "([^"]+)";/u)?.[1] ?? null;
-if (modManifest.version !== version || nativeVersion !== version) {
-  throw new Error(
-    `Connector release ${version}, Mod manifest ${modManifest.version} and native implementation ${nativeVersion ?? "missing"} must match`
-  );
-}
-
+assertConnectorVersions({ packageVersion: version, releaseVersion: release.release.version,
+  modManifestVersion: modManifest.version, nativeSource: connectorMod });
 const source = componentGitState(root);
 if (source.componentWorktreeStatus !== "clean") {
   throw new Error("Release packaging requires a clean Connector component worktree");
