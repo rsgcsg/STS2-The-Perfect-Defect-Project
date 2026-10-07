@@ -67,9 +67,12 @@ function full(value, id = "capture-1", ordinal = 1) {
       sha256: sha256(serializedSnapshot), total_bytes: Buffer.byteLength(serializedSnapshot),
       session: value.session, game_continuity_id: "game-1" } };
 }
-async function temporary(t) {
+async function temporary(t, closeResources = async () => {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "baseline-s0-test-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(async () => {
+    await closeResources();
+    await rm(directory, { recursive: true, force: true });
+  });
   return directory;
 }
 
@@ -191,9 +194,9 @@ test("bounded passthrough scene families have explicit choices and browse cannot
 });
 
 test("capsules preserve exact bytes; capture is not an offer; latest full snapshot join is mandatory", async t => {
-  const directory = await temporary(t);
-  const records = await S0RawRecords.create(path.join(directory, "raw"), "test", { id: "teacher" });
-  t.after(() => records.close());
+  let records;
+  const directory = await temporary(t, () => records?.close());
+  records = await S0RawRecords.create(path.join(directory, "raw"), "test", { id: "teacher" });
   const value = full(base);
   await records.capture(value);
   assert.equal(records.offerCount, 0);
@@ -217,9 +220,9 @@ test("capsules preserve exact bytes; capture is not an offer; latest full snapsh
 });
 
 test("corrupt or over-budget raw capsules never become policy offers", async t => {
-  const directory = await temporary(t);
-  const records = await S0RawRecords.create(path.join(directory, "raw"), "test", {}, { maxCaptureBytes: 1 });
-  t.after(() => records.close());
+  let records;
+  const directory = await temporary(t, () => records?.close());
+  records = await S0RawRecords.create(path.join(directory, "raw"), "test", {}, { maxCaptureBytes: 1 });
   const value = full(base);
   const bad = structuredClone(value);
   bad.serializedSnapshot += " ";
