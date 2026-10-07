@@ -101,15 +101,9 @@ export async function releaseReferenceController({
 }) {
   if (!controller || !expectedRuntimeInstanceId) throw new Error("reference_controller_missing");
   await controller.close();
-  const response = await fetchImpl(`${endpoint}/api/player-environment/control`, {
-    signal: AbortSignal.timeout(timeoutMs)
-  });
-  if (!response.ok) throw new Error(`reference_controller_status_http_${response.status}`);
-  const state = await response.json();
-  if (state.protocol_version !== "1.0.0"
-    || state.schema !== "sts2.player-environment/control-1"
-    || state.runtime_instance_id !== expectedRuntimeInstanceId
-    || !Array.isArray(state.clients) || state.controller != null) {
+  const state = (await new PlayerEnvironmentRestClient(endpoint, timeoutMs, fetchImpl)
+    .controlSnapshot()).data;
+  if (state.runtime_instance_id !== expectedRuntimeInstanceId || state.controller != null) {
     throw new Error("reference_controller_release_unconfirmed");
   }
   return {

@@ -124,7 +124,7 @@ test("reference handoff requires fresh exact-runtime unheld evidence after SDK c
   };
   const result = await releaseReferenceController({ controller, endpoint: "http://127.0.0.1:1234",
     expectedRuntimeInstanceId: "runtime-a", fetchImpl });
-  assert.deepEqual(calls, ["close", "http://127.0.0.1:1234/api/player-environment/control"]);
+  assert.deepEqual(calls, ["close", "http://127.0.0.1:1234/api/player-environment/controller"]);
   assert.equal(result.controller, null);
   assert.equal(result.basis, "fresh_control_observation_after_close");
   for (const invalid of [{ ...state, runtime_instance_id: "replacement" },
@@ -133,7 +133,7 @@ test("reference handoff requires fresh exact-runtime unheld evidence after SDK c
     await assert.rejects(releaseReferenceController({ controller,
       endpoint: "http://127.0.0.1:1234", expectedRuntimeInstanceId: "runtime-a",
       fetchImpl: async () => ({ ok: true, json: async () => invalid })
-    }), /release_unconfirmed/);
+    }), /release_unconfirmed|strict decoding/);
   }
   await assert.rejects(releaseReferenceController({ controller,
     endpoint: "http://127.0.0.1:1234", expectedRuntimeInstanceId: "runtime-a",
