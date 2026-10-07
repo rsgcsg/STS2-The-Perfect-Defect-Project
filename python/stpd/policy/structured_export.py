@@ -1,0 +1,250 @@
+"""Closed S-M2-0 inference package over the existing safe tensor-tree codec.
+
+The executable is the reviewed installed Python module, never supplied by a
+model artifact. Source and package hashes bind graph/projection/config/weights.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+from typing import Any
+
+import torch
+
+from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes, object_fields
+
+from ..canonical import semantic_hash
+from ..fullrun.structured_inputs import INPUT_ID, PROJECTION_VERSION
+from ..fullrun.text_menu_inputs import V2_SNAPSHOT_SCHEMA
+from ..models.structured_m2 import GRAPH_ID, SLOTS, WIDTH, StructuredM2
+from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
+
+PACKAGE_SCHEMA = "stpd/structured-m2-package-v1"
+WEIGHT_SCHEMA = "stpd/structured-m2-weights-v1"
+MANIFEST_NAME = "model.json"
+WEIGHTS_NAME = "weights.tensor-tree"
+MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_WEIGHTS_BYTES = 32 * 1024 * 1024
+ROOT = Path(__file__).resolve().parents[2]
+PROJECTION = {
+    "id": INPUT_ID,
+    "version": PROJECTION_VERSION,
+    "source_schema": V2_SNAPSHOT_SCHEMA,
+    "I": False,
+    "F": False,
+}
+GRAPH = {
+    "id": GRAPH_ID,
+    "width": WIDTH,
+    "slots": SLOTS,
+    "byte_vocabulary": 258,
+    "byte_embedding": 32,
+    "cnn_channels": 64,
+    "cnn_kernel": 3,
+    "relation_layers": 1,
+    "relation_aggregation": "typed_transform_masked_mean",
+    "entity_fields": "typed_local_mean",
+    "numeric": "known_signed_scale_signed_log1p",
+    "array_policy": "explicit_public_order_else_bag-v1",
+}
+
+
+def code_digest(root: Path = ROOT) -> str:
+    """Match the existing portable policy source scope without loading old recipes.
+
+    This is conservative source provenance, not a second artifact registry. In
+    particular the S0 adapter must not import obsolete Human training machinery
+    merely to hash files in the trusted installed source tree.
+    """
+    paths = sorted(
+        [*root.glob("stpd/**/*.py"), *root.glob("spireagent/**/*.py"), root / "uv.lock"],
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
+    if not (root / "stpd/policy/structured_port.py").is_file() or any(
+        path.is_symlink() or not path.is_file() for path in paths
+    ):
+        raise BoundaryError("structured_package", "trusted_source_missing")
+    rows = [
+        {
+            "path": path.relative_to(root).as_posix(),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        for path in paths
+    ]
+    return semantic_hash(rows)
+
+
+def _regular_bytes(path: Path, maximum: int) -> bytes:
+    if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= maximum:
+        raise BoundaryError("structured_package", "file_missing_or_size")
+    return path.read_bytes()
+
+
+def export_structured_package(
+    model: StructuredM2,
+    destination: Path,
+    *,
+    source_revision: str,
+    data_sha256: str,
+    source_kind: str,
+    teacher_sha256: str,
+    training: dict[str, Any],
+) -> dict[str, Any]:
+    digest(source_revision, "structured_package.source_revision", length=40)
+    digest(data_sha256, "structured_package.data_sha256")
+    digest(teacher_sha256, "structured_package.teacher_sha256")
+    if source_kind not in {"agent", "synthetic"} or not isinstance(training, dict):
+        raise BoundaryError("structured_package", "source_or_training")
+    model.validate_parameters()
+    if model.seed != 0:
+        raise BoundaryError("structured_package", "unsupported_initialization_recipe")
+    raw = encode_checkpoint(
+        {
+            "schema": WEIGHT_SCHEMA,
+            "graph": GRAPH,
+            "projection": PROJECTION,
+            "seed": model.seed,
+            "state_dict": dict(model.state_dict()),
+        }
+    )
+    if len(raw) > MAX_WEIGHTS_BYTES:
+        raise BoundaryError("structured_package", "weights_size_limit")
+    body = {
+        "schema": PACKAGE_SCHEMA,
+        "graph": GRAPH,
+        "projection": PROJECTION,
+        "seed": model.seed,
+        "adapter_code_sha256": code_digest(ROOT),
+        "weights": {
+            "path": WEIGHTS_NAME,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw),
+        },
+        "source": {
+            "source_revision": source_revision,
+            "data_sha256": data_sha256,
+            "source_kind": source_kind,
+            "teacher_sha256": teacher_sha256,
+        },
+        "training": training,
+        "runtime": {"device": "cpu", "dtype": "float32", "torch_version": torch.__version__},
+        "qualification": "engineering_only",
+    }
+    manifest = {**body, "model_id": semantic_hash(body)}
+    encoded = json_bytes(manifest)
+    if len(encoded) > MAX_MANIFEST_BYTES:
+        raise BoundaryError("structured_package", "manifest_size_limit")
+    if destination.exists():
+        raise BoundaryError("structured_package", "destination_exists")
+    destination.mkdir(parents=True)
+    (destination / WEIGHTS_NAME).write_bytes(raw)
+    # Manifest-last publication; incomplete output never loads as a package.
+    (destination / MANIFEST_NAME).write_bytes(encoded)
+    load_structured_package(destination)
+    return manifest
+
+
+def load_structured_package(
+    directory: Path,
+    *,
+    expected_manifest_sha256: str | None = None,
+) -> tuple[dict[str, Any], StructuredM2]:
+    if directory.is_symlink() or not directory.is_dir():
+        raise BoundaryError("structured_package", "directory_required")
+    if set(path.name for path in directory.iterdir()) != {MANIFEST_NAME, WEIGHTS_NAME}:
+        raise BoundaryError("structured_package", "package_inventory")
+    encoded = _regular_bytes(directory / MANIFEST_NAME, MAX_MANIFEST_BYTES)
+    if expected_manifest_sha256 is not None and hashlib.sha256(encoded).hexdigest() != digest(
+        expected_manifest_sha256, "structured_package.expected_manifest_sha256"
+    ):
+        raise BoundaryError("structured_package", "manifest_digest_mismatch")
+    manifest = object_fields(
+        decode_json(encoded),
+        {
+            "schema",
+            "graph",
+            "projection",
+            "seed",
+            "adapter_code_sha256",
+            "weights",
+            "source",
+            "training",
+            "runtime",
+            "qualification",
+            "model_id",
+        },
+        "structured_package",
+    )
+    if (
+        encoded != json_bytes(manifest)
+        or manifest["schema"] != PACKAGE_SCHEMA
+        or manifest["graph"] != GRAPH
+        or manifest["projection"] != PROJECTION
+        or manifest["qualification"] != "engineering_only"
+        or type(manifest["seed"]) is not int
+        or manifest["seed"] != 0
+        or manifest["adapter_code_sha256"] != code_digest(ROOT)
+    ):
+        raise BoundaryError("structured_package", "unsupported_package_identity")
+    body = {key: value for key, value in manifest.items() if key != "model_id"}
+    if manifest["model_id"] != semantic_hash(body):
+        raise BoundaryError("structured_package", "model_id_mismatch")
+    source = object_fields(
+        manifest["source"],
+        {"source_revision", "data_sha256", "source_kind", "teacher_sha256"},
+        "structured_package.source",
+    )
+    digest(source["source_revision"], "structured_package.source_revision", length=40)
+    digest(source["data_sha256"], "structured_package.data_sha256")
+    digest(source["teacher_sha256"], "structured_package.teacher_sha256")
+    if source["source_kind"] not in {"agent", "synthetic"} or not isinstance(
+        manifest["training"], dict
+    ):
+        raise BoundaryError("structured_package", "source_or_training")
+    runtime = object_fields(
+        manifest["runtime"], {"device", "dtype", "torch_version"}, "structured_package.runtime"
+    )
+    if (
+        runtime["device"] != "cpu"
+        or runtime["dtype"] != "float32"
+        or runtime["torch_version"] != torch.__version__
+    ):
+        raise BoundaryError("structured_package", "runtime_identity_mismatch")
+    weights = object_fields(
+        manifest["weights"], {"path", "sha256", "bytes"}, "structured_package.weights"
+    )
+    raw = _regular_bytes(directory / WEIGHTS_NAME, MAX_WEIGHTS_BYTES)
+    if (
+        weights["path"] != WEIGHTS_NAME
+        or type(weights["bytes"]) is not int
+        or weights["bytes"] != len(raw)
+        or weights["sha256"] != hashlib.sha256(raw).hexdigest()
+    ):
+        raise BoundaryError("structured_package", "weights_digest_mismatch")
+    decoded = object_fields(
+        decode_checkpoint(raw),
+        {"schema", "graph", "projection", "seed", "state_dict"},
+        "structured_package.payload",
+    )
+    if (
+        decoded["schema"] != WEIGHT_SCHEMA
+        or decoded["graph"] != GRAPH
+        or decoded["projection"] != PROJECTION
+        or decoded["seed"] != manifest["seed"]
+        or not isinstance(decoded["state_dict"], dict)
+    ):
+        raise BoundaryError("structured_package", "weights_identity_mismatch")
+    model = StructuredM2(seed=manifest["seed"])
+    expected = model.state_dict()
+    actual = decoded["state_dict"]
+    if set(expected) != set(actual) or any(
+        not isinstance(actual[key], torch.Tensor)
+        or actual[key].dtype != tensor.dtype
+        or actual[key].shape != tensor.shape
+        for key, tensor in expected.items()
+    ):
+        raise BoundaryError("structured_package", "state_dict_shape_or_type")
+    model.load_state_dict(actual, strict=True)
+    model.validate_parameters()
+    return manifest, model.eval()
