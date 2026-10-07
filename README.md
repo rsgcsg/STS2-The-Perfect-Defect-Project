@@ -42,6 +42,8 @@ restrictions; local and cloud views do not create separate copies of authority.
   contracts, abstract layers, S0 real instance, I/F-off structured Model and gates.
 - [Current execution packet](docs/plans/BASELINE_V1_EXECUTION_2026-10-08.md) and
   [CURRENT](docs/memory/CURRENT.md): authorization, owners, evidence and next steps.
+- [Completed S0 learning loop](docs/evidence/BASELINE_S0_LEARNING_LOOP_2026-10-08.md):
+  real Agent collection, structured-model training/export, native play and exact limits.
 - [Architecture](docs/ARCHITECTURE.md), [components](docs/COMPONENTS.md),
   [testing](docs/TESTING.md), [workflow](docs/DEVELOPMENT_WORKFLOW.md),
   [governance](docs/ENGINEERING_GOVERNANCE.md) and [project standards](docs/PROJECT_SYSTEM.md).
