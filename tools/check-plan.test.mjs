@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
-import { classifyChanges, parseDiff, makePlan, aggregatePassed, scopeCommands } from "./check-plan.mjs";
+import { classifyChanges, parseDiff, makePlan, checkPatch, aggregatePassed, scopeCommands } from "./check-plan.mjs";
 
 test("only modified editorial surfaces select docs; additions, deletion and rename stay full", () => {
   assert.equal(classifyChanges([{ status: "M", file: "README.md" }]).scope, "docs");
@@ -43,6 +43,27 @@ test("required aggregate rejects missing, failed, cancelled or unexpectedly skip
   for (const key of ["plan", "linux", "windows"]) for (const value of ["skipped", "cancelled", "failure", ""]) assert.equal(aggregatePassed("full", { ...full, [key]: value }), false);
   for (const key of ["plan", "docs"]) for (const value of ["skipped", "cancelled", "failure", ""]) assert.equal(aggregatePassed("docs", { ...docs, [key]: value }), false);
   assert.equal(aggregatePassed("unknown", full), false);
+});
+
+test("patch preflight checks the committed range on a clean checkout and validates refs", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "check-patch-"));
+  const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+  try {
+    git("init"); git("config", "user.email", "test@example.invalid"); git("config", "user.name", "Test");
+    fs.writeFileSync(path.join(cwd, "README.md"), "base\n"); git("add", "."); git("commit", "-m", "base");
+    const base = git("rev-parse", "HEAD");
+    assert.doesNotThrow(() => checkPatch({ base, cwd }));
+    assert.doesNotThrow(() => checkPatch({ base: "0".repeat(40), cwd }));
+    assert.doesNotThrow(() => checkPatch({ cwd }));
+    fs.writeFileSync(path.join(cwd, "README.md"), "bad trailing space \n"); git("commit", "-am", "bad");
+    assert.doesNotThrow(() => git("diff", "--check")); // Late dirty diff misses it.
+    assert.throws(() => checkPatch({ base, cwd }));
+    assert.throws(() => checkPatch({ cwd }));
+    fs.writeFileSync(path.join(cwd, "another.md"), "clean\n"); git("add", "."); git("commit", "-m", "later clean commit");
+    assert.throws(() => checkPatch({ base, cwd })); // Not just the last commit.
+    assert.throws(() => checkPatch({ base: "missing", cwd }));
+    assert.throws(() => checkPatch({ base: "--help", cwd }));
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
 });
 
 test("Python owner changes retain repository guards and both OS Python consumers", () => {
