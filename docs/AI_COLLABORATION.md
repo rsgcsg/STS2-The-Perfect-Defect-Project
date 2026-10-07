@@ -220,13 +220,50 @@ the worker's checkout. State the actual branch/commit and integration status in 
 Do not force-reset or merge another writer's branch just to read a design. Documentation
 changes by the architect remain reviewable candidates, not self-certified project gates.
 
-## Five-minute waiting checkpoint and bounded extension
+## Task packet and delivery format
 
-Owner update, 2026-09-23: five minutes remains a passive-wait checkpoint, with a
-bounded extension to ten minutes when progress is credible and completion is near.
+Owner refinement, 2026-10-06: use one stable task ID and one consumer-visible
+outcome. Baseline work uses the [P/E/G/V/R task index](plans/BASELINE_TASKS.zh-CN.md);
+subtasks retain the parent ID. Baseline task gates and engineering change classes
+are separate fields. Explanatory groupings never renumber active work.
+
+Use the [engineering task form](../.github/ISSUE_TEMPLATE/engineering_task.yml)
+or the same fields in an existing issue/PR. Scale detail to risk; a small packet
+can be short, but must not omit its owning fact, dependencies or acceptance.
+
+| Packet | Required content |
+| --- | --- |
+| Goal and basis | real need, task ID, accepted design/version, evidence and relevant historical decision |
+| Placement and scope | exact repo/base, owner, one writable worktree, paths, reusable mechanism, non-goals |
+| Dependencies and authority | producer/consumer contracts, shared writer, allowed operations/resources, unresolved decisions |
+| Validation | normal and negative examples, cheapest faithful checks, required evidence level, rollback |
+| Delivery | artifact/code/report, next consumer and use path, completion and stop conditions |
+
+The receiver rechecks changed refs/dependencies before editing. Independent
+investigation can run in parallel; provider/consumer implementation can run in
+parallel once shared semantics and examples are stable. One owner writes a shared
+contract, lifecycle state machine or integration ref. A changed interface triggers
+an impact update for its consumers; no worker changes semantics merely to make
+its local test pass. Use real useful concurrency, not a target worker count.
+
+Return exact head/artifact identity, behavior changed, actual checks and side
+effects, evidence scope, limitations, next consumer and remaining gate. Distinguish
+submitted, independently accepted, integrated and runtime-qualified. A claimed
+completion without usable artifacts and a consumer handoff is not delivery.
+
+## Five-minute passive-wait checkpoint
+
+Owner update, 2026-10-06: after about five minutes of only passive waiting, end
+that wait cycle. Switch to independent useful work, perform a bounded diagnosis,
+or provide a resumable handoff if nothing independent remains. Do not silently
+extend the old ten-minute waiting allowance or replace observers to wait forever.
 Active reading, implementation and review are not subject to this elapsed-work limit.
 Ordinary authorized repairs should finish locally; the human is not a relay for each
 assertion failure or each completed substep.
+
+Stopping conversational waiting is not cancelling CI, training or an external job,
+not evidence that it failed, and not a passed result. Preserve its exact identity
+and real monitor; never promise later notification without an actual mechanism.
 
 For an already authorized long CI/test/training job, prefer one real read-only observer
 bound to its exact run/head/attempt or local task identity. Declare a finite total window

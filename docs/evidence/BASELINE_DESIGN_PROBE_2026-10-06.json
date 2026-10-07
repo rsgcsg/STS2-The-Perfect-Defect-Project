@@ -1,0 +1,656 @@
+{
+  "schema": "p5-synthetic-design-probe-1",
+  "fixtureVersion": 1,
+  "sourceSha256": "fda63641804c9d918f72c8d710664d66325809355dece4c0e72b882b622943ea",
+  "runtime": {
+    "node": "v20.20.2",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "checks": [
+    {
+      "name": "different public histories distinguish equal current pages",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "transport duplicate does not write state twice",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "new occurrence with equal content is retained",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "same ID changed content is rejected",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "gap is not invented history",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "new environment generation is not old continuation",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "online reference boundary rejects future_label",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "online reference boundary rejects private_rng",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "online reference boundary rejects teacher_latent",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "candidate what-if reads do not mutate persistent state",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "empty catalog fails without a state write",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "state export is a copy, not an external mutable alias",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "separate Agent instances isolate history",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "offline public-prefix replay reproduces reference state",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "unknown delivery yields without a second selection",
+      "kind": "reference_transition",
+      "status": "pass"
+    },
+    {
+      "name": "current request binds complete catalog",
+      "kind": "binding_guard",
+      "status": "pass"
+    },
+    {
+      "name": "stale context after Read rejects old action",
+      "kind": "binding_guard",
+      "status": "pass"
+    },
+    {
+      "name": "different complete catalog rejects reused action binding",
+      "kind": "binding_guard",
+      "status": "pass"
+    },
+    {
+      "name": "old generation rejects request",
+      "kind": "binding_guard",
+      "status": "pass"
+    },
+    {
+      "name": "native effective confirmation differs from raw preference arithmetic",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "hand replace and grid max-cap are not one selection rule",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "preview back does not close parent choice",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "empty result null target and Task cancellation stay distinct",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "card reward return and final skip differ",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "reroll invalidates old generation of choices",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "unknown win has no negative label",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "known current floor is not failure floor",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "unknown combat end masks HP target",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "unexecuted branch has no observed outcome target",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "active plays count current play but not child or automatic repeat",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "few plays cannot unconditionally outrank survival",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "copied terminal labels have one independent group",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "provider completed is not accepted result",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "cancel requested is not provider stopped",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "submission unknown never creates a replacement attempt automatically",
+      "kind": "design_counterexample",
+      "status": "pass"
+    },
+    {
+      "name": "cost fixtures preserve the same required view set and gameplay count",
+      "kind": "cost_fixture",
+      "status": "pass"
+    },
+    {
+      "name": "automatic context removes query only when that view is actually provided",
+      "kind": "cost_fixture",
+      "status": "pass"
+    },
+    {
+      "name": "unneeded bundle facts increase fixture bytes",
+      "kind": "cost_fixture",
+      "status": "pass"
+    }
+  ],
+  "checksPassed": 38,
+  "checkKinds": {
+    "reference_transition": 15,
+    "binding_guard": 4,
+    "design_counterexample": 16,
+    "cost_fixture": 3
+  },
+  "costs": [
+    {
+      "profile": "C-L",
+      "scene": "small_combat_pile",
+      "gameplayRequests": 1,
+      "nativeNavigation": 2,
+      "readRequests": 0,
+      "policyCallsAssumed": 3,
+      "frames": 3,
+      "totalJsonBytes": 3485,
+      "peakFrameJsonBytes": 2263,
+      "requestedViews": [
+        "piles"
+      ],
+      "exposedViews": [
+        "piles"
+      ]
+    },
+    {
+      "profile": "C-S-query",
+      "scene": "small_combat_pile",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 1,
+      "policyCallsAssumed": 2,
+      "frames": 2,
+      "totalJsonBytes": 2873,
+      "peakFrameJsonBytes": 2257,
+      "requestedViews": [
+        "piles"
+      ],
+      "exposedViews": [
+        "piles"
+      ]
+    },
+    {
+      "profile": "C-S-bundle",
+      "scene": "small_combat_pile",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 0,
+      "policyCallsAssumed": 1,
+      "frames": 1,
+      "totalJsonBytes": 4991,
+      "peakFrameJsonBytes": 4991,
+      "requestedViews": [
+        "piles"
+      ],
+      "exposedViews": [
+        "combat",
+        "deck",
+        "map",
+        "piles"
+      ]
+    },
+    {
+      "profile": "C-H",
+      "scene": "small_combat_pile",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 1,
+      "policyCallsAssumed": 2,
+      "frames": 2,
+      "totalJsonBytes": 2861,
+      "peakFrameJsonBytes": 2251,
+      "requestedViews": [
+        "piles"
+      ],
+      "exposedViews": [
+        "piles"
+      ]
+    },
+    {
+      "profile": "C-L",
+      "scene": "large_combat_pile_map",
+      "gameplayRequests": 1,
+      "nativeNavigation": 4,
+      "readRequests": 0,
+      "policyCallsAssumed": 5,
+      "frames": 5,
+      "totalJsonBytes": 15877,
+      "peakFrameJsonBytes": 11443,
+      "requestedViews": [
+        "piles",
+        "map"
+      ],
+      "exposedViews": [
+        "map",
+        "piles"
+      ]
+    },
+    {
+      "profile": "C-S-query",
+      "scene": "large_combat_pile_map",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 2,
+      "policyCallsAssumed": 3,
+      "frames": 3,
+      "totalJsonBytes": 14647,
+      "peakFrameJsonBytes": 11437,
+      "requestedViews": [
+        "piles",
+        "map"
+      ],
+      "exposedViews": [
+        "map",
+        "piles"
+      ]
+    },
+    {
+      "profile": "C-S-bundle",
+      "scene": "large_combat_pile_map",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 0,
+      "policyCallsAssumed": 1,
+      "frames": 1,
+      "totalJsonBytes": 24976,
+      "peakFrameJsonBytes": 24976,
+      "requestedViews": [
+        "piles",
+        "map"
+      ],
+      "exposedViews": [
+        "combat",
+        "deck",
+        "map",
+        "piles"
+      ]
+    },
+    {
+      "profile": "C-H",
+      "scene": "large_combat_pile_map",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 2,
+      "policyCallsAssumed": 3,
+      "frames": 3,
+      "totalJsonBytes": 14629,
+      "peakFrameJsonBytes": 11431,
+      "requestedViews": [
+        "piles",
+        "map"
+      ],
+      "exposedViews": [
+        "map",
+        "piles"
+      ]
+    },
+    {
+      "profile": "C-L",
+      "scene": "selector_combat_context",
+      "gameplayRequests": 1,
+      "nativeNavigation": 2,
+      "readRequests": 0,
+      "policyCallsAssumed": 3,
+      "frames": 3,
+      "totalJsonBytes": 2581,
+      "peakFrameJsonBytes": 1359,
+      "requestedViews": [
+        "combat"
+      ],
+      "exposedViews": [
+        "combat"
+      ]
+    },
+    {
+      "profile": "C-S-query",
+      "scene": "selector_combat_context",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 1,
+      "policyCallsAssumed": 2,
+      "frames": 2,
+      "totalJsonBytes": 1969,
+      "peakFrameJsonBytes": 1353,
+      "requestedViews": [
+        "combat"
+      ],
+      "exposedViews": [
+        "combat"
+      ]
+    },
+    {
+      "profile": "C-S-bundle",
+      "scene": "selector_combat_context",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 0,
+      "policyCallsAssumed": 1,
+      "frames": 1,
+      "totalJsonBytes": 10376,
+      "peakFrameJsonBytes": 10376,
+      "requestedViews": [
+        "combat"
+      ],
+      "exposedViews": [
+        "combat",
+        "deck",
+        "map",
+        "piles"
+      ]
+    },
+    {
+      "profile": "C-H",
+      "scene": "selector_combat_context",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 0,
+      "policyCallsAssumed": 1,
+      "frames": 1,
+      "totalJsonBytes": 1347,
+      "peakFrameJsonBytes": 1347,
+      "requestedViews": [
+        "combat"
+      ],
+      "exposedViews": [
+        "combat"
+      ]
+    },
+    {
+      "profile": "C-L",
+      "scene": "reward_deck_context",
+      "gameplayRequests": 1,
+      "nativeNavigation": 2,
+      "readRequests": 0,
+      "policyCallsAssumed": 3,
+      "frames": 3,
+      "totalJsonBytes": 6589,
+      "peakFrameJsonBytes": 5367,
+      "requestedViews": [
+        "deck"
+      ],
+      "exposedViews": [
+        "deck"
+      ]
+    },
+    {
+      "profile": "C-S-query",
+      "scene": "reward_deck_context",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 1,
+      "policyCallsAssumed": 2,
+      "frames": 2,
+      "totalJsonBytes": 5977,
+      "peakFrameJsonBytes": 5361,
+      "requestedViews": [
+        "deck"
+      ],
+      "exposedViews": [
+        "deck"
+      ]
+    },
+    {
+      "profile": "C-S-bundle",
+      "scene": "reward_deck_context",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 0,
+      "policyCallsAssumed": 1,
+      "frames": 1,
+      "totalJsonBytes": 11726,
+      "peakFrameJsonBytes": 11726,
+      "requestedViews": [
+        "deck"
+      ],
+      "exposedViews": [
+        "combat",
+        "deck",
+        "map",
+        "piles"
+      ]
+    },
+    {
+      "profile": "C-H",
+      "scene": "reward_deck_context",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 0,
+      "policyCallsAssumed": 1,
+      "frames": 1,
+      "totalJsonBytes": 5355,
+      "peakFrameJsonBytes": 5355,
+      "requestedViews": [
+        "deck"
+      ],
+      "exposedViews": [
+        "deck"
+      ]
+    },
+    {
+      "profile": "C-L",
+      "scene": "shop_deck_map",
+      "gameplayRequests": 1,
+      "nativeNavigation": 4,
+      "readRequests": 0,
+      "policyCallsAssumed": 5,
+      "frames": 5,
+      "totalJsonBytes": 11606,
+      "peakFrameJsonBytes": 7392,
+      "requestedViews": [
+        "deck",
+        "map"
+      ],
+      "exposedViews": [
+        "deck",
+        "map"
+      ]
+    },
+    {
+      "profile": "C-S-query",
+      "scene": "shop_deck_map",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 2,
+      "policyCallsAssumed": 3,
+      "frames": 3,
+      "totalJsonBytes": 10376,
+      "peakFrameJsonBytes": 7386,
+      "requestedViews": [
+        "deck",
+        "map"
+      ],
+      "exposedViews": [
+        "deck",
+        "map"
+      ]
+    },
+    {
+      "profile": "C-S-bundle",
+      "scene": "shop_deck_map",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 0,
+      "policyCallsAssumed": 1,
+      "frames": 1,
+      "totalJsonBytes": 16656,
+      "peakFrameJsonBytes": 16656,
+      "requestedViews": [
+        "deck",
+        "map"
+      ],
+      "exposedViews": [
+        "combat",
+        "deck",
+        "map",
+        "piles"
+      ]
+    },
+    {
+      "profile": "C-H",
+      "scene": "shop_deck_map",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 1,
+      "policyCallsAssumed": 2,
+      "frames": 2,
+      "totalJsonBytes": 9748,
+      "peakFrameJsonBytes": 7380,
+      "requestedViews": [
+        "deck",
+        "map"
+      ],
+      "exposedViews": [
+        "deck",
+        "map"
+      ]
+    },
+    {
+      "profile": "C-L",
+      "scene": "no_optional_information",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 0,
+      "policyCallsAssumed": 1,
+      "frames": 1,
+      "totalJsonBytes": 610,
+      "peakFrameJsonBytes": 610,
+      "requestedViews": [],
+      "exposedViews": []
+    },
+    {
+      "profile": "C-S-query",
+      "scene": "no_optional_information",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 0,
+      "policyCallsAssumed": 1,
+      "frames": 1,
+      "totalJsonBytes": 616,
+      "peakFrameJsonBytes": 616,
+      "requestedViews": [],
+      "exposedViews": []
+    },
+    {
+      "profile": "C-S-bundle",
+      "scene": "no_optional_information",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 0,
+      "policyCallsAssumed": 1,
+      "frames": 1,
+      "totalJsonBytes": 12166,
+      "peakFrameJsonBytes": 12166,
+      "requestedViews": [],
+      "exposedViews": [
+        "combat",
+        "deck",
+        "map",
+        "piles"
+      ]
+    },
+    {
+      "profile": "C-H",
+      "scene": "no_optional_information",
+      "gameplayRequests": 1,
+      "nativeNavigation": 0,
+      "readRequests": 0,
+      "policyCallsAssumed": 1,
+      "frames": 1,
+      "totalJsonBytes": 610,
+      "peakFrameJsonBytes": 610,
+      "requestedViews": [],
+      "exposedViews": []
+    }
+  ],
+  "projectionTiming": {
+    "repeats": 5,
+    "projectionsPerRepeat": 2400,
+    "medianMs": 98.73583400000001,
+    "minMs": 96.21341699999999,
+    "maxMs": 101.599334
+  },
+  "scope": "synthetic reference transitions and JSON projection only",
+  "nonClaims": [
+    "native execution",
+    "production enforcement",
+    "Human evidence",
+    "neural D-M2 inference",
+    "BPE token count",
+    "training efficacy",
+    "network latency",
+    "provider cost",
+    "universal protocol superiority"
+  ]
+}

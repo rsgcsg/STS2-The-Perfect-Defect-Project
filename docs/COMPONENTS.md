@@ -3,6 +3,9 @@
 
 # Components
 
+For the proposed cross-system responsibility map, read [baseline foundations](design/BASELINE_FOUNDATION.zh-CN.md).
+The proposal does not move these components or transfer their current authority.
+
 > Accepted direction: [ADR-0015](adr/0015-native-logical-interaction.md) owns the
 > native logical-page/action/memory target and the two contrasting selection
 > examples. Acceptance covers that upper-level direction and its stated

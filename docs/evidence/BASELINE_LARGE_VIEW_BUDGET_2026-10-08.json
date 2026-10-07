@@ -1,0 +1,125 @@
+{
+  "schema": "g1-large-synthetic-view-budget-v1",
+  "script_sha256": "9cc0e1cf10342be97e5450e71b771e6a4349b67da3e76394ab2a99df3de7746d",
+  "fixture_source_sha256": "c8576bad64df9466cedd85e199f8c5b36790589706920c6dd946985531afd990",
+  "tokenizer": {
+    "repo": "Qwen/Qwen3-0.6B",
+    "revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+    "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+    "library_version": "0.22.2"
+  },
+  "limitations": [
+    "Synthetic sizing and operation-count arithmetic only, not observed gameplay.",
+    "No neural inference, GPU memory allocation, latency or throughput measured.",
+    "Attention matrices are naive materialized estimates, not actual kernel memory.",
+    "Entity matrix excludes local text, relations, W, layers, gradients and optimizer.",
+    "Page count excludes metadata, catalog and dependent object reads.",
+    "Reference tokenizer is not the future train-only scratch tokenizer."
+  ],
+  "results": [
+    {
+      "card_count": 200,
+      "assumptions": {
+        "cards": 200,
+        "enemies": 0,
+        "relics": 50,
+        "occupied_potions": 5,
+        "statuses": 0,
+        "orbs": 0,
+        "mode": "pile",
+        "all_listed_actions_native_available_assumed": true,
+        "long_synthetic_text": false
+      },
+      "state_utf8_bytes": 38921,
+      "frame_json_bytes": 48643,
+      "state_reference_bpe_tokens": 12480,
+      "state_plus_catalog_reference_bpe_tokens": 14175,
+      "candidate_count": 201,
+      "candidate_byte_tokens": 4898,
+      "candidate_cnn_mac_only_d384_k3": 2166718464,
+      "card_entity_matrix_fp32_bytes_d384": 307200,
+      "dense_entity_attention_one_layer_fp16_six_heads_bytes": 480000,
+      "naive_text_attention_one_layer_fp16_six_heads_bytes": 1869004800,
+      "pages_if_128_members": 2,
+      "state_text_sha256": "f37ec0bc4c0204cefeddb34f56dd0ce9ab91d0bc8dadc5b4781238d67e3ecd5e"
+    },
+    {
+      "card_count": 500,
+      "assumptions": {
+        "cards": 500,
+        "enemies": 0,
+        "relics": 50,
+        "occupied_potions": 5,
+        "statuses": 0,
+        "orbs": 0,
+        "mode": "pile",
+        "all_listed_actions_native_available_assumed": true,
+        "long_synthetic_text": false
+      },
+      "state_utf8_bytes": 94225,
+      "frame_json_bytes": 116847,
+      "state_reference_bpe_tokens": 30134,
+      "state_plus_catalog_reference_bpe_tokens": 34529,
+      "candidate_count": 501,
+      "candidate_byte_tokens": 12398,
+      "candidate_cnn_mac_only_d384_k3": 5484478464,
+      "card_entity_matrix_fp32_bytes_d384": 768000,
+      "dense_entity_attention_one_layer_fp16_six_heads_bytes": 3000000,
+      "naive_text_attention_one_layer_fp16_six_heads_bytes": 10896695472,
+      "pages_if_128_members": 4,
+      "state_text_sha256": "f146218d8a0b3336a6e88c68f9b9bb1dff3ba0bf505b319570ea31bab2405fcb"
+    },
+    {
+      "card_count": 1000,
+      "assumptions": {
+        "cards": 1000,
+        "enemies": 0,
+        "relics": 50,
+        "occupied_potions": 5,
+        "statuses": 0,
+        "orbs": 0,
+        "mode": "pile",
+        "all_listed_actions_native_available_assumed": true,
+        "long_synthetic_text": false
+      },
+      "state_utf8_bytes": 186399,
+      "frame_json_bytes": 230521,
+      "state_reference_bpe_tokens": 59558,
+      "state_plus_catalog_reference_bpe_tokens": 68453,
+      "candidate_count": 1001,
+      "candidate_byte_tokens": 24898,
+      "candidate_cnn_mac_only_d384_k3": 11014078464,
+      "card_entity_matrix_fp32_bytes_d384": 1536000,
+      "dense_entity_attention_one_layer_fp16_six_heads_bytes": 12000000,
+      "naive_text_attention_one_layer_fp16_six_heads_bytes": 42565864368,
+      "pages_if_128_members": 8,
+      "state_text_sha256": "e3b735ff92df91ea79cb191bbea9777fa973c13a0485d5e0c2442dcd75a162fd"
+    },
+    {
+      "card_count": 10000,
+      "assumptions": {
+        "cards": 10000,
+        "enemies": 0,
+        "relics": 50,
+        "occupied_potions": 5,
+        "statuses": 0,
+        "orbs": 0,
+        "mode": "pile",
+        "all_listed_actions_native_available_assumed": true,
+        "long_synthetic_text": false
+      },
+      "state_utf8_bytes": 1872513,
+      "frame_json_bytes": 2303635,
+      "state_reference_bpe_tokens": 616172,
+      "state_plus_catalog_reference_bpe_tokens": 715067,
+      "candidate_count": 10001,
+      "candidate_byte_tokens": 258898,
+      "candidate_cnn_mac_only_d384_k3": 114528190464,
+      "card_entity_matrix_fp32_bytes_d384": 15360000,
+      "dense_entity_attention_one_layer_fp16_six_heads_bytes": 1200000000,
+      "naive_text_attention_one_layer_fp16_six_heads_bytes": 4556015203008,
+      "pages_if_128_members": 79,
+      "state_text_sha256": "09df506282df4704c64268dc397519b7628261fac59583c36e8f484aba2acd8f"
+    }
+  ]
+}

@@ -21,6 +21,17 @@ When sources disagree, use this order:
 Fix the weaker stale source. Never create a second version, component identity,
 or artifact registry to make prose easier to query.
 
+For operational facts, current evidence describes what happened; accepted needs
+and contracts describe what should happen. Do not turn a source bug into a new
+requirement or declare a proposed design implemented. Label unresolved conflicts
+and route them to the owner before dependent work.
+
+The short newcomer/Agent route is README -> CURRENT -> task packet -> owning
+specification/component guide -> exact code/tests/evidence. The packet retains
+the useful history and call-path map so the next engineer need not repeat broad
+discovery. Refresh changing refs and runtime facts; do not assume a copied handoff
+is still current.
+
 ## Documentation classes and triggers
 
 | Owner | Contains | Update when |
@@ -36,6 +47,13 @@ or artifact registry to make prose easier to query.
 Durable docs do not list current topic branches or reproduce evidence
 timelines. CURRENT points to the PR/report instead of copying it. Historical
 evidence remains searchable but is outside default newcomer/Codex context.
+
+The [baseline task index](plans/BASELINE_TASKS.zh-CN.md) owns its stable IDs and
+dependencies; CURRENT owns only the active packet and next gate. Design proposals,
+accepted norms, implementation status and historical evidence have separate labels.
+Update affected routes/consumer documentation with the change and link to the fact
+owner instead of copying status strings. Existing project checks catch mechanical
+drift; semantic freshness and truthful status remain review responsibilities.
 
 ## Code, naming, and formatting authority
 
@@ -59,8 +77,58 @@ line endings in Connector do not authorize new drift and are not a reason for a
 mass-format change. A formatter or linter earns machine enforcement only after
 it catches a demonstrated recurring defect, can enter without a mass rewrite,
 has low false-positive/CI cost, and does not duplicate compiler/type checks.
-V1 retains `.editorconfig`, compiler/type checking, and tests as style
-enforcement.
+Retain existing language gates, including Python Ruff/mypy; do not add a new
+blanket linter/formatter suite or mass rewrite merely for consistency.
+
+| Language / material | Current authority and enforcement | Boundary |
+| --- | --- | --- |
+| All source | root `.editorconfig`: UTF-8, LF, final newline, whitespace and indentation | Editor configuration is not proof every historical file is formatted |
+| Python | `python/pyproject.toml`: Ruff E/F/I/UP/B/SIM, line length 100, mypy; executed by `python/tools/project.py` | No claim that `ruff format` is a current mandatory whole-repo gate |
+| TypeScript | owning `tsconfig.json`: strict types, unchecked indexing and filename-case checks where configured | No claim an ESLint suite is configured |
+| C# | owning project/Directory.Build.props and compiler checks | Nullable, language version and warnings-as-errors differ by project; do not claim global uniformity |
+| Documentation | project-system links, commands, routing and instruction budgets | Semantic freshness, clear naming and evidence scope require review |
+
+### Terms and writing
+
+Use Agent for the complete entity speaking a declared interaction contract; Model
+for a concrete computational structure with explicit inputs/outputs, optionally
+including state. One model call is not necessarily one Agent decision or one
+game action. STPD names the current research implementation, not every Agent.
+Clarify game Agent, engineering collaborator and Human actor when ambiguous.
+Interface placement and task-management capabilities remain design decisions,
+not consequences of the word Agent. Logical roles can map to reusable current
+components without freezing their names or deployment topology.
+
+Lead prose with what a user or consumer can do and what happens. Explain acronyms
+on first use; prefer one precise claim per sentence. Label proposal, accepted
+contract, source implementation, executed evidence and unknown separately. Give
+scope, conditions and failure behavior for words such as supported, complete,
+automatic and default. Keep normal, stale/rejected and unknown examples distinct.
+Preserve exact wire identifiers and historical producer/schema IDs rather than
+renaming them for style. Link to the owning rule, command or evidence instead of
+copying status into several documents.
+
+### Incremental adoption
+
+The existing baseline E0 inventory maps configuration, terms, compatibility and
+real drift. Each E1–E6 owning change follows current standards for new/modified
+code; no unrelated formatting sweep. Module moves require a reason, consumer and
+identity map, migration/rollback and scoped checks. V1/G3 review current routing,
+terminology and contract consistency; release preserves archival readability.
+Component-guide wording is repaired within its owning identity-aware packet.
+These are activities within existing tasks, not a second set of stage IDs.
+
+### Performance as part of interface design
+
+For each substantive data, interaction or model change, state the relevant scale,
+time and space costs: objects, candidates, tokens, relations, payloads, retained
+versions, round trips, native-thread work, queues and model/training activations.
+Separate measured results, arithmetic estimates and untested assumptions. Define
+normal, rare-normal and stress behavior, including cancellation and honest limits.
+Caching, batching, pagination and chunking must preserve the declared semantics;
+information loss, changed exposure or approximate selection needs an explicit
+input/Agent contract. Use targeted profiling where it answers a real unknown;
+this is not a requirement to benchmark trivial edits or repeat full tests.
 
 ## Agent and Codex path
 

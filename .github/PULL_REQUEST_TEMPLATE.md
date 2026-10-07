@@ -4,6 +4,7 @@
 - Base branch / exact base SHA:
 - Head branch / latest head SHA:
 - Workstream / primary owner:
+- Stable task ID / owning design and version (separate from change class):
 - Change class (`G0`-`G6`) and why:
 - Owning fact / layer:
 
@@ -13,6 +14,7 @@
 - First causal defect or missing fact:
 - Implemented change:
 - Alternatives or hypotheses rejected:
+- Relevant history / producer-consumer path / existing mechanism reused:
 - Non-goals:
 
 ## Contracts and identity
@@ -30,6 +32,13 @@
 - Evidence level actually proved:
 - Latest-head CI/status SHA:
 - Remaining non-claims:
+
+## Delivery and next consumer
+
+- Artifact or capability delivered and how the next consumer uses it:
+- Actual external effects (or none):
+- Submitted / independently accepted / integrated / runtime-qualified scope:
+- Remaining decision or gate, owner and recovery/monitor when applicable:
 
 ## Rollback
 

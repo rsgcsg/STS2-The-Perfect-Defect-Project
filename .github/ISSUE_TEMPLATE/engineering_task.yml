@@ -1,0 +1,49 @@
+name: Engineering task
+description: A bounded design, investigation or implementation packet with a usable handoff
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Follow docs/AI_COLLABORATION.md. Keep small tasks short. An issue is a packet, not proof of dispatch or permission to run external operations. Do not include secrets, raw recordings, saves or private workstation paths.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Task identity and observable outcome
+      description: Stable task ID (P/E/G/V/R for baseline work), real need, next consumer and completion boundary. State the engineering change class separately.
+    validations:
+      required: true
+  - type: textarea
+    id: basis
+    attributes:
+      label: Requirements, evidence and reuse
+      description: Accepted design/version, exact source/evidence, relevant historical decisions, current problem and existing mechanisms to reuse. Mark unresolved assumptions.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Owner, baseline and scope
+      description: Repository, exact base, responsible component/writer, affected paths, producer/consumer dependencies and non-goals. Resolve the actual worktree at dispatch.
+    validations:
+      required: true
+  - type: textarea
+    id: authority
+    attributes:
+      label: Authority and decision boundaries
+      description: Allowed reads/edits/commit/push/PR and any explicitly authorized runtime/data/resource operations. State pending human decisions and stop conditions; never infer merge/deploy/training permission.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Examples, checks and evidence level
+      description: Normal case, meaningful counterexample, cheapest faithful checks, required gates and rollback. Explain exact existing coverage when no new test is needed.
+    validations:
+      required: true
+  - type: textarea
+    id: handoff
+    attributes:
+      label: Delivery and continuation
+      description: Expected artifacts and consumer use path. At return add exact head, actual changes/checks/side effects, limitations, monitor if running and next gate. Submitted is not accepted or integrated.
+    validations:
+      required: true

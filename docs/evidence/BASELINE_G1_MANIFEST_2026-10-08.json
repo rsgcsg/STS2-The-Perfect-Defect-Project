@@ -1,0 +1,1631 @@
+{
+  "schema": "g1-design-review-manifest-v1",
+  "candidate": "G1-RC2",
+  "owner_approval": "pending",
+  "source_audit_base": "b1875e9744b858d756897c6f46071df20362ab52",
+  "scope": "design_and_source_audit_only",
+  "manifest_self_excluded": true,
+  "files": [
+    {
+      "path": "CONTRIBUTING.md",
+      "sha256": "c18e8f2d6b6a3a5cf3c6c04923029b5006abbf00bb7c560656793a0123d96b86",
+      "bytes": 1568
+    },
+    {
+      "path": "docs/PROJECT_SYSTEM.md",
+      "sha256": "897c3388e8363dc2f864b41e7638b6f85915af5c727554cdbb6fadcbee1fc4bc",
+      "bytes": 13515
+    },
+    {
+      "path": "docs/design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md",
+      "sha256": "ed0317cd5f69bb4ba6bad62d0bd6c495bf9145aefb297fe06ffac3e8613deb93",
+      "bytes": 24688
+    },
+    {
+      "path": "docs/design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md",
+      "sha256": "9c800011cf8637529a5702b72bfd8bdfe1e207c8ee4e9f6803781071dd35b6a7",
+      "bytes": 38383
+    },
+    {
+      "path": "docs/design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md",
+      "sha256": "41cd428facf58050e250821b335a64ebdb6f69e9a5b205f1f570d3cd67b01759",
+      "bytes": 53076
+    },
+    {
+      "path": "docs/design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md",
+      "sha256": "f8d74135ba56ab4967ec546cb0fcafda9fdce194a37e0bf63b595ceb73b450c2",
+      "bytes": 32337
+    },
+    {
+      "path": "docs/design/BASELINE_DESIGN_HISTORY.zh-CN.md",
+      "sha256": "75b7e07d881ae1ecf5c5efa9851b3b2cbc62935e2bbc978387101744e933fb4e",
+      "bytes": 11401
+    },
+    {
+      "path": "docs/design/BASELINE_FOUNDATION.zh-CN.md",
+      "sha256": "97a6037782f04ffc02fda97e2c5e1e4ed73bae29a9abd564e734f51aa49611a1",
+      "bytes": 33888
+    },
+    {
+      "path": "docs/design/BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md",
+      "sha256": "cf0148ef90e33640a454e8c2fedaf4f6322089740a95c73ae09ddc56c52ab5dd",
+      "bytes": 27478
+    },
+    {
+      "path": "docs/design/BASELINE_G1_CONTRACTS.zh-CN.md",
+      "sha256": "ec3bc5d45207235770b316626c59a8e271e11be1de57eda14554aa31c70a70bb",
+      "bytes": 28855
+    },
+    {
+      "path": "docs/design/BASELINE_G1_EXECUTION_ROADMAP.zh-CN.md",
+      "sha256": "ae3050b7789b2070afebdb3807e6d41db5e02ce0f7d4d7b0becd49dac8c85a19",
+      "bytes": 22287
+    },
+    {
+      "path": "docs/design/BASELINE_G1_REVIEW_PACKET.zh-CN.md",
+      "sha256": "9060dda0abb5211eaff3a3a8386fb66db7af936c8b8e0389310d83cd75f415c3",
+      "bytes": 16687
+    },
+    {
+      "path": "docs/design/BASELINE_INTERACTION_CANDIDATES.zh-CN.md",
+      "sha256": "58337ba32a39ac5199101d822d9f8ac094d8927c911ca7273097186eb23231c8",
+      "bytes": 19637
+    },
+    {
+      "path": "docs/design/BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md",
+      "sha256": "044d69303fed312676dd7dab98796aa6205bc20c04c86f7fc58d4a35e74e6f78",
+      "bytes": 30726
+    },
+    {
+      "path": "docs/design/BASELINE_LN_QUEUED_TIMING.zh-CN.md",
+      "sha256": "aa004ef02a8748117accf4bb58206c9bf3b8dea6e71ac8c3bf950776cf1033ca",
+      "bytes": 24996
+    },
+    {
+      "path": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md",
+      "sha256": "feb818a2782ef1686098173375bc1ea24f9aae0193bc3db13fec19ff9ca10857",
+      "bytes": 53217
+    },
+    {
+      "path": "docs/design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md",
+      "sha256": "3e3b7f2d5c7f919ef8e6def1d323b9e093dc727f7cbece052690a0f89af058ff",
+      "bytes": 59123
+    },
+    {
+      "path": "docs/design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md",
+      "sha256": "f72fba7a74e14a4ca490b31e6d211c03ae40def0bfee08c0ba3df3285c942dc9",
+      "bytes": 37223
+    },
+    {
+      "path": "docs/design/BASELINE_SCENARIO_SPEC.zh-CN.md",
+      "sha256": "ab349cd8e7d0da5e1f715e6bd9ad3cadc38796ff1962a0aaacf801314cd9d65a",
+      "bytes": 23102
+    },
+    {
+      "path": "docs/evidence/BASELINE_G1_AUDIT_2026-10-07.md",
+      "sha256": "d7ae3881c2014310c0b5b7516cf4f1a74dce9099c8ca8d3cdc44b65f65449c75",
+      "bytes": 14896
+    },
+    {
+      "path": "docs/evidence/BASELINE_G1_INPUT_BUDGET_2026-10-08.json",
+      "sha256": "ce78ef54f448fce23868d65d23202c1e7e2cde802da8ee065e1c5bb9816092d9",
+      "bytes": 7210
+    },
+    {
+      "path": "docs/evidence/BASELINE_G1_REVISION_AUDIT_2026-10-08.md",
+      "sha256": "0d505ee4f3033ac49447fce15878106cb881d235c2bfdc8dabde3536d9f6e0d8",
+      "bytes": 8864
+    },
+    {
+      "path": "docs/evidence/BASELINE_LEARNING_AUDIT_2026-10-06.md",
+      "sha256": "0b60c4f4212e846226a40a87ba39f42be7598e1519545195d473d0b878f12371",
+      "bytes": 9734
+    },
+    {
+      "path": "docs/evidence/BASELINE_P1_AUDIT_2026-10-06.md",
+      "sha256": "ff6d9b9206cf238686066723363d8d40a8098f39beed9a275bf68bd7d87ccc7a",
+      "bytes": 24599
+    },
+    {
+      "path": "docs/evidence/BASELINE_P5_EVIDENCE_2026-10-06.md",
+      "sha256": "2eaddcd1a38e6613e53eb3332b7efb774e33ac75c5bfc01c249227c9f8c2dd1f",
+      "bytes": 10885
+    },
+    {
+      "path": "docs/plans/BASELINE_TASKS.zh-CN.md",
+      "sha256": "9b00fb9c95c761a093360080ea15e8c1c9986412d124802fe3b7ebab4f19f6db",
+      "bytes": 19834
+    },
+    {
+      "path": "tools/g1_input_budget_probe.py",
+      "sha256": "c8576bad64df9466cedd85e199f8c5b36790589706920c6dd946985531afd990",
+      "bytes": 9933
+    }
+  ],
+  "file_content_set_sha256": "81031962738a59582a72c784a59af7da3fcaa5b82524e0a606014ea7875cc34e",
+  "coverage_counts": {
+    "formal_tasks": 19,
+    "requirements": 12,
+    "scenarios": 16,
+    "mechanism_cards": 21,
+    "operation_rows": 64,
+    "consumer_journeys": 14,
+    "joint_stress_cases": 15,
+    "g1_recommended_decisions": 16,
+    "g1_contracts": 15
+  },
+  "operation_coverage_plan": [
+    {
+      "id": "L01",
+      "operation": "打开本局牌组；返回真实先前 owner",
+      "scope_condition": "必需，原生入口此时启用",
+      "source_design_note": "已有 open_run_deck/return；需核各 overlay 时机",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L02",
+      "operation": "打开抽牌堆；返回",
+      "scope_condition": "必需，原生战斗入口启用；提供完整公开成员，不给真实抽取顺序",
+      "source_design_note": "已有入口；列表来源、空堆可达性和长列表需资格化",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L03",
+      "operation": "打开弃牌堆；返回",
+      "scope_condition": "必需，同上，保留 pile 身份",
+      "source_design_note": "已有入口",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L04",
+      "operation": "打开消耗堆；返回",
+      "scope_condition": "必需，同上",
+      "source_design_note": "已有入口",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L05",
+      "operation": "打开地图查看；原生允许时关闭地图",
+      "scope_condition": "必需；关闭与选路分开",
+      "source_design_note": "已有入口/返回；旅行阶段不发明 Back",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L06",
+      "operation": "对当前可 focus 的卡牌显示原生 tooltip；解除/转换焦点",
+      "scope_condition": "必需，按手牌、网格、商店、奖励等实际原生能力",
+      "source_design_note": "已有 show_card_tips；当前 overlay/holder guards 有范围，须逐 owner 核对",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L07",
+      "operation": "进入卡牌详情；关闭到真实来源页",
+      "scope_condition": "必需，在原生可进入详情的每一承诺页面；不为原生没有详情入口的卡凭空开页",
+      "source_design_note": "目前 deck/bundle 有 opener；pile/hand/reward/shop 的实际原生入口需逐类补核，不能由同名 card reader 代替",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L08",
+      "operation": "在卡牌详情中切换升级预览开/关",
+      "scope_condition": "**必需且条件于原生开关可用**；提供切换后原生显示，明确 preview 非实际升级",
+      "source_design_note": "已有 toggle_card_upgrade_preview；开关、动态费用/星费/附魔、原卡归属需完整捕获",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L09",
+      "operation": "卡牌详情上一张/下一张",
+      "scope_condition": "必需，原生箭头可用；保留 native 列表与顺序",
+      "source_design_note": "已有 previous/next；不靠数组索引构造 native operand",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L10",
+      "operation": "遗物 tooltip 显示/解除/切换",
+      "scope_condition": "必需，原生可 focus",
+      "source_design_note": "已有 show_relic_tips；只给原生公开计数，未知 tooltip 子类不装完整",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L11",
+      "operation": "进入遗物详情、上一件/下一件、返回",
+      "scope_condition": "必需，原生 controls 启用",
+      "source_design_note": "已有 inspect_relic；读 actual rendered 文案及 seen/unlocked，不用内部完整模型绕过限制",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L12",
+      "operation": "药水 tooltip 显示/解除/切换",
+      "scope_condition": "必需，与使用弹窗分开",
+      "source_design_note": "**无专门可控 potion-hover leaf**；已有被动提示不证明 Agent 能主动取得，需补",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L13",
+      "operation": "角色/敌人状态效果、意图 tooltip",
+      "scope_condition": "必需，原生可显示的各对象",
+      "source_design_note": "已有 power/intent tips；分对象和原生实际显示内容，不暴露内部未来计划",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L14",
+      "operation": "球与其他公开资源 tooltip",
+      "scope_condition": "必需，所选角色/Hook 中适用",
+      "source_design_note": "orb 有入口；其他机制逐类 registry，不泛称所有资源已支持",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L15",
+      "operation": "原生角色/敌人本体的其他独立信息提示",
+      "scope_condition": "条件必需：若确有与 L13 不同的公开内容和入口则纳入；若原生无此能力则明确 not_native_capability",
+      "source_design_note": "当前无 generic enemy/body leaf；不得靠名称假设其一定存在或直接排除",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L16",
+      "operation": "顶栏 HP/金币/楼层/Boss/地图/牌组等提示",
+      "scope_condition": "必需，原生显示的提示",
+      "source_design_note": "已有 topbar tips；同一控件点击与 hover 效果分开",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L17",
+      "operation": "selector 的 Peek 打开/保持/返回",
+      "scope_condition": "必需，原生提供此功能时；提供实际可见战场，返回原 child",
+      "source_design_note": "**目前只登记 close Peek**，没有对称 open；需要补 exact owner 入口",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L18",
+      "operation": "已实际显示的关联关键词、卡牌预览、图标语义",
+      "scope_condition": "当前视图的一部分，通常**不另造点击动作**；原生确有二级交互才登记额外操作",
+      "source_design_note": "已有两类 tooltip 投影；不无限遍历内部图鉴，不把预览当持有实例",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L19",
+      "operation": "已显示的提示随焦点消失/替换、窗口自动刷新",
+      "scope_condition": "公开事件；原生真实解除操作必要时目录提供，纯布局/动画不另造策略动作",
+      "source_design_note": "passive hover 已有来源；模糊归属/未知 subtype 必须显式缺口",
+      "group": "information",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L20",
+      "operation": "开始出牌，进入原生持牌/目标或确认阶段",
+      "scope_condition": "必需，原生当前允许",
+      "source_design_note": "已有 begin_card_play；不要另造纯虚拟暂选并称 native",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L21",
+      "operation": "将持牌焦点移向一个当前原生目标，**不确认**",
+      "scope_condition": "**必需**；产生原生 target-dependent 预览",
+      "source_design_note": "已有 focus_target→OnNodeHovered；资格化 exact card/target/owner",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L22",
+      "operation": "在不同目标间切换焦点",
+      "scope_condition": "必需；提供每次真实渲染后的说明/数字、焦点对象",
+      "source_design_note": "现有链可更新 description；focused-target 明确字段、完整显示需补",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L23",
+      "operation": "从目标移开/清除目标焦点",
+      "scope_condition": "条件必需，原生允许；恢复 native 未定目标预览",
+      "source_design_note": "现有 NCardPlay 有 unhover/clear 原生机制，协议 leaf 尚需补核；不把 cancel whole card 当同义替代",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L24",
+      "operation": "确认当前目标；或原生一步指向并确认目标",
+      "scope_condition": "必需，按已登记原生语义；可以选择先预览，也可以直接确认，不强制读每个目标",
+      "source_design_note": "已有 confirm_target，内部先 focus 再原生 select；不能把返回未知当 Commit",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L25",
+      "operation": "无单体目标/全体目标的原生确认",
+      "scope_condition": "必需，有实际确认阶段才提供；显示 native multi-target 预览",
+      "source_design_note": "controller 路径有入口；untargeted mouse 续接缺口，不能自动归成功",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L26",
+      "operation": "取消持牌/目标过程并回到原生阶段",
+      "scope_condition": "必需，原生允许；不用药/出牌是否已发生按真实反馈",
+      "source_design_note": "有 cancel_card_play；鼠标/控制器等价和恢复需资格化",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L27",
+      "operation": "持牌期间可用的信息入口",
+      "scope_condition": "**条件必需**：此时原生仍可取得的必要提示/Peek/资料必须保留",
+      "source_design_note": "FrameBuilder held early-return 目前只给 cancel/focus/confirm，需核是否漏原生可达操作",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L28",
+      "operation": "结束回合",
+      "scope_condition": "必需，原生 enabled/ready",
+      "source_design_note": "已有 end_turn；等待敌方/自动效果，不逐帧造 Wait 动作",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L29",
+      "operation": "打开药水操作弹窗",
+      "scope_condition": "必需，原生当前允许",
+      "source_design_note": "已有 open_potion_popup",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L30",
+      "operation": "选择使用药水",
+      "scope_condition": "必需，原生当前允许；可能进入真实 target stage",
+      "source_design_note": "已有 choose_potion_use；popup 消失不证明已消耗",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L31",
+      "operation": "药水目标的焦点/预览、确认、取消",
+      "scope_condition": "条件必需：按该原生目标机制实际提供的机会",
+      "source_design_note": "当前 select/cancel 已登记，独立 focus 是否有新公开内容需逐机制核对；不从卡牌推断所有药水行为",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L32",
+      "operation": "丢弃药水",
+      "scope_condition": "必需，原生允许，走其确认阶段（若有）",
+      "source_design_note": "已有 discard_potion；不把丢弃当查看",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L33",
+      "operation": "关闭药水弹窗",
+      "scope_condition": "必需，原生可关闭",
+      "source_design_note": "已有 close；不等于已使用/丢弃",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L34",
+      "operation": "接收公开自动效果、敌人行动、新回合、原生排队/取消的公开表现",
+      "scope_condition": "事件；原生重新input-ready即可决定，不必等先前效果全部结束；没有选择不造native no-op",
+      "source_design_note": "输入、入队、执行、取消/Commit与因果后继分开；参见异步时序规格",
+      "group": "combat_input",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L35",
+      "operation": "手牌选择一张、撤选、原生满额替换",
+      "scope_condition": "必需，原生候选与操作",
+      "source_design_note": "每选一步重新观察；不枚举组合，不套用 grid cap",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L36",
+      "operation": "手牌选择确认",
+      "scope_condition": "条件必需，实际控件启用",
+      "source_design_note": "自动完成时不补一次假确认；min=0 不等于 cancel",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L37",
+      "operation": "simple grid 选择/撤选/确认/整页取消",
+      "scope_condition": "必需，按具体控件",
+      "source_design_note": "满额禁止与手牌替换不同；空/Task canceled 保留",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L38",
+      "operation": "生成牌选择/原生 skip",
+      "scope_condition": "必需，生成和 opening-ready 后",
+      "source_design_note": "新候选不提前提供；无候选可自动返回",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L39",
+      "operation": "战斗牌堆选择/撤选/确认/原生取消",
+      "scope_condition": "必需，Draw/Discard/Exhaust 按实际来源",
+      "source_design_note": "有效候选数、动态 selected 清理、clamped 约束；不是普通浏览",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L40",
+      "operation": "通用牌组选牌/撤选/进入预览",
+      "scope_condition": "必需，eligible 原对象",
+      "source_design_note": "原生满额/确认进入 preview，不自算另一个选择器",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L41",
+      "operation": "通用牌组预览确认/取消；整个选择过程关闭",
+      "scope_condition": "条件必需",
+      "source_design_note": "preview cancel 回 selecting，whole close 返回原生空/取消，二者不同",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L42",
+      "operation": "升级选牌/撤选/升级视图/预览确认/取消",
+      "scope_condition": "必需",
+      "source_design_note": "看升级与实际升级不同；选择原牌，preview clone 不执行",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L43",
+      "operation": "变换选牌/撤选/原生预览/确认/取消",
+      "scope_condition": "必需",
+      "source_design_note": "只展示原生已经展示的结果，不提前运行 RNG",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L44",
+      "operation": "附魔选牌/撤选/预览/确认/取消",
+      "scope_condition": "必需",
+      "source_design_note": "原生修饰显示、实际可附对象、取消层次",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L45",
+      "operation": "卡包预览、包内原生详情、确认整包、取消预览",
+      "scope_condition": "必需",
+      "source_design_note": "包为单位，不把成员变成任意可选单卡",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L46",
+      "operation": "Boss/其他遗物选择、原生 skip",
+      "scope_condition": "必需，范围内发生时",
+      "source_design_note": "skip 后继依实际 caller，不统一按宝箱解释",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L47",
+      "operation": "多层 child selector 的上述操作",
+      "scope_condition": "必需",
+      "source_design_note": "父等待、child 新输入、child 完成后父原生续执行；不重发父动作",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L48",
+      "operation": "空结果、零选、全选自动完成、退出取消",
+      "scope_condition": "真实原生事件或已登记取消动作",
+      "source_design_note": "空、null、Task canceled、正常完成不同，不能统一 success",
+      "group": "selector",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L49",
+      "operation": "选择地图目的地、退出原生地图标注模式（若当前有）",
+      "scope_condition": "必需/条件",
+      "source_design_note": "travel 与 map close/annotation exit 分开；坐标不是 consumer mutation operand",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L50",
+      "operation": "外层奖励打开/领取",
+      "scope_condition": "必需，当前原生项目",
+      "source_design_note": "独立组、已解决状态、暂未揭示内容分开",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L51",
+      "operation": "linked reward 子项选择",
+      "scope_condition": "必需，原生互斥组",
+      "source_design_note": "一项成功导致 group 消失，不伪造其他项 skip 决策",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L52",
+      "operation": "卡牌奖励选择",
+      "scope_condition": "必需，完整当前候选",
+      "source_design_note": "多次选牌 Hook 后重新观察，不默认一次结束",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L53",
+      "operation": "卡牌奖励返回/Skip、reroll、特殊 alternative",
+      "scope_condition": "必需，各真实 alternative",
+      "source_design_note": "返外层不一定完成；reroll 更新；消耗/牺牲可能完成并触发新效果",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L54",
+      "operation": "外层奖励继续/原生最终放弃",
+      "scope_condition": "必需，controls 启用",
+      "source_design_note": "nonterminal 自动关闭、terminal proceed、父事件恢复分别处理",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L55",
+      "operation": "打开商店库存、关闭、房间 Proceed",
+      "scope_condition": "必需",
+      "source_design_note": "进入库存是原生阶段；原生教程可能打断 Proceed",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L56",
+      "operation": "购买商店卡/遗物/药水",
+      "scope_condition": "必需，当前报价/库存/native affordability",
+      "source_design_note": "新 Hook/补货后重新捕获，不能预读新货或复用旧报价",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L57",
+      "operation": "打开商店移除服务",
+      "scope_condition": "必需，后接 L40–41",
+      "source_design_note": "最终原生返回选中牌后才确认扣费/移除；预览可取消",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L58",
+      "operation": "事件对话推进、选择选项、原生 Proceed",
+      "scope_condition": "必需，包括范围内内置专用布局",
+      "source_design_note": "未揭示页不前置；事件中战斗后可能回事件",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L59",
+      "operation": "营火选项与 Proceed",
+      "scope_condition": "必需，动态完整 native options",
+      "source_design_note": "不固定只有休息/升级；可多次行动时不强制提前结束",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L60",
+      "operation": "开宝箱、处理先行奖励、选择/跳过遗物、Proceed",
+      "scope_condition": "必需",
+      "source_design_note": "原生 normal/extra rewards 后才 relic collection；skip 与卡牌返回不同",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L61",
+      "operation": "教程启用/禁用选择、上一页、继续/关闭",
+      "scope_condition": "默认管理准备关闭；教程profile可选",
+      "source_design_note": "意外出现按已声明管理/任务能力处理并记录，不静默代选；不是默认模型核心训练目标",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L62",
+      "operation": "跨幕/第二 Boss 等原生继续与 readiness",
+      "scope_condition": "必需，范围内实际发生；高进阶扩展另资格",
+      "source_design_note": "无输入时等待；已经提交不因画面静止重发",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L63",
+      "operation": "胜负/放弃公开结果、总结推进、返回菜单",
+      "scope_condition": "必需",
+      "source_design_note": "task stop/断线不当 native loss；**当前 FrameBuilder 在 !IsInProgress 时清空 leaves，必须补 terminal/summary owner 路由，不能因局结束而漏掉总结退出承诺**",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    },
+    {
+      "id": "L64",
+      "operation": "局内退出/放弃确认流程",
+      "scope_condition": "管理侧显式任务停止/用户控制；本版默认**不给策略自行重开/放弃来优化计数**",
+      "source_design_note": "这是任务权限限制，不说原生没有此操作；若研究允许 surrender，需新任务/profile 明示并记结果",
+      "group": "journey",
+      "contract_refs": [
+        "C01",
+        "C04",
+        "C06",
+        "C07",
+        "C09",
+        "C15"
+      ],
+      "implementers": [
+        "E1",
+        "E2",
+        "E3"
+      ],
+      "acceptance": "G2 selected subset; V1 all applicable; G3 seals exact qualified scope",
+      "evidence_state": "design_requirement_not_new_execution_evidence",
+      "scope_source": "docs/design/BASELINE_LN_V1_SPEC.zh-CN.md"
+    }
+  ]
+}

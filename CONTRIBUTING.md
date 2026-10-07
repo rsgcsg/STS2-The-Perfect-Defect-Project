@@ -23,6 +23,11 @@ Game-bound changes additionally require `npm run check:exact-game` and the
 relevant exact-runtime gate. Do not include proprietary game files, generated
 artifacts, raw recordings, local evidence, credentials or model weights.
 
-Cross-repository work uses a separate STPD PR pinned to an exact Platform
-release or explicitly non-stable candidate. STPD is a research consumer of this
-model-neutral foundation; Platform does not absorb its model semantics.
+This monorepo includes Platform components, project applications and STPD
+research. A cross-layer change uses this repository workflow and preserves
+component contracts/identity; it does not require a separate STPD repository PR.
+External consumers still pin exact versioned contracts or explicit candidates.
+Platform remains model-neutral and does not import research semantics.
+Code, naming, document writing and incremental consistency are maintained in
+[Project System](docs/PROJECT_SYSTEM.md#code-naming-and-formatting-authority);
+check selection remains in [Testing](docs/TESTING.md).

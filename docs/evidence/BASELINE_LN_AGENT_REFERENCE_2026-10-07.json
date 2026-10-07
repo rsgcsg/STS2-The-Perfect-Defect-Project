@@ -1,0 +1,184 @@
+{
+  "schema": "ln-agent-protocol-reference-1",
+  "fixtureVersion": 1,
+  "evidence": "synthetic_reference_only",
+  "sourceSha256": "9ab12c5ac920cfc22b2b3f047239e26e8dc0d37fbf63aa5930123c7dab28701a",
+  "runtime": {
+    "node": "v20.20.2",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "categories": {
+    "agent_composition": 6,
+    "binding_reference": 8,
+    "history_reference": 2,
+    "await_reference": 8,
+    "scale_reference": 1
+  },
+  "checks": [
+    {
+      "category": "agent_composition",
+      "name": "four Agent strategies share one E contract",
+      "status": "pass"
+    },
+    {
+      "category": "agent_composition",
+      "name": "empty native catalog means wait or explicit task completion, never a fake action",
+      "status": "pass"
+    },
+    {
+      "category": "agent_composition",
+      "name": "known pending effects need not force all Agents to wait",
+      "status": "pass"
+    },
+    {
+      "category": "agent_composition",
+      "name": "a blocked child choice wakes a boundary Agent",
+      "status": "pass"
+    },
+    {
+      "category": "agent_composition",
+      "name": "facade and internal scheduling expose different histories",
+      "status": "pass"
+    },
+    {
+      "category": "agent_composition",
+      "name": "boundary facade supports real reference input-to-source submission",
+      "status": "pass"
+    },
+    {
+      "category": "binding_reference",
+      "name": "facade rejects malformed requests before normalization",
+      "status": "pass"
+    },
+    {
+      "category": "binding_reference",
+      "name": "stale boundary views cannot be rebound to the latest source",
+      "status": "pass"
+    },
+    {
+      "category": "binding_reference",
+      "name": "stale observation is not silently rebound",
+      "status": "pass"
+    },
+    {
+      "category": "binding_reference",
+      "name": "request retransmission does not execute twice",
+      "status": "pass"
+    },
+    {
+      "category": "binding_reference",
+      "name": "unknown delivery blocks a new submission",
+      "status": "pass"
+    },
+    {
+      "category": "binding_reference",
+      "name": "Stop blocks future input without deleting pending effects",
+      "status": "pass"
+    },
+    {
+      "category": "binding_reference",
+      "name": "cross-product combinations not in the current relation are rejected",
+      "status": "pass"
+    },
+    {
+      "category": "binding_reference",
+      "name": "ambiguous semantic proposal is not resolved by first-match",
+      "status": "pass"
+    },
+    {
+      "category": "history_reference",
+      "name": "transport repeats do not advance memory; actual revisits do",
+      "status": "pass"
+    },
+    {
+      "category": "history_reference",
+      "name": "missing event and changed generation require an explicit new segment",
+      "status": "pass"
+    },
+    {
+      "category": "await_reference",
+      "name": "event during inference is replayed at registration",
+      "status": "pass"
+    },
+    {
+      "category": "await_reference",
+      "name": "already-true level condition differs from waiting for a new edge",
+      "status": "pass"
+    },
+    {
+      "category": "await_reference",
+      "name": "events after the absolute basis deadline cannot restart the wait budget",
+      "status": "pass"
+    },
+    {
+      "category": "await_reference",
+      "name": "control abort wins before result sealing; replay keeps the sealed result",
+      "status": "pass"
+    },
+    {
+      "category": "await_reference",
+      "name": "retention gaps and past matches are not current-state assertions",
+      "status": "pass"
+    },
+    {
+      "category": "await_reference",
+      "name": "only registered own predicates and declared event kinds are accepted",
+      "status": "pass"
+    },
+    {
+      "category": "await_reference",
+      "name": "basis clock cannot be shifted to extend an old observation deadline",
+      "status": "pass"
+    },
+    {
+      "category": "await_reference",
+      "name": "empty, interior-gap and duplicate buffers cannot assert quiet timeout",
+      "status": "pass"
+    },
+    {
+      "category": "scale_reference",
+      "name": "10000 catalog entries remain available without 10000 model scores",
+      "status": "pass"
+    }
+  ],
+  "examples": [
+    {
+      "kind": "boundary_scorer",
+      "choice": "act",
+      "action": "begin-b",
+      "referenceCandidatesScored": 2
+    },
+    {
+      "kind": "modular_timing",
+      "choice": "act",
+      "action": "begin-b",
+      "referenceCandidatesScored": 2
+    },
+    {
+      "kind": "generated_command",
+      "choice": "act",
+      "action": "begin-b",
+      "referenceCandidatesScored": 0
+    },
+    {
+      "kind": "retrieval_rerank",
+      "choice": "act",
+      "action": "begin-b",
+      "referenceCandidatesScored": 1
+    },
+    {
+      "kind": "synthetic_10000_lookup",
+      "authorityEntries": 10000,
+      "referenceCandidatesScored": 0,
+      "caveat": "Host setup and this reference resolve scan are O(N); this is not neural generation or a sublinear performance claim."
+    }
+  ],
+  "limitations": [
+    "Not a production port, complete native simulator, learned M2, language model, RL run or Human data qualification.",
+    "Await is evaluated over a supplied deterministic event history; no concurrent broker, native capture or real timer is exercised.",
+    "Boundary readiness is a fixture fact; no native quiescence or H capture accuracy is proved.",
+    "All protocols and consumers use synthetic public objects; no private corpus or proprietary card text is accessed.",
+    "Counts refer to toy-model callbacks; no latency, token, GPU-cost or strategy-quality result is measured."
+  ]
+}

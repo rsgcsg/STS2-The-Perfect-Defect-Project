@@ -38,17 +38,24 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
-- [Current work and next gate](docs/memory/CURRENT.md); [Stage 1a product delivery](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md).
-- [New member and Agent handoff (中文)](docs/NEW_MEMBER_HANDOFF.zh-CN.md): accounts,
-  first installation, collection, development/PRs, operations and incident reporting.
-- [Default release and migration acceptance](docs/MONOREPO_MIGRATION.md): native recording,
-  automatic upload and member download passed the sealed migration Human gate.
-- [Architecture and component ownership](docs/ARCHITECTURE.md).
-- [Developer workflow](docs/DEVELOPMENT_WORKFLOW.md), [testing](docs/TESTING.md),
-  [engineering governance](docs/ENGINEERING_GOVERNANCE.md), [skills](.agents/skills/README.md).
-- [Collection, member setup and maintenance](python/docs/B_PIPELINE_HANDOFF.md).
-- [Cloud deployment and recovery](python/deploy/hub/RUNBOOK.md).
-- [Research and data](python/docs/FULLRUN_RESEARCH.md).
+- [Current baseline v1 specification](docs/BASELINE_V1_SPEC.zh-CN.md): selected
+  contracts, abstract layers, S0 real instance, I/F-off structured Model and gates.
+- [Current execution packet](docs/plans/BASELINE_V1_EXECUTION_2026-10-08.md) and
+  [CURRENT](docs/memory/CURRENT.md): authorization, owners, evidence and next steps.
+- [Architecture](docs/ARCHITECTURE.md), [components](docs/COMPONENTS.md),
+  [testing](docs/TESTING.md), [workflow](docs/DEVELOPMENT_WORKFLOW.md),
+  [governance](docs/ENGINEERING_GOVERNANCE.md) and [project standards](docs/PROJECT_SYSTEM.md).
+- [New member handoff](docs/NEW_MEMBER_HANDOFF.zh-CN.md) and
+  [existing Stage1a product requirements](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md).
+- [Design history](docs/design/BASELINE_DESIGN_HISTORY.zh-CN.md) and
+  [document map](docs/DOCUMENT_MAP.md) and [skills](.agents/skills/README.md): earlier proposals, alternatives and exact
+  receipts. Historical proposal documents are not additional normative layers.
+
+The first new instance is explicitly a text-menu-v2 sealed-observation compatibility
+profile, not claimed full native-flat or Human qualification. G1 review, source/test,
+installed/loaded execution and scientific results remain separate. The latest owner
+has authorized lead-managed implementation and necessary operations within the
+execution packet; paid model/training spend is capped at USD 20 in aggregate.
 
 ## Workspace
 

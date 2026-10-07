@@ -3,6 +3,11 @@
 
 # Architecture
 
+The [P0/P2 baseline foundation proposal](design/BASELINE_FOUNDATION.zh-CN.md)
+reviews the broader system and lists decisions for P3–P5. It does not replace
+the accepted contracts below or select a default information profile. Current
+facts and proposal conflicts are separated in the [P1 audit](evidence/BASELINE_P1_AUDIT_2026-10-06.md).
+
 ## Product Boundary
 
 STS2 AI Platform provides a real-game Host, fair-player Player Environment,
