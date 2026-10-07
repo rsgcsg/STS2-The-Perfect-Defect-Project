@@ -32,6 +32,8 @@ H/P/A是逻辑合同，不强制三个进程。BND-2现作为实施默认：共�
 
 S0的动作完整性是`text-menu-v2`当前cursor全部choices；不同cursor不是一个扁平目录。card/target selection是协议虚拟选择，native输入只在对应确认派发。初始内核继续现有Controller、request fingerprint、stale与native execute-time复验；capsule ID不产生动作权威。目标native-flat profile日后独立版本实现，不能把S0名字换掉就继承资格。
 
+当前C的完整性还包含公开对象对应关系：对不同可见牌、遗物、能力、意图、充能球或栏位执行的信息操作，必须绑定同一frame中可见的subject/owner referent及已公开描述。只给不同opaque action ID，而公开标签、主体和关系无法表达已公开差异，不足以支持模型选择；不能用私有ID embedding或任意目录下标弥补。真实同名、公开等价对象可以对称，但已公开差异必须保留。descriptor或公开对象关系变化必须更新观察依据；原生control仍由Connector独立精确保存和复验。
+
 完整范围按既有L01–64机制族、SX01–21和SC01–16固定登记：信息/预览、战斗/目标/药水、selector/父child、奖励/linked/reroll、地图、事件、商店、营火/宝箱、跨幕、终局、管理/数据/产品。教程L61为管理/专门测试条件项。适用规则是当前构建/角色/阶层可达的机制；新发现未映射机制新增明确unsupported格并扩展，不删分母、不声称穷举所有卡牌组合。source/test/build/runtime/Human/学习各列分开填写。
 
 ## 4. 三种身份与S0消费规则
