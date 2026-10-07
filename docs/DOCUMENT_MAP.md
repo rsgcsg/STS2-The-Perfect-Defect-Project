@@ -1,5 +1,10 @@
 # Document Map
 
+Current baseline authority: [v1 specification](BASELINE_V1_SPEC.zh-CN.md) and
+[execution packet](plans/BASELINE_V1_EXECUTION_2026-10-08.md). Earlier BASELINE design
+entries below are history/alternatives, not coequal implementation specifications.
+
+
 Use the smallest route that answers the task.
 
 ## Current baseline design packet

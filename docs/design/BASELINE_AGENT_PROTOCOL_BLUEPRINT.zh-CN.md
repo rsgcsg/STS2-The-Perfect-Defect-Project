@@ -1,5 +1,7 @@
 # Agent—协议完整蓝图：统一事件接口、可选边界接口与四种 Agent 原型
 
+历史设计材料：当前实施合同已收敛至[BASELINE_V1_SPEC](../BASELINE_V1_SPEC.zh-CN.md)。本文件保留原讨论与证据，不再通过“其余不冲突部分”追加实现义务；旧授权与待选项按当前执行包处理。
+
 最新完整收敛见[G1审阅总册](BASELINE_G1_REVIEW_PACKET.zh-CN.md)、[待批准合同](BASELINE_G1_CONTRACTS.zh-CN.md)及[分阶段路线](BASELINE_G1_EXECUTION_ROADMAP.zh-CN.md)。本文件的详细案例/证据纳入G1候选；冲突按总册优先级解释，G1仍待用户阅读理解后明确批准。
 
 日期：2026-10-07。版本：0.1。状态：P3/P4/P5设计交付候选＋有界合成参考程序；G1未接受，未实现生产协议、训练或操作游戏。当前源码核对基点bfd9cf441b5ae149e175939d00a06c0d298c4b12。

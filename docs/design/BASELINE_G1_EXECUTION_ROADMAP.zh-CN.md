@@ -1,5 +1,7 @@
 # G1 后从哪里开始：闭环、稳定游戏Agent与研究路线
 
+历史设计材料：当前实施合同已收敛至[BASELINE_V1_SPEC](../BASELINE_V1_SPEC.zh-CN.md)。本文件保留原讨论与证据，不再通过“其余不冲突部分”追加实现义务；旧授权与待选项按当前执行包处理。
+
 最新澄清以[RC2交互边界、模型输入与预算](BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md)为准：D01与具体协议仍待确定；比较Host侧、协议核心与Agent侧的职责分配，不预先固定Agent管理能力边界。全角色A0–A10为设计目标，Defect A0为首个验收切片；教程默认由任务准备关闭。
 
 日期：2026-10-08。版本：G1-RC2，待用户理解并批准。使用原19个任务ID；下述E1.1等为已有任务的子包，不另建一套编号。配套[总册](BASELINE_G1_REVIEW_PACKET.zh-CN.md)与[合同C01–15](BASELINE_G1_CONTRACTS.zh-CN.md)。本文是可批准计划，不代表已经派发实现、使用数据或花费预算。

@@ -38,56 +38,24 @@ restrictions; local and cloud views do not create separate copies of authority.
 
 ## Start here
 
-- [Capture/cache defaults](docs/design/BASELINE_CAPTURE_CACHE_DEFAULT.zh-CN.md): what is captured immediately or on request, immutable-view reuse, current versus historical reads, and I/F-off first-Model defaults.
+- [Current baseline v1 specification](docs/BASELINE_V1_SPEC.zh-CN.md): selected
+  contracts, abstract layers, S0 real instance, I/F-off structured Model and gates.
+- [Current execution packet](docs/plans/BASELINE_V1_EXECUTION_2026-10-08.md) and
+  [CURRENT](docs/memory/CURRENT.md): authorization, owners, evidence and next steps.
+- [Architecture](docs/ARCHITECTURE.md), [components](docs/COMPONENTS.md),
+  [testing](docs/TESTING.md), [workflow](docs/DEVELOPMENT_WORKFLOW.md),
+  [governance](docs/ENGINEERING_GOVERNANCE.md) and [project standards](docs/PROJECT_SYSTEM.md).
+- [New member handoff](docs/NEW_MEMBER_HANDOFF.zh-CN.md) and
+  [existing Stage1a product requirements](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md).
+- [Design history](docs/design/BASELINE_DESIGN_HISTORY.zh-CN.md) and
+  [document map](docs/DOCUMENT_MAP.md) and [skills](.agents/skills/README.md): earlier proposals, alternatives and exact
+  receipts. Historical proposal documents are not additional normative layers.
 
-- [Large views and query protocol](docs/design/BASELINE_LARGE_VIEWS_AND_QUERY_PROTOCOL.zh-CN.md): push/pull/hybrid tradeoffs, 200–10000-card sizing, I/F source facts, and structured M2 in the early plan. BND-2 is tentative; G1 remains unapproved.
-
-- [Tentative BND-2 and two M2 models](docs/design/BASELINE_BND2_TWO_M2_MODELS.zh-CN.md): protocol data/completeness, the complete Agent, concrete text and structured model inputs, full-scene mapping and learning. Model choices and G1 remain unaccepted.
-
-- [G1-RC2 boundary, Agent/Model and input budget](docs/design/BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md): three protocol parts, alternative responsibility placements, explicit model inputs, all-character scope and measured synthetic sizing. D01 remains undecided.
-
-- [G1 complete review packet](docs/design/BASELINE_G1_REVIEW_PACKET.zh-CN.md): plain-language guide, detailed contracts, independent audit, and G2/V1/G3/research roadmap. G1 awaits the owner’s understanding and explicit approval. Start here.
-
-- [A system journeys and joint evaluation](docs/design/BASELINE_A_SYSTEM_JOURNEYS.zh-CN.md): proposed main direction, 14 complete consumer/data journeys, Host and three-chain stress tests, and remaining G1 decisions.
-
-- [Agent/protocol blueprint](docs/design/BASELINE_AGENT_PROTOCOL_BLUEPRINT.zh-CN.md): detailed event contract, optional boundary facade, four Agent designs, full interaction/data/runtime examples and bounded executable reference.
-
-- [First-version protocol synthesis](docs/design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md): precise capture guarantees, native realization/data projection, boundary and model-timed profiles, explicit assumptions and acceptance. Supporting capture and abstraction detail.
-
-- [L-N queued-action timing](docs/design/BASELINE_LN_QUEUED_TIMING.zh-CN.md): native input/effect overlap, separate Human and execution histories, late cancellation and event-driven Agent design.
-
-- [L-N Human learning integration](docs/design/BASELINE_LN_LEARNING_INTEGRATION.zh-CN.md): the actual partial Human input stream, M2 variants and learning requirements; interface support is not dataset qualification.
-
-- [L-N v1 scope and Agent contract](docs/design/BASELINE_LN_V1_SPEC.zh-CN.md): detailed operation commitments, native target/upgrade previews, model-neutral catalog access and loop ownership; proposal, not an implemented profile.
-
-- [P0–P5 complete design and acceptance delivery](docs/design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md),
-  [detailed native/abstract scene specification](docs/design/BASELINE_SCENARIO_SPEC.zh-CN.md),
-  and [bounded P5 evidence](docs/evidence/BASELINE_P5_EVIDENCE_2026-10-06.md).
-  [Three Agent contracts and four concrete Host combinations](docs/design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md)
-  now define the detailed choices. D-M2 sequence-N is the reference journey;
-  A and its detailed interface remain under discussion; detailed G1 acceptance and deployment
-  remain pending.
-
-- [New baseline foundations: P0 needs and P2 upper design](docs/design/BASELINE_FOUNDATION.zh-CN.md),
-  [P1 source/evidence audit](docs/evidence/BASELINE_P1_AUDIT_2026-10-06.md), and
-  [stable task IDs and gates](docs/plans/BASELINE_TASKS.zh-CN.md). These are a
-  reviewable design packet, not an accepted new gameplay protocol or runtime release.
-- [P3 interaction candidates](docs/design/BASELINE_INTERACTION_CANDIDATES.zh-CN.md)
-  and [P4 Agent, learning and execution contracts](docs/design/BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md)
-  extend the packet with full candidate semantics, model axes and N/Z/O design;
-  implementation, experiments and G1 acceptance remain separate.
-
-- [Current work and next gate](docs/memory/CURRENT.md); [Stage 1a product delivery](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md).
-- [New member and Agent handoff (中文)](docs/NEW_MEMBER_HANDOFF.zh-CN.md): accounts,
-  first installation, collection, development/PRs, operations and incident reporting.
-- [Default release and migration acceptance](docs/MONOREPO_MIGRATION.md): native recording,
-  automatic upload and member download passed the sealed migration Human gate.
-- [Architecture and component ownership](docs/ARCHITECTURE.md).
-- [Developer workflow](docs/DEVELOPMENT_WORKFLOW.md), [testing](docs/TESTING.md),
-  [engineering governance](docs/ENGINEERING_GOVERNANCE.md), [skills](.agents/skills/README.md).
-- [Collection, member setup and maintenance](python/docs/B_PIPELINE_HANDOFF.md).
-- [Cloud deployment and recovery](python/deploy/hub/RUNBOOK.md).
-- [Research and data](python/docs/FULLRUN_RESEARCH.md).
+The first new instance is explicitly a text-menu-v2 sealed-observation compatibility
+profile, not claimed full native-flat or Human qualification. G1 review, source/test,
+installed/loaded execution and scientific results remain separate. The latest owner
+has authorized lead-managed implementation and necessary operations within the
+execution packet; paid model/training spend is capped at USD 20 in aggregate.
 
 ## Workspace
 

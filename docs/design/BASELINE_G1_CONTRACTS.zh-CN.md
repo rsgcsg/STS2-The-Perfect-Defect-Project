@@ -1,5 +1,7 @@
 # G1 待批准合同：A 主系统、记录、Agent 与执行
 
+历史设计材料：当前实施合同已收敛至[BASELINE_V1_SPEC](../BASELINE_V1_SPEC.zh-CN.md)。本文件保留原讨论与证据，不再通过“其余不冲突部分”追加实现义务；旧授权与待选项按当前执行包处理。
+
 最新默认：[采集与缓存详解](BASELINE_CAPTURE_CACHE_DEFAULT.zh-CN.md)。I/F先关闭，首个Model仅消费声明的当前公开观察与W（候选仅供选择评分）；历史动作/receipt不换名塞入P/E，控制侧照常核对。下文I/F能力与旧实现是通用/历史说明，不表示默认启用。新请求式默认区分按需ReadCurrent与已封存ReadSealed，不承诺每个早期通知都已有全部历史内容。
 
 最新澄清以[RC2交互边界、模型输入与预算](BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md)为准：D01与具体协议仍待确定；比较Host侧、协议核心与Agent侧的职责分配，不预先固定Agent管理能力边界。全角色A0–A10为设计目标，Defect A0为首个验收切片；教程默认由任务准备关闭。

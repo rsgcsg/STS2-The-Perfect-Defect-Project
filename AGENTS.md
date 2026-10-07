@@ -12,14 +12,16 @@ One repository and workflow do not merge game, evidence, operational or research
 3. `docs/ARCHITECTURE.md` and `docs/COMPONENTS.md`
 4. the relevant component `AGENTS.md` or guide and exact code/tests
 
-For current design work, follow the stable IDs and scope in
-[baseline tasks](docs/plans/BASELINE_TASKS.zh-CN.md). Current authorization includes
-P5 design/bounded verification and complete G1 preparation with independent audit.
-Read the [G1 packet](docs/design/BASELINE_G1_REVIEW_PACKET.zh-CN.md). Only explicit
-owner approval after understanding passes G1; no production implementation,
-training, live operations or automatic G1 acceptance is authorized. Existing
-[Stage 1a product requirements](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md) retain their
-meaning until explicitly reconciled; do not silently cancel their milestones.
+Current owner authorization delegates G1 convergence and independent acceptance
+review to the project lead, followed by implementation and a real minimal loop.
+Read [the current v1 specification](docs/BASELINE_V1_SPEC.zh-CN.md) and
+[execution packet](docs/plans/BASELINE_V1_EXECUTION_2026-10-08.md), then CURRENT.
+Necessary game lifecycle, installs, GitHub integration and deployment are within
+scope; model/training paid spend has one aggregate USD 20 cap. Preserve native
+Human origin, data/use/Gold restrictions and exact runtime/rollback evidence.
+Old design-only/owner-read approval notices describe previous packets, not this
+authorization. Do not self-accept without the required independent review.
+Existing Stage1a product/research duties retain their explicitly reconciled scope.
 All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md). The local
 supervisor owns planning, delegation and integration coordination; implementation and
 the supervisor's own changes receive independent review. Authorized bounded packets

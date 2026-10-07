@@ -1,48 +1,49 @@
 # Current project context, 2026-10-08
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
-Resolve live GitHub refs, owners and exact producer facts before work; current
-authorities override this file. Design, source, runtime and research evidence differ.
+Resolve live GitHub refs and producer facts; current authorities override this file.
 
 ## Current authorized packet
 
-G1 design preparation/revision and independent audit. BND-2 is tentative; full
-D01 remains under discussion. Structured M2 belongs in the early implementation
-plan. First-Model I/F are now OFF by owner direction: do not repackage historical
-own-action/receipt features into P/E/W. Keep controller records and current
-public observations; persistent W still consumes qualified observations.
-G1 requires explicit owner understanding and approval. No production code,
-real-data use/training, game/Human/save/unlock, spending, installation, deployment,
-merge, release or branch cleanup is authorized by this design packet.
+The owner delegates project leadership: reconverge G1 with independent audits,
+repair design, then implement and verify a real minimal loop. Needed game start/
+stop, install, GitHub integration and deployment are authorized examples, not a
+whitelist. Aggregate paid model/training budget is USD 20; start local CPU at $0.
+Stop only for important ambiguity, inaccessible authority, unrecoverable risk or
+unbounded cost. Preserve data/use/Gold and truthful Human versus Agent origin.
 
 ## Read and review
 
-1. [Capture/cache defaults](../design/BASELINE_CAPTURE_CACHE_DEFAULT.zh-CN.md):
-   capture necessary facts/transient history promptly; deferred large ReadCurrent
-   captures on demand; ReadSealed reuses frozen scope. Full input must be coherent.
-   [Review](../evidence/BASELINE_CAPTURE_CACHE_REVIEW_2026-10-08.md) and
-   [manifest](../evidence/BASELINE_CAPTURE_CACHE_MANIFEST_2026-10-08.json).
-2. [Large views](../design/BASELINE_LARGE_VIEWS_AND_QUERY_PROTOCOL.zh-CN.md):
-   200–10000 synthetic sizing, query exposure and early structured M2.
-3. [Two models](../design/BASELINE_BND2_TWO_M2_MODELS.zh-CN.md) and
-   [G1 packet](../design/BASELINE_G1_REVIEW_PACKET.zh-CN.md): complete Agent,
-   text/object model designs and inherited contracts. New defaults take precedence.
-4. [Tasks](../plans/BASELINE_TASKS.zh-CN.md): same 19 IDs; G2 real small closure,
-   V1 scoped autonomous/product acceptance, G3 engineering closure, separate research.
+1. [Current v1 specification](../BASELINE_V1_SPEC.zh-CN.md): one normative candidate,
+   H/P/A layers, exact S0 compatibility profile, acquisition/consume and I/F OFF.
+2. [Execution packet](../plans/BASELINE_V1_EXECUTION_2026-10-08.md): G1 review,
+   disjoint source packets, resources, budget and stop criteria.
+3. [Testing](../TESTING.md), [workflow](../DEVELOPMENT_WORKFLOW.md),
+   [collaboration](../AI_COLLABORATION.md), [governance](../ENGINEERING_GOVERNANCE.md).
+   [Old design history](../design/BASELINE_DESIGN_HISTORY.zh-CN.md) is evidence and
+   alternatives, not another active contract. Formal 19 task IDs remain unchanged.
 
-## Anchors and rules
+## Current findings
 
-Original develop base: `9556d21188b2deea027192567827a339a0ce50f7`.
-Capture audit source base: `9786ba2d9373c9797e5981b8aa5ce6202a99498a`.
-Current Observe/Read/text-menu captures reread native state before identity checks;
-new shared-cache semantics are proposed, not deployed. No reliable dirty/version
-means no claim that native scanning is skipped. Unknown delivery never auto-retries.
-Follow [collaboration](../AI_COLLABORATION.md), [governance](../ENGINEERING_GOVERNANCE.md),
-[testing](../TESTING.md) and [workflow](../DEVELOPMENT_WORKFLOW.md).
+Cold reviews found overlapping specs, deferred-capture/consume ambiguity and
+I/F-off overrides inconsistent with old recipes. v1 selects one concrete first
+instance rather than stacking more caveats. Connector sealed read store plus
+shared acquisition, S-M2-0 and its actual training/export/live adapter are the
+first packages; generic cloud scheduling/full UI do not block the local loop.
+S0 uses existing text-menu-v2 exact submit; complete current cursor is not full
+native-flat relation. Agent-source rollout can prove a real learning loop but
+never Human validation. I/F remains OFF and receipt/control never drives W.
+
+## Anchors and evidence
+
+Design audit base: `bb87e35a02b715e82ba3fbfb373d8aee094c12d0`.
+Live develop was `9556d21188b2deea027192567827a339a0ce50f7` at initial refresh.
+G1-v1 is independently reviewed and accepted for the bounded S0 implementation.
+Source packets are being assigned; no source behavior has changed yet. No paid
+job submitted; no game or installation changed in this packet so far.
 
 ## Remaining Platform non-claims
 
-No new installed/loaded/Human/training/GPU/cloud/scientific qualification follows.
-Synthetic token/byte counts are not native maxima or neural performance. Old
-artifacts retain original input/history identity. About five minutes of only
-passive waiting ends the wait cycle, not another task or external job.
+Source/test, build, installed, loaded, runtime, Human and research remain distinct.
+Historical probes and receipts do not qualify new source. S0 is bounded and does
+not prove all scenes, all characters, complete Human histories or strategy quality.

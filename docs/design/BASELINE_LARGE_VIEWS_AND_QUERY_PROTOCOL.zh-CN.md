@@ -1,5 +1,7 @@
 # 大页面与请求式交互：200到10000张牌、I/F与结构M2前期计划
 
+历史设计材料：当前实施合同已收敛至[BASELINE_V1_SPEC](../BASELINE_V1_SPEC.zh-CN.md)。本文件保留原讨论与证据，不再通过“其余不冲突部分”追加实现义务；旧授权与待选项按当前执行包处理。
+
 最新默认：[采集与缓存详解](BASELINE_CAPTURE_CACHE_DEFAULT.zh-CN.md)。I/F先关闭，首个Model仅消费声明的当前公开观察与W（候选仅供选择评分）；历史动作/receipt不换名塞入P/E，控制侧照常核对。下文I/F能力与旧实现是通用/历史说明，不表示默认启用。新请求式默认区分按需ReadCurrent与已封存ReadSealed，不承诺每个早期通知都已有全部历史内容。
 
 日期：2026-10-08。版本：LargeView-0.1。状态：BND-2暂定；本文是D01信息提供/查询/性能的进一步候选，G1未批准。补充[双M2设计](BASELINE_BND2_TWO_M2_MODELS.zh-CN.md)及[RC2边界](BASELINE_G1_AGENT_BOUNDARY_AND_BUDGET.zh-CN.md)。结构M2按用户要求明确纳入前期计划，不再只作为遥远扩展；具体图仍可调整。
