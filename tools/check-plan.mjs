@@ -19,14 +19,18 @@ function prose({status, file, oldMode, newMode}) {
   // Executable files, symlinks and type changes cannot masquerade as prose.
   const regular = newMode === "100644" &&
     ((status === "A" && oldMode === "000000") || (status === "M" && oldMode === "100644"));
-  const protectedName = /(?:^|\/)(?:AGENTS|SKILL)\.md$/.test(file);
   const surface = (status === "M" && editorial.has(file)) ||
     file === "docs/memory/CURRENT.md" || /^docs\/(?:design|plans|evidence)\/[^/]+\.md$/.test(file);
-  return regular && !protectedName && surface;
+  return regular && surface;
 }
 
 export function classifyChanges(entries) {
   if (!entries.length) return { scope: "full", reason: "empty_or_unknown_diff" };
+  // Protected instructions cannot enter the Python report-companion route either.
+  // Case variants stay protected on case-insensitive supported workstations.
+  if (entries.some(({file}) => /(?:^|\/)(?:AGENTS|SKILL)\.md$/i.test(file))) {
+    return {scope: "full", reason: "protected_instruction_change"};
+  }
   if (entries.some(({oldMode, newMode}) =>
     (oldMode !== undefined && !["000000", "100644"].includes(oldMode)) ||
     (newMode !== undefined && !["000000", "100644"].includes(newMode)))) {

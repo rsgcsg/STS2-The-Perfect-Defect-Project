@@ -138,3 +138,12 @@ test("raw parser rejects ambiguous modes and preserves unusual file names", () =
   for(const raw of [`:0 100644 ${sha} ${sha} A\0a\0`,`:100644 100644 ${sha} ${sha} R100\0a\0b\0`,":bad\0a\0"])
     assert.throws(()=>parseRawDiff(raw));
 });
+
+test("protected instruction names cannot qualify as Python report companions", () => {
+  const source = proseEntry("python/stpd/model.py");
+  for (const name of ["AGENTS.md", "SKILL.md", "agents.md", "Skill.MD"]) {
+    const instruction = proseEntry(`docs/evidence/${name}`);
+    assert.equal(classifyChanges([source, instruction]).scope, "full", name);
+    assert.equal(classifyChanges([instruction]).scope, "full", name);
+  }
+});

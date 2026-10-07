@@ -62,7 +62,8 @@ The router uses actual committed Git changes, not a caller-selected test list:
 
 The docs route accepts non-executable regular Git blobs (mode 100644): modified
 editorial allowlist files, added/modified CURRENT, and single-level Markdown files
-in root docs/design, docs/plans and docs/evidence. AGENTS and SKILL names,
+in root docs/design, docs/plans and docs/evidence. AGENTS and SKILL names
+(case-insensitive, including Python report companions),
 governance/ADR, component/Python docs, JSON/schema/manifest files, tools, locks,
 deletions, symlinks and mode/type changes retain full routing. Mixed executable
 changes cannot use docs. The router reads committed raw Git modes; file extensions
