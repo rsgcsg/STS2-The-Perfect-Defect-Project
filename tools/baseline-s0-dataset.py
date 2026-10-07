@@ -143,6 +143,52 @@ def singleton(records: list[dict[str, Any]], kind: str) -> dict[str, Any]:
     return items[0]
 
 
+def verify_fresh_bootstrap(trace: Any) -> None:
+    """Accept the Host's delivered new-run chain, including tutorial handoff.
+
+    The Host chooses the native disable-tutorial semantic option; its compact
+    trace retains the localized label, not that semantic ID. Do not infer a
+    new start from a resumed map, or invent an Embark/direct-map shortcut.
+    """
+    setup = {"main_menu", "singleplayer_menu", "character_select"}
+    tutorials = {"tutorial", "tutorial_preference"}
+    if not isinstance(trace, list) or not 0 < len(trace) <= 16:
+        fail("fresh_native_new_run_bootstrap_required")
+    embark = []
+    for index, step in enumerate(trace):
+        if (
+            not isinstance(step, dict)
+            or step.get("delivery") != "delivered"
+            or step.get("interaction_kind") not in setup | tutorials
+            or re.search(r"resume|continue.*run", str(step.get("label", "")), re.I)
+        ):
+            fail("fresh_native_new_run_bootstrap_required")
+        if index + 1 < len(trace) and step.get("successor_kind") != trace[index + 1].get(
+            "interaction_kind"
+        ):
+            fail("bootstrap_chain_disconnected")
+        if step.get("label") == "Embark":
+            if step.get("interaction_kind") != "character_select" or step.get("verb") != "activate":
+                fail("bootstrap_embark_binding")
+            embark.append(index)
+    if (
+        trace[0]["interaction_kind"] not in setup
+        or len(embark) != 1
+        or trace[-1].get("successor_kind") != "map_navigation"
+    ):
+        fail("fresh_native_new_run_bootstrap_required")
+    position = embark[0]
+    if (
+        any(step["interaction_kind"] not in setup for step in trace[:position])
+        or any(
+            step["interaction_kind"] not in tutorials or step.get("verb") != "activate"
+            for step in trace[position + 1 :]
+        )
+        or trace[position].get("successor_kind") not in tutorials | {"map_navigation"}
+    ):
+        fail("bootstrap_post_embark_handoff_invalid")
+
+
 def verify_template(episode: dict[str, Any], run_start: dict[str, Any]) -> dict[str, Any]:
     profile = episode["profile"]
     template_id = text(profile.get("template_id"), "template_id")
@@ -618,21 +664,7 @@ def verify_run(directory: Path, split: str) -> tuple[dict[str, Any], dict[str, A
         or episode.get("requested_ascension") != 0
     ):
         fail("native_episode_provenance_required")
-    trace = episode.get("bootstrap_trace")
-    if (
-        not isinstance(trace, list)
-        or not trace
-        or trace[0].get("interaction_kind")
-        not in {"main_menu", "singleplayer_menu", "character_select"}
-        or any(step.get("delivery") != "delivered" for step in trace)
-        or not any(
-            step.get("interaction_kind") == "character_select"
-            and step.get("label") == "Embark"
-            and step.get("successor_kind") == "map_navigation"
-            for step in trace
-        )
-    ):
-        fail("fresh_native_new_run_bootstrap_required")
+    verify_fresh_bootstrap(episode.get("bootstrap_trace"))
     template = verify_template(episode, start)
     runtime_row = singleton(records, "runtime_identity")
     runtime = runtime_row["payload"]
@@ -788,8 +820,17 @@ def verify_run(directory: Path, split: str) -> tuple[dict[str, Any], dict[str, A
             capture_bytes += len(capsule_raw)
             if capture_bytes > MAX_CAPTURE_BYTES:
                 fail("raw_capture_budget")
-            if latest is None and snapshot["interaction"]["kind"] != "map_navigation":
-                fail("first_capture_not_fresh_map")
+            if latest is None:
+                interaction = snapshot["interaction"]
+                native_map = (
+                    interaction["kind"] == "native_map"
+                    and interaction.get("content_schema")
+                    == "sts2.player-environment/surface/map_navigation-1"
+                    and interaction.get("content", {}).get("surface", {}).get("kind")
+                    == "map_navigation"
+                )
+                if interaction["kind"] != "map_navigation" and not native_map:
+                    fail("first_capture_not_fresh_map")
             if snapshot["persistent"] is not None:
                 persistent = snapshot["persistent"]["content"]
                 if (

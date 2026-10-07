@@ -27,7 +27,14 @@ def sha(raw):
 
 
 def create_run(
-    root, seed="1", suffix="one", *, extra_capture=True, continuity_change=False, navigation=False
+    root,
+    seed="1",
+    suffix="one",
+    *,
+    extra_capture=True,
+    continuity_change=False,
+    navigation=False,
+    native_map=False,
 ):
     root = root.resolve()
     directory = root / suffix
@@ -131,6 +138,7 @@ def create_run(
         "bootstrap_trace": [
             {
                 "interaction_kind": "character_select",
+                "verb": "activate",
                 "label": "Embark",
                 "delivery": "delivered",
                 "successor_kind": "map_navigation",
@@ -216,6 +224,10 @@ def create_run(
         "surface": {"kind": "map_navigation"},
         "context": {"kind": "map"},
     }
+    if native_map:
+        base["interaction"].update(
+            kind="native_map", content_schema="sts2.player-environment/surface/map_navigation-1"
+        )
     base["persistent"] = {
         "content": {
             "player": {"character_definition_id": "DEFECT", "hp": 70},
@@ -800,3 +812,95 @@ def test_same_length_template_edit_rejects_old_inventory_hash(tmp_path):
     assert settings.stat().st_size == len(before)
     with pytest.raises(ValueError, match="template_file_checksum_drift"):
         converter.convert_runs([("train", directory)])
+
+
+def tutorial_bootstrap():
+    return [
+        {
+            "interaction_kind": "main_menu",
+            "verb": "open",
+            "label": "Open Single Player",
+            "delivery": "delivered",
+            "reason_code": None,
+            "successor_kind": "character_select",
+        },
+        {
+            "interaction_kind": "character_select",
+            "verb": "select",
+            "label": "Select 故障机器人",
+            "delivery": "delivered",
+            "reason_code": None,
+            "successor_kind": "character_select",
+        },
+        {
+            "interaction_kind": "character_select",
+            "verb": "activate",
+            "label": "Embark",
+            "delivery": "delivered",
+            "reason_code": None,
+            "successor_kind": "tutorial",
+        },
+        {
+            "interaction_kind": "tutorial",
+            "verb": "activate",
+            "label": "不了",
+            "delivery": "delivered",
+            "reason_code": None,
+            "successor_kind": "map_navigation",
+        },
+    ]
+
+
+def test_native_tutorial_disable_handoff_preserves_new_run_qualification(tmp_path):
+    directory, rows = create_run(tmp_path)
+    payload(rows, "episode_identity")["bootstrap_trace"] = tutorial_bootstrap()
+    write_rows(directory, rows)
+    converted = converter.convert_runs([("train", directory)])
+    assert len(converted["runs"][0]["steps"]) == 2
+
+
+def test_native_map_profile_name_requires_public_map_surface(tmp_path):
+    valid_directory, _ = create_run(tmp_path, suffix="valid-native-map", native_map=True)
+    assert len(converter.convert_runs([("train", valid_directory)])["runs"][0]["steps"]) == 2
+    directory, rows = create_run(tmp_path)
+    # Profile rename is a faithful source boundary, not a new arbitrary page allowance.
+    first_capture = payload(rows, "capture")
+    snapshot_path = directory / first_capture["snapshot_path"]
+    snapshot = json.loads(snapshot_path.read_bytes())
+    snapshot["interaction"].update(
+        kind="native_map", content_schema="sts2.player-environment/surface/map_navigation-1"
+    )
+    raw = json.dumps(snapshot, indent=2).encode()
+    snapshot_path.write_bytes(raw)
+    first_capture.update(sha256=sha(raw), bytes=len(raw))
+    first_capture["capture"].update(sha256=sha(raw), total_bytes=len(raw))
+    payload(rows, "policy_offer").update(snapshot_sha256=sha(raw))
+    # Explicit predicate rejection comes before event joins if its surface is inconsistent.
+    snapshot["interaction"]["content"]["surface"]["kind"] = "combat_turn"
+    raw = json.dumps(snapshot, indent=2).encode()
+    snapshot_path.write_bytes(raw)
+    first_capture.update(sha256=sha(raw), bytes=len(raw))
+    first_capture["capture"].update(sha256=sha(raw), total_bytes=len(raw))
+    write_rows(directory, rows)
+    with pytest.raises(ValueError, match="first_capture_not_fresh_map"):
+        converter.verify_run(directory, "train")
+
+
+@pytest.mark.parametrize(
+    "mutation,code",
+    [
+        (lambda trace: trace[0].update(label="Resume Run"), "fresh_native"),
+        (lambda trace: trace[2].update(successor_kind="map_navigation"), "chain_disconnected"),
+        (lambda trace: trace[3].update(delivery="unknown"), "fresh_native"),
+        (lambda trace: trace[3].update(successor_kind="combat_turn"), "fresh_native"),
+        (
+            lambda trace: trace[3].update(interaction_kind="character_select", label="Embark"),
+            "chain_disconnected",
+        ),
+    ],
+)
+def test_tutorial_handoff_does_not_backfill_resume_or_broken_chains(mutation, code):
+    trace = tutorial_bootstrap()
+    mutation(trace)
+    with pytest.raises(ValueError, match=code):
+        converter.verify_fresh_bootstrap(trace)
