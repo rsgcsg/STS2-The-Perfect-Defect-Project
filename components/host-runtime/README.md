@@ -393,3 +393,9 @@ disabled; process close remains the episode owner's responsibility.
 UI preparation under an isolated, Steam-disabled profile. The default remains
 headless. Native UI preparation, administrative unlocks and AI-operated steps are
 recorded separately; they establish neither Human origin nor headless qualification.
+
+The reference handoff status query uses the existing public
+`GET /api/player-environment/controller` wire contract directly, with exact runtime
+and envelope checks. This preserves the standalone Host package's intentionally
+pinned released SDK, which supports controller close but predates the new SDK
+status getter. There is no route fallback or local dependency override.

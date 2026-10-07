@@ -101,9 +101,24 @@ export async function releaseReferenceController({
 }) {
   if (!controller || !expectedRuntimeInstanceId) throw new Error("reference_controller_missing");
   await controller.close();
-  const state = (await new PlayerEnvironmentRestClient(endpoint, timeoutMs, fetchImpl)
-    .controlSnapshot()).data;
-  if (state.runtime_instance_id !== expectedRuntimeInstanceId || state.controller != null) {
+  // The distributed Host intentionally supports its released SDK, whose close
+  // method predates the status getter. Observe the existing public wire contract
+  // directly; there is no alternate route, SDK detection or retry.
+  const response = await fetchImpl(`${endpoint}/api/player-environment/controller`, {
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  if (!response.ok) throw new Error(`reference_controller_status_http_${response.status}`);
+  const state = await response.json();
+  const fields = new Set(["protocol_version", "schema", "runtime_instance_id", "clients", "controller"]);
+  const nonempty = value => typeof value === "string" && value.length > 0;
+  if (!state || typeof state !== "object" || Array.isArray(state)
+    || Object.keys(state).some(key => !fields.has(key))
+    || state.protocol_version !== "1.0.0" || state.schema !== "sts2.player-environment/control-1"
+    || !nonempty(state.runtime_instance_id) || state.runtime_instance_id !== expectedRuntimeInstanceId
+    || !Array.isArray(state.clients) || state.clients.some(client => !client
+      || typeof client !== "object" || Array.isArray(client)
+      || !nonempty(client.client_session_id) || !nonempty(client.client_instance_id))
+    || state.controller != null) {
     throw new Error("reference_controller_release_unconfirmed");
   }
   return {
