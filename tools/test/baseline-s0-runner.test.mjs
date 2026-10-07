@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { PublicMenuTeacher } from "../baseline-s0-teacher.mjs";
 import { S0RawRecords, sha256 } from "../baseline-s0-records.mjs";
 import { runS0, makeS0Manifest, confirmControlReleased, parseArguments } from "../baseline-s0-runner.mjs";
+import { resolveInstallation } from "../../components/host-runtime/src/game-installation.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const base = JSON.parse(await readFile(path.join(root,
@@ -136,13 +137,27 @@ test("manifest binds actual host/game/modset and limits interaction support", ()
 
 test("control release must be freshly confirmed with exact runtime and null owner", async () => {
   const control = { schema: "sts2.player-environment/control-1", protocol_version: "1.0.0",
-    runtime_instance_id: "runtime-1", controller: null };
+    runtime_instance_id: "runtime-1", clients: [], controller: null };
   assert.equal((await confirmControlReleased("http://fixture", "runtime-1", async () => ({ ok: true,
     json: async () => control }))).confirmed, true);
+  const omitted = { ...control };
+  delete omitted.controller; // Actual C# WhenWritingNull serialization.
+  assert.equal((await confirmControlReleased("http://fixture", "runtime-1", async () => ({ ok: true,
+    json: async () => omitted }))).confirmed, true);
   await assert.rejects(confirmControlReleased("http://fixture", "other", async () => ({ ok: true,
     json: async () => control })), /unconfirmed/u);
   await assert.rejects(confirmControlReleased("http://fixture", "runtime-1", async () => ({ ok: true,
     json: async () => ({ ...control, controller: { held: true } }) })), /unconfirmed/u);
+  await assert.rejects(confirmControlReleased("http://fixture", "runtime-1", async () => ({ ok: true,
+    json: async () => ({ schema: control.schema, protocol_version: "1.0.0", runtime_instance_id: "runtime-1" }) })), /unconfirmed/u);
+  for (const malformed of [{ ...control, clients: [{}] }, { ...control, clients: [null] },
+    { ...control, unexpected: true }, null, []]) {
+    await assert.rejects(confirmControlReleased("http://fixture", "runtime-1", async () => ({ ok: true,
+      json: async () => malformed })), /unconfirmed/u);
+  }
+  assert.equal((await confirmControlReleased("http://fixture", "runtime-1", async () => ({ ok: true,
+    json: async () => ({ ...omitted, clients: [{ client_session_id: "client", client_instance_id: "instance",
+      product_id: "product", product_name: "name" }] }) }))).confirmed, true);
 });
 
 function lifecycleDependencies(trace, { failStop = false, unknown = true } = {}) {
@@ -206,4 +221,31 @@ test("Stop failure still closes owning episode and does not claim release", asyn
 test("finite CLI options reject duplicate flags and increased autonomy", async () => {
   assert.throws(() => parseArguments(["collect", "--seed", "1", "--seed", "2"]), /duplicate/u);
   await assert.rejects(runS0({ mode: "collect", maxCalls: 61 }), /finite_budget/u);
+});
+
+test("actual CLI directory parser is resolved by the Host installation resolver before Driver start", async t => {
+  const directory = await temporary(t), trace = [];
+  const options = parseArguments(["collect", "--installation", path.join(directory, "game"),
+    "--local-root", path.join(directory, "local"), "--evidence-root", path.join(directory, "evidence"),
+    "--seed", "1", "--browse", "false"]);
+  assert.equal(typeof options.installation, "string");
+  const deps = lifecycleDependencies(trace);
+  const start = deps.startEpisode;
+  let resolved;
+  deps.resolveInstallation = value => {
+    assert.equal(value, options.installation);
+    resolved = resolveInstallation(value);
+    return resolved;
+  };
+  deps.startEpisode = actual => {
+    assert.equal(actual.installation, resolved);
+    assert.equal(actual.installation.game_dir, options.installation);
+    assert.equal(typeof actual.installation.data_dir, "string");
+    assert.equal(typeof actual.installation.release_info, "string");
+    assert.equal(typeof actual.installation.executable, "string");
+    return start(actual);
+  };
+  const result = await runS0(options, deps);
+  assert.equal(result.stop_confirmed, true);
+  assert.equal(trace.at(-1), "episode-close");
 });

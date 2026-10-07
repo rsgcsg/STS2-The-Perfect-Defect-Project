@@ -4,7 +4,9 @@ This CLI reuses the shipped Host Driver, Connector sealed text-menu-v2 SDK,
 Policy Runtime and trusted Python NDJSON2 adapter. It has no second executor.
 The lead prepares the isolated `defect-a0-s0` profile template and exact installed
 artifact first. The Driver explicitly selects Defect A0 and verifies its public
-run identity. Build the existing Connector SDK and Runtime before running.
+run identity. The CLI game directory is resolved through the existing Host
+installation resolver before Driver start. Build the existing Connector SDK
+and Runtime before running.
 
 ```sh
 node tools/baseline-s0-runner.mjs collect \
@@ -50,7 +52,8 @@ manifest. The existing AgentRunEvidence writer additionally records admitted
 Runtime decisions, submit results and lifecycle. No raw files enter Git.
 
 Every exit closes the owning episode. Runtime Stop precedes a fresh control GET
-that must show the exact runtime with null controller; then the child adapter
+that must show the exact runtime, a client list and null/omitted controller
+(the native serializer omits null fields); then the child adapter
 and Driver close. `summary.json` preserves the explicit termination reason,
 release confirmation and errors. Unknown termination may have confirmed control
 release but remains unknown; it is not a successful native action claim.

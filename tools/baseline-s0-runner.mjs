@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { PublicMenuTeacher, TEACHER_ID, TEACHER_VERSION, INPUT_SPEC } from "./baseline-s0-teacher.mjs";
 import { S0RawRecords, sha256 } from "./baseline-s0-records.mjs";
+import { resolveInstallation } from "../components/host-runtime/src/game-installation.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA = "sts2.player-environment/text-menu-snapshot-2";
@@ -58,8 +59,17 @@ export async function confirmControlReleased(endpoint, runtimeInstanceId, fetchI
     { signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(`stop_control_http_${response.status}`);
   const control = await response.json();
-  if (control.schema !== "sts2.player-environment/control-1" || control.protocol_version !== "1.0.0"
-    || control.runtime_instance_id !== runtimeInstanceId || control.controller !== null)
+  // SDK has no GET ControlSnapshot decoder. Match its client registration
+  // minimum fields/passthrough clients and the native GET record's exact envelope.
+  const validClient = client => client && typeof client === "object" && !Array.isArray(client)
+    && typeof client.client_session_id === "string" && client.client_session_id.length > 0
+    && typeof client.client_instance_id === "string" && client.client_instance_id.length > 0;
+  const validEnvelope = control && typeof control === "object" && !Array.isArray(control)
+    && Object.keys(control).every(key => ["schema", "protocol_version", "runtime_instance_id", "clients", "controller"].includes(key));
+  if (!validEnvelope || control.schema !== "sts2.player-environment/control-1" || control.protocol_version !== "1.0.0"
+    || control.runtime_instance_id !== runtimeInstanceId || !Array.isArray(control.clients)
+    || !control.clients.every(validClient)
+    || control.controller != null) // Native WhenWritingNull omits the unheld controller; SDK agrees.
     throw new Error("stop_control_release_unconfirmed");
   return { confirmed: true, basis: "fresh_control_observation_after_runtime_stop", control };
 }
@@ -85,6 +95,10 @@ export async function runS0(options, dependencies) {
     throw new Error("s0_finite_budget_required");
   if (options.mode === "evaluate" && !options.package) throw new Error("evaluate_package_required");
   const deps = dependencies ?? await defaultDependencies();
+  // CLI provides a directory, while the Host Driver consumes resolved installation paths.
+  // Programmatic callers may already hold that Host-owned object.
+  const installation = typeof options.installation === "string"
+    ? (deps.resolveInstallation ?? resolveInstallation)(options.installation) : options.installation;
   const runId = `s0-${options.mode}-${randomUUID()}`;
   await mkdir(options.evidenceRoot, { recursive: true });
   const directory = path.join(options.evidenceRoot, runId);
@@ -111,7 +125,7 @@ export async function runS0(options, dependencies) {
       records_code_sha256: sha256(await readFile(path.join(ROOT, "tools/baseline-s0-records.mjs"))) });
     const hostRoot = path.join(directory, "host");
     await mkdir(hostRoot);
-    episode = await deps.startEpisode({ installation: options.installation, localRoot: options.localRoot,
+    episode = await deps.startEpisode({ installation, localRoot: options.localRoot,
       evidenceRoot: hostRoot, seed: options.seed, templateId: options.templateId ?? "defect-a0-s0",
       characterId: "DEFECT", ascension: 0,
       experimentalBuildAcknowledged: options.experimentalBuildAcknowledged ?? false,
