@@ -113,50 +113,48 @@ internal sealed class PublicInformationBindings
         var shown = Copy(facts, "definition_id", "name", "counter");
         return Declare(id, "relic", Text(facts["name"]), shown);
     }
-    internal bool TryOrbBasis(string owner, out int capacity, out IReadOnlyList<string> ids)
+    internal PlayerEnvironmentReferent? OrbPresentation(string id, string owner, string definition,
+        string? name, int slot, int nativeSlots, bool labelsPresent,
+        bool passiveVisible, string? passiveText, bool evokeVisible, string? evokeText)
     {
-        JsonObject? facts = OwnerFacts(owner);
-        int? slots = Integer(facts?["orb_slots"]);
-        var orbs = facts?["orbs"] as JsonArray;
-        if (slots == null || slots < 0 || orbs == null)
+        if (!labelsPresent || slot < 0 || slot >= nativeSlots
+            || passiveVisible && passiveText == null
+            || evokeVisible && evokeText == null)
+        { Missing("orb_display_fields"); return null; }
+        var shown = new JsonObject
         {
-            capacity = 0;
-            ids = Array.Empty<string>();
-            Missing("orb_capture_basis");
-            return false;
-        }
-        string?[] values = orbs.Select(value => Text(value?["entity_id"])).ToArray();
-        if (values.Any(string.IsNullOrWhiteSpace))
-        {
-            capacity = 0;
-            ids = Array.Empty<string>();
-            Missing("orb_capture_basis");
-            return false;
-        }
-        capacity = slots.Value;
-        ids = values.Select(value => value!).ToArray();
-        return true;
+            ["presentation_basis"] = "native_current_orb_ui",
+            ["occupied"] = true,
+            ["slot_order"] = slot,
+            ["slot_count"] = nativeSlots,
+            ["definition_id"] = definition,
+            ["name"] = name,
+            ["passive_text_visible"] = passiveVisible,
+            ["evoke_text_visible"] = evokeVisible
+        };
+        if (passiveVisible) shown["displayed_passive_text"] = passiveText;
+        if (evokeVisible) shown["displayed_evoke_text"] = evokeText;
+        // The native UI node has an independent control ID. Existing logical
+        // model referents/context remain untouched even when their timing differs.
+        var subject = Declare(id, "orb_ui", name, shown, owner);
+        if (subject != null) visible[id] = subject = subject with
+            { Kind = "control", PropertiesSchema = "sts2.player-environment/referent/orb_ui-1" };
+        return subject;
     }
 
-    internal PlayerEnvironmentReferent? Orb(string id, string owner)
-    {
-        var orb = Existing(id, "orb_subject", "orb");
-        JsonObject? facts = Find(OwnerFacts(owner)?["orbs"], "entity_id", id);
-        if (orb == null || facts == null || Existing(owner, "orb_owner") == null)
-        { Missing("orb_membership"); return null; }
-        return Declare(id, "orb", orb.Label, Copy(facts, "definition_id", "name", "passive_value",
-            "evoke_value", "queue_index", "is_next_to_evoke"), owner);
-    }
     internal PlayerEnvironmentReferent? EmptyOrb(string id, string owner, int slot, int nativeSlots)
     {
-        JsonObject? facts = OwnerFacts(owner);
-        if (Existing(owner, "orb_slot_owner") == null || Integer(facts?["orb_slots"]) != nativeSlots
-            || slot < 0 || slot >= nativeSlots)
+        if (slot < 0 || slot >= nativeSlots)
         { Missing("orb_slot_membership"); return null; }
-        // Slot order is the native visible orb queue/slot order, not a candidate ordinal.
-        return Declare(id, "orb_slot", "Empty orb slot", new JsonObject
-            { ["occupied"] = false, ["slot_order"] = slot, ["slot_count"] = nativeSlots }, owner);
+        var subject = Declare(id, "orb_slot", "Empty orb slot", new JsonObject
+        {
+            ["presentation_basis"] = "native_current_orb_ui",
+            ["occupied"] = false, ["slot_order"] = slot, ["slot_count"] = nativeSlots
+        }, owner);
+        if (subject != null) visible[id] = subject = subject with { Kind = "control" };
+        return subject;
     }
+
     internal PlayerEnvironmentReferent? Power(string id, string owner, string definition,
         decimal amount, bool nativeMembership)
     {

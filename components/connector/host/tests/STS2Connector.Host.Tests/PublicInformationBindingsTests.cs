@@ -165,7 +165,7 @@ public sealed class PublicInformationBindingsTests
         {
             ("card_tips", bindings.Card("card-a"), (string?)null),
             ("relic_tips", bindings.Relic("relic"), (string?)null),
-            ("orb_tips", bindings.Orb("orb", "player"), "player"),
+            ("orb_tips", bindings.OrbPresentation("ui-orb", "player", "LIGHTNING", "Lightning", 0, 3, true, true, "3", false, null), "player"),
             ("orb_tips", bindings.EmptyOrb("empty-slot", "player", 2, 3), "player"),
             ("power_tips", bindings.Power("power", "enemy", "STRENGTH", 2, true), "enemy"),
             ("intent_tips", bindings.Intent("intent-a", "enemy", 0, 2, true), "enemy")
@@ -185,8 +185,72 @@ public sealed class PublicInformationBindingsTests
         var json = JsonSerializer.Serialize(bindings.Page.Referents, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
         Assert.DoesNotContain("unopened", json);
         Assert.Contains("owner_referent_id", json);
-        Assert.Contains("passive_value", json);
+        Assert.Contains("displayed_passive_text", json);
+        Assert.DoesNotContain("passive_value", json);
         Assert.Equal("Attack 7", bindings.Page.Referents.Single(value => value.ReferentId == "intent-a").Label);
+    }
+
+    [Fact]
+    public void UiOrbDescriptorsDoNotEraseLogicalValuesOrRequireLogicalModelMembership()
+    {
+        var page = Page();
+        page = page with { Referents = page.Referents.Select(value => value.ReferentId == "orb"
+            ? value with { PropertiesSchema = "sts2.player-environment/referent/orb-1",
+                Properties = page.Interaction.Content.Context["player"]!["orbs"]![0]!.DeepClone() } : value).ToArray() };
+        string logicalBefore = page.Interaction.Content.Context.ToJsonString();
+        var bindings = new PublicInformationBindings(page);
+        var ui = bindings.OrbPresentation("native-ui-node", "player", "LIGHTNING", "Lightning", 1, 4,
+            true, true, "12", true, "21")!;
+        Assert.True(bindings.Complete);
+        Assert.Equal("control", ui.Kind);
+        Assert.Equal("orb_ui", ui.Role);
+        Assert.Equal("native_current_orb_ui", ui.Properties!["presentation_basis"]!.GetValue<string>());
+        Assert.Equal("12", ui.Properties["displayed_passive_text"]!.GetValue<string>());
+        Assert.Null(ui.Properties["passive_value"]);
+        Assert.Null(ui.Properties["evoke_value"]);
+        Assert.Null(ui.Properties["queue_index"]);
+        Assert.Null(ui.Properties["is_next_to_evoke"]);
+        Assert.Null(ui.Properties["description"]);
+        Assert.Equal(logicalBefore, bindings.Page.Interaction.Content.Context.ToJsonString());
+        var logical = bindings.Page.Referents.Single(value => value.ReferentId == "orb");
+        Assert.Equal(3, logical.Properties!["passive_value"]!.GetValue<int>());
+        Assert.Equal(8, logical.Properties["evoke_value"]!.GetValue<int>());
+        Assert.Equal(0, logical.Properties["queue_index"]!.GetValue<int>());
+        Assert.True(logical.Properties["is_next_to_evoke"]!.GetValue<bool>());
+        Assert.Equal("orb", logical.Role);
+        var emptyUi = bindings.EmptyOrb("native-empty-node", "player", 3, 4)!;
+        Assert.Equal("control", emptyUi.Kind);
+        Assert.False(emptyUi.Properties!["occupied"]!.GetValue<bool>());
+        Assert.Equal(4, emptyUi.Properties["slot_count"]!.GetValue<int>()); // UI capacity may differ legitimately.
+    }
+
+    [Fact]
+    public void ActualVisibleEmptyAmountTextIsCapturedWithoutNumericInference()
+    {
+        var bindings = new PublicInformationBindings(Page());
+        var ui = bindings.OrbPresentation("ui-empty-text", "player", "LIGHTNING", "Lightning", 0, 1,
+            true, true, "", true, "");
+        Assert.NotNull(ui);
+        Assert.True(bindings.Complete);
+        Assert.Equal("", ui!.Properties!["displayed_passive_text"]!.GetValue<string>());
+        Assert.Equal("", ui.Properties["displayed_evoke_text"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void PlasmaHiddenAmountLabelsAreValidButMissingRequiredNodesAreNot()
+    {
+        var bindings = new PublicInformationBindings(Page());
+        var plasma = bindings.OrbPresentation("ui-plasma", "player", "PLASMA", "Plasma", 0, 1,
+            true, false, "must not expose hidden label", false, "must not expose hidden label");
+        Assert.NotNull(plasma);
+        Assert.True(bindings.Complete);
+        Assert.False(plasma!.Properties!["passive_text_visible"]!.GetValue<bool>());
+        Assert.False(plasma.Properties["evoke_text_visible"]!.GetValue<bool>());
+        Assert.Null(plasma.Properties["displayed_passive_text"]);
+        Assert.Null(plasma.Properties["displayed_evoke_text"]);
+        Assert.Null(bindings.OrbPresentation("bad-ui", "player", "PLASMA", "Plasma", 0, 1,
+            false, false, null, false, null));
+        Assert.False(bindings.Complete);
     }
 
     [Theory]
@@ -197,8 +261,11 @@ public sealed class PublicInformationBindingsTests
     [InlineData("intent-owner")]
     [InlineData("intent-membership")]
     [InlineData("intent-count")]
-    [InlineData("orb-membership")]
-    [InlineData("slot-count")]
+    [InlineData("orb-owner")]
+    [InlineData("orb-label-nodes")]
+    [InlineData("orb-visible-text")]
+    [InlineData("slot-owner")]
+    [InlineData("slot-range")]
     public void UnresolvedRequiredMappingsMakeTheWholeMenuUnavailable(string failure)
     {
         var bindings = new PublicInformationBindings(Page());
@@ -211,8 +278,11 @@ public sealed class PublicInformationBindingsTests
             "intent-owner" => bindings.Intent("intent", "not-current", 0, 2, true),
             "intent-membership" => bindings.Intent("intent", "enemy", 0, 2, false),
             "intent-count" => bindings.Intent("intent", "enemy", 0, 3, true),
-            "orb-membership" => bindings.Orb("not-current", "player"),
-            _ => bindings.EmptyOrb("slot", "player", 2, 4)
+            "orb-owner" => bindings.OrbPresentation("ui-orb", "not-current", "LIGHTNING", "Lightning", 0, 3, true, true, "3", false, null),
+            "orb-label-nodes" => bindings.OrbPresentation("ui-orb", "player", "LIGHTNING", "Lightning", 0, 3, false, false, null, false, null),
+            "orb-visible-text" => bindings.OrbPresentation("ui-orb", "player", "LIGHTNING", "Lightning", 0, 3, true, true, null, false, null),
+            "slot-owner" => bindings.EmptyOrb("slot", "not-current", 2, 3),
+            _ => bindings.EmptyOrb("slot", "player", 3, 3)
         };
         Assert.Null(invalid);
         Assert.Equal("partial", bindings.Page.Completeness.Status);

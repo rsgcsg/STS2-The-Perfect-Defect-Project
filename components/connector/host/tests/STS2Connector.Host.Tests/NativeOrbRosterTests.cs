@@ -22,49 +22,57 @@ public sealed class NativeOrbRosterTests
         }
         return nodes;
     }
-    private static NativeOrbRosterResult<OrbNode> Capture(OrbNode? anchor, int capacity,
-        params string[] models) => NativeOrbRoster.Capture(anchor, false, capacity, models,
-            node => node.CurrentMember, node => node.Left, node => node.Right, node => node.Model);
+    private static NativeOrbRosterResult<OrbNode> Capture(OrbNode? anchor) => NativeOrbRoster.Capture(anchor,
+        false, node => node.CurrentMember, node => node.Left, node => node.Right);
 
     [Fact]
     public void NativeCurrentRingExcludesTheOutgoingFadeChildAfterEvoke()
     {
         var current = Ring("remaining-orb", null, null);
         var outgoing = new OrbNode("evoked-orb") { Left = current[1], Right = current[2] };
-        var sceneChildren = new[] { outgoing }.Concat(current).ToArray();
-        Assert.Equal(4, sceneChildren.Length); // Old scene-child enumeration poisoned capacity/membership.
-        var result = Capture(current[0], 3, "remaining-orb");
+        Assert.Equal(4, new[] { outgoing }.Concat(current).Count());
+        var result = Capture(current[0]);
         Assert.Null(result.Error);
         Assert.Equal(current, result.Nodes);
         Assert.DoesNotContain(outgoing, result.Nodes);
+    }
+
+    [Fact]
+    public void LogicalChannelBeforeSmallWaitDoesNotEraseCurrentEmptyUiSlot()
+    {
+        var current = Ring("old-orb", null, null);
+        var logical = new List<string> { "old-orb", "newly-channelled" };
+        // Exact OrbQueue.TryEnqueue adds the new model before SmallWait;
+        // OrbCmd.Channel calls AddOrbAnim only after that await returns.
+        var result = Capture(current[0]);
+        Assert.Null(result.Error);
+        Assert.Equal(2, logical.Count);
+        Assert.Single(result.Nodes, node => node.Model != null);
         Assert.Equal(2, result.Nodes.Count(node => node.Model == null));
     }
 
     [Fact]
-    public void LeftNavigationIsTheNativeForwardQueueOrder()
+    public void CurrentUiOrderAndCapacityAreNotReconstructedFromLogicalQueue()
     {
-        var nodes = Ring("first", "second", null);
-        var result = Capture(nodes[0], 3, "first", "second");
+        var current = Ring("second", "first", null, null);
+        var logical = new[] { "first", "second" };
+        var result = Capture(current[0]);
         Assert.Null(result.Error);
-        Assert.Equal(nodes, result.Nodes);
-        Assert.Equal(NativeOrbRosterError.CaptureInconsistent, Capture(nodes[0], 3, "second", "first").Error);
+        Assert.Equal(4, result.Nodes.Count);
+        Assert.Equal(new[] { "second", "first" }, result.Nodes.Where(node => node.Model != null).Select(node => node.Model));
+        Assert.NotEqual(logical, result.Nodes.Where(node => node.Model != null).Select(node => node.Model).ToArray());
     }
 
     [Fact]
-    public void ZeroSlotsRequireExactEmptyAnchorAndActualEmptyLogicalBasis()
+    public void ExactHitboxAnchorProvesEmptyUiIndependentlyOfLogicalCapacity()
     {
-        var valid = NativeOrbRoster.Capture<OrbNode>(null, true, 0, Array.Empty<string>(),
+        var valid = NativeOrbRoster.Capture<OrbNode>(null, true,
             _ => throw new InvalidOperationException(), _ => throw new InvalidOperationException(),
-            _ => throw new InvalidOperationException(), _ => throw new InvalidOperationException());
+            _ => throw new InvalidOperationException());
         Assert.Null(valid.Error);
         Assert.Empty(valid.Nodes);
-        Assert.Equal(NativeOrbRosterError.CaptureInconsistent,
-            NativeOrbRoster.Capture<OrbNode>(null, false, 0, Array.Empty<string>(), _ => true,
-                node => node.Left, node => node.Right, node => node.Model).Error);
-        // ClearOrbs can empty the UI while logical capacity remains: do not invent capacity zero.
-        Assert.Equal(NativeOrbRosterError.CaptureInconsistent,
-            NativeOrbRoster.Capture<OrbNode>(null, true, 3, Array.Empty<string>(), _ => true,
-                node => node.Left, node => node.Right, node => node.Model).Error);
+        Assert.Equal(NativeOrbRosterError.NavigationUnresolved,
+            NativeOrbRoster.Capture<OrbNode>(null, false, _ => true, node => node.Left, node => node.Right).Error);
     }
 
     [Theory]
@@ -72,8 +80,7 @@ public sealed class NativeOrbRosterTests
     [InlineData("single")]
     public void OneSlotSupportsBothSelfLinks(string? model)
     {
-        var node = Ring(model)[0];
-        var result = Capture(node, 1, model == null ? Array.Empty<string>() : new[] { model });
+        var result = Capture(Ring(model)[0]);
         Assert.Null(result.Error);
         Assert.Single(result.Nodes);
     }
@@ -84,35 +91,25 @@ public sealed class NativeOrbRosterTests
         var nodes = Ring("first", null);
         nodes[1].CurrentMember = false;
         int rightReads = 0;
-        var result = NativeOrbRoster.Capture(nodes[0], false, 2, new[] { "first" },
+        var result = NativeOrbRoster.Capture(nodes[0], false,
             node => node.CurrentMember, node => node.Left,
-            node => { rightReads++; throw new InvalidOperationException("invalid native object accessor"); },
-            node => node.Model);
+            node => { rightReads++; throw new InvalidOperationException("invalid native object accessor"); });
         Assert.Equal(NativeOrbRosterError.NavigationUnresolved, result.Error);
         Assert.Equal(0, rightReads);
     }
 
     [Fact]
-    public void InvalidCycleBrokenInverseAndUnboundedRingAreUnresolved()
+    public void InvalidCycleBrokenInverseAndUnboundedRingRemainUnresolved()
     {
         var nodes = Ring("first", "second", null);
         nodes[1].Right = nodes[2];
-        Assert.Equal(NativeOrbRosterError.NavigationUnresolved, Capture(nodes[0], 3, "first", "second").Error);
+        Assert.Equal(NativeOrbRosterError.NavigationUnresolved, Capture(nodes[0]).Error);
         nodes = Ring("first", "second", null);
         nodes[2].Left = nodes[1];
-        Assert.Equal(NativeOrbRosterError.NavigationUnresolved, Capture(nodes[0], 3, "first", "second").Error);
+        Assert.Equal(NativeOrbRosterError.NavigationUnresolved, Capture(nodes[0]).Error);
         nodes = Ring("first", "second", null);
         Assert.Equal(NativeOrbRosterError.NavigationUnresolved,
-            NativeOrbRoster.Capture(nodes[0], false, 3, new[] { "first", "second" }, _ => true,
-                node => node.Left, node => node.Right, node => node.Model, maxNodes: 2).Error);
-    }
-
-    [Fact]
-    public void CurrentModelMismatchCapacityMismatchAndNonemptyTailRemainInconsistent()
-    {
-        Assert.Equal(NativeOrbRosterError.CaptureInconsistent, Capture(Ring("not-frozen", null)[0], 2, "frozen").Error);
-        Assert.Equal(NativeOrbRosterError.CaptureInconsistent, Capture(Ring("first", null)[0], 3, "first").Error);
-        Assert.Equal(NativeOrbRosterError.CaptureInconsistent, Capture(Ring("first", "unexpected")[0], 2, "first").Error);
-        Assert.Equal(NativeOrbRosterError.CaptureInconsistent, Capture(Ring("same", "same")[0], 2, "same", "same").Error);
+            NativeOrbRoster.Capture(nodes[0], false, _ => true,
+                node => node.Left, node => node.Right, maxNodes: 2).Error);
     }
 }
