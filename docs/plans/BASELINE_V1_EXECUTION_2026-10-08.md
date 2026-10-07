@@ -11,10 +11,10 @@
 | 包 | owning修改 | 验收 | 状态 |
 | --- | --- | --- | --- |
 | G1-v1 | lead收敛规范、当前授权/路由/旧文档定位，独立review | 明确source/capture/consume、S0关系scope、I/Foff、S最小图、真实闭环及限制 | G1-v1限定S0已接受 |
-| E1-S0 | Connector public capsule store/routes、SDK读取/组装、schema/文档 | 深冻结、chunk覆盖/expiry/cursor、零native sealed读、旧提交不变 | capsule/SDK、信息页对象绑定、focus和退役owner修复已实现；355 exact-game测试，新产物实采验收中 |
-| E3/E4-S0 | S张量化/图、序列训练、导出和可信adapter | I/Foff、无身份泄漏、候选/实体绑定与顺序、无标签推进、真实小训练/导出一致 | 图/训练/导出/端口已有独立source接受与160项针对性测试；数据转换40项回归，真实训练待闭环 |
+| E1-S0 | Connector public capsule store/routes、SDK读取/组装、schema/文档 | 深冻结、chunk覆盖/expiry/cursor、零native sealed读、旧提交不变 | capsule/SDK、信息页对象绑定、focus和退役owner修复已实现；382 exact-game测试；最终产物真实采集、界面/逻辑差异与提示范围验证通过 |
+| E3/E4-S0 | S张量化/图、序列训练、导出和可信adapter | I/Foff、无身份泄漏、候选/实体绑定与顺序、无标签推进、真实小训练/导出一致 | 160项source回归、40项数据回归；174个实际offer、3epochs/45updates、114行导出一致性及learned实机通过 |
 | E0-checks | 精确纯prose路由＋repository cheapguards，必要反例 | CI自身完整检查与独立review，不回溯跳当前PRfull | PR166已通过两OS CI合入；PR167测试fixture隔离复用也已合入 |
-| Lead闭环 | Runtime shared acquisition、isolated原生qualification、采集/训练/learned运行/Stop/报告 | exact源码→产物→加载→真实行为；$ ledger；局部范围结论 | 已修真实teacher暴露的共享机制；最终native cohort、训练与learned执行进行中 |
+| Lead闭环 | Runtime shared acquisition、isolated原生qualification、采集/训练/learned运行/Stop/报告 | exact源码→产物→加载→真实行为；$ ledger；局部范围结论 | G2-S0限定工程闭环已接受；新learned run含11次原生play输入、预算Stop/释放通过，策略循环等限制见证据 |
 
 实施writer各有独立worktree/branch，公共wire只有E1 writer；model读取已封存contract。允许并行开发，实际安装/控制只有lead一位，重本地build/train各一slot。G1规范合入前的依赖topic须显式引用规范exact commit，不改其他旧writer分支。
 
@@ -30,8 +30,12 @@
 
 | 项 | 上限/预留 | 已发生 |
 | --- | --- | --- |
-| 本轮model/train/API/GPU合计 | 20 USD硬上限 | 0 USD（尚未提交付费任务） |
-| 本地CPU S0 | 使用已核资源，先单worker2线程 | 未训练 |
+| 本轮model/train/API/GPU合计 | 20 USD硬上限 | 0 USD（本轮完成，无付费任务） |
+| 本地CPU S0 | 单worker2线程，固定3epochs/max80updates | 实际45updates、17.491秒，180545参数 |
 | 外部付费 | 只有本地不能满足且明确计费/上限时才预留提交 | 未提交 |
 
 付费任务若submit unknown，保留预留并核原attempt，不重试/释放预算假装未花费。必要部署优先既有资源，不采购未限定的新服务。
+
+## 本轮完成与下一门槛
+
+源码PR168普通merge与两OS exact-head CI、实际数据/用途/训练/导出/learned输入及限制记录于[G2-S0证据](../evidence/BASELINE_S0_LEARNING_LOOP_2026-10-08.md)。这完成本包的真实最小工程闭环；并不完成全场景V1、G3/R1、Human或科学质量门。奖励推进策略、更多数据及产品/恢复覆盖继续按唯一规范的后续门槛推进，不把小样本loss下降当强策略。
