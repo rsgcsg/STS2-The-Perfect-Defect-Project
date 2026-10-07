@@ -27,6 +27,35 @@ disables the finite teacher information browse/return/revisit journey; this
 parameter is recorded with the teacher source hash. This is an explicit public
 heuristic teacher, not Human data or an optimal strategy.
 
+## Actual text-menu-v2 scope
+
+Teacher 1.1.0 and generated manifests share `S0_TEXT_V2_KINDS`, a finite registry
+of current native text overrides and source-defined LiveHost/NativeUi passthrough
+families. Unknown/unresolved kinds abstain or fail whole-decision admission;
+there is no arbitrary-kind fallback. This source scope is not all-scene runtime
+qualification. It intentionally excludes startup/menu/tutorial management.
+
+| Public page/owner | Teacher choice | Source owner |
+| --- | --- | --- |
+| `native_map`, surface `map_navigation` | Current-C `activate` whose subject is a public `next_options` member; prefer public monster option. Otherwise current `return_native_map`. | `NativeTextMenuInformation.CaptureOwned`, `NativeTextMenuFrameBuilder`, `BoundActionProjection` |
+| `combat_turn/ready`, virtual `root/card_targets/card_confirmation` | `select_card/select_target/play`, then `end_turn` when no advertised card choice. | `TextMenuV2Session.Observe` |
+| `combat_card_operation/card_targeting` or `card_confirm` | Advertised `confirm_target/confirm_card` (or cancel); does not confuse native held-card ownership with virtual selection. | `NativeTextMenuFrameBuilder.CardOperationPage` |
+| Native tips (`card_tips/relic_tips/power_tips/intent_tips/orb_tips/topbar_tips/native_tip`) | `return_native_tips` at root. Native ownership resets the virtual cursor. | `NativeTextMenuInformation.CaptureTip` |
+| `run_deck/combat_draw_pile/combat_discard_pile/combat_exhaust_pile` | `return_native_information` | `NativeTextMenuInformation.CaptureOwned` |
+| `relic_inspect/inspect_card` | `return_relic_inspect/return_card_inspect` | `NativeTextMenuInformation.CaptureRelic/CaptureCardInspect` |
+| `potion_popup/potion_targeting` | Close/cancel advertised current operation; teacher does not initiate potion use. | `NativeTextMenuPotions`, `NativeTextMenuFrameBuilder` |
+| Reward/linked rewards | Advertised proceed/skip or claim leaf | `NativeTextMenuRewardPages` |
+| Exact source-defined selector families | Advertised confirm/select/skip/cancel | `LiveHost/*SurfaceReader`, `NativeUi/*Selection`, `NativeTextMenuFrameBuilder.OrderLegacyTextActions` |
+| Event/dialogue/rest/treasure/shop/game-over | Declared forward-choice heuristic over current native C; unknown operations abstain | Exact LiveHost surface readers and bound-action projection |
+
+The teacher's optional browse journey requests an information category and tip,
+counts a visit only when the native tip page is actually obtained, returns through
+the native owner and repeats once. A stale chosen leaf does not fabricate a
+visit. Browse offers are capped at 16, then ordinary play continues; native return
+actions remain preferred. No raw runtime IDs, coordinates, private rule state or
+consumer-created operands determine executable authority. Public map references
+are only used to rank existing C members, never reconstruct legality.
+
 `records.jsonl` uses `sts2.baseline-s0/raw-record-1` envelopes with monotonic
 `record_index`, `run_id`, `recorded_at`, `type`, `payload`. Each `capture` stores
 the complete metadata and a relative `snapshot_path` to exact original UTF-8

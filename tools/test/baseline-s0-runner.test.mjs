@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PublicMenuTeacher } from "../baseline-s0-teacher.mjs";
+import { PublicMenuTeacher, S0_TEXT_V2_KINDS, S0_INFORMATION_RETURNS } from "../baseline-s0-teacher.mjs";
 import { S0RawRecords, sha256 } from "../baseline-s0-records.mjs";
 import { runS0, makeS0Manifest, confirmControlReleased, parseArguments } from "../baseline-s0-runner.mjs";
 import { resolveInstallation } from "../../components/host-runtime/src/game-installation.mjs";
@@ -13,14 +13,46 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const base = JSON.parse(await readFile(path.join(root,
   "components/connector/sdk/typescript/test/fixtures/text-menu-v2-targeted-root.json"), "utf8"));
 const action = (verb, kind = "system_navigation") => ({ action_id: `a-${verb}`, kind,
-  verb, label: verb, subject_referent_id: null, arguments: [],
+  verb, label: verb, subject_referent_id: verb === "select_card" || verb === "play" ? "card-C"
+    : verb === "select_target" ? "enemy-E" : null,
+  arguments: verb === "play" ? [{ role: "target", referent_id: "enemy-E" }] : [],
   effect_domain: kind === "native_input" ? "native_input" : "text_menu" });
 function snapshot(cursor, actions, kind = "combat_turn") {
   const value = structuredClone(base);
   value.menu.cursor = cursor;
+  value.menu.selection = cursor === "card_targets" ? [{ role: "card", referent_id: "card-C" }]
+    : cursor === "card_confirmation" ? [{ role: "card", referent_id: "card-C" }, { role: "target", referent_id: "enemy-E" }] : [];
   value.interaction.kind = kind;
   value.menu_actions.actions = actions;
   value.menu_actions.materialized_count = value.menu_actions.total_count = actions.length;
+  return value;
+}
+function nativeInformation(kind, verb = S0_INFORMATION_RETURNS[kind]) {
+  const value = snapshot("root", [action(verb, "native_input")], kind);
+  value.interaction.stage = "native_information_page";
+  value.interaction.content_schema = `sts2.player-environment/surface/${kind}_text_menu-1`;
+  const surface = verb === "return_native_tips" ? { kind: "native_tips",
+    tips: [{ title: "Public tip", description: "Current exposed rule text" }] }
+    : kind === "inspect_card" ? { kind, displayed_title: "Public card", displayed_cost: "1",
+      displayed_description: "Current exposed description", upgrade_preview: false }
+    : kind === "relic_inspect" ? { kind, title: "Public relic", rarity: "Starter", description: "Public rule", flavor: "" }
+    : { kind, details: { cards: [] } };
+  value.interaction.content = { surface, context: { kind: verb === "return_native_tips" ? "native_tips" : kind } };
+  value.referents = [];
+  return value;
+}
+function nativeMap() {
+  const value = snapshot("root", [{ ...action("activate", "native_input"), subject_referent_id: "map-option-1",
+    label: "Choose monster at (3,0)" }], "native_map");
+  value.interaction.stage = "native_information_page";
+  value.interaction.content_schema = "sts2.player-environment/surface/map_navigation-1";
+  value.interaction.content = { surface: { kind: "map_navigation", travel_enabled: true, traveling: false,
+    drawing_mode: "none", next_options: [{ entity_id: "map-option-1", col: 3, row: 0, point_type: "monster" }],
+    can_exit_annotation: false }, context: { kind: "native_map" } };
+  value.referents = [{ referent_id: "map-option-1", role: "option", kind: "entity",
+    state: { visible: true, observation_basis: "native_visible_fact" },
+    properties_schema: "sts2.player-environment/referent/option-1",
+    properties: value.interaction.content.surface.next_options[0] }];
   return value;
 }
 function input(value) {
@@ -41,39 +73,121 @@ async function temporary(t) {
   return directory;
 }
 
-test("teacher browses, returns, revisits and then plays only complete advertised choices", () => {
+test("actual text-v2 native owner resets cursor; teacher returns, revisits and then staged-plays", async () => {
   const teacher = new PublicMenuTeacher();
   const frames = [
     snapshot("root", [action("select_card", "system_selection"), action("open_information")]),
     snapshot("information", [action("back"), action("open_card_tips")]),
     snapshot("card_tips", [action("back"), action("show_card_tips", "native_input")]),
-    snapshot("card_tips", [action("back"), action("show_card_tips", "native_input")]),
-    snapshot("information", [action("back"), action("open_card_tips")]),
+    nativeInformation("card_tips"),
     snapshot("root", [action("select_card", "system_selection"), action("open_information")]),
     snapshot("information", [action("back"), action("open_card_tips")]),
+    snapshot("card_tips", [action("back"), action("show_card_tips", "native_input")]),
+    nativeInformation("card_tips"),
     snapshot("root", [action("select_card", "system_selection"), action("open_information")]),
     snapshot("card_targets", [action("cancel_selection", "system_selection"), action("select_target", "system_selection")]),
     snapshot("card_confirmation", [action("cancel_selection", "system_selection"), action("play", "native_input")])
   ];
-  const selected = frames.map(value => {
+  const { decodeTextMenuV2Snapshot } = await import("../../components/connector/sdk/typescript/dist/index.js");
+  const selected = frames.map(raw => {
+    const value = decodeTextMenuV2Snapshot(raw).data;
     const result = teacher.decide(input(value));
     assert.equal(result.output.scores.length, value.menu_actions.actions.length);
     assert.equal(result.completion.snapshot_id, value.snapshot_id);
     return value.menu_actions.actions[result.output.selected_index].verb;
   });
-  assert.deepEqual(selected, ["open_information", "open_card_tips", "show_card_tips", "back",
-    "back", "open_information", "back", "select_card", "select_target", "play"]);
+  assert.deepEqual(selected, ["open_information", "open_card_tips", "show_card_tips", "return_native_tips",
+    "open_information", "open_card_tips", "show_card_tips", "return_native_tips", "select_card", "select_target", "play"]);
+  assert.equal(teacher.browseVisits, 2);
 });
 
 test("teacher progresses map and abstains on unfamiliar native operation", () => {
   const teacher = new PublicMenuTeacher({ browse: false });
-  assert.equal(teacher.decide(input(snapshot("root", [action("travel", "native_input")], "map_navigation")))
+  assert.equal(teacher.decide(input(nativeMap()))
     .output.selected_index, 0);
   assert.equal(teacher.decide(input(snapshot("root", [action("unfamiliar", "native_input")], "event_option")))
     .output.selected_index, null);
   const truncated = snapshot("root", [action("select", "native_input")]);
   truncated.menu_actions.status = "truncated";
   assert.throws(() => teacher.decide(input(truncated)), /complete_public_catalog/u);
+});
+
+test("native_map actual public shape and activate leaf are admitted by declared text-v2 scope", async () => {
+  const { decodeTextMenuV2Snapshot } = await import("../../components/connector/sdk/typescript/dist/index.js");
+  const value = decodeTextMenuV2Snapshot(nativeMap()).data;
+  const manifest = makeS0Manifest({ ...capabilities, verbs: ["activate", "return_native_map"] },
+    { id: "teacher", path: "teacher", sha256: "c".repeat(64) },
+    { id: "teacher", version: "1.1.0", protocol: "sts2.policy-runtime/decision-only-ndjson-2", code_sha256: "d".repeat(64) });
+  assert.ok(manifest.support.interaction_kinds.includes(value.interaction.kind));
+  assert.ok(manifest.support.action_verbs.includes(value.menu_actions.actions[0].verb));
+  const result = new PublicMenuTeacher().decide(input(value));
+  assert.equal(value.menu_actions.actions[result.output.selected_index].verb, "activate");
+  assert.equal(value.menu_actions.actions[result.output.selected_index].subject_referent_id,
+    value.interaction.content.surface.next_options[0].entity_id);
+  assert.equal(manifest.support.interaction_kinds.includes("native_information_unresolved"), false);
+});
+
+test("map teacher only ranks current C members whose public subjects are next options", () => {
+  const value = nativeMap();
+  const distraction = { ...action("activate", "native_input"), action_id: "annotation-action",
+    subject_referent_id: "annotation-control", label: "Annotation control" };
+  value.referents.push({ referent_id: "annotation-control", role: "control", kind: "control",
+    state: { visible: true, enabled: true, observation_basis: "native_visible_fact" } });
+  value.menu_actions.actions.unshift(distraction, action("return_native_map", "native_input"));
+  value.menu_actions.total_count = value.menu_actions.materialized_count = value.menu_actions.actions.length;
+  const selected = new PublicMenuTeacher().decide(input(value)).output.selected_index;
+  assert.equal(selected, 2);
+  value.interaction.content.surface.next_options = [];
+  assert.equal(new PublicMenuTeacher().decide(input(value)).output.selected_index, 1);
+  const unknown = snapshot("root", [action("activate", "native_input")], "arbitrary_new_scene");
+  assert.equal(new PublicMenuTeacher().decide(input(unknown)).output.selected_index, null);
+});
+
+test("every declared native information owner returns through its actual native verb", async () => {
+  const { decodeTextMenuV2Snapshot } = await import("../../components/connector/sdk/typescript/dist/index.js");
+  for (const [kind, verb] of Object.entries(S0_INFORMATION_RETURNS)) {
+    assert.ok(S0_TEXT_V2_KINDS.includes(kind));
+    const value = decodeTextMenuV2Snapshot(nativeInformation(kind)).data;
+    const result = new PublicMenuTeacher().decide(input(value));
+    assert.equal(value.menu_actions.actions[result.output.selected_index].verb, verb, kind);
+  }
+});
+
+test("native held-card operation and potion owners use current native controls instead of virtual cursor assumptions", async () => {
+  const { decodeTextMenuV2Snapshot } = await import("../../components/connector/sdk/typescript/dist/index.js");
+  for (const stage of ["card_targeting", "card_confirm"]) {
+    const verb = stage === "card_targeting" ? "confirm_target" : "confirm_card";
+    const value = snapshot("root", [action("cancel_card_play", "native_input"), action(verb, "native_input")], "combat_card_operation");
+    value.interaction.stage = stage;
+    value.interaction.content_schema = "sts2.player-environment/surface/combat_card_operation_text_menu-1";
+    value.interaction.content = { surface: { kind: "combat_card_operation", stage,
+      held_card_referent_id: "card-C", displayed_title: "Strike", displayed_cost: "1", displayed_description: "Public damage" },
+      context: { kind: "combat" } };
+    const result = new PublicMenuTeacher().decide(input(decodeTextMenuV2Snapshot(value).data));
+    assert.equal(value.menu_actions.actions[result.output.selected_index].verb, verb);
+  }
+  for (const [kind, verb] of [["potion_popup", "close_potion_popup"], ["potion_targeting", "cancel_potion_target"]]) {
+    const value = snapshot("root", [action(verb, "native_input")], kind);
+    assert.equal(new PublicMenuTeacher().decide(input(value)).output.selected_index, 0);
+  }
+});
+
+test("bounded passthrough scene families have explicit choices and browse cannot loop without exposure", () => {
+  for (const [kind, verb] of [["reward_claim", "proceed_rewards"], ["card_reward_selection", "select"],
+    ["card_bundle_selection", "confirm"], ["native_generated_card_choice", "select"],
+    ["event_option", "activate"], ["event_dialogue", "activate"], ["rest_site", "activate"],
+    ["treasure_room", "activate"], ["shop_inventory", "close"], ["game_over", "activate"]]) {
+    assert.equal(new PublicMenuTeacher().decide(input(snapshot("root", [action(verb, "native_input")], kind)))
+      .output.selected_index, 0, kind);
+  }
+  const teacher = new PublicMenuTeacher();
+  const combat = snapshot("root", [action("select_card", "system_selection"), action("open_information")]);
+  const emptyInformation = snapshot("information", [action("back")]);
+  for (let index = 0; index < 16; index += 1)
+    teacher.decide(input(index % 2 === 0 ? combat : emptyInformation));
+  assert.equal(teacher.browseVisits, 0); // Offered actions never fabricate observed native exposure.
+  const result = teacher.decide(input(combat));
+  assert.equal(combat.menu_actions.actions[result.output.selected_index].verb, "select_card");
 });
 
 test("capsules preserve exact bytes; capture is not an offer; latest full snapshot join is mandatory", async t => {
