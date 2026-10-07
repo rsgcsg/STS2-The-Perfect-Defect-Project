@@ -74,6 +74,12 @@ added/modified single-file Markdown reports under docs/evidence. They qualify on
 alongside a Python owner change; standalone eligible prose instead uses docs,
 and evidence deletions still use full. ADR/governance and unknown docs are not companions.
 
+The full and Python scopes also run `npm run check:s0`: the small shared SDK
+build, bounded runner lifecycle tests and offline capsule/Runtime dataset joins.
+These use synthetic protocol fixtures and never start a game or train on real
+records. The S0 consumer tests live under `tools/test`, so Python's normal
+`tests/` discovery alone does not cover this cross-owner seam.
+
 The Python scope still covers installed Platform consumers, application/research tests,
 SDK contracts, typecheck, CPU E2E and packaging. Platform never imports Python applications;
 repository boundary guards run in both scopes. This is owner-level routing, not yet a

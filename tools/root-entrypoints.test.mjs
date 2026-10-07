@@ -70,3 +70,13 @@ test("exact-game validation builds the Connector before the dependent Annotator"
   assert.ok(annotatorCheck > connectorBuild,
     "Annotator validation must consume the already-built Connector artifact");
 });
+
+
+test("S0 consumer regressions participate in full and Python owner gates", () => {
+  const { scripts } = packageJson();
+  for (const name of ["check", "check:python-scope"])
+    assert.ok(scripts[name].includes("npm run check:s0"), `${name} omits S0 consumers`);
+  assert.ok(scripts["precheck:s0"].includes("components/connector/sdk/typescript run build"));
+  assert.ok(scripts["check:s0"].includes("tools/test/baseline-s0-runner.test.mjs"));
+  assert.ok(scripts["check:s0"].includes("tools/test/test_baseline_s0_dataset.py"));
+});
