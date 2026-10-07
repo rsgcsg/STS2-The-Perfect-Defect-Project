@@ -21,6 +21,11 @@ node --test tools/test/baseline-s0-runner.test.mjs
 
 Budgets default to 60 policy calls, 60 submissions and 240000 ms. Flags
 `--max-calls`, `--max-submissions`, `--deadline-ms` may only reduce those bounds.
+S0 keeps the existing Runtime successor-observation compatibility policy
+(41 attempts at 250 ms intervals), rather than introducing a shorter animation
+budget without native evidence. The global deadline and unknown-no-retry rule
+still apply. This sampled post-delivery observation is not causal settlement;
+changing this timing does not qualify or repair an unrelated native focus bug.
 The raw capture budget is 64 MiB / 4096 captures. SDK capture failure or ledger
 write failure stops collection; native unknown is never retried. `--browse false`
 disables the finite teacher information browse/return/revisit journey; this

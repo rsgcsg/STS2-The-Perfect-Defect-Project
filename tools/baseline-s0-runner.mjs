@@ -194,7 +194,7 @@ export async function runS0(options, dependencies) {
       runtimeIdentity: { version: deps.POLICY_RUNTIME_VERSION, code_sha256: runtimeCode },
       autoBudget: { maxPolicyCalls: maxCalls, maxSubmissions, deadlineMs },
       staleRefresh: { maxAttempts: 1, baseBackoffMs: 0 },
-      successorPoll: { maxAttempts: 40, baseBackoffMs: 100 }, policyTimeoutMs: 30_000 });
+      policyTimeoutMs: 30_000 });
     const started = performance.now();
     while (!externalStop && ticks < 1200 && performance.now() - started < deadlineMs) {
       const result = await runtime.tick();
