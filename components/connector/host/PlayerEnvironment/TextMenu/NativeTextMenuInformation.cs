@@ -741,29 +741,43 @@ internal static class NativeTextMenuInformation
                     bindings.Intent(entities.GetId(intent, "intent"), owner!, nativeOrder,
                         current.Length, nativeOrder >= 0), owner, bindings.OwnerLabel(owner!));
             }
-            foreach (NOrb orb in VisibleNodes<NOrb>(room))
+            foreach (NCreature ownerNode in creatures)
             {
-                NCreature? ownerNode = VisibleAncestor<NCreature>(orb);
-                var ownerScope = NativeCreatureTipOwner.Resolve(
-                    ownerNode == null ? Array.Empty<NCreature>() : new[] { ownerNode }, currentOwners, removingOwners);
+                NOrbManager? manager = ownerNode.OrbManager;
+                if (manager == null || !ConnectorMod.IsNodeVisible(manager)) continue;
+                var ownerScope = NativeCreatureTipOwner.Resolve(new[] { ownerNode }, currentOwners, removingOwners);
                 if (ownerScope.Scope == NativeCreatureTipOwnerScope.Retired) continue;
-                NOrbManager? manager = VisibleAncestor<NOrbManager>(orb);
-                if (ownerScope.Scope != NativeCreatureTipOwnerScope.Current || ownerNode == null || manager == null
+                if (ownerScope.Scope != NativeCreatureTipOwnerScope.Current
                     || !ReferenceEquals(room.GetCreatureNode(ownerNode.Entity), ownerNode)
-                    || !ReferenceEquals(ownerNode.OrbManager, manager)
                     || !entities.TryGetExistingId(ownerNode.Entity, out string? owner))
                 { bindings.Missing("orb_owner"); continue; }
-                PlayerEnvironmentReferent? subject;
-                if (orb.Model is { } model)
-                    subject = bindings.Orb(entities.GetId(model, "orb"), owner!);
-                else
+                if (!bindings.TryOrbBasis(owner!, out int capacity, out IReadOnlyList<string> ids)) continue;
+                Control focus = manager.DefaultFocusOwner;
+                NOrb? anchor = focus as NOrb;
+                Node? container = anchor?.GetParent();
+                NativeOrbRosterResult<NOrb> roster = NativeOrbRoster.Capture(anchor,
+                    ReferenceEquals(focus, ownerNode.Hitbox), capacity, ids,
+                    node => ConnectorMod.IsLiveNode(node) && ReferenceEquals(node.GetParent(), container)
+                        && ReferenceEquals(VisibleAncestor<NOrbManager>(node), manager),
+                    node => node.GetNodeOrNull<NOrb>(node.FocusNeighborLeft),
+                    node => node.GetNodeOrNull<NOrb>(node.FocusNeighborRight),
+                    node => node.Model == null ? null : entities.GetId(node.Model, "orb"));
+                if (roster.Error != null)
                 {
-                    NOrb[] slots = orb.GetParent().GetChildren().OfType<NOrb>().ToArray();
-                    int slot = Array.FindIndex(slots, value => ReferenceEquals(value, orb));
-                    subject = bindings.EmptyOrb(entities.GetId(orb, "orb_slot"), owner!, slot, slots.Length);
+                    bindings.Missing(roster.Error == NativeOrbRosterError.CaptureInconsistent
+                        ? "orb_capture_inconsistent" : "orb_navigation_unresolved");
+                    continue;
                 }
-                AddSignalTipLeaf(entities, leaves, orb, "orb_tips", Control.SignalName.FocusEntered,
-                    subject, owner, bindings.OwnerLabel(owner!));
+                for (int slot = 0; slot < roster.Nodes.Count; slot++)
+                {
+                    NOrb orb = roster.Nodes[slot];
+                    if (!ConnectorMod.IsNodeVisible(orb) || !orb.IsEnabled) continue;
+                    PlayerEnvironmentReferent? subject = orb.Model is { } model
+                        ? bindings.Orb(entities.GetId(model, "orb"), owner!)
+                        : bindings.EmptyOrb(entities.GetId(orb, "orb_slot"), owner!, slot, roster.Nodes.Count);
+                    AddSignalTipLeaf(entities, leaves, orb, "orb_tips", Control.SignalName.FocusEntered,
+                        subject, owner, bindings.OwnerLabel(owner!));
+                }
             }
         }
         NTopBar? topbar = NRun.Instance?.GlobalUi.TopBar;
@@ -873,47 +887,33 @@ internal static class NativeTextMenuInformation
     {
         Node? textContainer = set.GetNodeOrNull<Node>("textHoverTipContainer");
         Node? cardContainer = set.GetNodeOrNull<Node>("cardHoverTipContainer");
-        if (textContainer == null || cardContainer == null) return null;
-        var texts = new JsonArray();
-        foreach (Node entry in textContainer.GetChildren())
+        return RenderedNativeTips.Capture(textContainer?.GetChildren(), cardContainer?.GetChildren(),
+            ReadRenderedTextTip, ReadRenderedCardTip);
+    }
+
+    private static JsonObject? ReadRenderedTextTip(Node entry)
+    {
+        if (entry is not Control visibleText || !ConnectorMod.IsNodeVisible(visibleText)) return null;
+        var title = entry.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%Title");
+        var description = entry.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%Description");
+        if (description == null) return null;
+        return new JsonObject
         {
-            if (entry is not Control visibleText
-                || !ConnectorMod.IsNodeVisible(visibleText))
-                return null;
-            var title = entry.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%Title");
-            var description = entry.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%Description");
-            if (description == null) return null;
-            texts.Add(new JsonObject
-            {
-                ["title"] = title != null && ConnectorMod.IsNodeVisible(title)
-                    ? title.Text : null,
-                ["description"] = description.Text
-            });
-        }
-        var cards = new JsonArray();
-        foreach (Node entry in cardContainer.GetChildren())
-        {
-            if (entry is not Control control || !ConnectorMod.IsNodeVisible(control))
-                return null;
-            NCard? card = control.GetNodeOrNull<NCard>("%Card");
-            if (card == null || !ConnectorMod.IsNodeVisible(card)
-                || card.Visibility != ModelVisibility.Visible)
-                return null;
-            var title = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%TitleLabel");
-            var cost = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%EnergyLabel");
-            var description = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%DescriptionLabel");
-            if (title == null || cost == null || description == null)
-                return null;
-            cards.Add(new JsonObject
-            {
-                ["title"] = title.Text,
-                ["cost"] = cost.Text,
-                ["description"] = description.Text
-            });
-        }
-        return texts.Count + cards.Count > 0
-            ? new JsonObject { ["text_tips"] = texts, ["card_previews"] = cards }
-            : null;
+            ["title"] = title != null && ConnectorMod.IsNodeVisible(title) ? title.Text : null,
+            ["description"] = description.Text
+        };
+    }
+
+    private static JsonObject? ReadRenderedCardTip(Node entry)
+    {
+        if (entry is not Control control || !ConnectorMod.IsNodeVisible(control)) return null;
+        NCard? card = control.GetNodeOrNull<NCard>("%Card");
+        if (card == null || !ConnectorMod.IsNodeVisible(card) || card.Visibility != ModelVisibility.Visible) return null;
+        var title = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%TitleLabel");
+        var cost = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%EnergyLabel");
+        var description = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%DescriptionLabel");
+        if (title == null || cost == null || description == null) return null;
+        return new JsonObject { ["title"] = title.Text, ["cost"] = cost.Text, ["description"] = description.Text };
     }
 
     private static (IReadOnlyList<JsonNode> Rendered, int Unresolved) ReadPassiveHoverFacts()
