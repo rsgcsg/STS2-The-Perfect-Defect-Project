@@ -92,6 +92,66 @@ export async function settleReferenceReceipt({
   };
 }
 
+/** Release only the reference bootstrap controller, then observe the exact
+ * runtime unheld. SDK close intentionally swallows transport failures, so its
+ * return alone is not handoff evidence. No gameplay submission is retried. */
+export async function releaseReferenceController({
+  controller, endpoint, expectedRuntimeInstanceId, timeoutMs = 5000,
+  fetchImpl = fetch
+}) {
+  if (!controller || !expectedRuntimeInstanceId) throw new Error("reference_controller_missing");
+  await controller.close();
+  const response = await fetchImpl(`${endpoint}/api/player-environment/control`, {
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  if (!response.ok) throw new Error(`reference_controller_status_http_${response.status}`);
+  const state = await response.json();
+  if (state.protocol_version !== "1.0.0"
+    || state.schema !== "sts2.player-environment/control-1"
+    || state.runtime_instance_id !== expectedRuntimeInstanceId
+    || !Array.isArray(state.clients) || state.controller != null) {
+    throw new Error("reference_controller_release_unconfirmed");
+  }
+  return {
+    schema: "sts2.host-runtime/reference-controller-handoff-1",
+    runtime_instance_id: expectedRuntimeInstanceId,
+    observed_at: new Date().toISOString(),
+    controller: null,
+    basis: "fresh_control_observation_after_close"
+  };
+}
+
+/** Select only Connector-provided setup inputs; never manufacture operands. */
+export function chooseReferenceBootstrapAction(snapshot, { characterId = null, ascension = 0 } = {}) {
+  if (characterId == null || snapshot.interaction?.kind !== "character_select")
+    return chooseBoundAction(snapshot, { tutorialPreference: "disable" });
+  if (snapshot.status !== "interactive" || snapshot.bound_actions?.status !== "complete")
+    return null;
+  const surface = snapshot.interaction.content?.surface;
+  const character = surface?.characters?.find((value) => value.character_id === characterId);
+  if (!character || character.is_locked || !character.is_enabled)
+    throw new Error("reference_desired_character_unavailable");
+  const actions = snapshot.bound_actions.actions;
+  if (!character.is_selected)
+    return actions.find((action) => action.verb === "select"
+      && action.subject_referent_id === character.entity_id) ?? null;
+  // An absent ascension panel denotes the native default A0, checked again in-run.
+  const currentAscension = surface.ascension ?? 0;
+  if (currentAscension !== ascension) {
+    const label = currentAscension > ascension ? "Decrease Ascension" : "Increase Ascension";
+    return actions.find((action) => action.verb === "activate" && action.label === label) ?? null;
+  }
+  return actions.find((action) => action.verb === "activate" && action.label === "Embark") ?? null;
+}
+
+export function verifyReferenceCharacter(snapshot, { characterId = null, ascension = 0 } = {}) {
+  if (characterId == null) return;
+  const persistent = snapshot.persistent?.content;
+  if (persistent?.player?.character_definition_id !== characterId
+    || persistent?.run?.ascension !== ascension)
+    throw new Error("reference_actual_character_or_ascension_mismatch");
+}
+
 async function closeStreams(streams) {
   for (const stream of streams) stream.end();
   await Promise.allSettled(streams.map((stream) => finished(stream)));
@@ -103,12 +163,18 @@ export async function startShippedPlayerEnvironmentEpisode({
   evidenceRoot,
   seed,
   templateId = "vanilla-clean",
+  characterId = null,
+  ascension = 0,
   endpoint = null,
   timeoutMs = 90_000,
   requestTimeoutMs = 30_000,
   experimentalBuildAcknowledged = false,
   experimentalConnectorAcknowledged = false
 }) {
+  if (characterId !== null && (typeof characterId !== "string" || !characterId))
+    throw new Error("reference_character_id_invalid");
+  if (!Number.isSafeInteger(ascension) || ascension < 0 || ascension > 10)
+    throw new Error("reference_ascension_invalid");
   const canonicalSeed = canonicalizeEpisodeSeed(seed);
   if (canonicalSeed == null) throw new Error("Reference episodes require one explicit canonical seed.");
   const running = listGameProcesses();
@@ -154,6 +220,7 @@ export async function startShippedPlayerEnvironmentEpisode({
   let controller = null;
   let capabilities = null;
   let closed = false;
+  let handoffReceipt = null;
 
   const close = async () => {
     if (closed) return null;
@@ -223,7 +290,7 @@ export async function startShippedPlayerEnvironmentEpisode({
       "tutorial_preference"
     ]);
     for (let index = 0; runEntryKinds.has(snapshot.interaction.kind) && index < 16; index += 1) {
-      const action = chooseBoundAction(snapshot, { tutorialPreference: "disable" });
+      const action = chooseReferenceBootstrapAction(snapshot, { characterId, ascension });
       if (action == null) {
         throw new Error(`Reference reset cannot safely advance ${snapshot.interaction.kind}.`);
       }
@@ -268,6 +335,7 @@ export async function startShippedPlayerEnvironmentEpisode({
         `Reference reset expected the first map decision, observed ${snapshot.status}:${snapshot.interaction.kind}.`
       );
     }
+    verifyReferenceCharacter(snapshot, { characterId, ascension });
     await refreshProvenance();
     if (provenance.verdict !== "provenance_pass") {
       throw new Error(`Reference run seed was not proven after bootstrap: ${provenance.errors.join(", ")}`);
@@ -285,6 +353,8 @@ export async function startShippedPlayerEnvironmentEpisode({
           return provenance;
         },
         bootstrap_trace: bootstrapTrace,
+        requested_character_id: characterId,
+        requested_ascension: characterId == null ? null : ascension,
         evidence_directory: evidenceDirectory,
         endpoint: runtimeEndpoint
       },
@@ -292,7 +362,17 @@ export async function startShippedPlayerEnvironmentEpisode({
       read: async ({ readId, expectedSnapshotId }) =>
         (await client.read(readId, expectedSnapshotId)).data,
       provenance: refreshProvenance,
+      releaseController: async () => {
+        if (handoffReceipt) return handoffReceipt;
+        handoffReceipt = await releaseReferenceController({
+          controller, endpoint: runtimeEndpoint,
+          expectedRuntimeInstanceId: capabilities.host.runtime_instance_id,
+          timeoutMs: requestTimeoutMs
+        });
+        return handoffReceipt;
+      },
       submit: async ({ requestId, expectedSnapshotId, boundActionId }) => {
+        if (handoffReceipt) throw new Error("reference_controller_handed_off");
         const credentials = await controller.credentials();
         const receipt = (await client.submit({
           requestId,
@@ -350,6 +430,10 @@ export class ShippedPlayerEnvironmentSession {
 
   submit(input) {
     return this.requireEpisode().submit(input);
+  }
+
+  releaseController() {
+    return this.requireEpisode().releaseController();
   }
 
   async provenance() {

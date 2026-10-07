@@ -7,7 +7,7 @@ import type {
   PlayerEnvironmentSnapshot
 } from "@rsgcsg/sts2-connector-client";
 import type { TextMenuAction, TextMenuActionResult, TextMenuCapabilities, TextMenuSnapshot, TextMenuObservationContext } from "@rsgcsg/sts2-connector-client";
-import type { TextMenuV2Action, TextMenuV2ActionResult, TextMenuV2Capabilities, TextMenuV2Snapshot, TextMenuV2ObservationContext } from "@rsgcsg/sts2-connector-client";
+import type { FullTextMenuV2Observation, TextMenuV2Action, TextMenuV2ActionResult, TextMenuV2Capabilities, TextMenuV2Snapshot, TextMenuV2ObservationContext } from "@rsgcsg/sts2-connector-client";
 
 export type TextInputProfile = "text-menu-v1" | "text-menu-v2";
 export type TextSnapshot = TextMenuSnapshot | TextMenuV2Snapshot;
@@ -22,7 +22,7 @@ export const POLICY_PORT_SCHEMA = "sts2.policy-runtime/policy-port-1" as const;
 export const POLICY_PORT_V2_SCHEMA = "sts2.policy-runtime/policy-port-2" as const;
 export const POLICY_PORT_V3_SCHEMA = "sts2.policy-runtime/policy-port-3" as const;
 export const EVIDENCE_MANIFEST_SCHEMA = "sts2.policy-runtime/immutable-evidence-manifest-1" as const;
-export const POLICY_RUNTIME_VERSION = "0.1.0-rc.17" as const;
+export const POLICY_RUNTIME_VERSION = "0.1.0-rc.23" as const;
 export const RUNTIME_ENVIRONMENT_SCHEMA = "sts2.policy-runtime/environment-1" as const;
 
 /** Read-only observation used by control clients before preparing a command. */
@@ -379,6 +379,7 @@ export interface ConnectorAdapterClient {
   observeTextMenuContext(): Promise<DecodedPlayerPayload<TextMenuObservationContext>>;
   observeTextMenuV2(): Promise<DecodedPlayerPayload<TextMenuV2Snapshot>>;
   observeTextMenuV2Context(): Promise<DecodedPlayerPayload<TextMenuV2ObservationContext>>;
+  getFullTextMenuV2?(): Promise<FullTextMenuV2Observation>;
   read(readId: string, expectedSnapshotId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReadResponse>>;
   submit(input: { requestId: string; expectedSnapshotId: string; boundActionId: string; clientSessionId: string; controllerLeaseId: string; controllerGeneration: number }): Promise<DecodedPlayerPayload<PlayerEnvironmentReceipt>>;
   submitTextMenu(input: { requestId: string; expectedSnapshotId: string; boundActionId: string; clientSessionId: string; controllerLeaseId: string; controllerGeneration: number }): Promise<DecodedPlayerPayload<TextMenuActionResult>>;

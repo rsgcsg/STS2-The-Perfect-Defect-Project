@@ -44,6 +44,8 @@ S0的动作完整性是`text-menu-v2`当前cursor全部choices；不同cursor不
 
 S0采用**请求取得观察**，而非完整原生事件流：ReadCurrent取得当前公开页面；库收齐同capture的状态/C后才交模型。以白名单投影后的公开Model-state digest比较最近已消费观察；排除C/opaque身份/receipt/control。公共state未变时不重复W写入，即使capture/snapshot/control身份变化；C变了仍可用同W重新评分，动作绑定按最新实际basis。页A→B→A已实际取得时state序列确实变化，仍是新消费位置。source capture ID不同但公共观察未变，不自动制造新学习step。数据保存consume/advance布尔值，训练必须复现同规则。相同digest只复用W，每次新的capture仍重建/验证当前E、ref→row和candidate gather，不复用旧raw绑定；advance=false仍可有新的N选择/loss，不能删行。TBPTT四步计数仅计真实advance，score-only行在同chunk累计loss后统一backward。
 
+S0实际输入规格固定为`s0-admitted-policy-offers-v1`：当前Runtime端口2只把已准入、非空C的决策观察交给Model。内部等待、后继探测和终局采集全部保留为raw capture，但未offer的观察明确标为模型未消费，不进入训练W序列；离线数据只取实际offer边界。模型对空C观察的单元能力不等于当前在线端口支持。以后若引入独立无动作observe消息，必须版本化InputSpec并同时修改采集、训练与在线端口。
+
 若notice A在取得前被B超越：记录A未形成模型输入，ReadCurrent返回实际B或expected_source失败，绝不回填A。S0序列资格表示**采样取得历史连续**，不表示人类实际看见的全部瞬态历史。S0仅对已取得的当前card target/selector/info视图承诺保留。完整瞬态CaptureProfile以后必须明确逐seam的eager字段，并另获Human/真实曝光资格；不能通过轮询或编号连续补证明。
 
 ## 5. ReadCurrent / ReadSealed：第一版可实施边界

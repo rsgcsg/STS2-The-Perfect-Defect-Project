@@ -375,3 +375,21 @@ or published Runtime update.
 For an unknown game build, normal `start` fails closed. Maintainers may run an
 explicit non-support probe with `--experimental-build`; passing that probe is
 new evidence, not automatic compatibility.
+
+### Explicit isolated baseline preparation
+
+`startShippedPlayerEnvironmentEpisode` optionally accepts `characterId` and
+`ascension` (0–10). It selects only the current Connector-provided setup actions,
+checks the selected character before Embark, and verifies actual run HUD identity.
+A locked or unavailable requested character fails; no fallback character is chosen.
+Omitting `characterId` preserves the historical template-selected behavior.
+
+A caller transferring the bootstrapped episode to another controller first calls
+`releaseController()`. The returned handoff receipt requires a fresh observation
+of the same runtime without a held controller. Bootstrap submission is then
+disabled; process close remains the episode owner's responsibility.
+
+`shippedRuntimeLaunch` also accepts `displayMode: "native-ui"` for explicit native
+UI preparation under an isolated, Steam-disabled profile. The default remains
+headless. Native UI preparation, administrative unlocks and AI-operated steps are
+recorded separately; they establish neither Human origin nor headless qualification.
