@@ -113,6 +113,31 @@ internal sealed class PublicInformationBindings
         var shown = Copy(facts, "definition_id", "name", "counter");
         return Declare(id, "relic", Text(facts["name"]), shown);
     }
+    internal bool TryOrbBasis(string owner, out int capacity, out IReadOnlyList<string> ids)
+    {
+        JsonObject? facts = OwnerFacts(owner);
+        int? slots = Integer(facts?["orb_slots"]);
+        var orbs = facts?["orbs"] as JsonArray;
+        if (slots == null || slots < 0 || orbs == null)
+        {
+            capacity = 0;
+            ids = Array.Empty<string>();
+            Missing("orb_capture_basis");
+            return false;
+        }
+        string?[] values = orbs.Select(value => Text(value?["entity_id"])).ToArray();
+        if (values.Any(string.IsNullOrWhiteSpace))
+        {
+            capacity = 0;
+            ids = Array.Empty<string>();
+            Missing("orb_capture_basis");
+            return false;
+        }
+        capacity = slots.Value;
+        ids = values.Select(value => value!).ToArray();
+        return true;
+    }
+
     internal PlayerEnvironmentReferent? Orb(string id, string owner)
     {
         var orb = Existing(id, "orb_subject", "orb");

@@ -235,3 +235,20 @@ ignored. No HP inference, blanket settling conversion or guessed timeout supplie
 retirement. Queued-for-deletion ancestors also retire their full subtree before
 individual descendants disappear. These are native UI ownership/lifetime facts,
 not causal successor proof or a new gameplay legality engine.
+
+Orb information sources use the native manager's current navigation roster rather
+than all rendered children. `DefaultFocusOwner` anchors that roster; forward
+`FocusNeighborLeft` links and inverse right links must form a bounded unique ring
+under the same live manager/container. The result must match the same capture's
+logical orb IDs/order, capacity and empty-slot tail. Evoked orbs can remain as
+fading scene children after native retirement; they are excluded only after a
+valid current ring is established. Zero slots require the exact creature-hitbox
+anchor plus actual zero capacity/empty logical queue; one slot permits both
+self-links. Broken navigation or inconsistent current facts remain explicitly
+partial. No private roster reflection, cached historical facts or guessed waits
+supply the missing evidence.
+
+A valid native hover-tip set with both required containers and zero children now
+returns typed empty `text_tips`/`card_previews` arrays. Some ordinary cards have no
+additional native tips. Missing containers or any malformed, hidden or unready
+actual child remain unresolved; no card statistics fabricate a tooltip body.
