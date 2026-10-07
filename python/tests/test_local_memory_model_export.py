@@ -10,12 +10,14 @@ from unittest.mock import patch
 
 import pytest
 import torch
-from test_local_training import _human_ready
+from m2_export_fixture import clone_completed_m2
 
 from spireagent.json_boundary import BoundaryError
+from spireagent.storage.blobs import StoreError
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import atomic_json
 from spireagent.workbench.inplace_curation import configured_owner
+from spireagent.workbench.local_curation import OWNER_NAME
 from spireagent.workbench.local_model_export import (
     EXPORT_ROOT,
     OPERATION_FILE,
@@ -29,25 +31,11 @@ from stpd.fullrun.text_menu_human_import import load_verified_human_text_bundle
 from stpd.policy.memory_export import validate_memory_package
 from stpd.workers.memory_run import execute_memory_run
 
+pytest_plugins = ("m2_export_fixture",)
 
-def _fixture(tmp_path: Path, monkeypatch, *, recipe: str = M2_K1_RECIPE):
-    config, dataset_id, sources, store = _human_ready(tmp_path, monkeypatch)
-    owner = configured_owner(config)
-    runs: set[str] = set()
-    for source in sources:
-        _, bundle, _ = load_verified_human_text_bundle(store, source)
-        runs.update(bundle.session_id + "/" + run for run in bundle.run_ids)
-    operation_id = "a" * 32
-    for source in sources:
-        owner.ledger.use_source(source, "training", operation_id)
-    owner.ledger.use(runs, "training", operation_id)
-    producer = store.get_manifest(dataset_id).producer
-    run_id, _ = prepare_workbench_memory(store, dataset_id, producer, operation_id, recipe)
-    reporter = ObjectStoreRunReporter(store, store.blobs)
-    outcome = execute_memory_run(store, reporter, run_id, producer)
-    assert outcome.state == "completed" and outcome.result_id is not None
-    model_id = store.get_manifest(outcome.result_id).parent("model")
-    return config, owner, store, dataset_id, sources, runs, run_id, model_id
+
+def _fixture(tmp_path: Path, completed_m2_recipes, *, recipe: str = M2_K1_RECIPE):
+    return clone_completed_m2(completed_m2_recipes.get(recipe), tmp_path)
 
 
 def _settle(service: LocalModelExport) -> dict:
@@ -58,9 +46,9 @@ def _settle(service: LocalModelExport) -> dict:
 
 
 def test_completed_m2_exports_private_package_after_later_training(
-        tmp_path: Path, monkeypatch) -> None:
+        tmp_path: Path, monkeypatch, completed_m2_recipes) -> None:
     config, owner, store, dataset, sources, runs, run_id, model_id = _fixture(
-        tmp_path, monkeypatch)
+        tmp_path, completed_m2_recipes)
     # A later completed operation replaces the UI's latest record. Immutable
     # run and ledger use remain sufficient for the earlier model.
     later = "b" * 32
@@ -109,9 +97,10 @@ def _settle_after_recheck(service: LocalModelExport, model_id: str) -> dict:
     return _settle(service)
 
 
-def test_missing_use_and_index_block_before_export_or_child(tmp_path: Path, monkeypatch) -> None:
+def test_missing_use_and_index_block_before_export_or_child(
+        tmp_path: Path, monkeypatch, completed_m2_recipes) -> None:
     config, owner, store, dataset, sources, runs, _run_id, model_id = _fixture(
-        tmp_path, monkeypatch)
+        tmp_path, completed_m2_recipes)
     service = LocalModelExport(config)
     with owner.transaction() as db:
         db.execute("DELETE FROM curation_source_uses WHERE source=?", (sources[0],))
@@ -130,9 +119,9 @@ def test_missing_use_and_index_block_before_export_or_child(tmp_path: Path, monk
 
 
 def test_spawn_failure_is_failed_but_started_child_outcome_is_unknown(
-        tmp_path: Path, monkeypatch) -> None:
+        tmp_path: Path, monkeypatch, completed_m2_recipes) -> None:
     config, _owner, _store, _dataset, _sources, _runs, _run_id, model_id = _fixture(
-        tmp_path, monkeypatch)
+        tmp_path, completed_m2_recipes)
     service = LocalModelExport(config)
     with patch("spireagent.workbench.local_model_export.private_child",
                side_effect=OSError("no child")):
@@ -153,8 +142,8 @@ def test_spawn_failure_is_failed_but_started_child_outcome_is_unknown(
 
 
 def test_registration_uses_completed_child_receipt_without_web_replay(
-        tmp_path: Path, monkeypatch) -> None:
-    config, _, _, _, _, _, _, model_id = _fixture(tmp_path, monkeypatch)
+        tmp_path: Path, monkeypatch, completed_m2_recipes) -> None:
+    config, _, _, _, _, _, _, model_id = _fixture(tmp_path, completed_m2_recipes)
     service = LocalModelExport(config)
     service.start(model_id)
     assert _settle(service)["status"] == "completed"
@@ -177,9 +166,9 @@ def test_registration_uses_completed_child_receipt_without_web_replay(
 
 
 def test_reset_k1_exports_and_retains_its_verified_recipe_identity(
-        tmp_path: Path, monkeypatch) -> None:
+        tmp_path: Path, monkeypatch, completed_m2_recipes) -> None:
     config, _owner, store, _dataset, _sources, _runs, run_id, model_id = _fixture(
-        tmp_path, monkeypatch, recipe=RESET_K1_RECIPE)
+        tmp_path, completed_m2_recipes, recipe=RESET_K1_RECIPE)
     model = store.get_manifest(model_id)
     assert model.parameters.value()["config"]["reset_each_step"] is True
     service = LocalModelExport(config)
@@ -195,8 +184,8 @@ def test_reset_k1_exports_and_retains_its_verified_recipe_identity(
 
 
 def test_old_completed_m2_requires_explicit_reverify_for_receipt(
-        tmp_path: Path, monkeypatch) -> None:
-    config, _, _, _, _, _, _, model_id = _fixture(tmp_path, monkeypatch)
+        tmp_path: Path, monkeypatch, completed_m2_recipes) -> None:
+    config, _, _, _, _, _, _, model_id = _fixture(tmp_path, completed_m2_recipes)
     service = LocalModelExport(config)
     service.start(model_id)
     assert _settle(service)["status"] == "completed"
@@ -230,3 +219,54 @@ def test_private_verification_child_timeout_reaps_without_reusing_log(tmp_path: 
     with pytest.raises(FileExistsError):
         private_child([sys.executable, "-c", "pass"], log,
                       dict(os.environ), timeout_seconds=0.1)
+
+
+def test_completed_recipe_clones_preserve_lineage_and_isolate_payloads_and_ledger(
+        tmp_path: Path, completed_m2_recipes) -> None:
+    source = completed_m2_recipes.get(M2_K1_RECIPE)
+    assert source is completed_m2_recipes.get(M2_K1_RECIPE)
+    prefixes = ("objects/", "payload-indexes/", "manifests/", "run-events/", "run-completions/")
+    original = {key: source.store.blobs.get(key)
+                for prefix in prefixes for key in source.store.blobs.keys(prefix)}
+    first = clone_completed_m2(source, tmp_path / "first")
+    second = clone_completed_m2(source, tmp_path / "second")
+    _, first_owner, first_store, dataset, sources, runs, run_id, _ = first
+    _, second_owner, second_store, _, _, _, _, _ = second
+    assert first_owner.identity != second_owner.identity
+    for clone in (first_store, second_store):
+        assert clone.manifest_ids() == source.store.manifest_ids()
+        for key, content in original.items():
+            assert clone.blobs.get(key) == content
+    for owner in (first_owner, second_owner):
+        owner.ledger.require_training_use(dataset, sources, runs, "a" * 32)
+    with first_owner.transaction() as db:
+        db.execute("DELETE FROM curation_source_uses WHERE source=?", (sources[0],))
+    with pytest.raises(BoundaryError, match="training_source_use_missing"):
+        first_owner.ledger.require_training_use(dataset, sources, runs, "a" * 32)
+    second_owner.ledger.require_training_use(dataset, sources, runs, "a" * 32)
+    archive = first_store.get_manifest(sources[0]).payload("archive")
+    index = json.loads(first_store.blobs.get(f"payload-indexes/v1/{archive.sha256}.json"))
+    chunk_key = f"objects/sha256/{index['chunks'][0]['sha256']}"
+    damaged = first_store.blobs.root / chunk_key
+    damaged.write_bytes(damaged.read_bytes() + b"corrupt")
+    with pytest.raises((BoundaryError, StoreError), match="integrity"):
+        load_verified_human_text_bundle(first_store, sources[0])
+    for clone in (source.store, second_store):
+        load_verified_human_text_bundle(clone, sources[0])
+        assert clone.blobs.get(chunk_key) == original[chunk_key]
+        assert ObjectStoreRunReporter(clone, clone.blobs).completed(run_id) is not None
+    assert {key: source.store.blobs.get(key) for key in original} == original
+    with pytest.raises(StoreError, match="read_only_store"):
+        source.store.blobs.put_if_absent("objects/forbidden", b"mutation")
+
+
+def test_cloned_owner_still_rejects_foreign_ledger_path(
+        tmp_path: Path, completed_m2_recipes) -> None:
+    source = completed_m2_recipes.get(M2_K1_RECIPE)
+    config, owner, _, _, _, _, _, _ = clone_completed_m2(source, tmp_path)
+    marker_path = owner.store_dir / OWNER_NAME
+    marker = json.loads(marker_path.read_bytes())
+    marker["ledger_path"] = str(source.config.research_workspace.store_dir / ".curation.sqlite")
+    atomic_json(marker_path, marker)
+    with pytest.raises(BoundaryError, match="store_identity_mismatch"):
+        configured_owner(config)

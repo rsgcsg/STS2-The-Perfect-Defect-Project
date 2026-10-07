@@ -25,12 +25,14 @@ from spireagent.workbench.memory_recipe import (
 )
 from stpd.memory_policy_installation import PROTOCOL, validate
 
+pytest_plugins = ("m2_export_fixture",)
+
 
 @pytest.mark.parametrize("recipe", [M2_K1_RECIPE, M2_K8_RECIPE, RESET_K8_RECIPE])
 def test_m2_registration_requires_own_install_context_and_preserves_token_roster(
-        tmp_path: Path, monkeypatch, recipe: str) -> None:
+        tmp_path: Path, monkeypatch, recipe: str, completed_m2_recipes) -> None:
     config, owner, store, _, sources, _, _, model_id = _fixture(
-        tmp_path, monkeypatch, recipe=recipe)
+        tmp_path, completed_m2_recipes, recipe=recipe)
     settings = memory_settings_for_recipe(recipe)
     saved_config = store.get_manifest(model_id).parameters.value()["config"]
     assert saved_config["slots"] == settings.slots
@@ -145,8 +147,9 @@ def test_m2_registration_requires_own_install_context_and_preserves_token_roster
     assert (models.private_root / "token-policies-v1.json").read_bytes() == roster
 
 
-def test_m2_context_missing_blocks_before_roster_write(tmp_path: Path, monkeypatch) -> None:
-    config, _, _, _, _, _, _, model_id = _fixture(tmp_path, monkeypatch)
+def test_m2_context_missing_blocks_before_roster_write(
+        tmp_path: Path, monkeypatch, completed_m2_recipes) -> None:
+    config, _, _, _, _, _, _, model_id = _fixture(tmp_path, completed_m2_recipes)
     exported = LocalModelExport(config)
     exported.start(model_id)
     assert _settle(exported)["status"] == "completed"
