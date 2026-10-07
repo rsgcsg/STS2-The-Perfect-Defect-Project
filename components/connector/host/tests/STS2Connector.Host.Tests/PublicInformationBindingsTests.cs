@@ -223,6 +223,36 @@ public sealed class PublicInformationBindingsTests
     }
 
     [Fact]
+    public void DyingVisualIsNotARequiredIntentButMissingFactsForCurrentNativeOwnerStillFailClosed()
+    {
+        PlayerEnvironmentSnapshot page = Page();
+        page = page with
+        {
+            Interaction = page.Interaction with { Content = new(page.Interaction.Content.Surface,
+                JsonNode.Parse("""{"kind":"combat","player":{"player_entity_id":"player","hand":[]},"enemies":[]}""")!) },
+            Referents = page.Referents.Where(value => value.Role == "player").ToArray()
+        };
+        object dyingNode = new(), playerNode = new();
+        var retired = NativeCreatureTipOwner.Resolve(new[] { dyingNode }, new[] { playerNode }, new[] { dyingNode });
+        var bindings = new PublicInformationBindings(page);
+        Assert.Equal(NativeCreatureTipOwnerScope.Retired, retired.Scope);
+        // Positive native retirement excludes the old visual before attempting a
+        // public intent binding. It must not poison otherwise complete root input.
+        var frame = Frame(bindings.Page) with
+        {
+            Leaves = new[] { new TextMenuLeaf("native-end", "root", "end_turn", "End turn", null,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), () => NativeInputResult.Delivered("native guard")) }
+        };
+        Assert.Equal("complete", new TextMenuV2Session().Observe(frame).Snapshot.MenuActions.Status);
+
+        var current = NativeCreatureTipOwner.Resolve(new[] { dyingNode }, new[] { dyingNode, playerNode }, Array.Empty<object>());
+        Assert.Equal(NativeCreatureTipOwnerScope.Current, current.Scope);
+        Assert.Null(bindings.Intent("current-intent", "enemy", 0, 1, true));
+        Assert.Equal("partial", bindings.Page.Completeness.Status);
+        Assert.Equal("unavailable", new TextMenuV2Session().Observe(Frame(bindings.Page)).Snapshot.MenuActions.Status);
+    }
+
+    [Fact]
     public void TopbarSubjectsHaveDistinctSemanticRolesAndOnlyFrozenShownHudFacts()
     {
         var bindings = new PublicInformationBindings(Page());

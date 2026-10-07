@@ -703,10 +703,22 @@ internal static class NativeTextMenuInformation
         if (noOverlay && room != null && ConnectorMod.IsNodeVisible(room)
             && NCapstoneContainer.Instance is not { InUse: true })
         {
+            // Native RemoveCreatureNode retires input ownership immediately but
+            // leaves the scene subtree rendered until its death animation completes.
+            NCreature[] currentOwners = room.CreatureNodes.ToArray();
+            NCreature[] removingOwners = room.RemovingCreatureNodes.ToArray();
             foreach (NPower power in VisibleNodes<NPower>(room))
             {
+                NCreature? treeOwner = VisibleAncestor<NCreature>(power);
+                var ownerScope = NativeCreatureTipOwner.Resolve(
+                    treeOwner == null ? Array.Empty<NCreature>() : new[] { treeOwner }, currentOwners, removingOwners);
+                if (ownerScope.Scope == NativeCreatureTipOwnerScope.Retired) continue;
+                if (ownerScope.Scope != NativeCreatureTipOwnerScope.Current)
+                { bindings.Missing("power_owner"); continue; }
                 PowerModel model = power.Model;
-                if (!entities.TryGetExistingId(model.Owner, out string? owner))
+                if (!ReferenceEquals(model.Owner, ownerScope.Owner!.Entity)
+                    || !ReferenceEquals(room.GetCreatureNode(model.Owner), ownerScope.Owner)
+                    || !entities.TryGetExistingId(model.Owner, out string? owner))
                 { bindings.Missing("power_owner"); continue; }
                 AddSignalTipLeaf(entities, leaves, power, "power_tips", Control.SignalName.MouseEntered,
                     bindings.Power(entities.GetId(model, "power"), owner!, model.Id.Entry,
@@ -717,9 +729,13 @@ internal static class NativeTextMenuInformation
             {
                 NCreature[] owners = creatures.Where(creature => creature.IntentContainer != null
                     && ReferenceEquals(intent.GetParent(), creature.IntentContainer)).ToArray();
-                if (owners.Length != 1 || !entities.TryGetExistingId(owners[0].Entity, out string? owner))
+                var ownerScope = NativeCreatureTipOwner.Resolve(owners, currentOwners, removingOwners);
+                if (ownerScope.Scope == NativeCreatureTipOwnerScope.Retired) continue;
+                if (ownerScope.Scope != NativeCreatureTipOwnerScope.Current
+                    || !ReferenceEquals(room.GetCreatureNode(ownerScope.Owner!.Entity), ownerScope.Owner)
+                    || !entities.TryGetExistingId(ownerScope.Owner.Entity, out string? owner))
                 { bindings.Missing("intent_owner"); continue; }
-                NIntent[] current = owners[0].IntentContainer.GetChildren().OfType<NIntent>().ToArray();
+                NIntent[] current = ownerScope.Owner.IntentContainer.GetChildren().OfType<NIntent>().ToArray();
                 int nativeOrder = Array.FindIndex(current, value => ReferenceEquals(value, intent));
                 AddSignalTipLeaf(entities, leaves, intent, "intent_tips", Control.SignalName.MouseEntered,
                     bindings.Intent(entities.GetId(intent, "intent"), owner!, nativeOrder,
@@ -728,8 +744,13 @@ internal static class NativeTextMenuInformation
             foreach (NOrb orb in VisibleNodes<NOrb>(room))
             {
                 NCreature? ownerNode = VisibleAncestor<NCreature>(orb);
+                var ownerScope = NativeCreatureTipOwner.Resolve(
+                    ownerNode == null ? Array.Empty<NCreature>() : new[] { ownerNode }, currentOwners, removingOwners);
+                if (ownerScope.Scope == NativeCreatureTipOwnerScope.Retired) continue;
                 NOrbManager? manager = VisibleAncestor<NOrbManager>(orb);
-                if (ownerNode == null || manager == null || !ReferenceEquals(ownerNode.OrbManager, manager)
+                if (ownerScope.Scope != NativeCreatureTipOwnerScope.Current || ownerNode == null || manager == null
+                    || !ReferenceEquals(room.GetCreatureNode(ownerNode.Entity), ownerNode)
+                    || !ReferenceEquals(ownerNode.OrbManager, manager)
                     || !entities.TryGetExistingId(ownerNode.Entity, out string? owner))
                 { bindings.Missing("orb_owner"); continue; }
                 PlayerEnvironmentReferent? subject;
@@ -775,6 +796,9 @@ internal static class NativeTextMenuInformation
         while (queue.Count != 0 && visited++ < 2048)
         {
             Node node = queue.Dequeue();
+            // A queued-for-deletion ancestor has retired its complete subtree,
+            // even if descendants have not individually been queued yet.
+            if (!ConnectorMod.IsLiveNode(node)) continue;
             if (node is T typed && ConnectorMod.IsNodeVisible(typed))
                 yield return typed;
             foreach (Node child in node.GetChildren()) queue.Enqueue(child);
