@@ -1,7 +1,8 @@
 # Current project context, 2026-10-08
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
-Live refs and exact producer records override this navigation summary.
+Resolve live GitHub refs before using this navigation summary. Exact code,
+contracts, native/runtime records and current evidence override this file.
 
 ## Authority and entry
 
@@ -44,7 +45,7 @@ verified 57-offer bounded teacher prefix, including same-card tip revisits and
 Fresh final-candidate cohort collection and learned-model execution are pending.
 No real training or paid task has started; cumulative paid spend is USD 0.
 
-## Scope boundary
+## Remaining Platform non-claims
 
 S0 means sampled admitted text-menu-v2 offers and complete current cursor C, with
 I/F OFF. It is not native-flat L, complete transient Human exposure, all scenes,
