@@ -192,6 +192,105 @@ def test_same_name_instances_keep_numeric_attributes_and_binding():
     assert not torch.allclose(entities[refs["card-C"]], entities[refs["enemy-E"]])
 
 
+def ordered_identical_cards(*, collection="hand", aliases=False):
+    current = sample()
+    first = copy.deepcopy(current["referents"][0])
+    second = copy.deepcopy(first)
+    second["referent_id"] = "card-B"
+    current["referents"] = [first, second]
+    identifiers = ("entity-C", "entity-B") if aliases else ("card-C", "card-B")
+    for ref, identifier in zip(current["referents"], identifiers, strict=True):
+        if aliases:
+            ref["properties"]["entity_id"] = identifier
+    current["interaction"]["content"][collection] = [
+        {"entity_id": identifier, "title": "Strike", "cost": 1} for identifier in identifiers
+    ]
+    current["menu_actions"]["actions"] = [
+        {
+            "action_id": "choose-" + ref["referent_id"],
+            "kind": "system_selection",
+            "verb": "select_card",
+            "label": "Select Strike",
+            "subject_referent_id": ref["referent_id"],
+            "arguments": [],
+            "effect_domain": "text_menu",
+        }
+        for ref in current["referents"]
+    ]
+    current["menu_actions"].update(total_count=2, materialized_count=2)
+    return current
+
+
+@pytest.mark.parametrize("seed", [0, 1, 7])
+@pytest.mark.parametrize("collection", ["hand", "orbs", "potions"])
+@pytest.mark.parametrize("aliases", [False, True])
+def test_public_order_reaches_candidate_anchors_without_extra_neural_layers(
+    seed, collection, aliases
+):
+    first = ordered_identical_cards(collection=collection, aliases=aliases)
+    second = copy.deepcopy(first)
+    second["interaction"]["content"][collection].reverse()
+    model = StructuredM2(seed=seed)
+    before, after = project_structured_snapshot(first), project_structured_snapshot(second)
+    assert (
+        before.state_digest == after.state_digest
+    )  # Equal public instances, different binding layout.
+    encoded_before, encoded_after = model.encode(before), model.encode(after)
+    rows_before, rows_after = dict(before.ref_rows), dict(after.ref_rows)
+    left_before, right_before = (
+        encoded_before[rows_before["card-C"]],
+        encoded_before[rows_before["card-B"]],
+    )
+    left_after, right_after = (
+        encoded_after[rows_after["card-C"]],
+        encoded_after[rows_after["card-B"]],
+    )
+    assert not torch.allclose(left_before, right_before)
+    assert torch.allclose(left_before, right_after, atol=2e-6, rtol=2e-6)
+    assert torch.allclose(right_before, left_after, atol=2e-6, rtol=2e-6)
+    memory = model.initial_memory()
+    scores_before = model.score(before, encoded_before, memory)
+    scores_after = model.score(after, encoded_after, memory)
+    assert not torch.allclose(scores_before[0], scores_before[1])
+    assert torch.allclose(scores_before, scores_after.flip(0), atol=2e-6, rtol=2e-6)
+
+
+def test_ordered_position_binding_survives_id_rename_and_referent_bag_permutation():
+    first = ordered_identical_cards(aliases=True)
+    second = rename(
+        first,
+        {
+            "card-C": "other-C",
+            "card-B": "other-B",
+            "entity-C": "other-entity-C",
+            "entity-B": "other-entity-B",
+        },
+    )
+    second["referents"].reverse()
+    model = StructuredM2()
+    before, scores_before, memory_before = score(model, first)
+    after, scores_after, memory_after = score(model, second)
+    assert before.state_digest == after.state_digest
+    assert torch.allclose(scores_before, scores_after, atol=2e-6, rtol=2e-6)
+    assert torch.allclose(memory_before, memory_after, atol=2e-6, rtol=2e-6)
+
+
+def test_unordered_run_deck_and_referent_bag_never_create_position_features():
+    first = ordered_identical_cards(collection="cards")
+    first["interaction"]["content"].update(kind="run_deck", ordering_semantics="unordered_multiset")
+    second = copy.deepcopy(first)
+    second["interaction"]["content"]["cards"].reverse()
+    second["referents"].reverse()
+    before, after = project_structured_snapshot(first), project_structured_snapshot(second)
+    assert not any(node.field.endswith("$public_order") for node in before.nodes)
+    assert before.state_digest == after.state_digest
+    model = StructuredM2()
+    _, scores_before, memory_before = score(model, first)
+    _, scores_after, memory_after = score(model, second)
+    assert torch.allclose(scores_before, scores_after, atol=2e-6, rtol=2e-6)
+    assert torch.allclose(memory_before, memory_after, atol=2e-6, rtol=2e-6)
+
+
 @pytest.mark.parametrize("value", [None, False, 0, 0.0, "unknown"])
 def test_scalar_types_distinguish_null_zero_false_and_unknown(value):
     current = sample()

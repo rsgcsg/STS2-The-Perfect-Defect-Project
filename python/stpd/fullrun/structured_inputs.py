@@ -229,6 +229,42 @@ def project_structured_snapshot(snapshot: dict[str, Any]) -> StructuredFrame:
     collect(roots)
     collect(visible)
     visible_ids = {ref["referent_id"] for ref in visible}
+    aliases = {identifier: {identifier} for identifier in registry}
+
+    def alias(identifiers: tuple[str, ...]) -> None:
+        if identifiers:
+            joined = set().union(*(aliases[identifier] for identifier in identifiers))
+            for identifier in joined:
+                aliases[identifier] = joined
+
+    def collect_aliases(value: Any) -> None:
+        if isinstance(value, dict):
+            alias(
+                tuple(value[key] for key in sorted(IDENTIFIERS) if isinstance(value.get(key), str))
+            )
+            for item in value.values():
+                collect_aliases(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect_aliases(item)
+
+    collect_aliases(roots)
+    collect_aliases(visible)
+    for ref in visible:
+        properties = ref["properties"]
+        if isinstance(properties, dict):
+            alias(
+                (
+                    ref["referent_id"],
+                    *(
+                        properties[key]
+                        for key in sorted(IDENTIFIERS)
+                        if isinstance(properties.get(key), str)
+                    ),
+                )
+            )
+    # Python identities are ephemeral occurrence bindings, never node features.
+    declarations: dict[int, tuple[str, ...]] = {}
 
     def clean(
         value: Any, field: str = "", owner: dict[str, Any] | None = None, depth: int = 0
@@ -258,6 +294,9 @@ def project_structured_snapshot(snapshot: dict[str, Any]) -> StructuredFrame:
                     )
                 else:
                     output[key] = clean(item, key, value, depth + 1)
+            declarations[id(output)] = tuple(
+                value[key] for key in sorted(IDENTIFIERS) if isinstance(value.get(key), str)
+            )
             return output
         if isinstance(value, list):
             return (
@@ -384,6 +423,9 @@ def project_structured_snapshot(snapshot: dict[str, Any]) -> StructuredFrame:
             index = node(field, "object") if anchor is None else anchor
             for key, item in sorted(value.items()):
                 tree(item, field + "/" + key, index, owner=owner)
+            for identifier in declarations.get(id(value), ()):
+                if anchors[identifier] != index:
+                    edge(index, anchors[identifier], 2)
         elif isinstance(value, tuple):
             kind, items = value
             index = node(field, kind)
@@ -391,7 +433,22 @@ def project_structured_snapshot(snapshot: dict[str, Any]) -> StructuredFrame:
             for ordinal, item in enumerate(items):
                 child = tree(item, field + "/$item", index, owner=owner)
                 if kind == "ordered":
-                    tree(ordinal, field + "/$public_order", child, owner=owner)
+                    position = tree(ordinal, field + "/$public_order", child, owner=owner)
+                    identifiers = (
+                        (item.identifier,)
+                        if isinstance(item, _Reference)
+                        else declarations.get(id(item), ())
+                        if isinstance(item, dict)
+                        else ()
+                    )
+                    position_targets = set().union(
+                        *(aliases[identifier] for identifier in identifiers)
+                    )
+                    for identifier in sorted(position_targets):
+                        target = anchors[identifier]
+                        edge(target, position, 0)
+                        if (target, position) not in entity_members:
+                            entity_members.append((target, position))
         else:
             kind = (
                 "null"
