@@ -36,6 +36,14 @@
 - 遗物、药水、卡牌详解、关键词和预览进入正式对象/曝光/来源表；公开动态说明不等于 seen/unlocked 控制下的 inspect 页面文案。
 - 新[详细方案](BASELINE_PROTOCOL_OPTIONS.zh-CN.md)提供三种 AP 与四个完整组合、共同 OP-S、具体资料配置及异常恢复；没有决定默认或开始生产实现。
 
+## 2026-10-07：L-N 首版与表示/模型接口
+
+用户倾向L-N，允许有具体工程依据的小范围妥协，要求把卡牌详情/升级、目标预览、全部适用操作、loop/缺失/效率责任及生成/非全量评分模型写清。新[L-N v1规格](BASELINE_LN_V1_SPEC.zh-CN.md)给出64行操作承诺和明确暂缓；单人Defect标准A0是本轮首验范围建议，未当作用户已批准。
+
+表示是Agent协议的一部分：公开对象/原生文字/展示关系可直接结构化；typed模型输入不等于JSON文本token。Agent是直接对接协议的封装体，模型是内部任务组件。合法集合完整不推出每个模型必须全评分；现Runtime确有scores长度约束，新Choice/prefix/Resolve需有版本的端口设计。Agent内部shortlist不能改环境权威目录。
+
+原生target focus改变渲染卡牌说明及升级inspect控件已有源码依据；缺星费/焦点投影、holder完整可达、open-Peek/potion-hover、部分mouse续接及终局路由均作为实施缺口，不用这些缺口默认淘汰L-N。game outcome与包含summary导航的Agent task complete分开，防止过早结束承诺旅程。
+
 ## 怎样维护这份沿革
 
 1. 新决定写入当前 owning 规范，沿革只记录来源、修正与替代关系，不复制全部当前状态。

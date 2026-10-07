@@ -4,6 +4,8 @@
 
 完整阅读入口：[P0–P5 交付与验收](BASELINE_ACCEPTANCE_PLAN.zh-CN.md)。候选及信息策略见 P3；D-M2、记录/训练/工程连接见 P4。最新[三套契约与四个组合](BASELINE_PROTOCOL_OPTIONS.zh-CN.md)明确 AP/IP/OP/HC/MP；C-H 归查询信息配置，此前首发推荐撤回。本文的原生机制仍保留，资料默认提供与否以选定 IP 为准；本轮四案共同 OP-S 保留真实原生选择阶段。
 
+L-N首版动作范围、缺口和完整合法关系详见[具体规格](BASELINE_LN_V1_SPEC.zh-CN.md)。原生目标focus引起的渲染数值变化、卡牌inspect升级切换属于首版要求；64行承诺不是当前已运行支持数量。
+
 ## 1. 哪些是原生，哪些是我们的抽象
 
 | 标记 | 含义 | 例子 |

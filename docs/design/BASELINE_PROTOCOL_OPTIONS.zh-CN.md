@@ -4,6 +4,8 @@
 
 本文回应两个要求：给出几套能从开局一直解释到终局、记录和学习的方案；每套明确 Agent 看见的契约、Host 提供的能力，以及适配器怎样连接它们。符号和消息名都是**建议语义**，不是已经存在的 API/schema。既有 ADR-0015、text-menu、Read 和旧模型仍保留原义；新增查询/资料包 profile 若偏离已接受的原生逻辑页信息规则，必须经明确设计决议和版本化实施，不能借本文件悄悄修改旧合同。
 
+L-N 的最新首版细则见[L-N v1 规格](BASELINE_LN_V1_SPEC.zh-CN.md)：64 行操作承诺、详情/目标预览、合法目录与非评分 Agent 端口。用户倾向 L-N；仍是设计候选，未授权实现或接受默认。
+
 阅读路径：先看第 1 节四个组合，再读第 3–8 节的具体规则；第 9 节用完整轨迹比较；第 10–13 节说明学习、成本、实现和验收。相关原生行为见[场景册](BASELINE_SCENARIO_SPEC.zh-CN.md)，基础需求见[P0/P2](BASELINE_FOUNDATION.zh-CN.md)，模型和任务合同见[P4](BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md)。
 
 ## 1. 我们实际在比较什么
@@ -74,7 +76,7 @@ AP-L 也可以在 Agent 内用固定程序执行“打开→读取→返回”�
 | `event_cursor / gap / continuity` | 已提供的公共历史位置、缺口与连续性；不能据相同画面推断无缺口 |
 | `view_sources / completeness` | 每份资料的来源、上下文、捕获位置、完整性和失效条件 |
 
-处于动画/自动续执行而没有可操作 owner 时发 `settling`，不伪造“默认继续”。轮询、网络心跳、无新事实的 observe 不成为新的模型时间步。完整目录可以无损分块运输；收到 manifest/count/digest 对应的全部块之前不能标 complete 或开始选动作。资源不足时显式拒绝/暂停该 Agent 实例，不能截 top-k。
+处于动画/自动续执行而没有可操作 owner 时发 `settling`，不伪造“默认继续”。轮询、网络心跳、无新事实的 observe 不成为新的模型时间步。完整目录可以无损分块运输。Connector authority 集合必须完整；全量 scorer 在收到 manifest/count/digest 对应的全部块之前不能开始全目录选择。新 L-N v1 的生成/分解 Agent 可按同一完整目录的分页/前缀/唯一 Resolve 访问后选择，不强制把全表送进模型；这需要新端口，旧 strict schema 不变。资源不足时显式拒绝/暂停相应 Agent 实例；环境不能以 top-k 代替完整权威集合，Agent 内部已登记的检索 shortlist 是另一回事。
 
 ### 3.2 OP-S：本轮四案统一保留的动作粒度
 
@@ -367,7 +369,7 @@ Q-N 一个 Inspect 可以对应多项 Host 操作，保留 child request 关系�
 | stale/rejected/公开失败结果 | 新结果事件一次，含前一实际请求；尚未新观察时不选旧目录 | 待新鲜完整输入后才可调用 | 不能把拒绝结果当成功动作标签；保留有资格的原选择及负结果 |
 | 重传、重复 Observe、心跳、纯传输进度 | 零次；新真实 occurrence 不在此类 | 否 | 无新增标签 |
 | gap/新 generation/无法续接的接管 | 结束旧 segment，明确 reset 一次；新初始输入另更新一次 | 管理允许恢复且新输入合格后 | 连续 prefix 跨 gap 不合格，不能靠 mask 一步假装修复历史 |
-| 终局事件 | 新终局公开事件一次，之后冻结该 segment | 无后续策略决定则不调用；若任务包含 summary 导航，仍用目录 | 终局无 choice N；Z/O 由独立终点证据决定 |
+| 终局事件 | game outcome 事件一次；若任务含 summary 导航，继续消费该尾段，task complete 后才冻结；新局另 reset | 无后续策略决定则不调用；summary 导航仍用目录 | 终局无 choice N；summary 不是新局/战斗，Z/O 由独立终点证据决定 |
 
 同一 action result 与它携带的 observation 在序列化时使用一个 AP event ID，不能双写；独立之后观察有新的真实事实才是新事件。pending actual request 在下一次 consume 后清空其“未消费”标记，后续反馈引用同一 request 但不重放已消费请求。没有后续入站事件就只留下未闭合记录，不捏造反馈。重新绑定但语义未变的传输消息不写 W；原生真实页面重访是语义事件，二者靠 occurrence 而不是正文哈希区分。固定浏览程序也必须走此消费入口，不能跳过输入使在线/离线前缀不一致。
 

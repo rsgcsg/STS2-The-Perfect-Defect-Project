@@ -109,7 +109,9 @@ ProtocolTraceView 要分别描述 observed-before、available-before、confirmed
 
 ### N：行为监督
 
-N 学习实际选择在完整候选集中的条件分布，默认可用 listwise cross entropy；它不自动表示人类最优策略。信息重表达后的 Human 标签仍是行为来源，不声称 Human 读过全部新输入。对查询、导航和选择器是否提供 N 标签由目标协议映射决定，派生动作须标明 derived，不能冒充 native Human occurrence。
+[L-N v1](BASELINE_LN_V1_SPEC.zh-CN.md)补充模型无关的Choice端口与目录访问提案。当前参考全量scorer的N学习实际选择在完整候选集中的条件分布，默认可用listwise cross entropy；它不自动表示人类最优策略。信息重表达后的 Human 标签仍是行为来源，不声称 Human 读过全部新输入。对查询、导航和选择器是否提供 N 标签由目标协议映射决定，派生动作须标明 derived，不能冒充 native Human occurrence。
+
+生成/分解/检索式Agent可以采用独立声明的动作token、条件因子或shortlist目标；这不等于旧全目录N loss，也不改变Connector完整合法集合。完整目录不必整表进入每个模型上下文；新端口的prefix/Resolve与旧Runtime强制scores合同分开版本化。
 
 ### Z：实际后继的监督
 

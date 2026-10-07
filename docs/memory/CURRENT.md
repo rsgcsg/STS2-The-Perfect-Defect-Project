@@ -1,4 +1,4 @@
-# Current project context, 2026-10-06
+# Current project context, 2026-10-07
 
 Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`.
 Resolve live GitHub refs, writers and relevant producer facts before work;
@@ -15,7 +15,10 @@ merge, release or old branch cleanup.
 
 ## Read and review
 
-1. [Concrete protocol options](../design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md):
+1. [L-N v1 scope and Agent contract](../design/BASELINE_LN_V1_SPEC.zh-CN.md):
+   owner-preferred direction, 64 operation commitment rows, native target/upgrade previews,
+   typed public inputs and model-neutral catalog access. The proposal is not implemented;
+   [Concrete protocol options](../design/BASELINE_PROTOCOL_OPTIONS.zh-CN.md):
    three Agent contracts, four Host/mapping combinations, object details and failure semantics;
    [P0–P5 complete delivery](../design/BASELINE_ACCEPTANCE_PLAN.zh-CN.md):
    corrected candidate comparison, D-M2 journeys, cost comparison, acceptance matrix and next work.
@@ -31,6 +34,9 @@ merge, release or old branch cleanup.
 5. [Stable task index](../plans/BASELINE_TASKS.zh-CN.md): only 19 P/E/G/V/R IDs.
    P5 has a bounded delivery candidate; G1/E/R remain unaccepted/unstarted.
 
+The owner prefers L-N and requests explicit, evidence-based compromises only.
+The new spec proposes a single-player Defect standard Ascension-0 qualification scope
+and a model-neutral Choice port; G1 has not accepted that scope or protocol.
 The next step is G1 review, not automatic implementation. C-H is an automatic-view configuration of the query contract, not a separate
 protocol. Its previous priority recommendation is withdrawn; the old probe assumed
 different automatic information and policy-call programs. New options select no default. Required additional evidence

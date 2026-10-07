@@ -2,6 +2,8 @@
 
 日期：2026-10-06。版本：0.3。状态：**设计交付候选；P5 有界源码/合成评估已交付，G1 未接受，未注册新运行 schema。** 最新详细定义以[三套契约与四个组合](BASELINE_PROTOCOL_OPTIONS.zh-CN.md)为准：AP-L/AP-Q/AP-B，配 L-N/Q-N/Q-D/B-D；尚未选择默认。本文件保留早期候选的需求分析，发生冲突时新候选规范优先。详细原生依据见 [P5 完整包](BASELINE_ACCEPTANCE_PLAN.zh-CN.md)和[逐场景册](BASELINE_SCENARIO_SPEC.zh-CN.md)。本文件不授权生产实现、游戏、录制、训练、安装、云执行或合并。
 
+L-N 首版进一步收敛见[具体规格](BASELINE_LN_V1_SPEC.zh-CN.md)：合法集合由 Connector 完整持有，不强制每个模型全量打分；新增模型无关端口是提案，不改变现有 scorer schema。
+
 入口：[上层基础](BASELINE_FOUNDATION.zh-CN.md)、[P4 学习与工程连接](BASELINE_DATA_AGENT_CONTRACTS.zh-CN.md)、[任务表](../plans/BASELINE_TASKS.zh-CN.md)。本文的候选名称只用于本次设计比较，不替换原生协议、text-menu 或已训练模型的身份。
 
 ## 1. 服务对象、范围和设计空间
