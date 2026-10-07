@@ -16,7 +16,7 @@ import {
 } from "./game-installation.mjs";
 import { evaluateRuntimeCompatibility } from "./compatibility.mjs";
 import { readProjectIdentity } from "./project-identity.mjs";
-import { publicProfileDescriptor, resolveLaunchProfile } from "./profile-isolation.mjs";
+import { isolatedProfilePaths, publicProfileDescriptor, resolveLaunchProfile } from "./profile-isolation.mjs";
 import {
   GAME_CANARY_ENVIRONMENT_VARIABLE,
   HOST_CONTROL_TOKEN_ENVIRONMENT_VARIABLE,
@@ -311,6 +311,30 @@ function safeTimestamp() {
   return new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 }
 
+/** Native UI is for explicit isolated preparation; it has no headless qualification. */
+export function shippedDisplayArguments(displayMode = "headless", launchProfile = null) {
+  if (!["headless", "native-ui"].includes(displayMode)) throw new Error("unsupported_shipped_display_mode");
+  if (displayMode === "native-ui") {
+    if (launchProfile?.mode !== "isolated_local_profile"
+      || launchProfile.steam !== "disabled_before_platform_initialization"
+      || typeof launchProfile.profile_root !== "string" || !path.isAbsolute(launchProfile.profile_root)
+      || typeof launchProfile.generation_id !== "string" || !launchProfile.generation_id
+      || launchProfile.client_id !== "1")
+      throw new Error("native_ui_preparation_requires_isolated_profile");
+    const expected = isolatedProfilePaths(path.dirname(path.dirname(launchProfile.profile_root)), launchProfile.profile_id);
+    if (launchProfile.profile_root !== expected.profile_root
+      || launchProfile.expected_user_data_root !== expected.expected_user_data_root
+      || launchProfile.environment?.HOME !== expected.home
+      || launchProfile.environment?.USERPROFILE !== expected.home
+      || (process.platform === "win32" && (launchProfile.environment.APPDATA !== expected.appdata
+        || launchProfile.environment.LOCALAPPDATA !== expected.local_appdata))
+      || (process.platform === "linux" && launchProfile.environment.XDG_DATA_HOME !== expected.xdg_data_home)
+      || JSON.stringify(launchProfile.args) !== JSON.stringify(["--force-steam=off", "--clientId=1"]))
+      throw new Error("native_ui_preparation_requires_isolated_profile");
+  }
+  return [...(displayMode === "headless" ? ["--headless"] : []), "--verbose", ...(launchProfile?.args ?? [])];
+}
+
 export function shippedRuntimeLaunch(installation, {
   stdout = "pipe",
   stderr = "pipe",
@@ -319,14 +343,15 @@ export function shippedRuntimeLaunch(installation, {
   connectorEndpoint = null,
   runSeed = null,
   connectorCanary = null,
-  hostExecutionProfile = null
+  hostExecutionProfile = null,
+  displayMode = "headless"
 } = {}) {
   const requestedHostExecutionProfile = validateRequestedHostExecutionProfile(hostExecutionProfile);
   const connector = connectorEndpoint == null
     ? null
     : resolveConnectorEndpoint(connectorEndpoint);
   const hostControlToken = connector == null ? null : randomBytes(32).toString("hex");
-  const args = ["--headless", "--verbose", ...(launchProfile?.args ?? [])];
+  const args = shippedDisplayArguments(displayMode, launchProfile);
   const environment = withExplicitConnectorCanary({
     ...process.env,
     SteamAppId: process.env.SteamAppId ?? STS2_APP_ID,
@@ -346,6 +371,9 @@ export function shippedRuntimeLaunch(installation, {
     delete environment.SteamAppId;
     delete environment.SteamGameId;
   }
+  if (displayMode === "native-ui" && Object.entries(launchProfile.environment)
+    .some(([key, value]) => environment[key] !== value))
+    throw new Error("native_ui_preparation_environment_override");
   const child = spawn(installation.executable, args, {
     cwd: installation.executable_cwd,
     env: environment,
@@ -358,8 +386,8 @@ export function shippedRuntimeLaunch(installation, {
     connector,
     hostControlToken,
     hostConfiguration: {
-      display_driver: "headless",
-      audio_driver: "Dummy",
+      display_driver: displayMode === "headless" ? "headless" : "native_default",
+      audio_driver: displayMode === "headless" ? "Dummy" : "native_default",
       scene_thread_mode: "default",
       authority_profile: connectorCanary == null
         ? "sealed_only"

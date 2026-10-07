@@ -21,6 +21,7 @@ interface CliOptions {
   adapterCwd?: string;
   connectorEndpoint: string;
   connectorEndpointExplicit: boolean;
+  observationAcquisition: "direct" | "sealed-text-menu-v2";
   managed?: { bindingPath: string; attachmentPath: string; target: ManagedTarget };
   listenPort: number;
   evidenceRoot: string;
@@ -33,6 +34,9 @@ async function main(): Promise<void> {
   const manifestPath = resolve(options.manifestPath);
   const manifest = validatePolicyManifest(JSON.parse(await readFile(manifestPath, "utf8")));
   const isManaged = "kind" in manifest.requirements.environment;
+  if (options.observationAcquisition === "sealed-text-menu-v2"
+    && (isManaged || manifest.representation.input_schema !== "sts2.player-environment/text-menu-snapshot-2"))
+    throw new Error("sealed acquisition requires a native text-menu-v2 manifest");
   if (isManaged !== Boolean(options.managed)) throw new Error("Managed manifest requires exact Managed attachment and binding arguments");
   if (isManaged && options.connectorEndpointExplicit) throw new Error("Managed Runtime cannot use a Connector endpoint");
   const artifactPath = isAbsolute(manifest.artifact.path)
@@ -86,7 +90,7 @@ async function main(): Promise<void> {
     await evidence.attestAdapter(adapter);
     const connector = managedClient ?? new ConnectorPolicyClient(
       new PlayerEnvironmentRestClient(options.connectorEndpoint, 5_000),
-      { productVersion: POLICY_RUNTIME_VERSION }
+      { productVersion: POLICY_RUNTIME_VERSION, observationAcquisition: options.observationAcquisition }
     );
     runtime = new PolicyRuntime({
       manifest,
@@ -163,7 +167,7 @@ function parseArgs(args: string[]): CliOptions {
     if (!value) throw new Error(`${key} requires a value`);
     index += 1;
     if (key === "--adapter-arg") adapterArgs.push(value);
-    else if (["--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
+    else if (["--observation-acquisition", "--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
     else throw new Error(`unknown argument: ${key}`);
   }
   const manifestPath = required(values, "--manifest");
@@ -173,6 +177,9 @@ function parseArgs(args: string[]): CliOptions {
   if (parsedEndpoint.protocol !== "http:" || !["127.0.0.1", "localhost", "::1", "[::1]"].includes(parsedEndpoint.hostname)) throw new Error("Connector endpoint must be loopback HTTP");
   const listenPort = Number(values.get("--listen-port") ?? "15527");
   if (!Number.isSafeInteger(listenPort) || listenPort < 1 || listenPort > 65535) throw new Error("--listen-port must be a valid TCP port");
+  const observationAcquisition = values.get("--observation-acquisition") ?? "direct";
+  if (observationAcquisition !== "direct" && observationAcquisition !== "sealed-text-menu-v2")
+    throw new Error("--observation-acquisition must be direct or sealed-text-menu-v2");
   const mode = values.get("--mode") ?? "human";
   if (mode !== "human" && mode !== "shadow" && mode !== "one_step" && mode !== "auto") throw new Error("--mode is invalid");
   const autoBudget = {
@@ -191,6 +198,7 @@ function parseArgs(args: string[]): CliOptions {
     }
   } : undefined;
   return {
+    observationAcquisition,
     manifestPath,
     adapterCommand,
     adapterArgs,

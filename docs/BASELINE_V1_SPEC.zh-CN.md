@@ -32,6 +32,10 @@ H/P/A是逻辑合同，不强制三个进程。BND-2现作为实施默认：共�
 
 S0的动作完整性是`text-menu-v2`当前cursor全部choices；不同cursor不是一个扁平目录。card/target selection是协议虚拟选择，native输入只在对应确认派发。初始内核继续现有Controller、request fingerprint、stale与native execute-time复验；capsule ID不产生动作权威。目标native-flat profile日后独立版本实现，不能把S0名字换掉就继承资格。
 
+当前C的完整性还包含公开对象对应关系：对不同可见牌、遗物、能力、意图、充能球或栏位执行的信息操作，必须绑定同一frame中可见的subject/owner referent及已公开描述。只给不同opaque action ID，而公开标签、主体和关系无法表达已公开差异，不足以支持模型选择；不能用私有ID embedding或任意目录下标弥补。真实同名、公开等价对象可以对称，但已公开差异必须保留。descriptor或公开对象关系变化必须更新观察依据；原生control仍由Connector独立精确保存和复验。
+
+同一次capture中的逻辑状态与当前UI呈现是不同事实。原生充能球入队可先更新逻辑队列，再更新仍可操作的UI；当前UI roster、栏位顺序、占用及实际显示文字由原生界面确定，不能要求它们先与逻辑队列相等才发布动作。两类事实保留各自来源和含义，不把新逻辑对象赋给仍显示为空的控件，也不把逻辑数值冒充实际rendered值。可见UI对象的公开身份及显示字段可形成同frame referent；未打开的hover正文仍不得预取。缺失真正必需的owner、UI成员关系或显示字段仍明确partial，差异本身不推导settling或删减C。
+
 完整范围按既有L01–64机制族、SX01–21和SC01–16固定登记：信息/预览、战斗/目标/药水、selector/父child、奖励/linked/reroll、地图、事件、商店、营火/宝箱、跨幕、终局、管理/数据/产品。教程L61为管理/专门测试条件项。适用规则是当前构建/角色/阶层可达的机制；新发现未映射机制新增明确unsupported格并扩展，不删分母、不声称穷举所有卡牌组合。source/test/build/runtime/Human/学习各列分开填写。
 
 ## 4. 三种身份与S0消费规则
@@ -43,6 +47,8 @@ S0的动作完整性是`text-menu-v2`当前cursor全部choices；不同cursor不
 - **consume ordinal**属于Agent run/segment；只在一个完整且合格的新观察成功交给模型时前进。传输重传、重复读取同capture、receipt/control事件不前进。
 
 S0采用**请求取得观察**，而非完整原生事件流：ReadCurrent取得当前公开页面；库收齐同capture的状态/C后才交模型。以白名单投影后的公开Model-state digest比较最近已消费观察；排除C/opaque身份/receipt/control。公共state未变时不重复W写入，即使capture/snapshot/control身份变化；C变了仍可用同W重新评分，动作绑定按最新实际basis。页A→B→A已实际取得时state序列确实变化，仍是新消费位置。source capture ID不同但公共观察未变，不自动制造新学习step。数据保存consume/advance布尔值，训练必须复现同规则。相同digest只复用W，每次新的capture仍重建/验证当前E、ref→row和candidate gather，不复用旧raw绑定；advance=false仍可有新的N选择/loss，不能删行。TBPTT四步计数仅计真实advance，score-only行在同chunk累计loss后统一backward。
+
+S0实际输入规格固定为`s0-admitted-policy-offers-v1`：当前Runtime端口2只把已准入、非空C的决策观察交给Model。内部等待、后继探测和终局采集全部保留为raw capture，但未offer的观察明确标为模型未消费，不进入训练W序列；离线数据只取实际offer边界。模型对空C观察的单元能力不等于当前在线端口支持。以后若引入独立无动作observe消息，必须版本化InputSpec并同时修改采集、训练与在线端口。
 
 若notice A在取得前被B超越：记录A未形成模型输入，ReadCurrent返回实际B或expected_source失败，绝不回填A。S0序列资格表示**采样取得历史连续**，不表示人类实际看见的全部瞬态历史。S0仅对已取得的当前card target/selector/info视图承诺保留。完整瞬态CaptureProfile以后必须明确逐seam的eager字段，并另获Human/真实曝光资格；不能通过轮询或编号连续补证明。
 

@@ -141,3 +141,21 @@ test("Host provenance remains unavailable without exact process-local credential
   assert.equal(result.status, "unavailable");
   assert.equal(result.error, "host_control_not_configured");
 });
+
+test("native UI preparation requires an isolated profile and preserves profile arguments", async () => {
+  const { shippedDisplayArguments } = await import("../src/runtime-probe.mjs");
+  assert.deepEqual(shippedDisplayArguments(), ["--headless", "--verbose"]);
+  assert.throws(() => shippedDisplayArguments("native-ui"), /requires_isolated/);
+  assert.throws(() => shippedDisplayArguments("other"), /unsupported/);
+  assert.throws(() => shippedDisplayArguments("native-ui", { steam: "disabled_before_platform_initialization", args: [] }), /requires_isolated/);
+  const { isolatedProfileLaunch } = await import("../src/profile-isolation.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "sts2-native-ui-profile-"));
+  try {
+    const profile = isolatedProfileLaunch(root, "prepare");
+    assert.deepEqual(shippedDisplayArguments("native-ui", profile), ["--verbose", "--force-steam=off", "--clientId=1"]);
+    assert.throws(() => shippedDisplayArguments("native-ui", { ...profile, environment: {} }), /requires_isolated/);
+    assert.throws(() => shippedDisplayArguments("native-ui", { ...profile, expected_user_data_root: os.homedir() }), /requires_isolated/);
+    const { shippedRuntimeLaunch } = await import("../src/runtime-probe.mjs");
+    assert.throws(() => shippedRuntimeLaunch({}, { displayMode: "native-ui", launchProfile: profile, extraEnvironment: { HOME: os.homedir() } }), /environment_override/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

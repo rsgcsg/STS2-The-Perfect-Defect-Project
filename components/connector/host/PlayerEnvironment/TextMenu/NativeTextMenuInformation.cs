@@ -69,6 +69,7 @@ internal static class NativeTextMenuInformation
     private static JsonNode? _tipContent;
     private static Control? _nativeTipOwner;
     private static Control? _nativeTipSource;
+    private static NativeTipEntry? _nativeTipEntry;
     private static string? _nativeTipGroup;
     private static bool _unresolvedTipSignal;
     private static readonly FieldInfo? ActiveHoverTipsField = typeof(NHoverTipSet)
@@ -108,11 +109,12 @@ internal static class NativeTextMenuInformation
         AddPileOpen(legacy, PileType.Discard, leaves);
         AddPileOpen(legacy, PileType.Exhaust, leaves);
         AddMapOpen(leaves);
-        AddRelicInspectOpen(entities, leaves);
-        AddRelicTipsOpen(entities, leaves);
-        AddOtherTipLeaves(entities, leaves);
+        var bindings = new PublicInformationBindings(legacy.Snapshot);
+        AddRelicInspectOpen(entities, leaves, bindings);
+        AddRelicTipsOpen(entities, leaves, bindings);
+        AddOtherTipLeaves(entities, leaves, bindings);
         return new NativeTextMenuInformationCapture(
-            legacy.Snapshot,
+            bindings.Page,
             RootOwnerKey(legacy),
             leaves);
     }
@@ -577,7 +579,7 @@ internal static class NativeTextMenuInformation
 
     private static void AddRelicInspectOpen(
         NativeEntityRegistry entities,
-        List<NativeTextMenuInformationLeaf> leaves)
+        List<NativeTextMenuInformationLeaf> leaves, PublicInformationBindings bindings)
     {
         NRelicInventory? inventory = NRun.Instance?.GlobalUi.RelicInventory;
         if (inventory == null || !ConnectorMod.IsNodeVisible(inventory)
@@ -590,16 +592,17 @@ internal static class NativeTextMenuInformation
                 || holder.Relic?.Model == null
                 || !holder.IsEnabled || !ConnectorMod.IsNodeVisible(holder)) continue;
             string id = entities.GetId(holder, "relic_holder");
-            string label = holder.Relic.Model.Title.GetFormattedText();
-            leaves.Add(Leaf($"inspect_relic:{id}", "relic_inspect",
-                "inspect_relic", $"Inspect {label}",
-                () => OpenRelic(holder, inventory)));
+            PlayerEnvironmentReferent? subject = bindings.Relic(entities.GetId(holder.Relic.Model, "relic"));
+            if (subject != null)
+                leaves.Add(new NativeTextMenuInformationLeaf($"inspect_relic:{id}", "relic_inspect",
+                    "inspect_relic", $"Inspect {subject.Label}", subject.ReferentId,
+                    Array.Empty<PlayerEnvironmentBoundActionArgument>(), () => OpenRelic(holder, inventory)));
         }
     }
 
     private static void AddRelicTipsOpen(
         NativeEntityRegistry entities,
-        List<NativeTextMenuInformationLeaf> leaves)
+        List<NativeTextMenuInformationLeaf> leaves, PublicInformationBindings bindings)
     {
         NRelicInventory? inventory = NRun.Instance?.GlobalUi.RelicInventory;
         if (inventory == null || !ConnectorMod.IsNodeVisible(inventory)
@@ -614,9 +617,10 @@ internal static class NativeTextMenuInformation
             IHoverTip[] tips = holder.Relic.Model.HoverTips.ToArray();
             if (tips.Length == 0) continue;
             string id = entities.GetId(holder, "relic_holder");
-            leaves.Add(Leaf($"show_relic_tips:{id}", "relic_tips",
-                "show_relic_tips", $"Show {holder.Relic.Model.Title.GetFormattedText()} tips",
-                () => OpenRelicTips(holder, inventory)));
+            PlayerEnvironmentReferent? subject = bindings.Relic(entities.GetId(holder.Relic.Model, "relic"));
+            if (subject != null)
+                leaves.Add(PublicInformationBindings.Leaf($"show_relic_tips:{id}", "relic_tips",
+                    "show_relic_tips", subject, () => OpenRelicTips(holder, inventory)));
         }
     }
 
@@ -682,55 +686,128 @@ internal static class NativeTextMenuInformation
     }
 
     private static void AddOtherTipLeaves(
-        NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves)
+        NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves,
+        PublicInformationBindings bindings)
     {
         if (ActiveHoverTipsField == null || NMapScreen.Instance?.IsOpen == true) return;
         bool noOverlay = NOverlayStack.Instance?.Peek() == null;
         NCombatRoom? room = NCombatRoom.Instance;
-        Node? cardRoot = NCapstoneContainer.Instance?.CurrentCapstoneScreen as Node
-            ?? room;
+        Node? cardRoot = NCapstoneContainer.Instance?.CurrentCapstoneScreen as Node ?? room;
         if (noOverlay && cardRoot != null)
-        {
             foreach (NCardHolder holder in VisibleNodes<NCardHolder>(cardRoot))
             {
-                if (holder.CardNode?.Visibility != ModelVisibility.Visible
-                    || holder.CardModel == null)
-                    continue;
-                AddSignalTipLeaf(entities, leaves, holder, "card_tips",
-                    Control.SignalName.FocusEntered, "Card tips");
+                if (holder.CardNode?.Visibility != ModelVisibility.Visible || holder.CardModel == null) continue;
+                AddSignalTipLeaf(entities, leaves, holder, "card_tips", Control.SignalName.FocusEntered,
+                    bindings.Card(entities.GetId(holder.CardModel, "card")));
             }
-        }
         if (noOverlay && room != null && ConnectorMod.IsNodeVisible(room)
             && NCapstoneContainer.Instance is not { InUse: true })
         {
+            // Native RemoveCreatureNode retires input ownership immediately but
+            // leaves the scene subtree rendered until its death animation completes.
+            NCreature[] currentOwners = room.CreatureNodes.ToArray();
+            NCreature[] removingOwners = room.RemovingCreatureNodes.ToArray();
             foreach (NPower power in VisibleNodes<NPower>(room))
             {
-                AddSignalTipLeaf(entities, leaves, power, "power_tips",
-                    Control.SignalName.MouseEntered, "Power tips");
+                NCreature? treeOwner = VisibleAncestor<NCreature>(power);
+                var ownerScope = NativeCreatureTipOwner.Resolve(
+                    treeOwner == null ? Array.Empty<NCreature>() : new[] { treeOwner }, currentOwners, removingOwners);
+                if (ownerScope.Scope == NativeCreatureTipOwnerScope.Retired) continue;
+                if (ownerScope.Scope != NativeCreatureTipOwnerScope.Current)
+                { bindings.Missing("power_owner"); continue; }
+                PowerModel model = power.Model;
+                if (!ReferenceEquals(model.Owner, ownerScope.Owner!.Entity)
+                    || !ReferenceEquals(room.GetCreatureNode(model.Owner), ownerScope.Owner)
+                    || !entities.TryGetExistingId(model.Owner, out string? owner))
+                { bindings.Missing("power_owner"); continue; }
+                AddSignalTipLeaf(entities, leaves, power, "power_tips", Control.SignalName.MouseEntered,
+                    bindings.Power(entities.GetId(model, "power"), owner!, model.Id.Entry,
+                        model.DisplayAmount, model.Owner.Powers.Contains(model)), owner, bindings.OwnerLabel(owner!));
             }
+            NCreature[] creatures = VisibleNodes<NCreature>(room).ToArray();
             foreach (NIntent intent in VisibleNodes<NIntent>(room))
-                AddSignalTipLeaf(entities, leaves, intent, "intent_tips",
-                    Control.SignalName.MouseEntered, "Intent tips");
-            foreach (NOrb orb in VisibleNodes<NOrb>(room))
             {
-                AddSignalTipLeaf(entities, leaves, orb, "orb_tips",
-                    Control.SignalName.FocusEntered, "Orb tips");
+                NCreature[] owners = creatures.Where(creature => creature.IntentContainer != null
+                    && ReferenceEquals(intent.GetParent(), creature.IntentContainer)).ToArray();
+                var ownerScope = NativeCreatureTipOwner.Resolve(owners, currentOwners, removingOwners);
+                if (ownerScope.Scope == NativeCreatureTipOwnerScope.Retired) continue;
+                if (ownerScope.Scope != NativeCreatureTipOwnerScope.Current
+                    || !ReferenceEquals(room.GetCreatureNode(ownerScope.Owner!.Entity), ownerScope.Owner)
+                    || !entities.TryGetExistingId(ownerScope.Owner.Entity, out string? owner))
+                { bindings.Missing("intent_owner"); continue; }
+                NIntent[] current = ownerScope.Owner.IntentContainer.GetChildren().OfType<NIntent>().ToArray();
+                int nativeOrder = Array.FindIndex(current, value => ReferenceEquals(value, intent));
+                AddSignalTipLeaf(entities, leaves, intent, "intent_tips", Control.SignalName.MouseEntered,
+                    bindings.Intent(entities.GetId(intent, "intent"), owner!, nativeOrder,
+                        current.Length, nativeOrder >= 0), owner, bindings.OwnerLabel(owner!));
+            }
+            foreach (NCreature ownerNode in creatures)
+            {
+                NOrbManager? manager = ownerNode.OrbManager;
+                if (manager == null || !ConnectorMod.IsNodeVisible(manager)) continue;
+                var ownerScope = NativeCreatureTipOwner.Resolve(new[] { ownerNode }, currentOwners, removingOwners);
+                if (ownerScope.Scope == NativeCreatureTipOwnerScope.Retired) continue;
+                if (ownerScope.Scope != NativeCreatureTipOwnerScope.Current
+                    || !ReferenceEquals(room.GetCreatureNode(ownerNode.Entity), ownerNode)
+                    || !entities.TryGetExistingId(ownerNode.Entity, out string? owner))
+                { bindings.Missing("orb_owner"); continue; }
+                Control focus = manager.DefaultFocusOwner;
+                NOrb? anchor = focus as NOrb;
+                Node? container = anchor?.GetParent();
+                NativeOrbRosterResult<NOrb> roster = NativeOrbRoster.Capture(anchor,
+                    ReferenceEquals(focus, ownerNode.Hitbox),
+                    node => ConnectorMod.IsLiveNode(node) && ReferenceEquals(node.GetParent(), container)
+                        && ReferenceEquals(VisibleAncestor<NOrbManager>(node), manager),
+                    node => node.GetNodeOrNull<NOrb>(node.FocusNeighborLeft),
+                    node => node.GetNodeOrNull<NOrb>(node.FocusNeighborRight));
+                if (roster.Error != null)
+                {
+                    bindings.Missing("orb_navigation_unresolved");
+                    continue;
+                }
+                for (int slot = 0; slot < roster.Nodes.Count; slot++)
+                {
+                    NOrb orb = roster.Nodes[slot];
+                    if (!ConnectorMod.IsNodeVisible(orb) || !orb.IsEnabled) continue;
+                    PlayerEnvironmentReferent? subject;
+                    if (orb.Model is { } model)
+                    {
+                        var passive = orb.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%PassiveAmount");
+                        var evoke = orb.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%EvokeAmount");
+                        bool passiveVisible = passive != null && ConnectorMod.IsNodeVisible(passive);
+                        bool evokeVisible = evoke != null && ConnectorMod.IsNodeVisible(evoke);
+                        subject = bindings.OrbPresentation(entities.GetId(orb, "orb_slot"), owner!, model.Id.Entry,
+                            ConnectorMod.SafeGetText(() => model.Title), slot, roster.Nodes.Count,
+                            passive != null && evoke != null, passiveVisible, passiveVisible ? passive!.Text : null,
+                            evokeVisible, evokeVisible ? evoke!.Text : null);
+                    }
+                    else
+                        subject = bindings.EmptyOrb(entities.GetId(orb, "orb_slot"), owner!, slot, roster.Nodes.Count);
+                    AddSignalTipLeaf(entities, leaves, orb, "orb_tips", Control.SignalName.FocusEntered,
+                        subject, owner, bindings.OwnerLabel(owner!));
+                }
             }
         }
         NTopBar? topbar = NRun.Instance?.GlobalUi.TopBar;
-        if (topbar != null && ConnectorMod.IsNodeVisible(topbar)
-            && CanUseTopBarWithCurrentOverlay()
+        if (topbar != null && ConnectorMod.IsNodeVisible(topbar) && CanUseTopBarWithCurrentOverlay()
             && NCapstoneContainer.Instance is not { InUse: true })
-        {
-            foreach (Control control in new Control[]
-                     { topbar.Deck, topbar.Map, topbar.FloorIcon,
-                         topbar.BossIcon, topbar.Gold, topbar.Hp })
+            foreach (var (control, role) in new (Control, string)[]
+                { (topbar.Deck, "deck"), (topbar.Map, "map"), (topbar.FloorIcon, "floor"),
+                  (topbar.BossIcon, "boss"), (topbar.Gold, "gold"), (topbar.Hp, "hp") })
+            {
+                if (!ConnectorMod.IsNodeVisible(control) || control is NClickableControl { IsEnabled: false }) continue;
                 AddSignalTipLeaf(entities, leaves, control, "topbar_tips",
-                    control is NClickableControl
-                        ? Control.SignalName.FocusEntered
-                        : Control.SignalName.MouseEntered,
-                    "Top bar tips", allowRewardOverlay: true);
-        }
+                    control is NClickableControl ? Control.SignalName.FocusEntered : Control.SignalName.MouseEntered,
+                    bindings.Topbar(entities.GetId(control, "topbar_control"), role), allowRewardOverlay: true);
+            }
+    }
+
+    private static T? VisibleAncestor<T>(Node source) where T : Control
+    {
+        Node? current = source.GetParent();
+        for (int depth = 0; current != null && depth < 64; depth++, current = current.GetParent())
+            if (current is T result && ConnectorMod.IsNodeVisible(result)) return result;
+        return null;
     }
 
     private static IEnumerable<T> VisibleNodes<T>(Node root) where T : Control
@@ -741,6 +818,9 @@ internal static class NativeTextMenuInformation
         while (queue.Count != 0 && visited++ < 2048)
         {
             Node node = queue.Dequeue();
+            // A queued-for-deletion ancestor has retired its complete subtree,
+            // even if descendants have not individually been queued yet.
+            if (!ConnectorMod.IsLiveNode(node)) continue;
             if (node is T typed && ConnectorMod.IsNodeVisible(typed))
                 yield return typed;
             foreach (Node child in node.GetChildren()) queue.Enqueue(child);
@@ -752,14 +832,15 @@ internal static class NativeTextMenuInformation
 
     private static void AddSignalTipLeaf(
         NativeEntityRegistry entities, List<NativeTextMenuInformationLeaf> leaves,
-        Control source, string group, StringName signal, string label,
-        bool allowRewardOverlay = false)
+        Control source, string group, StringName signal, PlayerEnvironmentReferent? subject,
+        string? owner = null, string? ownerLabel = null, bool allowRewardOverlay = false)
     {
         if (!ConnectorMod.IsNodeVisible(source)) return;
         if (source is NClickableControl clickable && !clickable.IsEnabled) return;
+        if (subject == null) return; // Binding owner marked the required catalog partial.
         string id = entities.GetId(source, "tip_source");
-        leaves.Add(Leaf($"show_{group}:{id}", group, $"show_{group}", label,
-            () => OpenSignalTip(source, group, signal, allowRewardOverlay)));
+        leaves.Add(PublicInformationBindings.Leaf($"show_{group}:{id}", group, $"show_{group}", subject,
+            () => OpenSignalTip(source, group, signal, allowRewardOverlay), owner, ownerLabel));
     }
 
     private static NativeInputResult OpenSignalTip(
@@ -776,6 +857,11 @@ internal static class NativeTextMenuInformation
             || NMapScreen.Instance?.IsOpen == true)
             return NativeInputResult.Rejected("native_tip_owner_changed",
                 "The exact visible tip source or native tip registry is unavailable.");
+        NativeTipEntry? entry = signal == Control.SignalName.FocusEntered ? NativeTipEntry.Focus
+            : signal == Control.SignalName.MouseEntered ? NativeTipEntry.Mouse : null;
+        if (entry == null)
+            return NativeInputResult.Rejected("native_tip_signal_unsupported",
+                "Only the declared native focus or mouse entry may open tips.");
         var before = active.ToDictionary(pair => pair.Key, pair => pair.Value);
         source.EmitSignal(signal);
         var changed = active.Where(pair =>
@@ -799,6 +885,7 @@ internal static class NativeTextMenuInformation
         _ownedKind = group;
         _nativeTipOwner = owner;
         _nativeTipSource = source;
+        _nativeTipEntry = entry;
         _nativeTipGroup = group;
         _tipContent = ReadRenderedTips(set);
         return NativeInputResult.Delivered("native focus/hover signal; exact rendered tip set");
@@ -808,47 +895,33 @@ internal static class NativeTextMenuInformation
     {
         Node? textContainer = set.GetNodeOrNull<Node>("textHoverTipContainer");
         Node? cardContainer = set.GetNodeOrNull<Node>("cardHoverTipContainer");
-        if (textContainer == null || cardContainer == null) return null;
-        var texts = new JsonArray();
-        foreach (Node entry in textContainer.GetChildren())
+        return RenderedNativeTips.Capture(textContainer?.GetChildren(), cardContainer?.GetChildren(),
+            ReadRenderedTextTip, ReadRenderedCardTip);
+    }
+
+    private static JsonObject? ReadRenderedTextTip(Node entry)
+    {
+        if (entry is not Control visibleText || !ConnectorMod.IsNodeVisible(visibleText)) return null;
+        var title = entry.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%Title");
+        var description = entry.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%Description");
+        if (description == null) return null;
+        return new JsonObject
         {
-            if (entry is not Control visibleText
-                || !ConnectorMod.IsNodeVisible(visibleText))
-                return null;
-            var title = entry.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%Title");
-            var description = entry.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%Description");
-            if (description == null) return null;
-            texts.Add(new JsonObject
-            {
-                ["title"] = title != null && ConnectorMod.IsNodeVisible(title)
-                    ? title.Text : null,
-                ["description"] = description.Text
-            });
-        }
-        var cards = new JsonArray();
-        foreach (Node entry in cardContainer.GetChildren())
-        {
-            if (entry is not Control control || !ConnectorMod.IsNodeVisible(control))
-                return null;
-            NCard? card = control.GetNodeOrNull<NCard>("%Card");
-            if (card == null || !ConnectorMod.IsNodeVisible(card)
-                || card.Visibility != ModelVisibility.Visible)
-                return null;
-            var title = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%TitleLabel");
-            var cost = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%EnergyLabel");
-            var description = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%DescriptionLabel");
-            if (title == null || cost == null || description == null)
-                return null;
-            cards.Add(new JsonObject
-            {
-                ["title"] = title.Text,
-                ["cost"] = cost.Text,
-                ["description"] = description.Text
-            });
-        }
-        return texts.Count + cards.Count > 0
-            ? new JsonObject { ["text_tips"] = texts, ["card_previews"] = cards }
-            : null;
+            ["title"] = title != null && ConnectorMod.IsNodeVisible(title) ? title.Text : null,
+            ["description"] = description.Text
+        };
+    }
+
+    private static JsonObject? ReadRenderedCardTip(Node entry)
+    {
+        if (entry is not Control control || !ConnectorMod.IsNodeVisible(control)) return null;
+        NCard? card = control.GetNodeOrNull<NCard>("%Card");
+        if (card == null || !ConnectorMod.IsNodeVisible(card) || card.Visibility != ModelVisibility.Visible) return null;
+        var title = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%TitleLabel");
+        var cost = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%EnergyLabel");
+        var description = card.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%DescriptionLabel");
+        if (title == null || cost == null || description == null) return null;
+        return new JsonObject { ["title"] = title.Text, ["cost"] = cost.Text, ["description"] = description.Text };
     }
 
     private static (IReadOnlyList<JsonNode> Rendered, int Unresolved) ReadPassiveHoverFacts()
@@ -1225,9 +1298,16 @@ internal static class NativeTextMenuInformation
         }
         if (screen is NHoverTipSet && (_nativeTipOwner ?? _tipOwner) is { } tipOwner)
         {
-            NHoverTipSet.Remove(tipOwner);
-            ClearOwner();
-            return NativeInputResult.Delivered("NHoverTipSet.Remove; exact relic tip closed");
+            Control? source = _nativeTipSource;
+            NativeTipEntry? entry = _nativeTipEntry;
+            return NativeTipReturn.Close(source != null || entry != null,
+                () => ReferenceEquals(_ownedScreen, screen) && IsExactOwner(screen, kind),
+                () => source != null && entry != null
+                    && ReferenceEquals(_nativeTipSource, source) && _nativeTipEntry == entry
+                    && ConnectorMod.IsLiveNode(source) && ConnectorMod.IsNodeVisible(source),
+                () => source!.EmitSignal(entry == NativeTipEntry.Focus
+                    ? Control.SignalName.FocusExited : Control.SignalName.MouseExited),
+                () => NHoverTipSet.Remove(tipOwner), ClearOwner);
         }
         NCapstoneContainer.Instance!.Close();
         if (ReferenceEquals(NCapstoneContainer.Instance?.CurrentCapstoneScreen, screen))
@@ -1274,6 +1354,7 @@ internal static class NativeTextMenuInformation
         _tipContent = null;
         _nativeTipOwner = null;
         _nativeTipSource = null;
+        _nativeTipEntry = null;
         _nativeTipGroup = null;
         _unresolvedTipSignal = false;
     }

@@ -8,3 +8,4 @@ export * from "./textMenu.js";
 export * from "./textMenuV2.js";
 export * from "./visibleState.js";
 export type { JsonObject, JsonValue } from "./json.js";
+export * from "./sealedObservation.js";

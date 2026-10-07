@@ -20,7 +20,9 @@
         "sdk/typescript/src/rewardPage.ts",
         "sdk/typescript/src/textMenu.ts",
         "sdk/typescript/src/textMenuV2.ts",
-        "host/PlayerEnvironment/Protocol/TextMenuContracts.cs"
+        "host/PlayerEnvironment/Protocol/TextMenuContracts.cs",
+        "sdk/typescript/src/sealedObservation.ts",
+        "host/PlayerEnvironment/Protocol/SealedObservationContracts.cs"
       ]
     },
     "host-runtime": {
@@ -31,7 +33,8 @@
         "src/host-execution-profile.mjs",
         "consumers/python/sts2_headless",
         "src/workstation-api.mjs",
-        "src/game-processes.mjs"
+        "src/game-processes.mjs",
+        "src/shipped-player-environment.mjs"
       ]
     },
     "annotator": {

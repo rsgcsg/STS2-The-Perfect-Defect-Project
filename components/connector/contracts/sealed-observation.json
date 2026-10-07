@@ -1,0 +1,34 @@
+{
+  "read_profile": "text-menu-v2-sealed-1",
+  "input_profile": "text-menu-v2",
+  "scope": "sampled_public_text_menu_v2_current_cursor",
+  "creates_mutation_authority": false,
+  "schemas": {
+    "capabilities": "sts2.player-environment/sealed-observation-capabilities-1",
+    "capture": "sts2.player-environment/sealed-observation-1",
+    "chunk": "sts2.player-environment/sealed-observation-chunk-1",
+    "release": "sts2.player-environment/sealed-observation-release-1"
+  },
+  "routes": {
+    "capabilities": "GET /api/player-environment/sealed-observation/capabilities",
+    "current": "GET /api/player-environment/sealed-observation/current",
+    "read": "GET /api/player-environment/sealed-observation/read",
+    "release": "POST /api/player-environment/sealed-observation/release"
+  },
+  "limits": {
+    "max_capsule_bytes": 8388608,
+    "max_retained_bytes": 67108864,
+    "max_capsules": 32,
+    "ttl_ms": 120000,
+    "default_chunk_bytes": 65536,
+    "min_chunk_bytes": 1024,
+    "max_chunk_bytes": 1048576
+  },
+  "capture_fields": ["schema", "read_profile", "input_profile", "capture_id", "source_snapshot_id", "session", "generation_id", "game_continuity_id", "captured_at", "expires_at", "total_bytes", "sha256", "first_cursor", "capture_ordinal"],
+  "chunk_fields": ["schema", "capture_id", "sha256", "offset", "total_bytes", "data_base64", "next_cursor", "end"],
+  "release_fields": ["schema", "capture_id", "released"],
+  "native_capture": "Only ReadCurrent captures. Serialization of public Snapshot occurs synchronously on the game main thread. ReadSealed and Release access bytes only.",
+  "capture_ordinal": "Sealed capture attempts only, including failure. Not a global native capture count.",
+  "expiry": "Monotonic retention; wall-clock expires_at is diagnostic.",
+  "model_readiness": "GetFull validates complete bytes and public schema. Consumer gates Snapshot/menu/input completeness before Model inference."
+}

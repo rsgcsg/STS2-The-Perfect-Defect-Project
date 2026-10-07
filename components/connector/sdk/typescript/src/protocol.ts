@@ -76,6 +76,14 @@ const clientRegistrationSchema = z.object({
   controller: controlLeaseSchema.nullable().optional()
 }).strict();
 
+const controlSnapshotSchema = z.object({
+  protocol_version: z.literal(SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL),
+  schema: z.literal("sts2.player-environment/control-1"),
+  runtime_instance_id: z.string().min(1),
+  clients: z.array(controlClientSchema),
+  controller: controlLeaseSchema.nullable().optional()
+}).strict();
+
 const controllerLeaseResponseSchema = z.object({
   protocol_version: z.literal(SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL),
   schema: z.literal("sts2.player-environment/control-1"),
@@ -390,6 +398,10 @@ export interface PlayerEnvironmentReceipt {
 
 export type PlayerEnvironmentReadResponse = z.infer<typeof readResponseSchema>;
 
+/** Canonical GET status route; control commands remain subroutes of this resource. */
+export const PLAYER_ENVIRONMENT_CONTROL_ROUTE = "/api/player-environment/controller" as const;
+export type PlayerEnvironmentControlSnapshot = z.infer<typeof controlSnapshotSchema>;
+
 export interface PlayerEnvironmentClientRegistration {
   protocol_version: typeof SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL;
   schema: "sts2.player-environment/control-1";
@@ -429,6 +441,9 @@ export function decodePlayerReceipt(value: unknown): DecodedPlayerPayload<Player
 }
 export function decodePlayerRead(value: unknown): DecodedPlayerPayload<PlayerEnvironmentReadResponse> {
   return decode<PlayerEnvironmentReadResponse>(value, readResponseSchema, "Player Environment read");
+}
+export function decodePlayerControlSnapshot(value: unknown): DecodedPlayerPayload<PlayerEnvironmentControlSnapshot> {
+  return decode<PlayerEnvironmentControlSnapshot>(value, controlSnapshotSchema, "Player Environment control snapshot");
 }
 export function decodePlayerClientRegistration(value: unknown): DecodedPlayerPayload<PlayerEnvironmentClientRegistration> {
   return decode<PlayerEnvironmentClientRegistration>(value, clientRegistrationSchema, "Player Environment client registration");

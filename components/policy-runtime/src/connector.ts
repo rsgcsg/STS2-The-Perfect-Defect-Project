@@ -22,6 +22,7 @@ export interface ConnectorPolicyClientOptions {
   productName?: string;
   productVersion?: string;
   clientInstanceId?: string;
+  observationAcquisition?: "direct" | "sealed-text-menu-v2";
 }
 
 type ActiveController = { session: ControllerSession; bridge: ControllerControlBridge };
@@ -29,9 +30,17 @@ type ActiveController = { session: ControllerSession; bridge: ControllerControlB
 export class ConnectorPolicyClient implements PolicyConnector {
   private capabilitiesValue?: Awaited<ReturnType<ConnectorAdapterClient["capabilities"]>>["data"];
   private controller?: ActiveController;
+  private readonly sealedTextMenuV2: boolean;
   private readonly options: Required<Pick<ConnectorPolicyClientOptions, "productId" | "productName" | "productVersion">> & Pick<ConnectorPolicyClientOptions, "clientInstanceId">;
 
   constructor(private readonly client: ConnectorAdapterClient, options: ConnectorPolicyClientOptions = {}) {
+    if (options.observationAcquisition !== undefined
+      && options.observationAcquisition !== "direct"
+      && options.observationAcquisition !== "sealed-text-menu-v2")
+      throw new Error("invalid_observation_acquisition");
+    this.sealedTextMenuV2 = options.observationAcquisition === "sealed-text-menu-v2";
+    if (this.sealedTextMenuV2 && !client.getFullTextMenuV2)
+      throw new Error("sealed_text_menu_v2_client_unsupported");
     this.options = {
       productId: options.productId ?? "sts2-policy-runtime",
       productName: options.productName ?? "STS2 Policy Runtime",
@@ -51,13 +60,17 @@ export class ConnectorPolicyClient implements PolicyConnector {
   }
 
   async observeBundle(requiredReadKinds: readonly string[], inputProfile?: TextInputProfile): Promise<AnyDecisionBundle> {
+    if (this.sealedTextMenuV2 && inputProfile !== "text-menu-v2")
+      throw new Error("sealed_acquisition_requires_text_menu_v2");
     if (inputProfile === "text-menu-v1") {
       if (requiredReadKinds.length !== 0) throw new Error("text_menu_reads_unsupported");
       return { observation: (await this.client.observeTextMenu()).data, reads: [] };
     }
     if (inputProfile === "text-menu-v2") {
       if (requiredReadKinds.length !== 0) throw new Error("text_menu_reads_unsupported");
-      return { observation: (await this.client.observeTextMenuV2()).data, reads: [] };
+      return { observation: this.sealedTextMenuV2
+        ? (await this.client.getFullTextMenuV2!()).context.snapshot
+        : (await this.client.observeTextMenuV2()).data, reads: [] };
     }
     const observation = (await this.client.observe()).data;
     const required = new Set(requiredReadKinds);
@@ -86,6 +99,10 @@ export class ConnectorPolicyClient implements PolicyConnector {
   }
 
   async observeTextMenuContext(inputProfile: TextInputProfile = "text-menu-v1") {
+    if (this.sealedTextMenuV2) {
+      if (inputProfile !== "text-menu-v2") throw new Error("sealed_acquisition_requires_text_menu_v2");
+      return (await this.client.getFullTextMenuV2!()).context;
+    }
     return inputProfile === "text-menu-v2"
       ? (await this.client.observeTextMenuV2Context()).data
       : (await this.client.observeTextMenuContext()).data;

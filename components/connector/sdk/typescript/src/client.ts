@@ -1,3 +1,10 @@
+import {
+  SEALED_OBSERVATION_ROUTE, assembleSealedTextMenuV2, validateSealedChunkLimit,
+  decodeSealedObservationCapabilities, decodeSealedObservationCapture,
+  decodeSealedObservationChunk, decodeSealedObservationRelease,
+  type SealedObservationCapabilities, type SealedObservationCapture,
+  type SealedObservationChunk, type SealedObservationRelease, type FullTextMenuV2Observation
+} from "./sealedObservation.js";
 import { isJsonObject, type JsonObject } from "./json.js";
 import {
   ORDINARY_REWARD_PAGE_PROFILE,
@@ -31,6 +38,9 @@ import {
   type TextMenuV2ActionResult, type TextMenuV2ObservationContext
 } from "./textMenuV2.js";
 import {
+  PLAYER_ENVIRONMENT_CONTROL_ROUTE,
+  decodePlayerControlSnapshot,
+  type PlayerEnvironmentControlSnapshot,
   decodePlayerClientRegistration,
   decodePlayerCapabilities,
   decodePlayerControllerLeaseResponse,
@@ -116,6 +126,44 @@ export class PlayerEnvironmentRestClient {
   async observeTextMenuV2Context(): Promise<DecodedPlayerPayload<TextMenuV2ObservationContext>> {
     return decodeTextMenuV2ObservationContext(await this.get(
       `/api/player-environment/text-menu/observation-context?input_profile=${TEXT_MENU_V2_PROFILE}`));
+  }
+
+  async sealedObservationCapabilities(): Promise<DecodedPlayerPayload<SealedObservationCapabilities>> {
+    return decodeSealedObservationCapabilities(await this.get(`${SEALED_OBSERVATION_ROUTE}/capabilities`));
+  }
+
+  async readCurrent(input: { expectedSnapshotId?: string } = {}): Promise<DecodedPlayerPayload<SealedObservationCapture>> {
+    const query = new URLSearchParams({ input_profile: TEXT_MENU_V2_PROFILE });
+    if (input.expectedSnapshotId !== undefined) query.set("expected_snapshot_id", input.expectedSnapshotId);
+    const capture = decodeSealedObservationCapture(await this.get(`${SEALED_OBSERVATION_ROUTE}/current?${query}`));
+    if (input.expectedSnapshotId !== undefined && capture.data.source_snapshot_id !== input.expectedSnapshotId)
+      throw new PlayerEnvironmentHttpError("Sealed capture does not match the requested snapshot");
+    return capture;
+  }
+
+  async readSealed(input: { captureId: string; cursor: string; maxBytes?: number }): Promise<DecodedPlayerPayload<SealedObservationChunk>> {
+    if (input.maxBytes !== undefined) validateSealedChunkLimit(input.maxBytes);
+    const query = new URLSearchParams({ capture_id: input.captureId, cursor: input.cursor });
+    if (input.maxBytes !== undefined) query.set("max_bytes", String(input.maxBytes));
+    return decodeSealedObservationChunk(await this.get(`${SEALED_OBSERVATION_ROUTE}/read?${query}`));
+  }
+
+  async releaseSealed(captureId: string): Promise<DecodedPlayerPayload<SealedObservationRelease>> {
+    const result = decodeSealedObservationRelease(await this.post(`${SEALED_OBSERVATION_ROUTE}/release`, { capture_id: captureId }));
+    if (result.data.capture_id !== captureId) throw new PlayerEnvironmentHttpError("Sealed release capture ID mismatch");
+    return result;
+  }
+
+  async getFullTextMenuV2(input: { expectedSnapshotId?: string; maxBytes?: number } = {}): Promise<FullTextMenuV2Observation> {
+    if (input.maxBytes !== undefined) validateSealedChunkLimit(input.maxBytes);
+    const capture = (await this.readCurrent(input)).data;
+    try {
+      return await assembleSealedTextMenuV2(capture, this, input.maxBytes);
+    } finally {
+      // Idempotent best-effort retention cleanup cannot invalidate already verified bytes
+      // or replace the original acquisition failure. TTL still bounds failed cleanup.
+      await this.releaseSealed(capture.capture_id).catch(() => undefined);
+    }
   }
 
   async read(readId: string, expectedSnapshotId: string): Promise<DecodedPlayerPayload<PlayerEnvironmentReadResponse>> {
@@ -240,6 +288,11 @@ export class PlayerEnvironmentRestClient {
   async textMenuV2Result(requestId: string): Promise<DecodedPlayerPayload<TextMenuV2ActionResult>> {
     return decodeTextMenuV2ActionResult(await this.get(
       `/api/player-environment/actions/${encodeURIComponent(requestId)}?input_profile=${TEXT_MENU_V2_PROFILE}`));
+  }
+
+  /** Read current ownership; omitted/null controller means no held lease. */
+  async controlSnapshot(): Promise<DecodedPlayerPayload<PlayerEnvironmentControlSnapshot>> {
+    return decodePlayerControlSnapshot(await this.get(PLAYER_ENVIRONMENT_CONTROL_ROUTE));
   }
 
   async registerClient(input: {

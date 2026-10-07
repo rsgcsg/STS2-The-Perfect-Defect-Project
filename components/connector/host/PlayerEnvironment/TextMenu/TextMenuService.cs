@@ -49,7 +49,9 @@ internal static partial class PlayerEnvironmentService
                 TextMenuFrame frame = NativeTextMenuFrameBuilder.Capture(native, Entities,
                     binding => StartPlayerEnvironmentInput(
                         native, binding.NativeAction, binding.ExactOperands));
-                return includeSemanticCardPlays ? AttachSemanticCardPlays(native, frame) : frame;
+                if (!includeSemanticCardPlays) return frame;
+                frame = frame with { Page = TextMenuV2Visibility.Sanitize(frame.Page) };
+                return AttachSemanticCardPlays(native, frame);
             },
             run => Entities.GetId(run, "run"));
     }

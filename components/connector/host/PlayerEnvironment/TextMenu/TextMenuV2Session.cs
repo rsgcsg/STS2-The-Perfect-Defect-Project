@@ -40,9 +40,9 @@ internal sealed class TextMenuV2Session
             frame.Page.Status, frame.Page.Persistent, frame.Page.Interaction,
             frame.Page.Referents, frame.Page.Completeness,
             leaves = frame.Leaves.Select(leaf => new
-            { leaf.Key, leaf.Group, leaf.Verb, leaf.SubjectReferentId, leaf.Arguments }),
+            { leaf.Key, leaf.Group, leaf.Verb, leaf.Label, leaf.SubjectReferentId, leaf.Arguments }),
             cardPlays = frame.CardPlays.Select(leaf => new
-            { leaf.Key, leaf.Verb, leaf.SubjectReferentId, leaf.Arguments }),
+            { leaf.Key, leaf.Verb, leaf.Label, leaf.SubjectReferentId, leaf.Arguments }),
             frame.CardPlayCatalogComplete
         });
         if (sourceIdentity != source)

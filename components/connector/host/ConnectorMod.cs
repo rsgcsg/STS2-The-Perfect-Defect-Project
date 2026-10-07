@@ -1,3 +1,4 @@
+using STS2Connector.PlayerEnvironment.Protocol;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -21,7 +22,7 @@ namespace STS2Connector;
 #endif
 public static partial class ConnectorMod
 {
-    public const string Version = "1.3.0-rc.6";
+    public const string Version = "1.3.0-rc.14";
     public const int DefaultPort = 15526;
     internal const string ConfigFileName = "STS2_MCP.conf";
     internal const string PortEnvironmentVariable = "STS2_CONNECTOR_PORT";
@@ -315,6 +316,10 @@ public static partial class ConnectorMod
                     HandleGetTextMenuObservationContext(request, response);
                 else
                     SendError(response, 405, "Method not allowed");
+            }
+            else if (path.StartsWith(SealedObservationContract.Route + "/", StringComparison.Ordinal))
+            {
+                HandleSealedObservation(path[(SealedObservationContract.Route.Length + 1)..], request, response);
             }
             else if (path.StartsWith("/api/player-environment/reads/", StringComparison.Ordinal))
             {

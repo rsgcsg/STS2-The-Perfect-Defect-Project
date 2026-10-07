@@ -374,3 +374,17 @@ submits another action. Exhaustion or identity drift still fails closed. Initial
 settling frames do not terminate Auto; unsupported stable surfaces still hand off.
 These changes require a newly pinned package before live use; rc.4 artifacts remain
 immutable and do not acquire this behavior from a source edit.
+
+### Sealed public observation acquisition
+
+Native text-menu-v2 callers may opt into
+`--observation-acquisition sealed-text-menu-v2` (or the matching
+`ConnectorPolicyClient` option). The Connector SDK assembles and verifies one
+immutable public Snapshot capsule before Runtime admission. Acquisition failure
+propagates without a direct-read fallback. Other profiles and Managed sessions
+reject this option; existing direct acquisition remains the default.
+
+This transport does not change input timing: the current stateful port offers
+only admitted, interactive, nonempty action menus. Internal waits and successor
+observations are not Model inputs. A sampled-offer dataset must retain that
+distinction and must not reconstruct Model history from every transport capture.
