@@ -127,10 +127,12 @@ def main(argv: list[str] | None = None) -> int:
             "one_step",
             "auto",
             "stop",
+            "reconcile",
         ),
         help="local model action; generation changes require a stopped Workbench",
     )
     parser.add_argument("--credential-file", type=Path)
+    parser.add_argument("--request-id", help="exact original pending native Runtime request ID")
     parser.add_argument(
         "--tool-directory", type=Path, help="absolute public CollectionTool directory"
     )
@@ -191,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.action,
                     selection=args.selection,
                     artifact=args.artifact,
+                    request_id=args.request_id,
                     runtime_archive=args.runtime_archive,
                     runtime_profile=args.runtime_profile,
                     expected_active_sha256=args.expected_active_sha256,

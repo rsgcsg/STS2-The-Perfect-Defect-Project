@@ -88,6 +88,33 @@ public sealed class NativeLogicalFamilyPublicationTests
         Assert.Equal(new[] { "1", "2", "3", "4" }, new[] { first, opened, closing, returned }.Select(e => e.Event.PublicationIndex));
     }
     [Fact]
+    public void VisibleCloseFreezesSurvivingBackstopCatalogBeforeActualDelayedDeckReturn()
+    {
+        using var fixture = new Fixture();
+        var initial = fixture.Next(fixture.Subscription.StartingCursor, 1);
+        fixture.Frame = MakeFrame("inspect", true) with { Leaves = new[]
+        {
+            new TextMenuLeaf("return_card_inspect", "root", "return_card_inspect", "Close card inspection", null,
+                Array.Empty<PlayerEnvironmentBoundActionArgument>(), () => NativeInputResult.Delivered("native_close"))
+        } };
+        fixture.Owner.Publish("native_information_owner", "Close_returned");
+        var withdrawal = fixture.Next(initial.Event.Cursor, 2);
+        Assert.Equal("available", withdrawal.Availability);
+        Assert.Equal("complete", fixture.Observe(withdrawal).Completeness.Status);
+        Assert.Equal("return_card_inspect", Assert.Single(fixture.Owner.Store.Catalog(withdrawal.Event.CaptureRef!).Actions).Verb);
+        object inspect = new(), context = new();
+        using var witness = ConnectorNativeLogicalInspectionDeparture.Begin(inspect, inspect, inspect, context, true, true, true);
+        fixture.Frame = MakeFrame("deck", true);
+        bool accounted = fixture.Owner.PublishTracked("native_information_owner", "information_context_update_returned");
+        ConnectorNativeLogicalInspectionDeparture.ContextReturned(context, accounted);
+        Assert.Equal(InspectionDepartureDisposition.ExistingContextPublication, witness!.Returned(inspect, inspect, true, false, false));
+        var returned = fixture.Next(withdrawal.Event.Cursor, 3);
+        Assert.Equal("deck", fixture.Observe(returned).Interaction!.Content.Surface["kind"]!.GetValue<string>());
+        Assert.Equal("return_card_inspect", Assert.Single(fixture.Owner.Store.Catalog(withdrawal.Event.CaptureRef!).Actions).Verb);
+        Assert.Equal(new[] { "1", "2", "3" }, new[] { initial, withdrawal, returned }.Select(value => value.Event.PublicationIndex));
+    }
+
+    [Fact]
     public void IncompleteRewardSourceAndFailedRefreshKeepOriginalMissingPositionsWithoutRecapture()
     {
         using var fixture = new Fixture();

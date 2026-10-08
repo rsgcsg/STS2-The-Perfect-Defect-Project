@@ -561,7 +561,7 @@ test("card reward alternatives cannot use visual position as the native callback
   const alternatives = sourceBetween(
     reader,
     "private static NCardRewardAlternativeButton[] AlternativeButtons",
-    "private static bool IsHolderClickable"
+    "internal static bool IsHolderClickable"
   );
 
   // Equal labels and counts still permit opposite visual positions. The native

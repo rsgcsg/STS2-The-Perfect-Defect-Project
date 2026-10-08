@@ -12,6 +12,12 @@ from .agent_run_evidence import (
     detect_agent_run_type,
     verify_agent_run_evidence,
 )
+from .agent_session_run_evidence import (
+    AgentSessionRunEvidence,
+    AgentSessionRunEvidenceVerifier,
+    detect_agent_session_run_type,
+    verify_agent_session_run_evidence,
+)
 from .human_session_bundle import (
     HumanSessionBundle,
     HumanSessionBundleV2,
@@ -79,10 +85,13 @@ __all__ = [
     "reconcile_and_drain",
     "AgentRunEvidence",
     "AgentRunEvidenceVerifier",
+    "AgentSessionRunEvidence",
+    "AgentSessionRunEvidenceVerifier",
     "ContentAddressedStore",
     "DirectoryReceiver",
     "DirectoryTransferManifest",
     "detect_agent_run_type",
+    "detect_agent_session_run_type",
     "HumanSessionBundle",
     "HumanSessionBundleV2",
     "HumanSessionBundleV3",
@@ -98,6 +107,7 @@ __all__ = [
     "VerifierDescriptor",
     "VerifierRegistry",
     "verify_agent_run_evidence",
+    "verify_agent_session_run_evidence",
     "load_collection_profile",
     "verify_human_session_bundle",
 ]

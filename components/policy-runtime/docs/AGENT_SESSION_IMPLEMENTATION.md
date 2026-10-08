@@ -1,5 +1,80 @@
 # E3 Agent session implementation checkpoint
 
+## Current native integration candidate (2026-10-08)
+
+Dependency base `f89a5267f43ea206fe39d081f5fd5d3643953ca8` includes independently
+accepted SDK `651f9cbd163d177805fa641ca0f05b8dcb424877`. The actual native branch
+now runs through `PolicyRuntime.forAgent`, the shared lifecycle owner, existing
+HTTP service and explicit CLI manifest discriminator. It owns one registration
+and controller, passive atomic Attach/Events, serial full-reference input,
+descriptor-only scoped queries, consume/ack watermarks, cancellable Await,
+deadline/Stop, exact original-request reconciliation and typed append-only events.
+The details below are historical source checkpoints, not current missing work.
+
+Initial `8ef88c13` canonical component check: TypeScript, 298 required tests, build and
+deterministic package check pass. The package check's installed CPU smoke covers
+legacy profiles and reports `game_contact:false`. Newly added external-fixture
+tests are separately enabled: producer export requires `E3_NATIVE_FIXTURE_OUTPUT`;
+numerical interop requires Python/PYTHONPATH/an exact private Model package.
+Producer export was executed and its actual 15 events independently checked by
+the application verifier. Numerical interop was executed against initialized
+Model candidate `73b40366c34ec34af71bbdb6abc6ac64fc799468`: real SDK/HTTP/Runtime/
+stdio Consume+ACK, all-three-candidate Shadow scoring, Human epoch change,
+opaque ExportState and OneStep/one native HTTP submit pass. This is synthetic
+source/test transport with an initialized numerical Model; no fresh numerical
+Restore parity, training, provider, game, loaded, Human or G2/V1 qualification.
+
+Remaining limits: the factory rejects `explicit_reset` and scoped opaque recovery
+before Attach. Actual native source coverage and installed/runtime qualification
+belong to their exact owning packets. Independent Runtime source review, lead
+integration, versions/BOM/contract/package promotion and live gates remain pending.
+
+## Independent native review repairs
+
+The independent `8ef88c13` review reproduced three Runtime P2 defects: terminal
+publications were skipped despite carrying captured views; Human during fresh
+Restore validation closed the still-valid original child before the stale epoch
+was rejected; passive renewal queued behind a long Model/Await operation let an
+accepted 400ms subscription expire. The owning repair counts every public source
+view, checks Restore authorization before replacing the child, and renews through
+one separate bounded passive SDK flight. Human preserves that flight; Stop and
+failed initialization quiesce it before detach. Actual five-second Await and long
+Consume tests retain the short subscription, and delayed ignored-abort tests
+verify that neither Stop nor failed initialization permit a late SDK response to
+resurrect it. Failure cancels active work/releases control immediately and seals
+only after its queued gap is recorded.
+
+The original source, review reproductions and numerical initialization package
+remain unchanged in private `/tmp` snapshots. A new exact producer fact binds
+durable original submission intent to an SDK-hook-proven not-started outcome;
+generic fail-closed strings are not substituted for that fact. These repairs need
+their own coherent freeze and independent recheck. The fresh repair canonical
+check passes TypeScript, 315 required tests, build and deterministic package checks;
+the two external-fixture cases remain separately enabled. Numerical fresh-child
+Restore reproduces the same three scores and opaque payload, source advance once,
+stale/pending recovery rejection, and the retained original numerical child after
+Human during fresh validation. They do not
+promote `8ef88c13` checks or synthetic expiry probes into game/runtime qualification.
+
+## Actual batch-tail provenance refinement
+
+The `4917eb31` producer advanced the SDK batch `next_cursor` without a typed tail
+fact. Native Hub global positions can legitimately yield an empty selected-scope
+batch, so an individual event cursor cannot substitute for that operational tail.
+The new `native_event_batch_received` records the exact original request cursor,
+SDK next/high/retained-start cursors and actual event count after all provided
+events and full-reference ACKs complete. Empty global advance and scoped-query
+ACK tests compare opaque cursor equality only; no cursor parsing, guessed order,
+new Model input or W advance is introduced. Interrupted/gapped batches emit no
+completed tail. Opaque Model metadata remains at the last acknowledged prefix.
+Historical `4917eb31` bundles retain their original event schema and claims;
+source/test verification of the refined producer requires newly generated facts.
+Fresh refined-producer canonical checks pass TypeScript, 319 required tests,
+build and deterministic package checks; the two external-fixture cases are
+separately enabled for the exact final source receipt.
+
+## Historical initial checkpoint
+
 Packet base: `1597141bf2d829c8b24eebb83a5177398101cf39`.
 Branch: `codex/e3-v1-agent-session`. Engineering class G2, Runtime-owned
 Agent contract/transport/consumption/evidence. This is an implementation checkpoint,

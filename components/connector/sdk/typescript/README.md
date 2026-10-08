@@ -93,6 +93,29 @@ properties/schema are independently nullable, matching the generic Core DTO.
 Submission identifiers follow the actual Host route's ASCII identifier grammar
 and 128-character ceiling; a wider generic action DTO is not route admission.
 
+When an initial controller acquisition is pending or its outcome is unknown,
+`controller.revokeUncertainClient()` is an explicit **final** closure option.
+It calls `client.revokeClient({runtimeInstanceId, clientSessionId})` for that
+original registration through the direct Authority route. The request is a
+closed two-field body bounded to 1 KiB; the reply must be exact HTTP 200 with
+protocol/schema, original runtime/client, `status: "client_revoked"`,
+`closed: true`, and explicit `controller: null`. Duplicate JSON keys, invalid
+UTF-8, oversized, wrong, missing or lost acknowledgements never prove closure.
+
+That null controller describes only the original revoked client. Another
+client's held lease is preserved. Matching acknowledgement permanently closes
+the SDK registration and passive subscription access; late acquire/renew replies
+cannot restore it. Wrong/lost acknowledgements retain the uncertainty fence,
+and only an explicit caller-chosen later idempotent closure attempt may retry
+revocation. There is no automatic Acquire retry, registration or Agent resume.
+Known Human `releaseControl()` remains lease-only and preserves passive access.
+An already-started POST may still return its actual original Result after final
+closure, validated against its captured original attribution identity.
+
+The additive revocation transport/barrier tests use the actual SDK with controlled
+HTTP responses. They are source/test evidence pending the matching Host route's
+independent integration and exact-runtime qualification.
+
 These methods implement and test the [native logical source contract](../../docs/NATIVE_LOGICAL_PROFILE.md).
 Shared producer fixtures, a synthetic HTTP listener, 200/500-action transfers and
 10,000-action protocol pressure do not qualify native hook coverage, live gameplay

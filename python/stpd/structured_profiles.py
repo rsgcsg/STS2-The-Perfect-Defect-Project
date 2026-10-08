@@ -11,12 +11,14 @@ from typing import TYPE_CHECKING, Any
 from spireagent.json_boundary import BoundaryError, FrozenObject
 
 from .fullrun.structured_inputs import INPUT_ID, PROJECTION_VERSION
+from .native_graph_spec import TRAINING_SCOPE as NATIVE_GRAPH_SCOPE
 from .structured_code_scope import LEGACY_SCOPE, TRAINING_SCOPE, code_identity
 
 if TYPE_CHECKING:
     from .fullrun.structured_sequences import StructuredDataset
 
 NATIVE_SCOPE = "native-structured-numerical-training-code-closure-v1"
+NATIVE_SCOPES = frozenset({NATIVE_SCOPE, NATIVE_GRAPH_SCOPE})
 NATIVE_SOURCE_SCHEMA = "stpd/native-structured-training-source-v1"
 NATIVE_INPUT_SCHEMA = "stpd/native-structured-training-input-v1"
 NATIVE_RUN_SCHEMA = "stpd/native-structured-m2-run-v1"
@@ -35,7 +37,7 @@ def validate_profile(dataset: StructuredDataset, scope: str) -> bool:
     if not isinstance(dataset.input_spec, FrozenObject):
         raise BoundaryError("structured_profile", "frozen_input_spec_required")
     if (
-        scope != NATIVE_SCOPE
+        scope not in NATIVE_SCOPES
         or dataset.input_spec.value() != INPUT_SPEC
         or dataset.source_kind != "synthetic"
     ):
@@ -44,7 +46,7 @@ def validate_profile(dataset: StructuredDataset, scope: str) -> bool:
 
 
 def parse_dataset(raw: bytes, scope: str) -> StructuredDataset:
-    if scope == NATIVE_SCOPE:
+    if scope in NATIVE_SCOPES:
         from .fullrun.native_training_sequences import parse_native_training_dataset
 
         return parse_native_training_dataset(raw)
@@ -64,10 +66,10 @@ def profile_projection(dataset: StructuredDataset, scope: str) -> dict[str, Any]
 
 
 def numerical_code_identity(scope: str) -> dict[str, str]:
-    if scope == NATIVE_SCOPE:
+    if scope in NATIVE_SCOPES:
         from .native_code_scope import native_training_code_identity
 
-        return native_training_code_identity()
+        return native_training_code_identity(graph=scope == NATIVE_GRAPH_SCOPE)
     return code_identity(scope)
 
 

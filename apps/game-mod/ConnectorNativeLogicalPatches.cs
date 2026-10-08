@@ -51,7 +51,7 @@ internal static class ConnectorNativeLogicalPatches
         Patch(harmony, typeof(NTargetManager), nameof(NTargetManager.OnNodeUnhovered), new[] { typeof(Node) }, nameof(TargetReturned));
         Patch(harmony, typeof(NPlayerHand), "OnHolderPressed", new[] { typeof(NCardHolder) }, nameof(InputReturned));
         Patch(harmony, typeof(NCard), nameof(NCard.SetPreviewTarget), new[] { typeof(Creature) }, nameof(CardPreviewReturned));
-        Patch(harmony, typeof(NInspectCardScreen), "UpdateCardDisplay", Type.EmptyTypes, nameof(InspectPreviewReturned));
+        ConnectorNativeCardOperationBindings.Register(harmony);
         Patch(harmony, typeof(NGameOverScreen), "OpenSummaryScreen", new[] { typeof(NButton) }, nameof(TerminalEntryReturned));
         foreach (string seam in new[] { "native_target_focus", "native_card_preview", "native_inspect_preview", "native_input_callback", "native_terminal_entry" })
             confirmed.Add(seam);
@@ -165,14 +165,6 @@ internal static class ConnectorNativeLogicalPatches
     {
         if (ConnectorMod.IsLiveNode(__instance) && ConnectorMod.IsNodeVisible(__instance))
             PlayerEnvironmentService.NativeLogical.Publish("native_card_preview", "preview_target_callback_returned");
-    }
-    private static void InspectPreviewReturned(NInspectCardScreen __instance)
-    {
-        if (ConnectorMod.IsLiveNode(__instance) && ConnectorMod.IsNodeVisible(__instance))
-        {
-            PlayerEnvironmentService.NativeLogical.Publish("native_inspect_preview", "card_display_callback_returned");
-            ConnectorNativeLogicalFamily.InspectContentReturned(__instance);
-        }
     }
     private static void TerminalEntryReturned(NGameOverScreen __instance)
     {

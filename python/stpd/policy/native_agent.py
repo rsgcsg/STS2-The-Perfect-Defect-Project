@@ -16,15 +16,14 @@ from spireagent.json_boundary import BoundaryError, decode_json, digest, json_by
 
 from ..fullrun.native_structured_inputs import INPUT_SPEC, PROFILE, PROJECTION_VERSION, SCOPE
 from ..models.native_structured_scorer import NativeStructuredScorer
-from ..native_code_scope import native_code_sha256
+from ..native_code_scope import REQUIRED_METHODS, native_code_sha256
 from ..structured_code_scope import ROOT
 from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .native_structured_export import (
-    AGENT_SPEC,
     MANIFEST_NAME,
-    STATE_FORMAT,
     encode_native_weights,
     load_native_package,
+    native_architecture,
 )
 
 SESSION_SCHEMA = "sts2.policy-runtime/agent-session-1"
@@ -77,12 +76,12 @@ BASIS_FIELDS = {
 }
 
 
-def adapter_identity() -> dict[str, str]:
+def adapter_identity(*, graph: bool = False) -> dict[str, str]:
     return {
         "id": ADAPTER_ID,
         "version": ADAPTER_VERSION,
         "protocol": PROTOCOL,
-        "code_sha256": native_code_sha256(ROOT),
+        "code_sha256": native_code_sha256(ROOT, graph=graph),
     }
 
 
@@ -189,21 +188,21 @@ class NativeStructuredAgent:
                 raise BoundaryError("native_agent", "invalid_support_wildcard")
         if (
             manifest["schema"] != MANIFEST_SCHEMA
-            or manifest["adapter"] != adapter_identity()
+            or manifest["adapter"] != adapter_identity(graph=model.model_control is not None)
             or artifact["id"] != metadata["model_id"]
             or not isinstance(input_spec, dict)
             or input_spec.get("profile") != PROFILE
             or input_spec.get("input_spec") != INPUT_SPEC
             or input_spec.get("projection")
             != {"id": INPUT_SPEC["id"], "version": PROJECTION_VERSION}
-            or input_spec.get("state_format_version") != STATE_FORMAT
+            or input_spec.get("state_format_version") != metadata["state_format_version"]
             or input_spec.get("history_mode") != "full_reference"
             or input_spec.get("consumption_mode") != "once_per_occurrence"
             or input_spec.get("gap_policy") != "handoff"
             or input_spec.get("attachment", {}).get("eager_scope") != list(SCOPE)
             or input_spec.get("attachment", {}).get("delivery_mode") != "full_reference"
-            or manifest["agent"].get("id") != AGENT_SPEC["id"]
-            or manifest["agent"].get("version") != AGENT_SPEC["version"]
+            or manifest["agent"].get("id") != metadata["agent_spec"]["id"]
+            or manifest["agent"].get("version") != metadata["agent_spec"]["version"]
         ):
             raise BoundaryError("native_agent", "agent_input_package_identity")
         agent = object_fields(
@@ -212,10 +211,10 @@ class NativeStructuredAgent:
             "native_agent.identity",
         )
         if agent != {
-            "id": AGENT_SPEC["id"],
-            "version": AGENT_SPEC["version"],
+            "id": metadata["agent_spec"]["id"],
+            "version": metadata["agent_spec"]["version"],
             "provider": "stpd",
-            "architecture": "structured-native-m2-k1d96",
+            "architecture": native_architecture(model.model_control),
         }:
             raise BoundaryError("native_agent", "unsupported_agent_identity")
         limits = object_fields(manifest["limits"], set(LIMIT_MAXIMA), "native_agent.limits")
@@ -250,8 +249,9 @@ class NativeStructuredAgent:
         methods = requirements["required_methods"]
         if (
             not isinstance(methods, list)
+            or any(not isinstance(method, str) or not method for method in methods)
             or len(set(methods)) != len(methods)
-            or not {"attach", "events", "read", "catalog", "submit", "await"} <= set(methods)
+            or not set(REQUIRED_METHODS) <= set(methods)
         ):
             raise BoundaryError("native_agent", "required_native_methods")
         recovery = input_spec["state_recovery"]
@@ -351,7 +351,7 @@ class NativeStructuredAgent:
             or expected["model_bindings"] != self.scorer.model_bindings
             or expected["input_spec"] != INPUT_SPEC
             or expected["profile"] != PROFILE
-            or expected["state_format_version"] != STATE_FORMAT
+            or expected["state_format_version"] != self.metadata["state_format_version"]
         ):
             raise BoundaryError("native_agent", "state_package_input_spec_binding")
         basis = object_fields(
@@ -384,7 +384,8 @@ class NativeStructuredAgent:
         self.verify_weights()
         metadata = self.check_metadata(expected)
         raw = encode_checkpoint(
-            {"schema": STATE_FORMAT, "metadata": metadata, "state": self.scorer.state()}
+            {"schema": self.metadata["state_format_version"], "metadata": metadata,
+             "state": self.scorer.state()}
         )
         if not 0 < len(raw) <= MAX_STATE_BYTES:
             raise BoundaryError("native_agent", "state_size_limit")
@@ -432,7 +433,8 @@ class NativeStructuredAgent:
         value = object_fields(
             decode_checkpoint(raw), {"schema", "metadata", "state"}, "native_agent.state"
         )
-        if value["schema"] != STATE_FORMAT or value["metadata"] != expected:
+        if (value["schema"] != self.metadata["state_format_version"]
+                or value["metadata"] != expected):
             raise BoundaryError("native_agent", "state_format_binding")
         candidate = NativeStructuredScorer(
             self.scorer.model, self.scorer.model_id, self.scorer.weights_sha256
@@ -458,19 +460,18 @@ def bind_native_agent(
     required_seams: list[dict[str, str]],
 ) -> dict[str, Any]:
     metadata, model = load_native_package(package)
-    del model
     if manifest_path.exists() or manifest_path.is_symlink():
         raise BoundaryError("native_agent", "manifest_destination_exists")
     manifest = {
         "schema": MANIFEST_SCHEMA,
         "manifest_id": manifest_id,
         "agent": {
-            "id": AGENT_SPEC["id"],
-            "version": AGENT_SPEC["version"],
+            "id": metadata["agent_spec"]["id"],
+            "version": metadata["agent_spec"]["version"],
             "provider": "stpd",
-            "architecture": "structured-native-m2-k1d96",
+            "architecture": native_architecture(model.model_control),
         },
-        "adapter": adapter_identity(),
+        "adapter": adapter_identity(graph=model.model_control is not None),
         "artifact": {
             "id": metadata["model_id"],
             "path": str((package / MANIFEST_NAME).resolve()),
@@ -480,7 +481,7 @@ def bind_native_agent(
             "profile": PROFILE,
             "input_spec": INPUT_SPEC,
             "projection": {"id": INPUT_SPEC["id"], "version": PROJECTION_VERSION},
-            "state_format_version": STATE_FORMAT,
+            "state_format_version": metadata["state_format_version"],
             "history_mode": "full_reference",
             "consumption_mode": "once_per_occurrence",
             "gap_policy": "handoff",
@@ -559,14 +560,13 @@ def serve(agent: NativeStructuredAgent, source: TextIO, destination: TextIO) -> 
             or not isinstance(current[0], str)
             or not current[0]
             or type(current[1]) is not int
-            or current[1] < 0
+            or not 0 <= current[1] <= 2**53 - 1
             or context is not None
-            and current != context
+            and (current[0] != context[0] or current[1] < context[1])
         ):
             raise BoundaryError("native_agent", "message_session_or_size")
-        context = current
         if kind == "consume_ack":
-            if request != pending_request:
+            if current != context or request != pending_request:
                 raise BoundaryError("native_agent", "consume_ack_request_binding")
             agent.scorer.acknowledge(message["completion"])
             pending_request = None
@@ -576,6 +576,10 @@ def serve(agent: NativeStructuredAgent, source: TextIO, destination: TextIO) -> 
         seen.add(request)
         if pending_request is not None:
             raise BoundaryError("native_agent", "consume_ack_before_next_required")
+        # Recovery epoch is the parent's operational fence, not model history.
+        # Only a fresh idle command can advance it in this physical session.
+        # An acknowledgement remains bound to the epoch of its Consume.
+        context = current
         if kind == "consume":
             result, output_kind, field = agent.consume(message["input"]), "consumed", "completion"
             pending_request = request

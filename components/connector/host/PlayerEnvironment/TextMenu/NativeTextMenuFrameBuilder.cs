@@ -105,33 +105,17 @@ internal static class NativeTextMenuFrameBuilder
         // accidentally append combat actions from the legacy underlying room.
         if (page.Interaction.Kind == "native_map")
         {
-            if (legacy.HostObservation.Surface is MapNavigationSurface
-                && legacy.Snapshot.BoundActions.Status == "complete")
-            {
-                var referents = page.Referents.ToList();
-                foreach (PlayerEnvironmentBoundAction action in
-                         OrderLegacyTextActions(legacy.HostObservation.Surface,
-                             legacy.Snapshot.BoundActions.Actions))
-                    if (legacy.Bindings.TryGetValue(action.BoundActionId,
-                            out PlayerEnvironmentNativeBinding? binding))
-                    {
-                        leaves.Add(FromLegacy(action, binding, executeLegacy));
-                        foreach (string id in action.Arguments.Select(value => value.ReferentId)
-                                     .Concat(action.SubjectReferentId is { } subject
-                                         ? new[] { subject } : Array.Empty<string>()))
-                            if (!referents.Any(value => value.ReferentId == id)
-                                && legacy.Snapshot.Referents.FirstOrDefault(value =>
-                                    value.ReferentId == id && value.State.Visible)
-                                    is { } native)
-                                referents.Add(native);
-                    }
-                page = page with { Referents = referents };
-            }
-            return new TextMenuFrame(page, owner, leaves);
+            var map = nativeLogical ? MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance : null;
+            return AppendMapActions(new TextMenuFrame(page, owner, leaves), legacy, executeLegacy,
+                map == null ? null : transition => NativeTextMenuInformation.ExecuteMapTransition(map, transition));
         }
+
         if (page.Interaction.Stage == "native_information_page"
             || page.Interaction.Kind == "native_information_unresolved")
             return new TextMenuFrame(page, owner, leaves);
+
+        if (nativeLogical && NativeLogicalCardRewardCapture.TryCapture(legacy, page, leaves, entities, executeLegacy) is { } cardReward)
+            return cardReward;
 
         if (nativeLogical && NativeLogicalGridCapture.TryCapture(legacy, page, leaves, entities) is { } logicalGrid)
             return logicalGrid.LogicalGridProof is { } proof
@@ -212,32 +196,15 @@ internal static class NativeTextMenuFrameBuilder
             leaves.Add(Leaf("cancel_potion_target:" + potionId,
                 "cancel_potion_target", "Cancel potion targeting", potionId,
                 () => NativeTextMenuPotions.CancelTargeting(nativePotionBinding)));
-            page = page with
-            {
-                Status = "interactive",
-                Referents = referents,
-                Completeness = new PlayerEnvironmentCompleteness(
-                    "complete", "current_native_potion_targeting",
-                    "exact_native_potion_target_controls", Array.Empty<string>(),
-                    Array.Empty<string>()),
-                Interaction = page.Interaction with
+            page = NativeLogicalCapturePolicy.PreserveNativeScope(page,
+                ProjectPotionTargetPage(page, referents, new JsonObject
                 {
-                    Kind = "potion_targeting", Stage = "native_targeting",
-                    Prompt = "Choose potion target",
-                    ContentSchema = "sts2.player-environment/surface/potion_targeting_text_menu-1",
-                    Content = new PlayerEnvironmentInteractionContent(new JsonObject
-                    {
-                        ["kind"] = "potion_targeting",
-                        ["potion_referent_id"] = potionId,
-                        ["focused_target_referent_id"] = nativeLogical && NativeTextMenuPotions.FocusedTarget(nativePotionBinding) is { } focusedPotionTarget
-                            ? PotionFocusId(focusedPotionTarget, entities) : null,
-                        ["target_count"] = targets.Count
-                            + (NativeTextMenuPotions.MerchantTarget(nativePotionBinding) == null ? 0 : 1)
-                    }, ValidContext(page.Interaction.Content.Context,
-                        "combat_potion_targeting")),
-                    Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
-                }
-            };
+                    ["kind"] = "potion_targeting", ["potion_referent_id"] = potionId,
+                    ["focused_target_referent_id"] = nativeLogical && NativeTextMenuPotions.FocusedTarget(nativePotionBinding) is { } focusedPotionTarget
+                        ? PotionFocusId(focusedPotionTarget, entities) : null,
+                    ["target_count"] = targets.Count
+                        + (NativeTextMenuPotions.MerchantTarget(nativePotionBinding) == null ? 0 : 1)
+                }), NativeLogicalProjectionReplacement.PotionTarget, nativeLogical);
             if (!nativeLogical && page.Interaction.Content.Surface is JsonObject potionSurface)
                 potionSurface.Remove("focused_target_referent_id");
             return new TextMenuFrame(page, owner, leaves);
@@ -256,23 +223,32 @@ internal static class NativeTextMenuFrameBuilder
             bool controllerHeld = play is NControllerCardPlay;
             bool mouseTargetHeld = play is NMouseCardPlay mouse
                 && mouse.Holder.CardModel is { } mouseCard
+                && (nativeLogical || mouseCard.TargetType == TargetType.AnyEnemy)
                 && NativeTextMenuCombat.OwnsMouseTarget(hand, mouse, mouseCard)
                 && NativeTextMenuCombat.CurrentTargets(hand, mouse, mouseCard).Count > 0;
-            if ((controllerHeld || mouseTargetHeld)
+            bool mouseOperationHeld = nativeLogical && play is NMouseCardPlay mouseOperation
+                && mouseOperation.Holder.CardModel is { } mouseOperationCard
+                && NativeMouseCardConfirmation.KnownOperation(mouseOperation, hand, mouseOperationCard);
+            if ((controllerHeld || mouseTargetHeld || mouseOperationHeld)
                 && play?.Holder.CardModel is { } card
                 && NativeTextMenuCombat.Owns(hand, play, card))
             {
                 string cardId = entities.GetId(card, "card");
+                bool actualSingleTarget = play is NMouseCardPlay
+                    ? mouseTargetHeld : NTargetManager.Instance.IsInSelection;
+                NativeMouseCardConfirmation.Binding? mouseConfirmation = nativeLogical && play is NMouseCardPlay mouseConfirm
+                    ? NativeMouseCardConfirmation.Capture(mouseConfirm, hand, card) : null;
                 page = CardOperationPage(page, hand, play, card, cardId, entities,
-                    NTargetManager.Instance.IsInSelection
-                        ? "card_targeting" : "card_confirm", nativeLogical);
+                    actualSingleTarget ? "card_targeting" : play is NMouseCardPlay
+                        ? mouseConfirmation != null ? "card_confirm" : "native_mouse_operation"
+                        : "card_confirm", nativeLogical);
                 leaves.Add(Leaf("cancel_card:" + cardId, "cancel_card_play",
                     "Cancel held card", cardId,
                     () => NativeTextMenuCombat.Cancel(hand, play, card)) with
                 {
                     NativeWitness = HeldCardWitness(play, card)
                 });
-                if (NTargetManager.Instance.IsInSelection)
+                if (actualSingleTarget)
                 {
                     if (nativeLogical && NativeTextMenuCombat.FocusedTarget(hand, play, card) is { } focused
                         && NativeTextMenuCombat.CanUnfocusTarget(hand, play, card, focused))
@@ -318,8 +294,15 @@ internal static class NativeTextMenuFrameBuilder
                         NativeWitness = HeldCardWitness(controller, card)
                     });
                 }
+                if (mouseConfirmation is { } exactMouseConfirmation)
+                    leaves.Add(Leaf("confirm_mouse_card:" + cardId, "confirm_card", "Confirm held card", cardId,
+                        () => NativeMouseCardConfirmation.Confirm(exactMouseConfirmation)) with
+                    { NativeWitness = HeldCardWitness(play, card) });
                 return new TextMenuFrame(page, owner, leaves);
             }
+
+            if (nativeLogical && play is NMouseCardPlay)
+                return NativeLogicalCapturePolicy.Partial(page, owner, "native_mouse_operation_source_unobserved");
 
             // Mouse drag or an unbound card operation is not a deterministic
             // text stage. No card-play claim is made from legacy settling data.
@@ -395,6 +378,30 @@ internal static class NativeTextMenuFrameBuilder
             page = page with { Referents = referents };
         }
         return new TextMenuFrame(page, owner, leaves);
+    }
+
+    internal static TextMenuFrame AppendMapActions(TextMenuFrame frame, SnapshotBuildResult source,
+        Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy,
+        Func<Func<NativeInputResult>, NativeInputResult>? mapDeparture = null)
+    {
+        if (source.HostObservation.Surface is not MapNavigationSurface
+            || source.Snapshot.BoundActions.Status != "complete") return frame;
+        var leaves = frame.Leaves.ToList();
+        var referents = frame.Page.Referents.ToList();
+        foreach (PlayerEnvironmentBoundAction action in OrderLegacyTextActions(source.HostObservation.Surface,
+                     source.Snapshot.BoundActions.Actions))
+            if (source.Bindings.TryGetValue(action.BoundActionId, out PlayerEnvironmentNativeBinding? binding))
+            {
+                TextMenuLeaf leaf = FromLegacy(action, binding, executeLegacy);
+                leaves.Add(mapDeparture != null && binding.NativeAction.Candidate.Operation == "choose_map_node"
+                    ? leaf with { Dispatch = () => mapDeparture(leaf.Dispatch) } : leaf);
+                foreach (string id in action.Arguments.Select(value => value.ReferentId)
+                             .Concat(action.SubjectReferentId is { } subject ? new[] { subject } : Array.Empty<string>()))
+                    if (!referents.Any(value => value.ReferentId == id)
+                        && source.Snapshot.Referents.FirstOrDefault(value => value.ReferentId == id && value.State.Visible) is { } native)
+                        referents.Add(native);
+            }
+        return frame with { Page = frame.Page with { Referents = referents }, Leaves = leaves };
     }
 
     internal static IReadOnlyList<PlayerEnvironmentBoundAction> OrderLegacyTextActions(
@@ -586,7 +593,14 @@ internal static class NativeTextMenuFrameBuilder
                 ? entities.GetId(focused.Entity, "creature") : null;
             NativeLogicalPresentation.AddCardDisplay(surface, cardNode);
         }
-        return source with
+        return ProjectHeldCardPage(source, visible, surface, stage, displayComplete, nativeLogical);
+    }
+
+    internal static PlayerEnvironmentSnapshot ProjectHeldCardPage(PlayerEnvironmentSnapshot source,
+        IReadOnlyList<PlayerEnvironmentReferent> visible, JsonObject surface, string stage,
+        bool displayComplete, bool nativeLogical)
+    {
+        PlayerEnvironmentSnapshot projected = source with
         {
             Status = displayComplete ? "interactive" : "settling",
             Referents = visible,
@@ -608,7 +622,24 @@ internal static class NativeTextMenuFrameBuilder
                 Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
             }
         };
+        return NativeLogicalCapturePolicy.PreserveNativeScope(source, projected,
+            NativeLogicalProjectionReplacement.HeldCard, nativeLogical);
     }
+
+    internal static PlayerEnvironmentSnapshot ProjectPotionTargetPage(PlayerEnvironmentSnapshot source,
+        IReadOnlyList<PlayerEnvironmentReferent> referents, JsonObject surface) => source with
+    {
+        Status = "interactive", Referents = referents,
+        Completeness = new("complete", "current_native_potion_targeting",
+            "exact_native_potion_target_controls", Array.Empty<string>(), Array.Empty<string>()),
+        Interaction = source.Interaction with
+        {
+            Kind = "potion_targeting", Stage = "native_targeting", Prompt = "Choose potion target",
+            ContentSchema = "sts2.player-environment/surface/potion_targeting_text_menu-1",
+            Content = new(surface, ValidContext(source.Interaction.Content.Context, "combat_potion_targeting")),
+            Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
+        }
+    };
 
     private static JsonNode ValidContext(JsonNode source, string fallbackKind)
     {

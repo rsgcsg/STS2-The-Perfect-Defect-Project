@@ -7,9 +7,11 @@ remain separate, and the current Connector remains the environment authority.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import uuid
 from pathlib import Path
@@ -25,10 +27,17 @@ from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import instance_lock
 from spireagent.workbench.local_model_dependencies import (
     local_models_available,
+    native_models_available,
     require_local_models,
+    require_native_models,
 )
 from spireagent.workbench.local_model_export import LocalModelExport, _ordinary
-from spireagent.workbench.local_models import LocalModelService, _loopback
+from spireagent.workbench.local_models import (
+    NATIVE_ADAPTER,
+    NATIVE_PROFILE,
+    LocalModelService,
+    _loopback,
+)
 from spireagent.workbench.managed_model_target import managed_manifest
 from spireagent.workbench.memory_recipe import (
     MEMORY_RECIPES,
@@ -42,6 +51,27 @@ from spireagent.workbench.runtime_install import (
     v2_sdk_available,
     validate_runtime_install,
 )
+
+
+class RegistrationStorageError(BoundaryError):
+    """A terminal storage failure with a safe correlation ID for the local log."""
+
+    def __init__(self, error: sqlite3.DatabaseError) -> None:
+        self.error_id = uuid.uuid4().hex
+        super().__init__(
+            "local_model_registration", "registration_verification_storage_failed",
+            "inspect verification storage and service resource limits before an explicit retry",
+        )
+        logging.getLogger(__name__).error(
+            "registration storage failure error_id=%s sqlite_errorcode=%s sqlite_errorname=%s",
+            self.error_id, getattr(error, "sqlite_errorcode", None),
+            getattr(error, "sqlite_errorname", None), exc_info=True,
+        )
+
+    def public_failure(self) -> dict[str, str]:
+        return {"error": self.code, "stage": self.stage, "category": "storage",
+                "status": "failed", "error_id": self.error_id}
+
 
 SCHEMA = "stpd/local-model-registration-v1"
 PROFILE = "text-menu-v1"
@@ -124,11 +154,22 @@ VERBS = (
     "next_inspect_card", "toggle_card_upgrade_preview", "previous_relic", "next_relic",
 )
 _SDK_SCRIPT = """
-const {PlayerEnvironmentRestClient} = await import(process.argv[1]);
+const {PlayerEnvironmentRestClient,EnvironmentControllerSession,NativeLogicalSession} =
+  await import(process.argv[1]);
 const client = new PlayerEnvironmentRestClient(process.argv[2], 5000);
-const result = await (process.argv[3] === 'text-menu-v2'
+const result = await (process.argv[3] === 'native-logical-v1'
+  ? new NativeLogicalSession(client, new EnvironmentControllerSession(client,
+      {productId:'spireagent-native-registration',productName:'SpireAgent',productVersion:'1.0.0'}))
+      .capabilities() : process.argv[3] === 'text-menu-v2'
   ? client.textMenuV2Capabilities() : client.textMenuCapabilities());
-process.stdout.write(JSON.stringify(result.data));
+if(process.argv[3] === 'native-logical-v1'){
+  const {NATIVE_LOGICAL_PUBLICATION_PROFILE,NATIVE_LOGICAL_PUBLICATION_PROFILE_SHA256} =
+    await import(process.argv[1]);
+  if(!NATIVE_LOGICAL_PUBLICATION_PROFILE)throw Error('fixed_native_profile_unavailable');
+  process.stdout.write(JSON.stringify({capabilities:result.data,
+    publication_profile:NATIVE_LOGICAL_PUBLICATION_PROFILE,
+    publication_profile_sha256:NATIVE_LOGICAL_PUBLICATION_PROFILE_SHA256}));
+}else{process.stdout.write(JSON.stringify(result.data));}
 """
 _CONTEXT_SCRIPT = """
 const {PlayerEnvironmentRestClient} = await import(process.argv[1]);
@@ -212,6 +253,126 @@ def _requirements(value: Any, *, input_profile: str = PROFILE
     except (KeyError, TypeError, ValueError) as error:
         raise BoundaryError(
             "local_model_registration", "text_menu_capabilities_incompatible",
+        ) from error
+
+
+def _native_requirements(value: Any) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
+    """Bind the fixed code-owned publication target, never an advertised subset."""
+    from spireagent.json_boundary import object_fields
+    from spireagent.workbench.native_agent_support import (
+        PUBLICATION_PROFILE_ID,
+        PUBLICATION_PROFILE_SHA256,
+    )
+    from stpd.native_code_scope import REQUIRED_METHODS
+    from stpd.policy.native_agent import SUPPORTED_ACTION_VERBS, SUPPORTED_INTERACTION_KINDS
+
+    try:
+        reply = object_fields(
+            value,
+            {"capabilities", "publication_profile", "publication_profile_sha256"},
+            "native_registration",
+        )
+        capabilities = reply["capabilities"]
+        profile = object_fields(
+            reply["publication_profile"],
+            {
+                "schema",
+                "profile_id",
+                "input_profile",
+                "delivery_mode",
+                "eager_scope",
+                "required_seams",
+            },
+            "native_registration.profile",
+        )
+        if (
+            profile["schema"] != "sts2.player-environment/native-logical-publication-profile-1"
+            or profile["profile_id"] != PUBLICATION_PROFILE_ID
+            or reply["publication_profile_sha256"] != PUBLICATION_PROFILE_SHA256
+            or profile["input_profile"] != NATIVE_PROFILE
+            or profile["delivery_mode"] != "full_reference"
+            or profile["eager_scope"] != ["persistent", "interaction", "referents", "catalog"]
+            or not isinstance(capabilities, dict)
+            or capabilities.get("schema") != "sts2.player-environment/native-logical-capabilities-1"
+            or capabilities.get("input_profile") != NATIVE_PROFILE
+            or capabilities.get("protocol_version") != "1.0.0"
+        ):
+            raise ValueError
+        methods = list(REQUIRED_METHODS)
+        advertised_methods = capabilities.get("supported_methods")
+        if not isinstance(advertised_methods, list) or not set(methods) <= set(advertised_methods):
+            raise ValueError
+        required = profile["required_seams"]
+        coverage = capabilities["capture_coverage"]
+        if not isinstance(required, list) or not required or not isinstance(coverage, list):
+            raise ValueError
+        advertised: dict[str, dict[str, str]] = {}
+        for seam in coverage:
+            seam = object_fields(
+                seam, {"source_seam", "version", "coverage"}, "native_registration.coverage"
+            )
+            if (not all(isinstance(item, str) and item for item in seam.values())
+                    or seam["source_seam"] in advertised):
+                raise ValueError
+            advertised[seam["source_seam"]] = seam
+        seen = set()
+        for seam in required:
+            seam = object_fields(
+                seam, {"source_seam", "version", "coverage"}, "native_registration.required"
+            )
+            seam_id = seam["source_seam"]
+            if (
+                seam_id in seen
+                or seam["version"] != "1"
+                or seam["coverage"] != "complete_at_seam"
+                or advertised.get(seam["source_seam"]) != seam
+            ):
+                raise BoundaryError("local_model_registration", "native_required_seam_unavailable")
+            seen.add(seam_id)
+        host, game = capabilities["host"], capabilities["game"]
+        implementation, modset = host["implementation"], game["modset"]
+        environment = {
+            "host_kind": host["host_kind"],
+            "connector_version": host["version"],
+            "connector_source_revision": implementation["source_revision"],
+            "connector_artifact_sha256": implementation["artifact_sha256"],
+            "connector_module_version_id": implementation["module_version_id"],
+            "modset_status": modset["status"],
+            "modset_fingerprint": modset["fingerprint"],
+            "loaded_mod_ids": modset["loaded_mod_ids"],
+        }
+        if (
+            environment["host_kind"] not in {"live_ui", "headless", "replay", "test"}
+            or any(
+                not isinstance(environment[key], str) or not environment[key]
+                for key in (
+                    "connector_version",
+                    "connector_source_revision",
+                    "connector_module_version_id",
+                    "modset_status",
+                )
+            )
+            or not isinstance(environment["loaded_mod_ids"], list)
+            or any(not isinstance(item, str) or not item for item in environment["loaded_mod_ids"])
+            or len(set(environment["loaded_mod_ids"])) != len(environment["loaded_mod_ids"])
+        ):
+            raise ValueError
+        digest(environment["connector_artifact_sha256"], "native_registration.connector")
+        digest(environment["modset_fingerprint"], "native_registration.modset")
+        if any(not isinstance(game[key], str) or not game[key] or game[key] == "*"
+               for key in ("version", "commit")):
+            raise ValueError
+        requirements = {"connector_protocol_version": capabilities["protocol_version"],
+                        "environment": environment, "required_methods": methods}
+        support = {"game_versions": [game["version"]], "game_commits": [game["commit"]],
+                   "interaction_kinds": list(SUPPORTED_INTERACTION_KINDS),
+                   "action_verbs": list(SUPPORTED_ACTION_VERBS)}
+        return requirements, support, required
+    except (KeyError, TypeError, ValueError) as error:
+        if isinstance(error, BoundaryError) and error.code == "native_required_seam_unavailable":
+            raise
+        raise BoundaryError(
+            "local_model_registration", "native_capabilities_incompatible"
         ) from error
 
 
@@ -348,6 +509,41 @@ class LocalModelRegistration:
                                     "registration_metadata_invalid") from error
         return None, stale
 
+    def _matching_native(self, artifact_id: str, export: Path, *,
+                         requirements: dict[str, Any] | None = None,
+                         support: dict[str, Any] | None = None,
+                         required_seams: list[dict[str, str]] | None = None
+                         ) -> tuple[str | None, bool]:
+        from spireagent.workbench.native_agent_support import validate
+
+        stale = False
+        for entry in reversed(self._entries()):
+            if (
+                entry.get("adapter") != NATIVE_ADAPTER
+                or entry.get("runtime_profile") != NATIVE_PROFILE
+            ):
+                continue
+            config_path = _inside(self.models.private_root, entry["config"])
+            manifest_path = _inside(self.models.private_root, entry["manifest"])
+            config = _object_file(config_path)
+            if (config.get("artifact_id") != artifact_id
+                    or config.get("export_path") != str(export.resolve())):
+                continue
+            try:
+                _, manifest = validate(self.models.root, config_path, manifest_path,
+                                       binding_root=self.models.private_root)
+            except BoundaryError:
+                stale = True
+                continue
+            if (requirements is not None and manifest["requirements"] != requirements
+                    or support is not None and manifest["support"] != support
+                    or required_seams is not None
+                    and manifest["input"]["attachment"]["required_seams"] != required_seams):
+                stale = True
+                continue
+            return entry["id"], stale
+        return None, stale
+
     def status(self, model_id: object, *, environment_kind: str = "native") -> dict[str, Any]:
         _target_kind(environment_kind)
         result = self._status(model_id, environment_kind=environment_kind)
@@ -359,6 +555,8 @@ class LocalModelRegistration:
         identity = digest(model_id, "local_model_registration.model_id")
         observed = self.export.status()
         operation = observed["operation"]
+        if operation.get("model_id") == identity and operation.get("model_type") == "native":
+            return self._status_native(identity, observed, environment_kind)
         memory = (operation.get("model_id") == identity
                   and operation.get("model_type") == "memory")
         structured = operation.get("model_type") == "structured"
@@ -443,6 +641,42 @@ class LocalModelRegistration:
             raise BoundaryError("local_model_registration",
                                 "text_menu_capabilities_unavailable") from error
 
+    def _native_runtime(self, *, deadline: float) -> tuple[Path, Path]:
+        directory, pin = self.models.runtime_profile()
+        node_modules = directory / "runtime" / "node_modules"
+        if not (directory / "runtime").exists():
+            node_modules = self.models._node_modules()
+        try:
+            validate_runtime_install(node_modules, pin, self.models._connector_pin())
+        except (BoundaryError, OSError, PackageIdentityError, ValueError) as error:
+            _remaining(deadline)
+            raise BoundaryError("local_model_registration",
+                                "native_runtime_local_install_required") from error
+        sdk = node_modules / RUNTIME_PACKAGE / "node_modules" / CONNECTOR_PACKAGE / "dist/index.js"
+        return node_modules, sdk
+
+    def _status_native(self, identity: str, observed: dict[str, Any],
+                       environment_kind: str) -> dict[str, Any]:
+        if environment_kind != "native":
+            return _public(identity, "unavailable", profile=NATIVE_PROFILE,
+                           reason_code="native_managed_environment_not_supported")
+        if (observed.get("availability") != "ready"
+                or observed["operation"].get("status") != "completed"):
+            return _public(identity, "unavailable", profile=NATIVE_PROFILE,
+                           reason_code="verified_export_required")
+        if not native_models_available():
+            return _public(identity, "unavailable", profile=NATIVE_PROFILE,
+                           reason_code="native_models_extra_required")
+        try:
+            export = self.config.state_dir / "model-exports" / identity
+            found, stale = self._matching_native(identity, export)
+            return _public(identity, "registered" if found else "not_registered",
+                           selection_id=found, profile=NATIVE_PROFILE,
+                           reason_code="source_binding_changed" if stale and not found else None)
+        except (BoundaryError, OSError, ValueError, KeyError, TypeError):
+            return _public(identity, "unavailable", profile=NATIVE_PROFILE,
+                           reason_code="registration_metadata_invalid")
+
     def _context_available(self, sdk: Path, *, deadline: float,
                            input_profile: str = PROFILE) -> None:
         """Require the opt-in atomic context route; a menu may have no current run."""
@@ -501,7 +735,13 @@ class LocalModelRegistration:
 
     def register(self, model_id: object, *, environment_kind: str = "native") -> dict[str, Any]:
         _target_kind(environment_kind)
-        result = self._register(model_id, environment_kind=environment_kind)
+        try:
+            result = self._register(model_id, environment_kind=environment_kind)
+        except sqlite3.DatabaseError as error:
+            # Verification can use private, disk-backed decision rows before any
+            # registration is published. A storage fault must finish the POST as
+            # a classified failure, rather than disconnecting the browser thread.
+            raise RegistrationStorageError(error) from error
         if environment_kind == "managed":
             result["environment_kind"] = environment_kind
         return result
@@ -513,6 +753,9 @@ class LocalModelRegistration:
         # Weight/scorer verification and current-store binding are explicit POST work.
         observed = self.export.status()
         operation = observed["operation"]
+        if operation.get("model_id") == identity and operation.get("model_type") == "native":
+            return self._register_native(identity, environment_kind=environment_kind,
+                                         deadline=deadline)
         memory = (observed.get("schema") == "stpd/local-model-export-operation-v2"
                   and operation.get("model_id") == identity
                   and operation.get("model_type") == "memory")
@@ -665,6 +908,86 @@ class LocalModelRegistration:
             if error.code == "already_running":
                 raise BoundaryError(
                     "local_model_registration", "registration_in_progress",
+                ) from error
+            raise
+        except OSError as error:
+            raise BoundaryError("local_model_registration", "registration_write_failed") from error
+
+    def _register_native(self, identity: str, *, environment_kind: str,
+                         deadline: float) -> dict[str, Any]:
+        from spireagent.workbench.native_agent_support import bind_native_export
+
+        if environment_kind != "native":
+            raise BoundaryError(
+                "local_model_registration", "native_managed_environment_not_supported"
+            )
+        require_native_models("local_model_registration")
+        export = self.export.verified_for_registration(identity)
+        node_modules, sdk = self._native_runtime(deadline=deadline)
+        del node_modules
+        capabilities = self._capabilities(sdk, deadline=deadline, input_profile=NATIVE_PROFILE)
+        requirements, support, required_seams = _native_requirements(capabilities)
+        private = self.models.private_root
+        if private.exists() or private.is_symlink():
+            if not _ordinary(private, directory=True):
+                raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+        else:
+            private.mkdir(mode=0o700)
+        lock_path = private / LOCK
+        if lock_path.is_symlink() or (
+            lock_path.exists() and not _ordinary(lock_path, directory=False)
+        ):
+            raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+        try:
+            with instance_lock(lock_path):
+                _remaining(deadline)
+                found, _ = self._matching_native(identity, export, requirements=requirements,
+                                                 support=support, required_seams=required_seams)
+                if found is not None:
+                    found_entry = self.models.selection(found)
+                    self.models._public_manifest_contract(
+                        self.models.entry_path(found_entry, "manifest")
+                    )
+                    return _public(identity, "registered", selection_id=found,
+                                   profile=NATIVE_PROFILE)
+                folder = private / REGISTRATIONS
+                if folder.exists() or folder.is_symlink():
+                    if not _ordinary(folder, directory=True):
+                        raise BoundaryError(
+                            "local_model_registration", "registration_metadata_invalid"
+                        )
+                else:
+                    folder.mkdir(mode=0o700)
+                selection = "local-native-m2-" + uuid.uuid4().hex
+                target = folder / selection
+                target.mkdir(mode=0o700)
+                config_path, manifest_path = target / "config.json", target / "manifest.json"
+                try:
+                    bind_native_export(self.models.root, export, config_path, manifest_path,
+                                       artifact_id=identity, manifest_id=selection,
+                                       requirements=requirements, support=support,
+                                       required_seams=required_seams, binding_root=private)
+                    self.models._public_manifest_contract(manifest_path)
+                    entry = {"id": selection, "label": "本机原生 M2 有界 Agent " + identity[:8],
+                             "adapter": NATIVE_ADAPTER, "runtime_profile": NATIVE_PROFILE,
+                             "manifest": manifest_path.relative_to(private).as_posix(),
+                             "config": config_path.relative_to(private).as_posix()}
+                    entries = self._entries()
+                    _remaining(deadline)
+                    atomic_json(private / REGISTRY,
+                                {"schema": "stpd/local-token-policies-v1",
+                                 "policies": [*entries, entry]})
+                except Exception:
+                    config_path.unlink(missing_ok=True)
+                    manifest_path.unlink(missing_ok=True)
+                    target.rmdir()
+                    raise
+                return _public(identity, "registered", selection_id=selection,
+                               profile=NATIVE_PROFILE)
+        except BoundaryError as error:
+            if error.code == "already_running":
+                raise BoundaryError(
+                    "local_model_registration", "registration_in_progress"
                 ) from error
             raise
         except OSError as error:

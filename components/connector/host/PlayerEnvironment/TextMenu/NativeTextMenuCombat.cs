@@ -22,8 +22,8 @@ namespace STS2Connector.PlayerEnvironment;
 /// <summary>
 /// Exact, device-scoped entry points into the game's card-play operation. This
 /// class does not recreate card legality or enqueue a PlayCardAction. Mouse
-/// single-enemy targeting is available only while its exact manager binding
-/// is observable; untargeted mouse release remains outside this menu.
+/// single-creature targeting requires its exact manager binding. The native
+/// logical profile additionally uses source-witnessed mouse confirmation.
 /// </summary>
 internal static class NativeTextMenuCombat
 {
@@ -130,7 +130,7 @@ internal static class NativeTextMenuCombat
     internal static bool OwnsMouseTarget(
         NPlayerHand hand, NMouseCardPlay play, CardModel card) =>
         Owns(hand, play, card)
-        && card.TargetType == TargetType.AnyEnemy
+        && card.TargetType is TargetType.AnyEnemy or TargetType.AnyAlly
         && NTargetManager.Instance is { IsInSelection: true } manager
         // SingleCreatureTargeting passes an instance-bound exit predicate to
         // StartTargeting. This proves the manager still belongs to this play,
@@ -172,7 +172,9 @@ internal static class NativeTextMenuCombat
 
     internal static NCreature? FocusedTarget(NPlayerHand hand, NCardPlay play, CardModel card)
     {
-        if (!Owns(hand, play, card) || NTargetManager.Instance is not { IsInSelection: true } manager)
+        if (!Owns(hand, play, card) || card.TargetType is not (TargetType.AnyEnemy or TargetType.AnyAlly)
+            || play is NMouseCardPlay mouse && !OwnsMouseTarget(hand, mouse, card)
+            || NTargetManager.Instance is not { IsInSelection: true } manager)
             return null;
         NCreature? focused = CurrentFocusedNode(manager) as NCreature;
         return focused != null && ConnectorMod.IsLiveNode(focused) && ConnectorMod.IsNodeVisible(focused)

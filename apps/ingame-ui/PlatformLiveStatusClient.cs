@@ -85,7 +85,7 @@ public sealed class PlatformLiveStatusClient : IDisposable
             errors.Add($"Connector: {connectorTransportDetail}");
         }
 
-        PolicyRuntimeStatus? policyRuntime = null;
+        IPlatformRuntimeStatus? policyRuntime = null;
         string policyRuntimeTransportStatus = "unavailable";
         string? policyRuntimeTransportDetail = null;
         try
@@ -129,7 +129,7 @@ public sealed class PlatformLiveStatusClient : IDisposable
         return observed;
     }
 
-    public async Task<PolicyRuntimeStatus> SetModeAsync(
+    public async Task<IPlatformRuntimeStatus> SetModeAsync(
         string mode,
         string expectedRunId,
         PlatformPolicyBinding? binding = null,
@@ -149,7 +149,7 @@ public sealed class PlatformLiveStatusClient : IDisposable
         return response.Status;
     }
 
-    public async Task<PolicyRuntimeStatus> StopAsync(string expectedRunId, CancellationToken cancellationToken = default)
+    public async Task<IPlatformRuntimeStatus> StopAsync(string expectedRunId, CancellationToken cancellationToken = default)
     {
         var response = await PostAsync<PolicyRuntimeHttpStatusResponse>("stop", new { }, expectedRunId, cancellationToken,
             validate: value => {
@@ -160,7 +160,7 @@ public sealed class PlatformLiveStatusClient : IDisposable
         return response.Status;
     }
 
-    public async Task<PolicyRuntimeStatus> TickAsync(string expectedRunId, PlatformPolicyBinding binding, CancellationToken cancellationToken = default)
+    public async Task<IPlatformRuntimeStatus> TickAsync(string expectedRunId, PlatformPolicyBinding binding, CancellationToken cancellationToken = default)
     {
         PolicyRuntimeTickResponse response = await PostAsync<PolicyRuntimeTickResponse>(
             "tick",
@@ -169,7 +169,7 @@ public sealed class PlatformLiveStatusClient : IDisposable
             cancellationToken, binding, value => {
                 EnsureCommandStatus(value.Schema, value.Status, expectedRunId, allowTickSchema: true);
                 if (value.Schema != PolicyRuntimeTickSchema || value.Results == null || value.Results.Count != 1
-                    || value.Results[0].Type is not ("human" or "shadow" or "delivered" or "not_delivered" or "unknown" or "not_admitted" or "not_executed"))
+                    || value.Results[0].Type is not ("human" or "shadow" or "delivered" or "not_delivered" or "unknown" or "not_admitted" or "not_executed" or "observation" or "awaited" or "closed"))
                     throw new JsonException("Policy Runtime tick result is incomplete.");
             });
         return response.Status;
@@ -230,7 +230,7 @@ public sealed class PlatformLiveStatusClient : IDisposable
             ?? throw new JsonException($"Loopback endpoint returned an empty {typeof(T).Name}.");
     }
 
-    private static void EnsureCommandStatus(string envelopeSchema, PolicyRuntimeStatus status,
+    private static void EnsureCommandStatus(string envelopeSchema, IPlatformRuntimeStatus status,
         string expectedRunId, bool allowTickSchema = false)
     {
         EnsurePolicyRuntimeStatus(envelopeSchema, status, allowTickSchema);
@@ -240,7 +240,7 @@ public sealed class PlatformLiveStatusClient : IDisposable
 
     private static void EnsurePolicyRuntimeStatus(
         string envelopeSchema,
-        PolicyRuntimeStatus status,
+        IPlatformRuntimeStatus status,
         bool allowTickSchema = false)
     {
         if (envelopeSchema != PolicyRuntimeHttpSchema
@@ -248,20 +248,81 @@ public sealed class PlatformLiveStatusClient : IDisposable
         {
             throw new JsonException($"Policy Runtime HTTP schema is unsupported: {envelopeSchema}");
         }
-        if (status.Schema != PolicyRuntimeStatus.CurrentSchema)
+        if (status.Schema != PolicyRuntimeStatus.CurrentSchema && status.Schema != NativeAgentRuntimeStatus.CurrentSchema)
             throw new JsonException($"Policy Runtime status schema is unsupported: {status.Schema}");
         if (status.Runtime == null || string.IsNullOrWhiteSpace(status.Runtime.Version))
             throw new JsonException("Policy Runtime software identity is absent.");
-        if (status.Policy == null || string.IsNullOrWhiteSpace(status.Policy.ManifestId))
+        if (status is PolicyRuntimeStatus policy && (policy.Policy == null || string.IsNullOrWhiteSpace(policy.Policy.ManifestId)))
             throw new JsonException("Policy Runtime policy identity is absent.");
+        if (status is NativeAgentRuntimeStatus native)
+        {
+            if (native.Agent is null || string.IsNullOrWhiteSpace(native.Agent.ManifestId)
+                || string.IsNullOrWhiteSpace(native.Agent.AgentId) || string.IsNullOrWhiteSpace(native.Agent.AgentVersion)
+                || string.IsNullOrWhiteSpace(native.Agent.Provider) || string.IsNullOrWhiteSpace(native.Agent.Architecture)
+                || string.IsNullOrWhiteSpace(native.Agent.ArtifactId) || native.Agent.Adapter is null
+                || string.IsNullOrWhiteSpace(native.Agent.Adapter.Id) || string.IsNullOrWhiteSpace(native.Agent.Adapter.Version)
+                || native.Agent.Adapter.Protocol != "sts2.policy-runtime/agent-session-ndjson-1"
+                || !PlatformNativeWorkbenchPair.Hex(native.Agent.ArtifactSha256, 64)
+                || !PlatformNativeWorkbenchPair.Hex(native.AgentManifestSha256, 64)
+                || !PlatformNativeWorkbenchPair.Hex(native.Agent.Adapter.CodeSha256, 64))
+                throw new JsonException("Native Agent identity is absent or invalid.");
+            if (native.Errors is null || native.Invalidations is null
+                || native.AutonomyBudget.ValueKind != JsonValueKind.Object)
+                throw new JsonException("Native Agent operational fields are absent.");
+            if (native.Session is { } session && (session.Profile != "native-logical-v1"
+                || string.IsNullOrWhiteSpace(session.SessionId) || session.RecoveryEpoch < 0
+                || session.StateVersion < 0 || session.AgentState is not ("known" or "uncertain")))
+                throw new JsonException("Native Agent session binding is invalid.");
+            if (native.PendingRequest is { } pending && (pending.RunId != native.RunId
+                || string.IsNullOrWhiteSpace(pending.RequestId) || string.IsNullOrWhiteSpace(pending.RuntimeInstanceId)
+                || string.IsNullOrWhiteSpace(pending.SessionId) || string.IsNullOrWhiteSpace(pending.BasisAcquisitionId)
+                || string.IsNullOrWhiteSpace(pending.SnapshotId) || string.IsNullOrWhiteSpace(pending.ActionId)
+                || pending.SubmissionEpoch < 0 || pending.Status is not ("pending" or "unresolved")))
+                throw new JsonException("Native Agent original pending request is invalid.");
+            if (native.LastResult is { } result && (string.IsNullOrWhiteSpace(result.RequestId)
+                || result.Status is not ("pending" or "terminal")))
+                throw new JsonException("Native Agent result status is invalid.");
+            if (native.LastDirective is { } directive) EnsureNativeDirective(directive);
+        }
         if (string.IsNullOrWhiteSpace(status.RunId))
             throw new JsonException("Policy Runtime run identity is absent.");
         if (status.Lifecycle is not ("running" or "stopped")
             || status.Mode is not ("human" or "shadow" or "one_step" or "auto")
-            || status.Controller is not ("held" or "released"))
+            || (status.Controller is not ("held" or "released")
+                && !(status is NativeAgentRuntimeStatus && status.Controller == "unknown")))
         {
             throw new JsonException("Policy Runtime lifecycle status is invalid.");
         }
+    }
+
+    private static void EnsureNativeDirective(JsonElement directive)
+    {
+        if (directive.ValueKind != JsonValueKind.Object || !directive.TryGetProperty("type", out JsonElement type))
+            throw new JsonException("Native directive type is absent.");
+        string[] fields = type.GetString() switch
+        {
+            "act" => ["type", "basis_acquisition_id", "selection", "scores"],
+            "await" => ["type", "after_cursor", "condition", "timeout_ms"],
+            "abstain" or "close" => ["type", "reason"],
+            _ => throw new JsonException("Native directive is unsupported.")
+        };
+        if (directive.EnumerateObject().Count() != fields.Length || fields.Any(field => !directive.TryGetProperty(field, out _)))
+            throw new JsonException("Native directive fields are invalid.");
+        if (type.GetString() != "act") return;
+        JsonElement selection = directive.GetProperty("selection"), scores = directive.GetProperty("scores");
+        if (selection.ValueKind != JsonValueKind.Object || !selection.TryGetProperty("kind", out JsonElement kind)
+            || kind.GetString() is not ("handle" or "expression"))
+            throw new JsonException("Native action selection is invalid.");
+        if (kind.GetString() == "handle" && (!selection.TryGetProperty("action_id", out JsonElement action)
+            || action.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(action.GetString())))
+            throw new JsonException("Native action handle is invalid.");
+        if (scores.ValueKind == JsonValueKind.Null) return;
+        if (scores.ValueKind != JsonValueKind.Object || !scores.TryGetProperty("catalog_digest", out JsonElement catalog)
+            || !PlatformNativeWorkbenchPair.Hex(catalog.GetString(), 64) || !scores.TryGetProperty("values", out JsonElement values)
+            || values.ValueKind != JsonValueKind.Array || values.GetArrayLength() > 65536
+            || values.EnumerateArray().Any(value => value.ValueKind != JsonValueKind.Number
+                || !value.TryGetDouble(out double score) || !double.IsFinite(score)))
+            throw new JsonException("Native catalogue scores are invalid.");
     }
 
     private static void ValidateMode(string mode)

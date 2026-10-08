@@ -9,11 +9,13 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../PlatformLiveUiMount.cs" Link="PlatformLiveUiMount.cs" />
     <Compile Include="../PlatformLiveActionFeed.cs" Link="PlatformLiveActionFeed.cs" />
     <Compile Include="../PlatformCollectionHandoff.cs" Link="PlatformCollectionHandoff.cs" />
     <Compile Include="../PlatformPolicyCommands.cs" Link="PlatformPolicyCommands.cs" />
     <Compile Include="../PlatformPolicyBinding.cs" Link="PlatformPolicyBinding.cs" />
     <Compile Include="../PlatformPolicyTransport.cs" Link="PlatformPolicyTransport.cs" />
+    <Compile Include="../PlatformRuntimeContracts.cs" Link="PlatformRuntimeContracts.cs" />
     <Compile Include="../PlatformWorkbenchOpen.cs" Link="PlatformWorkbenchOpen.cs" />
     <Compile Include="../PlatformNativeWorkbenchPair.cs" Link="PlatformNativeWorkbenchPair.cs" />
     <Compile Include="../PlatformNativeWorkbenchClient.cs" Link="PlatformNativeWorkbenchClient.cs" />

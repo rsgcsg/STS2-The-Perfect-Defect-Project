@@ -44,6 +44,7 @@ ACTIONS = frozenset(
         "models.takeover",
         "models.human",
         "models.stop",
+        "models.reconcile",
         "identity.login",
         "identity.poll",
         "identity.logout",
@@ -79,6 +80,8 @@ _PRECONDITION_CODES = frozenset(
         "unknown_local_model",
         "new_experiment_precondition_failed",
         "native_model_intent_superseded",
+        "native_pending_request_required",
+        "native_pending_request_changed",
     }
 )
 _PRIVATE_KEYS = frozenset(
@@ -232,6 +235,18 @@ class NativeWorkbenchApi:
                 and not loading
                 and session.get("status") not in {"command_unknown", "recovery_required"}
             )
+            runtime = session.get("runtime")
+            pending = runtime.get("pending_request") if isinstance(runtime, dict) else None
+            request_id = pending.get("request_id") if isinstance(pending, dict) else None
+            can_reconcile = (
+                session.get("loaded") is True
+                and isinstance(runtime, dict)
+                and isinstance(pending, dict)
+                and runtime.get("schema") == "sts2.policy-runtime/agent-session-status-1"
+                and isinstance(request_id, str)
+                and bool(request_id)
+                and pending.get("run_id") == runtime.get("run_id")
+            )
 
             controls.extend(
                 [
@@ -275,6 +290,23 @@ class NativeWorkbenchApi:
                     ),
                     action("models.human", "暂停并交还 Human"),
                     action("models.stop", "结束模型运行"),
+                    action(
+                        "models.reconcile",
+                        "明确查询原始待定请求",
+                        [
+                            field(
+                                "request_id",
+                                "原始 Runtime 请求",
+                                "enum",
+                                request_id or "",
+                                [{"value": request_id, "label": request_id}]
+                                if can_reconcile
+                                else [],
+                            ),
+                        ],
+                        enabled=can_reconcile,
+                        reason=None if can_reconcile else "native_pending_request_required",
+                    ),
                 ]
             )
             if context_id:
@@ -682,6 +714,9 @@ class NativeWorkbenchApi:
                 return app.models.recover_native_intent(body["native_request_id"], mode)
             exact(body, set())
             return app.models.command(mode)
+        if action_id == "models.reconcile":
+            exact(body, {"request_id"})
+            return app.models.command("reconcile", request_id=body["request_id"])
         if action_id == "identity.login":
             exact(body, {"device_name"})
             return app.account.begin(body["device_name"])

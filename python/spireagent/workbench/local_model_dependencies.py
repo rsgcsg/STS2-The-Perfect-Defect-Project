@@ -15,6 +15,15 @@ def require_local_models(owner: str) -> None:
         raise BoundaryError(owner, "local_models_extra_required")
 
 
+def native_models_available() -> bool:
+    return all(find_spec(name) is not None for name in ("torch", "safetensors"))
+
+
+def require_native_models(owner: str) -> None:
+    if not native_models_available():
+        raise BoundaryError(owner, "native_models_extra_required")
+
+
 def recipe_dependencies_available(recipe_id: str) -> bool:
     if recipe_id == "structured-m2-cpu-v2":
         return find_spec("torch") is not None

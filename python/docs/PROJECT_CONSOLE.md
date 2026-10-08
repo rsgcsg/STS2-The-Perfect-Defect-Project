@@ -374,6 +374,29 @@ new selection. An explicit offline Runtime install can stage its kit-verified pr
 private directory. A missing private profile is reported separately from a missing or drifted
 Runtime install.
 
+The long-lived local service owns `state_dir/workbench-tmp`, rather than inheriting an
+installer phase's scratch directory. Both `project open` and direct `serve` reject a finite
+POSIX `RLIMIT_FSIZE` as `workbench_file_limit_incompatible`; they never raise or remove an
+administrator's soft/hard limit. Start the service through a launcher outside a bounded
+installer phase. This is a process resource contract, not unlimited storage or a verification
+time guarantee. POSIX scratch permissions are checked for the current owner and no group/other
+access; on Windows privacy depends on the selected state directory's ACL. Normal temporary
+files are removed by their operation owner. Hard-kill orphan cleanup is not provided here.
+
+A SQLite storage failure during explicit registration returns HTTP 500 with
+`error=registration_verification_storage_failed`, `stage=local_model_registration`,
+`category=storage`, `status=failed`, and a random `error_id`. The local service log records the
+same ID with SQLite diagnostics; the browser receives no database path or traceback. This is
+separate from the existing HTTP 409 identity/precondition blockers. The browser releases its
+pending command, displays the safe log ID, and never automatically repeats the POST. Inspect
+the storage/resource environment before another explicit attempt. A listening port alone
+does not prove that registration or model loading succeeded.
+The authenticated native Workbench command endpoint preserves its existing HTTP 200
+command-result envelope: this non-precondition storage error is `unconfirmed` with
+its bounded code and `automatic_retry=false`. It exposes no SQLite path/traceback
+and does not reinterpret the failure as a retryable identity blocker. Its existing
+wire format does not carry the browser's log correlation ID.
+
 The local **准备本机模型环境** panel has three fixed actions: text-menu v1,
 M2 v1 and M2 v2.
 Each explicit request reuses an exact installed private Runtime and pin when both
@@ -412,6 +435,27 @@ use typed Platform Runtime requests; deliberate execution is distinct from loadi
 never start a local game. An uncertain effectful response is not automatically resent. A workbench
 restart requires exact instance recovery before new execution. Local Agent evidence and bounded
 operation reports remain separate from Human collection, win-rate evaluation and scientific results.
+
+Native logical Model artifacts use the same export journal, downloaded-byte
+verification and local registry as other models. The fixed
+`stpd-native-structured-m2-agent` adapter delegates package validation and
+AgentManifest construction to STPD. The immutable Model ArtifactID and package
+model ID stay distinct. Registration requires the fixed public native publication
+profile, every required seam, the actual SDK and Agent Runtime APIs, and the
+installed native Agent-session Evidence verifier. It reads capabilities without
+attaching or acquiring a controller. The native lane uses the existing primary
+Runtime installation pin; it does not choose an executable from model bytes.
+
+Native status keeps its Agent/directive/result namespace. A pending original
+request exposes one explicit `models.reconcile` recovery action through the same
+Runtime HTTP client. The selected request, Runtime run, game instance and current
+recovery epoch must still match. Runtime performs one original Result lookup and
+records its terminal or unresolved disposition while staying Human. Refreshing
+does not look up, resubmit or resume Auto. Unknown delivery and sticky taint stay
+visible. Stop/restart verifies sealed native Agent-session evidence and records an
+operational handoff; opaque state hashes do not prove numerical memory, gameplay
+qualification or scientific evaluation. The direct in-game Human and Stop
+controls consume the explicit native status DTO with their existing binding guards.
 
 Runtime commands use the versioned HTTP/2 mutation routes and the process run ID captured at
 startup. The Runtime checks that ID before any command, including Stop during Workbench shutdown.
@@ -698,13 +742,13 @@ or use reservation and do not enter training-input/model ancestry. An ordinary
 Agent source JSON, capsule hash or `engineering_only` label cannot establish
 provenance. Historical S0 input meaning is unchanged.
 
-The structured Agent registry entry still reports
-`structured_installation_adapter_required`: STPD must supply its public package
-verifier/installation builder before Workbench export/registration can offer it.
-Typed source admission and training are therefore distinct from structured model
-installation support. Training HTTP/console consumption is implemented below;
-source/test seams do not complete the ordinary end-to-end model journey,
-runtime/Human qualification or final G2/V1 user acceptance.
+The native structured Agent registry entry uses STPD's public package verifier
+and installation builder through the fixed application adapter. Typed source
+admission, training, export/registration and online Runtime execution remain
+separate checks. Source implementations and synthetic tests do not complete
+native runtime/Human qualification or final G2/V1 user acceptance. Historical
+structured adapters without a public installation builder retain their explicit
+`structured_installation_adapter_required` disposition.
 
 
 ## Local training browser boundary

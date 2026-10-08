@@ -7,7 +7,7 @@ using STS2Connector.PlayerEnvironment.Protocol;
 
 namespace STS2Connector.PlayerEnvironment;
 
-internal enum NativeLogicalProjectionReplacement { Grid, ChoicePeek, BundlePeek }
+internal enum NativeLogicalProjectionReplacement { Grid, ChoicePeek, BundlePeek, InformationPage, HeldCard, PotionTarget }
 
 /// <summary>The exact native adapter replaces only its old holder/window facts.
 /// Shared/persistent/consistency gaps are not evidence supplied by that adapter.</summary>
@@ -22,6 +22,13 @@ internal static class NativeLogicalCapturePolicy
         { "visible_cards", "current_controls", "current_ui_controls" };
     private static readonly IReadOnlySet<string> BundlePeekGaps = new HashSet<string>(StringComparer.Ordinal)
         { "bundle_membership", "stage", "legal_actions" };
+
+    private static readonly IReadOnlySet<string> InformationGaps = new HashSet<string>(StringComparer.Ordinal)
+        { "current_native_information_projection_incomplete" };
+    private static readonly IReadOnlySet<string> HeldCardGaps = new HashSet<string>(StringComparer.Ordinal)
+        { "current_native_card_display" };
+    private static readonly IReadOnlySet<string> PotionTargetGaps = new HashSet<string>(StringComparer.Ordinal)
+        { "current_native_potion_target_projection_incomplete" };
 
     // A qualified binder may supersede only a projection of this same owner,
     // including the old adapter's explicit failure for this exact source type.
@@ -56,6 +63,9 @@ internal static class NativeLogicalCapturePolicy
             NativeLogicalProjectionReplacement.Grid => GridGaps,
             NativeLogicalProjectionReplacement.ChoicePeek => ChoicePeekGaps,
             NativeLogicalProjectionReplacement.BundlePeek => BundlePeekGaps,
+            NativeLogicalProjectionReplacement.InformationPage => InformationGaps,
+            NativeLogicalProjectionReplacement.HeldCard => HeldCardGaps,
+            NativeLogicalProjectionReplacement.PotionTarget => PotionTargetGaps,
             _ => throw new ArgumentOutOfRangeException(nameof(scope))
         };
         const string catalogGap = "finite_bound_action_projection_incomplete";
@@ -73,6 +83,38 @@ internal static class NativeLogicalCapturePolicy
             discovery, missing, inherited.HiddenByPolicy);
     }
 
+    // A new entered page supplies its own declared slice, not the inherited
+    // persistent/shared/consistency obligations. Compatibility text profiles
+    // retain their existing projection; only native-logical calls this merge.
+    internal static PlayerEnvironmentSnapshot PreserveNativeScope(PlayerEnvironmentSnapshot inherited,
+        PlayerEnvironmentSnapshot projected, NativeLogicalProjectionReplacement scope, bool nativeLogical)
+    {
+        if (!nativeLogical) return projected;
+        bool solved = projected.Completeness.Status == "complete"
+            && projected.Completeness.Missing.Count == 0
+            && projected.Interaction.Kind != "native_information_unresolved";
+        IEnumerable<string> ownMissing = projected.Completeness.Missing;
+        if (!solved && (!ownMissing.Any() || projected.Interaction.Kind == "native_information_unresolved"))
+            ownMissing = ownMissing.Append(scope switch
+        {
+            NativeLogicalProjectionReplacement.HeldCard => "current_native_card_display",
+            NativeLogicalProjectionReplacement.PotionTarget => "current_native_potion_target_projection_incomplete",
+            _ => "current_native_information_projection_incomplete"
+        });
+        PlayerEnvironmentCompleteness completeness = Replace(inherited.Completeness, scope,
+            solved, ownMissing, projected.Completeness.VisibleInformation, projected.Completeness.InteractionDiscovery);
+        completeness = completeness with
+        {
+            HiddenByPolicy = inherited.Completeness.HiddenByPolicy.Concat(projected.Completeness.HiddenByPolicy)
+                .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()
+        };
+        return projected with
+        {
+            Completeness = completeness,
+            Status = solved ? ProjectionStatus("active", inherited.Status, completeness) : FailureStatus(inherited.Status)
+        };
+    }
+
     internal static string FailureStatus(string actualSourceStatus) =>
         actualSourceStatus is "settling" or "observed" ? actualSourceStatus : "visible_unsupported";
 
@@ -81,7 +123,7 @@ internal static class NativeLogicalCapturePolicy
             : completeness.Status == "complete" ? "interactive" : FailureStatus(inheritedStatus);
 
     internal static TextMenuFrame CloseIncompleteRequiredScope(TextMenuFrame frame) =>
-        frame.Page.Completeness.Status == "complete" ? frame
+        frame.Page.Completeness.Status == "complete" && frame.Page.Completeness.Missing.Count == 0 ? frame
             : frame with { Page = frame.Page with { Status = FailureStatus(frame.Page.Status) }, Leaves = Array.Empty<TextMenuLeaf>() };
 
     internal static TextMenuFrame Partial(PlayerEnvironmentSnapshot source, string ownerKey, string reason) =>
