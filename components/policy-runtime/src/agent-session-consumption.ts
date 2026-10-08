@@ -208,6 +208,7 @@ export class AgentConsumptionLedger {
     if (advanced && this.currentVersion === Number.MAX_SAFE_INTEGER) throw new AgentSessionError("state_version_exhausted");
     if (advanced && this.consumptionIds.size >= 65_536) throw new AgentSessionError("consumption_id_capacity");
     const publication = known.acquisition.publication_index;
+    const newPublication = publication !== null && BigInt(publication) > this.lastPublication;
     if (this.manifest.input.history_mode === "full_reference") {
       if (this.requiredGapPending || (publication === null && advanced && !this.resetBasisAllowed)) throw new AgentSessionError("full_reference_gap");
       if (publication !== null && BigInt(publication) < this.lastPublication) throw new AgentSessionError("publication_regressed");
@@ -226,8 +227,13 @@ export class AgentConsumptionLedger {
       this.resetBasisAllowed = false;
       if (previousOccurrence !== null) this.dropUnreferencedFacts(previousOccurrence);
     }
-    if (advanced || publication !== null) this.lastConsumedPublication = publication;
-    if (publication !== null) { this.lastPublication = BigInt(publication); this.receivedUnconsumed = Math.max(0, this.receivedUnconsumed - 1); }
+    if (advanced || newPublication) this.lastConsumedPublication = publication;
+    // A source position is consumed once even if its same-unit report is replayed.
+    // A new position can still be acknowledged without another Model/state advance.
+    if (newPublication) {
+      this.lastPublication = BigInt(publication!);
+      this.receivedUnconsumed = Math.max(0, this.receivedUnconsumed - 1);
+    }
     const completeness = sessionObject(known.acquisition.observation.completeness);
     this.missingScopes = validateAgentScope(completeness.missing);
     return freeze({ consumption_id: report.consumption_id, acquisition_id: report.acquisition_id,

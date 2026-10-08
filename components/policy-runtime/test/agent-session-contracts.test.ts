@@ -64,6 +64,28 @@ describe("additive Agent manifest/consumption contract", () => {
     expect(ack.prefix.consumed_publication_index).toBe("12");
     expect(() => ledger.accept(report("A_duplicate", 2, "consumed-1"))).toThrow("consumption_unit_advance_mismatch");
   });
+  it("replayed consumption cannot erase another received but unconsumed publication", () => {
+    const ledger = new AgentConsumptionLedger(manifest(), "segment");
+    ledger.register(acquisition("A")); ledger.register(acquisition("B"));
+    ledger.noteReceived("cursor-13", 2);
+    expect(ledger.accept(report("A", 1)).prefix.omissions.received_unconsumed_count).toBe(1);
+    const duplicate = ledger.accept(report("A", 1, "consumed-1", false));
+    expect(duplicate.prefix.omissions.received_unconsumed_count).toBe(1);
+    expect(duplicate.state_version).toBe(1);
+    expect(ledger.accept(report("B", 2, "consumed-1")).prefix.omissions.received_unconsumed_count).toBe(0);
+  });
+  it("a new publication of the same occurrence is counted once without a state advance", () => {
+    const ledger = new AgentConsumptionLedger(manifest(), "segment");
+    ledger.register(acquisition("A"));
+    const nextPublication = acquisition("A_duplicate"); nextPublication.publication_index = "13";
+    ledger.register(nextPublication); ledger.noteReceived("cursor-13", 2);
+    ledger.accept(report("A", 1));
+    expect(ledger.accept(report("A_duplicate", 1, "consumed-1", false)).prefix).toMatchObject({
+      consumed_publication_index: "13", omissions: { received_unconsumed_count: 0 }
+    });
+    ledger.noteReceived("cursor-14", 1);
+    expect(ledger.accept(report("A_duplicate", 1, "consumed-1", false)).prefix.omissions.received_unconsumed_count).toBe(1);
+  });
   it("advances A-B-A and same-feature new focus by occurrence, never content hash", () => {
     const ledger = new AgentConsumptionLedger(manifest(), "segment");
     for (const [index, key] of ["A", "B", "A_return", "same_features_new_focus"].entries()) {

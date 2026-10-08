@@ -149,4 +149,30 @@ describe("strict duplex Agent session child port", () => {
     await vi.advanceTimersByTimeAsync(shared.manifest.limits.agent_timeout_ms);
     await rejected; expect(f.child.kill).toHaveBeenCalledWith("SIGKILL");
   });
+  it.each(["timeout", "close", "poison", "external_abort"] as const)("%s aborts the dispatched query's owned scope", async reason => {
+    vi.useFakeTimers();
+    const f = fixture(); await f.port.ready();
+    let querySignal: AbortSignal | undefined;
+    let disposed = false;
+    const h = handlers();
+    h.query = vi.fn((_input, signal) => {
+      querySignal = signal;
+      signal.addEventListener("abort", () => { disposed = true; }, { once: true });
+      return new Promise<AgentQueryResult>(() => {});
+    });
+    const caller = new AbortController();
+    const result = f.port.next(context, initial, h, caller.signal, () => {});
+    f.emit("query", "child-owned-query", "input", { method: "resolve", arguments: {} });
+    expect(querySignal?.aborted).toBe(false);
+    const rejected = expect(result).rejects.toThrow();
+    if (reason === "timeout") await vi.advanceTimersByTimeAsync(shared.manifest.limits.agent_timeout_ms);
+    else if (reason === "close") f.port.close();
+    else if (reason === "poison") f.emit("directive", "parent-unknown", "output", abstain);
+    else caller.abort();
+    await rejected;
+    expect(querySignal?.aborted).toBe(true);
+    expect(disposed).toBe(true);
+    expect(f.child.kill).toHaveBeenCalledWith("SIGKILL");
+    if (reason !== "external_abort") expect(caller.signal.aborted).toBe(false);
+  });
 });

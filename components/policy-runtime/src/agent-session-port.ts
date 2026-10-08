@@ -43,6 +43,7 @@ interface Pending {
   input: AgentConsumeInput | AgentNextInput;
   handlers?: AgentPortHandlers;
   signal: AbortSignal;
+  cancellation: AbortController;
   resolve: (value: AgentConsumeAck | AgentDirectiveOutput | AgentExportedState | AgentStateMetadata) => void;
   reject: (error: Error) => void;
   cleanup: () => void;
@@ -164,11 +165,12 @@ export class NdjsonAgentSessionPort {
     const message = { schema: AGENT_SESSION_SCHEMA, message_type: kind, ...checkedContext, request_id: requestId, input };
     const prepared = this.prepareWrite(message);
     return new Promise((resolve, reject) => {
+      const cancellation = new AbortController();
       const onAbort = () => this.fail(new AgentSessionError("agent_call_cancelled"));
       const timer = setTimeout(() => this.fail(new AgentSessionError("agent_call_timeout")), this.limits.agent_timeout_ms);
       const cleanup = () => { clearTimeout(timer); signal.removeEventListener("abort", onAbort); };
       const boundInput = kind === "consume" ? { ...input, input_spec: { ...(input as AgentConsumeInput).input_spec } } : { ...input };
-      this.pending.set(requestId, { kind, context: { ...checkedContext }, input: boundInput, handlers, signal,
+      this.pending.set(requestId, { kind, context: { ...checkedContext }, input: boundInput, handlers, signal: cancellation.signal, cancellation,
         resolve: value => resolve(value as AgentConsumeAck | AgentDirectiveOutput), reject, cleanup, latestAck: null, queries: 0, queryBytes: 0,
         pendingQueries: 0, reportPending: false });
       signal.addEventListener("abort", onAbort, { once: true });
@@ -199,6 +201,7 @@ export class NdjsonAgentSessionPort {
     const prepared = this.prepareWrite({ schema: AGENT_SESSION_SCHEMA, message_type: kind,
       ...checkedContext, request_id: requestId, input });
     return new Promise((resolve, reject) => {
+      const cancellation = new AbortController();
       const onAbort = () => this.fail(new AgentSessionError("agent_call_cancelled"));
       const timer = setTimeout(() => this.fail(new AgentSessionError("agent_call_timeout")), this.limits.agent_timeout_ms);
       const cleanup = () => { clearTimeout(timer); signal.removeEventListener("abort", onAbort); };
@@ -206,7 +209,7 @@ export class NdjsonAgentSessionPort {
       this.pending.set(requestId, { kind, context: checkedContext,
         input: { continuity_token: binding.continuity_token, consumption_id: binding.consumption_id,
           state_version: binding.state_version, basis_acquisition_id: binding.last_acknowledged_basis.acquisition_id,
-          received_cursor: binding.prefix.received_cursor }, signal, resolve: value => resolve(value as AgentExportedState | AgentStateMetadata), reject,
+          received_cursor: binding.prefix.received_cursor }, signal: cancellation.signal, cancellation, resolve: value => resolve(value as AgentExportedState | AgentStateMetadata), reject,
         cleanup, latestAck: null, queries: 0, queryBytes: 0, pendingQueries: 0, reportPending: false,
         stateCall: { manifest, authorization, input } });
       signal.addEventListener("abort", onAbort, { once: true });
@@ -367,7 +370,11 @@ export class NdjsonAgentSessionPort {
     this.closed = true;
     const error = value instanceof Error ? value : new AgentSessionError("agent_port_failed");
     if (!this.readyIdentity) this.rejectReady(error);
-    for (const pending of this.pending.values()) { pending.cleanup(); pending.reject(error); }
+    for (const pending of this.pending.values()) {
+      pending.cleanup();
+      pending.cancellation.abort(error);
+      pending.reject(error);
+    }
     this.pending.clear();
     if (this.child.exitCode === null) this.child.kill("SIGKILL");
   }

@@ -59,3 +59,18 @@ Remaining dependency and work:
 No game, production package installation, provider, real data/training, publication,
 push or merge occurred. Developer dependency preparation and synthetic temporary
 evidence directories are the only external filesystem effects of this checkpoint.
+
+## Independent c91 review repairs
+
+Independent review reproduced two P2 defects on `c91c139676c9f3eba15bee7b52ce27dbec2b8ef9`:
+replaying an acknowledged publication decremented the remaining observation count
+again, and port timeout killed the child without aborting the dispatched query.
+The repair counts only a newly acknowledged source publication, preserving a new
+publication of the same occurrence without another state advance. Each port call
+now owns a cancellation scope shared with its handlers; timeout, close, protocol
+failure and external abort revoke it before rejecting the call.
+
+Six faithful regressions cover replay accounting, new-position duplicate units,
+and all four cancellation causes. Fresh typecheck, all 238 Runtime tests (47 new
+session tests), and build pass. Actual SDK/native lifecycle integration remains the
+separate pending work above; these repairs do not complete that branch or G2/V1.
