@@ -254,10 +254,13 @@ internal sealed partial class NativeLogicalService : IDisposable
     }
     private void ObserveOwnerReady(NativeDecisionOwnerReadyObservation observed) =>
         Publish("native_owner_ready", observed.Domain, observed.Domain == NativeDecisionOwnerReadyProvider.GameOverDomain ? "terminal" : "observation");
-    internal void Publish(string seam, string phase, string kind = "observation")
+    internal void Publish(string seam, string phase, string kind = "observation") => _ = PublishTracked(seam, phase, kind);
+    // Acknowledges original source accounting only, including explicit missing;
+    // it never means readiness, dispatch acceptance, effects or native Commit.
+    internal bool PublishTracked(string seam, string phase, string kind = "observation")
     {
-        try { SynchronizeRun(); CaptureReservation(Hub.Reserve(seam, phase, kind)); }
-        catch (Exception) { /* Native diagnostics cannot interfere with gameplay. */ }
+        try { SynchronizeRun(); CaptureReservation(Hub.Reserve(seam, phase, kind)); return true; }
+        catch (Exception) { return false; /* Native observer failure cannot alter gameplay. */ }
     }
     private void CaptureReservation(NativeLogicalPublicationReservation reservation)
     {
