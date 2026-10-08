@@ -85,3 +85,66 @@ relations and the writer, but no strength, learned timing, optimal teacher or
 scientific quality is claimed. The next coherent learning step extends the existing
 numerical engine/workload through an explicit trusted InputSpec profile; it does
 not create another optimizer, trainer or operation journal.
+
+## Shared numerical workload and trained package
+
+The explicit `stpd/native-structured-training-source-v1` wrapper contains the
+fixed InputSpec descriptor, teacher declaration and source-grouped train/dev/test
+runs. Each run carries original native observation/catalog pairs, explicit
+continuity resets and sparse exact catalog labels. The native sequence owner
+computes occurrence advances directly; it never manufactures a legacy Snapshot.
+It produces the existing `StructuredRun`/`StructuredStep` and `StructuredDataset`
+with an optional frozen InputSpec descriptor. Legacy datasets default to None
+and retain their previous projection, advance, source and namespace meanings.
+Only synthetic input is admitted by this parser; old canonical records and bare
+native/Human flags are rejected.
+
+The caller explicitly selects
+`native-structured-numerical-training-code-closure-v1` through the existing
+`prepare_structured_workload`/`execute_structured_workload` APIs. There is one
+`StructuredTrainingEngine`, AdamW optimizer, four-actual-advance TBPTT recipe,
+seed 0, learning rate 1e-3 and CPU thread count 2. Empty C consumes/advances W
+without an N label or fake Wait. InputSpec, profile, source bytes/order, numerical
+source closure, full dependency lock and runtime are frozen before publication
+or numerical mutation. Native source, training-input, experiment, run,
+checkpoint, Model and report use explicit native namespaces; legacy artifacts
+never silently enter them. Existing application attempt authority, explicit
+checkpoint selection, bounded attempt ancestry, cumulative update budget,
+pause/cancel and uncertain-publication reconciliation remain the same owners.
+
+The strict standalone native-package-v1 shape is retained. Trained publication
+uses `stpd/native-structured-m2-package-v2`, binding the original source ArtifactID,
+training-input ArtifactID, synthetic validation identity and truthful
+`synthetic_engineering_only` qualification. Provenance binds the actual training
+and export producers, run/training-input/checkpoint IDs and export platform.
+Source kind alone cannot admit a native recording or upgrade qualification.
+Actual native source admission requires the owning E2 verifier/bridge and its
+closed source/receipt contract; this numerical packet does not provide that gate.
+
+The immutable Model Artifact schema is `stpd/native-structured-m2-model-v1`.
+Its parents are exactly run, checkpoint and training_input; its own payloads are
+package_manifest (`model.json`, application/json) and weights
+(`weights.tensor-tree`, application/vnd.stpd.tensor-tree). Its ArtifactID remains
+separate from the package's model_id. `is_native_model_schema`,
+`require_native_model_package` and `export_native_model` in
+`policy.native_structured_export` validate the exact own-byte package/weight
+closure and lineage IDs. Export reads only those authorized own payloads, without
+opening private ancestors. The application retains its existing export journal,
+permissions, budgets, registration and Runtime lifecycle; no second ledger or
+training service is introduced.
+
+The Agent's code-owned mechanical support declarations are singleton `['*']`
+for interaction_kinds/action_verbs under exact native-logical-v1/InputSpec and
+resource bounds. Finite arrays remain exact whole-input checks; mixed wildcard
+arrays and game-version/commit wildcards are rejected. This declares numerical
+acceptance of valid strings, not implemented native families or complete capture
+seams. Included interaction scope always requires the actual object, including
+terminal observations. Only scope omission permits wire-level interaction null;
+this full-reference model does not fabricate an empty page. Explicit persistent
+null remains valid public absence.
+
+Tiny synthetic checks exercise actual loss-reducing optimizer updates, exact
+paused/resumed weights/W/AdamW/budgets, immutable Model/checkpoint publication,
+closed export and the fresh fixed stdio Agent action/empty-C loop. They do not
+qualify native recording training, Human origin, installed Runtime behavior,
+model quality, provider execution or scientific independence.

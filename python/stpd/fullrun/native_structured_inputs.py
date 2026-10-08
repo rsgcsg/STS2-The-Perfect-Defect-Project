@@ -344,21 +344,12 @@ def project_native_structured(
             persistent, {"content_schema", "content"}, "native_structured_input.persistent"
         )["content"]
     page = observation["interaction"]
-    if page is not None:
-        page = object_fields(
-            page,
-            {
-                "interaction_id",
-                "kind",
-                "stage",
-                "prompt",
-                "content_schema",
-                "content",
-                "capabilities",
-            },
-            "native_structured_input.page",
-        )
-        page = {key: page[key] for key in ("kind", "stage", "prompt", "content")}
+    page = object_fields(
+        page,
+        {"interaction_id", "kind", "stage", "prompt", "content_schema", "content", "capabilities"},
+        "native_structured_input.page",
+    )
+    page = {key: page[key] for key in ("kind", "stage", "prompt", "content")}
     roots = {
         "CURRENT_PERSISTENT": persistent,
         "CURRENT_PAGE": page,

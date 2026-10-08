@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 
 from .canonical import semantic_hash
-from .structured_code_scope import INFERENCE_PATHS, ROOT, _regular_bytes
+from .structured_code_scope import INFERENCE_PATHS, ROOT, TRAINING_PATHS, _regular_bytes
 
 SCOPE = "native-structured-inference-code-closure-v1"
 PATHS = tuple(
@@ -40,3 +40,18 @@ def native_code_identity(root: Path = ROOT) -> dict[str, str]:
 
 def native_code_sha256(root: Path = ROOT) -> str:
     return semantic_hash(native_code_identity(root))
+
+
+TRAINING_SCOPE = "native-structured-numerical-training-code-closure-v1"
+TRAINING_PATHS_NATIVE = tuple(sorted(set(TRAINING_PATHS) | set(PATHS) | {
+    "stpd/fullrun/native_training_sequences.py",
+}))
+
+
+def native_training_code_identity(root: Path = ROOT) -> dict[str, str]:
+    root = root.resolve()
+    rows = [{"path": relative, "sha256": hashlib.sha256(_regular_bytes(root, relative)).hexdigest()}
+            for relative in TRAINING_PATHS_NATIVE]
+    return {"schema": "stpd/native-structured-training-code-identity-v1",
+            "scope": TRAINING_SCOPE, "source_sha256": semantic_hash(rows),
+            "dependency_lock_sha256": hashlib.sha256(_regular_bytes(root, "uv.lock")).hexdigest()}

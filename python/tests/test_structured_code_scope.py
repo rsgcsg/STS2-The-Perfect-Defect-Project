@@ -322,6 +322,21 @@ CROSS_SCOPE_FUNCTIONS = {
     ("stpd/workers/structured_execution.py", "execute_structured_workload"),  # Final export only.
 }
 
+# Exact imports behind reviewed native descriptor/scope or publication branches.
+# This preserves legacy scope independence while checking the native closure too.
+NATIVE_SCOPE_IMPORTS = {
+    ("stpd/structured_profiles.py", "validate_profile"): {
+        "stpd/fullrun/native_structured_inputs.py"},
+    ("stpd/structured_profiles.py", "profile_projection"): {
+        "stpd/fullrun/native_structured_inputs.py"},
+    ("stpd/structured_profiles.py", "parse_dataset"): {"stpd/fullrun/native_training_sequences.py"},
+    ("stpd/structured_profiles.py", "numerical_code_identity"): {"stpd/native_code_scope.py"},
+    ("stpd/workers/structured_execution.py", "_completed"): {
+        "stpd/policy/native_structured_export.py"},
+    ("stpd/workers/structured_execution.py", "execute_structured_workload"): {
+        "stpd/policy/native_structured_export.py"},
+}
+
 
 def _local_module_path(module: str) -> str | None:
     if module.split(".")[0] not in {"stpd", "spireagent"}:
@@ -380,6 +395,8 @@ def test_reviewed_static_potential_imports_and_initializers_are_covered(scope, p
                     if (scope == TRAINING_SCOPE and path.startswith("stpd/policy/")
                             and (relative, function) in CROSS_SCOPE_FUNCTIONS):
                         allowed |= set(INFERENCE_PATHS)
+                    if scope == TRAINING_SCOPE:
+                        allowed |= NATIVE_SCOPE_IMPORTS.get((relative, function), set())
                     assert path in allowed, (scope, relative, function, path)
                     parent = Path(path).parent
                     while str(parent) != ".":
