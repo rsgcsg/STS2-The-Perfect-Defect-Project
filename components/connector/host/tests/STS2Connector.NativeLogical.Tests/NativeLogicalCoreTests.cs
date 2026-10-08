@@ -45,6 +45,23 @@ public sealed class NativeLogicalCoreTests
         Assert.True(encoded.Length <= new NativeLogicalLimits().MaxPageBytes);
     }
     [Fact]
+    public void SharedGenericNativePublicDomainsMatchTheOwningDto()
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "native-logical-public-domains-v1.json")));
+        foreach (var fixture in doc.RootElement.GetProperty("cases").EnumerateArray())
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(fixture.GetProperty("wire").GetRawText());
+            if (fixture.GetProperty("valid").GetBoolean())
+            {
+                var observation = NativeLogicalDecoder.Decode<NativeLogicalObservation>(bytes);
+                Assert.Equal("observed", observation.Status);
+                Assert.Equal("card", observation.Referents[0].Kind);
+                Assert.Equal("logical-public", observation.Referents[0].State.ObservationBasis);
+            }
+            else Assert.Throws<NativeLogicalException>(() => NativeLogicalDecoder.Decode<NativeLogicalObservation>(bytes));
+        }
+    }
+    [Fact]
     public void SharedIndependentDigestAndGrammarFixturesAgree()
     {
         using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "native-logical-v1.json")));
