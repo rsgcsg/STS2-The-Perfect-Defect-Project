@@ -129,7 +129,8 @@ export class AgentConsumptionLedger {
       } else {
         if (field === "referents") {
           if (!Array.isArray(observation.referents)) throw new AgentSessionError("native_referents_required");
-        } else if (observation[field] === null || typeof observation[field] !== "object" || Array.isArray(observation[field])) {
+        } else if (!(field === "persistent" && Object.hasOwn(observation, field) && observation[field] === null)
+          && (observation[field] === null || typeof observation[field] !== "object" || Array.isArray(observation[field]))) {
           throw new AgentSessionError(`native_${field}_required`);
         }
         if (field === "interaction") {
