@@ -1,6 +1,5 @@
 using STS2Connector.PlayerEnvironment.Protocol;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -32,7 +31,7 @@ public static partial class ConnectorMod
 
     private static HttpListener? _listener;
     private static Thread? _serverThread;
-    private static readonly ConcurrentQueue<Action> _mainThreadQueue = new();
+    private static readonly MainThreadWorkQueue _mainThreadQueue = new();
     internal static readonly JsonSerializerOptions _jsonOptions = new()
     {
         WriteIndented = true,
@@ -211,36 +210,14 @@ public static partial class ConnectorMod
 
     private static void ProcessMainThreadQueue()
     {
-        int processed = 0;
-        while (_mainThreadQueue.TryDequeue(out var action) && processed < 10)
-        {
-            try { action(); }
-            catch (Exception ex) { GD.PrintErr($"[STS2 Connector] Main thread action error: {ex}"); }
-            processed++;
-        }
+        _mainThreadQueue.Drain(10);
     }
 
-    internal static Task<T> RunOnMainThread<T>(Func<T> func)
-    {
-        var tcs = new TaskCompletionSource<T>();
-        _mainThreadQueue.Enqueue(() =>
-        {
-            try { tcs.SetResult(func()); }
-            catch (Exception ex) { tcs.SetException(ex); }
-        });
-        return tcs.Task;
-    }
+    internal static Task<T> RunOnMainThread<T>(Func<T> func, CancellationToken cancellationToken = default) =>
+        _mainThreadQueue.Enqueue(func, cancellationToken);
 
-    internal static Task RunOnMainThread(Action action)
-    {
-        var tcs = new TaskCompletionSource<bool>();
-        _mainThreadQueue.Enqueue(() =>
-        {
-            try { action(); tcs.SetResult(true); }
-            catch (Exception ex) { tcs.SetException(ex); }
-        });
-        return tcs.Task;
-    }
+    internal static Task RunOnMainThread(Action action, CancellationToken cancellationToken = default) =>
+        _mainThreadQueue.Enqueue(() => { action(); return true; }, cancellationToken);
 
     private static void ServerLoop()
     {
