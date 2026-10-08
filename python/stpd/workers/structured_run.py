@@ -49,9 +49,22 @@ def prepare_structured_run(
     config: StructuredTrainingConfig,
     *,
     source_id: str | None = None,
+    operation_id: str | None = None,
 ) -> Manifest:
     """Persist a caller-authorized input using existing immutable artifact kinds."""
     config.validate()
+    execution_parameters: dict[str, Any] = {}
+    if operation_id is not None:
+        from spireagent.json_boundary import digest
+
+        from ..models.structured_engine import execution_identity
+
+        digest(operation_id, "structured_run.operation_id", length=32)
+        torch.set_num_threads(config.cpu_threads)
+        execution_parameters = {
+            "operation_id": operation_id,
+            "execution_identity": execution_identity(dataset, config),
+        }
     if source_id is None:
         payload = store.put_payload("source", io.BytesIO(dataset.source_bytes), "application/json")
         source = Manifest(
@@ -124,11 +137,12 @@ def prepare_structured_run(
         ),
         parameters=FrozenObject.of(
             {
-                "schema": RUN_SCHEMA,
+                "schema": "stpd/structured-m2-run-v2" if operation_id is not None else RUN_SCHEMA,
                 "config": asdict(config),
                 "source_sha256": dataset.source_sha256,
                 "torch_version": torch.__version__,
                 "partition": "train",
+                **execution_parameters,
             }
         ),
     )
