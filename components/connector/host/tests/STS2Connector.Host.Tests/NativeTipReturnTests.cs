@@ -32,6 +32,62 @@ public sealed class NativeTipReturnTests
         internal void Remove() => Tip = null;
     }
 
+    [Theory]
+    [InlineData("card_tips")]
+    [InlineData("relic_tips")]
+    [InlineData("potion_tips")]
+    public void MerchantTipCaptureRetainsItsExactSourceUntilNativeExit(string kind)
+    {
+        var source = new LatchedTipSource();
+        source.Enter();
+        object? retainedSource = source;
+        object? retainedSet = source.Tip;
+        NativeTipEntry? retainedEntry = NativeTipEntry.Focus;
+        // Capture's kind gate must not discard an otherwise current native owner.
+        if (!NativeTextMenuInformation.IsTipKind(kind))
+        {
+            retainedSource = retainedSet = null;
+            retainedEntry = null;
+        }
+        Assert.Same(source, retainedSource);
+        Assert.Same(source.Tip, retainedSet);
+        // The same still-rendered registry set is reusable only with retained proof.
+        Assert.True(NativeTipReturn.CanReuse(retainedSource, source, retainedEntry,
+            NativeTipEntry.Focus, retainedSet, source.Tip!, true, true));
+        int exits = 0;
+        var closed = NativeTipReturn.Close(true,
+            () => NativeTextMenuInformation.IsTipKind(kind)
+                && ReferenceEquals(retainedSet, source.Tip),
+            () => ReferenceEquals(retainedSource, source) && retainedEntry == NativeTipEntry.Focus,
+            () => { exits++; source.Exit(); }, source.Remove,
+            () => { retainedSource = retainedSet = null; retainedEntry = null; });
+        Assert.True(closed.Accepted);
+        Assert.Equal(1, exits);
+        Assert.False(source.Focused);
+        Assert.Equal(0, source.HandHoverNotifications);
+        Assert.Null(retainedSource);
+        source.Enter();
+        Assert.NotNull(source.Tip);
+        Assert.Equal(2, source.Created);
+    }
+
+    [Theory]
+    [InlineData("unknown_tips")]
+    [InlineData("potion")]
+    [InlineData("native_map")]
+    public void UndeclaredTipKindsCannotRetainOrCloseNativeInput(string kind)
+    {
+        int exits = 0, removes = 0;
+        Assert.False(NativeTextMenuInformation.IsTipKind(kind));
+        var result = NativeTipReturn.Close(true,
+            () => NativeTextMenuInformation.IsTipKind(kind), () => true,
+            () => exits++, () => removes++, () => throw new InvalidOperationException("no cleanup"));
+        Assert.False(result.Accepted);
+        Assert.Equal("native_information_owner_changed", result.ErrorCode);
+        Assert.Equal(0, exits);
+        Assert.Equal(0, removes);
+    }
+
     [Fact]
     public void ReturnBalancesFocusSoTheSameNativeHolderCanReopenTips()
     {

@@ -1729,6 +1729,10 @@ internal static class NativeTextMenuInformation
         _unresolvedTipSignal = false;
     }
 
+    internal static bool IsTipKind(string kind) =>
+        kind is "native_tip" or "relic_tips" or "card_tips"
+            or "potion_tips" or "power_tips" or "intent_tips" or "orb_tips" or "topbar_tips";
+
     private static bool IsExactOwner(object screen, string kind) =>
         screen switch
         {
@@ -1751,9 +1755,7 @@ internal static class NativeTextMenuInformation
             NInspectCardScreen card => kind == "inspect_card"
                 && ConnectorMod.IsNodeVisible(card)
                 && ActiveScreenContext.Instance.IsCurrent(card),
-            NHoverTipSet tip => kind is "native_tip" or "relic_tips" or "card_tips"
-                    or "power_tips" or "intent_tips" or "orb_tips"
-                    or "topbar_tips"
+            NHoverTipSet tip => IsTipKind(kind)
                 && (_nativeTipOwner ?? _tipOwner) is { } owner
                 && ConnectorMod.IsNodeVisible(owner)
                 && ConnectorMod.IsNodeVisible(tip)
