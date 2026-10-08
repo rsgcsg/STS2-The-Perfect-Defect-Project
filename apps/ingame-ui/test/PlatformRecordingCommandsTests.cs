@@ -157,7 +157,7 @@ public sealed class PlatformRecordingCommandsTests
     [InlineData("N")]
     [InlineData("B")]
     [InlineData("P")]
-    public void OriginalModelPreparationIsDetachedBeforeQueueAndKeepsLegacyGuidForms(string format)
+    public async Task OriginalModelPreparationIsDetachedBeforeQueueAndKeepsLegacyGuidForms(string format)
     {
         string id = Guid.NewGuid().ToString(format);
         PlatformModelPreparationRequest preparation;
@@ -178,6 +178,6 @@ public sealed class PlatformRecordingCommandsTests
                 });
         });
         Assert.False(result.IsCompleted); queue.Drain(1);
-        Assert.False(PlatformCollectionHandoff.Ready(result.GetAwaiter().GetResult()));
+        Assert.False(PlatformCollectionHandoff.Ready(await result));
     }
 }
