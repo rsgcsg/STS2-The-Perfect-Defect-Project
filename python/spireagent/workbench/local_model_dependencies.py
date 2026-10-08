@@ -6,8 +6,7 @@ from spireagent.json_boundary import BoundaryError
 
 
 def local_models_available() -> bool:
-    return all(find_spec(name) is not None for name in
-               ("torch", "tokenizers", "safetensors"))
+    return all(find_spec(name) is not None for name in ("torch", "tokenizers", "safetensors"))
 
 
 def require_local_models(owner: str) -> None:
@@ -25,9 +24,11 @@ def require_native_models(owner: str) -> None:
 
 
 def recipe_dependencies_available(recipe_id: str) -> bool:
+    from stpd.ordered_source_spec import RECIPES
+
     if recipe_id == "structured-m2-cpu-v2":
         return find_spec("torch") is not None
-    if recipe_id == "structured-m2-cpu-v3":
+    if recipe_id == "structured-m2-cpu-v3" or recipe_id in RECIPES:
         return all(find_spec(name) is not None for name in ("torch", "safetensors"))
     return local_models_available()
 

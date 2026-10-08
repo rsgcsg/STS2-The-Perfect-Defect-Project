@@ -29,7 +29,8 @@ from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import ROOT
 from spireagent.workbench.instance_lock import instance_lock
 from spireagent.workbench.trusted_recipes import (
-    STRUCTURED_SCOPED_RECIPE,
+    ORDERED_RECIPES,
+    structured_recipe_is_scoped,
     structured_recipe_run_schema,
     structured_recipe_scope,
 )
@@ -202,12 +203,13 @@ class ChildReporter:
 
 def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
     store = ManifestArtifactStore(LocalBlobStore(args.store, create=False))
-    fence = ReadOnlyAttemptFence(args.operation_file, args.operation_id, args.attempt_id,
-                                args.remaining_seconds, store)
+    fence = ReadOnlyAttemptFence(
+        args.operation_file, args.operation_id, args.attempt_id, args.remaining_seconds, store
+    )
     operation = fence.operation()
     fence.channel = channel
     scope = structured_recipe_scope(operation["recipe"])
-    scoped = operation["recipe"] == STRUCTURED_SCOPED_RECIPE
+    scoped = structured_recipe_is_scoped(operation["recipe"])
     current_producer = source_identity(ROOT)
     if scoped and current_producer != Producer.decode(operation["attempt_producer"]):
         raise BoundaryError("structured_child", "current_attempt_producer_mismatch")
@@ -230,7 +232,21 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
     fenced_store = FencedStore(store, fence)
     if operation["mode"] == "start":
         source = store.get_manifest(operation["dataset_id"])
-        if "partition_schema" in source.parameters.value():
+        if source.parameters.value().get("partition_schema") == "stpd/source3-ordered-partition-v1":
+            from stpd.fullrun.ordered_source import verify_ordered_source_partition
+            from stpd.ordered_source_spec import checked_view, recipe_view
+
+            verified_ordered = verify_ordered_source_partition(store, source.artifact_id)
+            info = source.parameters.value()
+            if (
+                operation["recipe"] not in ORDERED_RECIPES
+                or verified_ordered.split != "train"
+                or checked_view(info["projection_spec"], info["target_spec"])
+                != recipe_view(operation["recipe"])
+            ):
+                raise BoundaryError("structured_child", "source3_recipe_or_partition_mismatch")
+            dataset = verified_ordered.dataset
+        elif "partition_schema" in source.parameters.value():
             from stpd.fullrun.protocol_source import verify_protocol_source_partition
 
             verified = verify_protocol_source_partition(store, source.artifact_id)
@@ -242,32 +258,58 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
             dataset = parse_structured_dataset(b"".join(store.read_payload(payload)))
         if any(run.split != "train" for run in dataset.runs):
             raise BoundaryError("structured_child", "train_only_source_required")
+        from stpd.ordered_source_spec import recipe_control
+
         run = prepare_structured_workload(
-            fenced_store, dataset, current_producer,
-            StructuredTrainingConfig(**{key: item for key, item in
-                                        operation["request"]["config"].items()
-                                        if key != "checkpoint_every_boundaries"}),
-            operation_id=args.operation_id, source_id=source.artifact_id, code_scope=scope)
+            fenced_store,
+            dataset,
+            current_producer,
+            StructuredTrainingConfig(
+                **{
+                    key: item
+                    for key, item in operation["request"]["config"].items()
+                    if key != "checkpoint_every_boundaries"
+                }
+            ),
+            operation_id=args.operation_id,
+            source_id=source.artifact_id,
+            code_scope=scope,
+            model_control=(
+                recipe_control(operation["recipe"])
+                if operation["recipe"] in ORDERED_RECIPES
+                else None
+            ),
+        )
         input_id = run.parent("training_input")
         channel.emit("prepared", run_id=run.artifact_id, input_id=input_id)
         fence.wait_for_parent_run(run.artifact_id, input_id)
     else:
         run = store.get_manifest(operation["run_id"])
-    if (run.parameters.value().get("schema")
-            != structured_recipe_run_schema(operation["recipe"])):
+    if run.parameters.value().get("schema") != structured_recipe_run_schema(operation["recipe"]):
         raise BoundaryError("structured_child", "recipe_run_scope_mismatch")
     request = StructuredWorkloadRequest(
-        run.artifact_id, run.parent("training_input"), args.operation_id, args.attempt_id,
+        run.artifact_id,
+        run.parent("training_input"),
+        args.operation_id,
+        args.attempt_id,
         mode=operation["mode"],
-        resume_checkpoint_id=(operation.get("resume_checkpoint_id")
-                              if operation["mode"] == "resume" else None),
-        checkpoint_every_boundaries=operation["request"]["config"]["checkpoint_every_boundaries"])
-    reporter = ChildReporter(ObjectStoreRunReporter(fenced_store, FencedSlots(store.blobs, fence)),
-                             fence, channel)
-    result = execute_structured_workload(fenced_store, reporter, request, run.producer,
-                                        authority=fence, control=fence,
-                                        **({"attempt_producer": current_producer}
-                                           if scoped else {}))
+        resume_checkpoint_id=(
+            operation.get("resume_checkpoint_id") if operation["mode"] == "resume" else None
+        ),
+        checkpoint_every_boundaries=operation["request"]["config"]["checkpoint_every_boundaries"],
+    )
+    reporter = ChildReporter(
+        ObjectStoreRunReporter(fenced_store, FencedSlots(store.blobs, fence)), fence, channel
+    )
+    result = execute_structured_workload(
+        fenced_store,
+        reporter,
+        request,
+        run.producer,
+        authority=fence,
+        control=fence,
+        **({"attempt_producer": current_producer} if scoped else {}),
+    )
     channel.emit("terminal", **asdict(result))
 
 

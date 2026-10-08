@@ -20,7 +20,11 @@ from ..native_code_scope import GRAPH_MODEL_SCHEMA, native_code_identity, native
 from ..native_code_scope import MODEL_SCHEMA as MODEL_SCHEMA
 from ..native_code_scope import is_native_model_schema as is_native_model_schema
 from ..native_graph_spec import NativeGraphControl, checked_control, optional_control
+from ..ordered_source_spec import COHORTS, checked_view, validation_identity, view_qualification
+from ..ordered_source_spec import MODEL_SCHEMA as ORDERED_MODEL_SCHEMA
+from ..ordered_source_spec import PACKAGE_SCHEMA as ORDERED_PACKAGE_SCHEMA
 from ..structured_code_scope import ROOT, exporter_runtime, inference_runtime
+from .native_task import ready_summary_task_spec
 from .structured_export import GRAPH, MAX_MANIFEST_BYTES, MAX_WEIGHTS_BYTES, _regular_bytes
 
 if TYPE_CHECKING:
@@ -64,12 +68,25 @@ def native_agent_spec(model_control: NativeGraphControl | None) -> dict[str, Any
             "model_control": model_control.to_dict()}
 
 
+def ordered_native_agent_spec(model_control: NativeGraphControl | None) -> dict[str, Any]:
+    """Only the new Source3 package adopts the explicit ready-summary task."""
+    control = optional_control(model_control)
+    if control is None:
+        raise BoundaryError("native_package", "source3_trained_control_required")
+    return {**native_agent_spec(control), "version": "1.2.0",
+            "task_spec": ready_summary_task_spec()}
+
+
 def native_architecture(model_control: NativeGraphControl | None) -> str:
     return ("structured-native-m2-k1d96" if model_control is None else model_control.id)
 
 
 def package_control(value: dict[str, Any]) -> NativeGraphControl | None:
-    if value["schema"] in (GRAPH_PACKAGE_SCHEMA, GRAPH_TRAINED_PACKAGE_SCHEMA):
+    if value["schema"] in (
+        GRAPH_PACKAGE_SCHEMA,
+        GRAPH_TRAINED_PACKAGE_SCHEMA,
+        ORDERED_PACKAGE_SCHEMA,
+    ):
         graph = value.get("graph")
         if not isinstance(graph, dict):
             raise BoundaryError("native_package", "graph_control_required")
@@ -125,6 +142,47 @@ def _trained_source(source: object, data_sha256: str) -> dict[str, Any]:
     }:
         raise BoundaryError("native_package", "source_verification_identity_mismatch")
     return value
+
+
+def _ordered_trained_source(source: object, data_sha256: str) -> dict[str, Any]:
+    value = object_fields(
+        source,
+        {"kind", "data_sha256", "source_artifact_id", "training_input_id", "verification_identity"},
+        "native_package.source3",
+    )
+    digest(value["source_artifact_id"], "native_package.source3.source_artifact_id")
+    digest(value["training_input_id"], "native_package.source3.training_input_id")
+    if value["kind"] not in COHORTS or value["data_sha256"] != data_sha256:
+        raise BoundaryError("native_package", "source3_source_scope_mismatch")
+    verified = object_fields(
+        value["verification_identity"],
+        {
+            "schema",
+            "source_sha256",
+            "input_spec_sha256",
+            "cohort",
+            "projection_spec",
+            "target_spec",
+            "raw_refs",
+            "validation",
+        },
+        "native_package.source3.verification",
+    )
+    expected = validation_identity(
+        data_sha256,
+        value["kind"],
+        verified["raw_refs"],
+        projection_spec=verified["projection_spec"],
+        target_spec=verified["target_spec"],
+    )
+    if json_bytes(verified) != json_bytes(expected):
+        raise BoundaryError("native_package", "source3_source_verification_identity_mismatch")
+    return value
+
+
+def _ordered_qualification(source: dict[str, Any]) -> str:
+    identity = source["verification_identity"]
+    return view_qualification(checked_view(identity["projection_spec"], identity["target_spec"]))
 
 
 def _trained_provenance(
@@ -183,6 +241,29 @@ def export_native_trained_package(
     )
 
 
+def export_ordered_native_trained_package(
+    model: StructuredM2,
+    destination: Path,
+    *,
+    producer: Producer,
+    data_sha256: str,
+    training: dict[str, Any],
+    source: dict[str, Any],
+    provenance: dict[str, Any],
+) -> dict[str, Any]:
+    """Separate recorded Source3 package; synthetic package admission stays strict."""
+    return _export_package(
+        model,
+        destination,
+        producer=producer,
+        data_sha256=data_sha256,
+        training=training,
+        source=source,
+        provenance=provenance,
+        ordered=True,
+    )
+
+
 def _export_package(
     model: StructuredM2,
     destination: Path,
@@ -192,6 +273,7 @@ def _export_package(
     training: dict[str, Any],
     source: dict[str, Any] | None,
     provenance: dict[str, Any] | None,
+    ordered: bool = False,
 ) -> dict[str, Any]:
     digest(data_sha256, "native_package.data_sha256")
     if not isinstance(producer, Producer) or not isinstance(training, dict) or model.seed != 0:
@@ -204,18 +286,31 @@ def _export_package(
     if producer.uv_lock_sha256 != identity["dependency_lock_sha256"]:
         raise BoundaryError("native_package", "producer_lock_mismatch")
     trained = source is not None
+    if ordered and (not trained or control is None):
+        raise BoundaryError("native_package", "source3_trained_control_required")
     if trained:
-        source = _trained_source(source, data_sha256)
+        source = (
+            _ordered_trained_source(source, data_sha256)
+            if ordered
+            else _trained_source(source, data_sha256)
+        )
         provenance = _trained_provenance(provenance, source, producer)
     elif provenance is not None:
         raise BoundaryError("native_package", "standalone_provenance_forbidden")
     body = {
-        "schema": ((TRAINED_PACKAGE_SCHEMA if trained else PACKAGE_SCHEMA) if control is None
-                   else GRAPH_TRAINED_PACKAGE_SCHEMA if trained else GRAPH_PACKAGE_SCHEMA),
+        "schema": (
+            ORDERED_PACKAGE_SCHEMA
+            if ordered
+            else (TRAINED_PACKAGE_SCHEMA if trained else PACKAGE_SCHEMA)
+            if control is None
+            else GRAPH_TRAINED_PACKAGE_SCHEMA
+            if trained
+            else GRAPH_PACKAGE_SCHEMA
+        ),
         "graph": native_graph(control),
         "projection": PROJECTION,
         "input_spec": INPUT_SPEC,
-        "agent_spec": native_agent_spec(control),
+        "agent_spec": ordered_native_agent_spec(control) if ordered else native_agent_spec(control),
         "state_format_version": STATE_FORMAT if control is None else GRAPH_STATE_FORMAT,
         "seed": 0,
         "code_identity": identity,
@@ -230,7 +325,9 @@ def _export_package(
         "training": training,
         "runtime": inference_runtime(str(torch.__version__)),
         "export_runtime": exporter_runtime(),
-        "qualification": "synthetic_engineering_only",
+        "qualification": _ordered_qualification(source)
+        if ordered and source
+        else "synthetic_engineering_only",
         **({"provenance": provenance} if trained else {}),
     }
     manifest = {**body, "model_id": semantic_hash(body)}
@@ -267,30 +364,62 @@ def _native_manifest(encoded: bytes) -> dict[str, Any]:
         "model_id",
     }
     decoded = decode_json(encoded)
+    ordered = isinstance(decoded, dict) and decoded.get("schema") == ORDERED_PACKAGE_SCHEMA
     trained = isinstance(decoded, dict) and decoded.get("schema") in (
-        TRAINED_PACKAGE_SCHEMA, GRAPH_TRAINED_PACKAGE_SCHEMA
+        TRAINED_PACKAGE_SCHEMA,
+        GRAPH_TRAINED_PACKAGE_SCHEMA,
+        ORDERED_PACKAGE_SCHEMA,
     )
     value = object_fields(
         decoded, fields | ({"provenance"} if trained else set()), "native_package"
     )
     control = package_control(value)
+    ordered_source = None
+    if ordered:
+        candidate = object_fields(
+            value["source"],
+            {
+                "kind",
+                "data_sha256",
+                "source_artifact_id",
+                "training_input_id",
+                "verification_identity",
+            },
+            "native_package.source3",
+        )
+        ordered_source = _ordered_trained_source(candidate, candidate["data_sha256"])
+        if control is None:
+            raise BoundaryError("native_package", "source3_trained_control_required")
     if (
         encoded != json_bytes(value)
-        or value["schema"] != ((TRAINED_PACKAGE_SCHEMA if trained else PACKAGE_SCHEMA)
-                               if control is None else GRAPH_TRAINED_PACKAGE_SCHEMA if trained
-                               else GRAPH_PACKAGE_SCHEMA)
+        or value["schema"]
+        != (
+            ORDERED_PACKAGE_SCHEMA
+            if ordered
+            else (TRAINED_PACKAGE_SCHEMA if trained else PACKAGE_SCHEMA)
+            if control is None
+            else GRAPH_TRAINED_PACKAGE_SCHEMA
+            if trained
+            else GRAPH_PACKAGE_SCHEMA
+        )
         or json_bytes(value["graph"]) != json_bytes(native_graph(control))
         or json_bytes(value["projection"]) != json_bytes(PROJECTION)
         or json_bytes(value["input_spec"]) != json_bytes(INPUT_SPEC)
-        or json_bytes(value["agent_spec"]) != json_bytes(native_agent_spec(control))
-        or value["state_format_version"] != (STATE_FORMAT if control is None
-                                             else GRAPH_STATE_FORMAT)
+        or json_bytes(value["agent_spec"]) != json_bytes(
+            ordered_native_agent_spec(control) if ordered else native_agent_spec(control))
+        or value["state_format_version"]
+        != (STATE_FORMAT if control is None else GRAPH_STATE_FORMAT)
         or type(value["seed"]) is not int
         or value["seed"] != 0
         or value["code_identity"] != native_code_identity(ROOT, graph=control is not None)
         or value["adapter_code_sha256"] != native_code_sha256(ROOT, graph=control is not None)
         or value["runtime"] != inference_runtime(str(torch.__version__))
-        or value["qualification"] != "synthetic_engineering_only"
+        or value["qualification"]
+        != (
+            _ordered_qualification(ordered_source)
+            if ordered_source
+            else "synthetic_engineering_only"
+        )
         or value["model_id"] != semantic_hash({k: v for k, v in value.items() if k != "model_id"})
     ):
         raise BoundaryError("native_package", "package_identity_mismatch")
@@ -309,8 +438,12 @@ def _native_manifest(encoded: bytes) -> dict[str, Any]:
     )
     digest(source["data_sha256"], "native_package.source_sha256")
     if trained:
-        source = _trained_source(source, source["data_sha256"])
-    if source["kind"] != "synthetic" or not isinstance(value["training"], dict):
+        source = (
+            _ordered_trained_source(source, source["data_sha256"])
+            if ordered
+            else _trained_source(source, source["data_sha256"])
+        )
+    if (not ordered and source["kind"] != "synthetic") or not isinstance(value["training"], dict):
         raise BoundaryError("native_package", "source_scope_mismatch")
     platform = object_fields(
         value["export_runtime"], {"python", "system", "machine"}, "native_package.export_runtime"
@@ -371,11 +504,21 @@ def load_native_package(
 
 def native_model_parameters(package: dict[str, Any], attempt: str) -> dict[str, Any]:
     digest(attempt, "native_model.attempt", length=32)
-    if package.get("schema") not in (TRAINED_PACKAGE_SCHEMA, GRAPH_TRAINED_PACKAGE_SCHEMA):
+    if package.get("schema") not in (
+        TRAINED_PACKAGE_SCHEMA,
+        GRAPH_TRAINED_PACKAGE_SCHEMA,
+        ORDERED_PACKAGE_SCHEMA,
+    ):
         raise BoundaryError("native_model", "trained_package_required")
     package = _native_manifest(json_bytes(package))
     return {
-        "schema": MODEL_SCHEMA if package_control(package) is None else GRAPH_MODEL_SCHEMA,
+        "schema": (
+            ORDERED_MODEL_SCHEMA
+            if package["schema"] == ORDERED_PACKAGE_SCHEMA
+            else MODEL_SCHEMA
+            if package_control(package) is None
+            else GRAPH_MODEL_SCHEMA
+        ),
         "model_id": package["model_id"],
         "graph_id": package["graph"]["id"],
         "input_spec": package["input_spec"],
@@ -397,7 +540,8 @@ def require_native_model_package(model: Manifest, package: dict[str, Any]) -> No
         or not is_native_model_schema(info.get("schema"))
         or {parent.role for parent in model.parents} != {"run", "checkpoint", "training_input"}
         or {payload.role for payload in model.payloads} != {"package_manifest", "weights"}
-        or package.get("schema") not in (TRAINED_PACKAGE_SCHEMA, GRAPH_TRAINED_PACKAGE_SCHEMA)
+        or package.get("schema")
+        not in (TRAINED_PACKAGE_SCHEMA, GRAPH_TRAINED_PACKAGE_SCHEMA, ORDERED_PACKAGE_SCHEMA)
     ):
         raise BoundaryError("native_model", "model_inventory_or_schema")
     attempt = digest(info.get("attempt"), "native_model.attempt", length=32)

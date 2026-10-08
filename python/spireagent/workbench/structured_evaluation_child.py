@@ -46,9 +46,12 @@ def execute(operation_file: Path, ledger: Path, operation_id: str) -> dict[str, 
 
     fence = Fence()
     fence.assert_current()
-    owner.record_verified_protocol_evaluation_use(
-        store, operation["source_id"], operation["model_id"], operation_id
-    )
+    source_schema = store.get_manifest(operation["source_id"]).parameters.value().get(
+        "partition_schema")
+    use = (owner.record_verified_ordered_evaluation_use
+           if source_schema == "stpd/source3-ordered-partition-v1" else
+           owner.record_verified_protocol_evaluation_use)
+    use(store, operation["source_id"], operation["model_id"], operation_id)
     # Delayed import preserves collector dependency and parent RNG boundaries.
     from stpd.workers.structured_evaluation import (
         StructuredEvaluationRequest,

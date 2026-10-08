@@ -41,9 +41,13 @@ SCOPED_REPORT_SCHEMA = "stpd/structured-m2-training-report-v3"
 SCOPED_ADAPTER_VERSION = "1.1.0"
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_WEIGHTS_BYTES = 32 * 1024 * 1024
-STRUCTURED_MODEL_SCHEMAS = frozenset({
-    "stpd/structured-m2-model-v1", "stpd/structured-m2-model-v2", SCOPED_MODEL_SCHEMA,
-})
+STRUCTURED_MODEL_SCHEMAS = frozenset(
+    {
+        "stpd/structured-m2-model-v1",
+        "stpd/structured-m2-model-v2",
+        SCOPED_MODEL_SCHEMA,
+    }
+)
 
 
 def is_structured_model_schema(schema: object) -> bool:
@@ -81,6 +85,7 @@ def require_structured_model_package(model: Manifest, package: dict[str, Any]) -
             raise BoundaryError("structured_model", "model_export_provenance_mismatch")
         digest(info["attempt"], "structured_model.export_attempt", length=32)
 
+
 # Include package initializers even when they expose unused lazy legacy exports.
 # Their exact source is part of the boundary, rather than inferred from one run.
 _SHARED_PATHS = (
@@ -108,27 +113,44 @@ _SHARED_PATHS = (
     "stpd/workers/__init__.py",
     "stpd/workers/checkpoint_codec.py",
 )
-INFERENCE_PATHS = tuple(sorted((*_SHARED_PATHS,
-    "stpd/policy/__init__.py",
-    "stpd/policy/structured_export.py",
-    "stpd/policy/structured_port.py",
-)))
-TRAINING_PATHS = tuple(sorted((*_SHARED_PATHS,
-    "stpd/structured_profiles.py",
-    "spireagent/storage/__init__.py",
-    "spireagent/storage/blobs.py",
-    "spireagent/storage/local.py",
-    "spireagent/storage/run_reporter.py",
-    "spireagent/storage/store.py",
-    "stpd/fullrun/structured_sequences.py",
-    "stpd/models/structured_engine.py",
-    "stpd/models/structured_training.py",
-    "stpd/structured_workload_contracts.py",
-    "stpd/workers/reporting.py",
-    "stpd/workers/structured_control.py",
-    "stpd/workers/structured_execution.py",
-    "stpd/workers/structured_run.py",
-)))
+INFERENCE_PATHS = tuple(
+    sorted(
+        (
+            *_SHARED_PATHS,
+            "stpd/policy/__init__.py",
+            "stpd/policy/structured_export.py",
+            "stpd/policy/structured_port.py",
+        )
+    )
+)
+TRAINING_PATHS = tuple(
+    sorted(
+        (
+            *_SHARED_PATHS,
+            "stpd/ordered_source_spec.py",
+            "stpd/policy/__init__.py",
+            "stpd/policy/native_task.py",
+            "stpd/fullrun/ordered_source.py",
+            "stpd/fullrun/native_structured_inputs.py",
+            "stpd/fullrun/native_structured_sequences.py",
+            "spireagent/storage/archives.py",
+            "stpd/structured_profiles.py",
+            "spireagent/storage/__init__.py",
+            "spireagent/storage/blobs.py",
+            "spireagent/storage/local.py",
+            "spireagent/storage/run_reporter.py",
+            "spireagent/storage/store.py",
+            "stpd/fullrun/structured_sequences.py",
+            "stpd/models/structured_engine.py",
+            "stpd/models/structured_training.py",
+            "stpd/structured_workload_contracts.py",
+            "stpd/workers/reporting.py",
+            "stpd/workers/structured_control.py",
+            "stpd/workers/structured_execution.py",
+            "stpd/workers/structured_run.py",
+        )
+    )
+)
 
 
 def _regular_bytes(root: Path, relative: str) -> bytes:
@@ -173,6 +195,8 @@ def exporter_runtime() -> dict[str, str]:
 
 
 def run_code_scope(schema: object) -> str:
+    if schema == "stpd/source3-ordered-native-m2-run-v1":
+        return "source3-ordered-native-training-code-closure-v1"
     if schema == GRAPH_RUN_SCHEMA:
         return GRAPH_TRAINING_SCOPE
     if schema == "stpd/native-structured-m2-run-v1":
@@ -185,6 +209,8 @@ def run_code_scope(schema: object) -> str:
 
 
 def checkpoint_schema(scope: str) -> str:
+    if scope == "source3-ordered-native-training-code-closure-v1":
+        return "stpd/source3-ordered-native-m2-checkpoint-v1"
     if scope == GRAPH_TRAINING_SCOPE:
         return GRAPH_CHECKPOINT_SCHEMA
     if scope == "native-structured-numerical-training-code-closure-v1":
