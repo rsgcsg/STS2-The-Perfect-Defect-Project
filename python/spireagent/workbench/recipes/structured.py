@@ -109,7 +109,7 @@ class StructuredRecipeAdapter:
             owner.ledger.require_training_use(source_id, {source_id}, runs, identity)
 
         def current() -> dict[str, Any]:
-            value = service._read(path, owner.identity)
+            value: dict[str, Any] = service._read(path, owner.identity)
             if (value.get("operation_id") != identity or value.get("attempt_id") != attempt_id
                     or value.get("status") != "pending" or value.get("writer_terminal")
                     or service._active_attempt != attempt_id):
@@ -255,7 +255,7 @@ class StructuredRecipeAdapter:
                     raise BoundaryError("local_training", "scratch_budget_exhausted")
                 if value["requested_action"] != "cancel":
                     return False
-                started_cancel = service._cancel_requested_monotonic
+                started_cancel: float | None = service._cancel_requested_monotonic
                 if started_cancel is None:
                     service._cancel_requested_monotonic = time.monotonic()
                     return False

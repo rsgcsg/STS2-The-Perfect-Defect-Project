@@ -830,7 +830,7 @@ class LocalTrainingService:
         name = "local-training-"+operation["attempt_id"]+".child.lock"
         if operation.get("child_lock_name") != name:
             raise BoundaryError("local_training", "child_ownership_identity_mismatch")
-        child_path = path.parent/name
+        child_path: Path = path.parent/name
         if child_path.is_symlink() or not child_path.is_file():
             raise BoundaryError("local_training", "child_ownership_recovery_required")
         return child_path
