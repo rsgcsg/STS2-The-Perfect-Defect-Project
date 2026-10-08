@@ -494,6 +494,8 @@ public sealed record CurrentRecordingManifest(
     public int? RecoverySchemaVersion { get; init; }
     public int? ContinuousSchemaVersion { get; init; }
     public int? TextInputSchemaVersion { get; init; }
+    public int? SourceSchemaVersion { get; init; }
+    public RecorderEnvironmentIdentity? SourceEnvironment { get; init; }
 }
 
 public sealed record CurrentCoverageSummary(
