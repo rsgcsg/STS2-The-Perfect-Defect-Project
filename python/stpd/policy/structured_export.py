@@ -113,6 +113,8 @@ def export_structured_package(
     if not scoped and provenance is not None:
         raise BoundaryError("structured_package", "unexpected_scoped_provenance")
     model.validate_parameters()
+    if model.model_control is not None:
+        raise BoundaryError("structured_package", "native_control_not_legacy")
     if model.seed != 0:
         raise BoundaryError("structured_package", "unsupported_initialization_recipe")
     raw = encode_structured_weights(model, schema=WEIGHT_SCHEMA, graph=GRAPH,

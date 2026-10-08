@@ -51,7 +51,7 @@ generation without that declared reset fails. The default Agent uses full-refere
 once-per-occurrence and handoff on gap. Independent receipts do not update W.
 
 `policy.native_structured_export` creates a closed native package over the shared
-weight verifier, fixed graph, InputSpec, source closure/lock and portable inference
+weight verifier, trusted graph, InputSpec, source closure/lock and portable inference
 ABI. Its current qualification is synthetic_engineering_only. The actual model
 weight bytes and producer/data/training declarations remain separate identities;
 standalone export does not attest that learning happened. Exporter platform is
@@ -76,7 +76,7 @@ size/Base64/hash, missing scope/gap or wrong memory shape fails before committin
 state. Restoring state never revives an action handle or clears unknown delivery.
 The model validates its actual parameter bytes before consumption/Next/state copy.
 
-Graph arithmetic is unchanged: shared byte CNN, one sparse relation layer,
+Default graph arithmetic is unchanged: shared byte CNN, one sparse relation layer,
 entity-local aggregation and K1/d96 gated memory. Read attention over one memory
 slot is identically one. N therefore reads the same global W for every candidate,
 with candidate-specific kind/verb/label and current referenced entity gathers;
@@ -177,3 +177,52 @@ application consumes its public SDK/profile identity; the current advertised
 subset does not redefine that target. Registration remains blocked until the
 source fulfills it. This target and synthetic conformance fixtures do not imply
 all native-family/L64 coverage, installed behavior or Human qualification.
+
+## Explicit native memory controls
+
+`native_graph_spec` defines four fixed `NativeGraphControl` presets, combining
+`GraphSpec` slots 1 or 8 at width 96 with `ResetSpec` carry or
+`reset_before_each_actual_advance`. The caller explicitly supplies one typed
+control to the existing `prepare_structured_workload` API and selects
+`native-structured-graph-training-code-closure-v1`. This is the same numerical
+engine, AdamW, four-actual-advance TBPTT, attempt authority, publication and
+AgentSession child. No separate trainer, service or executable selector exists.
+
+| Control ID | Memory | Writer reset |
+|---|---|---|
+| `stpd.native-m2.k1d96.carry.v1` | 1 × 96 | Explicit continuity boundaries |
+| `stpd.native-m2.k1d96.reset-each-advance.v1` | 1 × 96 | Before each actual advance |
+| `stpd.native-m2.k8d96.carry.v1` | 8 × 96 | Explicit continuity boundaries |
+| `stpd.native-m2.k8d96.reset-each-advance.v1` | 8 × 96 | Before each actual advance |
+
+`model_control=None` retains the historical 43 parameter keys, K1/d96 tensor
+shapes, initialization, arithmetic and default package/state field meanings.
+The explicit K1 carry control has its own identity despite equal arithmetic.
+K8 adds seven learned write queries through a separate deterministic RNG fork;
+all common encoder/writer/scorer parameters and the first query initialize
+identically. Its N read attends over the eight memory slots. Parameter count
+and tensor shape differ; this is not an equal-parameter comparison.
+
+The reset control runs inside the existing writer only on `advance`. A repeated
+same occurrence, score-only row, Next, Receipt or checkpoint copy does not reset
+or advance W. Empty C still advances on an actual new occurrence. TBPTT detach
+does not change continuity or consumption counters. Online Consume stages the
+same write and commits only after the exact acknowledgment.
+
+Controlled numerical runs/checkpoints/Models/reports use native version 2
+schemas. Controlled standalone/trained packages use
+`stpd/native-structured-m2-package-v3`/`-v4`; weights/state use native version 2
+schemas. The complete graph/reset control, source/order, code/lock/runtime and
+configuration bind numerical resume. Closed export verifies exact parameter
+and K1/K8 memory shapes. The Agent Manifest retains its existing protocol and
+opaque contract, binding the actual package, weights and versioned state;
+cross-control numerical and inference restores fail before state mutation.
+Legacy export rejects controlled models, and historical artifacts receive no
+automatic conversion. Existing input/source validation remains synthetic only.
+
+Tiny CPU synthetic tests cover each cell's exact resumed weights, W and AdamW,
+once-only consumption, reset on an actual advance, closed Model export,
+completed-result reconciliation, fresh stdio Agent and opaque restore. Separate
+pre-edit golden checks preserve default native/legacy frame outputs and weight
+bytes. These checks establish source/test conformance only, not native recording
+admission, installed behavior, learned strength, or a scientific ablation result.

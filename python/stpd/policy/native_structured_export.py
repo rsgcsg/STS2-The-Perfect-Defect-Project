@@ -16,9 +16,10 @@ from ..canonical import semantic_hash
 from ..fullrun.native_structured_inputs import INPUT_SPEC, PROJECTION
 from ..models.structured_m2 import StructuredM2
 from ..models.structured_weights import encode_structured_weights, load_structured_weights
+from ..native_code_scope import GRAPH_MODEL_SCHEMA, native_code_identity, native_code_sha256
 from ..native_code_scope import MODEL_SCHEMA as MODEL_SCHEMA
 from ..native_code_scope import is_native_model_schema as is_native_model_schema
-from ..native_code_scope import native_code_identity, native_code_sha256
+from ..native_graph_spec import NativeGraphControl, checked_control, optional_control
 from ..structured_code_scope import ROOT, exporter_runtime, inference_runtime
 from .structured_export import GRAPH, MAX_MANIFEST_BYTES, MAX_WEIGHTS_BYTES, _regular_bytes
 
@@ -29,6 +30,10 @@ PACKAGE_SCHEMA = "stpd/native-structured-m2-package-v1"
 TRAINED_PACKAGE_SCHEMA = "stpd/native-structured-m2-package-v2"
 WEIGHT_SCHEMA = "stpd/native-structured-m2-weights-v1"
 STATE_FORMAT = "stpd/native-structured-m2-state-v1"
+GRAPH_PACKAGE_SCHEMA = "stpd/native-structured-m2-package-v3"
+GRAPH_TRAINED_PACKAGE_SCHEMA = "stpd/native-structured-m2-package-v4"
+GRAPH_WEIGHT_SCHEMA = "stpd/native-structured-m2-weights-v2"
+GRAPH_STATE_FORMAT = "stpd/native-structured-m2-state-v2"
 AGENT_SPEC = {
     "id": "stpd-native-full-reference-m2-agent",
     "version": "1.0.0",
@@ -43,9 +48,42 @@ MANIFEST_NAME = "model.json"
 WEIGHTS_NAME = "weights.tensor-tree"
 
 
+def native_graph(model_control: NativeGraphControl | None) -> dict[str, Any]:
+    model_control = optional_control(model_control)
+    if model_control is None:
+        return dict(GRAPH)
+    return {**GRAPH, "id": model_control.id, "slots": model_control.graph.slots,
+            "model_control": model_control.to_dict()}
+
+
+def native_agent_spec(model_control: NativeGraphControl | None) -> dict[str, Any]:
+    model_control = optional_control(model_control)
+    if model_control is None:
+        return dict(AGENT_SPEC)
+    return {**AGENT_SPEC, "version": "1.1.0", "memory_slots": model_control.graph.slots,
+            "model_control": model_control.to_dict()}
+
+
+def native_architecture(model_control: NativeGraphControl | None) -> str:
+    return ("structured-native-m2-k1d96" if model_control is None else model_control.id)
+
+
+def package_control(value: dict[str, Any]) -> NativeGraphControl | None:
+    if value["schema"] in (GRAPH_PACKAGE_SCHEMA, GRAPH_TRAINED_PACKAGE_SCHEMA):
+        graph = value.get("graph")
+        if not isinstance(graph, dict):
+            raise BoundaryError("native_package", "graph_control_required")
+        return checked_control(graph.get("model_control"))
+    if value["schema"] not in (PACKAGE_SCHEMA, TRAINED_PACKAGE_SCHEMA):
+        raise BoundaryError("native_package", "unsupported_package_schema")
+    return None
+
+
 def encode_native_weights(model: StructuredM2) -> bytes:
+    control = model.model_control
     return encode_structured_weights(
-        model, schema=WEIGHT_SCHEMA, graph=GRAPH, projection=PROJECTION
+        model, schema=WEIGHT_SCHEMA if control is None else GRAPH_WEIGHT_SCHEMA,
+        graph=native_graph(control), projection=PROJECTION
     )
 
 
@@ -161,7 +199,8 @@ def _export_package(
     raw = encode_native_weights(model)
     if len(raw) > MAX_WEIGHTS_BYTES:
         raise BoundaryError("native_package", "weights_size_limit")
-    identity = native_code_identity(ROOT)
+    control = model.model_control
+    identity = native_code_identity(ROOT, graph=control is not None)
     if producer.uv_lock_sha256 != identity["dependency_lock_sha256"]:
         raise BoundaryError("native_package", "producer_lock_mismatch")
     trained = source is not None
@@ -171,15 +210,16 @@ def _export_package(
     elif provenance is not None:
         raise BoundaryError("native_package", "standalone_provenance_forbidden")
     body = {
-        "schema": TRAINED_PACKAGE_SCHEMA if trained else PACKAGE_SCHEMA,
-        "graph": GRAPH,
+        "schema": ((TRAINED_PACKAGE_SCHEMA if trained else PACKAGE_SCHEMA) if control is None
+                   else GRAPH_TRAINED_PACKAGE_SCHEMA if trained else GRAPH_PACKAGE_SCHEMA),
+        "graph": native_graph(control),
         "projection": PROJECTION,
         "input_spec": INPUT_SPEC,
-        "agent_spec": AGENT_SPEC,
-        "state_format_version": STATE_FORMAT,
+        "agent_spec": native_agent_spec(control),
+        "state_format_version": STATE_FORMAT if control is None else GRAPH_STATE_FORMAT,
         "seed": 0,
         "code_identity": identity,
-        "adapter_code_sha256": native_code_sha256(ROOT),
+        "adapter_code_sha256": native_code_sha256(ROOT, graph=control is not None),
         "weights": {
             "path": WEIGHTS_NAME,
             "sha256": hashlib.sha256(raw).hexdigest(),
@@ -227,22 +267,28 @@ def _native_manifest(encoded: bytes) -> dict[str, Any]:
         "model_id",
     }
     decoded = decode_json(encoded)
-    trained = isinstance(decoded, dict) and decoded.get("schema") == TRAINED_PACKAGE_SCHEMA
+    trained = isinstance(decoded, dict) and decoded.get("schema") in (
+        TRAINED_PACKAGE_SCHEMA, GRAPH_TRAINED_PACKAGE_SCHEMA
+    )
     value = object_fields(
         decoded, fields | ({"provenance"} if trained else set()), "native_package"
     )
+    control = package_control(value)
     if (
         encoded != json_bytes(value)
-        or value["schema"] != (TRAINED_PACKAGE_SCHEMA if trained else PACKAGE_SCHEMA)
-        or json_bytes(value["graph"]) != json_bytes(GRAPH)
+        or value["schema"] != ((TRAINED_PACKAGE_SCHEMA if trained else PACKAGE_SCHEMA)
+                               if control is None else GRAPH_TRAINED_PACKAGE_SCHEMA if trained
+                               else GRAPH_PACKAGE_SCHEMA)
+        or json_bytes(value["graph"]) != json_bytes(native_graph(control))
         or json_bytes(value["projection"]) != json_bytes(PROJECTION)
         or json_bytes(value["input_spec"]) != json_bytes(INPUT_SPEC)
-        or json_bytes(value["agent_spec"]) != json_bytes(AGENT_SPEC)
-        or value["state_format_version"] != STATE_FORMAT
+        or json_bytes(value["agent_spec"]) != json_bytes(native_agent_spec(control))
+        or value["state_format_version"] != (STATE_FORMAT if control is None
+                                             else GRAPH_STATE_FORMAT)
         or type(value["seed"]) is not int
         or value["seed"] != 0
-        or value["code_identity"] != native_code_identity(ROOT)
-        or value["adapter_code_sha256"] != native_code_sha256(ROOT)
+        or value["code_identity"] != native_code_identity(ROOT, graph=control is not None)
+        or value["adapter_code_sha256"] != native_code_sha256(ROOT, graph=control is not None)
         or value["runtime"] != inference_runtime(str(torch.__version__))
         or value["qualification"] != "synthetic_engineering_only"
         or value["model_id"] != semantic_hash({k: v for k, v in value.items() if k != "model_id"})
@@ -314,19 +360,22 @@ def load_native_package(
         or weights["sha256"] != hashlib.sha256(raw).hexdigest()
     ):
         raise BoundaryError("native_package", "weights_digest_mismatch")
+    control = package_control(value)
     model = load_structured_weights(
-        raw, schema=WEIGHT_SCHEMA, graph=GRAPH, projection=PROJECTION, seed=value["seed"]
+        raw, schema=WEIGHT_SCHEMA if control is None else GRAPH_WEIGHT_SCHEMA,
+        graph=native_graph(control), projection=PROJECTION, seed=value["seed"],
+        model_control=control
     )
     return value, model
 
 
 def native_model_parameters(package: dict[str, Any], attempt: str) -> dict[str, Any]:
     digest(attempt, "native_model.attempt", length=32)
-    if package.get("schema") != TRAINED_PACKAGE_SCHEMA:
+    if package.get("schema") not in (TRAINED_PACKAGE_SCHEMA, GRAPH_TRAINED_PACKAGE_SCHEMA):
         raise BoundaryError("native_model", "trained_package_required")
     package = _native_manifest(json_bytes(package))
     return {
-        "schema": MODEL_SCHEMA,
+        "schema": MODEL_SCHEMA if package_control(package) is None else GRAPH_MODEL_SCHEMA,
         "model_id": package["model_id"],
         "graph_id": package["graph"]["id"],
         "input_spec": package["input_spec"],
@@ -348,7 +397,7 @@ def require_native_model_package(model: Manifest, package: dict[str, Any]) -> No
         or not is_native_model_schema(info.get("schema"))
         or {parent.role for parent in model.parents} != {"run", "checkpoint", "training_input"}
         or {payload.role for payload in model.payloads} != {"package_manifest", "weights"}
-        or package.get("schema") != TRAINED_PACKAGE_SCHEMA
+        or package.get("schema") not in (TRAINED_PACKAGE_SCHEMA, GRAPH_TRAINED_PACKAGE_SCHEMA)
     ):
         raise BoundaryError("native_model", "model_inventory_or_schema")
     attempt = digest(info.get("attempt"), "native_model.attempt", length=32)

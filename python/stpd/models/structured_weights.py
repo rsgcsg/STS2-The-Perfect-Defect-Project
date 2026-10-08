@@ -8,6 +8,7 @@ import torch
 
 from spireagent.json_boundary import BoundaryError, object_fields
 
+from ..native_graph_spec import NativeGraphControl
 from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .structured_m2 import StructuredM2
 
@@ -28,7 +29,8 @@ def encode_structured_weights(
 
 
 def load_structured_weights(
-    raw: bytes, *, schema: str, graph: dict[str, Any], projection: dict[str, Any], seed: int
+    raw: bytes, *, schema: str, graph: dict[str, Any], projection: dict[str, Any], seed: int,
+    model_control: NativeGraphControl | None = None
 ) -> StructuredM2:
     """Schema/graph/projection expectations come from trusted code, never artifacts."""
     decoded = object_fields(
@@ -44,7 +46,7 @@ def load_structured_weights(
         or not isinstance(decoded["state_dict"], dict)
     ):
         raise BoundaryError("structured_package", "weights_identity_mismatch")
-    model = StructuredM2(seed=seed)
+    model = StructuredM2(seed=seed, model_control=model_control)
     expected = model.state_dict()
     actual = decoded["state_dict"]
     if set(expected) != set(actual) or any(

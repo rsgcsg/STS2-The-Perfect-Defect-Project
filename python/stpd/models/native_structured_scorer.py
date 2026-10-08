@@ -15,7 +15,8 @@ from spireagent.json_boundary import BoundaryError, object_fields
 from ..fullrun.native_structured_inputs import INPUT_SPEC
 from ..fullrun.native_structured_sequences import NativeUnit, native_advance, qualify_native
 from ..fullrun.structured_inputs import StructuredFrame
-from .structured_m2 import SLOTS, WIDTH, StructuredM2
+from ..native_graph_spec import checked_control
+from .structured_m2 import WIDTH, StructuredM2
 
 MAX_RETIRED_SEGMENTS = 1024
 MAX_STATE_VERSION = 2**53 - 1
@@ -191,6 +192,8 @@ class NativeStructuredScorer:
         ):
             raise BoundaryError("native_model", "acknowledged_state_required")
         return {
+            **({"model_control": self.model.model_control.to_dict()}
+               if self.model.model_control is not None else {}),
             "memory": self.memory.clone(),
             "unit": asdict(self.unit),
             "input": copy.deepcopy(self.input),
@@ -215,9 +218,13 @@ class NativeStructuredScorer:
                 "state_version",
                 "prefix",
                 "retired",
-            },
+            } | ({"model_control"} if self.model.model_control is not None else set()),
             "native_model.state",
         )
+        if self.model.model_control is not None and checked_control(value["model_control"]) != (
+            self.model.model_control
+        ):
+            raise BoundaryError("native_model", "state_control_binding")
         source = object_fields(
             value["input"],
             {
@@ -237,7 +244,7 @@ class NativeStructuredScorer:
         if (
             value["unit"] != asdict(unit)
             or not isinstance(memory, torch.Tensor)
-            or memory.shape != (SLOTS, WIDTH)
+            or memory.shape != (self.model.slots, WIDTH)
             or memory.dtype != torch.float32
             or memory.device.type != "cpu"
             or not bool(torch.isfinite(memory).all())
