@@ -6,6 +6,8 @@ using STS2Connector.PlayerEnvironment.Protocol;
 
 namespace STS2Connector.PlayerEnvironment.NativeLogical;
 
+using NativeLogicalCapture = global::STS2Connector.PlayerEnvironment.Protocol.NativeLogicalCapture;
+
 /// <summary>Frozen public bytes only. Shared references charge one actual owned buffer until its last owner releases.</summary>
 public sealed class NativeLogicalCaptureStore
 {
