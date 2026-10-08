@@ -196,3 +196,54 @@ Evidence typing and diff hygiene passed. The latest exact Runtime freeze,
 private package/wheel, fresh application journey and independent paired
 re-review remain separate next gates. None of these typed metadata checks prove
 native content, decoded numerical W or research admission.
+
+## E6 application and E4 graph composition repair
+
+2026-10-09, G2 consumer compatibility. The accepted application head
+`1a5779f5a3107a9dd9c6fde94298c427c1bd14ec` normally merged accepted graph head
+`724baa663441db951f2b78a5efe8f326953b7005`, producing dependency baseline
+`b910092ce63a12d6e3fab24df785d82af9b89877`. The repair head is the commit
+containing this addition. No public schema, lock, version, package pin or BOM
+changes belong to this repair.
+
+The application's native package validator discarded the already validated
+model and compared every manifest to the legacy adapter code closure. Thus
+all four explicit K1/K8 carry/reset packages failed application registration,
+although domain export and Agent binding independently succeeded. It now
+selects the expected adapter closure from the validated model's typed control.
+Config data cannot select executable behavior. STPD remains the authority for
+complete package/control/weight validation and AgentManifest construction.
+
+The adjacent consumer audit found no second active default-identity check:
+native registration matching and readiness call this validator; native artifact
+export/download dispatch already uses the graph-aware domain schema predicate.
+The generic registration `code_digest` precheck serves legacy token/memory
+adapters, while native matching takes its separate existing path. No new
+compatibility registry or application control representation was introduced.
+
+Five new regression cells use actual one-update synthetic numerical artifacts
+for legacy and all four graph controls. Each exercises the application export,
+own-byte download reconciliation, binding, idempotent registration/status,
+policy/backend readiness and static child arguments. Adapter closure swaps,
+unrecognized config controls and changed package controls remain rejected.
+No model loader, binder, package identity or adapter identity is mocked.
+Installed Runtime/capabilities/public-contract checks are explicitly isolated;
+these tests do not establish overall installation readiness or native execution.
+
+Before the repair, the four graph cells failed with `export_identity_drift` and
+legacy passed (3.35 s). Afterward, all 50 tests across the new composition,
+existing native application and graph-control suites passed (11.18 s). Ruff,
+canonical Mypy on the owning application file and the 11-test project check
+passed. The reused private composition environment used CPython 3.11.15,
+Torch 2.13.0, pytest 9.1.1, the worktree's source and lock SHA-256
+`d5ff237e7a4bed931ae726ebe740b05cf1a1089129c2ca82b43fe894fc5a9218`,
+and the previously built private Evidence wheel SHA-256
+`7634b08d9e3f217d73b2888876fc78c9965e4a04c0dafc90c5a36fec23616640`.
+No new dependency install or real-data training occurred.
+
+This is submitted synthetic source/test composition evidence. Independent
+review, integration/selected wider gates and exact Runtime/native/scientific
+qualification remain separate. Rollback reverts the owning application repair
+and selects the previously accepted package/source pair while retaining
+immutable artifacts, export journals and run evidence; it never retries an
+unknown delivery. No game, install, cloud or paid operation occurred.
