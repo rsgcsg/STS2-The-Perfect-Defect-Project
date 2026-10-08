@@ -57,6 +57,8 @@ internal static class NativeLogicalCapture
     private static TextMenuFrame AppendPeek(TextMenuFrame frame, NativeEntityRegistry entities)
     {
         if (frame.Page.Interaction.Stage == "native_information_page"
+            || frame.LogicalGridProof?.Completion.IsCompleted == true
+            || frame.LogicalGridProof?.Stage == "settling"
             || NCapstoneContainer.Instance is { InUse: true }) return frame;
         Node? owner = NOverlayStack.Instance?.Peek() as Node;
         NPeekButton? button = owner?.GetNodeOrNull<NPeekButton>("%PeekButton");
