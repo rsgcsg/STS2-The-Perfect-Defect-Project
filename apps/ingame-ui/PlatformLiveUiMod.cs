@@ -578,7 +578,7 @@ internal sealed class PlatformLivePanel : IDisposable
         _tickButton = BuildCommandButton(
             "在工作台推进 Tick",
             () => OpenNativeWorkbenchPage("play"),
-            "在同一模型任务 owner 中，明确推进当前模式的一次 Tick。");
+            "在工作台按当前模式推进一次 Tick。");
         _tickButton.Disabled = true;
         advancedModes.AddChild(_tickButton);
         body.AddChild(advancedModes);

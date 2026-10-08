@@ -27,7 +27,7 @@ test("advanced fixed actions carry original run game and epoch through the same 
   for(const mode of ["auto","shadow","one_step","tick"]){assert.ok(client.includes(`"models.${mode}"`));assert.ok(api.includes(`"models.${mode}"`));}
   for(const field of ["runtime_run_id","runtime_instance_id","recovery_epoch"])
     assert.ok(panel.includes(`body["${field}"]`));
-  assert.match(api,/app.models.command\(action_id.split/);
+  assert.match(api,/app\.models\.command\(\s*action_id\.split/);
   assert.match(api,/expected_context=body/);
   assert.doesNotMatch(panel,/Process.Start|SetModeAsync|TickAsync/);
 });
