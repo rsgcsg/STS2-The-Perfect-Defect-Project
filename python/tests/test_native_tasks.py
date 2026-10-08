@@ -46,7 +46,17 @@ def bridge():
         def do_GET(self):
             calls.append((self.path, None))
             assert self.path == "/api/player-environment/capabilities"
-            raw = json.dumps(capabilities).encode()
+            ordinal = sum(route == self.path for route, _ in calls)
+            fault_at, fault = behavior.get("connector_fault_at", (None, None))
+            if fault_at == ordinal and fault == "unavailable":
+                self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            value = capabilities
+            if fault_at == ordinal and fault == "drift":
+                value = {**capabilities, "host": {"runtime_instance_id": "replacement-game"}}
+            raw = json.dumps(value).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
@@ -82,7 +92,8 @@ def bridge():
                     self.respond({"error": "unrecognized"}, 503)
                     return
                 result = {"schema": "sts2.platform/recording-result-1", "command_id": body["command"]["command_id"],
-                          "accepted": True, "pending": False, "code": "recording", "status": behavior["recording"]}
+                          "accepted": True, "pending": behavior.get("recording_result_pending", False),
+                          "code": "recording", "status": behavior["recording"]}
                 if outcome == "malformed":
                     result["extra"] = "not allowed"
                 if outcome == "wrong_id":
@@ -215,9 +226,63 @@ def test_connector_identity_must_agree_before_close(bridge, drift):
 def test_connector_replacement_while_closing_cannot_authorize_model_control(bridge):
     client, _, calls, behavior = bridge
     behavior["replace_connector"] = True
-    with pytest.raises(BoundaryError, match="game_identity_mismatch"):
+    with pytest.raises(BoundaryError, match="native_task_command_unknown"):
         client.prepare_model({"environment": None}, behavior["connector_endpoint"])
     assert sum(body is not None for _, body in calls) == 1
+
+
+@pytest.mark.parametrize("fault,preflight_code", [("unavailable", "connector_identity_unavailable"),
+                                               ("drift", "native_task_game_identity_mismatch")])
+@pytest.mark.parametrize("phase", ["before_close", "after_close", "ready_no_close"])
+def test_model_identity_confirmation_keeps_submission_stage(bridge, fault, preflight_code, phase):
+    client, observed, calls, behavior = bridge
+    if phase == "ready_no_close":
+        observed.update(recording_lifecycle="closed", ready_for_model=True)
+    behavior["connector_fault_at"] = (1 if phase == "before_close" else 2, fault)
+    expected = "native_task_command_unknown" if phase == "after_close" else preflight_code
+    with pytest.raises(BoundaryError) as result:
+        client.prepare_model({"environment": {"runtime_instance_id": "game-1"}}, behavior["connector_endpoint"])
+    assert result.value.code == expected
+    assert sum(body is not None for _, body in calls) == (1 if phase == "after_close" else 0)
+    assert not any(route in {"/mode", "/tick"} for route, _ in calls)
+
+
+@pytest.mark.parametrize("fault", ["unavailable", "drift"])
+def test_workbench_post_close_confirmation_failure_requires_recovery_without_model_dispatch(bridge, tmp_path, fault):
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.local_models import LocalModelService
+
+    native, _, native_calls, behavior = bridge
+    # Workbench first validates its persisted Connector, then NativeTasks reads
+    # before Close, and the third read confirms after the actual Close POST.
+    behavior["connector_fault_at"] = (3, fault)
+    service = LocalModelService(ProjectConfig(tmp_path, "", "", None, combination()))
+    service.native_tasks = native
+    runtime_calls = []
+
+    class Runtime:
+        def request(self, route, body=None, *, binding=None):
+            runtime_calls.append((route, body))
+            assert body is None
+            if route == "/status":
+                return {"status": {"environment": None, "run_id": "fixture-run", "mode": "human"}}
+            assert route == "/environment"
+            return {"schema": "sts2.policy-runtime/environment-1", "run_id": "fixture-run",
+                    "runtime_instance_id": "game-1", "recovery_epoch": 19}
+
+    service.client = Runtime()
+    service.state.update(status="loaded", loaded=True, connector_endpoint=behavior["connector_endpoint"])
+    service.command("auto")
+    service.thread.join(timeout=3)
+    assert not service.thread.is_alive()
+    assert service.state["status"] == "command_unknown"
+    assert service.state["operation"]["status"] == "unknown"
+    assert service.state["error_code"] == "native_task_command_unknown"
+    assert runtime_calls == [("/status", None), ("/environment", None)]
+    assert sum(body is not None for _, body in native_calls) == 1
+    with pytest.raises(BoundaryError, match="previous_operation_requires_recovery"):
+        service.command("auto")
+    assert sum(body is not None for _, body in native_calls) == 1
 
 
 @pytest.mark.parametrize("action", ["auto", "one_step", "shadow"])
@@ -350,3 +415,25 @@ def test_source_status_requires_exact_safe_shape_and_profile_claim(bridge, field
     behavior["recording"][field] = value
     with pytest.raises(BoundaryError, match="native_recording_unavailable"):
         client.recording_status(behavior["connector_endpoint"])
+
+
+@pytest.mark.parametrize("fault,preflight_code", [("unavailable", "connector_identity_unavailable"),
+                                               ("drift", "native_recording_game_identity_mismatch")])
+@pytest.mark.parametrize("phase", ["before_post", "after_post"])
+def test_source_confirmation_failure_is_unknown_only_after_submission(bridge, fault, preflight_code, phase):
+    client, _, calls, behavior = bridge
+    source_status(behavior)
+    observed = client.recording_status(behavior["connector_endpoint"])
+    reads = sum(route == "/api/player-environment/capabilities" for route, _ in calls)
+    behavior["connector_fault_at"] = (reads + (1 if phase == "before_post" else 2), fault)
+    behavior["recording_result_pending"] = True
+    behavior["recording"].update(recording_lifecycle="closing", closeout_status="closing")
+    expected = "native_recording_command_unknown" if phase == "after_post" else preflight_code
+    with pytest.raises(BoundaryError) as result:
+        client.recording_command(behavior["connector_endpoint"], observed, "close")
+    assert result.value.code == expected
+    posts = sum(route == "/v1/tasks/recording/command" for route, _ in calls)
+    assert posts == (1 if phase == "after_post" else 0)
+    # A recovered read observes lifecycle only; it never replays the uncertain command.
+    client.recording_status(behavior["connector_endpoint"])
+    assert sum(route == "/v1/tasks/recording/command" for route, _ in calls) == posts

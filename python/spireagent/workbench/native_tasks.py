@@ -164,7 +164,11 @@ class NativeTasks:
                 or not isinstance(value["code"], str) or not re.fullmatch(r"[a-z0-9_]{1,96}", value["code"])
                 or not self._recording_status_valid(value["status"])):
             raise BoundaryError("recording", "native_recording_command_unknown")
-        if value["status"]["runtime_instance_id"] != expected or self.connector_instance(connector_endpoint) != expected:
+        try:
+            confirmed = self.connector_instance(connector_endpoint)
+        except BoundaryError:
+            raise BoundaryError("recording", "native_recording_command_unknown") from None
+        if value["status"]["runtime_instance_id"] != expected or confirmed != expected:
             raise BoundaryError("recording", "native_recording_command_unknown")
         return value
 
@@ -281,8 +285,10 @@ class NativeTasks:
         observed = self.request()
         if observed["runtime_instance_id"] != expected:
             raise BoundaryError("local_model", "native_task_game_identity_mismatch")
+        close_submitted = False
         if not observed["ready_for_model"]:
             # One bounded request only. Uncertain Close is never automatically retried.
+            close_submitted = True
             observed = self.request(
                 {
                     "runtime_instance_id": expected,
@@ -291,9 +297,17 @@ class NativeTasks:
                 }
             )
         if observed["runtime_instance_id"] != expected:
-            raise BoundaryError("local_model", "native_task_game_identity_mismatch")
+            raise BoundaryError("local_model", "native_task_command_unknown" if close_submitted
+                                else "native_task_game_identity_mismatch")
         if not observed["ready_for_model"]:
             raise BoundaryError("local_model", "recording_close_pending_or_failed")
-        if self.connector_instance(connector_endpoint) != expected:
-            raise BoundaryError("local_model", "native_task_game_identity_mismatch")
+        try:
+            confirmed = self.connector_instance(connector_endpoint)
+        except BoundaryError:
+            if close_submitted:
+                raise BoundaryError("local_model", "native_task_command_unknown") from None
+            raise
+        if confirmed != expected:
+            raise BoundaryError("local_model", "native_task_command_unknown" if close_submitted
+                                else "native_task_game_identity_mismatch")
         return observed
