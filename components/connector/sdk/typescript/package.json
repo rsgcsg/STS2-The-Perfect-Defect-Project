@@ -27,10 +27,10 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "typecheck": "node tools/generate-native-logical-profile.mjs --check && tsc -p tsconfig.typecheck.json",
     "test": "vitest run",
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
-    "check": "npm run typecheck && npm run test && npm run build",
+    "build": "node tools/generate-native-logical-profile.mjs --check && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm run test && npm run build && node tools/check-native-logical-profile-package.mjs",
     "prepare": "npm run build"
   },
   "dependencies": {

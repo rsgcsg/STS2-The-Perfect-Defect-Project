@@ -16,5 +16,6 @@
     <Compile Include="../../PlayerEnvironment/Protocol/NativeLogicalContracts.cs" Link="Protocol/NativeLogicalContracts.cs" />
     <Compile Include="../../PlayerEnvironment/NativeLogical/*.cs" Link="Core/%(Filename)%(Extension)" />
     <None Include="../../../contracts/fixtures/native-logical-v1.json" Link="native-logical-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../contracts/fixtures/native-logical-public-domains-v1.json" Link="native-logical-public-domains-v1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

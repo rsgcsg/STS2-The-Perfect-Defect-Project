@@ -316,7 +316,9 @@ export class EnvironmentControllerSession {
 
   private async serialize(operation: () => Promise<void>): Promise<void> {
     const previous = this.operation;
-    const current = (async () => {
+    // Publish the pending operation before invoking an injected transport. A
+    // synchronous Stop from its acquire callback must see and await this owner.
+    const current = Promise.resolve().then(async () => {
       if (previous) {
         try {
           await previous;
@@ -325,7 +327,7 @@ export class EnvironmentControllerSession {
         }
       }
       await operation();
-    })();
+    });
     this.operation = current;
     try {
       await current;

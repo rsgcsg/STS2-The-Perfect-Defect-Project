@@ -9,8 +9,11 @@ import {
   validateNativeLogicalRequest, type NativeLogicalAction, type NativeLogicalTransportOperation
 } from "../src/index.js";
 import { nativeFixture } from "./nativeLogicalFixtures.js";
+import { readFileSync } from "node:fs";
 
 const fixture = nativeFixture();
+const publicDomains: { cases: { name: string; valid: boolean; wire: unknown }[] } = JSON.parse(readFileSync(
+  new URL("../../../contracts/fixtures/native-logical-public-domains-v1.json", import.meta.url), "utf8"));
 const decoders: Record<string, (value: unknown) => unknown> = {
   observation: decodeNativeLogicalObservation, capture: decodeNativeLogicalCapture, observation_context: decodeNativeLogicalContext,
   read: decodeNativeLogicalRead, catalog_page: decodeNativeLogicalCatalogPage, resolve: decodeNativeLogicalResolve,
@@ -25,6 +28,10 @@ const decoders: Record<string, (value: unknown) => unknown> = {
 };
 
 describe("native logical shared wire conformance", () => {
+  it.each(publicDomains.cases)("matches the generic native DTO domain $name", value => {
+    if (value.valid) expect(() => decodeNativeLogicalObservation(structuredClone(value.wire))).not.toThrow();
+    else expect(() => decodeNativeLogicalObservation(structuredClone(value.wire))).toThrow();
+  });
   it.each(fixture.digest_cases)("matches C# canonical UTF8 digest $name", value => {
     expect(digestNativeLogicalActions(value.actions)).toBe(value.sha256);
   });

@@ -21,7 +21,7 @@ import { assembleNativeLogicalCapture, assembleNativeLogicalObservation, type Na
 
 export interface NativeLogicalAttachInput {
   eagerScope: readonly NativeLogicalScopeField[];
-  requiredSeams: NativeLogicalCapabilities["capture_coverage"];
+  requiredSeams: readonly NativeLogicalCapabilities["capture_coverage"][number][];
   deliveryMode: "full_reference" | "scoped";
   signal?: AbortSignal;
 }
@@ -36,6 +36,19 @@ export interface NativeLogicalAwaitInput {
 }
 export type NativeLogicalResultLookup = { status: "pending"; requestId: string } |
   { status: "terminal"; result: DecodedPlayerPayload<NativeLogicalResult> };
+export interface NativeLogicalSubmitInput {
+  requestId: string;
+  expectedSnapshotId: string;
+  actionId: string;
+  /** Cancellation guards preparation and admission only. After the one dispatch
+   * attempt starts, its bounded original response remains observable. */
+  preSubmitSignal?: AbortSignal;
+  /** Compatibility alias for preSubmitSignal; never aborts a started POST. */
+  signal?: AbortSignal;
+  /** Synchronous admission notification before the final cancellation check.
+   * This proves neither HTTP delivery, native input, nor Commit. */
+  onSubmitStart?: () => void;
+}
 
 /** Thin client over the one registered Player Environment session. Scope and
  * event acknowledgements are caller-owned; this class never advances Model memory. */
@@ -68,7 +81,7 @@ export class NativeLogicalSession {
     validateNativeLogicalScope(input.eagerScope);
     const capabilities = await this.negotiated(input.signal);
     const reply = await this.call("attach", { client_session_id: this.identity().clientSessionId,
-      eager_scope: [...input.eagerScope], required_seams: input.requiredSeams, delivery_mode: input.deliveryMode },
+      eager_scope: [...input.eagerScope], required_seams: [...input.requiredSeams], delivery_mode: input.deliveryMode },
     decodeNativeLogicalAttach, { signal: input.signal, maxResponseBytes: 1024 * 1024 });
     if (reply.data.subscription) {
       const accepted = reply.data.subscription;
@@ -221,15 +234,23 @@ export class NativeLogicalSession {
     return reply;
   }
 
-  async submit(input: { requestId: string; expectedSnapshotId: string; actionId: string; signal?: AbortSignal }): Promise<NativeLogicalResultLookup> {
-    await this.negotiated(input.signal);
-    input.signal?.throwIfAborted();
+  async submit(input: NativeLogicalSubmitInput): Promise<NativeLogicalResultLookup> {
+    const signals = [input.preSubmitSignal, input.signal].filter((value): value is AbortSignal => value !== undefined);
+    const preSubmitSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+    preSubmitSignal?.throwIfAborted();
+    await this.negotiated(preSubmitSignal);
+    preSubmitSignal?.throwIfAborted();
     const credentials = await this.#controller.credentials();
-    input.signal?.throwIfAborted();
-    const response = await this.#environment.nativeLogicalRequest("submit", { request_id: input.requestId, expected_snapshot_id: input.expectedSnapshotId,
+    preSubmitSignal?.throwIfAborted();
+    const body = { request_id: input.requestId, expected_snapshot_id: input.expectedSnapshotId,
       bound_action_id: input.actionId, client_session_id: credentials.clientSessionId,
       controller_lease_id: credentials.controllerLeaseId, controller_generation: credentials.controllerGeneration,
-      input_profile: NATIVE_LOGICAL_PROFILE }, { signal: input.signal, maxResponseBytes: 2 * 1024 * 1024 });
+      input_profile: NATIVE_LOGICAL_PROFILE };
+    validateNativeLogicalRequest("submit", body);
+    preSubmitSignal?.throwIfAborted();
+    input.onSubmitStart?.();
+    preSubmitSignal?.throwIfAborted(); // Reentrant Stop in the notification prevents dispatch.
+    const response = await this.#environment.nativeLogicalRequest("submit", body, { maxResponseBytes: 2 * 1024 * 1024 });
     if (response.statusCode === 202 && isNativeLogicalPendingLookup(response.raw))
       return { status: "pending", requestId: input.requestId };
     const reply = decodeNativeLogicalResult(response.raw);
