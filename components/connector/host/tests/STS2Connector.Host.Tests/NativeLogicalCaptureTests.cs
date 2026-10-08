@@ -295,6 +295,18 @@ public sealed class NativeLogicalCaptureTests
         Assert.Empty(native.Completeness.Missing);
     }
 
+    [Fact]
+    public void CompletedInformationReturnDoesNotReopenInputOnUnderlyingObservedRoom()
+    {
+        PlayerEnvironmentSnapshot underlying = Snapshot() with { Status = "observed" };
+        var captured = new NativeTextMenuInformationCapture(underlying, "underlying_room",
+            Array.Empty<NativeTextMenuInformationLeaf>());
+        NativeTextMenuInformationCapture result = NativeTextMenuInformation.PreserveInformationScope(
+            Snapshot(), captured, nativeLogical: true);
+        Assert.Same(captured, result);
+        Assert.Equal("observed", result.Page.Status);
+    }
+
     private sealed class PotionOwnerFixture
     {
         public bool ShouldCancelTargeting() => throw new InvalidOperationException("Owner probe must not invoke native delegates.");

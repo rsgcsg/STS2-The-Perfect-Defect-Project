@@ -227,9 +227,9 @@ public sealed class NativeLogicalBridgeTests
             ["displayed_cost"] = "1", ["displayed_description"] = "Gain 5 Block." };
         return family switch
         {
-            "inspect" => NativeLogicalCapturePolicy.PreserveNativeScope(source,
-                NativeTextMenuInformation.ProjectCardInspectPage(source, "Defend", "1", "Gain 5 Block.", true),
-                NativeLogicalProjectionReplacement.InformationPage, nativeLogical),
+            "inspect" => NativeTextMenuInformation.PreserveInformationScope(source,
+                new(NativeTextMenuInformation.ProjectCardInspectPage(source, "Defend", "1", "Gain 5 Block.", true),
+                    "entered_inspect", Array.Empty<NativeTextMenuInformationLeaf>()), nativeLogical).Page,
             "held" => NativeTextMenuFrameBuilder.ProjectHeldCardPage(source, source.Referents, surface,
                 "native_targeting", displayComplete: true, nativeLogical),
             "potion" => NativeLogicalCapturePolicy.PreserveNativeScope(source,

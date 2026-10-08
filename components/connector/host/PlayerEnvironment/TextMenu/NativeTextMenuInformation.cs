@@ -311,10 +311,21 @@ internal static class NativeTextMenuInformation
         NativeEntityRegistry entities, bool nativeLogical)
     {
         NativeTextMenuInformationCapture captured = CaptureOwnedCore(legacy, entities, nativeLogical);
+        return PreserveInformationScope(legacy.Snapshot, captured, nativeLogical);
+    }
+
+    internal static NativeTextMenuInformationCapture PreserveInformationScope(PlayerEnvironmentSnapshot inherited,
+        NativeTextMenuInformationCapture captured, bool nativeLogical)
+    {
+        // A completed return can recursively capture the underlying room. That
+        // result is no longer an entered information slice and keeps its own
+        // established readiness; the old page must not reopen input over it.
+        if (!nativeLogical || captured.Page.Interaction.Stage != "native_information_page"
+            && captured.Page.Interaction.Kind != "native_information_unresolved") return captured;
         return captured with
         {
-            Page = NativeLogicalCapturePolicy.PreserveNativeScope(legacy.Snapshot, captured.Page,
-                NativeLogicalProjectionReplacement.InformationPage, nativeLogical)
+            Page = NativeLogicalCapturePolicy.PreserveNativeScope(inherited, captured.Page,
+                NativeLogicalProjectionReplacement.InformationPage, nativeLogical: true)
         };
     }
 
