@@ -25,6 +25,7 @@ from .native_structured_export import (
     load_native_package,
     native_architecture,
 )
+from .native_task import observe_ready_summary, ready_summary_task_spec
 
 SESSION_SCHEMA = "sts2.policy-runtime/agent-session-1"
 MANIFEST_SCHEMA = "sts2.policy-runtime/agent-manifest-1"
@@ -266,6 +267,13 @@ class NativeStructuredAgent:
         ):
             raise BoundaryError("native_agent", "opaque_state_contract_required")
         self.metadata, self.manifest = metadata, manifest
+        task_spec = metadata["agent_spec"].get("task_spec")
+        if task_spec is not None and (
+            task_spec != ready_summary_task_spec()
+            or metadata["agent_spec"]["version"] != "1.2.0"
+        ):
+            raise BoundaryError("native_agent", "unsupported_task_spec")
+        self.ready_summary_task = task_spec is not None
         self.scorer = NativeStructuredScorer(
             model, metadata["model_id"], metadata["weights"]["sha256"]
         )
@@ -313,6 +321,18 @@ class NativeStructuredAgent:
         ):
             raise BoundaryError("native_agent", "acknowledged_next_basis_required")
         self.verify_weights()
+        # Programmed task completion is part of this explicit AgentSpec. It does
+        # not turn a native terminal/summary into an empty action catalog, nor
+        # silently change legacy generic Agents. The stateless predicate uses
+        # the same accepted input preserved by scorer export/restore.
+        if (self.ready_summary_task and scorer.input is not None
+                and observe_ready_summary(scorer.input["observation"]).agent_task_complete):
+            return {
+                "continuity_token": scorer.continuity,
+                "consumption_id": scorer.consumption_id,
+                "state_version": scorer.state_version,
+                "directive": {"type": "close", "reason": "native_ready_summary_task_complete"},
+            }
         values = scorer.scores()
         directive: dict[str, Any]
         if values:

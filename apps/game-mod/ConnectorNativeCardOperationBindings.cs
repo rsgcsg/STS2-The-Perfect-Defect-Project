@@ -36,9 +36,11 @@ internal static class ConnectorNativeCardOperationBindings
         {
             (nameof(NInspectCardScreen.Open), new[] { typeof(List<CardModel>), typeof(int), typeof(bool) }),
             ("SetCard", new[] { typeof(int) }),
-            ("ToggleShowUpgrade", new[] { typeof(NTickbox) }),
-            (nameof(NInspectCardScreen.Close), Type.EmptyTypes)
+            ("ToggleShowUpgrade", new[] { typeof(NTickbox) })
         }) Add(harmony, typeof(NInspectCardScreen), method, arguments, typeof(void), nameof(InspectReplacing));
+        // Close withdraws controls but does not replace the source/display
+        // tuple. Capture continues to revalidate that exact visible tuple;
+        // Open/SetCard/Toggle and failed displays still invalidate it.
         NativeMouseCardConfirmation.Registered();
         NativeCardInspectionBinding.Registered();
     }

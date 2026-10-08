@@ -11,7 +11,7 @@ test('card source hooks register exact typed invocations and retain passive boun
   assert.match(hooks, /BindingFlags\.DeclaredOnly/u);
   assert.match(hooks, /original\.DeclaringType != owner \|\| original\.IsStatic \|\| original\.ReturnType != returns/u);
   assert.match(hooks, /"MultiCreatureTargeting", new\[\] \{ typeof\(TargetMode\) \}, typeof\(Task\)/u);
-  for (const seam of ['Start', 'CancelPlayCard', '_ExitTree', 'UpdateCardDisplay', 'SetCard', 'ToggleShowUpgrade', 'Open', 'Close'])
+  for (const seam of ['Start', 'CancelPlayCard', '_ExitTree', 'UpdateCardDisplay', 'SetCard', 'ToggleShowUpgrade', 'Open'])
     assert.ok(hooks.includes(seam), seam);
   assert.doesNotMatch(hooks, /PatchAll|transpiler|\.Invoke\(|Dispatch\(|_Input\(|await |ContinueWith|Task\.Run|Timer|TryPlayCard/u);
   assert.ok(hooks.indexOf('NativeCardInspectionBinding.DisplayReturned(__instance, __state);')
@@ -21,6 +21,9 @@ test('card source hooks register exact typed invocations and retain passive boun
   assert.equal(composition.match(/ConnectorNativeCardOperationBindings\.Register\(harmony\)/gu)?.length, 1);
   assert.doesNotMatch(composition, /"UpdateCardDisplay"|InspectPreviewReturned/u);
   assert.match(source('apps/game-mod/STS2Platform.GameMod.csproj'), /Compile Include="ConnectorNativeCardOperationBindings.cs"/u);
+  const replacements = hooks.slice(hooks.indexOf('foreach ((string method'), hooks.indexOf('NativeMouseCardConfirmation.Registered();'));
+  assert.doesNotMatch(replacements, /nameof\(NInspectCardScreen\.Close\)/u);
+  assert.match(composition, /typeof\(NInspectCardScreen\), nameof\(NInspectCardScreen\.Close\)/u);
 });
 
 test('mouse adapter dispatches only actual two-field left input without state edits or task completion', () => {

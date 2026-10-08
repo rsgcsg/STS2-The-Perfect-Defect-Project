@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Godot;
@@ -86,6 +87,31 @@ public sealed class NativeCardOperationBindingTests
         Assert.False(NativeMouseCardConfirmation.CanDispatch(entryBinding with { Ticket = replacement }, entryBinding));
         Assert.False(NativeMouseCardConfirmation.CanDispatch(entryBinding, entryBinding));
     }
+
+    [Fact]
+    public void AssignedInspectorBeforeOpenHasNoEnteredSourceButOpenSourceIsNotACompletedDisplayCertificate()
+    {
+        var inspector = Bare<NInspectCardScreen>();
+        Assert.False(NativeCardInspectionBinding.HasEnteredNativeSource(inspector));
+        var cards = typeof(NInspectCardScreen).GetField("_cards", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)!;
+        cards.SetValue(inspector, new List<CardModel> { Card() });
+        Assert.True(NativeCardInspectionBinding.HasEnteredNativeSource(inspector));
+        // Native Open source entry makes a callback eligible, but only completed
+        // UpdateCardDisplay can certify the original/rendered relation.
+        Assert.Null(NativeCardInspectionBinding.Capture(inspector, Bare<NCard>()));
+    }
+
+    [Theory]
+    [InlineData(true, true, true, Control.MouseFilterEnum.Stop, true, true)]
+    [InlineData(true, true, true, Control.MouseFilterEnum.Pass, true, true)]
+    [InlineData(false, true, true, Control.MouseFilterEnum.Stop, true, false)]
+    [InlineData(true, false, true, Control.MouseFilterEnum.Stop, true, false)]
+    [InlineData(true, true, false, Control.MouseFilterEnum.Stop, true, false)]
+    [InlineData(true, true, true, Control.MouseFilterEnum.Ignore, true, false)]
+    [InlineData(true, true, true, Control.MouseFilterEnum.Stop, false, false)]
+    public void InspectorControlsUseTheirOwnActualAdmissionRatherThanScreenProcessInput(
+        bool live, bool visible, bool enabled, Control.MouseFilterEnum mouseFilter, bool canProcess, bool expected) =>
+        Assert.Equal(expected, NativeTextMenuInformation.CardInspectControlAvailable(live, visible, enabled, mouseFilter, canProcess));
 
     [Fact]
     public void InspectorRequiresCurrentOriginalListIndexNodeUpgradeAndRenderedModel()
