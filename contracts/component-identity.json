@@ -20,9 +20,17 @@
         "sdk/typescript/src/rewardPage.ts",
         "sdk/typescript/src/textMenu.ts",
         "sdk/typescript/src/textMenuV2.ts",
+        "sdk/typescript/src/nativeLogical.ts",
+        "sdk/typescript/src/nativeLogicalWire.ts",
+        "sdk/typescript/src/nativeLogicalAssembly.ts",
+        "sdk/typescript/src/nativeLogicalClient.ts",
+        "sdk/typescript/src/nativeLogicalPublicationProfile.generated.ts",
         "host/LiveHost/LiveHostContracts.cs",
         "docs/player-environment/PROTOCOL.md",
+        "docs/NATIVE_LOGICAL_PROFILE.md",
         "host/PlayerEnvironment/Protocol/TextMenuContracts.cs",
+        "host/PlayerEnvironment/Protocol/NativeLogicalContracts.cs",
+        "host/PlayerEnvironment/NativeLogical/NativeLogicalWire.cs",
         "sdk/typescript/src/sealedObservation.ts",
         "host/PlayerEnvironment/Protocol/SealedObservationContracts.cs"
       ]
