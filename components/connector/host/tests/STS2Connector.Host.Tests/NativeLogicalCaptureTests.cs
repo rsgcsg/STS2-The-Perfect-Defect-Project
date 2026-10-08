@@ -296,6 +296,37 @@ public sealed class NativeLogicalCaptureTests
     }
 
     [Fact]
+    public void VisibleWithdrawnInspectorKeepsCompleteNoActionObservedThroughInformationScope()
+    {
+        PlayerEnvironmentSnapshot inherited = Snapshot();
+        var closing = NativeTextMenuInformation.ProjectCardInspectPage(inherited,
+            "Defend", "1", "Gain 5 Block.", false) with { Status = "observed" };
+        var captured = new NativeTextMenuInformationCapture(closing, "inspect",
+            Array.Empty<NativeTextMenuInformationLeaf>());
+        var result = NativeTextMenuInformation.PreserveInformationScope(inherited, captured, nativeLogical: true);
+        Assert.Equal("observed", result.Page.Status);
+        Assert.Equal("complete", result.Page.Completeness.Status);
+        Assert.Empty(result.Leaves);
+        Assert.Equal("inspect_card", result.Page.Interaction.Kind);
+        Assert.Equal("Gain 5 Block.", result.Page.Interaction.Content.Surface["description"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void NoActionInspectorDoesNotEraseUnrelatedInheritedMissingFacts()
+    {
+        PlayerEnvironmentSnapshot inherited = Snapshot() with { Completeness =
+            new("partial", "inherited", "inherited", new[] { "persistent_visible_state" }, Array.Empty<string>()) };
+        var closing = NativeTextMenuInformation.ProjectCardInspectPage(inherited,
+            "Defend", "1", "Gain 5 Block.", false) with { Status = "observed" };
+        var captured = new NativeTextMenuInformationCapture(closing, "inspect", Array.Empty<NativeTextMenuInformationLeaf>());
+        var result = NativeTextMenuInformation.PreserveInformationScope(inherited, captured, nativeLogical: true);
+        Assert.Equal("partial", result.Page.Completeness.Status);
+        Assert.Equal("visible_unsupported", result.Page.Status);
+        Assert.Equal(new[] { "persistent_visible_state" }, result.Page.Completeness.Missing);
+        Assert.Empty(result.Leaves);
+    }
+
+    [Fact]
     public void CompletedInformationReturnDoesNotReopenInputOnUnderlyingObservedRoom()
     {
         PlayerEnvironmentSnapshot underlying = Snapshot() with { Status = "observed" };

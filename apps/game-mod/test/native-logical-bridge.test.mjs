@@ -35,6 +35,8 @@ test('family publication routes are typed native observations with no independen
   assert.match(family, /ConnectorMod\.IsLiveNode\(node\)/u);
   assert.match(family, /Live\(node\) && node\.IsNodeReady\(\)/u);
   assert.match(family, /ConnectorMod\.IsNodeVisible\(canvas\)/u);
+  assert.match(family, /node is not NInspectCardScreen inspector \|\| NativeCardInspectionBinding\.HasEnteredNativeSource\(inspector\)/u);
+  assert.match(family, /Live\(__instance\) && NativeCardInspectionBinding\.HasEnteredNativeSource\(__instance\)/u);
   assert.match(family, /ReferenceEquals\(node\.GetParent\(\), __instance\)/u);
   assert.match(family, /__state \|\| \(Reward\(__instance\) && Current\(__instance\)\)/u);
   assert.match(family, /__state \|\| \(Information\(__instance\) && Current\(__instance\)\)/u);

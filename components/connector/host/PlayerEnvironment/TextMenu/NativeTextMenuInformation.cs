@@ -328,10 +328,16 @@ internal static class NativeTextMenuInformation
         // established readiness; the old page must not reopen input over it.
         if (!nativeLogical || captured.Page.Interaction.Stage != "native_information_page"
             && captured.Page.Interaction.Kind != "native_information_unresolved") return captured;
+        PlayerEnvironmentSnapshot page = NativeLogicalCapturePolicy.PreserveNativeScope(inherited, captured.Page,
+            NativeLogicalProjectionReplacement.InformationPage, nativeLogical: true);
+        // Scope composition preserves a complete actual no-input inspection
+        // view; its display certificate does not supply an input capability.
+        if (captured.Page.Interaction.Kind == "inspect_card" && captured.Page.Status == "observed"
+            && captured.Leaves.Count == 0 && page.Completeness.Status == "complete")
+            page = page with { Status = "observed" };
         return captured with
         {
-            Page = NativeLogicalCapturePolicy.PreserveNativeScope(inherited, captured.Page,
-                NativeLogicalProjectionReplacement.InformationPage, nativeLogical: true)
+            Page = page
         };
     }
 
@@ -350,7 +356,11 @@ internal static class NativeTextMenuInformation
                 ClearOwner();
                 return Capture(legacy, entities, nativeLogical);
             }
-            return FailClosedPage(legacy, key, "native_information_return_pending");
+            // Native card Close retains a visible exact display while its
+            // tween runs. Read that actual view/catalog, including any surviving
+            // native Backstop; the compatibility profiles keep their old wait.
+            if (!nativeLogical || screen is not NInspectCardScreen)
+                return FailClosedPage(legacy, key, "native_information_return_pending");
         }
         if (!IsExactOwner(screen, kind))
             return FailClosedPage(legacy, key, "native_information_owner_changed");
@@ -1486,10 +1496,11 @@ internal static class NativeTextMenuInformation
         var description = card?.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaRichTextLabel>("%DescriptionLabel");
         NButton? left = screen.GetNodeOrNull<NButton>("LeftArrow");
         NButton? right = screen.GetNodeOrNull<NButton>("RightArrow");
+        NButton? backstop = screen.GetNodeOrNull<NButton>("Backstop");
         NTickbox? upgrade = screen.GetNodeOrNull<NTickbox>("%Upgrade");
         if (card == null || card.Visibility != ModelVisibility.Visible
             || title == null || cost == null || description == null
-            || upgrade == null)
+            || upgrade == null || nativeLogical && backstop == null)
             return FailClosedPage(legacy, key, "native_card_inspect_display_unresolved");
         PlayerEnvironmentSnapshot page = ProjectCardInspectPage(legacy.Snapshot, title.Text, cost.Text,
             description.Text, upgrade.IsTicked);
@@ -1504,22 +1515,47 @@ internal static class NativeTextMenuInformation
                 entities.GetId(sourceBinding.Source.Original, "card"),
                 entities.GetId(sourceBinding.Source.DisplayModel!, "card"));
         }
-        var leaves = new List<NativeTextMenuInformationLeaf>
-        {
-            Leaf("return_card_inspect", "root", "return_card_inspect",
-                "Close card inspection", () => Return(screen, "inspect_card"))
-        };
-        if (left is { IsEnabled: true } && ConnectorMod.IsNodeVisible(left))
+        var leaves = new List<NativeTextMenuInformationLeaf>();
+        // Screen ProcessInput/MouseFilter govern the screen's input, not every
+        // child. In particular native Close leaves Backstop enabled. Bind each
+        // native control's actual admission independently instead of guessing
+        // an empty catalog from the screen's withdrawal.
+        if (!nativeLogical || backstop != null && CardInspectControlAvailable(backstop))
+            leaves.Add(Leaf("return_card_inspect", "root", "return_card_inspect",
+                "Close card inspection", () => ReturnCardInspect(screen, backstop, nativeLogical)));
+        if (left is { IsEnabled: true } && ConnectorMod.IsNodeVisible(left)
+            && (!nativeLogical || CardInspectControlAvailable(left)))
             leaves.Add(Leaf("previous_inspect_card", "root", "previous_inspect_card",
-                "Previous card", () => ClickCardInspectControl(screen, left, "LeftArrow")));
-        if (right is { IsEnabled: true } && ConnectorMod.IsNodeVisible(right))
+                "Previous card", () => ClickCardInspectControl(screen, left, "LeftArrow", nativeLogical)));
+        if (right is { IsEnabled: true } && ConnectorMod.IsNodeVisible(right)
+            && (!nativeLogical || CardInspectControlAvailable(right)))
             leaves.Add(Leaf("next_inspect_card", "root", "next_inspect_card",
-                "Next card", () => ClickCardInspectControl(screen, right, "RightArrow")));
-        if (upgrade.IsEnabled && ConnectorMod.IsNodeVisible(upgrade))
+                "Next card", () => ClickCardInspectControl(screen, right, "RightArrow", nativeLogical)));
+        if (upgrade.IsEnabled && ConnectorMod.IsNodeVisible(upgrade)
+            && (!nativeLogical || CardInspectControlAvailable(upgrade)))
             leaves.Add(Leaf("toggle_card_upgrade_preview", "root",
                 "toggle_card_upgrade_preview", "Toggle upgrade preview",
-                () => ClickCardInspectControl(screen, upgrade, "%Upgrade")));
+                () => ClickCardInspectControl(screen, upgrade, "%Upgrade", nativeLogical)));
+        if (nativeLogical && leaves.Count == 0) page = page with { Status = "observed" };
         return new NativeTextMenuInformationCapture(page, key, leaves);
+    }
+
+    private static bool CardInspectControlAvailable(NClickableControl control) =>
+        ConnectorMod.IsLiveNode(control) && CardInspectControlAvailable(true, ConnectorMod.IsNodeVisible(control),
+            control.IsEnabled, control.MouseFilter, control.CanProcess());
+
+    internal static bool CardInspectControlAvailable(bool live, bool visible, bool enabled,
+        Control.MouseFilterEnum mouseFilter, bool canProcess) =>
+        live && visible && enabled && mouseFilter != Control.MouseFilterEnum.Ignore && canProcess;
+
+    private static NativeInputResult ReturnCardInspect(NInspectCardScreen screen, NButton? backstop, bool nativeLogical)
+    {
+        if (nativeLogical && (backstop == null || !IsExactOwner(screen, "inspect_card")
+            || !ReferenceEquals(screen.GetNodeOrNull<NButton>("Backstop"), backstop)
+            || !CardInspectControlAvailable(backstop)))
+            return NativeInputResult.Rejected("card_inspect_return_control_changed",
+                "The exact native card inspection Backstop is no longer available.");
+        return Return(screen, "inspect_card");
     }
 
     internal static PlayerEnvironmentSnapshot ProjectCardInspectPage(PlayerEnvironmentSnapshot source,
@@ -1576,12 +1612,13 @@ internal static class NativeTextMenuInformation
     }
 
     private static NativeInputResult ClickCardInspectControl(
-        NInspectCardScreen screen, NButton button, string path)
+        NInspectCardScreen screen, NButton button, string path, bool nativeLogical = false)
     {
         if (!ReferenceEquals(_ownedScreen, screen)
             || !IsExactOwner(screen, "inspect_card")
             || !ReferenceEquals(screen.GetNodeOrNull<NButton>(path), button)
-            || !button.IsEnabled || !ConnectorMod.IsNodeVisible(button))
+            || !button.IsEnabled || !ConnectorMod.IsNodeVisible(button)
+            || nativeLogical && !CardInspectControlAvailable(button))
             return NativeInputResult.Rejected("card_inspect_control_changed",
                 "The exact native card inspection control is no longer enabled.");
         button.ForceClick();
