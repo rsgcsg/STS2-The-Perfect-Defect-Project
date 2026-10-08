@@ -35,17 +35,22 @@ from ..fullrun.structured_sequences import (
     parse_structured_dataset,
 )
 from ..models.structured_engine import (
-    CHECKPOINT_SCHEMA,
     MAX_CHECKPOINT_BYTES,
     StructuredTrainingEngine,
     execution_identity,
 )
 from ..models.structured_training import StructuredTrainingConfig
-from ..policy.structured_export import (
+from ..structured_code_scope import (
+    INFERENCE_SCOPE,
+    LEGACY_SCOPE,
     MAX_MANIFEST_BYTES,
     MAX_WEIGHTS_BYTES,
-    export_structured_package,
-    load_structured_package,
+    SCOPED_MODEL_SCHEMA,
+    SCOPED_REPORT_SCHEMA,
+    TRAINING_SCOPE,
+    checkpoint_schema,
+    exporter_runtime,
+    run_code_scope,
 )
 from ..structured_workload_contracts import MAX_RESUME_ANCESTRY
 from .checkpoint_codec import decode_checkpoint
@@ -70,12 +75,14 @@ def prepare_structured_workload(
     *,
     operation_id: str,
     source_id: str | None = None,
+    code_scope: str = LEGACY_SCOPE,
 ) -> Manifest:
     """Freeze caller-authorized source/config/execution identity; numerical work is separate."""
     if parse_structured_dataset(dataset.source_bytes) != dataset:
         raise BoundaryError("structured_workload", "source_projection_mismatch")
     return prepare_structured_run(
-        store, dataset, producer, config, source_id=source_id, operation_id=operation_id
+        store, dataset, producer, config, source_id=source_id, operation_id=operation_id,
+        code_scope=code_scope
     )
 
 
@@ -86,10 +93,7 @@ def _load(
 ) -> tuple[Manifest, Manifest, StructuredDataset, StructuredTrainingConfig]:
     request.validate()
     run = store.get_manifest(request.run_id)
-    if run.parameters.value().get("schema") != RUN_SCHEMA:
-        raise BoundaryError(
-            "structured_workload", "exact_run_identity_mismatch_or_v1_not_resumable"
-        )
+    scope = run_code_scope(run.parameters.value().get("schema"))
     _roles(run, {"experiment", "training_input"}, set())
     info = object_fields(
         run.parameters.value(),
@@ -107,7 +111,7 @@ def _load(
     if (
         run.kind != "run"
         or run.producer != producer
-        or info.get("schema") != RUN_SCHEMA
+        or run_code_scope(info.get("schema")) != scope
         or info.get("operation_id") != request.operation_id
         or info.get("partition") != "train"
         or run.parent("training_input") != request.training_input_id
@@ -138,7 +142,7 @@ def _load(
         or source.parameters.value().get("source_sha256", dataset.source_sha256)
         != dataset.source_sha256
         or source.parameters.value().get("source_kind", dataset.source_kind) != dataset.source_kind
-        or execution_identity(dataset, config) != info.get("execution_identity")
+        or execution_identity(dataset, config, code_scope=scope) != info.get("execution_identity")
     ):
         raise BoundaryError("structured_workload", "source_config_code_or_runtime_changed")
     expected_training_info = {
@@ -207,6 +211,7 @@ def _checkpoint_manifest(
     store: ArtifactStore, checkpoint_id: str, run: Manifest, training: Manifest
 ) -> Manifest:
     saved = store.get_manifest(checkpoint_id)
+    scoped = run_code_scope(run.parameters.value().get("schema")) == TRAINING_SCOPE
     parent_roles = {"run", "training_input"}
     if any(parent.role == "resume_checkpoint" for parent in saved.parents):
         parent_roles.add("resume_checkpoint")
@@ -221,16 +226,22 @@ def _checkpoint_manifest(
             "phase",
             "optimizer_updates",
             "attempt",
-        },
+        } | ({"attempt_producer"} if scoped else set()),
         "structured_checkpoint_manifest",
     )
     digest(info["attempt"], "structured_checkpoint_manifest.attempt", length=32)
+    if scoped:
+        declared_producer = Producer.decode(info["attempt_producer"])
+        if (declared_producer != saved.producer or declared_producer.uv_lock_sha256 !=
+                run.parameters.value()["execution_identity"]["code_identity"]["dependency_lock_sha256"]):
+            raise BoundaryError("structured_workload", "checkpoint_attempt_producer_mismatch")
     if (
         saved.kind != "checkpoint"
-        or saved.producer != run.producer
+        or not scoped and saved.producer != run.producer
         or saved.parent("run") != run.artifact_id
         or saved.parent("training_input") != training.artifact_id
-        or info["schema"] != CHECKPOINT_SCHEMA
+        or info["schema"] != checkpoint_schema(
+            run_code_scope(run.parameters.value().get("schema")))
         or info["execution_identity_sha256"]
         != semantic_hash(run.parameters.value()["execution_identity"])
     ):
@@ -294,7 +305,9 @@ def _checkpoint_bytes(
         "structured_checkpoint_payload_counters",
     )
     if (
-        json_bytes({key: info[key] for key in ("boundary", "cursor", "phase", "optimizer_updates")})
+        state.get("schema") != info["schema"]
+        or json_bytes({key: info[key]
+                       for key in ("boundary", "cursor", "phase", "optimizer_updates")})
         != json_bytes(
             {
                 "boundary": state.get("boundary"),
@@ -317,6 +330,12 @@ def _completed(
     dataset: StructuredDataset,
     config: StructuredTrainingConfig,
 ) -> tuple[str, int]:
+    from ..policy.structured_export import load_structured_package
+
+    scope = run_code_scope(run.parameters.value().get("schema"))
+    scoped = scope == TRAINING_SCOPE
+    saved = _checkpoint_manifest(store, result.parent("checkpoint"), run, training)
+    completed_producer = saved.producer if scoped else run.producer
     _roles(result, {"run", "training_input", "checkpoint", "model"}, {"report"})
     info = object_fields(
         result.parameters.value(),
@@ -333,7 +352,7 @@ def _completed(
     attempt = digest(info["attempt"], "structured_completed_result.attempt", length=32)
     if (
         result.kind != "run_result"
-        or result.producer != run.producer
+        or result.producer != completed_producer
         or info
         != {
             "schema": "stpd/run-result-v1",
@@ -347,7 +366,7 @@ def _completed(
         or result.parent("training_input") != training.artifact_id
     ):
         raise BoundaryError("structured_workload", "completed_result_identity_mismatch")
-    engine = StructuredTrainingEngine(dataset, config)
+    engine = StructuredTrainingEngine(dataset, config, code_scope=scope)
     engine.restore(_checkpoint_bytes(store, result.parent("checkpoint"), run, training))
     if engine.phase != "publication":
         raise BoundaryError("structured_workload", "completed_checkpoint_phase")
@@ -366,8 +385,8 @@ def _completed(
     )
     if (
         model.kind != "model"
-        or model.producer != run.producer
-        or model_info["schema"] != MODEL_SCHEMA
+        or model.producer != completed_producer
+        or model_info["schema"] != (SCOPED_MODEL_SCHEMA if scoped else MODEL_SCHEMA)
         or model_info["graph_id"] != engine.identity["graph_id"]
         or model_info["qualification"] != "engineering_only"
         or model_info["attempt"] != attempt
@@ -392,6 +411,14 @@ def _completed(
                 raise BoundaryError("structured_workload", "model_media_type_mismatch")
             (package / name).write_bytes(_read_payload(store, payload, maximum))
         metadata, restored = load_structured_package(package)
+        if scoped and metadata.get("provenance") != {
+            "training_producer": run.producer.to_dict(),
+            "export_producer": completed_producer.to_dict(),
+            "run_id": run.artifact_id, "training_input_id": training.artifact_id,
+            "checkpoint_id": result.parent("checkpoint"),
+            "export_runtime": exporter_runtime(),
+        }:
+            raise BoundaryError("structured_workload", "completed_export_provenance_mismatch")
         if (
             metadata["model_id"] != model_info["model_id"]
             or metadata["source"]
@@ -429,15 +456,16 @@ def _completed(
             "checkpoint_id",
             "model_artifact_id",
             "operation_id",
-        },
+        } | ({"training_producer"} if scoped else set()),
         "structured_completed_report",
     )
     seconds = report["attempt_seconds"]
     if type(seconds) not in {int, float} or not math.isfinite(seconds) or seconds < 0:
         raise BoundaryError("structured_workload", "report_attempt_seconds_mismatch")
     expected_report = {
-        "schema": "stpd/structured-m2-training-report-v2",
-        "producer": run.producer.to_dict(),
+        "schema": SCOPED_REPORT_SCHEMA if scoped else "stpd/structured-m2-training-report-v2",
+        "producer": completed_producer.to_dict(),
+        **({"training_producer": run.producer.to_dict()} if scoped else {}),
         "source_sha256": dataset.source_sha256,
         "config": asdict(config),
         "metrics": engine.metrics(),
@@ -463,10 +491,22 @@ def execute_structured_workload(
     *,
     authority: AttemptAuthority,
     control: ExecutionControl | None = None,
+    attempt_producer: Producer | None = None,
 ) -> StructuredExecutionResult:
     """One explicit attempt; all publication follows the injected application fence."""
     started = time.perf_counter()
     run, training, dataset, config = _load(store, request, producer)
+    scope = run_code_scope(run.parameters.value().get("schema"))
+    scoped = scope == TRAINING_SCOPE
+    if scoped:
+        if (not isinstance(attempt_producer, Producer) or attempt_producer.uv_lock_sha256 !=
+                run.parameters.value()["execution_identity"]["code_identity"]["dependency_lock_sha256"]):
+            raise BoundaryError("structured_workload", "current_attempt_producer_required")
+        publisher = attempt_producer
+    else:
+        if attempt_producer is not None and attempt_producer != producer:
+            raise BoundaryError("structured_workload", "legacy_attempt_producer_mismatch")
+        publisher = producer
 
     def guard() -> None:
         authority.assert_current(request.run_id, request.operation_id, request.attempt_id)
@@ -475,7 +515,10 @@ def execute_structured_workload(
     history = reporter.events(run.artifact_id)
     if any(
         event.kind != "run_event"
-        or event.producer != producer
+        or (event.producer != producer if not scoped else
+            event.parameters.value().get("details", {}).get("attempt_producer") !=
+            event.producer.to_dict() or event.producer.uv_lock_sha256 !=
+            run.parameters.value()["execution_identity"]["code_identity"]["dependency_lock_sha256"])
         or event.parent("run") != run.artifact_id
         or event.parameters.value().get("schema") != "stpd/run-event-v1"
         for event in history
@@ -533,7 +576,7 @@ def execute_structured_workload(
         ):
             raise BoundaryError("structured_workload", "resume_attempt_limit")
     checkpoint_id = request.resume_checkpoint_id
-    engine = StructuredTrainingEngine(dataset, config)
+    engine = StructuredTrainingEngine(dataset, config, code_scope=scope)
     if checkpoint_id is not None:
         engine.restore(_checkpoint_bytes(store, checkpoint_id, run, training))
 
@@ -545,7 +588,7 @@ def execute_structured_workload(
         guard()
         candidate = Manifest(
             "run_event",
-            producer,
+            publisher,
             (Parent("run", run.artifact_id),),
             parameters=FrozenObject.of(
                 {
@@ -553,7 +596,8 @@ def execute_structured_workload(
                     "step": event_step + 1,
                     "attempt": request.attempt_id,
                     "kind": kind,
-                    "details": details,
+                    "details": {**details, **({"attempt_producer": publisher.to_dict()}
+                                               if scoped else {})},
                 }
             ),
         )
@@ -577,18 +621,19 @@ def execute_structured_workload(
         parents = _checkpoint_parents(run, training, request.resume_checkpoint_id)
         saved = Manifest(
             "checkpoint",
-            producer,
+            publisher,
             parents,
             (payload,),
             FrozenObject.of(
                 {
-                    "schema": CHECKPOINT_SCHEMA,
+                    "schema": engine.checkpoint_schema,
                     "execution_identity_sha256": semantic_hash(engine.identity),
                     "boundary": engine.boundary,
                     "cursor": asdict(engine.cursor),
                     "phase": engine.phase,
                     "optimizer_updates": engine.updates,
                     "attempt": request.attempt_id,
+                    **({"attempt_producer": publisher.to_dict()} if scoped else {}),
                 }
             ),
         )
@@ -705,6 +750,8 @@ def execute_structured_workload(
                 time.perf_counter() - started,
             )
         assert checkpoint_id is not None
+        from ..policy.structured_export import export_structured_package
+
         with tempfile.TemporaryDirectory(prefix="structured-export-") as folder:
             package = Path(folder) / "agent"
             metadata = export_structured_package(
@@ -715,6 +762,11 @@ def execute_structured_workload(
                 source_kind=dataset.source_kind,
                 teacher_sha256=semantic_hash(dataset.teacher.value()),
                 training={"config": asdict(config), "metrics": engine.metrics()},
+                code_scope=INFERENCE_SCOPE if scoped else LEGACY_SCOPE,
+                provenance=({"training_producer": run.producer.to_dict(),
+                             "export_producer": publisher.to_dict(), "run_id": run.artifact_id,
+                             "training_input_id": training.artifact_id,
+                             "checkpoint_id": checkpoint_id} if scoped else None),
             )
             payloads = []
             for role, filename, media in (
@@ -728,7 +780,7 @@ def execute_structured_workload(
         guard()
         model = Manifest(
             "model",
-            producer,
+            publisher,
             (
                 Parent("run", run.artifact_id),
                 Parent("checkpoint", checkpoint_id),
@@ -737,7 +789,7 @@ def execute_structured_workload(
             tuple(payloads),
             FrozenObject.of(
                 {
-                    "schema": MODEL_SCHEMA,
+                    "schema": SCOPED_MODEL_SCHEMA if scoped else MODEL_SCHEMA,
                     "model_id": metadata["model_id"],
                     "graph_id": engine.identity["graph_id"],
                     "qualification": "engineering_only",
@@ -747,13 +799,14 @@ def execute_structured_workload(
         )
         store.publish(model)
         report = {
-            "schema": "stpd/structured-m2-training-report-v2",
+            "schema": SCOPED_REPORT_SCHEMA if scoped else "stpd/structured-m2-training-report-v2",
             "run_id": run.artifact_id,
             "training_input_id": training.artifact_id,
             "checkpoint_id": checkpoint_id,
             "model_artifact_id": model.artifact_id,
             "operation_id": request.operation_id,
-            "producer": producer.to_dict(),
+            "producer": publisher.to_dict(),
+            **({"training_producer": run.producer.to_dict()} if scoped else {}),
             "source_sha256": dataset.source_sha256,
             "config": asdict(config),
             "metrics": engine.metrics(),
@@ -767,7 +820,7 @@ def execute_structured_workload(
         )
         result = Manifest(
             "run_result",
-            producer,
+            publisher,
             (
                 Parent("run", run.artifact_id),
                 Parent("training_input", training.artifact_id),
