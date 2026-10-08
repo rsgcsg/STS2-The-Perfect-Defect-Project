@@ -237,6 +237,11 @@ class Application:
         self.control_token = secrets.token_hex(32)
         self.identity = tool_identity()
         self.account = LocalIdentity(config)
+        from spireagent.workbench.native_workbench_access import NativeWorkbenchAccess
+        from spireagent.workbench.native_workbench_api import NativeWorkbenchApi
+
+        self.native_access = NativeWorkbenchAccess(self)
+        self.native_api = NativeWorkbenchApi(self)
         self.members = MemberClient(self.account)
         self.collection = CollectionSetup(self.members)
         self.delivery: subprocess.Popen[bytes] | None = None
@@ -721,7 +726,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 and hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), app.account.csrf)
             )
 
-        def json_body(self, maximum: int = 65536) -> dict[str, Any]:
+        def json_body(self, maximum: int = 65536, *,
+                      reject_duplicate: bool = False) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0"))
             if (
                 not 0 < length <= maximum
@@ -730,7 +736,12 @@ def create_server(app: Application) -> ThreadingHTTPServer:
             ):
                 raise ValueError
             raw = self.rfile.read(length)
-            body = json.loads(raw)
+            if reject_duplicate:
+                from spireagent.workbench.native_workbench_access import unique_object
+
+                body = json.loads(raw, object_pairs_hook=unique_object)
+            else:
+                body = json.loads(raw)
             if len(raw) != length or not isinstance(body, dict):
                 raise ValueError
             return body
@@ -787,6 +798,17 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(403, b"{}")
                 return
             parsed = urlsplit(self.path)
+            if parsed.path == "/api/native-workbench/v1/view":
+                from spireagent.workbench.native_workbench_api import bounded_response
+
+                try:
+                    pair = app.native_access.authenticate(self.headers)
+                    self.respond(200, bounded_response(app.native_api.view(parsed.query, pair)))
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError, KeyError):
+                    self.respond(400, b'{"error":"invalid_native_request"}')
+                return
             if parsed.path == "/health":
                 self.respond(200, json.dumps({"instance_id": app.instance_id}).encode())
             elif parsed.path == "/api/status":
@@ -1211,6 +1233,37 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(404, b"{}")
 
         def do_POST(self) -> None:
+            if self.path.startswith("/api/native-workbench/v1/"):
+                from spireagent.workbench.native_workbench_api import (
+                    ACTIONS,
+                    MAX_COMMAND_BYTES,
+                    PREFIX,
+                    bounded_response,
+                )
+
+                if not self.local_host():
+                    self.respond(403, b'{"error":"native_loopback_required"}')
+                    return
+                action = self.path.removeprefix(PREFIX + "/actions/")
+                if action not in ACTIONS:
+                    self.respond(404, b'{"error":"native_action_not_supported"}')
+                    return
+                try:
+                    body = self.json_body(maximum=MAX_COMMAND_BYTES, reject_duplicate=True)
+                    payload = body.get("payload")
+                    if (action in {"models.human", "models.stop"} and isinstance(payload, dict)
+                            and set(payload) == {"native_request_id"}):
+                        pair = app.native_access.authenticate_recovery(
+                            self.headers, payload["native_request_id"])
+                    else:
+                        pair = app.native_access.authenticate(self.headers)
+                    value = app.native_api.command(action, body, pair)
+                    self.respond(200, bounded_response(value))
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError, KeyError):
+                    self.respond(400, b'{"error":"invalid_native_request"}')
+                return
             if self.path.startswith("/api/local-environment/"):
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')
@@ -1648,7 +1701,8 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
             # custom Host configuration must not silently bind to another game.
             if config.platform_url in {"http://127.0.0.1:15526", "http://localhost:15526"}:
                 registration = start_workbench_registration(
-                    f"http://127.0.0.1:{server.server_port}/", app.instance_id
+                    f"http://127.0.0.1:{server.server_port}/", app.instance_id,
+                    access=app.native_access,
                 )
             server.serve_forever(poll_interval=0.2)
         finally:
