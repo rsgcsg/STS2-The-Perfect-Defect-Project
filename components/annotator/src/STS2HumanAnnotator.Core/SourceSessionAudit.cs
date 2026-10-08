@@ -112,7 +112,7 @@ public static class SourceSessionAudit
                     throw new InvalidDataException("source_observation_segment_or_pause_invalid");
                 SourceSessionContract.Identifier(observation.SourceSeam); SourceSessionContract.Identifier(observation.Phase);
                 _ = SourceSessionContract.Index(new(close.StreamGeneration, observation.SourceIndex));
-                Join(observation.Capture, observation.Catalog);
+                Join(observation.Capture, observation.Catalog, observation.Completeness == "complete");
                 if (observation.Capture != null && observation.SnapshotId != observation.Capture.SnapshotId
                     || observation.Completeness == "complete"
                     && (observation.Capture == null || observation.Catalog == null || observation.MissingReason != null)
@@ -152,6 +152,7 @@ public static class SourceSessionAudit
                 {
                     if (outcome.MatchCount != 1 || outcome.SelectedAction == null || input.PreCapture == null || input.Catalog == null)
                         throw new InvalidDataException("source_exact_input_basis_missing");
+                    Join(input.PreCapture, input.Catalog, requireFull: true);
                     var matches = actions[input.Catalog.CatalogRef]
                         .Where(value => value.ActionId == outcome.SelectedAction.ActionId).ToArray();
                     if (matches.Length != 1 || SourceCatalogCodec.Digest(matches)
@@ -211,7 +212,7 @@ public static class SourceSessionAudit
                 }
                 return false;
             }
-            void Join(PublicCaptureReference? capture, PublicCatalogReference? catalog)
+            void Join(PublicCaptureReference? capture, PublicCatalogReference? catalog, bool requireFull = false)
             {
                 if (capture != null)
                 {
@@ -224,11 +225,13 @@ public static class SourceSessionAudit
                     if (root.GetProperty("schema").GetString() != "sts2.player-environment/native-logical-observation-1"
                         || root.GetProperty("input_profile").GetString() != "native-logical-v1"
                         || root.GetProperty("snapshot_id").GetString() != capture.SnapshotId
+                        || root.GetProperty("protocol_version").GetString() != manifest.SourceEnvironment!.PlayerEnvironmentProtocol
                         || root.GetProperty("session").GetProperty("runtime_instance_id").GetString() != manifest.SourceEnvironment!.RuntimeInstanceId
                         || root.GetProperty("session").GetProperty("environment_fingerprint").GetString() != manifest.SourceEnvironment.EnvironmentFingerprint
                         || root.GetProperty("information_policy").GetProperty("includes_hidden_information").GetBoolean()
                         || capture.ScopeId != profile.ScopeId || capture.StreamGeneration != close.StreamGeneration)
                         throw new InvalidDataException("source_capture_identity_invalid");
+                    SourceCaptureCodec.Validate(root, capture, requireFull);
                 }
                 if (catalog == null) return;
                 if (capture == null || capture.SnapshotId != catalog.SnapshotId || capture.ScopeId != catalog.ScopeId
@@ -245,6 +248,7 @@ public static class SourceSessionAudit
                 actions[catalog.CatalogRef] = decoded;
                 using JsonDocument json = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(directory, capture.PayloadRef)));
                 JsonElement descriptor = json.RootElement.GetProperty("catalog");
+                SourceCaptureCodec.Validate(json.RootElement, capture, requireFull, decoded);
                 if (descriptor.GetProperty("catalog_ref").GetString() != catalog.CatalogRef
                     || descriptor.GetProperty("snapshot_id").GetString() != catalog.SnapshotId
                     || descriptor.GetProperty("scope_id").GetString() != catalog.ScopeId

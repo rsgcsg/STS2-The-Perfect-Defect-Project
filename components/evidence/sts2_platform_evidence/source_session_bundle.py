@@ -152,6 +152,111 @@ def _freeze(value: Any) -> Any:
     return value
 
 
+def _capture_shape(body: dict[str, Any], capture: Mapping[str, Any], require_full: bool = False,
+                   actions: list[dict[str, Any]] | None = None) -> bool:
+    """Verify the captured public projection; this does not evaluate native legality."""
+    domains = ["persistent", "interaction", "referents", "catalog"]
+
+    def field(value: Any, name: str) -> Any:
+        _require(isinstance(value, dict) and name in value, "source_capture_shape_invalid")
+        return value[name]
+
+    def text(value: Any, name: str) -> str:
+        result = field(value, name)
+        _require(isinstance(result, str), "source_capture_shape_invalid")
+        return result
+
+    def array(value: Any, name: str) -> list[Any]:
+        result = field(value, name)
+        _require(isinstance(result, list), "source_capture_shape_invalid")
+        return result
+
+    def strings(value: Any, name: str) -> list[str]:
+        result = array(value, name)
+        _require(all(isinstance(item, str) for item in result), "source_capture_shape_invalid")
+        return result
+
+    def boolean(value: Any, name: str) -> bool:
+        result = field(value, name)
+        _require(type(result) is bool, "source_capture_shape_invalid")
+        return result
+
+    def nullable(value: Any, name: str, kind: type) -> None:
+        _require(isinstance(value, dict) and (name not in value or value[name] is None or type(value[name]) is kind),
+                 "source_capture_shape_invalid")
+
+    completeness = _object(field(body, "completeness"))
+    included, missing = strings(completeness, "included"), strings(completeness, "missing")
+    _require(included == [item for item in domains if item in included]
+             and missing == [item for item in domains if item not in included], "source_capture_scope_completeness_invalid")
+    full = boolean(completeness, "full_reference_complete")
+    _require(text(completeness, "status") == ("partial" if missing else "complete")
+             and full == (not missing), "source_capture_scope_completeness_invalid")
+    persistent = field(body, "persistent")
+    if "persistent" not in included:
+        _require(persistent is None, "source_capture_shape_invalid")
+    elif persistent is not None:
+        text(persistent, "content_schema")
+        _require(field(persistent, "content") is not None, "source_capture_shape_invalid")
+    interaction = field(body, "interaction")
+    if "interaction" not in included:
+        _require(interaction is None, "source_capture_shape_invalid")
+    else:
+        for name in ("interaction_id", "kind", "stage", "content_schema"):
+            text(interaction, name)
+        nullable(interaction, "prompt", str)
+        content = field(interaction, "content")
+        text(field(content, "surface"), "kind")
+        text(field(content, "context"), "kind")
+        for capability in array(interaction, "capabilities"):
+            text(capability, "verb")
+            text(capability, "availability_basis")
+            nullable(capability, "subject_role", str)
+            for argument in array(capability, "arguments"):
+                text(argument, "role")
+                boolean(argument, "required")
+    referents: set[str] = set()
+    references = array(body, "referents")
+    _require("referents" in included or not references, "source_capture_shape_invalid")
+    for reference in references:
+        referent_id = text(reference, "referent_id")
+        _require(referent_id not in referents, "source_capture_referent_identity_invalid")
+        referents.add(referent_id)
+        text(reference, "role")
+        text(reference, "kind")
+        nullable(reference, "label", str)
+        nullable(reference, "properties_schema", str)
+        state = field(reference, "state")
+        boolean(state, "visible")
+        text(state, "observation_basis")
+        for name in ("enabled", "selected", "focused"):
+            nullable(state, name, bool)
+    owner = field(body, "owner_occurrence")
+    for name in ("owner_id", "occurrence_id", "binding_revision"):
+        text(owner, name)
+    nullable(owner, "focus_referent_id", str)
+    nullable(owner, "focus_occurrence", str)
+    descriptor = field(body, "catalog")
+    _require(all(text(descriptor, key) == capture[key] for key in ("snapshot_id", "scope_id", "stream_generation")),
+             "source_capture_scope_mismatch")
+    text(descriptor, "catalog_ref")
+    text(descriptor, "ordering_semantics")
+    methods = strings(descriptor, "access_methods")
+    if "catalog" in included:
+        _require(text(descriptor, "status") == "complete" and type(field(descriptor, "total_count")) is int
+                 and 0 <= descriptor["total_count"] <= 65536 and _SHA.fullmatch(text(descriptor, "digest")) is not None,
+                 "source_capture_catalog_shape_invalid")
+    else:
+        _require(text(descriptor, "status") == "not_captured" and field(descriptor, "total_count") is None
+                 and field(descriptor, "digest") is None and not methods, "source_capture_catalog_shape_invalid")
+    _require(not require_full or full, "source_capture_full_reference_incomplete")
+    if full and actions is not None:
+        _require(all((action["subject_referent_id"] is None or action["subject_referent_id"] in referents)
+                     and all(argument["referent_id"] in referents for argument in action["arguments"])
+                     for action in actions), "source_catalog_operand_not_in_capture")
+    return full
+
+
 @dataclass(frozen=True)
 class SourceSessionBundle:
     directory: Path
@@ -404,7 +509,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[
         observed_payloads.add(relative)
         return payload
 
-    def join(capture: Any, catalog: Any) -> None:
+    def join(capture: Any, catalog: Any, require_full: bool = False) -> None:
         body: dict[str, Any] | None = None
         if capture is not None:
             capture = _object(capture)
@@ -419,11 +524,13 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[
             _require(body.get("schema") == "sts2.player-environment/native-logical-observation-1"
                      and body.get("input_profile") == "native-logical-v1"
                      and body.get("snapshot_id") == capture["snapshot_id"]
+                     and body.get("protocol_version") == environment.get("player_environment_protocol")
                      and session.get("runtime_instance_id") == environment["runtime_instance_id"]
                      and session.get("environment_fingerprint") == environment["environment_fingerprint"]
                      and policy.get("includes_hidden_information") is False
                      and capture.get("scope_id") == scope and capture.get("stream_generation") == generation,
                      "source_capture_identity_invalid")
+            _capture_shape(body, capture, require_full)
         if catalog is None:
             return
         catalog = _object(catalog)
@@ -442,6 +549,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[
                  and all(descriptor.get(key) == catalog.get(key) for key in
                          ("catalog_ref", "snapshot_id", "scope_id", "stream_generation", "total_count"))
                  and descriptor.get("digest") == structural, "source_capture_catalog_descriptor_mismatch")
+        _capture_shape(body, capture, require_full, actions)
         catalog_actions[catalog["catalog_ref"]] = actions
 
     observations = rows["public-observations.jsonl"]
@@ -457,7 +565,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[
         _identifier(observation.get("source_seam"))
         _identifier(observation.get("phase"))
         _clock({"stream_generation": generation, "publication_index": observation.get("source_index")})
-        join(observation.get("capture"), observation.get("catalog"))
+        join(observation.get("capture"), observation.get("catalog"), observation.get("completeness") == "complete")
         capture = observation.get("capture")
         completeness = observation.get("completeness")
         _require(completeness in {"complete", "partial", "capacity_exceeded", "failed"}
@@ -502,6 +610,7 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any]) -> tuple[
         if mapping == "exact":
             _require(count == 1 and isinstance(selected, dict) and item.get("pre_capture") is not None
                      and item.get("catalog") is not None, "source_exact_input_basis_missing")
+            join(item.get("pre_capture"), item.get("catalog"), require_full=True)
             actions = catalog_actions[item["catalog"]["catalog_ref"]]
             _require(sum(action == selected for action in actions) == 1, "source_selected_action_not_in_original_catalog")
         else:

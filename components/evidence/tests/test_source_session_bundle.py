@@ -6,7 +6,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sts2_platform_evidence.source_session_bundle import (
     STREAMS, SourceSessionBundleVerifier, _catalog_digest,
@@ -46,6 +46,42 @@ class SourceSessionBundleTests(unittest.TestCase):
 
     def write_rows(self, file: str, rows: list[dict[str, Any]]) -> None:
         (self.bundle / "raw" / file).write_bytes(b"".join(encoded(row) for row in rows))
+
+    def rewrite_capture(self, mutate: Callable[[dict[str, Any]], None]) -> None:
+        observations = self.rows("public-observations.jsonl")
+        original = observations[0]["capture"]
+        body = self.read("raw/" + original["payload_ref"])
+        mutate(body)
+        payload = encoded(body)
+        digest = sha(payload)
+        relative = f"public-captures/sha256/{digest[:2]}/{digest}.bin"
+        destination = self.bundle / "raw" / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        replacement = dict(original, sha256=digest, byte_count=len(payload), payload_ref=relative)
+        for file, field in (("public-observations.jsonl", "capture"), ("native-input-witnesses.jsonl", "pre_capture")):
+            rows = self.rows(file)
+            for row in rows:
+                if row.get(field) and row[field]["capture_id"] == original["capture_id"]:
+                    row[field] = replacement
+            self.write_rows(file, rows)
+        if original["payload_ref"] != relative:
+            (self.bundle / "raw" / original["payload_ref"]).unlink()
+
+    @staticmethod
+    def partial_body(body: dict[str, Any]) -> None:
+        body["completeness"] = {"status": "partial", "included": ["interaction", "catalog"],
+                                "missing": ["persistent", "referents"], "full_reference_complete": False}
+        body["persistent"], body["referents"] = None, []
+
+    def label_observation_partial(self) -> None:
+        rows = self.rows("public-observations.jsonl")
+        rows[0].update(completeness="partial", missing_reason="scope_omission")
+        self.write_rows("public-observations.jsonl", rows)
+        for file in ("raw/source-close-receipt.json", "source-session-bundle-manifest.json", "audit/source-audit.json"):
+            value = self.read(file)
+            value["gap_count"] = 1
+            self.write(file, value)
 
     def seal_mutation(self) -> None:
         """Recompute transport integrity so semantic mutations must be rejected independently."""
@@ -245,6 +281,43 @@ class SourceSessionBundleTests(unittest.TestCase):
         self.write("raw/unexpected-private-data.json", {"fixture": "not-an-approved-stream"})
         self.seal_mutation()
         self.assert_fail("source_unexpected_raw_file")
+
+    def test_partial_body_cannot_be_promoted_by_complete_outer_label_after_rehash(self) -> None:
+        self.rewrite_capture(self.partial_body)
+        self.seal_mutation()
+        self.assert_fail("source_capture_full_reference_incomplete")
+
+    def test_partial_observation_still_cannot_supply_an_exact_input_after_rehash(self) -> None:
+        self.rewrite_capture(self.partial_body)
+        self.label_observation_partial()
+        self.seal_mutation()
+        self.assert_fail("source_capture_full_reference_incomplete")
+        rows = self.rows("native-input-witnesses.jsonl")
+        rows[0]["outcome"].update(mapping_status="unmapped", match_count=0, selected_action=None)
+        self.write_rows("native-input-witnesses.jsonl", rows)
+        self.seal_mutation()
+        result = self.verifier.verify(self.bundle)
+        self.assertTrue(result.passed, result.findings)  # explicit partial evidence remains transferable
+
+    def test_missing_domain_and_scope_mismatch_reject_after_all_hashes_are_repaired(self) -> None:
+        self.rewrite_capture(lambda body: body.pop("persistent"))
+        self.seal_mutation()
+        self.assert_fail("source_capture_shape_invalid")
+
+    def test_scope_mismatch_and_inconsistent_completeness_reject_after_rehash(self) -> None:
+        self.rewrite_capture(lambda body: body["catalog"].update(scope_id="other-scope"))
+        self.seal_mutation()
+        self.assert_fail("source_capture_scope_mismatch")
+
+    def test_full_catalog_operand_cannot_point_outside_frozen_referents(self) -> None:
+        self.rewrite_capture(lambda body: body.update(referents=[]))
+        self.seal_mutation()
+        self.assert_fail("source_catalog_operand_not_in_capture")
+
+    def test_claimed_full_scope_must_match_completeness_and_domain_array(self) -> None:
+        self.rewrite_capture(lambda body: body["completeness"].update(included=["interaction", "catalog"]))
+        self.seal_mutation()
+        self.assert_fail("source_capture_scope_completeness_invalid")
 
 
 if __name__ == "__main__":

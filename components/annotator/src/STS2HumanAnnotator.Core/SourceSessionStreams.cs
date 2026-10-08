@@ -153,10 +153,12 @@ internal sealed class SourceSessionStreams : IDisposable
             || root.GetProperty("schema").GetString() != "sts2.player-environment/native-logical-observation-1"
             || root.GetProperty("input_profile").GetString() != "native-logical-v1"
             || root.GetProperty("snapshot_id").GetString() != capture.SnapshotId
+            || root.GetProperty("protocol_version").GetString() != manifest.SourceEnvironment!.PlayerEnvironmentProtocol
             || root.GetProperty("session").GetProperty("runtime_instance_id").GetString() != manifest.SourceEnvironment!.RuntimeInstanceId
             || root.GetProperty("session").GetProperty("environment_fingerprint").GetString() != manifest.SourceEnvironment.EnvironmentFingerprint
             || root.GetProperty("information_policy").GetProperty("includes_hidden_information").GetBoolean())
             throw new InvalidDataException("source_capture_identity_invalid");
+        SourceCaptureCodec.Validate(root, capture.SnapshotId, capture.ScopeId, capture.StreamGeneration);
         string relative = "public-captures/sha256/" + capture.Sha256[..2] + "/" + capture.Sha256 + ".bin";
         var reference = new PublicCaptureReference(capture.CaptureId, capture.SnapshotId,
             capture.ScopeId, capture.StreamGeneration, capture.CapturedAt, capture.Bytes.LongLength, capture.Sha256, relative);
@@ -210,7 +212,7 @@ internal sealed class SourceSessionStreams : IDisposable
         if (IsPaused(index) || closeClock != null && index > SourceSessionContract.Index(closeClock)) return;
         PublicCaptureReference? capture = packet.Capture == null ? null : Persist(packet.Capture);
         PublicCatalogReference? catalog = packet.Catalog == null ? null : Persist(packet.Catalog);
-        Join(capture, catalog);
+        Join(capture, catalog, packet.Completeness == "complete");
         if (packet.Completeness == "complete" && (capture == null || catalog == null || packet.MissingReason != null))
             throw new InvalidDataException("source_full_reference_incomplete");
         if (packet.Completeness != "complete" && string.IsNullOrWhiteSpace(packet.MissingReason))
@@ -309,6 +311,7 @@ internal sealed class SourceSessionStreams : IDisposable
         {
             if (value.MatchCount != 1 || value.SelectedAction == null || scope.PreCapture == null || scope.Catalog == null)
                 throw new InvalidDataException("source_exact_input_basis_missing");
+            Join(scope.PreCapture, scope.Catalog, requireFull: true);
             VerifyBlob(scope.Catalog.PayloadRef, scope.Catalog.PayloadSha256, scope.Catalog.ByteCount);
             var actions = SourceCatalogCodec.Decode(File.ReadAllBytes(Path.Combine(directory, scope.Catalog.PayloadRef)));
             var matches = actions.Where(a => a.ActionId == value.SelectedAction.ActionId).ToArray();
@@ -369,12 +372,20 @@ internal sealed class SourceSessionStreams : IDisposable
         return start != null && index > SourceSessionContract.Index(start);
     }
 
-    private void Join(PublicCaptureReference? capture, PublicCatalogReference? catalog)
+    private void Join(PublicCaptureReference? capture, PublicCatalogReference? catalog, bool requireFull = false)
     {
         if (capture != null && (!captures.TryGetValue(capture.CaptureId, out var known) || known != capture))
             throw new InvalidDataException("source_capture_not_owned");
         if (catalog != null && (!catalogs.TryGetValue(catalog.CatalogRef, out var knownCatalog) || knownCatalog != catalog))
             throw new InvalidDataException("source_catalog_not_owned");
+        if (catalog != null) VerifyBlob(catalog.PayloadRef, catalog.PayloadSha256, catalog.ByteCount);
+        if (capture != null)
+        {
+            VerifyBlob(capture.PayloadRef, capture.Sha256, capture.ByteCount);
+            using JsonDocument body = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(directory, capture.PayloadRef)));
+            SourceCaptureCodec.Validate(body.RootElement, capture, requireFull,
+                catalog == null ? null : SourceCatalogCodec.Decode(File.ReadAllBytes(Path.Combine(directory, catalog.PayloadRef))));
+        }
         if (catalog == null) return;
         if (capture == null || capture.SnapshotId != catalog.SnapshotId || capture.ScopeId != catalog.ScopeId
             || capture.StreamGeneration != catalog.StreamGeneration)

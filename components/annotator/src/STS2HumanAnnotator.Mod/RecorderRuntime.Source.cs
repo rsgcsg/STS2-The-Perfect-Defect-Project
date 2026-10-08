@@ -7,6 +7,7 @@ internal static partial class RecorderRuntime
 {
     private static ISourceRecordingBridge? _sourceBridge;
     private static ISourceRecordingAttachment? _sourceAttachment;
+    private static SourcePublicationBinding? _sourcePublicationBinding;
     private static SourceClockReference? _sourceCloseBoundary;
     private static SourceSessionStatus? _lastSourceStatus;
     private static string _activeCaptureProfileId = HumanCaptureProfiles.FullRunReadRich.ProfileId;
@@ -148,6 +149,7 @@ internal static partial class RecorderRuntime
         if (_configuration == null || _sourceRevision == null || _sourceBridge == null)
             throw new InvalidOperationException("source_bridge_unavailable");
         ISourceRecordingAttachment attachment = _sourceBridge.Attach(); // no callback until Activate
+        RecordingSessionStore? sourceStore = null;
         try
         {
             SourceBridgeContext context = attachment.Context;
@@ -159,7 +161,10 @@ internal static partial class RecorderRuntime
             { SourceSchemaVersion = 1, SourceEnvironment = context.Environment, RecoverySchemaVersion = 1 };
             RecordingSessionStore store = RecordingSessionStore.CreateSource(_configuration.RecordingRoot,
                 manifest, context.Profile, source, context.StartingClock);
+            sourceStore = store;
             _store = store; _sourceAttachment = attachment; _sourceCloseBoundary = null;
+            var binding = new SourcePublicationBinding(store, attachment, manifest.SessionId, manifest.TimelineId);
+            _sourcePublicationBinding = binding;
             SessionId = manifest.SessionId; TimelineId = manifest.TimelineId;
             _recordingDirectory = store.DirectoryPath; _sessionStartedAt = manifest.CreatedAt; _sessionClosedAt = null;
             _activeCaptureProfileId = SourceSessionContract.ProfileId; _lastSourceStatus = store.GetSourceStatus();
@@ -171,21 +176,24 @@ internal static partial class RecorderRuntime
             _lastEnvironment = context.Environment; _lastSnapshotId = null; _lastBlockers = SourceSessionContract.NonClaims;
             _requiredReadsHealth = "source_bridge"; _lifecycle = lifecycle; _runtimeState = "source_recording";
             AppendJournal("session_started", null, null, "Explicit native-logical source recording; no Human attestation.");
-            attachment.Activate(ObserveSourcePublication); // replay includes initial reservation after store is ready
+            attachment.Activate(packet => ObserveSourcePublication(binding, packet)); // exact store exists before initial replay
         }
         catch
         {
+            if (ReferenceEquals(_sourceAttachment, attachment)) _sourcePublicationBinding = null;
             attachment.Dispose();
-            _store?.MarkSourceAccountingFailed("source_bridge_activation_failed");
+            sourceStore?.MarkSourceAccountingFailed("source_bridge_activation_failed");
             throw;
         }
     }
 
-    private static void ObserveSourcePublication(SourceObservationPacket packet)
+    private static void ObserveSourcePublication(SourcePublicationBinding binding, SourceObservationPacket packet)
     {
         lock (Gate)
         {
-            if (_store?.IsSourceSession != true || _lifecycle.State is RecordingLifecycleState.Ready or RecordingLifecycleState.Closed)
+            if (!ReferenceEquals(binding, _sourcePublicationBinding)
+                || !binding.Matches(_store, _sourceAttachment, SessionId, TimelineId, _lifecycle)
+                || _store?.IsSourceSession != true)
                 return;
             try
             {
@@ -251,6 +259,7 @@ internal static partial class RecorderRuntime
                 AppendJournal("session_closed", null, _lastSnapshotId, "Source streams flushed at explicit Close.");
                 _store.Dispose(); _lastSourceStatus = _store.GetSourceStatus();
                 _lastStoreSnapshot = _store.GetSnapshot(); _store = null;
+                _sourcePublicationBinding = null;
                 _sourceAttachment.Dispose(); _sourceAttachment = null;
                 _sessionClosedAt = DateTimeOffset.UtcNow;
                 _lifecycle = RecordingLifecycleStateMachine.MarkClosed(_lifecycle, _sessionClosedAt.Value);

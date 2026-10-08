@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using STS2HumanAnnotator.Core;
+using STS2HumanAnnotator.Mod;
 using Xunit;
 
 namespace STS2HumanAnnotator.Core.Tests;
@@ -244,6 +245,164 @@ public sealed class SourceSessionTests
         Assert.Contains("source_unexpected_raw_file", audit.Errors);
         Assert.Throws<InvalidDataException>(() => SourceSessionBundlePacker.Pack(fixture.Store.DirectoryPath,
             "worker", "campaign", Path.Combine(fixture.Root, "blocked-bundle"), new string('c', 40)));
+    }
+
+    [Fact]
+    public void PartialCapturedBodyCannotBecomeACompleteObservationOrExactInput()
+    {
+        using var fixture = new Fixture();
+        JsonObject body = JsonNode.Parse(fixture.Capture.Bytes)!.AsObject();
+        body["completeness"] = JsonSerializer.SerializeToNode(new
+        { status = "partial", included = new[] { "interaction", "catalog" }, missing = new[] { "persistent", "referents" }, full_reference_complete = false });
+        body["persistent"] = null; body["referents"] = new JsonArray();
+        byte[] bytes = Bytes(body);
+        FrozenPublicCapture partial = fixture.Capture with { Bytes = bytes, Sha256 = SourceSessionContract.Sha256(bytes) };
+        var capture = fixture.Store.PersistPublicCapture(partial);
+        var catalog = fixture.Store.PersistPublicCatalog(fixture.Catalog);
+        InvalidDataException promoted = Assert.Throws<InvalidDataException>(() => fixture.Store.AppendPublicObservation(
+            fixture.Packet(1) with { Capture = partial }));
+        Assert.Equal("source_capture_full_reference_incomplete", promoted.Message);
+        fixture.Store.AppendPublicObservation(fixture.Packet(1) with
+        { Capture = partial, Completeness = "partial", MissingReason = "scope_omission" });
+        SourceInputScope input = fixture.Store.BeginSourceInput("partial-input", Clock(2), capture, catalog, RecordingLifecycleState.Recording);
+        Assert.Equal("source_capture_full_reference_incomplete", Assert.Throws<InvalidDataException>(() =>
+            fixture.Store.CompleteSourceInput(input, new("exact", 1, Action, "fixture.callback", "delivered"))).Message);
+        fixture.Store.CompleteSourceInput(input, new("unmapped", 0, null, "fixture.callback", "unknown", "partial_basis"));
+        fixture.Close(3);
+        Assert.Equal("pass", SourceSessionAudit.Audit(fixture.Store.DirectoryPath).Status);
+        string inputPath = Path.Combine(fixture.Store.DirectoryPath, "native-input-witnesses.jsonl");
+        var row = JsonSerializer.Deserialize<SourceNativeInputWitness>(File.ReadAllText(inputPath), Json)!;
+        byte[] promotedRow = Bytes(row with { Outcome = new("exact", 1, Action, "fixture.callback", "delivered") });
+        File.WriteAllBytes(inputPath, promotedRow);
+        string closePath = Path.Combine(fixture.Store.DirectoryPath, "source-close-receipt.json");
+        JsonObject receipt = JsonNode.Parse(File.ReadAllBytes(closePath))!.AsObject();
+        receipt["stream_sha256"]!["native-input-witnesses.jsonl"] = SourceSessionContract.Sha256(promotedRow);
+        File.WriteAllBytes(closePath, Bytes(receipt));
+        Assert.Contains("source_capture_full_reference_incomplete", SourceSessionAudit.Audit(fixture.Store.DirectoryPath).Errors);
+    }
+
+    [Theory]
+    [InlineData("missing_domain")]
+    [InlineData("scope_mismatch")]
+    [InlineData("inconsistent_completeness")]
+    public void CapturedBodyShapeAndScopeAreCheckedBeforePersistence(string corruption)
+    {
+        using var fixture = new Fixture();
+        JsonObject body = JsonNode.Parse(fixture.Capture.Bytes)!.AsObject();
+        if (corruption == "missing_domain") body.Remove("persistent");
+        if (corruption == "scope_mismatch") body["catalog"]!["scope_id"] = "other-scope";
+        if (corruption == "inconsistent_completeness") body["completeness"]!["included"] = new JsonArray("interaction", "catalog");
+        byte[] bytes = Bytes(body);
+        Assert.Throws<InvalidDataException>(() => fixture.Store.PersistPublicCapture(fixture.Capture with
+        { Bytes = bytes, Sha256 = SourceSessionContract.Sha256(bytes) }));
+        Assert.Equal(0, fixture.Store.GetSourceStatus()!.Observations);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FullCatalogOperandsMustBelongToTheCapturedReferents(bool argument)
+    {
+        using var fixture = new Fixture();
+        SourcePublicAction wrong = argument ? Action with
+        { Arguments = new[] { new SourceActionArgument("target", "foreign-referent") } }
+            : Action with { SubjectReferentId = "foreign-referent" };
+        byte[] catalogBytes = Bytes(new[] { wrong });
+        string structural = SourceCatalogCodec.Digest(new[] { wrong });
+        FrozenPublicCatalog catalog = fixture.Catalog with
+        { Bytes = catalogBytes, PayloadSha256 = SourceSessionContract.Sha256(catalogBytes), StructuralDigest = structural };
+        JsonObject body = JsonNode.Parse(fixture.Capture.Bytes)!.AsObject();
+        body["catalog"]!["digest"] = structural;
+        byte[] captureBytes = Bytes(body);
+        FrozenPublicCapture capture = fixture.Capture with
+        { Bytes = captureBytes, Sha256 = SourceSessionContract.Sha256(captureBytes) };
+        Assert.Equal("source_catalog_operand_not_in_capture", Assert.Throws<InvalidDataException>(() =>
+            fixture.Store.AppendPublicObservation(fixture.Packet(1) with { Capture = capture, Catalog = catalog })).Message);
+    }
+
+    [Fact]
+    public void RehashedClosedCaptureStillCannotPromotePartialBodyInAudit()
+    {
+        using var fixture = new Fixture();
+        fixture.Store.AppendPublicObservation(fixture.Packet(1));
+        fixture.Close(3);
+        string directory = fixture.Store.DirectoryPath;
+        string observationsPath = Path.Combine(directory, "public-observations.jsonl");
+        var observation = JsonSerializer.Deserialize<SourcePublicObservation>(File.ReadAllText(observationsPath), Json)!;
+        JsonObject body = JsonNode.Parse(fixture.Capture.Bytes)!.AsObject();
+        body["completeness"] = JsonSerializer.SerializeToNode(new
+        { status = "partial", included = new[] { "interaction", "catalog" }, missing = new[] { "persistent", "referents" }, full_reference_complete = false });
+        body["persistent"] = null; body["referents"] = new JsonArray();
+        byte[] bytes = Bytes(body);
+        string digest = SourceSessionContract.Sha256(bytes);
+        string relative = "public-captures/sha256/" + digest[..2] + "/" + digest + ".bin";
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(directory, relative))!);
+        File.WriteAllBytes(Path.Combine(directory, relative), bytes);
+        File.Delete(Path.Combine(directory, observation.Capture!.PayloadRef));
+        var replacement = observation.Capture with { Sha256 = digest, ByteCount = bytes.Length, PayloadRef = relative };
+        byte[] rows = Bytes(observation with { Capture = replacement });
+        File.WriteAllBytes(observationsPath, rows);
+        string closePath = Path.Combine(directory, "source-close-receipt.json");
+        JsonObject receipt = JsonNode.Parse(File.ReadAllBytes(closePath))!.AsObject();
+        receipt["stream_sha256"]!["public-observations.jsonl"] = SourceSessionContract.Sha256(rows);
+        File.WriteAllBytes(closePath, Bytes(receipt));
+        Assert.Contains("source_capture_full_reference_incomplete", SourceSessionAudit.Audit(directory).Errors);
+    }
+
+    private sealed class Attachment(Fixture fixture) : ISourceRecordingAttachment
+    {
+        internal Action<SourceObservationPacket>? Observer { get; private set; }
+        public SourceBridgeContext Context => new(fixture.Profile, fixture.Environment, Clock(0));
+        public void Activate(Action<SourceObservationPacket> observer) => Observer = observer;
+        public SourceClockReference ReadBoundaryClock() => Clock(0);
+        public bool IsDrainedThrough(SourceClockReference boundary) => true;
+        public void Dispose() { } // Already queued callbacks deliberately remain callable in this regression.
+    }
+
+    [Fact]
+    public void OldQueuedAttachmentCallbackCannotPoisonReplacementStoreEvenWhenMetadataMatches()
+    {
+        using var first = new Fixture(); using var second = new Fixture();
+        var attachmentA = new Attachment(first); var attachmentB = new Attachment(second);
+        RecordingSessionStore activeStore = first.Store;
+        ISourceRecordingAttachment activeAttachment = attachmentA;
+        var lifecycle = new RecordingLifecycleSnapshot(RecordingLifecycleState.Recording,
+            first.Store.Manifest.SessionId, DateTimeOffset.UnixEpoch, "fixture");
+        var bindingA = new SourcePublicationBinding(first.Store, attachmentA,
+            first.Store.Manifest.SessionId, first.Store.Manifest.TimelineId);
+        attachmentA.Activate(packet =>
+        {
+            if (bindingA.Matches(activeStore, activeAttachment, activeStore.Manifest.SessionId,
+                    activeStore.Manifest.TimelineId, lifecycle)) activeStore.AppendPublicObservation(packet);
+        });
+        attachmentA.Observer!(first.Packet(1));
+        first.Close(2); attachmentA.Dispose();
+        second.Store.RecordSourceBoundary("pause", Clock(0), RecordingLifecycleState.Paused);
+        second.Store.ChangeSource(new("agent_protocol", "replacement-actor", "replacement-declaration", false),
+            second.Store.GetSourceStatus()!.SegmentId, Clock(0), RecordingLifecycleState.Paused);
+        second.Store.RecordSourceBoundary("resume", Clock(0), RecordingLifecycleState.Recording);
+        activeStore = second.Store; activeAttachment = attachmentB;
+        lifecycle = lifecycle with { SessionId = second.Store.Manifest.SessionId };
+        // IDs, scope, generation, environment and payload bytes deliberately match both fixtures.
+        attachmentA.Observer!(first.Packet(1));
+        attachmentA.Observer!(first.Packet(2) with { Clock = new("obsolete-generation", "2") });
+        Assert.Equal(0, second.Store.GetSourceStatus()!.Observations);
+        Assert.True(second.Store.GetSourceStatus()!.AccountingComplete);
+        Assert.Equal("replacement-actor", second.Store.GetSourceStatus()!.Declaration.ActorId);
+        var bindingB = new SourcePublicationBinding(second.Store, attachmentB,
+            second.Store.Manifest.SessionId, second.Store.Manifest.TimelineId);
+        Assert.False(bindingB.Matches(second.Store, attachmentA, second.Store.Manifest.SessionId, second.Store.Manifest.TimelineId, lifecycle));
+        Assert.False(bindingB.Matches(second.Store, attachmentB, "old-session", second.Store.Manifest.TimelineId, lifecycle));
+        Assert.False(bindingB.Matches(second.Store, attachmentB, second.Store.Manifest.SessionId, "old-timeline", lifecycle));
+        Assert.False(bindingB.Matches(second.Store, attachmentB, second.Store.Manifest.SessionId, second.Store.Manifest.TimelineId,
+            lifecycle with { State = RecordingLifecycleState.Closed }));
+        attachmentB.Activate(packet =>
+        {
+            if (bindingB.Matches(activeStore, activeAttachment, activeStore.Manifest.SessionId,
+                    activeStore.Manifest.TimelineId, lifecycle)) activeStore.AppendPublicObservation(packet);
+        });
+        attachmentB.Observer!(second.Packet(1));
+        Assert.Equal(1, second.Store.GetSourceStatus()!.Observations);
     }
 
     [Fact]

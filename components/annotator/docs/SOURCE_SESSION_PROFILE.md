@@ -89,6 +89,16 @@ scope and generation. Every full-reference observation and every complete input
 basis joins both objects. Catalogue payload bytes are separately content-addressed;
 the array's membership/order and structural digest are independently verified.
 
+An outer `complete` observation or `exact` input cannot promote a partial frozen
+body. Its completeness certificate must include all four domains in canonical
+order, have no missing domain and set `full_reference_complete:true`; domain
+shapes and descriptor snapshot/scope/generation must agree. Every full-catalogue
+subject and argument must reference an object in the captured public referent
+array. Explicitly partial observations and unmapped inputs remain recordable.
+The Connector's nullable persistent domain may be an explicit null fact; a missing
+domain property or a malformed non-null domain is rejected. These checks prove
+projection integrity, not native legality or coverage qualification.
+
 Per-stream sequence and identities are checked before append. Limits bound capture
 bytes, total persisted public bytes, row bytes, segment count and per-stream count.
 Capacity failure appends a reserved bounded gap/accounting row when possible.
@@ -110,6 +120,10 @@ including that initial reservation. Close drains through its actual source
 boundary; a pending encoding becomes a typed gap by the producer's finite deadline,
 not a fabricated current capture. The bridge exposes no Submit, native operands
 or controller methods. Connector/native producer code owns publication hooks.
+Each activated publication callback retains its exact store, attachment, session
+and timeline binding. The recording owner checks that binding under its gate
+before reading the packet; a queued obsolete callback cannot append to or mark a
+replacement session failed, even if scope/generation/environment metadata matches.
 
 Core store signatures:
 
