@@ -211,7 +211,9 @@ public static class SourceSessionAuditV2
             {
                 ulong index = InSeal(row.PrePosition); SourceSessionContract.Identifier(row.InputId);
                 Require(row.EpochId == row.PrePosition.EpochId && inputIds.Add(row.InputId) && segments.TryGetValue(row.SegmentId, out var segment)
-                    && Compare(segment.BoundaryPosition, row.PrePosition) <= 0 && !IsPaused(row.PrePosition), "source_input_original_binding_invalid");
+                    && Compare(segment.BoundaryPosition, row.PrePosition) <= 0
+                    && !(format.Ordered ? SourceSessionOrderAuditV3.InputIsPaused(row, boundaries) : IsPaused(row.PrePosition)),
+                    "source_input_original_binding_invalid");
                 int segmentIndex = segmentRows.FindIndex(x => x.SegmentId == row.SegmentId);
                 Require(segmentIndex + 1 == segmentRows.Count || Compare(row.PrePosition, segmentRows[segmentIndex + 1].BoundaryPosition) <= 0, "source_input_original_segment_mismatch");
                 Require((row.PreCapture == null || row.PreCapture.EpochId == row.EpochId) && (row.Catalog == null || row.Catalog.EpochId == row.EpochId), "source_input_epoch_mismatch");

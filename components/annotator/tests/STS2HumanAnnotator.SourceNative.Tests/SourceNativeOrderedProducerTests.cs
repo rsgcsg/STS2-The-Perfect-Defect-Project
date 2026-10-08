@@ -80,6 +80,52 @@ public sealed class SourceNativeOrderedProducerTests
         if (!string.IsNullOrEmpty(golden)) SourceNativeProducerTests.CopyGolden(bundle, Path.GetFullPath(golden));
     }
     [Fact]
+    public async Task ActualPhysicalInputImmediatelyAfterResumeUsesItsOriginalOrdinalAtTheUnchangedPausedEndWatermark()
+    {
+        using var f = new SourceNativeProducerTests.Fixture(3); await Ready(f);
+        var sink = new ObservedSink(f.Attachment.Sink!); f.Invoke(() => f.Attachment.Sink = sink);
+        Task originalBasis = sink.NextBasis(); GameAction pending = Carrier();
+        f.Invoke(() => { var original = Begin(f); NativeSourceInputProvider.BindSubmitted(pending); NativeSourceInputProvider.Finish(original); });
+        await originalBasis.WaitAsync(TimeSpan.FromSeconds(2));
+        f.Invoke(() =>
+        {
+            f.Worker.CommandBoundary("pause");
+            f.Surface = "paused-first-publication"; f.Owner.Publish("native_owner_ready", "original_paused_publication_first");
+            f.Worker.ChangeSource(new("declared_human", "actor-after-resume", "declaration-after-resume"), f.Worker.Status.SegmentId);
+            f.Surface = "paused-second-publication"; f.Owner.Publish("native_owner_ready", "original_paused_publication_second");
+            f.Worker.CommandBoundary("resume");
+        });
+        Task resumedBasis = sink.NextBasis();
+        f.Invoke(() =>
+        {
+            var before = f.Attachment.ReadBoundary().Position; Assert.Equal("3", before.PublicationIndex);
+            f.Surface = "input-immediately-after-resume";
+            var resumed = Begin(f); f.Dispatches++; NativeSourceInputProvider.Accepted(resumed); NativeSourceInputProvider.Finish(resumed);
+            Assert.Equal(before, f.Attachment.ReadBoundary().Position);
+        });
+        await resumedBasis.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(await Task.Run(() => SpinWait.SpinUntil(() => f.Worker.Status.Inputs == 1, TimeSpan.FromSeconds(3))));
+        f.Invoke(() => Assert.True(NativeSourceInputProvider.ObserveAccepted(pending)));
+        await f.Close(); Passed(f);
+        var inputs = f.Rows<SourceNativeInputWitnessV2>("native-input-witnesses.jsonl");
+        Assert.Equal(new[] { "2", "1" }, inputs.Select(row => row.InputPrefixOrdinal));
+        Assert.Equal("3", inputs[0].PrePosition.PublicationIndex); Assert.All(inputs, row => Assert.Equal("delivered", row.Outcome.Delivery));
+        Assert.All(inputs, row => Assert.Equal("exact", row.Outcome.MappingStatus));
+        var resume = Assert.Single(f.Rows<SourceBoundaryV2>("source-boundaries.jsonl"), row => row.Kind == "resume");
+        Assert.Equal(inputs[0].PrePosition, resume.Position); Assert.Equal("1", resume.AfterInputOrdinal);
+        var interval = Assert.Single(resume.PausedIntervals); Assert.Equal("1", interval.AfterIndex); Assert.Equal("3", interval.ThroughIndex);
+        Assert.Equal("1", interval.AfterInputOrdinal); Assert.Equal("1", interval.ThroughInputOrdinal);
+        var segments = f.Rows<SourceSegmentV2>("source-segments.jsonl");
+        Assert.Equal("actor-after-resume", segments.Single(row => row.SegmentId == inputs[0].SegmentId).Declaration.ActorId);
+        Assert.Equal("actor-original", segments.Single(row => row.SegmentId == inputs[1].SegmentId).Declaration.ActorId);
+        // Resume is a command boundary; no publication, Current response or
+        // invented successor is added to make this original prefix pass.
+        string bundle = Path.Combine(f.Root, "resume-tie-physical-bundle");
+        Assert.Equal("pass", SourceSessionBundlePackerV3.Pack(f.Store.DirectoryPath, "worker-resume-physical", "campaign-resume-v3", bundle, new string('e', 40)).Status);
+        string? golden = Environment.GetEnvironmentVariable("STS2_SOURCE_V3_RESUME_TIE_GOLDEN");
+        if (!string.IsNullOrEmpty(golden)) SourceNativeProducerTests.CopyGolden(bundle, Path.GetFullPath(golden));
+    }
+    [Fact]
     public async Task PublicationInsideOriginalPhysicalPrepareFailsBothSourceAcquisitionsWithoutMovingItsInputCut()
     {
         using var f = new SourceNativeProducerTests.Fixture(3); await Ready(f);

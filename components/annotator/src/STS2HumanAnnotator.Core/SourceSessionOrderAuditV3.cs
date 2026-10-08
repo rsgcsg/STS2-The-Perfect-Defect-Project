@@ -3,6 +3,28 @@ namespace STS2HumanAnnotator.Core;
 /// <summary>Additional order supplement over the common strict Source raw audit.</summary>
 internal static class SourceSessionOrderAuditV3
 {
+    internal static bool InputIsPaused(SourceNativeInputWitnessV2 input, IReadOnlyList<SourceBoundaryV2> boundaries)
+    {
+        static ulong Index(string value) => SourceSessionContract.Index(new("generation", value));
+        var point = input.PrePosition; ulong position = SourceSessionContractV2.Index(point);
+        foreach (var boundary in boundaries)
+        foreach (var interval in boundary.PausedIntervals)
+        {
+            if (interval.EpochId != point.EpochId || Index(interval.AfterIndex) >= position
+                || position > Index(interval.ThroughIndex)) continue;
+            // A native watermark need not advance when Resume precedes a new
+            // input. Only this exact original interval's Resume endpoint and
+            // an ordinal after its immutable cut prove the input came later.
+            bool afterResume = boundary.Kind == "resume" && boundary.Position == point
+                && SourceSessionContractV3.Ordinal(input.InputPrefixOrdinal
+                    ?? throw new InvalidDataException("source_input_fence_missing"))
+                   > SourceSessionContractV3.Ordinal(boundary.AfterInputOrdinal
+                    ?? throw new InvalidDataException("source_input_fence_missing"));
+            if (!afterResume) return true;
+        }
+        return false;
+    }
+
     internal static void Validate(IReadOnlyList<SourceAttachmentEpochV2> epochs,
         IReadOnlyList<SourceSegmentV2> segments, IReadOnlyList<SourceBoundaryV2> boundaries,
         IReadOnlyList<SourceNativeInputWitnessV2> inputs, IReadOnlyList<SourceFinalDrainV2> drains,

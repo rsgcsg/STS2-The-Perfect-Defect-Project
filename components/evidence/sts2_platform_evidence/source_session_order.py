@@ -6,6 +6,22 @@ from typing import Any
 from .source_session_bundle import _object, _require
 
 
+def _input_is_paused(value: dict[str, Any], boundaries: list[dict[str, Any]],
+                     index: Callable[[Any], int]) -> bool:
+    point = value["pre_position"]
+    position = index(point["publication_index"])
+    for boundary in boundaries:
+        for interval in boundary["paused_intervals"]:
+            if (interval["epoch_id"] != point["epoch_id"]
+                    or not index(interval["after_index"]) < position <= index(interval["through_index"])):
+                continue
+            after_resume = (boundary["kind"] == "resume" and boundary["position"] == point
+                            and index(value["input_prefix_ordinal"]) > index(boundary["after_input_ordinal"]))
+            if not after_resume:
+                return True
+    return False
+
+
 def _verify_order(epochs: list[dict[str, Any]], segments: list[dict[str, Any]],
                   boundaries: list[dict[str, Any]], inputs: list[dict[str, Any]],
                   drains: list[dict[str, Any]], final_ordinal: Any,

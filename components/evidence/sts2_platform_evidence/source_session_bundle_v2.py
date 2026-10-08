@@ -546,10 +546,13 @@ def _verify_raw(raw: Path, bundle: Mapping[str, Any], fmt: _SourceFormat = _Sour
                       if value["completeness"] == "complete" else isinstance(value["missing_reason"], str) and bool(value["missing_reason"])), "source_full_reference_incomplete")
         gaps += int(value["missing_reason"] is not None or value["gap_after_index"] is not None); last_observation[epoch_id] = index
     input_ids: set[str] = set()
+    if fmt.version == 3:
+        from .source_session_order import _input_is_paused
     for value in inputs:
         epoch_id = value["epoch_id"]; point = in_seal(value["pre_position"]); input_id = _identifier(value["input_id"])
         _require(input_id not in input_ids and epoch_id == value["pre_position"]["epoch_id"] and value["segment_id"] in segment_map
-                 and not is_paused(value["pre_position"]), "source_input_original_binding_invalid"); input_ids.add(input_id)
+                 and not (_input_is_paused(value, boundaries, _index) if fmt.version == 3 else is_paused(value["pre_position"])),
+                 "source_input_original_binding_invalid"); input_ids.add(input_id)
         segment = segment_map[value["segment_id"]]; offset = segments.index(segment)
         _require(position(segment["boundary_position"]) <= point and (offset + 1 == len(segments) or point <= position(segments[offset + 1]["boundary_position"])), "source_input_original_segment_mismatch")
         outcome = _object(value["outcome"])
