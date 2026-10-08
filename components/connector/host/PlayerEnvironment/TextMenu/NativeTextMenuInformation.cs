@@ -20,6 +20,7 @@ using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Orbs;
+using MegaCrit.Sts2.Core.Nodes.Potions;
 using MegaCrit.Sts2.Core.Nodes.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Relics;
@@ -77,7 +78,7 @@ internal static class NativeTextMenuInformation
 
     internal static NativeTextMenuInformationCapture Capture(
         SnapshotBuildResult legacy,
-        NativeEntityRegistry entities)
+        NativeEntityRegistry entities, bool nativeLogical = false)
     {
         legacy = legacy with { Snapshot = SanitizePage(legacy.Snapshot) };
         if (_unresolvedTipSignal)
@@ -100,7 +101,7 @@ internal static class NativeTextMenuInformation
         if (_unresolvedTipSignal)
             return FailClosedPage(legacy, RootOwnerKey(legacy),
                 "native_tip_owner_unresolved");
-        if (_ownedScreen != null)
+        if (_ownedScreen != null && !(nativeLogical && _ownedScreen is NHoverTipSet))
             return CaptureOwned(legacy, entities);
 
         var leaves = new List<NativeTextMenuInformationLeaf>();
@@ -111,8 +112,16 @@ internal static class NativeTextMenuInformation
         AddMapOpen(leaves);
         var bindings = new PublicInformationBindings(legacy.Snapshot);
         AddRelicInspectOpen(entities, leaves, bindings);
-        AddRelicTipsOpen(entities, leaves, bindings);
-        AddOtherTipLeaves(entities, leaves, bindings);
+        if (!nativeLogical || !NHoverTipSet.shouldBlockHoverTips)
+        {
+            AddRelicTipsOpen(entities, leaves, bindings);
+            AddOtherTipLeaves(entities, leaves, bindings);
+            if (nativeLogical) AddNativeLogicalTips(legacy, entities, leaves, bindings);
+        }
+        if (nativeLogical && _ownedScreen is NHoverTipSet tip && _ownedKind is { } tipKind
+            && IsExactOwner(tip, tipKind))
+            leaves.Add(Leaf("clear_native_tip", "root", "clear_native_tip",
+                "Clear tooltip focus", () => Return(tip, tipKind)));
         return new NativeTextMenuInformationCapture(
             bindings.Page,
             RootOwnerKey(legacy),
@@ -802,6 +811,36 @@ internal static class NativeTextMenuInformation
             }
     }
 
+    private static void AddNativeLogicalTips(
+        SnapshotBuildResult legacy, NativeEntityRegistry entities,
+        List<NativeTextMenuInformationLeaf> leaves, PublicInformationBindings bindings)
+    {
+        if (NOverlayStack.Instance?.Peek() != null || NMapScreen.Instance?.IsOpen == true)
+            return;
+        var topBar = NRun.Instance?.GlobalUi.TopBar;
+        if (topBar != null && ConnectorMod.IsNodeVisible(topBar))
+            foreach (NPotionHolder holder in VisibleNodes<NPotionHolder>(topBar.PotionContainer))
+            {
+                if (holder.Potion?.Model is not { } potion || !holder.IsEnabled) continue;
+                AddSignalTipLeaf(entities, leaves, holder, "potion_tips", Control.SignalName.FocusEntered,
+                    bindings.Potion(entities.GetId(potion, "potion")));
+            }
+        NCombatRoom? room = NCombatRoom.Instance;
+        if (room == null || !ConnectorMod.IsNodeVisible(room)
+            || NCapstoneContainer.Instance is { InUse: true }) return;
+        foreach (NCreature creature in room.CreatureNodes)
+        {
+            if (!ConnectorMod.IsNodeVisible(creature) || creature.Hitbox.MouseFilter == Control.MouseFilterEnum.Ignore
+                || !ConnectorMod.IsNodeVisible(creature.Hitbox)) continue;
+            AddSignalTipLeaf(entities, leaves, creature.Hitbox, "creature_tips", Control.SignalName.FocusEntered,
+                bindings.Existing(entities.GetId(creature.Entity, "creature"), "creature_subject"));
+        }
+        foreach (NStarCounter counter in VisibleNodes<NStarCounter>(room))
+            AddSignalTipLeaf(entities, leaves, counter, "resource_tips", Control.SignalName.MouseEntered,
+                bindings.PublicControl(entities.GetId(counter, "resource_control"), "resource", "Stars",
+                    NativeLogicalPresentation.ResourceFacts(counter, legacy.Snapshot.Interaction.Content.Context)));
+    }
+
     private static T? VisibleAncestor<T>(Node source) where T : Control
     {
         Node? current = source.GetParent();
@@ -946,9 +985,9 @@ internal static class NativeTextMenuInformation
     }
 
     internal static PlayerEnvironmentSnapshot AttachCurrentPassiveHoverFacts(
-        PlayerEnvironmentSnapshot page)
+        PlayerEnvironmentSnapshot page, bool nativeLogical = false)
     {
-        if (_ownedScreen is NHoverTipSet explicitTip)
+        if (!nativeLogical && _ownedScreen is NHoverTipSet explicitTip)
         {
             if (_ownedKind != null && _ownedKind != "native_tip"
                 && IsExactOwner(explicitTip, _ownedKind))

@@ -21,7 +21,8 @@ internal static partial class PlayerEnvironmentService
         Func<string, IReadOnlyCollection<string>>? requiredReadKindsForInteraction = null,
         ProcessLocalCaptureProfiler? captureProfiler = null,
         string? inputProfile = null,
-        bool textMenuCapture = false)
+        bool textMenuCapture = false,
+        int maximumBoundActions = MaxBoundActions)
     {
         if (!IsSupportedInputProfile(inputProfile)
             || inputProfile is TextMenuContract.Profile or TextMenuV2Contract.Profile)
@@ -158,7 +159,7 @@ internal static partial class PlayerEnvironmentService
             () => BuildFactReferents(surfaceContent));
         BoundActionProjectionResult projected = Measure(
             "bound_action_projection",
-            () => ProjectBoundActions(nativeBindings, interactionId, referents));
+            () => ProjectBoundActions(nativeBindings, interactionId, referents, maximumBoundActions));
         bool profileCatalogIncomplete = inputProfile != null
             && projected.Projection.Status != "complete";
         if (profileCatalogIncomplete)
