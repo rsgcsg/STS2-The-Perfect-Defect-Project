@@ -19,6 +19,16 @@ position coverage and all final drain seals. Typed receive uses
 content identity before promotion. Source v1 and Human readers retain their
 original schemas; Source v2 does not attest Human origin or research admission.
 
+The `0.1.0-rc.25` source candidate adds `SourceSessionBundleV3Verifier`,
+`verify_source_session_bundle_v3(path)` and `verify-source-bundle-v3`. It checks
+original input ordinals and actor/pause/epoch cuts over the same raw evidence
+pipeline. An input at the exact Resume watermark needs its original ordinal
+after that Resume cut; Source2 and publication pause rules remain unchanged.
+The verifier preserves missing captures and gaps, which research admission must
+evaluate separately. V3 neither attests Human origin nor qualifies continuous
+history. Consumers need the frozen package/pin containing this API; changing
+the source tree alone does not update an installed verifier.
+
 For an explicit Managed text-v2 Agent run, the verifier requires the sealed
 public `environment_binding` alongside the Host-independent model Manifest.
 It recomputes the binding's canonical SHA-256 from the manifest bytes and
