@@ -135,6 +135,9 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             var write = _writes[index]; if (!write.Task.IsCompleted) continue;
             _writes.RemoveAt(index);
             PlatformNativeWorkbenchCommandResult result = write.Task.GetAwaiter().GetResult();
+            // A completed write can leave owner IDs/capabilities unchanged.
+            // Recompute button eligibility only from the next fresh owner view.
+            _formsKey = null;
             _notice.Text = result.Status switch {
                 "accepted" => "服务已接收操作；请求登记与真正完成是不同状态，请查看所属任务的实际进度。",
                 "rejected" => "操作未投递：" + result.ErrorCode,

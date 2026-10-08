@@ -186,4 +186,64 @@ public sealed class PlatformNativeWorkbenchTests
         Assert.Single(commands.Unconfirmed); // Recovery ACK did not invent termination.
     }
 
+    [Theory]
+    [InlineData("recordings.refresh", "accepted")]
+    [InlineData("recordings.refresh", "rejected")]
+    [InlineData("identity.poll", "accepted")]
+    [InlineData("identity.poll", "rejected")]
+    public async Task UnchangedOwnerAllowsAnotherExplicitRefreshAfterConfirmedReply(
+        string action, string outcome)
+    {
+        PlatformNativeWorkbenchConnection connection = Connection();
+        var commands = new PlatformNativeWorkbenchCommands();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int posts = 0;
+        using var http = new HttpClient(new Handler(async (request, token) => {
+            posts++;
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            string id = body.RootElement.GetProperty("request_id").GetString()!;
+            if (posts == 1) { entered.SetResult(); await release.Task.WaitAsync(token); }
+            return Response(new { schema = PlatformNativeWorkbenchClient.ResultSchema,
+                binding = connection.Binding, request_id = id, status = outcome,
+                owner_response = outcome == "accepted" ? new { status = "pending" } : null,
+                error = outcome == "rejected" ? new { code = "invalid_native_payload" } : null });
+        }));
+        using var client = new PlatformNativeWorkbenchClient(http);
+        Assert.True(commands.CanSubmit(connection.Binding.ConfigurationId, action));
+        Task<PlatformNativeWorkbenchCommandResult> first = commands.RunAsync(
+            client, connection, action, new { }, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.False(commands.CanSubmit(connection.Binding.ConfigurationId, action));
+        release.SetResult();
+        Assert.Equal(outcome, (await first).Status);
+        // The owner reply stays pending and its identity/capabilities did not change.
+        // No status refresh or automatic POST is needed to release this local guard.
+        Assert.True(commands.CanSubmit(connection.Binding.ConfigurationId, action));
+        Assert.Equal(1, posts);
+        Assert.Empty(commands.Unconfirmed);
+        Assert.Equal(outcome, (await commands.RunAsync(
+            client, connection, action, new { }, CancellationToken.None)).Status);
+        Assert.Equal(2, posts); // A second explicit user submission, never an automatic retry.
+    }
+
+    [Fact]
+    public async Task UnconfirmedRecordingRefreshKeepsOwnerDisabledAfterTransportCompletes()
+    {
+        PlatformNativeWorkbenchConnection connection = Connection();
+        var commands = new PlatformNativeWorkbenchCommands();
+        int posts = 0;
+        using var http = new HttpClient(new Handler((_, _) => {
+            posts++; throw new HttpRequestException("refresh reply lost");
+        }));
+        using var client = new PlatformNativeWorkbenchClient(http);
+        Assert.Equal("unconfirmed", (await commands.RunAsync(
+            client, connection, "recordings.refresh", new { }, CancellationToken.None)).Status);
+        Assert.False(commands.CanSubmit(connection.Binding.ConfigurationId, "recordings.refresh"));
+        Assert.Equal("rejected", (await commands.RunAsync(
+            client, connection, "recordings.refresh", new { }, CancellationToken.None)).Status);
+        Assert.Equal(1, posts);
+        Assert.Single(commands.Unconfirmed);
+    }
+
 }

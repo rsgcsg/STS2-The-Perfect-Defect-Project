@@ -38,6 +38,19 @@ test("auth renewal refreshes captured controls while retaining drafts and unknow
   assert.match(panel,/Refresh\(_visible\)/);
 });
 
+test("completed writes refresh unchanged form eligibility without clearing user drafts", () => {
+  const frame = panel.slice(panel.indexOf("internal void OnFrame("), panel.indexOf("private string HubUrl()"));
+  const completed = frame.slice(frame.indexOf("var write = _writes[index]"));
+  assert.ok(completed.indexOf("_formsKey = null;") > completed.indexOf("write.Task.GetAwaiter().GetResult()"));
+  assert.ok(completed.indexOf("_formsKey = null;") < completed.indexOf("Refresh(_visible)"));
+  assert.doesNotMatch(completed, /_drafts.Clear\(|\.Disabled = false/);
+  const render = panel.slice(panel.indexOf("private void Render("), panel.indexOf("private void SetDraft("));
+  assert.match(render, /formsKey != _formsKey/);
+  assert.match(render, /BuildActionForm\(view, connection, descriptor, action\)/);
+  assert.match(render, /next.GrabFocus\(\)/);
+  assert.match(panel, /submit.Disabled = !Boolean\(descriptor, "enabled"\) \|\| !_commands.CanSubmit/);
+});
+
 test("public bridge status remains secret-free and scoped pair routes are explicit", () => {
   const status = bridge.slice(bridge.indexOf("private static object WorkbenchStatus()"),bridge.indexOf("private static void RegisterWorkbench("));
   assert.doesNotMatch(status,/Token|Secret|signature|cookie|control_token/);

@@ -89,6 +89,21 @@ intent. Paired native prepare/load and ordinary Human-mode loading retain their
 existing behavior. The source checks above precede this repair; its exact head
 requires fresh Python validation and an independent paired-Application probe.
 
+The intent repair `c5e655d0` passed 187 writer Python tests; independent review
+reproduced the original paired-Application path and confirmed that the expired
+old request is now rejected after ordinary start. Its 45 native access/API/
+takeover/registration tests passed without additional findings.
+
+Lead review then identified a presentation defect: a confirmed recording refresh
+or account poll can leave owner IDs and capabilities unchanged, so the disabled
+submit button was not rebuilt. The narrow follow-up invalidates the cached form
+key after any completed write. Only the next successful authenticated owner view
+rebuilds forms using their existing capability and command guards; drafts/focus,
+uncertain-command fences and stale-pair behavior remain unchanged. No button is
+unconditionally enabled and no command is automatically submitted. Source guards
+and actual portable command-transport checks cover explicit repeat refresh/poll
+after confirmed replies, in-flight exclusion and unknown recording-refresh fences.
+
 The lead must independently review the exact committed candidate and compose it
 with the accepted native input/provenance/AgentSession/application packets. Root
 STATUS/CURRENT, contract versions, component identity and BOM updates remain with
