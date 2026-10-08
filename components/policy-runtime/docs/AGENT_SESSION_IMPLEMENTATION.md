@@ -74,3 +74,13 @@ Six faithful regressions cover replay accounting, new-position duplicate units,
 and all four cancellation causes. Fresh typecheck, all 238 Runtime tests (47 new
 session tests), and build pass. Actual SDK/native lifecycle integration remains the
 separate pending work above; these repairs do not complete that branch or G2/V1.
+
+## Concurrent Evidence state-count repair
+
+The actual storeAgentState API accepted 130 distinct concurrent one-byte synthetic
+snapshots on the previous head, producing 260 files despite its 256-file bound.
+The existing owner now reserves two pending file slots before queue entry and
+rechecks before a new write. The faithful regression accepts 128 snapshots,
+rejects two for capacity, and verifies exactly 256 state files in sealed checksums.
+No new queue or schema was introduced. Fresh state-suite/typecheck, all 239 Runtime
+tests (48 session tests), and build pass; native SDK integration remains pending.
