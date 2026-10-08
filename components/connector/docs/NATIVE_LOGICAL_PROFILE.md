@@ -169,7 +169,13 @@ native actions is valid for settling or terminal observations.
 Current uses `native-logical-current-1`; Context uses `native-logical-context-1`,
 under the same schema prefix and profile. A `captured` Current reply requires its
 coherent Context and Capture references and a null reason; an optional retention
-reference must point to that original capture. Failures remain explicit, without
+reference must point to that original capture. A `partial` Current reply is an
+actual captured view with requested scope omissions: it requires joined Context
+and Capture references and `reason:scope_omission`, with the same optional
+retention join. The other statuses (`stale`, `capacity_exceeded`,
+`source_capture_incomplete`, `failed`) require null Context, Capture and
+Retention references and an explicit reason. A partial native source is a
+capture failure, never a partial successful Current view. Failures remain explicit, without
 substituting an older view. One-shot Current allocates its own immutable scope ID.
 Context's `game_continuity_id` is the actual native value or null, never a scheduling
 token. Retain returns the original immutable capture plus a fresh reader cursor
