@@ -3,6 +3,14 @@
 This component verifies typed immutable artifacts and moves their bytes without
 owning gameplay, Human action, or research semantics.
 
+The additive `SourceSessionBundleVerifier` verifies the explicit
+`source-session-bundle-v1` descriptor through `verify_source_session_bundle(path)`.
+It binds exact public observation and full catalogue bytes, source declaration
+segments, original input scopes and the durable close receipt. A declared source
+is never machine proof of Human origin; this format cannot enter the strict
+Human bundle verifier. Native exposure, causal transition proof and research
+admission remain separate gates.
+
 For an explicit Managed text-v2 Agent run, the verifier requires the sealed
 public `environment_binding` alongside the Host-independent model Manifest.
 It recomputes the binding's canonical SHA-256 from the manifest bytes and

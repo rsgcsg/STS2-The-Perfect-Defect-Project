@@ -3,6 +3,7 @@ namespace STS2HumanAnnotator.Core;
 public static class RecordingApplicationContract
 {
     public const string CommandSchema = "sts2.ai-platform/recording-command-1";
+    public const string SourceCommandSchema = "sts2.ai-platform/recording-command-2";
     public const string CommandResultSchema = "sts2.ai-platform/recording-command-result-1";
     public const string StatusSchema = "sts2.ai-platform/recording-status-5";
     public const string EventBatchSchema = "sts2.ai-platform/recording-event-batch-2";
@@ -22,7 +23,8 @@ public enum RecordingCommandKind
     StartNewSession,
     Pause,
     Resume,
-    Close
+    Close,
+    ChangeSource
 }
 
 public static class RecordingClosePolicy
@@ -36,7 +38,11 @@ public sealed record RecordingCommand(
     string CommandId,
     RecordingCommandKind Kind,
     string? CaptureProfileId = null,
-    string Schema = RecordingApplicationContract.CommandSchema);
+    string Schema = RecordingApplicationContract.CommandSchema)
+{
+    public SourceDeclaration? SourceDeclaration { get; init; }
+    public string? ExpectedSourceSegmentId { get; init; }
+}
 
 public sealed record RecordingLifecycleSnapshot(
     RecordingLifecycleState State,
@@ -183,7 +189,10 @@ public sealed record RecordingApplicationStatus(
     string? CurrentSnapshotId,
     IReadOnlyList<string> Blockers,
     long LatestEventSequence,
-    ContinuousRecordingStatus? Continuous = null);
+    ContinuousRecordingStatus? Continuous = null)
+{
+    public SourceSessionStatus? Source { get; init; }
+}
 
 public enum RecordingEventKind
 {

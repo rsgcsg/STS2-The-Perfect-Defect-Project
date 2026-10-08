@@ -200,7 +200,8 @@ internal static partial class RecorderRuntime
                 _lastSnapshotId,
                 _lastBlockers.ToArray(),
                 ApplicationEvents.LatestSequence,
-                Continuous.Snapshot());
+                Continuous.Snapshot())
+            { Source = _store?.GetSourceStatus() ?? _lastSourceStatus };
         }
     }
 
@@ -211,6 +212,10 @@ internal static partial class RecorderRuntime
         RecordingCommand command, RecordingSessionExpectation? expectedSession = null,
         bool automatic = false)
     {
+        if (IsSourceCommand(command)) return ExecuteSourceCommand(command, expectedSession);
+        lock (Gate)
+            if (SourceCommands.ContainsKey(command.CommandId))
+                return RejectedCommand("recording_command_conflict", "This command ID belongs to an exact source request.");
         if (!string.Equals(
                 command.Schema,
                 RecordingApplicationContract.CommandSchema,
@@ -400,6 +405,8 @@ internal static partial class RecorderRuntime
             CaptureProfile);
 
         _store = store;
+        _activeCaptureProfileId = CaptureProfile.ProfileId;
+        _lastSourceStatus = null;
         SessionId = lifecycle.SessionId;
         TimelineId = timelineId;
         _recordingDirectory = store.DirectoryPath;
@@ -443,7 +450,7 @@ internal static partial class RecorderRuntime
             SessionId,
             TimelineId,
             _currentRunId,
-            CaptureProfile.ProfileId,
+            _activeCaptureProfileId,
             _recordingDirectory,
             _sessionStartedAt.Value,
             _sessionClosedAt);
@@ -527,6 +534,7 @@ internal static partial class RecorderRuntime
 
     private static void FinalizeClose()
     {
+        if (IsSourceRecording) { FinalizeSourceClose(); return; }
         IReadOnlyList<SemanticBoundaryTraceDraft> closeDrafts;
         lock (Gate)
         {
@@ -787,7 +795,7 @@ internal static partial class RecorderRuntime
     private static bool AcceptingNewWitnesses()
     {
         lock (Gate)
-            return _initialized && _lifecycle.State == RecordingLifecycleState.Recording;
+            return !IsSourceRecording && _initialized && _lifecycle.State == RecordingLifecycleState.Recording;
     }
 
     /// <summary>
@@ -798,6 +806,7 @@ internal static partial class RecorderRuntime
     /// </summary>
     private static bool CanOpenSemanticEvidenceWindow()
     {
+        if (IsSourceRecording) return false;
         RecordingLifecycleState lifecycleState = GetRecordingLifecycle().State;
         return lifecycleState == RecordingLifecycleState.Recording
             || HumanActionScope.Current != null;
@@ -1440,6 +1449,7 @@ internal static partial class RecorderRuntime
 
     internal static void ObserveAcceptedAction(GameAction action)
     {
+        if (IsSourceRecording) return;
         // Some native UI callbacks enqueue a known child action inside the
         // UI method whose accepted occurrence is already being staged. The
         // exact object binding is installed in RequestEnqueue's Prefix, before
@@ -1903,6 +1913,7 @@ internal static partial class RecorderRuntime
 
     internal static void OnProcessFrame()
     {
+        if (IsSourceRecording) { FinalizeSourceClose(); return; }
         try
         {
             if (_store != null)
@@ -2245,6 +2256,7 @@ internal static partial class RecorderRuntime
     private static void ObserveNativeDecisionOwnerReady(
         NativeDecisionOwnerReadyObservation observation)
     {
+        if (IsSourceRecording) return; // the passive Connector bridge owns source publication
         string observedSessionId;
         string observedRunId;
         lock (Gate)
@@ -4313,6 +4325,12 @@ internal static partial class RecorderRuntime
 
     private static RecordingScopeStatus BuildScopeStatus(RecordingStoreSnapshot store)
     {
+        if (IsSourceRecording)
+            return new RecordingScopeStatus(Array.Empty<string>(), new Dictionary<string, long>(),
+                new Dictionary<string, long>(), new Dictionary<string, long>(), Array.Empty<string>(),
+                _store?.SourceProfile?.SeamCoverage.Where(pair => pair.Value.Coverage != "complete_at_seam")
+                    .Select(pair => pair.Key).ToArray() ?? Array.Empty<string>(),
+                "Native logical source facts; advertised native coverage remains unqualified.");
         var failedClosed = store.FailedActionFamilies ?? new Dictionary<string, long>(StringComparer.Ordinal);
         string[] notObserved = CaptureProfile.SupportedActionFamilies
             .Where(family => !store.RecordedActionFamilies.ContainsKey(family)
@@ -4536,6 +4554,7 @@ internal static partial class RecorderRuntime
         bool acceptedHumanEffect = false,
         RecordingDecisionFailure? decisionFailure = null)
     {
+        if (IsSourceRecording) return; // legacy Human correlation never authors source-profile evidence
         try
         {
             bool diagnostic = reason == "human_action_native_type_mismatch"
@@ -4749,8 +4768,11 @@ internal static partial class RecorderRuntime
             if (abandoned)
                 AppendJournal("run_abandoned_native", null, _lastSnapshotId,
                     "RunManager.OnEnded observed IsAbandoned=true.");
-            Continuous.ObserveTerminal(isVictory, abandoned);
-            TerminalSeal.ObserveNativeEnded(SessionId!, _currentRunId, abandoned);
+            if (!IsSourceRecording)
+            {
+                Continuous.ObserveTerminal(isVictory, abandoned);
+                TerminalSeal.ObserveNativeEnded(SessionId!, _currentRunId, abandoned);
+            }
             _statusRefreshRequested = true;
         }
         PublishApplicationEvent(RecordingEventKind.RunEnded, detail: detail);
@@ -4803,6 +4825,7 @@ internal static partial class RecorderRuntime
 
     private static void SealAfterNativeTerminal()
     {
+        if (IsSourceRecording) return;
         bool seal;
         string? sessionId;
         string runId;
