@@ -16,6 +16,8 @@ from ..canonical import semantic_hash
 from ..fullrun.native_structured_inputs import INPUT_SPEC, PROJECTION
 from ..models.structured_m2 import StructuredM2
 from ..models.structured_weights import encode_structured_weights, load_structured_weights
+from ..native_code_scope import MODEL_SCHEMA as MODEL_SCHEMA
+from ..native_code_scope import is_native_model_schema as is_native_model_schema
 from ..native_code_scope import native_code_identity, native_code_sha256
 from ..structured_code_scope import ROOT, exporter_runtime, inference_runtime
 from .structured_export import GRAPH, MAX_MANIFEST_BYTES, MAX_WEIGHTS_BYTES, _regular_bytes
@@ -25,7 +27,6 @@ if TYPE_CHECKING:
 
 PACKAGE_SCHEMA = "stpd/native-structured-m2-package-v1"
 TRAINED_PACKAGE_SCHEMA = "stpd/native-structured-m2-package-v2"
-MODEL_SCHEMA = "stpd/native-structured-m2-model-v1"
 WEIGHT_SCHEMA = "stpd/native-structured-m2-weights-v1"
 STATE_FORMAT = "stpd/native-structured-m2-state-v1"
 AGENT_SPEC = {
@@ -317,10 +318,6 @@ def load_native_package(
         raw, schema=WEIGHT_SCHEMA, graph=GRAPH, projection=PROJECTION, seed=value["seed"]
     )
     return value, model
-
-
-def is_native_model_schema(schema: object) -> bool:
-    return schema == MODEL_SCHEMA
 
 
 def native_model_parameters(package: dict[str, Any], attempt: str) -> dict[str, Any]:
