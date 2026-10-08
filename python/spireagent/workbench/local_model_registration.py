@@ -263,6 +263,7 @@ def _native_requirements(value: Any) -> tuple[dict[str, Any], dict[str, Any], li
         PUBLICATION_PROFILE_ID,
         PUBLICATION_PROFILE_SHA256,
     )
+    from stpd.native_code_scope import REQUIRED_METHODS
     from stpd.policy.native_agent import SUPPORTED_ACTION_VERBS, SUPPORTED_INTERACTION_KINDS
 
     try:
@@ -297,29 +298,9 @@ def _native_requirements(value: Any) -> tuple[dict[str, Any], dict[str, Any], li
             or capabilities.get("protocol_version") != "1.0.0"
         ):
             raise ValueError
-        methods = [
-            "capabilities",
-            "attach",
-            "current",
-            "read",
-            "catalog",
-            "resolve",
-            "events",
-            "await",
-            "cancel_wait",
-            "detach",
-            "renew",
-            "retain",
-            "release",
-            "submit",
-            "result",
-        ]
+        methods = list(REQUIRED_METHODS)
         advertised_methods = capabilities.get("supported_methods")
-        if not isinstance(advertised_methods, list) or not set(methods) - {
-            "capabilities",
-            "submit",
-            "result",
-        } <= set(advertised_methods):
+        if not isinstance(advertised_methods, list) or not set(methods) <= set(advertised_methods):
             raise ValueError
         required = profile["required_seams"]
         coverage = capabilities["capture_coverage"]

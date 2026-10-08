@@ -495,6 +495,246 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
         self.write()
         self.check(False)
 
+    def test_act_without_accepted_consumption_is_rejected_after_rehash(self) -> None:
+        self.events.pop(3)
+        self.write()
+        self.check(False)
+
+    def test_once_occurrence_cannot_claim_another_advance(self) -> None:
+        event = copy.deepcopy(self.events[3])
+        payload = event["payload"]
+        payload["report"].update(
+            previous_consumption_id="consumed-1",
+            consumption_id="consumed-2",
+            state_version=2,
+            advanced=True,
+        )
+        payload["acknowledgement"].update(
+            consumption_id="consumed-2",
+            state_version=2,
+            advanced=True,
+        )
+        self.events.insert(4, event)
+        self.events[5]["payload"]["output"].update(consumption_id="consumed-2", state_version=2)
+        self.write()
+        self.check(False)
+
+    def test_ack_publication_and_missing_scopes_must_follow_the_witness(self) -> None:
+        original = copy.deepcopy(self.ack["prefix"])
+        for field, value in (("consumed_publication_index", "0"), ("missing_scopes", ["catalog"])):
+            with self.subTest(field=field):
+                if field == "missing_scopes":
+                    self.ack["prefix"]["omissions"][field] = value
+                else:
+                    self.ack["prefix"][field] = value
+                self.write()
+                self.check(False)
+                self.ack["prefix"] = copy.deepcopy(original)
+
+    def test_scoped_terminal_view_is_an_omission_until_a_source_position_is_consumed(self) -> None:
+        wire = json.loads(
+            (ROOT / "connector/contracts/fixtures/native-logical-v1.json").read_bytes()
+        )["wire_samples"]
+        self.agent["input"]["history_mode"] = "scoped_query"
+        self.agent["input"]["attachment"]["delivery_mode"] = "scoped"
+        self.agent["input"]["state_recovery"] = {
+            "mode": "none",
+            "max_state_bytes": 0,
+            "model_bindings": [],
+        }
+        self.events[0]["payload"]["subscription"]["delivery_mode"] = "scoped"
+        self.witness["publication_index"] = None
+        self.ack["prefix"].update(history_mode="scoped_query", consumed_publication_index=None)
+        self.ack["prefix"]["omissions"]["received_unconsumed_count"] = 1
+        event = copy.deepcopy(wire["event_batch"]["events"][0])
+        event["event"].update(
+            kind="terminal",
+            publication_index="12",
+            stream_generation=self.witness["capture"]["stream_generation"],
+            scope_id=self.witness["capture"]["scope_id"],
+            capture_ref=self.witness["capture"]["capture_id"],
+            payload_reference=copy.deepcopy(self.witness["capture"]),
+        )
+        existing = self.events
+        self.events = existing[:2]
+        self.add("native_event_received", original=event, received_cursor=event["event"]["cursor"])
+        self.events += existing[2:]
+        self.write()
+        self.check()
+        self.ack["prefix"]["omissions"]["received_unconsumed_count"] = 0
+        self.write()
+        self.check(False)
+
+    def _replacement_intent(self) -> None:
+        stopped = self.events.pop()
+        self.add("mode_changed", mode="auto", autonomy_budget=self.budget, controller="held")
+        self.add("agent_directive", output=copy.deepcopy(self.events[4]["payload"]["output"]))
+        replacement = {**self.attempt, "request_id": "replacement-request"}
+        self.add("native_submission_requested", **replacement)
+        self.events.append(stopped)
+        self.write()
+
+    def test_unknown_terminal_cannot_authorize_a_replacement_submission(self) -> None:
+        self.result["delivery"] = "unknown"
+        self.run.update(tainted=True, status="tainted")
+        self._replacement_intent()
+        self.check(False)
+
+    def test_pending_original_cannot_authorize_a_replacement_submission(self) -> None:
+        self.pending()
+        self._replacement_intent()
+        self.check(False)
+
+    def test_missing_terminal_result_cannot_end_as_clean_stop(self) -> None:
+        self.events.pop(7)
+        self.write()
+        self.check(False)
+
+    def test_pre_submit_closure_is_original_bound_and_is_not_a_native_result(self) -> None:
+        self.events.pop(7)
+        stopped = self.events.pop()
+        self.add(
+            "native_submission_not_started",
+            request_id=self.attempt["request_id"],
+            submission_epoch=0,
+            reason="runtime_recovery_epoch_mismatch",
+        )
+        self.events[-1]["payload"]["recovery_epoch"] = 1
+        stopped["payload"]["recovery_epoch"] = 1
+        self.events.append(stopped)
+        self.write()
+        self.check()
+        for key, value in (("request_id", "another-intent"), ("submission_epoch", 1)):
+            with self.subTest(field=key):
+                original = self.events[-2]["payload"][key]
+                self.events[-2]["payload"][key] = value
+                self.write()
+                self.check(False)
+                self.events[-2]["payload"][key] = original
+
+    def test_pending_post_cannot_be_relabelled_as_not_started(self) -> None:
+        self.pending()
+        stopped = self.events.pop()
+        self.add(
+            "native_submission_not_started",
+            request_id=self.attempt["request_id"],
+            submission_epoch=0,
+            reason="not_a_post_start_escape",
+        )
+        self.events.append(stopped)
+        self.write()
+        self.check(False)
+
+    def test_closed_manifest_matches_runtime_state_scope_and_count_contract(self) -> None:
+        cases = (
+            (
+                "state_32MiB",
+                lambda a: a["input"]["state_recovery"].update(max_state_bytes=32 * 1024 * 1024),
+            ),
+            (
+                "models_17",
+                lambda a: a["input"]["state_recovery"].update(
+                    model_bindings=[
+                        {"model_id": f"model-{i}", "weights_sha256": "a" * 64} for i in range(17)
+                    ]
+                ),
+            ),
+            (
+                "sampled_full_reference",
+                lambda a: a["input"]["attachment"]["required_seams"][0].update(coverage="sampled"),
+            ),
+            ("scoped_full_delivery", lambda a: a["input"].update(history_mode="scoped_query")),
+            ("long_artifact_path", lambda a: a["artifact"].update(path="x" * 4097)),
+            (
+                "long_seam_id",
+                lambda a: a["input"]["attachment"]["required_seams"][0].update(
+                    source_seam="x" * 129
+                ),
+            ),
+            (
+                "zero_opaque_budget",
+                lambda a: a["input"]["state_recovery"].update(max_state_bytes=0),
+            ),
+        )
+        original = copy.deepcopy(self.agent)
+        for name, mutate in cases:
+            with self.subTest(name=name):
+                self.agent = copy.deepcopy(original)
+                mutate(self.agent)
+                self.write()
+                self.check(False)
+        for count in (0, 16):
+            with self.subTest(valid_model_count=count):
+                self.agent = copy.deepcopy(original)
+                self.agent["input"]["state_recovery"].update(
+                    max_state_bytes=16 * 1024 * 1024,
+                    model_bindings=[
+                        {"model_id": f"model-{i}", "weights_sha256": "a" * 64} for i in range(count)
+                    ],
+                )
+                self.write()
+                self.check()
+
+    def test_actual_owner_ledger_vectors_preserve_neutral_incremental_and_null_input(self) -> None:
+        vectors = json.loads(
+            (
+                Path(__file__).parent
+                / "fixtures/native_agent_session/owner-ledger-conformance.json"
+            ).read_bytes()
+        )
+        for record in vectors["records"]:
+            with self.subTest(case=record["name"]):
+                current = NativeAgentSessionEvidenceTests()
+                current.setUp()
+                try:
+                    current.agent["input"] = copy.deepcopy(record["input"])
+                    attachment = copy.deepcopy(current.events[0])
+                    capture = record["messages"][0]["witness"]["capture"]
+                    attachment["payload"]["environment"].update(capture["session"])
+                    attachment["payload"]["subscription"].update(
+                        stream_generation=capture["stream_generation"],
+                        scope_id=capture["scope_id"],
+                        eager_scope=current.agent["input"]["attachment"]["eager_scope"],
+                        delivery_mode=current.agent["input"]["attachment"]["delivery_mode"],
+                    )
+                    current.events = [attachment]
+                    current.budget["submissions_used"] = 0
+                    previous_ack = None
+                    for message in record["messages"]:
+                        witness, report = (
+                            copy.deepcopy(message["witness"]),
+                            copy.deepcopy(message["report"]),
+                        )
+                        ack = copy.deepcopy(message.get("acknowledgement"))
+                        if ack is None:
+                            assert previous_ack is not None
+                            ack = {
+                                key: report[key]
+                                for key in (
+                                    "consumption_id",
+                                    "acquisition_id",
+                                    "state_version",
+                                    "advanced",
+                                )
+                            }
+                            ack["prefix"] = copy.deepcopy(previous_ack["prefix"])
+                        current.add("native_acquisition_registered", witness=witness)
+                        current.add(
+                            "agent_consumed", witness=witness, report=report, acknowledgement=ack
+                        )
+                        previous_ack = ack
+                    current.add(
+                        "stopped",
+                        autonomy_budget=current.budget,
+                        controller="released",
+                        pending_request=None,
+                        agent_state="known",
+                    )
+                    current.write()
+                    current.check(all(m["accepted"] for m in record["messages"]))
+                finally:
+                    current.tearDown()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -55,6 +55,7 @@ _EVENT_FIELDS = {
         "run_id",
         "runtime_instance_id",
     },
+    "native_submission_not_started": {"request_id", "submission_epoch", "reason"},
     "native_result": {"result"},
     "native_request_pending": {"original"},
     "native_request_reconciled": {"original", "resolution", "result"},
@@ -100,8 +101,8 @@ def _object(value: object, fields: set[str] | None = None) -> dict[str, Any]:
     return value
 
 
-def _text(value: object, *, maximum: int = 65536) -> str:
-    _require(isinstance(value, str) and bool(value), "native_session_text")
+def _text(value: object, *, maximum: int = 65536, allow_empty: bool = False) -> str:
+    _require(isinstance(value, str) and (allow_empty or bool(value)), "native_session_text")
     assert isinstance(value, str)
     try:
         size = len(value.encode("utf-8"))
@@ -133,15 +134,17 @@ def _boolean(value: object) -> bool:
     return value
 
 
-def _nullable_text(value: object) -> None:
+def _nullable_text(value: object, *, maximum: int = 65536) -> None:
     if value is not None:
-        _text(value)
+        _text(value, maximum=maximum)
 
 
-def _strings(value: object, *, scope: bool = False, nonempty: bool = False) -> list[str]:
+def _strings(
+    value: object, *, scope: bool = False, nonempty: bool = False, maximum: int = 65536
+) -> list[str]:
     _require(isinstance(value, list) and (not nonempty or bool(value)), "native_session_array")
     assert isinstance(value, list)
-    result = [_text(item) for item in value]
+    result = [_text(item, maximum=maximum) for item in value]
     _require(len(set(result)) == len(result), "native_session_duplicate")
     if scope:
         _require(result == [field for field in SCOPE if field in result], "native_session_scope")
@@ -218,7 +221,7 @@ def _environment(value: object) -> dict[str, Any]:
         _text(result[key], maximum=256)
     for key in ("connector_artifact_sha256", "modset_fingerprint"):
         _digest(result[key])
-    _strings(result["loaded_mod_ids"])
+    _strings(result["loaded_mod_ids"], maximum=256)
     return result
 
 
@@ -246,7 +249,7 @@ def _agent_manifest(value: object) -> dict[str, Any]:
     _adapter(result["adapter"])
     artifact = _object(result["artifact"], {"id", "path", "sha256"})
     _text(artifact["id"], maximum=256)
-    _text(artifact["path"], maximum=16384)
+    _text(artifact["path"], maximum=4096)
     _digest(artifact["sha256"])
     input_ = _object(
         result["input"],
@@ -276,8 +279,15 @@ def _agent_manifest(value: object) -> dict[str, Any]:
     )
     recovery = _object(input_["state_recovery"], {"mode", "max_state_bytes", "model_bindings"})
     _require(recovery["mode"] in {"opaque", "none"}, "native_session_state_mode")
-    _integer(recovery["max_state_bytes"], maximum=64 * 1024 * 1024)
-    _require(isinstance(recovery["model_bindings"], list), "native_session_model_bindings")
+    _integer(
+        recovery["max_state_bytes"],
+        positive=recovery["mode"] == "opaque",
+        maximum=16 * 1024 * 1024,
+    )
+    _require(
+        isinstance(recovery["model_bindings"], list) and len(recovery["model_bindings"]) <= 16,
+        "native_session_model_bindings",
+    )
     model_ids = set()
     for binding in recovery["model_bindings"]:
         binding = _object(binding, {"model_id", "weights_sha256"})
@@ -287,14 +297,15 @@ def _agent_manifest(value: object) -> dict[str, Any]:
         _digest(binding["weights_sha256"])
     if recovery["mode"] == "none":
         _require(recovery["max_state_bytes"] == 0 and not model_ids, "native_session_stateless")
-    else:
-        _require(
-            recovery["max_state_bytes"] > 0 and bool(model_ids), "native_session_state_binding"
-        )
     attachment = _object(input_["attachment"], {"eager_scope", "required_seams", "delivery_mode"})
     scope = _strings(attachment["eager_scope"], scope=True)
     _require(
         attachment["delivery_mode"] in {"full_reference", "scoped"}, "native_session_delivery_mode"
+    )
+    _require(
+        (input_["history_mode"] == "full_reference")
+        == (attachment["delivery_mode"] == "full_reference"),
+        "native_session_history_delivery",
     )
     if input_["history_mode"] == "full_reference":
         _require(
@@ -308,20 +319,25 @@ def _agent_manifest(value: object) -> dict[str, Any]:
     seam_ids = set()
     for seam in seams:
         seam = _object(seam, {"source_seam", "version", "coverage"})
-        seam_id = _text(seam["source_seam"], maximum=256)
-        _text(seam["version"], maximum=256)
+        seam_id = _text(seam["source_seam"], maximum=128)
+        _text(seam["version"], maximum=128)
         _require(
             seam_id not in seam_ids
             and seam["coverage"] in {"complete_at_seam", "sampled", "unsupported"},
             "native_session_seam",
         )
         seam_ids.add(seam_id)
+    if input_["history_mode"] == "full_reference":
+        _require(
+            all(seam["coverage"] == "complete_at_seam" for seam in seams),
+            "native_session_full_reference_seams",
+        )
     requirements = _object(
         result["requirements"], {"connector_protocol_version", "environment", "required_methods"}
     )
     _text(requirements["connector_protocol_version"], maximum=256)
     _environment(requirements["environment"])
-    methods = _strings(requirements["required_methods"], nonempty=True)
+    methods = _strings(requirements["required_methods"], nonempty=True, maximum=256)
     allowed = {
         "capabilities",
         "attach",
@@ -359,7 +375,7 @@ def _agent_manifest(value: object) -> dict[str, Any]:
         result["support"], {"game_versions", "game_commits", "interaction_kinds", "action_verbs"}
     )
     for key, item in support.items():
-        declared = _strings(item, nonempty=True)
+        declared = _strings(item, nonempty=True, maximum=256)
         _require(
             "*" not in declared
             or key in {"interaction_kinds", "action_verbs"}
@@ -427,6 +443,128 @@ def _prefix(value: object, agent: Mapping[str, Any], continuity: str) -> dict[st
     return prefix
 
 
+class _DeclaredConsumptionStream:
+    """Check the owner's declared consumption metadata, without decoding input or W.
+
+    The unit and prefix rules match AgentConsumptionLedger. Witnesses do not
+    contain public field bytes, so this checks their association and transitions,
+    never their native/content coherence or numerical memory interpretation.
+    """
+
+    def __init__(self, agent: Mapping[str, Any]) -> None:
+        self.agent = agent
+        self.continuity: str | None = None
+        self.occurrence: tuple[Any, ...] | None = None
+        self.revision = -1
+        self.scopes: set[str] = set()
+        self.consumption_ids: set[str] = set()
+        self.last_report: dict[str, Any] | None = None
+        self.last_publication = -1
+        self.consumed_publication: str | None = None
+        self.received_unconsumed = 0
+        self.gap: dict[str, Any] | None = None
+
+    def received(self) -> None:
+        # All source publication entries are views, including terminal and
+        # unavailable entries. Their kind does not declare a task completion.
+        self.received_unconsumed += 1
+
+    def record_gap(self, value: dict[str, Any]) -> None:
+        self.gap = value
+
+    def watermark(self, output: Mapping[str, Any]) -> None:
+        token = _text(output["continuity_token"], maximum=256)
+        if self.continuity is None:
+            self.continuity = token
+        _require(token == self.continuity, "native_session_continuity_changed")
+        if self.last_report is None:
+            _require(
+                output["consumption_id"] is None and output["state_version"] == 0,
+                "native_session_directive_without_consumption",
+            )
+        else:
+            _require(
+                all(
+                    output[key] == self.last_report[key]
+                    for key in ("continuity_token", "consumption_id", "state_version")
+                ),
+                "native_session_directive_prefix",
+            )
+
+    def accept(self, report: dict[str, Any], ack: dict[str, Any], witness: dict[str, Any]) -> None:
+        token = report["continuity_token"]
+        if self.continuity is None:
+            self.continuity = token
+        _require(token == self.continuity, "native_session_continuity_changed")
+        previous = self.last_report
+        _require(
+            report["previous_consumption_id"]
+            == (None if previous is None else previous["consumption_id"]),
+            "native_session_consumption_prefix",
+        )
+        owner = witness["owner_occurrence"]
+        occurrence = (
+            witness["capture"]["stream_generation"],
+            witness["snapshot_id"],
+            owner["occurrence_id"],
+            owner["binding_revision"],
+            owner["focus_occurrence"],
+        )
+        new_occurrence = occurrence != self.occurrence
+        revision = witness["revision"]
+        _require(
+            revision >= self.revision and (not new_occurrence or revision > self.revision),
+            "native_session_consumption_revision",
+        )
+        added = set(witness["included"]) - self.scopes
+        advanced = new_occurrence or (
+            self.agent["input"]["consumption_mode"] == "incremental_view" and bool(added)
+        )
+        version = 0 if previous is None else previous["state_version"]
+        _require(
+            report["advanced"] == advanced and report["state_version"] == version + int(advanced),
+            "native_session_consumption_unit",
+        )
+        identity = report["consumption_id"]
+        _require(
+            (advanced and identity not in self.consumption_ids)
+            or (not advanced and previous is not None and identity == previous["consumption_id"]),
+            "native_session_consumption_identity",
+        )
+        publication = _index(witness["publication_index"], nullable=True)
+        new_publication = publication is not None and publication > self.last_publication
+        if self.agent["input"]["history_mode"] == "full_reference":
+            _require(
+                self.gap is None
+                and not (publication is None and advanced)
+                and (publication is None or publication >= self.last_publication),
+                "native_session_consumption_publication",
+            )
+        if advanced:
+            if new_occurrence:
+                self.scopes.clear()
+            self.scopes.update(witness["included"])
+            self.occurrence, self.revision = occurrence, revision
+            self.consumption_ids.add(identity)
+        if advanced or new_publication:
+            self.consumed_publication = witness["publication_index"]
+        if new_publication:
+            assert publication is not None
+            self.last_publication = publication
+            self.received_unconsumed = max(0, self.received_unconsumed - 1)
+        prefix = ack["prefix"]
+        omissions = prefix["omissions"]
+        _require(
+            prefix["consumed_publication_index"] == self.consumed_publication
+            and omissions["missing_scopes"] == witness["missing"]
+            and omissions["gap"] == self.gap
+            and omissions["received_unconsumed_count"]
+            == (self.received_unconsumed if self.gap is None else None),
+            "native_session_acknowledged_prefix",
+        )
+        self.last_report = report
+
+
 def _capture(value: object) -> dict[str, Any]:
     capture = _object(
         value,
@@ -487,10 +625,9 @@ def _witness(value: object) -> dict[str, Any]:
     capture = _capture(witness["capture"])
     _require(witness["snapshot_id"] == capture["snapshot_id"], "native_session_capture_snapshot")
     _index(witness["publication_index"], nullable=True)
-    _integer(witness["revision"], positive=True)
+    _integer(witness["revision"])
     _require(
-        witness["status"]
-        in {"interactive", "settling", "visible_unsupported", "observed", "terminal"},
+        witness["status"] in {"interactive", "settling", "observed", "terminal"},
         "native_session_observation_status",
     )
     owner = _object(
@@ -503,7 +640,10 @@ def _witness(value: object) -> dict[str, Any]:
     _nullable_text(owner["focus_occurrence"])
     included = _strings(witness["included"], scope=True)
     missing = _strings(witness["missing"], scope=True)
-    _require(not set(included) & set(missing), "native_session_scope_overlap")
+    _require(
+        not set(included) & set(missing) and set(included) | set(missing) == set(SCOPE),
+        "native_session_scope_overlap",
+    )
     _boolean(witness["catalog_materialized"])
     if "catalog" in included:
         _digest(witness["catalog_digest"])
@@ -975,6 +1115,7 @@ class AgentSessionRunEvidenceVerifier:
         witnesses: dict[str, dict[str, Any]] = {}
         submissions: dict[str, dict[str, Any]] = {}
         completed: set[str] = set()
+        outstanding: set[str] = set()
         pending: dict[str, Any] | None = None
         stored_files: set[str] = set()
         stored_metadata: list[dict[str, Any]] = []
@@ -984,6 +1125,10 @@ class AgentSessionRunEvidenceVerifier:
         tainted = False
         controller = "released"
         mode: str | None = None  # A finalized manifest records final mode, not initial mode.
+        stream = _DeclaredConsumptionStream(agent)
+        last_act: dict[str, Any] | None = None
+        last_act_epoch: int | None = None
+        agent_uncertain = False
         attachment: tuple[dict[str, Any], dict[str, Any]] | None = None
         for sequence, event in enumerate(events, 1):
             event = _object(event, {"schema", "sequence", "recorded_at", "kind", "payload"})
@@ -1038,6 +1183,14 @@ class AgentSessionRunEvidenceVerifier:
                 _require(
                     witness["acquisition_id"] not in witnesses, "native_session_acquisition_reused"
                 )
+                _require(
+                    witness["capture"]["byte_count"] <= agent["limits"]["max_capture_bytes"]
+                    and (
+                        witness["catalog_count"] is None
+                        or witness["catalog_count"] <= agent["limits"]["max_catalog_actions"]
+                    ),
+                    "native_session_acquisition_limits",
+                )
                 witnesses[witness["acquisition_id"]] = witness
             elif kind == "agent_consumed":
                 witness = _witness(payload["witness"])
@@ -1053,14 +1206,22 @@ class AgentSessionRunEvidenceVerifier:
                         "native_session_full_reference_consumption",
                     )
                 report, ack = self._consumption(payload, agent, last_report)
+                stream.accept(report, ack, witness)
                 last_report, last_ack, last_witness = report, ack, witness
             elif kind == "agent_directive":
-                self._directive(payload["output"], last_report, witnesses)
+                output = self._directive(payload["output"], last_report, witnesses)
+                stream.watermark(output)
+                last_act = output if output["directive"]["type"] == "act" else None
+                last_act_epoch = current_epoch if last_act is not None else None
             elif kind == "native_submission_requested":
                 request_id = _text(payload["request_id"], maximum=128)
                 basis = witnesses.get(payload["basis_acquisition_id"])
                 _require(
                     request_id not in submissions
+                    and not outstanding
+                    and pending is None
+                    and not tainted
+                    and not agent_uncertain
                     and basis is not None
                     and controller == "held"
                     and mode in {None, "auto", "one_step"}
@@ -1068,6 +1229,19 @@ class AgentSessionRunEvidenceVerifier:
                     "native_session_submission_owner",
                 )
                 assert basis is not None
+                _require(
+                    last_report is not None
+                    and last_act is not None
+                    and last_act_epoch == current_epoch
+                    and payload["basis_acquisition_id"] == last_report["acquisition_id"]
+                    and payload["basis_acquisition_id"]
+                    == last_act["directive"]["basis_acquisition_id"]
+                    and (
+                        last_act["directive"]["selection"]["kind"] == "expression"
+                        or payload["action_id"] == last_act["directive"]["selection"]["action_id"]
+                    ),
+                    "native_session_submission_without_acknowledged_act",
+                )
                 for key in ("action_id", "runtime_instance_id"):
                     _text(payload[key])
                 _require(
@@ -1075,6 +1249,8 @@ class AgentSessionRunEvidenceVerifier:
                     and payload["catalog_digest"] == basis["catalog_digest"]
                     and payload["runtime_instance_id"]
                     == basis["capture"]["session"]["runtime_instance_id"]
+                    and basis["catalog_count"] is not None
+                    and basis["catalog_count"] > 0
                     and (
                         agent["input"]["history_mode"] != "full_reference"
                         or basis["catalog_materialized"] is True
@@ -1082,16 +1258,38 @@ class AgentSessionRunEvidenceVerifier:
                     "native_session_submission_basis",
                 )
                 submissions[request_id] = payload
+                outstanding.add(request_id)
+                last_act, last_act_epoch = None, None
+            elif kind == "native_submission_not_started":
+                request_id = _text(payload["request_id"], maximum=128)
+                submission_epoch = _integer(payload["submission_epoch"])
+                _text(payload["reason"])
+                attempt = submissions.get(request_id)
+                _require(
+                    attempt is not None
+                    and request_id in outstanding
+                    and request_id not in completed
+                    and pending is None
+                    and submission_epoch == attempt["recovery_epoch"]
+                    and submission_epoch <= current_epoch,
+                    "native_session_not_started_original_intent",
+                )
+                outstanding.remove(request_id)
+                completed.add(request_id)
             elif kind == "native_result":
                 result = _object(payload["result"])
                 attempt = submissions.get(_text(result.get("request_id"), maximum=128))
                 _require(
-                    attempt is not None and result["request_id"] not in completed,
+                    attempt is not None
+                    and result["request_id"] in outstanding
+                    and result["request_id"] not in completed
+                    and pending is None,
                     "native_session_result_without_submission",
                 )
                 assert attempt is not None
                 result = _result(result, attempt)
                 completed.add(result["request_id"])
+                outstanding.remove(result["request_id"])
                 tainted |= result["delivery"] in {"partially_delivered", "unknown"}
             elif kind == "native_request_pending":
                 original = _pending(
@@ -1099,6 +1297,7 @@ class AgentSessionRunEvidenceVerifier:
                 )
                 _require(
                     pending is None
+                    and original["request_id"] in outstanding
                     and original["request_id"] not in completed
                     and original["status"] == "pending"
                     and original["reason"] is None,
@@ -1133,6 +1332,7 @@ class AgentSessionRunEvidenceVerifier:
                         )
                         tainted |= unknown
                         completed.add(original["request_id"])
+                        outstanding.discard(original["request_id"])
                         if not unknown:
                             pending = None
             elif kind == "controller_acquired":
@@ -1145,6 +1345,7 @@ class AgentSessionRunEvidenceVerifier:
                 _require(payload["controller"] == "unknown", "native_session_controller")
                 _text(payload["reason"])
                 tainted = True
+                controller = "unknown"
             elif kind in {
                 "mode_changed",
                 "autonomy_budget_exhausted",
@@ -1186,13 +1387,24 @@ class AgentSessionRunEvidenceVerifier:
                 _require(
                     payload["agent_state"] in {"known", "uncertain"}, "native_session_agent_state"
                 )
+                agent_uncertain = payload["agent_state"] == "uncertain"
             elif kind == "native_gap":
-                _object(payload["gap"])
+                stream.record_gap(_object(payload["gap"]))
             elif kind == "native_event_received":
                 self._event_availability(payload["original"], payload["received_cursor"])
+                stream.received()
             elif kind == "native_await_result":
                 self._await(payload)
             elif kind in {"agent_state_stored", "agent_state_restored"}:
+                _require(
+                    not tainted
+                    and pending is None
+                    and not outstanding
+                    and stream.gap is None
+                    and stream.received_unconsumed == 0
+                    and (kind == "agent_state_restored" or not agent_uncertain),
+                    "native_session_state_requires_durable_prefix",
+                )
                 metadata = self._state_metadata(
                     payload["metadata"], agent, last_report, last_ack, last_witness
                 )
@@ -1202,6 +1414,8 @@ class AgentSessionRunEvidenceVerifier:
                     stored_metadata.append(metadata)
                 else:
                     _require(metadata in stored_metadata, "native_session_restore_not_stored")
+                    agent_uncertain = False
+        _require(not outstanding or tainted, "native_session_unclosed_submission")
         _require(not tainted or run["tainted"], "native_session_taint_erased")
         _require(stored_files == state_files, "native_session_undeclared_state")
         return events
@@ -1292,7 +1506,7 @@ class AgentSessionRunEvidenceVerifier:
         )
         for key in ("acquisition_id", "continuity_token", "consumption_id"):
             _text(report[key], maximum=256)
-        _nullable_text(report["previous_consumption_id"])
+        _nullable_text(report["previous_consumption_id"], maximum=256)
         _input_spec(report["input_spec"])
         version, advanced = _integer(report["state_version"]), _boolean(report["advanced"])
         _integer(acknowledgement["state_version"])
@@ -1324,13 +1538,17 @@ class AgentSessionRunEvidenceVerifier:
     @staticmethod
     def _directive(
         value: object, report: dict[str, Any] | None, witnesses: Mapping[str, dict[str, Any]]
-    ) -> None:
+    ) -> dict[str, Any]:
         output = _object(
             value, {"continuity_token", "consumption_id", "state_version", "directive"}
         )
         _text(output["continuity_token"], maximum=256)
         _nullable_text(output["consumption_id"])
         _integer(output["state_version"])
+        _require(
+            (output["state_version"] == 0) == (output["consumption_id"] is None),
+            "native_session_directive_watermark",
+        )
         if report is not None:
             _require(
                 all(
@@ -1344,7 +1562,13 @@ class AgentSessionRunEvidenceVerifier:
         if kind == "act":
             _object(directive, {"type", "basis_acquisition_id", "selection", "scores"})
             witness = witnesses.get(directive["basis_acquisition_id"])
-            _require(witness is not None, "native_session_directive_basis")
+            _require(
+                report is not None
+                and output["consumption_id"] is not None
+                and witness is not None
+                and directive["basis_acquisition_id"] == report["acquisition_id"],
+                "native_session_directive_basis",
+            )
             selection = _object(directive["selection"])
             if selection.get("kind") == "handle":
                 _object(selection, {"kind", "action_id"})
@@ -1378,11 +1602,12 @@ class AgentSessionRunEvidenceVerifier:
                 in {"any_event", "observation", "catalog_nonempty", "terminal"},
                 "native_session_await_condition",
             )
-            _integer(directive["timeout_ms"], maximum=30000)
+            _integer(directive["timeout_ms"], positive=True, maximum=30000)
         else:
             _require(kind in {"abstain", "close"}, "native_session_directive_type")
             _object(directive, {"type", "reason"})
-            _text(directive["reason"])
+            _text(directive["reason"], maximum=256, allow_empty=True)
+        return output
 
     @staticmethod
     def _event_availability(value: object, received_cursor: object | None = None) -> None:

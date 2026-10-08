@@ -107,3 +107,56 @@ or uncertain exit still requires exact recovery; rollback is not permission to
 resubmit. No game, installed Mod, credentials, real recording, provider, paid
 compute, real-data training, Human validation, qualification or final G2/V1
 acceptance is performed or claimed by this report.
+
+## Independent review repairs
+
+The frozen increment `9f2e3993c48da8d869a128100b3fdfe98e298ae0` received a
+bounded independent source review which required three P2 repair families.
+Accepted Model, service and deferred UI mount dependencies were normally merged
+as `0d055a0b89b1fd55596a10c63acc71083dbd0caf` from the lead's
+`7584a33b2e9282a02ce03b6b31aabda1569f8f4a`. The service's outer database-error
+wrapper and the deferred mount remain intact.
+
+The default application now imports native schema recognition from the accepted
+dependency-light STPD owner. A fresh isolated constructor test denies Torch,
+safetensors, tokenizers and transformers and passes without requesting model
+work. Native registration takes the complete required method list from that
+same owning module.
+
+Typed Evidence now derives the reported consumption transition from declared
+occurrence/revision/scope metadata and binds the durable ACK publication,
+omissions and state watermark. Seven conformance sequences came from the actual
+Runtime `AgentConsumptionLedger` and shared acquisition fixture; neutral Current,
+incremental scope expansion, legitimate newer revisits and null persistent
+content remain valid. Witnesses do not contain the full input or numerical W,
+so this remains metadata association verification, not content/native proof.
+
+Act/submission requires acknowledged input and a matching current directive.
+Pending, unknown or outstanding requests prevent replacement submissions, and a
+missing terminal record cannot end as a clean run. The Runtime owner and lead
+approved `native_submission_not_started` with common session/current epoch plus
+exact original `request_id`, `submission_epoch` and `reason`. Only the producer's
+known false SDK start callback can establish that fact. An older 8ef producer
+trace containing only a generic failure after its intent is now rejected as an
+unclosed clean run; its zero-POST test observation is not substituted for typed
+evidence. Post-start unknown delivery cannot be relabelled as not started.
+
+Manifest validation now matches the Runtime's 16 MiB state bound, 16-binding
+bound, complete full-reference seams, exact history/delivery agreement and
+declared scalar limits. Opaque recovery with zero Model bindings is valid at
+this generic contract level. All independent rehashed counterexamples reject;
+the valid empty-binding counterexample passes.
+
+Repair working-source gates passed: 214 relevant application tests in 46.90 s,
+231 complete Evidence tests in 8.578 s, and scoped checking of the Evidence file.
+The new API still needs the lead's final public wheel/version/canonical typing
+gate. Frozen Runtime `4917eb313d9fa6aa9489de031c468e528e6081ec` produced an
+independently consumed 15-event run and ten alternative sealed runs: terminal
+capture, missing/expired payload, open publication kind, scoped omission,
+original bound pre-submit closure, Human before intent, Human-fenced Close,
+retained original request across Restore/Human, and actual numerical empty-C
+terminal consumption. All passed the repaired verifier. Their source/test
+scope is separate from independent Runtime acceptance and installed/native
+qualification. The private 9f+73 application composition previously passed a
+16-event real child/SDK/HTTP/service journey; a new private wheel and repaired
+candidate journey are required before final application acceptance.

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,8 +26,38 @@ from spireagent.workbench.native_agent_support import (
     bind_native_export,
     validate,
 )
+from stpd.native_code_scope import REQUIRED_METHODS
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_default_application_constructor_does_not_import_optional_model_backends(tmp_path):
+    script = """
+import importlib.abc
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+class NoModelExtras(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'torch', 'safetensors', 'tokenizers', 'transformers'}:
+            raise AssertionError('default application imported optional model backend: ' + fullname)
+sys.meta_path.insert(0, NoModelExtras())
+from spireagent.workbench.developer import ProjectConfig, combination
+from spireagent.workbench.developer_server import Application
+config = ProjectConfig(Path(sys.argv[2]), '', '', None, combination())
+app = Application(config)
+assert app.local_model_export is not None and app.local_model_registration is not None
+assert app.models.client is None and app.models.process is None
+app.models.close()
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(ROOT / "python"), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def native_capabilities() -> dict:
@@ -52,11 +84,22 @@ def native_capabilities() -> dict:
     caps["game"]["modset"].update(status="exact", fingerprint="c" * 64, loaded_mod_ids=["fixture"])
     caps["session"]["runtime_instance_id"] = "game-synthetic"
     caps["capture_coverage"] = copy.deepcopy(profile["required_seams"])
+    # The historical wire sample omits the three base methods. The actual Host
+    # and Runtime advertise/require the complete native method list.
+    caps["supported_methods"] = list(REQUIRED_METHODS)
     return {
         "capabilities": caps,
         "publication_profile": profile,
         "publication_profile_sha256": PUBLICATION_PROFILE_SHA256,
     }
+
+
+@pytest.mark.parametrize("missing", ["capabilities", "submit", "result"])
+def test_native_registration_requires_the_base_methods_its_runtime_will_admit(missing):
+    value = native_capabilities()
+    value["capabilities"]["supported_methods"].remove(missing)
+    with pytest.raises(BoundaryError, match="native_capabilities_incompatible"):
+        _native_requirements(value)
 
 
 def settled(service: LocalModelExport) -> dict:

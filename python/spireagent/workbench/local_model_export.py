@@ -38,7 +38,7 @@ from spireagent.workbench.memory_recipe import (
     recipe_for_memory_config,
 )
 from spireagent.workbench.research_process import private_child
-from stpd.policy.native_structured_export import is_native_model_schema
+from stpd.native_code_scope import is_native_model_schema
 from stpd.structured_code_scope import (
     is_structured_model_schema,
     require_structured_model_package,
