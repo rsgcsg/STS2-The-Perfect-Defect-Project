@@ -44,7 +44,6 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
             (ROOT / "connector/contracts/fixtures/native-logical-v1.json").read_bytes()
         )["wire_samples"]
         self.agent = copy.deepcopy(shared["manifest"])
-        self.agent["requirements"]["required_methods"] += ["renew", "retain", "release"]
         # A verifier binds bytes and does not open this local implementation path.
         self.agent["artifact"]["path"] = "/does/not/exist/private/model.json"
         self.run = {
