@@ -1,0 +1,593 @@
+{
+  "schema": "sts2.native-logical.conformance-1",
+  "profile": "native-logical-v1",
+  "digest_cases": [
+    {
+      "name": "empty",
+      "actions": [],
+      "sha256": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11"
+    },
+    {
+      "name": "multilingual_null_empty_ordered",
+      "actions": [
+        {
+          "action_id": "action-a",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "空 / 🐉 / café / é",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        },
+        {
+          "action_id": "action-b",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "",
+          "subject_referent_id": "",
+          "arguments": [
+            {
+              "role": "目标",
+              "referent_id": "référent-😀"
+            }
+          ],
+          "effect_domain": "native"
+        },
+        {
+          "action_id": "action-c",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "換行\n保留",
+          "subject_referent_id": "卡牌甲",
+          "arguments": [
+            {
+              "role": "first",
+              "referent_id": "甲"
+            },
+            {
+              "role": "second",
+              "referent_id": "乙"
+            }
+          ],
+          "effect_domain": "native"
+        }
+      ],
+      "sha256": "e219492176272b9832799b109a2c770d7801b97e21abf64f6ced9faea8cbcf63"
+    }
+  ],
+  "expression_cases": [
+    {
+      "expression": {},
+      "prefix_valid": true,
+      "resolve_valid": false
+    },
+    {
+      "expression": {
+        "verb": "选择",
+        "subject_referent_id": null,
+        "arguments": []
+      },
+      "prefix_valid": true,
+      "resolve_valid": true
+    },
+    {
+      "expression": {
+        "subject_referent_id": ""
+      },
+      "prefix_valid": true,
+      "resolve_valid": false
+    },
+    {
+      "expression": {
+        "verb": "选择",
+        "subject_referent_id": null,
+        "arguments": [
+          {
+            "role": "target",
+            "referent_id": "a"
+          },
+          {
+            "role": "target",
+            "referent_id": "b"
+          }
+        ]
+      },
+      "prefix_valid": false,
+      "resolve_valid": false
+    },
+    {
+      "expression": {
+        "label": "禁止"
+      },
+      "prefix_valid": false,
+      "resolve_valid": false
+    },
+    {
+      "expression": {
+        "verb": 4
+      },
+      "prefix_valid": false,
+      "resolve_valid": false
+    }
+  ],
+  "invalid_action_cases": [
+    {
+      "name": "duplicate_roles",
+      "actions": [
+        {
+          "action_id": "dup",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "重复",
+          "subject_referent_id": null,
+          "arguments": [
+            {
+              "role": "target",
+              "referent_id": "a"
+            },
+            {
+              "role": "target",
+              "referent_id": "b"
+            }
+          ],
+          "effect_domain": "native"
+        }
+      ]
+    },
+    {
+      "name": "duplicate_ids",
+      "actions": [
+        {
+          "action_id": "action-a",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "空 / 🐉 / café / é",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        },
+        {
+          "action_id": "action-a",
+          "kind": "native_input",
+          "verb": "选择",
+          "label": "空 / 🐉 / café / é",
+          "subject_referent_id": null,
+          "arguments": [],
+          "effect_domain": "native"
+        }
+      ]
+    }
+  ],
+  "raw_invalid_expressions": [
+    "{\"verb\":\"a\",\"verb\":\"b\"}",
+    "{\"arguments\":[{\"role\":\"a\",\"role\":\"b\",\"referent_id\":\"x\"}]}",
+    "{\"verb\":\"\\uD800\",\"subject_referent_id\":null,\"arguments\":[]}"
+  ],
+  "wire_samples": {
+    "observation": {
+      "protocol_version": "1.0.0",
+      "schema": "sts2.player-environment/native-logical-observation-1",
+      "input_profile": "native-logical-v1",
+      "snapshot_id": "snapshot-fixture",
+      "revision": 1,
+      "observed_at": "1970-01-01T00:00:00+00:00",
+      "status": "settling",
+      "persistent": {
+        "content_schema": "public-persistent-fixture",
+        "content": {
+          "text": "你好 / 🐉 / café / é"
+        }
+      },
+      "interaction": {
+        "interaction_id": "interaction-fixture",
+        "kind": "selector",
+        "stage": "ready",
+        "prompt": null,
+        "content_schema": "public-surface-fixture",
+        "content": {
+          "surface": {
+            "kind": "selector",
+            "focus_referent_id": null
+          },
+          "context": {
+            "kind": "public-fixture"
+          }
+        },
+        "capabilities": []
+      },
+      "referents": [],
+      "completeness": {
+        "status": "complete",
+        "included": [
+          "persistent",
+          "interaction",
+          "referents",
+          "catalog"
+        ],
+        "missing": [],
+        "full_reference_complete": true
+      },
+      "session": {
+        "runtime_instance_id": "runtime-fixture",
+        "environment_fingerprint": "environment-fixture"
+      },
+      "information_policy": {
+        "id": "fair-player",
+        "scope": "entered-native-page",
+        "includes_hidden_information": false,
+        "unknown_field_behavior": "explicit"
+      },
+      "owner_occurrence": {
+        "owner_id": "owner-fixture",
+        "occurrence_id": "occurrence-fixture",
+        "binding_revision": "binding-fixture",
+        "focus_referent_id": null,
+        "focus_occurrence": null
+      },
+      "catalog": {
+        "catalog_ref": "catalog-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "status": "complete",
+        "total_count": 0,
+        "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+        "ordering_semantics": "native_public_order",
+        "access_methods": [
+          "catalog",
+          "resolve"
+        ],
+        "scope_id": "scope-fixture",
+        "stream_generation": "stream-fixture"
+      }
+    },
+    "capture": {
+      "schema": "sts2.player-environment/native-logical-capture-1",
+      "capture_id": "capture-fixture",
+      "snapshot_id": "snapshot-fixture",
+      "input_profile": "native-logical-v1",
+      "session": {
+        "runtime_instance_id": "runtime-fixture",
+        "environment_fingerprint": "environment-fixture"
+      },
+      "stream_generation": "stream-fixture",
+      "scope_id": "scope-fixture",
+      "capture_ordinal": "1",
+      "captured_at": "1970-01-01T00:00:00+00:00",
+      "expires_at": "1970-01-01T00:02:00+00:00",
+      "byte_count": 1519,
+      "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+      "read_cursor": "opaque-read-fixture"
+    },
+    "read": {
+      "capture_id": "capture-fixture",
+      "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+      "offset": 0,
+      "total_bytes": 1519,
+      "data_base64": "eyJwcm90b2NvbF92ZXJzaW9uIjoiMS4wLjAiLCJzY2hlbWEiOiJzdHMyLnBsYXllci1lbnZpcm9ubWVudC9uYXRpdmUtbG9naWNhbC1vYnNlcnZhdGlvbi0xIiwiaW5wdXRfcHJvZmlsZSI6Im5hdGl2ZS1sb2dpY2FsLXYxIiwic25hcHNob3RfaWQiOiJzbmFwc2hvdC1maXh0dXJlIiwicmV2aXNpb24iOjEsIm9ic2VydmVkX2F0IjoiMTk3MC0wMS0wMVQwMDowMDowMCswMDowMCIsInN0YXR1cyI6InNldHRsaW5nIiwicGVyc2lzdGVudCI6eyJjb250ZW50X3NjaGVtYSI6InB1YmxpYy1wZXJzaXN0ZW50LWZpeHR1cmUiLCJjb250ZW50Ijp7InRleHQiOiLkvaDlpb0gLyDwn5CJIC8gY2Fmw6kgLyBlzIEifX0sImludGVyYWN0aW9uIjp7ImludGVyYWN0aW9uX2lkIjoiaW50ZXJhY3Rpb24tZml4dHVyZSIsImtpbmQiOiJzZWxlY3RvciIsInN0YWdlIjoicmVhZHkiLCJwcm9tcHQiOm51bGwsImNvbnRlbnRfc2NoZW1hIjoicHVibGljLXN1cmZhY2UtZml4dHVyZSIsImNvbnRlbnQiOnsic3VyZmFjZSI6eyJraW5kIjoic2VsZWN0b3IiLCJmb2N1c19yZWZlcmVudF9pZCI6bnVsbH0sImNvbnRleHQiOnsia2luZCI6InB1YmxpYy1maXh0dXJlIn19LCJjYXBhYmlsaXRpZXMiOltdfSwicmVmZXJlbnRzIjpbXSwiY29tcGxldGVuZXNzIjp7InN0YXR1cyI6ImNvbXBsZXRlIiwiaW5jbHVkZWQiOlsicGVyc2lzdGVudCIsImludGVyYWN0aW9uIiwicmVmZXJlbnRzIiwiY2F0YWxvZyJdLCJtaXNzaW5nIjpbXSwiZnVsbF9yZWZlcmVuY2VfY29tcGxldGUiOnRydWV9LCJzZXNzaW9uIjp7InJ1bnRpbWVfaW5zdGFuY2VfaWQiOiJydW50aW1lLWZpeHR1cmUiLCJlbnZpcm9ubWVudF9maW5nZXJwcmludCI6ImVudmlyb25tZW50LWZpeHR1cmUifSwiaW5mb3JtYXRpb25fcG9saWN5Ijp7ImlkIjoiZmFpci1wbGF5ZXIiLCJzY29wZSI6ImVudGVyZWQtbmF0aXZlLXBhZ2UiLCJpbmNsdWRlc19oaWRkZW5faW5mb3JtYXRpb24iOmZhbHNlLCJ1bmtub3duX2ZpZWxkX2JlaGF2aW9yIjoiZXhwbGljaXQifSwib3duZXJfb2NjdXJyZW5jZSI6eyJvd25lcl9pZCI6Im93bmVyLWZpeHR1cmUiLCJvY2N1cnJlbmNlX2lkIjoib2NjdXJyZW5jZS1maXh0dXJlIiwiYmluZGluZ19yZXZpc2lvbiI6ImJpbmRpbmctZml4dHVyZSIsImZvY3VzX3JlZmVyZW50X2lkIjpudWxsLCJmb2N1c19vY2N1cnJlbmNlIjpudWxsfSwiY2F0YWxvZyI6eyJjYXRhbG9nX3JlZiI6ImNhdGFsb2ctZml4dHVyZSIsInNuYXBzaG90X2lkIjoic25hcHNob3QtZml4dHVyZSIsInN0YXR1cyI6ImNvbXBsZXRlIiwidG90YWxfY291bnQiOjAsImRpZ2VzdCI6Ijc3YjA0NzhjNzZmNzI0N2UzOTE2YmVlMzYyMGQ2YjQ5ZDY5NGRjMDExMzljNTQ4ODA5NDVmN2U0MDc4ZGFjMTEiLCJvcmRlcmluZ19zZW1hbnRpY3MiOiJuYXRpdmVfcHVibGljX29yZGVyIiwiYWNjZXNzX21ldGhvZHMiOlsiY2F0YWxvZyIsInJlc29sdmUiXSwic2NvcGVfaWQiOiJzY29wZS1maXh0dXJlIiwic3RyZWFtX2dlbmVyYXRpb24iOiJzdHJlYW0tZml4dHVyZSJ9fQ==",
+      "next_cursor": null,
+      "complete": true,
+      "schema": "sts2.player-environment/native-logical-read-1"
+    },
+    "catalog_page": {
+      "schema": "sts2.player-environment/native-logical-catalog-page-1",
+      "status": "complete",
+      "catalog_ref": "catalog-fixture",
+      "snapshot_id": "snapshot-fixture",
+      "stream_generation": "stream-fixture",
+      "total_count": 0,
+      "digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+      "filtered_count": 0,
+      "filtered_digest": "77b0478c76f7247e3916bee3620d6b49d694dc01139c54880945f7e4078dac11",
+      "actions": [],
+      "next_cursor": null,
+      "minimum_required_bytes": null
+    },
+    "resolve": {
+      "status": "unique",
+      "action": {
+        "action_id": "action-a",
+        "kind": "native_input",
+        "verb": "选择",
+        "label": "空 / 🐉 / café / é",
+        "subject_referent_id": null,
+        "arguments": [],
+        "effect_domain": "native"
+      },
+      "schema": "sts2.player-environment/native-logical-resolve-1"
+    },
+    "attach_request": {
+      "client_session_id": "client-fixture",
+      "eager_scope": [
+        "persistent",
+        "interaction",
+        "referents",
+        "catalog"
+      ],
+      "required_seams": [
+        {
+          "source_seam": "owner",
+          "version": "1",
+          "coverage": "complete_at_seam"
+        }
+      ],
+      "delivery_mode": "full_reference"
+    },
+    "attach": {
+      "status": "attached",
+      "subscription": {
+        "subscription_id": "subscription-fixture",
+        "scope_id": "scope-fixture",
+        "eager_scope": [
+          "persistent",
+          "interaction",
+          "referents",
+          "catalog"
+        ],
+        "coverage": [
+          {
+            "source_seam": "owner",
+            "version": "1",
+            "coverage": "complete_at_seam"
+          }
+        ],
+        "delivery_mode": "full_reference",
+        "stream_generation": "stream-fixture",
+        "starting_cursor": "opaque-event-fixture-start",
+        "expires_at": "1970-01-01T00:02:00+00:00"
+      },
+      "schema": "sts2.player-environment/native-logical-attach-1"
+    },
+    "event": {
+      "schema": "sts2.player-environment/native-logical-event-1",
+      "cursor": "opaque-event-fixture-next",
+      "stream_generation": "stream-fixture",
+      "publication_index": "9007199254740993",
+      "kind": "observation",
+      "source_seam": "owner",
+      "source_phase": "enter",
+      "source_index": "18446744073709551614",
+      "scope_id": "scope-fixture",
+      "capture_ref": "capture-fixture",
+      "missing_reason": null,
+      "coverage": "complete_at_seam",
+      "payload_reference": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "stream_generation": "stream-fixture",
+        "scope_id": "scope-fixture",
+        "capture_ordinal": "1",
+        "captured_at": "1970-01-01T00:00:00+00:00",
+        "expires_at": "1970-01-01T00:02:00+00:00",
+        "byte_count": 1519,
+        "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+        "read_cursor": "opaque-read-fixture"
+      }
+    },
+    "event_batch": {
+      "events": [
+        {
+          "event": {
+            "schema": "sts2.player-environment/native-logical-event-1",
+            "cursor": "opaque-event-fixture-next",
+            "stream_generation": "stream-fixture",
+            "publication_index": "9007199254740993",
+            "kind": "observation",
+            "source_seam": "owner",
+            "source_phase": "enter",
+            "source_index": "18446744073709551614",
+            "scope_id": "scope-fixture",
+            "capture_ref": "capture-fixture",
+            "missing_reason": null,
+            "coverage": "complete_at_seam",
+            "payload_reference": {
+              "schema": "sts2.player-environment/native-logical-capture-1",
+              "capture_id": "capture-fixture",
+              "snapshot_id": "snapshot-fixture",
+              "input_profile": "native-logical-v1",
+              "session": {
+                "runtime_instance_id": "runtime-fixture",
+                "environment_fingerprint": "environment-fixture"
+              },
+              "stream_generation": "stream-fixture",
+              "scope_id": "scope-fixture",
+              "capture_ordinal": "1",
+              "captured_at": "1970-01-01T00:00:00+00:00",
+              "expires_at": "1970-01-01T00:02:00+00:00",
+              "byte_count": 1519,
+              "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+              "read_cursor": "opaque-read-fixture"
+            }
+          },
+          "availability": "available"
+        }
+      ],
+      "next_cursor": "opaque-event-fixture-next",
+      "high_watermark": "opaque-event-fixture-next",
+      "retained_start_cursor": "opaque-event-fixture-start",
+      "gap": null,
+      "schema": "sts2.player-environment/native-logical-events-1"
+    },
+    "await": {
+      "status": "event",
+      "event": {
+        "event": {
+          "schema": "sts2.player-environment/native-logical-event-1",
+          "cursor": "opaque-event-fixture-next",
+          "stream_generation": "stream-fixture",
+          "publication_index": "9007199254740993",
+          "kind": "observation",
+          "source_seam": "owner",
+          "source_phase": "enter",
+          "source_index": "18446744073709551614",
+          "scope_id": "scope-fixture",
+          "capture_ref": "capture-fixture",
+          "missing_reason": null,
+          "coverage": "complete_at_seam",
+          "payload_reference": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "capture-fixture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "runtime-fixture",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:00+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          }
+        },
+        "availability": "available"
+      },
+      "gap": null,
+      "reason": null,
+      "schema": "sts2.player-environment/native-logical-await-1"
+    },
+    "observation_context": {
+      "observation_ref": "snapshot-fixture",
+      "capture_ref": "capture-fixture",
+      "game_continuity_id": null,
+      "stream_generation": "stream-fixture",
+      "publication_cursor": null
+    },
+    "result": {
+      "protocol_version": "1.0.0",
+      "schema": "sts2.player-environment/native-logical-result-1",
+      "input_profile": "native-logical-v1",
+      "request_id": "request-fixture",
+      "snapshot_id": "snapshot-fixture",
+      "action": {
+        "action_id": "action-a",
+        "kind": "native_input",
+        "verb": "选择",
+        "label": "空 / 🐉 / café / é",
+        "subject_referent_id": null,
+        "arguments": [],
+        "effect_domain": "native"
+      },
+      "delivery": "partially_delivered",
+      "execution": "native_rejected",
+      "effect": "not_observed",
+      "cancel": "too_late",
+      "reason": "confirmation_rejected_after_native_focus",
+      "retry": "never_automatic",
+      "observed_frame": null,
+      "attribution": null
+    },
+    "capabilities": {
+      "protocol_version": "1.0.0",
+      "schema": "sts2.player-environment/native-logical-capabilities-1",
+      "input_profile": "native-logical-v1",
+      "host": {
+        "id": "host-fixture",
+        "name": "fixture",
+        "version": "fixture",
+        "runtime_instance_id": "runtime-fixture",
+        "host_kind": "fixture",
+        "implementation": {
+          "source_revision": null,
+          "module_version_id": null,
+          "artifact_sha256": null
+        }
+      },
+      "game": {
+        "version": null,
+        "commit": null,
+        "branch": null,
+        "main_assembly_hash": null,
+        "compatibility": {
+          "status": "fixture",
+          "observation_allowed": true,
+          "detail": "synthetic source conformance"
+        },
+        "modset": {
+          "status": "fixture",
+          "fingerprint": "fixture",
+          "scope": "fixture",
+          "loaded_mod_ids": [],
+          "detail": "synthetic source conformance"
+        }
+      },
+      "session": {
+        "runtime_instance_id": "runtime-fixture",
+        "environment_fingerprint": "environment-fixture"
+      },
+      "stream_generation": "stream-fixture",
+      "supported_methods": [
+        "attach",
+        "current",
+        "read",
+        "catalog",
+        "resolve",
+        "events",
+        "await",
+        "cancel_wait",
+        "detach",
+        "release"
+      ],
+      "implemented_mechanisms": [
+        "finite_materialized_catalog",
+        "frozen_capture",
+        "scoped_publication",
+        "atomic_await"
+      ],
+      "capture_coverage": [
+        {
+          "source_seam": "owner",
+          "version": "1",
+          "coverage": "complete_at_seam"
+        }
+      ],
+      "source_clock": {
+        "publication_index_encoding": "u64_decimal_string",
+        "source_index_encoding": "u64_decimal_string",
+        "source_position_meaning": "native_source_occurrence",
+        "publication_meaning": "contiguous_completed_projections_not_causal_commit_order"
+      },
+      "limits": {
+        "max_actions": 65536,
+        "max_capture_bytes": 67108864,
+        "max_retained_bytes": 536870912,
+        "max_events": 2048,
+        "retention_ms": 120000,
+        "max_read_bytes": 1048576,
+        "max_encoded_read_bytes": 2097152,
+        "max_page_bytes": 1048576,
+        "max_wait_ms": 30000,
+        "max_subscriptions": 64,
+        "max_client_subscriptions": 4,
+        "max_waiters": 128,
+        "max_client_waiters": 4,
+        "max_captures": 256,
+        "max_retention_handles": 1024,
+        "max_client_retention_handles": 64,
+        "encoding_deadline_ms": 2000,
+        "max_field_bytes": 65536,
+        "max_cursor_length": 1024,
+        "max_wait_ids_per_subscription": 65536,
+        "max_wait_id_metadata_bytes": 67108864,
+        "max_source_seams": 256,
+        "max_metadata_field_bytes": 128,
+        "max_in_flight_catalog_reads": 128
+      },
+      "control_policy": {
+        "recommended_renewal_ms": 1000
+      },
+      "non_claims": [
+        "synthetic_source_conformance_only",
+        "no_native_coverage_qualification"
+      ]
+    }
+  },
+  "wire_fixture_note": "Fixed opaque fixture tokens demonstrate shape only; HMAC cursor authorization is tested independently in C#."
+}
