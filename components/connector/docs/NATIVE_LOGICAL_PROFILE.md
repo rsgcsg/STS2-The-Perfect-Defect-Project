@@ -2,8 +2,8 @@
 
 Status: implementation contract candidate for E1.2/E2/E3, 2026-10-08.
 No complete native, capture or V1 qualification is claimed by this document.
-The root [specification](../../../docs/BASELINE_V1_SPEC.zh-CN.md) and
-[acceptance matrix](../../../docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)
+The root [specification](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/develop/docs/BASELINE_V1_SPEC.zh-CN.md) and
+[acceptance matrix](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/develop/docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)
 retain the required scope and user approval boundary.
 
 ## Ownership and compatibility
