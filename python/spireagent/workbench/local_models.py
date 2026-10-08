@@ -53,6 +53,7 @@ from spireagent.workbench.runtime_install import (
     v2_sdk_available,
     validate_runtime_install,
 )
+from stpd.structured_code_scope import is_structured_model_schema
 
 SCHEMA = "stpd/local-models-v1"
 RUNTIME_PACKAGE = "@rsgcsg/sts2-policy-runtime"
@@ -760,11 +761,12 @@ class LocalModelService:
                             "local_download": (directory / "download.json").is_file(),
                             "loaded": False,
                             "support_status": ("export_and_registration_required" if
-                                downloaded.parameters.value().get("schema") ==
-                                "stpd/structured-m2-model-v1" else "unsupported"),
+                                is_structured_model_schema(
+                                    downloaded.parameters.value().get("schema")) else
+                                "unsupported"),
                             "reason": ("s0_text_v2_only" if
-                                downloaded.parameters.value().get("schema") ==
-                                "stpd/structured-m2-model-v1" else
+                                is_structured_model_schema(
+                                    downloaded.parameters.value().get("schema")) else
                                 "no_compatible_live_adapter_and_input_parity"),
                         }
                     )
