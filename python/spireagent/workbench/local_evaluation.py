@@ -222,7 +222,14 @@ def _token_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str, Any
 
 
 def _structured_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str, Any]:
+    from stpd.ordered_source_spec import (
+        EVALUATION_INPUT_SCHEMA,
+        EVALUATION_REPORT_SCHEMA,
+        MODEL_SCHEMA,
+    )
+
     info = manifest.parameters.value()
+    ordered = info["schema"] == EVALUATION_REPORT_SCHEMA
     request = object_fields(info.get("request"),
         {"source_id", "model_id", "operation_id", "partition", "intent"},
         "local_evaluation.structured_request")
@@ -240,10 +247,12 @@ def _structured_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str
     model = store.get_manifest(manifest.parent("model"))
     prepared = store.get_manifest(manifest.parent("evaluation_input"))
     if (model.kind != "model"
-            or not is_structured_model_schema(model.parameters.value().get("schema"))
+            or (model.parameters.value().get("schema") != MODEL_SCHEMA if ordered else
+                not is_structured_model_schema(model.parameters.value().get("schema")))
             or prepared.kind != "analysis"
             or prepared.parameters.value().get("schema")
-            != "stpd/structured-fixed-model-evaluation-input-v1"
+            != (EVALUATION_INPUT_SCHEMA if ordered else
+                "stpd/structured-fixed-model-evaluation-input-v1")
             or prepared.parameters.value().get("request") != request
             or prepared.parent("source") != request["source_id"]
             or prepared.parent("model") != request["model_id"]
@@ -297,7 +306,8 @@ def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
     manifest = store.get_manifest(digest(evaluation_id, "local_evaluation.artifact_id"))
     schema = manifest.parameters.value().get("schema")
     if (manifest.kind == "offline_evaluation" and
-            schema == "stpd/structured-fixed-model-evaluation-report-v1"):
+            schema in {"stpd/structured-fixed-model-evaluation-report-v1",
+                       "stpd/source3-fixed-native-evaluation-report-v1"}):
         return _structured_summary(store, manifest)
     if manifest.kind != "offline_evaluation" or schema not in {
         FULLRUN_SCHEMA, TOKEN_SCHEMA, MEMORY_SCHEMA,

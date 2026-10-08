@@ -24,6 +24,18 @@ from spireagent.storage.store import ArtifactStore
 from ..fullrun.structured_sequences import StructuredDataset
 from ..models.structured_m2 import StructuredM2
 from ..models.structured_training import evaluate_runs
+from ..ordered_source_spec import (
+    EVALUATION_INPUT_SCHEMA as ORDERED_INPUT_SCHEMA,
+)
+from ..ordered_source_spec import (
+    EVALUATION_REPORT_SCHEMA as ORDERED_REPORT_SCHEMA,
+)
+from ..ordered_source_spec import (
+    MODEL_SCHEMA as ORDERED_MODEL_SCHEMA,
+)
+from ..ordered_source_spec import (
+    PARTITION_SCHEMA as ORDERED_PARTITION_SCHEMA,
+)
 from ..policy.structured_export import (
     MANIFEST_NAME,
     MAX_MANIFEST_BYTES,
@@ -39,6 +51,7 @@ REPORT_SCHEMA = "stpd/structured-fixed-model-evaluation-report-v1"
 MAX_REPORT_BYTES = 128 * 1024 * 1024
 
 if TYPE_CHECKING:
+    from ..fullrun.ordered_source import VerifiedOrderedSource
     from ..fullrun.protocol_source import VerifiedProtocolSource
 
 
@@ -82,8 +95,9 @@ def _bytes(store: ArtifactStore, payload: Payload, limit: int) -> bytes:
 def _model(store: ArtifactStore, model_id: str) -> tuple[Manifest, dict[str, Any], StructuredM2]:
     manifest = store.get_manifest(model_id)
     parameters = manifest.parameters.value()
+    ordered = parameters.get("schema") == ORDERED_MODEL_SCHEMA
     if (manifest.kind != "model"
-            or not is_structured_model_schema(parameters.get("schema"))
+            or not (is_structured_model_schema(parameters.get("schema")) or ordered)
             or {payload.role for payload in manifest.payloads} != {"package_manifest", "weights"}):
         raise BoundaryError("structured_evaluation", "structured_model_required")
     # Downloaded models need their own closed bytes, never private training payloads.
@@ -93,17 +107,36 @@ def _model(store: ArtifactStore, model_id: str) -> tuple[Manifest, dict[str, Any
         directory = Path(temporary)
         (directory / MANIFEST_NAME).write_bytes(metadata_bytes)
         (directory / WEIGHTS_NAME).write_bytes(weights_bytes)
-        metadata, model = load_structured_package(
+        if ordered:
+            from ..policy.native_structured_export import load_native_package
+
+            metadata, model = load_native_package(
+                directory, expected_manifest_sha256=hashlib.sha256(metadata_bytes).hexdigest())
+        else:
+            metadata, model = load_structured_package(
             directory, expected_manifest_sha256=hashlib.sha256(metadata_bytes).hexdigest())
-    require_structured_model_package(manifest, metadata)
+    if ordered:
+        from ..policy.native_structured_export import require_native_model_package
+
+        require_native_model_package(manifest, metadata)
+    else:
+        require_structured_model_package(manifest, metadata)
     return manifest, metadata, model
 
 
 def _source(store: ArtifactStore,
-            request: StructuredEvaluationRequest) -> VerifiedProtocolSource:
+            request: StructuredEvaluationRequest) -> VerifiedProtocolSource | VerifiedOrderedSource:
     from ..fullrun.protocol_source import verify_protocol_source_partition
 
-    verified = verify_protocol_source_partition(store, request.source_id)
+    verified: VerifiedProtocolSource | VerifiedOrderedSource
+    if store.get_manifest(request.source_id).parameters.value().get(
+        "partition_schema"
+    ) == ORDERED_PARTITION_SCHEMA:
+        from ..fullrun.ordered_source import verify_ordered_source_partition
+
+        verified = verify_ordered_source_partition(store, request.source_id)
+    else:
+        verified = verify_protocol_source_partition(store, request.source_id)
     if (verified.split != request.partition
             or any(run.split != request.partition for run in verified.dataset.runs)):
         raise BoundaryError("structured_evaluation", "single_partition_required")
@@ -114,8 +147,28 @@ def _source(store: ArtifactStore,
     return verified
 
 
-def _input_parameters(request: StructuredEvaluationRequest, source: VerifiedProtocolSource,
+def _input_parameters(request: StructuredEvaluationRequest,
+                      source: VerifiedProtocolSource | VerifiedOrderedSource,
                       metadata: dict[str, Any], model: Manifest) -> dict[str, Any]:
+    info = source.manifest.parameters.value()
+    ordered = info["partition_schema"] == ORDERED_PARTITION_SCHEMA
+    if ordered != (model.parameters.value()["schema"] == ORDERED_MODEL_SCHEMA):
+        raise BoundaryError("structured_evaluation", "model_source_family_mismatch")
+    if ordered:
+        identity = metadata["source"]["verification_identity"]
+        if any(identity[key] != info[key] for key in ("projection_spec", "target_spec")):
+            raise BoundaryError("structured_evaluation", "projection_target_view_mismatch")
+        return {"schema": ORDERED_INPUT_SCHEMA, "request": asdict(request),
+                "projection": metadata["projection"], "input_spec": info["input_spec"],
+                "projection_spec": info["projection_spec"], "target_spec": info["target_spec"],
+                "source_sha256": source.dataset.source_sha256,
+                "source_kind": source.dataset.source_kind, "source_parameters": info,
+                "package_model_id": metadata["model_id"],
+                "package_manifest_sha256": model.payload("package_manifest").sha256,
+                "weights_sha256": metadata["weights"]["sha256"],
+                "replay": "partition_start_fixed_weights_zero_memory_per_original_epoch",
+                "optimizer_updates": 0, "qualification": "engineering_descriptive",
+                "scientific_verdict": "not_claimed"}
     return {"schema": INPUT_SCHEMA, "request": asdict(request), "projection": PROJECTION,
             "source_sha256": source.dataset.source_sha256,
             "source_kind": source.dataset.source_kind,
@@ -203,7 +256,9 @@ def run_structured_evaluation(
     _current(authority)
     evaluation_input = store.get_manifest(evaluation_input_id)
     parameters = evaluation_input.parameters.value()
-    if evaluation_input.kind != "analysis" or parameters.get("schema") != INPUT_SCHEMA:
+    if evaluation_input.kind != "analysis" or parameters.get("schema") not in {
+        INPUT_SCHEMA, ORDERED_INPUT_SCHEMA
+    }:
         raise BoundaryError("structured_evaluation", "evaluation_input_required")
     request_fields = object_fields(parameters.get("request"), {
         "source_id", "model_id", "operation_id", "partition", "intent",
@@ -225,7 +280,9 @@ def run_structured_evaluation(
     summary = evaluate_runs(model, source.dataset.runs)
     if any(not torch.equal(value, model.state_dict()[key]) for key, value in frozen.items()):
         raise BoundaryError("structured_evaluation", "fixed_weights_changed")
-    report = {**parameters, "schema": REPORT_SCHEMA,
+    report_schema = (ORDERED_REPORT_SCHEMA if parameters["schema"] == ORDERED_INPUT_SCHEMA
+                     else REPORT_SCHEMA)
+    report = {**parameters, "schema": report_schema,
               "evaluation_input_id": evaluation_input_id,
               "model_artifact_id": request.model_id, "source_id": request.source_id,
               "producer": producer.to_dict(), "model_producer": model_manifest.producer.to_dict(),
@@ -266,7 +323,7 @@ def run_structured_evaluation(
         "offline_evaluation", producer,
         (Parent("evaluation_input", evaluation_input_id), Parent("source", request.source_id),
          Parent("model", request.model_id)), (payload,), FrozenObject.of({
-             "schema": REPORT_SCHEMA, "request": asdict(request),
+             "schema": report_schema, "request": asdict(request),
              "package_model_id": metadata["model_id"],
              "weights_sha256": metadata["weights"]["sha256"],
              "source_sha256": source.dataset.source_sha256, "rows": len(rows),

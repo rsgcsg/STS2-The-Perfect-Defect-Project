@@ -12,9 +12,10 @@ import io
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
-from importlib import import_module
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
+
+import sts2_platform_evidence as evidence_owner
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import (
@@ -25,23 +26,26 @@ from spireagent.json_boundary import (
     json_bytes,
     object_fields,
 )
+from spireagent.storage.archives import MAX_BYTES, _extract, archive_bundle
 from spireagent.storage.store import ArtifactStore
 
 from ..canonical import semantic_hash
 from ..ordered_source_spec import (
     ADMISSION_SCHEMA,
     COHORTS,
+    DEFAULT_VIEW,
     MAX_STEPS_PER_RUN,
     PARTITION_SCHEMA,
-    PROJECTION_SPEC,
-    QUALIFICATION,
+    PRETRAIN_VIEW,
     RAW_SCHEMA,
     SOURCE_SCHEMA,
-    TARGET_SPEC,
+    checked_view,
+    view_qualification,
+    view_specs,
 )
+from ..policy.native_task import observe_ready_summary
 from .native_structured_inputs import INPUT_SPEC
 from .native_structured_sequences import NativeUnit, native_advance, qualify_native
-from .platform_bundle3 import MAX_BYTES, _extract, archive_bundle
 from .structured_sequences import (
     MAX_RUNS,
     MAX_SOURCE_BYTES,
@@ -54,6 +58,7 @@ from .structured_sequences import (
 MAX_REPORT_BYTES = 64 * 1024 * 1024
 SOURCE_PROFILE = "native-logical-source-v3"
 EVIDENCE_FILES = (
+    "__init__.py",
     "core.py",
     "source_session_bundle.py",
     "source_session_bundle_v2.py",
@@ -81,10 +86,16 @@ def _sha(raw: bytes) -> str:
 def _api() -> Any:
     # Fixed owner API only. An installed Source2 reader cannot silently validate
     # Source3, and a fixture dictionary cannot act as a verification receipt.
-    try:
-        return import_module("sts2_platform_evidence.source_session_bundle_v3")
-    except ImportError as error:
-        raise BoundaryError("source3_ordered", "source3_evidence_api_required") from error
+    if any(
+        getattr(evidence_owner, name, None) is None
+        for name in (
+            "SourceSessionBundleV3",
+            "SourceSessionBundleV3Verifier",
+            "verify_source_session_bundle_v3",
+        )
+    ):
+        _fail("source3_evidence_api_required")
+    return evidence_owner
 
 
 def verifier_identity() -> dict[str, Any]:
@@ -100,8 +111,9 @@ def verifier_identity() -> dict[str, Any]:
         "type_id": "source-session-bundle-v3",
         "source_sha256": semantic_hash(rows),
         "projection_code_sha256": _sha(Path(__file__).read_bytes()),
-        "projection_spec": PROJECTION_SPEC,
-        "target_spec": TARGET_SPEC,
+        "supported_view_specs": [{"projection_spec": view_specs(view)[0],
+                                  "target_spec": view_specs(view)[1]}
+                                 for view in (DEFAULT_VIEW, PRETRAIN_VIEW)],
     }
 
 
@@ -141,7 +153,7 @@ def _blob(bundle: Any, reference: Mapping[str, Any], hash_key: str) -> bytes:
         or any(part in {"", ".", ".."} for part in name.split("/"))
     ):
         _fail("original_blob_reference_invalid")
-    target = Path(bundle.directory) / "raw" / name
+    target = Path(bundle.directory).resolve() / "raw" / name
     if target.is_symlink() or any(part.is_symlink() for part in target.parents):
         _fail("original_blob_reference_invalid")
     raw = target.read_bytes()
@@ -158,7 +170,8 @@ def _run_identity(bundle: Any, epoch: Mapping[str, Any]) -> tuple[str, str, list
     original = "game:" + continuity if continuity is not None else "epoch:" + epoch["epoch_id"]
     group = "source3:" + runtime + ":" + original
     name = "source3:" + bundle.manifest["timeline_id"] + ":" + original
-    return name, group, [group, "source3-timeline:" + bundle.manifest["timeline_id"]]
+    return name, group, [group, "source3-timeline:" + bundle.manifest["timeline_id"],
+                         "protocol-runtime:" + runtime]
 
 
 def _project_epoch(
@@ -168,6 +181,8 @@ def _project_epoch(
     original_publications: list[Mapping[str, Any]],
     original_inputs: list[Mapping[str, Any]],
     original_boundaries: list[Mapping[str, Any]],
+    cohort: str,
+    view: str,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]], int]:
     index: list[dict[str, Any]] = []
     exclusions: list[dict[str, Any]] = []
@@ -175,6 +190,7 @@ def _project_epoch(
     result = None
     epoch_id = epoch["epoch_id"]
     run_id, group, related = _run_identity(bundle, epoch)
+    declarations = {row["segment_id"]: row["declaration"] for row in bundle.segments}
     publications = {int(row["position"]["publication_index"]): row for row in original_publications}
     inputs: dict[int, list[Mapping[str, Any]]] = {}
     for row in original_inputs:
@@ -184,7 +200,9 @@ def _project_epoch(
     boundaries: dict[int, list[Mapping[str, Any]]] = {}
     for row in original_boundaries:
         boundaries.setdefault(int(row["position"]["publication_index"]), []).append(row)
-    previous: NativeUnit | None = None
+    source_previous: NativeUnit | None = None
+    publication_previous: NativeUnit | None = None
+    publication_actions: list[dict[str, Any]] | None = None
     steps: list[dict[str, Any]] = []
     prefix_failure: str | None = None
 
@@ -206,7 +224,12 @@ def _project_epoch(
             )
 
     def exposure(row: Mapping[str, Any], is_input: bool) -> None:
-        nonlocal previous, prefix_failure, eligible
+        nonlocal \
+            source_previous, \
+            publication_previous, \
+            publication_actions, \
+            prefix_failure, \
+            eligible
         stream = "native-input-witnesses.jsonl" if is_input else "public-observations.jsonl"
         capture = row["pre_capture"] if is_input else row["capture"]
         catalog = row["catalog"]
@@ -217,6 +240,7 @@ def _project_epoch(
             "original_run_id": run_id,
             "epoch_id": epoch_id,
             "segment_id": row["segment_id"],
+            "source_declaration": _plain(declarations[row["segment_id"]]),
             "publication_index": point["publication_index"],
             "input_prefix_ordinal": row["input_prefix_ordinal"] if is_input else None,
             "stream": stream,
@@ -227,6 +251,8 @@ def _project_epoch(
         }
         label = None
         reason = prefix_failure
+        model_exposed = False
+        target_eligibility = "publication_has_no_N_target"
         if (
             reason is None
             and is_input
@@ -242,10 +268,38 @@ def _project_epoch(
             catalog_raw = _blob(bundle, catalog, "payload_sha256")
             observation, actions = decode_json(observation_raw), decode_json(catalog_raw)
             frame, unit = qualify_native(observation, actions)
-            advance = native_advance(previous, unit)
+            source_advance = native_advance(source_previous, unit)
+            source_previous = unit
+            model_exposed = (
+                not is_input
+                or view != DEFAULT_VIEW
+                or unit == publication_previous
+                and actions == publication_actions
+            )
+            advance = (
+                native_advance(publication_previous, unit)
+                if view == DEFAULT_VIEW
+                else source_advance
+            )
             if is_input:
                 outcome = row["outcome"]
-                if outcome["mapping_status"] == "exact" and outcome["delivery"] == "delivered":
+                task_complete = observe_ready_summary(observation).agent_task_complete
+                target_eligibility = (
+                    "deployment_publication_basis_mismatch"
+                    if not model_exposed
+                    else "ready_summary_task_complete_no_N"
+                    if task_complete
+                    else "other_original_declared_cohort"
+                    if declarations[row["segment_id"]]["source_kind"] != cohort
+                    else "mapping_or_delivery_not_exact_delivered"
+                )
+                if (
+                    outcome["mapping_status"] == "exact"
+                    and outcome["delivery"] == "delivered"
+                    and declarations[row["segment_id"]]["source_kind"] == cohort
+                    and model_exposed
+                    and not task_complete
+                ):
                     selected = _plain(outcome["selected_action"])
                     # Equality of the entire original action is essential; ID-only
                     # matches cannot supply a target or an abbreviated catalog.
@@ -253,22 +307,26 @@ def _project_epoch(
                         _fail("N_full_original_action_binding")
                     label = selected["action_id"]
                     eligible += 1
-            steps.append(
-                {
-                    "observation": observation,
-                    "catalog": actions,
-                    "chosen_action_id": label,
-                    "reset_before": not steps,
-                    "reset_reason": "original_attachment_epoch_start" if not steps else None,
-                    "evidence": evidence,
-                }
-            )
-            previous = unit
+                    target_eligibility = "eligible_exact_delivered_N"
+            if not is_input:
+                publication_previous, publication_actions = unit, actions
+            if model_exposed:
+                steps.append(
+                    {
+                        "observation": observation,
+                        "catalog": actions,
+                        "chosen_action_id": label,
+                        "reset_before": not steps,
+                        "reset_reason": "original_attachment_epoch_start" if not steps else None,
+                        "evidence": evidence,
+                    }
+                )
             # Validation is performed now and again when serialized inputs load.
             assert type(advance) is bool and frame.action_ids == tuple(
                 a["action_id"] for a in actions
             )
         else:
+            target_eligibility = reason if is_input else "publication_has_no_N_target"
             if prefix_failure is None:
                 prefix_failure = reason
             exclusions.append(
@@ -292,7 +350,13 @@ def _project_epoch(
                 "record_ref": stream + ":" + str(row["sequence"]),
                 "occurrence_id": semantic_hash([bundle.content_id, stream, row["sequence"]]),
                 "admitted": reason is None,
+                "model_exposed": model_exposed,
                 "N_eligible": label is not None,
+                "target_eligibility": target_eligibility,
+                "original_N_candidate": is_input
+                and declarations[row["segment_id"]]["source_kind"] == cohort
+                and row["outcome"]["mapping_status"] == "exact"
+                and row["outcome"]["delivery"] == "delivered",
                 "evidence": evidence,
             }
         )
@@ -345,7 +409,7 @@ def _project_epoch(
 
 
 def _projection(
-    bundle: Any, raw_id: str, cohort: str
+    bundle: Any, raw_id: str, cohort: str, view: str = DEFAULT_VIEW
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """One recorded exposure per P+I; persistence sequence never orders inputs.
 
@@ -354,8 +418,7 @@ def _projection(
     """
     if cohort not in COHORTS:
         _fail("unsupported_declared_cohort")
-    if any(row["declaration"]["source_kind"] != cohort for row in bundle.segments):
-        _fail("separate_declared_source_cohorts_required")
+    projection_spec, target_spec = view_specs(view)
     if bundle.human_origin_verified:
         _fail("source_declaration_is_not_human_proof")
     publications: dict[str, list[Mapping[str, Any]]] = {}
@@ -377,6 +440,8 @@ def _projection(
             publications.get(epoch_id, []),
             inputs.get(epoch_id, []),
             boundaries.get(epoch_id, []),
+            cohort,
+            view,
         )
         if run is not None:
             all_runs.append(run)
@@ -389,9 +454,9 @@ def _projection(
         "bundle_content_id": bundle.content_id,
         "cohort": cohort,
         "input_spec": INPUT_SPEC,
-        "projection_spec": PROJECTION_SPEC,
-        "target_spec": TARGET_SPEC,
-        "qualification": QUALIFICATION,
+        "projection_spec": projection_spec,
+        "target_spec": target_spec,
+        "qualification": view_qualification(view),
         "human_origin_verified": False,
         "final_input_prefix_ordinal": bundle.final_input_prefix_ordinal,
         "original_recording": _plain(bundle.recording),
@@ -402,6 +467,20 @@ def _projection(
             "original_inputs": len(bundle.inputs),
             "admitted_frames": sum(len(r["steps"]) for r in all_runs),
             "eligible_unique_N": eligible,
+            "original_exact_delivered_cohort_choices": sum(
+                row["original_N_candidate"] for row in index
+            ),
+            "publication_basis_mismatched_N": sum(
+                row["original_N_candidate"]
+                and row["target_eligibility"] == "deployment_publication_basis_mismatch"
+                for row in index
+            ),
+            "ready_summary_task_masked_N": sum(
+                row["original_N_candidate"]
+                and row["target_eligibility"] == "ready_summary_task_complete_no_N"
+                for row in index
+            ),
+            "model_unexposed_frames": sum(not row["model_exposed"] for row in index),
             "excluded_frames": sum(not r["admitted"] for r in index),
             "original_game_runs": sum(
                 e["context"]["game_continuity_id"] is not None for e in bundle.epochs
@@ -410,6 +489,13 @@ def _projection(
                 r["identity"]["whole_game_recorded_capture_eligible"] for r in all_runs
             ),
         },
+    }
+    denominator = report["counts"]["original_exact_delivered_cohort_choices"]
+    report["N_coverage"] = {
+        "cohort": cohort,
+        "eligible": eligible,
+        "denominator": denominator,
+        "fraction": eligible / denominator if denominator else None,
     }
     return all_runs, report
 
@@ -435,12 +521,11 @@ def parse_ordered_training_dataset(raw: bytes) -> StructuredDataset:
         source["schema"] != SOURCE_SCHEMA
         or source["source_kind"] not in COHORTS
         or source["input_spec"] != INPUT_SPEC
-        or source["projection_spec"] != PROJECTION_SPEC
-        or source["target_spec"] != TARGET_SPEC
         or not isinstance(source["runs"], list)
         or not 0 < len(source["runs"]) <= MAX_RUNS
     ):
         _fail("projected_source_contract")
+    view = checked_view(source["projection_spec"], source["target_spec"])
     refs = source["raw_refs"]
     if (
         not isinstance(refs, list)
@@ -497,6 +582,7 @@ def parse_ordered_training_dataset(raw: bytes) -> StructuredDataset:
                     "original_run_id",
                     "epoch_id",
                     "segment_id",
+                    "source_declaration",
                     "publication_index",
                     "input_prefix_ordinal",
                     "stream",
@@ -518,9 +604,18 @@ def parse_ordered_training_dataset(raw: bytes) -> StructuredDataset:
                 _fail("projected_reset_or_original_run_binding")
             frame, unit = qualify_native(step["observation"], step["catalog"])
             advance = native_advance(previous, unit)
+            if (
+                view == DEFAULT_VIEW
+                and evidence["stream"] == "native-input-witnesses.jsonl"
+                and advance
+            ):
+                _fail("publication_memory_input_basis_must_not_advance")
             label = step["chosen_action_id"]
+            if label is not None and observe_ready_summary(step["observation"]).agent_task_complete:
+                _fail("N_ready_summary_task_complete_must_be_unlabelled")
             if label is not None and (
                 evidence["stream"] != "native-input-witnesses.jsonl"
+                or evidence["source_declaration"]["source_kind"] != source["source_kind"]
                 or not isinstance(label, str)
                 or label not in frame.action_ids
             ):
@@ -590,11 +685,11 @@ class VerifiedOrderedSource:
     index: tuple[dict[str, Any], ...]
 
 
-def _raw_info(bundle: Any, archive: bytes, cohort: str) -> dict[str, Any]:
+def _raw_info(bundle: Any, archive: bytes) -> dict[str, Any]:
     return {
         "schema": RAW_SCHEMA,
         "source_profile": SOURCE_PROFILE,
-        "cohort": cohort,
+        "source_kinds": sorted({row["declaration"]["source_kind"] for row in bundle.segments}),
         "bundle_content_id": bundle.content_id,
         "archive_sha256": _sha(archive),
         "original_recording": _plain(bundle.recording),
@@ -606,15 +701,9 @@ def publish_ordered_source_raw(
     store: ArtifactStore,
     directory: Path,
     original_producer: Producer,
-    *,
-    cohort: str = "declared_human",
 ) -> Manifest:
     """Import unchanged originals. Caller owns consent/access; no use reservation is made."""
-    if cohort not in COHORTS:
-        _fail("unsupported_declared_cohort")
     bundle = _verified(directory)
-    if any(row["declaration"]["source_kind"] != cohort for row in bundle.segments):
-        _fail("separate_declared_source_cohorts_required")
     if bundle.recording["recorder_source_revision"] != original_producer.source_revision:
         _fail("original_recorder_producer_mismatch")
     archive = archive_bundle(directory)
@@ -622,21 +711,21 @@ def publish_ordered_source_raw(
         root = Path(name)
         _extract(archive, root)
         replay = _verified(root)
-        if _raw_info(replay, archive, cohort) != _raw_info(bundle, archive, cohort):
+        if _raw_info(replay, archive) != _raw_info(bundle, archive):
             _fail("raw_changed_during_archive")
     payload = store.put_payload("archive", io.BytesIO(archive), "application/gzip")
     raw = Manifest(
         "evidence",
         original_producer,
         payloads=(payload,),
-        parameters=FrozenObject.of(_raw_info(bundle, archive, cohort)),
+        parameters=FrozenObject.of(_raw_info(bundle, archive)),
     )
     store.publish(raw)
     return raw
 
 
 def _replay_raw(
-    store: ArtifactStore, raw_id: str
+    store: ArtifactStore, raw_id: str, cohort: str, view: str
 ) -> tuple[Manifest, list[dict[str, Any]], dict[str, Any]]:
     raw = store.get_manifest(digest(raw_id, "source3.raw_id"))
     info = raw.parameters.value()
@@ -648,7 +737,7 @@ def _replay_raw(
         != {
             "schema",
             "source_profile",
-            "cohort",
+            "source_kinds",
             "bundle_content_id",
             "archive_sha256",
             "original_recording",
@@ -656,7 +745,6 @@ def _replay_raw(
         }
         or info["schema"] != RAW_SCHEMA
         or info["source_profile"] != SOURCE_PROFILE
-        or info["cohort"] not in COHORTS
         or raw.payload("archive").media_type != "application/gzip"
     ):
         _fail("typed_original_source3_required")
@@ -666,11 +754,11 @@ def _replay_raw(
         _extract(archive, root)
         bundle = _verified(root)
         if (
-            info != _raw_info(bundle, archive, info["cohort"])
+            info != _raw_info(bundle, archive)
             or bundle.recording["recorder_source_revision"] != raw.producer.source_revision
         ):
             _fail("original_raw_identity_changed")
-        runs, report = _projection(bundle, raw_id, info["cohort"])
+        runs, report = _projection(bundle, raw_id, cohort, view)
     report.update(
         original_producer=raw.producer.to_dict(),
         archive_sha256=_sha(archive),
@@ -680,17 +768,29 @@ def _replay_raw(
 
 
 def publish_ordered_source_admission(
-    store: ArtifactStore, raw_id: str, producer: Producer
+    store: ArtifactStore,
+    raw_id: str,
+    producer: Producer,
+    *,
+    cohort: str = "declared_human",
+    view: str = DEFAULT_VIEW,
 ) -> OrderedSourceRef:
     """Produce a new immutable report under this exact verifier and ProjectionSpec."""
-    raw, _, report = _replay_raw(store, raw_id)
+    raw, _, report = _replay_raw(store, raw_id, cohort, view)
     payload = store.put_payload("report", io.BytesIO(json_bytes(report)), "application/json")
     admission = Manifest(
         "analysis",
         producer,
         (Parent("raw", raw.artifact_id),),
         (payload,),
-        FrozenObject.of({"schema": ADMISSION_SCHEMA, "verifier": verifier_identity()}),
+        FrozenObject.of(
+            {
+                "schema": ADMISSION_SCHEMA,
+                "cohort": cohort,
+                "view": view,
+                "verifier": verifier_identity(),
+            }
+        ),
     )
     store.publish(admission)
     return OrderedSourceRef(raw.artifact_id, admission.artifact_id)
@@ -701,15 +801,23 @@ def _verify_ref(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if type(ref) is not OrderedSourceRef:
         _fail("typed_source3_reference_required")
-    _, runs, report = _replay_raw(store, ref.raw_id)
     admission = store.get_manifest(ref.admission_id)
+    info = object_fields(
+        admission.parameters.value(), {"schema", "cohort", "view", "verifier"}, "source3.admission"
+    )
+    _, runs, report = _replay_raw(store, ref.raw_id, info["cohort"], info["view"])
     if (
         admission.kind != "analysis"
         or admission.parents != (Parent("raw", ref.raw_id),)
         or len(admission.payloads) != 1
         or admission.payload("report").media_type != "application/json"
         or admission.parameters.value()
-        != {"schema": ADMISSION_SCHEMA, "verifier": verifier_identity()}
+        != {
+            "schema": ADMISSION_SCHEMA,
+            "cohort": report["cohort"],
+            "view": info["view"],
+            "verifier": verifier_identity(),
+        }
         or _bytes(store, admission, "report", MAX_REPORT_BYTES) != json_bytes(report)
     ):
         _fail("source3_admission_report_binding")
@@ -726,6 +834,7 @@ def _partition(
     runs: list[dict[str, Any]] = []
     index: list[dict[str, Any]] = []
     cohort: str | None = None
+    selected_view: str | None = None
     contents: set[str] = set()
     for ref in refs:
         original_runs, report = _verify_ref(store, ref)
@@ -735,16 +844,21 @@ def _partition(
         if cohort is not None and cohort != report["cohort"]:
             _fail("separate_declared_source_cohorts_required")
         cohort = report["cohort"]
+        view = checked_view(report["projection_spec"], report["target_spec"])
+        if selected_view is not None and selected_view != view:
+            _fail("same_projection_target_view_required")
+        selected_view = view
         runs.extend({**run, "split": split} for run in original_runs)
         index.extend(report["index"])
-    if cohort is None:
+    if cohort is None or selected_view is None:
         _fail("partition_selection")
+    projection_spec, target_spec = view_specs(selected_view)
     source = {
         "schema": SOURCE_SCHEMA,
         "source_kind": cohort,
         "input_spec": INPUT_SPEC,
-        "projection_spec": PROJECTION_SPEC,
-        "target_spec": TARGET_SPEC,
+        "projection_spec": projection_spec,
+        "target_spec": target_spec,
         "teacher": _teacher(cohort),
         "raw_refs": [ref.__dict__ for ref in refs],
         "runs": runs,
@@ -766,6 +880,8 @@ def publish_ordered_source_partition(
     refs = tuple(sorted(raw_refs, key=lambda ref: ref.raw_id))
     raw, _ = _partition(store, refs, split)
     dataset = parse_ordered_training_dataset(raw)
+    projected = decode_json(raw)
+    view = checked_view(projected["projection_spec"], projected["target_spec"])
     payload = store.put_payload("source", io.BytesIO(raw), "application/json")
     manifest = Manifest(
         "dataset",
@@ -780,9 +896,9 @@ def publish_ordered_source_partition(
                 "source_kind": dataset.source_kind,
                 "source_sha256": dataset.source_sha256,
                 "input_spec": INPUT_SPEC,
-                "projection_spec": PROJECTION_SPEC,
-                "target_spec": TARGET_SPEC,
-                "qualification": QUALIFICATION,
+                "projection_spec": projected["projection_spec"],
+                "target_spec": projected["target_spec"],
+                "qualification": view_qualification(view),
                 "raw_refs": [ref.__dict__ for ref in refs],
             }
         ),
@@ -814,13 +930,13 @@ def verify_ordered_source_partition(store: ArtifactStore, source_id: str) -> Ver
         or info["schema"] != SOURCE_SCHEMA
         or info["partition_schema"] != PARTITION_SCHEMA
         or info["input_spec"] != INPUT_SPEC
-        or info["projection_spec"] != PROJECTION_SPEC
-        or info["target_spec"] != TARGET_SPEC
-        or info["qualification"] != QUALIFICATION
         or not isinstance(info["raw_refs"], list)
         or not info["raw_refs"]
     ):
         _fail("typed_source3_partition_required")
+    view = checked_view(info["projection_spec"], info["target_spec"])
+    if info["qualification"] != view_qualification(view):
+        _fail("partition_qualification_identity")
     refs = tuple(
         OrderedSourceRef(**object_fields(value, {"raw_id", "admission_id"}, "source3.reference"))
         for value in info["raw_refs"]
@@ -834,6 +950,9 @@ def verify_ordered_source_partition(store: ArtifactStore, source_id: str) -> Ver
     if raw != expected:
         _fail("projected_original_join_mismatch")
     dataset = parse_ordered_training_dataset(raw)
+    source = decode_json(raw)
+    if checked_view(source["projection_spec"], source["target_spec"]) != view:
+        _fail("partition_view_binding")
     if dataset.source_sha256 != info["source_sha256"] or dataset.source_kind != info["source_kind"]:
         _fail("partition_identity")
     return VerifiedOrderedSource(

@@ -20,7 +20,8 @@ from spireagent.workbench.developer import ROOT
 from spireagent.workbench.research_process import private_child
 from spireagent.workbench.training_scratch import retained_scratch_bytes
 from spireagent.workbench.trusted_recipes import (
-    STRUCTURED_SCOPED_RECIPE,
+    ORDERED_RECIPES,
+    structured_recipe_is_scoped,
     structured_recipe_run_schema,
     structured_recipe_scope,
 )
@@ -31,25 +32,29 @@ _private_child = private_child
 def verify_resume_checkpoint(store: Any, operation: dict[str, Any], checkpoint_id: Any) -> None:
     checkpoint = store.get_manifest(checkpoint_id)
     run = store.get_manifest(operation["run_id"])
-    from stpd.structured_code_scope import TRAINING_SCOPE, checkpoint_schema, run_code_scope
+    from stpd.structured_code_scope import checkpoint_schema, run_code_scope
 
     info = checkpoint.parameters.value()
     scope = structured_recipe_scope(operation["recipe"])
-    scoped = scope == TRAINING_SCOPE
-    if (run.parameters.value().get("schema") != structured_recipe_run_schema(operation["recipe"])
-            or run_code_scope(run.parameters.value().get("schema")) != scope
-            or checkpoint.kind != "checkpoint"
-            or not scoped and checkpoint.producer != run.producer
-            or checkpoint.parent("run") != run.artifact_id
-            or checkpoint.parent("training_input") != operation["input_id"]
-            or info.get("schema") != checkpoint_schema(scope)):
+    scoped = structured_recipe_is_scoped(operation["recipe"])
+    if (
+        run.parameters.value().get("schema") != structured_recipe_run_schema(operation["recipe"])
+        or run_code_scope(run.parameters.value().get("schema")) != scope
+        or checkpoint.kind != "checkpoint"
+        or not scoped
+        and checkpoint.producer != run.producer
+        or checkpoint.parent("run") != run.artifact_id
+        or checkpoint.parent("training_input") != operation["input_id"]
+        or info.get("schema") != checkpoint_schema(scope)
+    ):
         raise BoundaryError("local_training", "checkpoint_run_identity_mismatch")
-    if scoped and (info.get("attempt_producer") != checkpoint.producer.to_dict()
-            or checkpoint.producer.uv_lock_sha256 != run.parameters.value()[
-                "execution_identity"]["code_identity"]["dependency_lock_sha256"]):
+    if scoped and (
+        info.get("attempt_producer") != checkpoint.producer.to_dict()
+        or checkpoint.producer.uv_lock_sha256
+        != run.parameters.value()["execution_identity"]["code_identity"]["dependency_lock_sha256"]
+    ):
         raise BoundaryError("local_training", "checkpoint_attempt_producer_mismatch")
-    prior = {item["attempt_id"]: item for item in operation["attempts"]
-             if item["writer_terminal"]}
+    prior = {item["attempt_id"]: item for item in operation["attempts"] if item["writer_terminal"]}
     if operation["writer_terminal"]:
         prior[operation["attempt_id"]] = operation
     creator = prior.get(info.get("attempt"))
@@ -60,19 +65,28 @@ def verify_resume_checkpoint(store: Any, operation: dict[str, Any], checkpoint_i
     # A copied or partially published checkpoint needs its exact historical event,
     # never a relabelled current writer or the run's original producer.
     events = ObjectStoreRunReporter(store, store.blobs).events(run.artifact_id)
-    if not any(event.kind == "run_event" and event.parent("run") == run.artifact_id
-               and event.producer == checkpoint.producer
-               and event.parameters.value().get("schema") == "stpd/run-event-v1"
-               and event.parameters.value().get("kind") == "checkpoint"
-               and event.parameters.value().get("attempt") == info["attempt"]
-               and event.parameters.value().get("details", {}).get("checkpoint_id") == checkpoint_id
-               and (not scoped or
-                    event.parameters.value().get("details", {}).get("attempt_producer")
-                    == checkpoint.producer.to_dict()) for event in events):
+    if not any(
+        event.kind == "run_event"
+        and event.parent("run") == run.artifact_id
+        and event.producer == checkpoint.producer
+        and event.parameters.value().get("schema") == "stpd/run-event-v1"
+        and event.parameters.value().get("kind") == "checkpoint"
+        and event.parameters.value().get("attempt") == info["attempt"]
+        and event.parameters.value().get("details", {}).get("checkpoint_id") == checkpoint_id
+        and (
+            not scoped
+            or event.parameters.value().get("details", {}).get("attempt_producer")
+            == checkpoint.producer.to_dict()
+        )
+        for event in events
+    ):
         raise BoundaryError("local_training", "checkpoint_event_required")
 
 
 class StructuredRecipeAdapter:
+    def __init__(self, recipe_id: str | None = None) -> None:
+        self.recipe_id = recipe_id
+
     def preflight(self, store: Any, owner: Any, source_id: str) -> Any:
         from stpd.fullrun.structured_sequences import (
             MAX_SOURCE_BYTES,
@@ -82,24 +96,56 @@ class StructuredRecipeAdapter:
 
         source = store.get_manifest(source_id)
         info = source.parameters.value()
+        if info.get("partition_schema") == "stpd/source3-ordered-partition-v1":
+            from stpd.fullrun.ordered_source import verify_ordered_source_partition
+            from stpd.ordered_source_spec import checked_view, recipe_view
+
+            if self.recipe_id not in ORDERED_RECIPES:
+                raise BoundaryError("local_training", "source3_recipe_required")
+            verified_ordered = verify_ordered_source_partition(store, source_id)
+            if verified_ordered.split != "train" or any(
+                run.split != "train" for run in verified_ordered.dataset.runs
+            ):
+                raise BoundaryError("local_training", "train_only_source_required")
+            if checked_view(info["projection_spec"], info["target_spec"]) != recipe_view(
+                self.recipe_id
+            ):
+                raise BoundaryError("local_training", "source3_recipe_projection_target_mismatch")
+            if owner.ledger.dataset(source_id) != ("training", set(verified_ordered.runs)):
+                raise BoundaryError("local_training", "training_claim_mismatch")
+            if not any(
+                step.chosen_action_id is not None
+                for run in verified_ordered.dataset.runs
+                for step in run.steps
+            ):
+                raise BoundaryError("local_training", "source3_no_eligible_N_for_training")
+            return verified_ordered.dataset
+        if self.recipe_id in ORDERED_RECIPES:
+            raise BoundaryError("local_training", "typed_source3_partition_required")
         if "partition_schema" in info:
             from stpd.fullrun.protocol_source import verify_protocol_source_partition
 
             verified = verify_protocol_source_partition(store, source_id)
-            if (verified.split != "train" or
-                    any(run.split != "train" for run in verified.dataset.runs)):
+            if verified.split != "train" or any(
+                run.split != "train" for run in verified.dataset.runs
+            ):
                 raise BoundaryError("local_training", "train_only_source_required")
             if owner.ledger.dataset(source_id) != ("training", set(verified.runs)):
                 raise BoundaryError("local_training", "training_claim_mismatch")
             return verified.dataset
         payload = source.payload("source")
-        if (source.kind != "dataset" or info.get("schema") != SOURCE_SCHEMA
-                or payload.size > MAX_SOURCE_BYTES):
+        if (
+            source.kind != "dataset"
+            or info.get("schema") != SOURCE_SCHEMA
+            or payload.size > MAX_SOURCE_BYTES
+        ):
             raise BoundaryError("local_training", "structured_source_manifest_required")
         dataset = parse_structured_dataset(b"".join(store.read_payload(payload)))
-        if (dataset.source_sha256 != payload.sha256
-                or info.get("source_sha256") != dataset.source_sha256
-                or info.get("source_kind") != dataset.source_kind):
+        if (
+            dataset.source_sha256 != payload.sha256
+            or info.get("source_sha256") != dataset.source_sha256
+            or info.get("source_kind") != dataset.source_kind
+        ):
             raise BoundaryError("local_training", "structured_source_identity_mismatch")
         # Synthetic fixtures exercise this actual application path without
         # granting Agent/Human provenance or runtime qualification. A production
@@ -111,8 +157,10 @@ class StructuredRecipeAdapter:
         runs = {run.run_id for run in dataset.runs}
         if owner.ledger.dataset(source_id) != ("training", runs):
             raise BoundaryError("local_training", "training_claim_mismatch")
-        if (not owner.ledger.exact_source_ready(source_id)
-                or owner.ledger.source_runs(source_id) != runs):
+        if (
+            not owner.ledger.exact_source_ready(source_id)
+            or owner.ledger.source_runs(source_id) != runs
+        ):
             raise BoundaryError("local_training", "source_index_incomplete")
         return dataset
 
@@ -122,12 +170,18 @@ class StructuredRecipeAdapter:
         dataset = self.preflight(store, owner, operation["dataset_id"])
         runs = {run.run_id for run in dataset.runs}
         source_id, attempt_id = operation["dataset_id"], operation["attempt_id"]
-        scoped = operation["recipe"] == STRUCTURED_SCOPED_RECIPE
+        scoped = structured_recipe_is_scoped(operation["recipe"])
         attempt_producer = (Producer.decode(operation["attempt_producer"]) if scoped else
                             source_identity(ROOT))
         expected_run_schema = structured_recipe_run_schema(operation["recipe"])
         protocol_source = "partition_schema" in store.get_manifest(source_id).parameters.value()
-        if protocol_source:
+        ordered_source = store.get_manifest(source_id).parameters.value().get(
+            "partition_schema") == "stpd/source3-ordered-partition-v1"
+        if ordered_source:
+            if operation["mode"] == "start":
+                owner.record_verified_ordered_training_use(store, source_id, identity)
+            owner.require_verified_ordered_training_use(store, source_id, identity)
+        elif protocol_source:
             if operation["mode"] == "start":
                 owner.record_verified_protocol_training_use(store, source_id, identity)
             owner.require_verified_protocol_training_use(store, source_id, identity)

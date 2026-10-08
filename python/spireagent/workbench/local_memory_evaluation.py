@@ -26,6 +26,7 @@ from spireagent.workbench.local_dataset import LocalDatasetService
 from spireagent.workbench.local_evaluation import summary
 from spireagent.workbench.local_model_dependencies import require_local_models
 from spireagent.workbench.local_training import _private_child
+from stpd.ordered_source_spec import MODEL_SCHEMA as ORDERED_MODEL_SCHEMA
 from stpd.structured_code_scope import is_structured_model_schema
 
 SCHEMA = "stpd/local-memory-evaluation-operation-v1"
@@ -168,8 +169,8 @@ class LocalMemoryEvaluationService:
                  or not 0 <= max_settling_events <= 64)):
             raise BoundaryError("local_memory_evaluation", "invalid_settling_limit")
         owner, store, registry_path = self._selected()
-        if is_structured_model_schema(
-                store.get_manifest(model_id).parameters.value().get("schema")):
+        schema = store.get_manifest(model_id).parameters.value().get("schema")
+        if is_structured_model_schema(schema) or schema == ORDERED_MODEL_SCHEMA:
             if max_settling_events is not None:
                 raise BoundaryError("local_memory_evaluation", "structured_projection_is_fixed")
             return self._start_structured(model_id, source_id, owner, store, registry_path)
@@ -257,8 +258,11 @@ class LocalMemoryEvaluationService:
             identity = uuid.uuid4().hex
             # Original source bytes, exact claim/use/Gold, partition and model ancestry
             # are checked before any ML child is launched or input is published.
-            admission = owner.record_verified_protocol_evaluation_use(
-                store, source_id, model_id, identity)
+            source_schema = store.get_manifest(source_id).parameters.value().get("partition_schema")
+            use = (owner.record_verified_ordered_evaluation_use
+                   if source_schema == "stpd/source3-ordered-partition-v1" else
+                   owner.record_verified_protocol_evaluation_use)
+            admission = use(store, source_id, model_id, identity)
             partition = admission["split"]
             operation = {
                 "schema": SCHEMA, "status": "pending", "purpose": partition,

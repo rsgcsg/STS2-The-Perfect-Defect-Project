@@ -31,9 +31,9 @@ from ..structured_code_scope import (
     inference_runtime,
 )
 from ..structured_profiles import (
-    NATIVE_GRAPH_SCOPE,
+    CONTROL_SCOPES,
     NATIVE_SCOPES,
-    NATIVE_SOURCE_SCHEMA,
+    native_source_schema,
     numerical_code_identity,
     profile_projection,
     source_verification,
@@ -73,7 +73,9 @@ def runtime_identity() -> dict[str, Any]:
 
 
 def execution_identity(
-    dataset: StructuredDataset, config: StructuredTrainingConfig, *,
+    dataset: StructuredDataset,
+    config: StructuredTrainingConfig,
+    *,
     code_scope: str = LEGACY_SCOPE,
     model_control: NativeGraphControl | None = None,
 ) -> dict[str, Any]:
@@ -82,7 +84,7 @@ def execution_identity(
         raise BoundaryError("structured_engine", "cpu_thread_identity_mismatch")
     native = validate_profile(dataset, code_scope)
     model_control = optional_control(model_control)
-    if (model_control is not None) != (code_scope == NATIVE_GRAPH_SCOPE):
+    if (model_control is not None) != (code_scope in CONTROL_SCOPES):
         raise BoundaryError("structured_engine", "control_scope_mismatch")
     scoped = code_scope in {TRAINING_SCOPE, *NATIVE_SCOPES}
     identity = numerical_code_identity(code_scope) if scoped else None
@@ -100,8 +102,14 @@ def execution_identity(
         **({"model_control": model_control.to_dict()} if model_control is not None else {}),
         "projection": profile_projection(dataset, code_scope),
         **({"input_spec": dataset.input_spec.value()} if native and dataset.input_spec else {}),
-        **({"source_schema": NATIVE_SOURCE_SCHEMA,
-            "source_verification": source_verification(dataset)} if native else {}),
+        **(
+            {
+                "source_schema": native_source_schema(code_scope),
+                "source_verification": source_verification(dataset),
+            }
+            if native
+            else {}
+        ),
         "event_order_sha256": semantic_hash(
             [
                 {

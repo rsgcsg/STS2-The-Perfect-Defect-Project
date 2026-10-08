@@ -39,8 +39,6 @@ from ..models.structured_engine import (
     execution_identity,
 )
 from ..models.structured_training import StructuredTrainingConfig
-from ..native_graph_spec import MODEL_SCHEMA as GRAPH_MODEL_SCHEMA
-from ..native_graph_spec import REPORT_SCHEMA as GRAPH_REPORT_SCHEMA
 from ..native_graph_spec import NativeGraphControl, control_from_identity
 from ..structured_code_scope import (
     INFERENCE_SCOPE,
@@ -55,12 +53,13 @@ from ..structured_code_scope import (
     run_code_scope,
 )
 from ..structured_profiles import (
-    NATIVE_GRAPH_SCOPE,
-    NATIVE_INPUT_SCHEMA,
-    NATIVE_MODEL_SCHEMA,
-    NATIVE_REPORT_SCHEMA,
     NATIVE_SCOPES,
-    NATIVE_SOURCE_SCHEMA,
+    ORDERED_SCOPE,
+    native_experiment,
+    native_input_schema,
+    native_model_schema,
+    native_report_schema,
+    native_source_schema,
     parse_dataset,
     qualification,
     source_verification,
@@ -150,6 +149,12 @@ def _load(
         raise BoundaryError("structured_workload", "training_source_binding_mismatch")
     raw = _read_payload(store, payload, MAX_SOURCE_BYTES)
     dataset = parse_dataset(raw, scope)
+    if scope == ORDERED_SCOPE:
+        from ..fullrun.ordered_source import verify_ordered_source_partition
+
+        verified = verify_ordered_source_partition(store, source.artifact_id)
+        if verified.dataset != dataset or verified.split != "train":
+            raise BoundaryError("structured_workload", "source3_partition_dataset_binding")
     native = scope in NATIVE_SCOPES
     if (
         dataset.source_sha256 != info["source_sha256"]
@@ -158,13 +163,16 @@ def _load(
         != dataset.source_sha256
         or source.parameters.value().get("source_kind", dataset.source_kind) != dataset.source_kind
         or execution_identity(
-            dataset, config, code_scope=scope,
-            model_control=control_from_identity(info["execution_identity"])
-        ) != info.get("execution_identity")
+            dataset,
+            config,
+            code_scope=scope,
+            model_control=control_from_identity(info["execution_identity"]),
+        )
+        != info.get("execution_identity")
     ):
         raise BoundaryError("structured_workload", "source_config_code_or_runtime_changed")
     expected_training_info = {
-        "schema": NATIVE_INPUT_SCHEMA if native else "stpd/structured-m2-training-input-v1",
+        "schema": native_input_schema(scope) if native else "stpd/structured-m2-training-input-v1",
         "source_sha256": dataset.source_sha256,
         "projection": info["execution_identity"]["projection"],
         "splits": {
@@ -172,22 +180,34 @@ def _load(
             for split in ("train", "dev", "test")
         },
         "qualification": qualification(dataset),
-        **({"input_spec": dataset.input_spec.value(),
-            "verification_identity": source_verification(dataset),
-            "code_identity": info["execution_identity"]["code_identity"]}
-           if native and dataset.input_spec else {}),
+        **(
+            {
+                "input_spec": dataset.input_spec.value(),
+                "verification_identity": source_verification(dataset),
+                "code_identity": info["execution_identity"]["code_identity"],
+            }
+            if native and dataset.input_spec
+            else {}
+        ),
     }
     if json_bytes(training.parameters.value()) != json_bytes(expected_training_info) or info[
         "torch_version"
     ] != str(torch.__version__):
         raise BoundaryError("structured_workload", "training_input_metadata_mismatch")
-    if native and source.parameters.value() != {
-        "schema": NATIVE_SOURCE_SCHEMA, "source_kind": dataset.source_kind,
-        "source_sha256": dataset.source_sha256, "qualification": qualification(dataset),
-        "input_spec": expected_training_info["input_spec"],
-        "verification_identity": source_verification(dataset),
-        "code_identity": info["execution_identity"]["code_identity"],
-    }:
+    if (
+        native
+        and scope != ORDERED_SCOPE
+        and source.parameters.value()
+        != {
+            "schema": native_source_schema(scope),
+            "source_kind": dataset.source_kind,
+            "source_sha256": dataset.source_sha256,
+            "qualification": qualification(dataset),
+            "input_spec": expected_training_info["input_spec"],
+            "verification_identity": source_verification(dataset),
+            "code_identity": info["execution_identity"]["code_identity"],
+        }
+    ):
         raise BoundaryError("structured_workload", "native_source_manifest_binding")
     experiment = store.get_manifest(run.parent("experiment"))
     _roles(experiment, {"training_input"}, set())
@@ -198,10 +218,11 @@ def _load(
         or json_bytes(experiment.parameters.value())
         != json_bytes(
             {
-                "schema": ("stpd/native-structured-experiment-v1"
-                           if native else "stpd/experiment-v1"),
-                "purpose": ("native_synthetic_teacher_imitation"
-                            if native else "s0_agent_teacher_imitation"),
+                **(
+                    native_experiment(scope)
+                    if native
+                    else {"schema": "stpd/experiment-v1", "purpose": "s0_agent_teacher_imitation"}
+                ),
                 "graph_id": info["execution_identity"]["graph_id"],
                 "config": asdict(config),
             }
@@ -391,9 +412,13 @@ def _completed(
     if (
         result.kind != "run_result"
         or result.producer != completed_producer
-        or scoped and (
-            completed_producer.uv_lock_sha256 != run.parameters.value()[
-                "execution_identity"]["code_identity"]["dependency_lock_sha256"])
+        or scoped
+        and (
+            completed_producer.uv_lock_sha256
+            != run.parameters.value()["execution_identity"]["code_identity"][
+                "dependency_lock_sha256"
+            ]
+        )
         or info
         != {
             "schema": "stpd/run-result-v1",
@@ -407,8 +432,12 @@ def _completed(
         or result.parent("training_input") != training.artifact_id
     ):
         raise BoundaryError("structured_workload", "completed_result_identity_mismatch")
-    engine = StructuredTrainingEngine(dataset, config, code_scope=scope,
-        model_control=control_from_identity(run.parameters.value()["execution_identity"]))
+    engine = StructuredTrainingEngine(
+        dataset,
+        config,
+        code_scope=scope,
+        model_control=control_from_identity(run.parameters.value()["execution_identity"]),
+    )
     engine.restore(_checkpoint_bytes(store, result.parent("checkpoint"), run, training))
     if engine.phase != "publication":
         raise BoundaryError("structured_workload", "completed_checkpoint_phase")
@@ -422,17 +451,32 @@ def _completed(
             "graph_id",
             "qualification",
             "attempt",
-        } | ({"input_spec", "agent_spec", "state_format_version", "code_identity",
-              "source", "provenance"} if native else set()),
+        }
+        | (
+            {
+                "input_spec",
+                "agent_spec",
+                "state_format_version",
+                "code_identity",
+                "source",
+                "provenance",
+            }
+            if native
+            else set()
+        ),
         "structured_completed_model",
     )
     if (
         model.kind != "model"
         or model.producer != completed_producer
-        or model_info["schema"] != ((GRAPH_MODEL_SCHEMA
-                                      if scope == NATIVE_GRAPH_SCOPE else NATIVE_MODEL_SCHEMA)
-                                     if native else
-                                     SCOPED_MODEL_SCHEMA if scoped else MODEL_SCHEMA)
+        or model_info["schema"]
+        != (
+            native_model_schema(scope)
+            if native
+            else SCOPED_MODEL_SCHEMA
+            if scoped
+            else MODEL_SCHEMA
+        )
         or model_info["graph_id"] != engine.identity["graph_id"]
         or model_info["qualification"] != qualification(dataset)
         or model_info["attempt"] != attempt
@@ -469,24 +513,31 @@ def _completed(
         if scoped and metadata.get("provenance") != {
             "training_producer": run.producer.to_dict(),
             "export_producer": completed_producer.to_dict(),
-            "run_id": run.artifact_id, "training_input_id": training.artifact_id,
+            "run_id": run.artifact_id,
+            "training_input_id": training.artifact_id,
             "checkpoint_id": result.parent("checkpoint"),
             "export_runtime": exporter_runtime(),
         }:
             raise BoundaryError("structured_workload", "completed_export_provenance_mismatch")
         if (
             metadata["model_id"] != model_info["model_id"]
-            or metadata["source"] != ({
-                "kind": dataset.source_kind, "data_sha256": dataset.source_sha256,
-                "source_artifact_id": training.parent("source"),
-                "training_input_id": training.artifact_id,
-                "verification_identity": source_verification(dataset),
-            } if native else {
-                "source_revision": run.producer.source_revision,
-                "data_sha256": dataset.source_sha256,
-                "source_kind": dataset.source_kind,
-                "teacher_sha256": semantic_hash(dataset.teacher.value()),
-            })
+            or metadata["source"]
+            != (
+                {
+                    "kind": dataset.source_kind,
+                    "data_sha256": dataset.source_sha256,
+                    "source_artifact_id": training.parent("source"),
+                    "training_input_id": training.artifact_id,
+                    "verification_identity": source_verification(dataset),
+                }
+                if native
+                else {
+                    "source_revision": run.producer.source_revision,
+                    "data_sha256": dataset.source_sha256,
+                    "source_kind": dataset.source_kind,
+                    "teacher_sha256": semantic_hash(dataset.teacher.value()),
+                }
+            )
             or json_bytes(metadata["training"])
             != json_bytes({"config": asdict(config), "metrics": engine.metrics()})
             or any(
@@ -515,17 +566,21 @@ def _completed(
             "checkpoint_id",
             "model_artifact_id",
             "operation_id",
-        } | ({"training_producer"} if scoped else set()),
+        }
+        | ({"training_producer"} if scoped else set()),
         "structured_completed_report",
     )
     seconds = report["attempt_seconds"]
     if type(seconds) not in {int, float} or not math.isfinite(seconds) or seconds < 0:
         raise BoundaryError("structured_workload", "report_attempt_seconds_mismatch")
     expected_report = {
-        "schema": (GRAPH_REPORT_SCHEMA
-                   if scope == NATIVE_GRAPH_SCOPE else
-                   NATIVE_REPORT_SCHEMA if native else SCOPED_REPORT_SCHEMA if scoped
-                   else "stpd/structured-m2-training-report-v2"),
+        "schema": (
+            native_report_schema(scope)
+            if native
+            else SCOPED_REPORT_SCHEMA
+            if scoped
+            else "stpd/structured-m2-training-report-v2"
+        ),
         "producer": completed_producer.to_dict(),
         **({"training_producer": run.producer.to_dict()} if scoped else {}),
         "source_sha256": dataset.source_sha256,
@@ -562,8 +617,13 @@ def execute_structured_workload(
     scoped = scope in {TRAINING_SCOPE, *NATIVE_SCOPES}
     native = scope in NATIVE_SCOPES
     if scoped:
-        if (not isinstance(attempt_producer, Producer) or attempt_producer.uv_lock_sha256 !=
-                run.parameters.value()["execution_identity"]["code_identity"]["dependency_lock_sha256"]):
+        if (
+            not isinstance(attempt_producer, Producer)
+            or attempt_producer.uv_lock_sha256
+            != run.parameters.value()["execution_identity"]["code_identity"][
+                "dependency_lock_sha256"
+            ]
+        ):
             raise BoundaryError("structured_workload", "current_attempt_producer_required")
         publisher = attempt_producer
     else:
@@ -578,10 +638,16 @@ def execute_structured_workload(
     history = reporter.events(run.artifact_id)
     if any(
         event.kind != "run_event"
-        or (event.producer != producer if not scoped else
-            event.parameters.value().get("details", {}).get("attempt_producer") !=
-            event.producer.to_dict() or event.producer.uv_lock_sha256 !=
-            run.parameters.value()["execution_identity"]["code_identity"]["dependency_lock_sha256"])
+        or (
+            event.producer != producer
+            if not scoped
+            else event.parameters.value().get("details", {}).get("attempt_producer")
+            != event.producer.to_dict()
+            or event.producer.uv_lock_sha256
+            != run.parameters.value()["execution_identity"]["code_identity"][
+                "dependency_lock_sha256"
+            ]
+        )
         or event.parent("run") != run.artifact_id
         or event.parameters.value().get("schema") != "stpd/run-event-v1"
         for event in history
@@ -632,15 +698,22 @@ def execute_structured_workload(
             raise BoundaryError("structured_workload", "resume_attempt_identity_reused")
         if (
             _resume_checkpoint_depth(
-                store, request.resume_checkpoint_id, run, training,
+                store,
+                request.resume_checkpoint_id,
+                run,
+                training,
                 prospective_attempt_id=request.attempt_id,
             )
             >= MAX_RESUME_ANCESTRY
         ):
             raise BoundaryError("structured_workload", "resume_attempt_limit")
     checkpoint_id = request.resume_checkpoint_id
-    engine = StructuredTrainingEngine(dataset, config, code_scope=scope,
-        model_control=control_from_identity(run.parameters.value()["execution_identity"]))
+    engine = StructuredTrainingEngine(
+        dataset,
+        config,
+        code_scope=scope,
+        model_control=control_from_identity(run.parameters.value()["execution_identity"]),
+    )
     if checkpoint_id is not None:
         engine.restore(_checkpoint_bytes(store, checkpoint_id, run, training))
 
@@ -660,8 +733,10 @@ def execute_structured_workload(
                     "step": event_step + 1,
                     "attempt": request.attempt_id,
                     "kind": kind,
-                    "details": {**details, **({"attempt_producer": publisher.to_dict()}
-                                               if scoped else {})},
+                    "details": {
+                        **details,
+                        **({"attempt_producer": publisher.to_dict()} if scoped else {}),
+                    },
                 }
             ),
         )
@@ -819,19 +894,38 @@ def execute_structured_workload(
         with tempfile.TemporaryDirectory(prefix="structured-export-") as folder:
             package = Path(folder) / "agent"
             if native:
-                from ..policy.native_structured_export import export_native_trained_package
+                from ..policy.native_structured_export import (
+                    export_native_trained_package,
+                    export_ordered_native_trained_package,
+                )
 
-                metadata = export_native_trained_package(engine.model.eval(), package,
-                    producer=publisher, data_sha256=dataset.source_sha256,
-                    source={"kind": dataset.source_kind, "data_sha256": dataset.source_sha256,
-                            "source_artifact_id": training.parent("source"),
-                            "training_input_id": training.artifact_id,
-                            "verification_identity": source_verification(dataset)},
+                exporter = (
+                    export_ordered_native_trained_package
+                    if scope == ORDERED_SCOPE
+                    else export_native_trained_package
+                )
+                metadata = exporter(
+                    engine.model.eval(),
+                    package,
+                    producer=publisher,
+                    data_sha256=dataset.source_sha256,
+                    source={
+                        "kind": dataset.source_kind,
+                        "data_sha256": dataset.source_sha256,
+                        "source_artifact_id": training.parent("source"),
+                        "training_input_id": training.artifact_id,
+                        "verification_identity": source_verification(dataset),
+                    },
                     training={"config": asdict(config), "metrics": engine.metrics()},
-                    provenance={"training_producer": run.producer.to_dict(),
-                        "export_producer": publisher.to_dict(), "run_id": run.artifact_id,
-                        "training_input_id": training.artifact_id, "checkpoint_id": checkpoint_id,
-                        "export_runtime": exporter_runtime()})
+                    provenance={
+                        "training_producer": run.producer.to_dict(),
+                        "export_producer": publisher.to_dict(),
+                        "run_id": run.artifact_id,
+                        "training_input_id": training.artifact_id,
+                        "checkpoint_id": checkpoint_id,
+                        "export_runtime": exporter_runtime(),
+                    },
+                )
             else:
                 metadata = export_structured_package(
                     engine.model.eval(),
@@ -842,10 +936,17 @@ def execute_structured_workload(
                     teacher_sha256=semantic_hash(dataset.teacher.value()),
                     training={"config": asdict(config), "metrics": engine.metrics()},
                     code_scope=INFERENCE_SCOPE if scoped else LEGACY_SCOPE,
-                    provenance=({"training_producer": run.producer.to_dict(),
-                                 "export_producer": publisher.to_dict(), "run_id": run.artifact_id,
-                                 "training_input_id": training.artifact_id,
-                                 "checkpoint_id": checkpoint_id} if scoped else None),
+                    provenance=(
+                        {
+                            "training_producer": run.producer.to_dict(),
+                            "export_producer": publisher.to_dict(),
+                            "run_id": run.artifact_id,
+                            "training_input_id": training.artifact_id,
+                            "checkpoint_id": checkpoint_id,
+                        }
+                        if scoped
+                        else None
+                    ),
                 )
             payloads = []
             for role, filename, media in (
@@ -862,9 +963,13 @@ def execute_structured_workload(
 
             model_parameters = native_model_parameters(metadata, request.attempt_id)
         else:
-            model_parameters = {"schema": SCOPED_MODEL_SCHEMA if scoped else MODEL_SCHEMA,
-                "model_id": metadata["model_id"], "graph_id": engine.identity["graph_id"],
-                "qualification": "engineering_only", "attempt": request.attempt_id}
+            model_parameters = {
+                "schema": SCOPED_MODEL_SCHEMA if scoped else MODEL_SCHEMA,
+                "model_id": metadata["model_id"],
+                "graph_id": engine.identity["graph_id"],
+                "qualification": "engineering_only",
+                "attempt": request.attempt_id,
+            }
         model = Manifest(
             "model",
             publisher,
@@ -878,10 +983,13 @@ def execute_structured_workload(
         )
         store.publish(model)
         report = {
-            "schema": (GRAPH_REPORT_SCHEMA
-                   if scope == NATIVE_GRAPH_SCOPE else
-                   NATIVE_REPORT_SCHEMA if native else SCOPED_REPORT_SCHEMA if scoped
-                   else "stpd/structured-m2-training-report-v2"),
+            "schema": (
+                native_report_schema(scope)
+                if native
+                else SCOPED_REPORT_SCHEMA
+                if scoped
+                else "stpd/structured-m2-training-report-v2"
+            ),
             "run_id": run.artifact_id,
             "training_input_id": training.artifact_id,
             "checkpoint_id": checkpoint_id,

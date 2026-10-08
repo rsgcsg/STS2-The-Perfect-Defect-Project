@@ -22,7 +22,7 @@ from stpd.fullrun.ordered_source import (
     _teacher,
     parse_ordered_training_dataset,
 )
-from stpd.ordered_source_spec import PROJECTION_SPEC, SOURCE_SCHEMA, TARGET_SPEC
+from stpd.ordered_source_spec import DEFAULT_VIEW, PRETRAIN_VIEW, SOURCE_SCHEMA, view_specs
 
 WIRE = json.loads(
     (
@@ -32,7 +32,9 @@ WIRE = json.loads(
 )
 
 
-def original_basis(directory: Path, revision: int, *, empty: bool = False):
+def original_basis(
+    directory: Path, revision: int, *, empty: bool = False, terminal: bool = False
+):
     observation = copy.deepcopy(WIRE["wire_samples"]["observation"])
     observation.update(snapshot_id=f"snapshot-{revision}", revision=revision)
     observation["owner_occurrence"].update(occurrence_id=f"occurrence-{revision}")
@@ -56,6 +58,19 @@ def original_basis(directory: Path, revision: int, *, empty: bool = False):
         total_count=len(actions),
         digest=native_catalog_digest(actions),
     )
+    if terminal:
+        observation["status"] = "interactive"
+        observation["interaction"].update(kind="game_over", stage="summary")
+        observation["interaction"]["content"] = {
+            "context": {
+                "kind": "game_over", "result": "loss", "game_mode": "standard",
+                "score": 15, "floor_reached": 1, "ascension": 0,
+            },
+            "surface": {
+                "kind": "game_over", "stage": "summary", "return_destination": "main_menu",
+                "can_advance_summary": False, "can_return": True, "other_controls": [],
+            },
+        }
     refs = []
     for family, value, hash_key in (
         ("public-captures", observation, "sha256"),
@@ -173,15 +188,16 @@ def contract_bundle(directory: Path):
     )
 
 
-def projected(bundle):
+def projected(bundle, *, view=PRETRAIN_VIEW):
     raw_id = "a" * 64
-    runs, report = _projection(bundle, raw_id, "declared_human")
+    runs, report = _projection(bundle, raw_id, "declared_human", view)
+    projection_spec, target_spec = view_specs(view)
     source = {
         "schema": SOURCE_SCHEMA,
         "source_kind": "declared_human",
         "input_spec": INPUT_SPEC,
-        "projection_spec": PROJECTION_SPEC,
-        "target_spec": TARGET_SPEC,
+        "projection_spec": projection_spec,
+        "target_spec": target_spec,
         "teacher": _teacher("declared_human"),
         "raw_refs": [OrderedSourceRef(raw_id, "b" * 64).__dict__],
         "runs": runs,
@@ -206,6 +222,10 @@ def test_same_watermark_uses_original_prefix_order_and_own_basis(tmp_path):
         "original_inputs": 2,
         "admitted_frames": 4,
         "eligible_unique_N": 2,
+        "original_exact_delivered_cohort_choices": 2,
+        "publication_basis_mismatched_N": 0,
+        "ready_summary_task_masked_N": 0,
+        "model_unexposed_frames": 0,
         "excluded_frames": 0,
         "original_game_runs": 1,
         "whole_game_recorded_capture_runs": 0,
@@ -232,6 +252,28 @@ def test_full_original_action_equality_required_for_N(tmp_path):
     bundle.inputs[0]["outcome"]["selected_action"] = selected
     with pytest.raises(BoundaryError, match="N_full_original_action_binding"):
         projected(bundle)
+
+
+@pytest.mark.parametrize("view", [DEFAULT_VIEW, PRETRAIN_VIEW])
+def test_ready_summary_context_is_retained_but_menu_return_has_no_N(tmp_path, view):
+    bundle = contract_bundle(tmp_path)
+    observation, actions, capture, catalog = original_basis(tmp_path, 1, terminal=True)
+    bundle.observations[0].update(capture=capture, catalog=catalog)
+    for row in bundle.inputs:
+        row.update(pre_capture=capture, catalog=catalog)
+        row["outcome"]["selected_action"] = actions[0]
+    source, report, dataset = projected(bundle, view=view)
+    assert report["counts"]["original_exact_delivered_cohort_choices"] == 2
+    assert report["counts"]["ready_summary_task_masked_N"] == 2
+    assert report["counts"]["eligible_unique_N"] == 0
+    assert report["N_coverage"]["denominator"] == 2
+    assert dataset.runs[0].steps[0].advance
+    assert all(step.chosen_action_id is None for step in dataset.runs[0].steps)
+    assert source["runs"][0]["steps"][0]["observation"] == observation
+    assert source["runs"][0]["steps"][1]["catalog"] == actions
+    source["runs"][0]["steps"][1]["chosen_action_id"] = actions[0]["action_id"]
+    with pytest.raises(BoundaryError, match="N_ready_summary_task_complete_must_be_unlabelled"):
+        parse_ordered_training_dataset(json_bytes(source))
 
 
 def test_pause_cut_includes_prior_input_excludes_later_same_cut(tmp_path):
@@ -295,18 +337,17 @@ def test_cohorts_and_synthetic_contracts_are_separate(tmp_path):
         parse_native_training_dataset(json_bytes(source))
     bundle = contract_bundle(tmp_path)
     bundle.segments[0]["declaration"]["source_kind"] = "agent_protocol"
-    with pytest.raises(BoundaryError, match="separate_declared_source_cohorts_required"):
-        projected(bundle)
+    _, report, dataset = projected(bundle)
+    assert report["counts"]["eligible_unique_N"] == 0
+    assert len(dataset.runs[0].steps) == 4
+    _, report = _projection(bundle, "a" * 64, "agent_protocol", PRETRAIN_VIEW)
+    assert report["counts"]["eligible_unique_N"] == 2
 
 
 def test_missing_shared_Source3_API_fails_closed_without_Source2_fallback(tmp_path, monkeypatch):
     from stpd.fullrun import ordered_source
 
-    def unavailable(name):
-        assert name == "sts2_platform_evidence.source_session_bundle_v3"
-        raise ImportError("Source3 owner API absent")
-
-    monkeypatch.setattr(ordered_source, "import_module", unavailable)
+    monkeypatch.setattr(ordered_source, "evidence_owner", SimpleNamespace())
     with pytest.raises(BoundaryError, match="source3_evidence_api_required"):
         ordered_source._verified(tmp_path)
 
@@ -317,3 +358,45 @@ def test_original_capture_bytes_are_rechecked_before_projection(tmp_path):
     original.write_bytes(original.read_bytes() + b" ")
     with pytest.raises(BoundaryError, match="original_blob_changed"):
         projected(bundle)
+
+
+def test_default_masks_input_only_bases_without_advancing_publication_memory(tmp_path):
+    source, report, dataset = projected(contract_bundle(tmp_path), view=DEFAULT_VIEW)
+    assert [step["observation"]["revision"] for step in source["runs"][0]["steps"]] == [1, 4]
+    assert [step.advance for step in dataset.runs[0].steps] == [True, True]
+    assert report["counts"]["publication_basis_mismatched_N"] == 2
+    assert report["counts"]["excluded_frames"] == 0
+    assert report["N_coverage"] == {
+        "cohort": "declared_human",
+        "eligible": 0,
+        "denominator": 2,
+        "fraction": 0.0,
+    }
+    assert [row["evidence"]["input_prefix_ordinal"] for row in report["index"]] == [
+        None,
+        "1",
+        "2",
+        None,
+    ]
+
+
+def test_default_exact_publication_basis_scores_N_without_new_W_advance(tmp_path):
+    bundle = contract_bundle(tmp_path)
+    publication = bundle.observations[0]
+    actions = json.loads((tmp_path / "raw" / publication["catalog"]["payload_ref"]).read_bytes())
+    for row in bundle.inputs:
+        row.update(
+            pre_capture=copy.deepcopy(publication["capture"]),
+            catalog=copy.deepcopy(publication["catalog"]),
+        )
+        row["outcome"]["selected_action"] = actions[0]
+    _, report, dataset = projected(bundle, view=DEFAULT_VIEW)
+    assert [step.advance for step in dataset.runs[0].steps] == [True, False, False, True]
+    assert [step.chosen_action_id for step in dataset.runs[0].steps] == [
+        None,
+        "action-1",
+        "action-1",
+        None,
+    ]
+    assert report["N_coverage"]["fraction"] == 1.0
+    assert report["counts"]["publication_basis_mismatched_N"] == 0

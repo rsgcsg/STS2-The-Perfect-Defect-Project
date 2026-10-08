@@ -6,15 +6,11 @@ bundle bytes. Catalogs/lineage/Commit/successors are read, never reconstructed.
 
 from __future__ import annotations
 
-import gzip
 import hashlib
-import io
-import tarfile
 import tempfile
-import zlib
 from collections import Counter, defaultdict
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from sts2_platform_evidence.human_session_bundle_v3 import (
@@ -24,6 +20,11 @@ from sts2_platform_evidence.human_session_bundle_v3 import (
 
 from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json
 from spireagent.local_verified_bundle import VerifiedLocalBundle
+from spireagent.storage.archives import MAX_BYTES as MAX_BYTES
+from spireagent.storage.archives import MAX_FILES as MAX_FILES
+from spireagent.storage.archives import _extract as _extract
+from spireagent.storage.archives import _extract_tar as _extract_tar
+from spireagent.storage.archives import archive_bundle as archive_bundle
 
 from ..canonical import semantic_hash
 from .contracts import (
@@ -42,8 +43,6 @@ from .semantic_projection import _SemanticProjection
 # actual game/Mod provenance remains in recording_identity. Do not rewrite old artifacts.
 SUPPORTED_PLATFORM_CONTRACT_REVISION = "6fb6afc9c7abb8a4d34d18d16de4f19f48bd608d"
 ADAPTER_ID = "stpd-platform-bundle3-adapter-v1@" + SUPPORTED_PLATFORM_CONTRACT_REVISION
-MAX_BYTES = 256 * 1024 * 1024
-MAX_FILES = 20000
 _TERMINATIONS = frozenset(
     {
         "transition_proved",
@@ -64,84 +63,6 @@ def _load(path: Path) -> dict[str, Any]:
 
 def _lines(path: Path) -> list[dict[str, Any]]:
     return [decode_json(line) for line in path.read_bytes().splitlines() if line.strip()]
-
-
-def archive_bundle(directory: Path) -> bytes:
-    """Deterministic transport of an existing bundle; does not edit or attest it."""
-    paths = sorted(directory.rglob("*"))
-    if any(p.is_symlink() for p in paths):
-        raise BoundaryError("source_archive", "symlink_forbidden")
-    files = [p for p in paths if p.is_file()]
-    if len(files) > MAX_FILES or sum(p.stat().st_size for p in files) > MAX_BYTES:
-        raise BoundaryError("source_archive", "size_limit")
-    target = io.BytesIO()
-    with (
-        gzip.GzipFile(fileobj=target, mode="wb", mtime=0) as compressed,
-        tarfile.open(fileobj=compressed, mode="w") as archive,
-    ):
-        for path in files:
-            content = path.read_bytes()
-            info = tarfile.TarInfo(path.relative_to(directory).as_posix())
-            info.size = len(content)
-            info.mode = 0o600
-            archive.addfile(info, io.BytesIO(content))
-    return target.getvalue()
-
-
-def _extract(raw: bytes, directory: Path) -> None:
-    if len(raw) > MAX_BYTES:
-        raise BoundaryError("source_archive", "size_limit")
-    try:
-        # Bound the entire decompressed stream, including PAX/longname headers
-        # that tarfile consumes before yielding a member for our inventory checks.
-        with tempfile.TemporaryFile() as expanded:
-            total_expanded = 0
-            with gzip.GzipFile(fileobj=io.BytesIO(raw), mode="rb") as compressed:
-                while chunk := compressed.read(1024 * 1024):
-                    total_expanded += len(chunk)
-                    if total_expanded > MAX_BYTES:
-                        raise BoundaryError("source_archive", "expanded_size_limit")
-                    expanded.write(chunk)
-            expanded.seek(0)
-            _extract_tar(expanded, directory)
-    except (tarfile.TarError, gzip.BadGzipFile, EOFError, zlib.error) as error:
-        raise BoundaryError("source_archive", "invalid_archive") from error
-
-
-def _extract_tar(expanded: Any, directory: Path) -> None:
-    # Streaming mode prevents a malicious metadata size from issuing an enormous
-    # direct file read, even though the expanded archive is already disk-bounded.
-    with tarfile.open(fileobj=expanded, mode="r|") as archive:
-        names: set[str] = set()
-        total = 0
-        for info in archive:
-            total += info.size
-            if len(names) >= MAX_FILES or total > MAX_BYTES:
-                raise BoundaryError("source_archive", "size_limit")
-            path = PurePosixPath(info.name)
-            folded = info.name.casefold()
-            if (
-                not info.name
-                or "\\" in info.name
-                or path.is_absolute()
-                or any(p in {".", ".."} for p in info.name.split("/"))
-                or ":" in info.name
-                or str(path) != info.name
-                or not info.isfile()
-                or folded in names
-                or info.size < 0
-            ):
-                raise BoundaryError("source_archive", "unsafe_or_duplicate_member")
-            names.add(folded)
-            member = archive.extractfile(info)
-            if member is None:
-                raise BoundaryError("source_archive", "missing_member")
-            content = member.read(info.size + 1)
-            if len(content) != info.size:
-                raise BoundaryError("source_archive", "member_size_mismatch")
-            target = directory / info.name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content)
 
 
 def _frame(raw: Path, ref: dict[str, Any]) -> dict[str, Any]:
@@ -300,15 +221,19 @@ class PlatformBundle3SourceAdapter:
             )
 
     def _project_verified_local(
-        self, verified: VerifiedLocalBundle,
+        self,
+        verified: VerifiedLocalBundle,
     ) -> SourceProjection:
         """Project the exact directory held by the local typed-verification context."""
         verified.assert_directory_identity()
         bundle = verified.bundle
         assert isinstance(bundle, HumanSessionBundleV3)
         return self._project(
-            verified.directory, None, bundle.bundle_content_id,
-            dict(bundle.capture_profile), dict(bundle.manifest),
+            verified.directory,
+            None,
+            bundle.bundle_content_id,
+            dict(bundle.capture_profile),
+            dict(bundle.manifest),
             source_sha256=verified.archive_sha256,
         )
 
@@ -319,7 +244,8 @@ class PlatformBundle3SourceAdapter:
         content_id: str,
         profile: dict[str, Any],
         manifest: dict[str, Any],
-        *, source_sha256: str | None = None,
+        *,
+        source_sha256: str | None = None,
     ) -> SourceProjection:
         raw = directory / "raw"
         canonical = _lines(directory / "export/canonical-transitions.jsonl")
@@ -361,8 +287,7 @@ class PlatformBundle3SourceAdapter:
         )
         if source is None and source_sha256 is None:
             raise BoundaryError("platform_projection", "source_identity_required")
-        source_hash = (hashlib.sha256(source).hexdigest() if source is not None
-                       else source_sha256)
+        source_hash = hashlib.sha256(source).hexdigest() if source is not None else source_sha256
         assert source_hash is not None
         runs: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in canonical:
