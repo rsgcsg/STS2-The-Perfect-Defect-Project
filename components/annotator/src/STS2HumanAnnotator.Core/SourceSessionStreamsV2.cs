@@ -65,9 +65,10 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
         if (admission.Boundary != null) AppendBoundary(admission.Boundary);
     }
     internal void AppendSegment(SourceSegmentV2 segment)
-    { Append("source-segments.jsonl", segment); sourceKinds.Add(segment.Declaration.SourceKind); }
+    { Ledger.AssertIssuedSegment(segment); Append("source-segments.jsonl", segment); sourceKinds.Add(segment.Declaration.SourceKind); }
     internal void AppendBoundary(SourceBoundaryV2 boundary)
     {
+        Ledger.AssertIssuedBoundary(boundary);
         Append("source-boundaries.jsonl", boundary);
         if (boundary.Kind == "close") closeBoundary = boundary;
     }
@@ -121,13 +122,17 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
     }
     internal void Observe(SourceObservationPacketV2 packet)
     {
+        Ledger.ValidateOriginalRange(packet.Position);
         if (packet.GapAfterIndex != null && packet.Capture == null && packet.Catalog == null)
         {
+            if (packet.SourceSeam != "source_gap" || packet.SourceIndex != "0" || packet.Phase != "retention_overflow"
+                || packet.Completeness != "failed" || packet.MissingReason != "retention_overflow")
+                throw new InvalidDataException("source_diagnostic_gap_invalid");
             ulong after = SourceSessionContract.Index(new(packet.Position.StreamGeneration, packet.GapAfterIndex));
             foreach (var piece in Ledger.UnpausedGapPieces(packet.Position, after))
             {
                 string through = piece.Through.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                ObserveCore(packet with { Position = packet.Position with { PublicationIndex = through }, SourceIndex = through,
+                ObserveCore(packet with { Position = packet.Position with { PublicationIndex = through },
                     GapAfterIndex = piece.After.ToString(System.Globalization.CultureInfo.InvariantCulture) });
             }
             Ledger.RecordDurable(packet.Position, packet.GapAfterIndex, observation: false);
@@ -153,6 +158,16 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
         var capture = packet.Capture == null ? null : Persist(packet.Capture);
         var catalog = packet.Catalog == null ? null : Persist(packet.Catalog);
         Join(capture, catalog, packet.Completeness == "complete");
+        if (packet.OwnerOccurrence != null)
+        {
+            SourceSessionContract.Identifier(packet.OwnerOccurrence);
+            if (capture != null)
+            {
+                using var body = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(directory, capture.PayloadRef)));
+                if (body.RootElement.GetProperty("owner_occurrence").GetProperty("occurrence_id").GetString() != packet.OwnerOccurrence)
+                    throw new InvalidDataException("source_observation_owner_occurrence_mismatch");
+            }
+        }
         if (packet.Completeness == "complete" && (capture == null || catalog == null || packet.MissingReason != null)
             || packet.Completeness != "complete" && string.IsNullOrWhiteSpace(packet.MissingReason)
             || capture != null && capture.SnapshotId != packet.SnapshotId)
@@ -198,7 +213,11 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
         SourceSessionContractV2.Text(outcome.NativeMechanism);
         if (outcome.ReasonCode != null) SourceSessionContractV2.Text(outcome.ReasonCode);
         foreach (var stage in outcome.Stages)
-        { SourceSessionContractV2.Text(stage.Stage); SourceSessionContractV2.Text(stage.Delivery); SourceSessionContractV2.Text(stage.Evidence); }
+        {
+            SourceSessionContractV2.Text(stage.Stage); SourceSessionContractV2.Text(stage.Delivery); SourceSessionContractV2.Text(stage.Evidence);
+            if (stage.Delivery is not ("rejected_before_input" or "delivered" or "partially_delivered" or "unknown"))
+                throw new InvalidDataException("source_input_stage_delivery_invalid");
+        }
         if (outcome.MappingStatus == "exact")
         {
             if (outcome.MatchCount != 1 || outcome.SelectedAction == null || input.Capture == null || input.Catalog == null)

@@ -94,6 +94,15 @@ public sealed class SourceSessionV2Tests
     }
 
     [Fact]
+    public void ObservationCannotReplaceItsOriginalCapturedOwnerOccurrence()
+    {
+        using var f = new Fixture();
+        var packet = f.Packet("title", 1, "title-continuity") with { OwnerOccurrence = "invented-owner-occurrence" };
+        Assert.Equal("source_observation_owner_occurrence_mismatch",
+            Assert.Throws<InvalidDataException>(() => f.Store.AppendPublicObservationV2(packet)).Message);
+    }
+
+    [Fact]
     public void OneVisibleStorePreservesOriginalEpochAndActorAcrossPausedSetupLaunchAndDelayedCompletion()
     {
         using var f = new Fixture(); var store = f.Store;
@@ -177,8 +186,8 @@ public sealed class SourceSessionV2Tests
     {
         using var f = new Fixture(); f.Store.AppendPublicObservationV2(f.Packet("title", 1, "title-continuity"));
         f.Store.AppendSourceBoundaryV2(f.Store.AdmitSourceBoundaryV2("pause", Position("title", 2)));
-        f.Store.AppendPublicObservationV2(new(Position("title", 5), "source_gap", "5", "retention_overflow", null, null,
-            "title-continuity", "partial", null, null, "retention_overflow", "1"));
+        f.Store.AppendPublicObservationV2(new(Position("title", 5), "source_gap", "0", "retention_overflow", null, null,
+            "title-continuity", "failed", null, null, "retention_overflow", "1"));
         f.Close("title", 5, new[] { Seal("title", 5, 5) });
         var observations = File.ReadLines(Path.Combine(f.Store.DirectoryPath, "public-observations.jsonl"))
             .Select(x => JsonSerializer.Deserialize<SourcePublicObservationV2>(x, Json)!).ToArray();
@@ -221,4 +230,50 @@ public sealed class SourceSessionV2Tests
         Assert.False(f.Store.GetSourceStatusV2()!.AccountingComplete);
         Assert.Equal("source_input_capacity", f.Store.GetSourceStatusV2()!.Error);
     }
+    [Fact]
+    public void FinalCloseRejectsCompletionAboveTheOriginalSealEvenWhenAllOriginalPositionsAreDurable()
+    {
+        using var f = new Fixture(); f.Store.AppendPublicObservationV2(f.Packet("title", 1, "title-continuity"));
+        f.Store.AppendSourceBoundaryV2(f.Store.AdmitSourceBoundaryV2("close", Position("title", 1), new[] { Seal("title", 1, 0) }));
+        Assert.Throws<InvalidDataException>(() => f.Store.PrepareSourceCloseV2(new[] { Seal("title", 1, 100) }));
+        Assert.False(File.Exists(Path.Combine(f.Store.DirectoryPath, "source-close-receipt.json")));
+    }
+    [Fact]
+    public void NativeStageDeliveryCannotUseArbitraryTextAndActualSeamsCannotMasqueradeAsDiagnosticGaps()
+    {
+        using var f = new Fixture(); var token = f.Store.ReserveSourceInputV2("input-stage", Position("title", 1));
+        f.Store.BindSourceInputBasisV2(token, null, null);
+        Assert.Throws<InvalidDataException>(() => f.Store.CompleteSourceInputV2(token, new("capture_missing", 0, null,
+            "fixture", "unknown", null, new[] { new SourceInputStageV2("dispatch", "invented-success", "fixture") })));
+        using var gap = new Fixture();
+        Assert.Throws<InvalidDataException>(() => gap.Store.AppendPublicObservationV2(new(Position("title", 3), "native_owner_ready", "1",
+            "retention_overflow", null, null, "title-continuity", "failed", null, null, "retention_overflow", "0")));
+    }
+
+    [Fact]
+    public void ForgedAppendRowsCannotRewriteTheAlreadyIssuedCloseBoundaryOrDeclaration()
+    {
+        using var f = new Fixture(); f.Store.AppendPublicObservationV2(f.Packet("title", 1, "title-continuity"));
+        var close = f.Store.AdmitSourceBoundaryV2("close", Position("title", 1), new[] { Seal("title", 1, 1) });
+        Assert.Throws<InvalidDataException>(() => f.Store.AppendSourceBoundaryV2(close with
+        { Position = Position("title", 999), SealedEpochs = Array.Empty<SourceNativeSealV2>() }));
+        Assert.False(File.Exists(Path.Combine(f.Store.DirectoryPath, "source-close-receipt.json")));
+        using var segment = new Fixture(); segment.Store.AdmitSourceBoundaryV2("pause", Position("title", 1));
+        var issued = segment.Store.AdmitSourceDeclarationV2(Agent("changed"), segment.Store.GetSourceStatusV2()!.SegmentId, Position("title", 1));
+        Assert.Throws<InvalidDataException>(() => segment.Store.AppendSourceDeclarationV2(issued with
+        { Declaration = issued.Declaration with { ActorId = "forged-actor" } }));
+    }
+
+    [Fact]
+    public void OriginalSealCannotRetreatBelowAnIssuedInputPositionOrAcceptLateRowsBeyondItsRange()
+    {
+        using var input = new Fixture(); input.Store.ReserveSourceInputV2("input-high", Position("title", 3));
+        Assert.Throws<InvalidDataException>(() => input.Store.AdmitSourceBoundaryV2("close", Position("title", 3), new[] { Seal("title", 2, 2) }));
+        using var row = new Fixture(); row.Store.AppendPublicObservationV2(row.Packet("title", 1, "title-continuity"));
+        row.Store.AppendSourceEpochV2(row.Store.AdmitSourceEpochV2(row.Epoch("run", "title", Seal("title", 1, 1),
+            Setup("title-continuity", "run-continuity"), "run-continuity")));
+        Assert.Throws<InvalidDataException>(() => row.Store.AppendPublicObservationV2(new(Position("title", 2), "source_gap", "0",
+            "retention_overflow", null, null, "title-continuity", "failed", null, null, "retention_overflow", "1")));
+    }
+
 }

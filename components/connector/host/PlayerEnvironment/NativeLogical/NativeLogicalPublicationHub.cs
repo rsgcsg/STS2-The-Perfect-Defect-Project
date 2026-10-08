@@ -483,7 +483,7 @@ public sealed partial class NativeLogicalPublicationHub : IDisposable
     {
         if (status == "subscription_expired" && sourceRegistration?.ActiveSubscription == id)
         {
-            sourceRegistration.Failure = "source_subscription_expired";
+            sourceRegistration.Failure ??= "source_subscription_expired";
             sourceRegistration.ActiveSubscription = null;
             SignalSourceProgress();
         }

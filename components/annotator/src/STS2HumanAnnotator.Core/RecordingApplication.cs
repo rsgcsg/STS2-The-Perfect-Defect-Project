@@ -192,6 +192,7 @@ public sealed record RecordingApplicationStatus(
     ContinuousRecordingStatus? Continuous = null)
 {
     public SourceSessionStatus? Source { get; init; }
+    public SourceSessionStatusV2? SourceV2 { get; init; }
 }
 
 public enum RecordingEventKind

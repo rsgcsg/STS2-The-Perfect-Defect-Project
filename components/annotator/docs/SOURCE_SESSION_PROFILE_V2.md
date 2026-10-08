@@ -1,12 +1,13 @@
 # Source recording v2: attachment epochs and real passive producer
 
-Status: revised wire freeze for the approved E2 producer work, 2026-10-08.
+Status: approved wire with Source V2 implementation under source review, 2026-10-08.
 Revision addresses exact early setup continuity and Launch-internal callback ordering.
 Implementation base is the normal dependency merge `f5a435892b6e90068e1070e20d163b67e7f69f0b`
 of accepted root `fa414996f453db765884a54dc6e00f1fe880f828`.
 Source v1 repair `a082862176c8b8df92d2b887d3bef3111be146a7` remains an accepted ancestor.
-This document and its conformance fixture precede production changes. They are
-not a live producer, native coverage, Human, causal, non-interference or G2/V1 receipt.
+The contract fixture fixes the wire; production implementation and its separately
+generated synthetic bundle require their own validation. This document is not a
+native coverage, Human, causal, non-interference or G2/V1 receipt.
 
 ## Authority and compatibility
 
@@ -37,6 +38,7 @@ No Source bundle is research admission.
 | Audit | `sts2.annotator/source-session-audit-2` |
 | Generic bundle | `sts2.annotator/source-session-bundle-2`, descriptor `source-session-bundle-v2` |
 | Recording command | `sts2.ai-platform/recording-command-3` |
+| Recording status | `sts2.ai-platform/recording-status-5`, additive `source_v2` |
 
 Profile v2 declares `input_profile:native-logical-v1`,
 `publication_profile_id:native-logical-publication-profile-v1` and
@@ -243,6 +245,35 @@ until actual disposal. Limits are provisional announced admission, not measured
 non-interference. Saturation records a bounded original-position gap where possible;
 if durable loss accounting cannot be written, the session fails instead of guessing.
 
+An explicit new recording attachment registers its own new original client.
+Automatic epoch turnover within that recording reuses the same client; it never
+re-registers, revives a closed client or retries a failed attachment implicitly.
+
+The native owner temporarily suppresses passive renewal only while sealing an
+original epoch and establishing its exact successor on the same native turn.
+It does not renew the old scope or claim that the successor is ready. Original
+client revocation marks matching active, retiring or closing Source accounting
+failed under the Hub metadata gate; observer callbacks and disk writes do not run
+under that gate. A different client's revocation cannot poison the recorder.
+
+Frozen public-copy admission reserves a conservative 64 times the original
+capture/catalog byte size before copying, including validation and parser scratch;
+input projection separately reserves 64 MiB scratch and at most 1 MiB encoded
+Source basis. These charges share the 128 MiB copy budget. They are finite admission
+limits, not a runtime memory measurement. Oversize or saturated captures produce
+an explicit original-position missing record rather than allocating and measuring
+afterward.
+
+`SourceSessionAuditV2` and `SourceSessionBundlePackerV2` expose strict recording
+audit and immutable export/packing. The Tool commands are `audit-source-v2`,
+`export-source-v2`, and `pack-source-v2`. The Evidence package registers
+`source-session-bundle-v2` and exports `SourceSessionBundleV2`,
+`SourceSessionBundleV2Verifier`, and `verify_source_session_bundle_v2`; v1 and Human
+descriptors retain their existing readers. Packing audits its actual copied raw
+snapshot and exports those same copied bytes before content identity is sealed.
+The Evidence CLI exposes `verify-source-bundle-v2` and accepts the same descriptor
+for typed `receive --verify-type source-session-bundle-v2`.
+
 ## Contract fixture and next validation
 
 `contracts/fixtures/source-session-v2.json` is synthetic contract conformance,
@@ -250,11 +281,28 @@ not a packer-emitted v2 bundle or actual native history. It fixes Title/prepared
 positions, early new/saved setup callbacks and native RunStarted inside Launch, delayed
 old-epoch observation/token source declarations, paused Close intervals, partial
 promotion rejection, generation mismatch without a native witness, finite close
-barriers and resource errors. Production serializer/packer/verifier will later
-emit and independently verify their own immutable synthetic bundle.
+barriers and resource errors. The production Source worker and C# packer additionally
+emit the synthetic bundle under Evidence `tests/fixtures/source_session_v2`.
+The fixture uses the actual request namespace, original native dispatch and
+terminal byte writer, preserving a Title input's original epoch and actor across
+setup/Launch before close. The independent Python verifier checks the saved bytes
+and rejects hash-repaired semantic corruptions. This is synthetic source/test
+evidence; physical UI ingress and runtime qualification remain separate work.
 
 Required gates cover actual Title→Launch→run→summary lifecycle, original epoch/actor
 completion after rollover, repeated generation/queue saturation, paused rollover,
 metadata/capture bytes, old v1/Human readability, source callback fencing and native
 main-thread versus off-thread timing. L01–L64 source hook coverage and native
 non-interference remain separately measured obligations; sampled seams stay sampled.
+
+The portable Core cases live in
+`tests/STS2HumanAnnotator.Core.Tests/SourceSessionV2Tests.cs`; run the existing
+Core project with filter `FullyQualifiedName~SourceSessionV2Tests`. The separate
+`tests/STS2HumanAnnotator.SourceNative.Tests` project references the real Connector
+Host and links the production Source worker. Its synthetic native owner exercises
+typed setup/Launch/terminal/cleanup callbacks and the actual protocol request
+boundary; it does not launch STS2. Run it with `dotnet test -c Release` and the exact
+local `STS2GameDir` property under the game's closed build gate. The optional
+`STS2_SOURCE_V2_SYNTHETIC_GOLDEN` output is emitted only after the actual complete
+producer/packer test passes; a prepared zero-input fixture has a separate
+`STS2_SOURCE_V2_PREPARED_GOLDEN` output and cannot stand in for that input test.

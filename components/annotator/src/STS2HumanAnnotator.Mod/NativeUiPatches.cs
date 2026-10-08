@@ -2759,8 +2759,12 @@ internal static class NativeRunStartedPatch
 
     internal static readonly NativeRunLaunchProvenance<RunState> Origins = new();
 
-    private static void Postfix(RunState __result) =>
+    private static void Postfix(RunState __result)
+    {
+        try { NativeRunLifecycleProvider.ObserveLaunch(__result); }
+        catch (Exception exception) { NativeUiObservationSafety.Report("run.launch.source", exception); }
         RecorderRuntime.ObserveNativeRunStarted(Origins.JournalKind(__result));
+    }
 }
 
 // Singleplayer is the recorder's supported admission domain. Setup observes
@@ -2768,20 +2772,52 @@ internal static class NativeRunStartedPatch
 [HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpNewSingleplayer))]
 internal static class NativeNewRunSetupPatch
 {
-    private static void Postfix([HarmonyArgument(0)] RunState state)
+    private static void Prefix([HarmonyArgument(0)] RunState state, out NativeRunSetupInvocation? __state)
     {
-        try { NativeRunStartedPatch.Origins.ObserveSetup(state, true); }
+        __state = null;
+        try { __state = NativeRunLifecycleProvider.StageSetup(state, RunManager.Instance.DebugOnlyGetState(), true); }
+        catch (Exception exception) { NativeUiObservationSafety.Report("run_setup.new.prefix", exception); }
+    }
+    private static void Postfix([HarmonyArgument(0)] RunState state, NativeRunSetupInvocation? __state)
+    {
+        try
+        {
+            NativeRunLifecycleProvider.FinishSetup(__state, RunManager.Instance.DebugOnlyGetState());
+            NativeRunStartedPatch.Origins.ObserveSetup(state, true);
+        }
         catch (Exception exception) { NativeUiObservationSafety.Report("run_setup.new", exception); }
+    }
+    private static Exception? Finalizer(NativeRunSetupInvocation? __state, Exception? __exception)
+    {
+        try { NativeRunLifecycleProvider.AbandonSetup(__state); }
+        catch (Exception exception) { NativeUiObservationSafety.Report("run_setup.new.finalizer", exception); }
+        return __exception;
     }
 }
 
 [HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpSavedSingleplayer))]
 internal static class NativeSavedRunSetupPatch
 {
-    private static void Postfix([HarmonyArgument(0)] RunState state)
+    private static void Prefix([HarmonyArgument(0)] RunState state, out NativeRunSetupInvocation? __state)
     {
-        try { NativeRunStartedPatch.Origins.ObserveSetup(state, false); }
+        __state = null;
+        try { __state = NativeRunLifecycleProvider.StageSetup(state, RunManager.Instance.DebugOnlyGetState(), false); }
+        catch (Exception exception) { NativeUiObservationSafety.Report("run_setup.saved.prefix", exception); }
+    }
+    private static void Postfix([HarmonyArgument(0)] RunState state, NativeRunSetupInvocation? __state)
+    {
+        try
+        {
+            NativeRunLifecycleProvider.FinishSetup(__state, RunManager.Instance.DebugOnlyGetState());
+            NativeRunStartedPatch.Origins.ObserveSetup(state, false);
+        }
         catch (Exception exception) { NativeUiObservationSafety.Report("run_setup.saved", exception); }
+    }
+    private static Exception? Finalizer(NativeRunSetupInvocation? __state, Exception? __exception)
+    {
+        try { NativeRunLifecycleProvider.AbandonSetup(__state); }
+        catch (Exception exception) { NativeUiObservationSafety.Report("run_setup.saved.finalizer", exception); }
+        return __exception;
     }
 }
 
@@ -2802,19 +2838,27 @@ internal static class NativeRunEndedPatch
             typeof(RunManager).FullName,
             "OnEnded");
 
-    private static void Postfix([HarmonyArgument(0)] bool isVictory) =>
+    private static void Postfix([HarmonyArgument(0)] bool isVictory)
+    {
+        try { NativeRunLifecycleProvider.ObserveTerminal(RunManager.Instance.DebugOnlyGetState(), isVictory); }
+        catch (Exception exception) { NativeUiObservationSafety.Report("run.terminal.source", exception); }
         RecorderRuntime.ObserveNativeRunEnded(isVictory);
+    }
 }
 
 [HarmonyPatch(typeof(RunManager), nameof(RunManager.CleanUp))]
 internal static class NativeRunCleanupPatch
 {
-    private static void Prefix(RunManager __instance, out bool __state) =>
-        __state = __instance.IsInProgress;
+    private sealed record CleanupState(bool WasInProgress, RunState? Previous);
+    private static void Prefix(RunManager __instance, out CleanupState __state) =>
+        __state = new(__instance.IsInProgress, __instance.DebugOnlyGetState());
 
-    private static void Postfix([HarmonyArgument(0)] bool graceful, bool __state)
+    private static void Postfix(RunManager __instance, [HarmonyArgument(0)] bool graceful, CleanupState __state)
     {
-        if (!__state) return;
+        // Source lifecycle follows exact pre/post continuity even when legacy IsInProgress was already false.
+        try { NativeRunLifecycleProvider.ObserveCleanup(__state.Previous, __instance.DebugOnlyGetState(), graceful); }
+        catch (Exception exception) { NativeUiObservationSafety.Report("run.cleanup.source", exception); }
+        if (!__state.WasInProgress) return;
         try { RecorderRuntime.ObserveNativeRunCleanup(graceful); }
         catch (Exception exception) { NativeUiObservationSafety.Report("run.cleanup", exception); }
     }

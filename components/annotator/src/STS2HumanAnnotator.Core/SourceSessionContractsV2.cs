@@ -24,8 +24,8 @@ public static class SourceSessionContractV2
         "source-attachment-epochs.jsonl", "source-segments.jsonl", "source-boundaries.jsonl",
         "public-observations.jsonl", "native-input-witnesses.jsonl"
     };
-    public static readonly string[] NonClaims = SourceSessionContract.NonClaims
-        .Append("not_non_interference_qualified").ToArray();
+    public static readonly string[] NonClaims = SourceSessionContract.NonClaims.Take(4)
+        .Append("not_non_interference_qualified").Append("not_g2_v1_approved").ToArray();
     public static ulong Index(SourceNativePositionV2 position)
     {
         SourceSessionContract.Identifier(position.EpochId);

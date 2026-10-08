@@ -488,8 +488,11 @@ test("current recording store has no archival native-ledger authority", () => {
   const audit = read("components/annotator/src/STS2HumanAnnotator.Core/CurrentRecordingAudit.cs");
   const bundle = read("components/annotator/src/STS2HumanAnnotator.Core/CurrentSessionBundle.cs");
 
-  assert.match(store, /public sealed class RecordingSessionStore/u);
-  assert.doesNotMatch(store, /AppendNativeActionEvent|_nativeActionLedger/u);
+  assert.match(store, /public sealed partial class RecordingSessionStore/u);
+  const storeSources = fs.readdirSync(path.join(root, "components/annotator/src/STS2HumanAnnotator.Core"))
+    .filter((file) => /^CurrentRecordingStore(?:\.[^.]+)?\.cs$/u.test(file))
+    .map((file) => read(`components/annotator/src/STS2HumanAnnotator.Core/${file}`)).join("\n");
+  assert.doesNotMatch(storeSources, /AppendNativeActionEvent|_nativeActionLedger/u);
   assert.doesNotMatch(audit, /ValidateNativeActionLedger|NativeActionLedgerValidator/u);
   assert.match(bundle, /native-action-ledger\.jsonl/u);
   assert.match(bundle, /archival reader input/u);

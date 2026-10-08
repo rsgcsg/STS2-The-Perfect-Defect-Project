@@ -70,6 +70,9 @@ internal sealed partial class NativeLogicalService : IDisposable
     private readonly NativeLogicalProjector projector;
     private readonly Func<TextMenuFrame> capture;
     private readonly Func<string?> continuity;
+    private readonly Func<RunState?> actualRunState;
+    private readonly Func<(PlayerEnvironmentCapabilitiesResponse Capabilities, string SourceDigest)> sourceIdentity;
+    private readonly Func<MutationClientRegistrationRequest, MutationClientRegistrationResult> registerSourceClient;
     private readonly object basisGate = new();
     private readonly SemaphoreSlim encodingAdmission = new(4, 4);
     private readonly ConcurrentQueue<Action> encodings = new();
@@ -91,10 +94,16 @@ internal sealed partial class NativeLogicalService : IDisposable
     internal NativeLogicalService(Func<TextMenuFrame> capture, Func<string?> continuity,
         RequestNamespace requests,
         Func<Func<Prepared>, CancellationToken, Task<Prepared>>? nativeQueue = null, Func<bool>? executionAllowed = null,
-        INativeLogicalClientLifetimeDependency? clientLifetime = null, Func<string, bool>? clientActive = null)
+        INativeLogicalClientLifetimeDependency? clientLifetime = null, Func<string, bool>? clientActive = null,
+        Func<RunState?>? actualRunState = null,
+        Func<(PlayerEnvironmentCapabilitiesResponse Capabilities, string SourceDigest)>? sourceIdentity = null,
+        Func<MutationClientRegistrationRequest, MutationClientRegistrationResult>? registerSourceClient = null)
     {
         this.capture = capture; this.continuity = continuity;
         this.clientActive = clientActive ?? MutationControlRuntime.IsActiveClient;
+        this.registerSourceClient = registerSourceClient ?? MutationControlRuntime.Register;
+        this.actualRunState = actualRunState ?? (() => RunManager.Instance.DebugOnlyGetState());
+        this.sourceIdentity = sourceIdentity ?? (() => (PlayerEnvironmentService.GetCapabilities(TextMenuContract.Profile), STS2Connector.PlayerEnvironment.Witness.PlayerEnvironmentTextMenuWitness.SourceDigest()));
         ExecutionAllowed = executionAllowed ?? (() => EnvironmentIdentityRuntime.ExecutionAvailable(EnvironmentIdentityRuntime.ReadGame()));
         this.nativeQueue = nativeQueue ?? ((work, cancellation) => ConnectorMod.RunOnMainThread(work, cancellation));
         Store = new(limits: Limits); projector = new(Limits);
@@ -118,6 +127,8 @@ internal sealed partial class NativeLogicalService : IDisposable
         if (initialized) return;
         mainThread = Environment.CurrentManagedThreadId; initialized = true;
         NativeDecisionOwnerReadyProvider.Observed += ObserveOwnerReady;
+        NativeRunLifecycleProvider.Observed += ObserveSourceLifecycle;
+        NativeRunLifecycleProvider.AccountingFailure += ObserveSourceAccountingFailure;
     }
     private void AssertMainThread()
     {
@@ -127,14 +138,24 @@ internal sealed partial class NativeLogicalService : IDisposable
     private void SynchronizeRun()
     {
         AssertMainThread();
+        if (NativeRunLifecycleProvider.HasPendingSetup)
+            NativeRunLifecycleProvider.ConsumeActualSetup(actualRunState());
         string? next = continuity();
-        if (runKnown && runId != next)
+        bool generationChanged = runKnown && runId != next;
+        if (generationChanged) lock (sourceGate) sourceEpochTransitioning = true;
+        try
         {
-            Hub.ChangeGeneration();
-            lock (basisGate) { projectedBasis = null; projectedSnapshot = null; currentActionKeys = new Dictionary<string, string>(); currentFacts = null; }
-            ownerKey = null;
+            if (generationChanged)
+            {
+                SourceBeforeGenerationChange();
+                Hub.ChangeGeneration();
+                lock (basisGate) { projectedBasis = null; projectedSnapshot = null; currentActionKeys = new Dictionary<string, string>(); currentFacts = null; }
+                ownerKey = null;
+            }
+            runKnown = true; runId = next;
+            if (generationChanged) SourceAfterGenerationChange(next);
         }
-        runKnown = true; runId = next;
+        finally { if (generationChanged) lock (sourceGate) sourceEpochTransitioning = false; }
     }
     internal sealed record Prepared(NativeLogicalPublicFrame Facts, string? Continuity, DateTimeOffset Time);
     private Prepared Prepare()
@@ -360,7 +381,13 @@ internal sealed partial class NativeLogicalService : IDisposable
     internal bool RunAdmitted(PlayerEnvironmentActionRequest request) => executor.RunAdmitted(request);
     public void Dispose()
     {
-        if (initialized) NativeDecisionOwnerReadyProvider.Observed -= ObserveOwnerReady;
+        if (initialized)
+        {
+            NativeDecisionOwnerReadyProvider.Observed -= ObserveOwnerReady;
+            NativeRunLifecycleProvider.Observed -= ObserveSourceLifecycle;
+            NativeRunLifecycleProvider.AccountingFailure -= ObserveSourceAccountingFailure;
+        }
+        sourceRecorder?.Dispose();
         Hub.Dispose();
         lock (basisGate) { currentNative = null; currentFacts = null; projectedBasis = null; currentActionKeys = new Dictionary<string, string>(); }
     }

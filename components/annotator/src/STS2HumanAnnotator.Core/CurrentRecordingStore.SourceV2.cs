@@ -13,6 +13,7 @@ public sealed partial class RecordingSessionStore
             || manifest.SourceSchemaVersion != 2 || manifest.SourceEnvironment == null
             || manifest.CaptureProfileId != profile.ProfileId || manifest.CaptureProfileSha256 != SourceSessionContractV2.ProfileDigest(profile)
             || manifest.DecisionSchemaVersion != null || manifest.TextInputSchemaVersion != null || manifest.CloseSchemaVersion != null
+            || manifest.DispositionSchemaVersion != null || manifest.ContinuousSchemaVersion != null || manifest.SupportedFamilies.Count != 0
             || !manifest.NonClaims.SequenceEqual(SourceSessionContractV2.NonClaims))
             throw new InvalidDataException("source_manifest_invalid");
         SourceSessionContract.ValidateEnvironment(manifest.SourceEnvironment);
@@ -31,6 +32,7 @@ public sealed partial class RecordingSessionStore
         SourceV2.Ledger.StageBoundary(kind, position, seals, transition);
     public SourceInputTokenV2 ReserveSourceInputV2(string inputId, SourceNativePositionV2 prePosition) =>
         SourceV2.Ledger.ReserveInput(inputId, prePosition);
+    public bool IsSourceObservationPausedV2(SourceNativePositionV2 position) => SourceV2.Ledger.IsPaused(position);
     public void MarkSourceV2AccountingFailed(string code) => SourceV2.Ledger.MarkFailure(code);
 
     // Only the serial recorder worker uses these writes. It cannot hold the metadata gate while doing disk I/O.
@@ -44,6 +46,23 @@ public sealed partial class RecordingSessionStore
         SourceWriteV2(source => source.CompleteInput(token, outcome));
     public void PrepareSourceCloseV2(IReadOnlyList<SourceNativeSealV2> completedOriginalSeals) =>
         SourceWriteV2(source => source.PrepareClose(completedOriginalSeals));
+    // Failed source accounting cannot produce Close; the worker still releases all native/disk resources explicitly.
+    public void AbortSourceV2(string code)
+    {
+        lock (_gate)
+        {
+            if (_closed) return;
+            var source = SourceV2; source.Ledger.MarkFailure(code);
+            try { source.WriteFailure(); source.WriteCoverage(); }
+            finally
+            {
+                foreach (var stream in _decisionFiles.Values) stream.Dispose();
+                _invalidations.Dispose(); _journal.Dispose(); _semanticBoundaryTrace.Dispose(); _canonicalTransitions.Dispose();
+                _nativeSemanticDiscriminator.Dispose(); _humanTextInputs?.Dispose(); source.Dispose(); _ownerLease?.Dispose();
+                _closed = true; _appendHealth = "failed"; _decisions = _decisions with { AccountingComplete = false };
+            }
+        }
+    }
     private void SourceWriteV2(Action<SourceSessionStreamsV2> write)
     {
         lock (_gate)

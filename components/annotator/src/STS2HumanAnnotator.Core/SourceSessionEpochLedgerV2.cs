@@ -11,6 +11,7 @@ internal sealed class SourceSessionEpochLedgerV2
         internal SourceNativeSealV2? Seal;
         internal ulong Boundary = SourceSessionContractV2.Index(row.StartingPosition);
         internal ulong Durable = SourceSessionContractV2.Index(row.StartingPosition);
+        internal ulong HighestKnown = SourceSessionContractV2.Index(row.StartingPosition);
         internal ulong? PausedAfter;
     }
     internal sealed class Input(SourceInputTokenV2 token)
@@ -139,7 +140,10 @@ internal sealed class SourceSessionEpochLedgerV2
             }
             else throw new InvalidOperationException("source_boundary_transition_invalid");
             epoch.Boundary = SourceSessionContractV2.Index(position);
-            return NewBoundary(kind, position, seals ?? Array.Empty<SourceNativeSealV2>(), closedIntervals, transition);
+            var originalSeals = kind == "close" ? epochs.Values.OrderBy(x => x.Row.Sequence)
+                .Select(x => x.Seal ?? throw new InvalidDataException("source_final_epoch_unsealed")).ToArray()
+                : seals ?? Array.Empty<SourceNativeSealV2>();
+            return NewBoundary(kind, position, originalSeals, closedIntervals, transition);
         }
     }
     private SourceBoundaryV2 NewBoundary(string kind, SourceNativePositionV2 position,
@@ -168,7 +172,8 @@ internal sealed class SourceSessionEpochLedgerV2
         {
             Healthy(); SourceSessionContract.Identifier(inputId);
             if (isPaused || closing || segments.Count == 0) throw new InvalidOperationException("source_input_not_recording");
-            CheckCurrentBoundary(pre);
+            var epoch = CheckCurrentBoundary(pre);
+            epoch.HighestKnown = Math.Max(epoch.HighestKnown, SourceSessionContractV2.Index(pre));
             if (inputs.ContainsKey(inputId)) throw new InvalidDataException("source_input_id_conflict");
             if (pendingInputs >= limits.MaxPendingInputs
                 || inputs.Count >= limits.MaxRowsPerStream) Fail("source_input_capacity");
@@ -224,6 +229,15 @@ internal sealed class SourceSessionEpochLedgerV2
                 ?? throw new InvalidDataException("source_observation_segment_missing");
         }
     }
+    internal void ValidateOriginalRange(SourceNativePositionV2 position)
+    {
+        lock (metadataGate)
+        {
+            var epoch = EpochFor(position.EpochId, position.StreamGeneration);
+            if (epoch.Seal != null && SourceSessionContractV2.Index(position) > SealIndex(epoch.Seal.ReservedThrough))
+                throw new InvalidDataException("source_original_epoch_range_exceeded");
+        }
+    }
     internal bool IsPaused(SourceNativePositionV2 position)
     {
         lock (metadataGate)
@@ -264,6 +278,8 @@ internal sealed class SourceSessionEpochLedgerV2
         {
             Healthy(); var epoch = EpochFor(position.EpochId, position.StreamGeneration);
             ulong index = SourceSessionContractV2.Index(position);
+            ValidateOriginalRange(position);
+            epoch.HighestKnown = Math.Max(epoch.HighestKnown, index);
             if (index <= epoch.Durable) return;
             ulong after = gapAfterIndex == null ? index - 1 : SealIndex(gapAfterIndex);
             if (after > epoch.Durable && !PausedCovers(epoch, epoch.Durable, after))
@@ -286,18 +302,31 @@ internal sealed class SourceSessionEpochLedgerV2
                 var seal = epoch.Seal ?? throw new InvalidDataException("source_final_epoch_unsealed");
                 var final = completed.SingleOrDefault(x => x.EpochId == epoch.Row.EpochId && x.StreamGeneration == epoch.Row.Context.StreamGeneration)
                     ?? throw new InvalidDataException("source_final_drain_missing");
+                ValidateSeal(epoch, final);
                 ulong reserved = SealIndex(seal.ReservedThrough), high = SealIndex(final.CompletedThrough);
-                if (final.ReservedThrough != seal.ReservedThrough || high < reserved || epoch.PausedAfter != null)
+                if (final.ReservedThrough != seal.ReservedThrough || high != reserved || epoch.PausedAfter != null)
                     throw new InvalidDataException("source_final_drain_incomplete");
                 if (epoch.Durable < reserved && PausedCovers(epoch, epoch.Durable, reserved)) epoch.Durable = reserved;
                 bool terminal = inputs.Values.Where(x => x.Token.PrePosition.EpochId == epoch.Row.EpochId).All(x => x.TerminalSignature != null);
-                if (epoch.Durable < reserved || !terminal) throw new InvalidDataException("source_final_drain_incomplete");
+                if (epoch.Durable != reserved || !terminal) throw new InvalidDataException("source_final_drain_incomplete");
                 result.Add(new(epoch.Row.EpochId, epoch.Row.Context.StreamGeneration, seal.ReservedThrough,
                     final.CompletedThrough, epoch.Durable.ToString(System.Globalization.CultureInfo.InvariantCulture), terminal));
             }
             if (completed.Count != result.Count) throw new InvalidDataException("source_final_drain_count_invalid");
             return result.AsReadOnly();
         }
+    }
+    internal void AssertIssuedBoundary(SourceBoundaryV2 row)
+    {
+        lock (metadataGate)
+            if (row.Sequence < 1 || row.Sequence > boundaries.Count || !ReferenceEquals(boundaries[(int)row.Sequence - 1], row))
+                throw new InvalidDataException("source_boundary_not_issued");
+    }
+    internal void AssertIssuedSegment(SourceSegmentV2 row)
+    {
+        lock (metadataGate)
+            if (row.Sequence < 1 || row.Sequence > segments.Count || !ReferenceEquals(segments[(int)row.Sequence - 1], row))
+                throw new InvalidDataException("source_segment_not_issued");
     }
     internal SourceSessionStatusV2 Status
     {
@@ -313,7 +342,7 @@ internal sealed class SourceSessionEpochLedgerV2
     private Epoch CheckCurrentBoundary(SourceNativePositionV2 position)
     {
         var epoch = EpochFor(position.EpochId, position.StreamGeneration); ulong index = SourceSessionContractV2.Index(position);
-        if (position.EpochId != currentEpoch || index < epoch.Boundary
+        if (position.EpochId != currentEpoch || index < Math.Max(epoch.Boundary, epoch.HighestKnown)
             || epoch.Seal != null && index > SealIndex(epoch.Seal.ReservedThrough))
             throw new InvalidDataException("source_native_boundary_order_invalid");
         return epoch;
@@ -326,7 +355,8 @@ internal sealed class SourceSessionEpochLedgerV2
     {
         if (seal.EpochId != epoch.Row.EpochId || seal.StreamGeneration != epoch.Row.Context.StreamGeneration
             || SealIndex(seal.CompletedThrough) > SealIndex(seal.ReservedThrough)
-            || SealIndex(seal.ReservedThrough) < epoch.Boundary
+            || SealIndex(seal.ReservedThrough) < Math.Max(epoch.Boundary, epoch.HighestKnown)
+            || SealIndex(seal.ReservedThrough) < epoch.Durable
             || epoch.Seal != null && epoch.Seal.ReservedThrough != seal.ReservedThrough)
             throw new InvalidDataException("source_epoch_seal_invalid");
     }
