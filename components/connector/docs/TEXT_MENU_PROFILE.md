@@ -274,3 +274,24 @@ public names/types/amounts/order, visible hand-card descriptions and bodies read
 from an actually entered native tip surface. Existing legacy producers and v1
 inputs are unchanged. Historical captures keep their original exposure identity;
 this source correction does not relabel them as conforming new data.
+
+## Native selector confirmation fidelity
+
+Selector request `min_select`/`max_select` and manual-confirm preferences remain
+facts about the caller's request. Actual confirmation availability comes from the
+exact current visible/enabled native button and is rechecked at delivery; these
+request facts do not form another confirmation legality engine.
+
+On exact game assembly `9cb4f1ad`, the combat-pile screen may enable confirmation
+below raw minimum after applying its native effective displayed-card count. The
+simple screen does not share that clamp: it initially enables zero-minimum
+confirmation even in automatic mode, then updates its own button and completion
+state after selections. Empty/no-screen and automatic completion remain native
+caller outcomes; Connector adds no synthetic confirm/cancel or repeated parent
+input. Grid selected-card cleanup remains native-owned.
+
+Upgrade and transform preview confirmation also follow their actual preview
+controls, rather than an extra generic raw-minimum veto. Original-card membership,
+exact stage/owner checks, native max-selection behavior and preview-cancel versus
+whole-selector close distinctions remain intact. These source/test fixes do not
+qualify all L35–48 scenarios or substitute for their live, Human or caller gates.
