@@ -12,15 +12,16 @@ One repository and workflow do not merge game, evidence, operational or research
 3. `docs/ARCHITECTURE.md` and `docs/COMPONENTS.md`
 4. the relevant component `AGENTS.md` or guide and exact code/tests
 
-Current owner authorization delegates G1 convergence and independent acceptance
-review to the project lead, followed by implementation and a real minimal loop.
-Read [the current v1 specification](docs/BASELINE_V1_SPEC.zh-CN.md) and
-[execution packet](docs/plans/BASELINE_V1_EXECUTION_2026-10-08.md), then CURRENT.
-Necessary game lifecycle, installs, GitHub integration and deployment are within
-scope; model/training paid spend has one aggregate USD 20 cap. Preserve native
-Human origin, data/use/Gold restrictions and exact runtime/rollback evidence.
-Old design-only/owner-read approval notices describe previous packets, not this
-authorization. Do not self-accept without the required independent review.
+Current owner authorization requires complete G2/V1 convergence, including all
+required earlier work, implementation, verification and independent evaluation.
+Read [the current specification](docs/BASELINE_V1_SPEC.zh-CN.md),
+[full execution and acceptance matrix](docs/plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)
+and CURRENT. Only the user can finally approve G2/V1. Source review, lead
+readiness, a merge or historical S0 acceptance cannot substitute that approval.
+Necessary game lifecycle, installs, GitHub integration and deployment remain
+within scope; model/training paid spend retains one aggregate USD 20 cap.
+Preserve Human/Agent origin, data/use/Gold, exact runtime and rollback evidence.
+Old design-only notices describe past packets; required goals remain active.
 Existing Stage1a product/research duties retain their explicitly reconciled scope.
 All AI collaborators read [AI collaboration](docs/AI_COLLABORATION.md). The local
 supervisor owns planning, delegation and integration coordination; implementation and
