@@ -49,6 +49,12 @@ from .source_session_bundle_v2 import (
     verify_source_session_bundle_v2,
 )
 
+from .source_session_bundle_v3 import (
+    SourceSessionBundleV3,
+    SourceSessionBundleV3Verifier,
+    verify_source_session_bundle_v3,
+)
+
 from .transfer import (
     DirectoryReceiver,
     DirectoryTransferManifest,
@@ -57,6 +63,9 @@ from .transfer import (
 )
 
 __all__ = [
+    "SourceSessionBundleV3",
+    "SourceSessionBundleV3Verifier",
+    "verify_source_session_bundle_v3",
     "SourceSessionBundleV2",
     "SourceSessionBundleV2Verifier",
     "verify_source_session_bundle_v2",

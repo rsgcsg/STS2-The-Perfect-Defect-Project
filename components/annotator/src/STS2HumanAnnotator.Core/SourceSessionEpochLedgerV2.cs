@@ -13,6 +13,7 @@ internal sealed class SourceSessionEpochLedgerV2
         internal ulong Durable = SourceSessionContractV2.Index(row.StartingPosition);
         internal ulong HighestKnown = SourceSessionContractV2.Index(row.StartingPosition);
         internal ulong? PausedAfter;
+        internal ulong? PausedAfterInput;
     }
     internal sealed class Input(SourceInputTokenV2 token)
     {
@@ -20,12 +21,15 @@ internal sealed class SourceSessionEpochLedgerV2
         internal PublicCaptureReferenceV2? Capture;
         internal PublicCatalogReferenceV2? Catalog;
         internal bool BasisBound;
+        internal SourceBasisOrderV3? BasisOrder;
         internal string? TerminalSignature;
     }
     private readonly object metadataGate = new();
     private readonly string sessionId, timelineId;
     private readonly RecorderEnvironmentIdentity environment;
     private readonly SourceSessionLimitsV2 limits;
+    private readonly SourceSessionWireFormat format;
+    private ulong lastInputOrdinal;
     private readonly Dictionary<string, Epoch> epochs = new(StringComparer.Ordinal);
     private readonly List<SourceSegmentV2> segments = new();
     private readonly List<SourceBoundaryV2> boundaries = new();
@@ -38,11 +42,11 @@ internal sealed class SourceSessionEpochLedgerV2
     private int pendingInputs;
 
     internal SourceSessionEpochLedgerV2(string sessionId, string timelineId, RecorderEnvironmentIdentity environment,
-        SourceSessionLimitsV2 limits)
+        SourceSessionLimitsV2 limits, SourceSessionWireFormat format)
     {
         SourceSessionContract.Identifier(sessionId); SourceSessionContract.Identifier(timelineId);
         SourceSessionContract.ValidateEnvironment(environment);
-        this.sessionId = sessionId; this.timelineId = timelineId; this.environment = environment; this.limits = limits;
+        this.sessionId = sessionId; this.timelineId = timelineId; this.environment = environment; this.limits = limits; this.format = format;
     }
     internal SourceEpochAdmissionV2 StageEpoch(SourceEpochPacketV2 packet)
     {
@@ -75,6 +79,7 @@ internal sealed class SourceSessionEpochLedgerV2
                     || packet.Transition.PreviousGameContinuityId != previous.Row.Context.GameContinuityId
                     || packet.Transition.GameContinuityId != packet.Context.GameContinuityId)
                     throw new InvalidDataException("source_epoch_transition_invalid");
+                packet = packet with { PredecessorSeal = StampSeal(previous, packet.PredecessorSeal) };
                 ValidateSeal(previous, packet.PredecessorSeal);
                 previous.Seal = packet.PredecessorSeal;
                 var intervals = ClosePausedEpoch(previous);
@@ -87,10 +92,11 @@ internal sealed class SourceSessionEpochLedgerV2
                 SeamCoverage = new System.Collections.ObjectModel.ReadOnlyDictionary<string, SourceSeamCoverage>(
                     new Dictionary<string, SourceSeamCoverage>(packet.Context.SeamCoverage, StringComparer.Ordinal))
             };
-            var row = new SourceAttachmentEpochV2(SourceSessionContractV2.EpochSchema, epochs.Count + 1,
+            var row = new SourceAttachmentEpochV2(format.Schema("source-attachment-epoch"), epochs.Count + 1,
                 sessionId, timelineId, packet.EpochId, packet.PreviousEpochId, context, packet.StartingPosition,
-                packet.InitialPosition, packet.PredecessorSeal, packet.Transition, DateTimeOffset.UtcNow);
-            var epoch = new Epoch(row); if (isPaused) epoch.PausedAfter = start;
+                packet.InitialPosition, packet.PredecessorSeal, packet.Transition, DateTimeOffset.UtcNow)
+            { AfterInputOrdinal = format.Fence(lastInputOrdinal) };
+            var epoch = new Epoch(row); if (isPaused) { epoch.PausedAfter = start; epoch.PausedAfterInput = lastInputOrdinal; }
             epochs.Add(row.EpochId, epoch); currentEpoch = row.EpochId;
             return new(row, boundary);
         }
@@ -105,9 +111,9 @@ internal sealed class SourceSessionEpochLedgerV2
             if (segments.Count != 0 && expectedSegment != segments[^1].SegmentId)
                 throw new InvalidOperationException("source_segment_changed");
             if (segments.Count >= limits.MaxSegments) Fail("source_segment_capacity");
-            var row = new SourceSegmentV2(SourceSessionContractV2.SegmentSchema, segments.Count + 1,
+            var row = new SourceSegmentV2(format.Schema("source-segment"), segments.Count + 1,
                 sessionId, timelineId, "source-segment-" + Guid.NewGuid().ToString("N"),
-                segments.Count == 0 ? null : segments[^1].SegmentId, declaration, position, DateTimeOffset.UtcNow);
+                segments.Count == 0 ? null : segments[^1].SegmentId, declaration, position, DateTimeOffset.UtcNow) { AfterInputOrdinal = format.Fence(lastInputOrdinal) };
             segments.Add(row); epoch.Boundary = SourceSessionContractV2.Index(position); return row;
         }
     }
@@ -120,11 +126,11 @@ internal sealed class SourceSessionEpochLedgerV2
             if (segments.Count == 0) throw new InvalidOperationException("source_segment_required");
             var closedIntervals = new List<SourcePausedIntervalV2>();
             if (kind == "pause" && !isPaused && !closing)
-            { isPaused = true; epoch.PausedAfter = SourceSessionContractV2.Index(position); }
+            { isPaused = true; epoch.PausedAfter = SourceSessionContractV2.Index(position); epoch.PausedAfterInput = lastInputOrdinal; }
             else if (kind is "resume" or "close" && !closing && (kind == "close" || isPaused))
             {
                 if (seals != null)
-                    foreach (var seal in seals) { var old = EpochFor(seal.EpochId, seal.StreamGeneration); ValidateSeal(old, seal); old.Seal = seal; }
+                    foreach (var seal in seals) { var old = EpochFor(seal.EpochId, seal.StreamGeneration); var original = StampSeal(old, seal); ValidateSeal(old, original); old.Seal = original; }
                 foreach (var old in epochs.Values)
                     if (old.PausedAfter != null)
                         closedIntervals.AddRange(ClosePausedEpoch(old, old.Row.EpochId == currentEpoch
@@ -151,9 +157,10 @@ internal sealed class SourceSessionEpochLedgerV2
         SourceNativeTransitionV2? transition)
     {
         if (boundaries.Count >= limits.MaxRowsPerStream) Fail("source_boundary_capacity");
-        var row = new SourceBoundaryV2(SourceSessionContractV2.BoundarySchema, boundaries.Count + 1,
+        var row = new SourceBoundaryV2(format.Schema("source-boundary"), boundaries.Count + 1,
             sessionId, timelineId, kind, segments[^1].SegmentId, position,
-            Array.AsReadOnly(seals.ToArray()), Array.AsReadOnly(intervals.ToArray()), transition, DateTimeOffset.UtcNow);
+            Array.AsReadOnly(seals.ToArray()), Array.AsReadOnly(intervals.ToArray()), transition, DateTimeOffset.UtcNow)
+        { AfterInputOrdinal = format.Fence(lastInputOrdinal) };
         boundaries.Add(row); return row;
     }
     private IReadOnlyList<SourcePausedIntervalV2> ClosePausedEpoch(Epoch epoch, ulong? through = null)
@@ -163,8 +170,9 @@ internal sealed class SourceSessionEpochLedgerV2
             throw new InvalidDataException("source_paused_epoch_unsealed"));
         if (end < after) throw new InvalidDataException("source_paused_interval_invalid");
         var row = new SourcePausedIntervalV2(epoch.Row.EpochId, epoch.Row.Context.StreamGeneration,
-            after.ToString(System.Globalization.CultureInfo.InvariantCulture), end.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        epoch.PausedAfter = null; paused.Add(row); if (end > after) gapCount++; return new[] { row };
+            after.ToString(System.Globalization.CultureInfo.InvariantCulture), end.ToString(System.Globalization.CultureInfo.InvariantCulture))
+        { AfterInputOrdinal = format.Fence(epoch.PausedAfterInput ?? lastInputOrdinal), ThroughInputOrdinal = format.Fence(lastInputOrdinal) };
+        epoch.PausedAfter = null; epoch.PausedAfterInput = null; paused.Add(row); if (end > after) gapCount++; return new[] { row };
     }
     internal SourceInputTokenV2 ReserveInput(string inputId, SourceNativePositionV2 pre)
     {
@@ -177,7 +185,9 @@ internal sealed class SourceSessionEpochLedgerV2
             if (inputs.ContainsKey(inputId)) throw new InvalidDataException("source_input_id_conflict");
             if (pendingInputs >= limits.MaxPendingInputs
                 || inputs.Count >= limits.MaxRowsPerStream) Fail("source_input_capacity");
-            var token = new SourceInputTokenV2(this, inputId, sessionId, timelineId, segments[^1].SegmentId, pre);
+            if (format.Ordered && lastInputOrdinal == ulong.MaxValue) Fail("source_input_ordinal_capacity");
+            var token = new SourceInputTokenV2(this, inputId, sessionId, timelineId, segments[^1].SegmentId, pre,
+                format.Fence(format.Ordered ? ++lastInputOrdinal : 0));
             inputs.Add(inputId, new(token)); pendingInputs++; return token;
         }
     }
@@ -192,6 +202,17 @@ internal sealed class SourceSessionEpochLedgerV2
             return input;
         }
     }
+    internal void SetInputOrder(SourceInputTokenV2 token, SourceBasisOrderV3 order)
+    {
+        lock (metadataGate)
+        {
+            var input = ExactInput(token);
+            if (!format.Ordered) return;
+            SourceSessionContractV3.Validate(new(token.InputPrefixOrdinal!, order));
+            if (input.BasisOrder != null && input.BasisOrder != order) throw new InvalidDataException("source_input_order_changed");
+            input.BasisOrder = order;
+        }
+    }
     internal void BindInput(SourceInputTokenV2 token, PublicCaptureReferenceV2? capture, PublicCatalogReferenceV2? catalog)
     {
         lock (metadataGate)
@@ -199,6 +220,8 @@ internal sealed class SourceSessionEpochLedgerV2
             var input = ExactInput(token);
             if (input.BasisBound && (input.Capture != capture || input.Catalog != catalog))
                 throw new InvalidDataException("source_input_basis_changed");
+            if (format.Ordered && input.BasisOrder?.Status != SourceSessionContractV3.FrozenBasis && (capture != null || catalog != null))
+                throw new InvalidDataException("source_unproven_input_has_capture");
             input.Capture = capture; input.Catalog = catalog; input.BasisBound = true;
         }
     }
@@ -310,12 +333,16 @@ internal sealed class SourceSessionEpochLedgerV2
                 bool terminal = inputs.Values.Where(x => x.Token.PrePosition.EpochId == epoch.Row.EpochId).All(x => x.TerminalSignature != null);
                 if (epoch.Durable != reserved || !terminal) throw new InvalidDataException("source_final_drain_incomplete");
                 result.Add(new(epoch.Row.EpochId, epoch.Row.Context.StreamGeneration, seal.ReservedThrough,
-                    final.CompletedThrough, epoch.Durable.ToString(System.Globalization.CultureInfo.InvariantCulture), terminal));
+                    final.CompletedThrough, epoch.Durable.ToString(System.Globalization.CultureInfo.InvariantCulture), terminal)
+                { AfterInputOrdinal = seal.AfterInputOrdinal });
             }
             if (completed.Count != result.Count) throw new InvalidDataException("source_final_drain_count_invalid");
             return result.AsReadOnly();
         }
     }
+    internal string? FinalInputPrefixOrdinal { get { lock (metadataGate) return format.Fence(lastInputOrdinal); } }
+    private SourceNativeSealV2 StampSeal(Epoch epoch, SourceNativeSealV2 seal) => seal with
+    { AfterInputOrdinal = epoch.Seal?.AfterInputOrdinal ?? format.Fence(lastInputOrdinal) };
     internal void AssertIssuedBoundary(SourceBoundaryV2 row)
     {
         lock (metadataGate)

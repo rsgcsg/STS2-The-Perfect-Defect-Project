@@ -8,6 +8,7 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
     private readonly string directory;
     private readonly CurrentRecordingManifest manifest;
     private readonly SourceCaptureProfileV2 profile;
+    private readonly SourceSessionWireFormat format;
     internal readonly SourceSessionEpochLedgerV2 Ledger;
     private readonly Dictionary<string, FileStream> streams = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> counts = new(StringComparer.Ordinal);
@@ -25,8 +26,8 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
         SourceDeclaration initialSource, SourceEpochPacketV2 initialEpoch)
     {
         ValidateProfile(profile); this.directory = directory; this.manifest = manifest;
-        this.profile = SourceSessionJson.Copy(profile);
-        Ledger = new(manifest.SessionId, manifest.TimelineId, manifest.SourceEnvironment!, profile.Limits);
+        this.profile = SourceSessionJson.Copy(profile); format = SourceSessionWireFormat.ForProfile(profile);
+        Ledger = new(manifest.SessionId, manifest.TimelineId, manifest.SourceEnvironment!, profile.Limits, format);
         try
         {
             foreach (string file in SourceSessionContractV2.StreamFiles)
@@ -41,8 +42,8 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
     }
     internal static void ValidateProfile(SourceCaptureProfileV2 profile)
     {
-        var l = profile.Limits;
-        if (profile.Schema != SourceSessionContractV2.ProfileSchema || profile.ProfileId != SourceSessionContractV2.ProfileId
+        var l = profile.Limits; var format = SourceSessionWireFormat.ForProfile(profile);
+        if (profile.Schema != format.Schema("source-capture-profile") || profile.ProfileId != format.ProfileId
             || profile.InputProfile != "native-logical-v1" || profile.PublicationProfileId != SourceSessionContractV2.PublicationProfileId
             || profile.PublicationProfileDefinitionSha256 != SourceSessionContractV2.PublicationProfileDefinitionSha256
             || !profile.EagerScope.SequenceEqual(new[] { "persistent", "interaction", "referents", "catalog" })
@@ -174,7 +175,7 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
             throw new InvalidDataException("source_full_reference_incomplete");
         if (packet.GapAfterIndex != null && SourceSessionContract.Index(new(packet.Position.StreamGeneration, packet.GapAfterIndex)) >= index)
             throw new InvalidDataException("source_gap_interval_invalid");
-        var row = new SourcePublicObservationV2(SourceSessionContractV2.ObservationSchema, counts["public-observations.jsonl"] + 1,
+        var row = new SourcePublicObservationV2(format.Schema("public-observation"), counts["public-observations.jsonl"] + 1,
             manifest.SessionId, manifest.TimelineId, packet.Position.EpochId, segment, packet.Position,
             packet.SourceSeam, packet.SourceIndex, packet.Phase, packet.SnapshotId, packet.OwnerOccurrence,
             packet.GameContinuityId, packet.Completeness, capture, catalog, packet.MissingReason, packet.GapAfterIndex);
@@ -199,9 +200,11 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
         ValidateOutcome(input, outcome); string signature = SourceSessionContract.Sha256(SourceSessionJson.Bytes(outcome));
         if (input.TerminalSignature != null)
         { if (input.TerminalSignature != signature) throw new InvalidDataException("source_input_completion_conflict"); return; }
-        var row = new SourceNativeInputWitnessV2(SourceSessionContractV2.InputSchema, counts["native-input-witnesses.jsonl"] + 1,
+        var row = new SourceNativeInputWitnessV2(format.Schema("native-input-witness"), counts["native-input-witnesses.jsonl"] + 1,
             manifest.SessionId, manifest.TimelineId, token.InputId, token.PrePosition.EpochId, token.SegmentId, token.PrePosition,
-            input.Capture, input.Catalog, outcome, DateTimeOffset.UtcNow);
+            input.Capture, input.Catalog, outcome, DateTimeOffset.UtcNow)
+        { InputPrefixOrdinal = token.InputPrefixOrdinal, BasisOrder = format.Ordered ? input.BasisOrder ??
+            new(SourceSessionContractV3.UnprovenBasis, SourceSessionContractV3.OrderUnprovenReason) : null };
         Append("native-input-witnesses.jsonl", row); Ledger.CompleteInput(token, signature);
     }
     private void ValidateOutcome(SourceSessionEpochLedgerV2.Input input, SourceInputOutcomeV2 outcome)
@@ -231,6 +234,8 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
         else if (outcome.SelectedAction != null || outcome.MappingStatus == "ambiguous" && outcome.MatchCount < 2
             || outcome.MappingStatus is "unmapped" or "capture_missing" && outcome.MatchCount != 0)
             throw new InvalidDataException("source_input_mapping_invalid");
+        if (format.Ordered && input.BasisOrder?.Status != SourceSessionContractV3.FrozenBasis && outcome.MappingStatus != "capture_missing")
+            throw new InvalidDataException("source_unproven_input_mapping_invalid");
         if (input.Capture == null && outcome.MappingStatus != "capture_missing")
             throw new InvalidDataException("source_missing_capture_mapping_invalid");
     }
@@ -253,14 +258,16 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
         var status = Status;
         var receipt = new
         {
-            schema = SourceSessionContractV2.CloseSchema, session_id = manifest.SessionId, timeline_id = manifest.TimelineId,
+            schema = format.Schema("source-session-close"), session_id = manifest.SessionId, timeline_id = manifest.TimelineId,
             status = "closed", accounting_complete = true, final_position = closeBoundary.Position,
             sealed_epochs = closeBoundary.SealedEpochs, final_drains = finalDrains, counts, stream_sha256 = hashes,
             gap_count = status.Gaps, input_count = status.Inputs, epoch_count = status.Epochs,
             source_kinds = sourceKinds.Order(StringComparer.Ordinal).ToArray()
         };
         string path = Path.Combine(directory, "source-close-receipt.json"), temporary = path + ".tmp";
-        WriteNew(temporary, SourceSessionJson.Bytes(receipt)); File.Move(temporary, path);
+        var receiptObject = System.Text.Json.Nodes.JsonNode.Parse(SourceSessionJson.Bytes(receipt))!.AsObject();
+        if (format.Ordered) receiptObject["final_input_prefix_ordinal"] = Ledger.FinalInputPrefixOrdinal;
+        WriteNew(temporary, SourceSessionJson.Bytes(receiptObject)); File.Move(temporary, path);
     }
     internal void RequirePreparedClose()
     {
@@ -268,13 +275,13 @@ internal sealed class SourceSessionStreamsV2 : IDisposable
         if (finalDrains == null) throw new InvalidOperationException("source_final_drains_required");
     }
     internal void WriteCoverage() => File.WriteAllBytes(Path.Combine(directory, "source-coverage.json"), SourceSessionJson.Bytes(new
-    { schema = "sts2.annotator/source-coverage-2", status = Status, non_claims = SourceSessionContractV2.NonClaims }));
+    { schema = format.Schema("source-coverage"), status = Status, non_claims = SourceSessionContractV2.NonClaims }));
     internal void WriteFailure()
     {
         if (Status.AccountingComplete) return;
         string path = Path.Combine(directory, "source-accounting-failure.json");
         if (!File.Exists(path)) WriteNew(path, SourceSessionJson.Bytes(new
-        { schema = "sts2.annotator/source-accounting-failure-2", code = Status.Error, accounting_complete = false, counts }));
+        { schema = format.Schema("source-accounting-failure"), code = Status.Error, accounting_complete = false, counts }));
     }
     private void Join(PublicCaptureReferenceV2? capture, PublicCatalogReferenceV2? catalog, bool requireFull = false)
     {
