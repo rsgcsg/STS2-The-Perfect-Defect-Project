@@ -9,6 +9,13 @@ internal enum NativeTipEntry { Focus, Mouse }
 /// Only the owning adapter provides the fixed native exit/remove callbacks.</summary>
 internal static class NativeTipReturn
 {
+    internal static bool CanReuse(object? previousSource, object source,
+        NativeTipEntry? previousEntry, NativeTipEntry entry, object? previousSet,
+        object currentSet, bool liveVisibleSet, bool currentSource) =>
+        currentSource && liveVisibleSet && previousSource != null && previousSet != null
+        && ReferenceEquals(previousSource, source) && previousEntry == entry
+        && ReferenceEquals(previousSet, currentSet);
+
     internal static NativeInputResult Close(bool signalEntered,
         Func<bool> exactOwner, Func<bool> exactSource,
         Action emitExit, Action remove, Action clearOwner)

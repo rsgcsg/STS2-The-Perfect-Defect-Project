@@ -221,6 +221,27 @@ expanded into a hidden boss definition or unopened text. Action labels use these
 public subjects/roles. Identical public instances may remain observationally
 symmetric; neither labels nor Model features embed opaque IDs to force distinction.
 
+The native-logical Map composes its existing travel/annotation actions with the
+currently available global information controls. Deck opens its native capstone;
+relic inspection and focus tips retain their exact inventory/model membership.
+Top-bar tips include Deck, Map, floor, boss, gold, HP, current room, the native
+portrait status tip when `ShowTip` is true, settings, visible run modifiers, and
+occupied or empty potion holders. Extra information controls use their visible
+control identity and role, without unopened descriptions or modifier operands;
+occupied potions keep their already captured public potion identity. These tips
+reuse `show_topbar_tips`. A live potion popup suppresses its holder's tip entry.
+
+Map Back and the top-bar Map button are independent native controls. Both use
+`return_native_map`, with separate exact leaves and labels; Back being disabled
+does not suppress an enabled current top-bar close, Deck or HUD information.
+Every Map global entry rechecks the exact Map input owner, named control/container,
+visibility, enabled/process and native focus-disable conditions. Deck honors
+native TestMode; tips honor the global hover-block/debug-hide conditions. Native
+modal/inspect/capstone ownership takes priority; rendered nonmodal tips keep the
+Map catalog and its scope failures. Map composition never appends underlying
+combat, hand or pile actions. These are source/Host-test guarantees; actual initial
+Map eligibility and exact-package journeys require separate runtime evidence.
+
 Missing or inconsistent required public bindings explicitly mark completeness
 partial and make the menu unavailable. Reward projections merge only the subjects
 and owners of appended information choices, not unrelated underlying room objects.

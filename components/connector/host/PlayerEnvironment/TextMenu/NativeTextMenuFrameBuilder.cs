@@ -104,31 +104,8 @@ internal static class NativeTextMenuFrameBuilder
         // An entered native information page owns input over the room. Do not
         // accidentally append combat actions from the legacy underlying room.
         if (page.Interaction.Kind == "native_map")
-        {
-            if (legacy.HostObservation.Surface is MapNavigationSurface
-                && legacy.Snapshot.BoundActions.Status == "complete")
-            {
-                var referents = page.Referents.ToList();
-                foreach (PlayerEnvironmentBoundAction action in
-                         OrderLegacyTextActions(legacy.HostObservation.Surface,
-                             legacy.Snapshot.BoundActions.Actions))
-                    if (legacy.Bindings.TryGetValue(action.BoundActionId,
-                            out PlayerEnvironmentNativeBinding? binding))
-                    {
-                        leaves.Add(FromLegacy(action, binding, executeLegacy));
-                        foreach (string id in action.Arguments.Select(value => value.ReferentId)
-                                     .Concat(action.SubjectReferentId is { } subject
-                                         ? new[] { subject } : Array.Empty<string>()))
-                            if (!referents.Any(value => value.ReferentId == id)
-                                && legacy.Snapshot.Referents.FirstOrDefault(value =>
-                                    value.ReferentId == id && value.State.Visible)
-                                    is { } native)
-                                referents.Add(native);
-                    }
-                page = page with { Referents = referents };
-            }
-            return new TextMenuFrame(page, owner, leaves);
-        }
+            return AppendMapActions(new TextMenuFrame(page, owner, leaves), legacy, executeLegacy);
+
         if (page.Interaction.Stage == "native_information_page"
             || page.Interaction.Kind == "native_information_unresolved")
             return new TextMenuFrame(page, owner, leaves);
@@ -378,6 +355,27 @@ internal static class NativeTextMenuFrameBuilder
             page = page with { Referents = referents };
         }
         return new TextMenuFrame(page, owner, leaves);
+    }
+
+    internal static TextMenuFrame AppendMapActions(TextMenuFrame frame, SnapshotBuildResult source,
+        Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy)
+    {
+        if (source.HostObservation.Surface is not MapNavigationSurface
+            || source.Snapshot.BoundActions.Status != "complete") return frame;
+        var leaves = frame.Leaves.ToList();
+        var referents = frame.Page.Referents.ToList();
+        foreach (PlayerEnvironmentBoundAction action in OrderLegacyTextActions(source.HostObservation.Surface,
+                     source.Snapshot.BoundActions.Actions))
+            if (source.Bindings.TryGetValue(action.BoundActionId, out PlayerEnvironmentNativeBinding? binding))
+            {
+                leaves.Add(FromLegacy(action, binding, executeLegacy));
+                foreach (string id in action.Arguments.Select(value => value.ReferentId)
+                             .Concat(action.SubjectReferentId is { } subject ? new[] { subject } : Array.Empty<string>()))
+                    if (!referents.Any(value => value.ReferentId == id)
+                        && source.Snapshot.Referents.FirstOrDefault(value => value.ReferentId == id && value.State.Visible) is { } native)
+                        referents.Add(native);
+            }
+        return frame with { Page = frame.Page with { Referents = referents }, Leaves = leaves };
     }
 
     internal static IReadOnlyList<PlayerEnvironmentBoundAction> OrderLegacyTextActions(
