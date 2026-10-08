@@ -30,6 +30,14 @@ def bridge():
         "host": {"runtime_instance_id": "game-1"},
     }
     behavior["capabilities"] = capabilities
+    behavior["recording"] = {
+        "schema": "sts2.platform/recording-status-1", "runtime_instance_id": "game-1",
+        "recording_session_id": None, "recording_lifecycle": "ready", "capture_profile_id": None,
+        "closeout_status": "idle", "source": None,
+        "health": {"append_health": "healthy", "disk_health": "healthy", "error": None},
+        "non_claims": ["not_machine_proof_of_human_origin", "not_native_coverage_qualified",
+                       "not_causal_transition_proof", "not_research_admission", "not_g2_v1_approved"],
+    }
 
     class ConnectorHandler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -50,12 +58,37 @@ def bridge():
 
         def do_GET(self):
             calls.append((self.path, None))
+            if self.path == "/v1/tasks/recording/status":
+                self.respond(behavior["recording"])
+                return
             assert self.path == "/v1/tasks/status"
             self.respond()
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             calls.append((self.path, body))
+            if self.path == "/v1/tasks/recording/command":
+                outcome = behavior.get("recording_outcome", "success")
+                if outcome == "lost":
+                    self.close_connection = True
+                    return
+                if outcome == "not_dispatched":
+                    self.respond({"error": "native_task_not_dispatched"}, 503)
+                    return
+                if outcome == "rejected":
+                    self.respond({"error": "task_handoff_rejected", "detail": "recording_game_instance_changed"}, 409)
+                    return
+                if outcome == "unknown_error":
+                    self.respond({"error": "unrecognized"}, 503)
+                    return
+                result = {"schema": "sts2.platform/recording-result-1", "command_id": body["command"]["command_id"],
+                          "accepted": True, "pending": False, "code": "recording", "status": behavior["recording"]}
+                if outcome == "malformed":
+                    result["extra"] = "not allowed"
+                if outcome == "wrong_id":
+                    result["command_id"] = "00000000-0000-0000-0000-000000000000"
+                self.respond(result)
+                return
             assert body["runtime_instance_id"] == "game-1"
             assert body["recording_session_id"] == "recording-1"
             if behavior["close"] == "lost":
@@ -69,9 +102,9 @@ def bridge():
                 capabilities["host"]["runtime_instance_id"] = "replacement-game"
             self.respond()
 
-        def respond(self):
-            raw = json.dumps(observed).encode()
-            self.send_response(200)
+        def respond(self, value=None, code=200):
+            raw = json.dumps(observed if value is None else value).encode()
+            self.send_response(code)
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
@@ -224,3 +257,96 @@ def test_workbench_first_model_command_uses_persisted_endpoint_not_current_confi
         ["/mode", "/tick"] if action == "one_step" else ["/mode"]
     )
     assert sum(body is not None for _, body in native_calls) == 1
+
+
+def source_status(behavior, state="paused"):
+    behavior["recording"].update(
+        recording_session_id="source-session", recording_lifecycle=state,
+        capture_profile_id="native-logical-source-v3",
+        source={"epoch_id": "epoch-1", "segment_id": "segment-1",
+                "declaration": {"source_kind": "agent_native_ui", "actor_id": "operator-agent",
+                                "declaration_id": "declaration-1", "machine_verifiable": False},
+                "observations": 7, "inputs": 3, "pending_inputs": 1, "epochs": 1,
+                "gaps": 0, "accounting_complete": True, "error": None},
+    )
+
+
+def test_source_start_and_paused_change_keep_explicit_declaration_session_segment(bridge):
+    client, _, calls, behavior = bridge
+    observed = client.recording_status(behavior["connector_endpoint"])
+    declaration = {"source_kind": "agent_protocol", "actor_id": "canary-operator",
+                   "declaration_id": "explicit-declaration", "machine_verifiable": False}
+    result = client.recording_command(behavior["connector_endpoint"], observed, "start_new_session",
+                                      source_declaration=declaration)
+    assert result["accepted"]
+    posted = next(body for route, body in calls if route == "/v1/tasks/recording/command")
+    assert posted["recording_session_id"] is None
+    assert posted["command"] == {
+        "schema": "sts2.ai-platform/recording-command-3", "command_id": posted["command"]["command_id"],
+        "kind": "start_new_session", "capture_profile_id": "native-logical-source-v3",
+        "source_declaration": declaration, "expected_source_segment_id": None,
+    }
+    source_status(behavior)
+    observed = client.recording_status(behavior["connector_endpoint"])
+    declaration = {**declaration, "source_kind": "declared_human", "declaration_id": "human-declaration"}
+    client.recording_command(behavior["connector_endpoint"], observed, "change_source", source_declaration=declaration)
+    posted = [body for route, body in calls if route == "/v1/tasks/recording/command"][-1]
+    assert posted["recording_session_id"] == "source-session"
+    assert posted["command"]["expected_source_segment_id"] == "segment-1"
+    assert posted["command"]["capture_profile_id"] is None
+    assert posted["command"]["source_declaration"]["machine_verifiable"] is False
+
+
+@pytest.mark.parametrize("kind", ["pause", "resume", "close"])
+def test_source_lifecycle_commands_have_no_declaration_or_profile_data(bridge, kind):
+    client, _, calls, behavior = bridge
+    source_status(behavior)
+    observed = client.recording_status(behavior["connector_endpoint"])
+    client.recording_command(behavior["connector_endpoint"], observed, kind)
+    posted = next(body for route, body in calls if route == "/v1/tasks/recording/command")["command"]
+    assert posted["schema"] == "sts2.ai-platform/recording-command-3"
+    assert all(posted[key] is None for key in ("capture_profile_id", "source_declaration", "expected_source_segment_id"))
+
+
+@pytest.mark.parametrize("outcome,code", [("lost", "native_recording_command_unknown"),
+    ("malformed", "native_recording_command_unknown"), ("wrong_id", "native_recording_command_unknown"),
+    ("not_dispatched", "native_recording_not_dispatched"), ("rejected", "native_recording_rejected"),
+    ("unknown_error", "native_recording_command_unknown")])
+def test_source_response_loss_or_unrecognized_error_never_reposts(bridge, outcome, code):
+    client, _, calls, behavior = bridge
+    source_status(behavior)
+    observed = client.recording_status(behavior["connector_endpoint"])
+    behavior["recording_outcome"] = outcome
+    with pytest.raises(BoundaryError, match=code):
+        client.recording_command(behavior["connector_endpoint"], observed, "close")
+    assert sum(route == "/v1/tasks/recording/command" for route, _ in calls) == 1
+    # A separate read observes current owner state; it does not repeat the mutation.
+    client.recording_status(behavior["connector_endpoint"])
+    assert sum(route == "/v1/tasks/recording/command" for route, _ in calls) == 1
+
+
+def test_source_stale_runtime_bad_declaration_or_live_switch_stays_before_post(bridge):
+    client, _, calls, behavior = bridge
+    source_status(behavior, "recording")
+    observed = client.recording_status(behavior["connector_endpoint"])
+    declaration = {"source_kind": "declared_human", "actor_id": "operator",
+                   "declaration_id": "declaration", "machine_verifiable": False}
+    for bad in ({**declaration, "machine_verifiable": True}, {**declaration, "source_kind": {}},
+                {**declaration, "actor_id": "/private/path"}, {**declaration, "extra": True}):
+        with pytest.raises(BoundaryError, match="invalid_native_recording_command"):
+            client.recording_command(behavior["connector_endpoint"], observed, "start_new_session", source_declaration=bad)
+    with pytest.raises(BoundaryError, match="invalid_native_recording_command"):
+        client.recording_command(behavior["connector_endpoint"], observed, "change_source", source_declaration=declaration)
+    observed["runtime_instance_id"] = "previous-game"
+    with pytest.raises(BoundaryError, match="native_recording_game_identity_mismatch"):
+        client.recording_command(behavior["connector_endpoint"], observed, "close")
+    assert all(route != "/v1/tasks/recording/command" for route, _ in calls)
+
+
+@pytest.mark.parametrize("field,value", [("extra", True), ("recording_lifecycle", []),
+                                        ("capture_profile_id", "native-logical-source-v3")])
+def test_source_status_requires_exact_safe_shape_and_profile_claim(bridge, field, value):
+    client, _, _, behavior = bridge
+    behavior["recording"][field] = value
+    with pytest.raises(BoundaryError, match="native_recording_unavailable"):
+        client.recording_status(behavior["connector_endpoint"])

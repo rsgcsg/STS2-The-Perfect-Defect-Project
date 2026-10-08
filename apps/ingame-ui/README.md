@@ -23,6 +23,28 @@ and causal-root lineage, selector metadata, action and state identities remain
 available in those details. Missing metadata stays unavailable. Canonical
 recording does not itself establish Full-Run qualification or research admission.
 
+The Recorder now offers **兼容语义录制** and **原生交互与观察**. The latter selects
+the explicit `native-logical-source-v3` profile. Select a source declaration
+(本人操作 / AI 界面操作 / Agent 协议 / 未知来源) and enter an operator ID before
+Start; no Human source is selected automatically. IDs use 1–128 ASCII letters,
+digits, `_`, `-` or `.`, excluding `.` and `..` alone. Pause before changing the
+source, then Resume. ChangeSource carries the observed exact session and source
+segment to the Recorder owner. Close remains Closing until the owner finishes
+the original accounting and durable drain; a fresh session can then start.
+
+Source views show public observations, inputs, pending inputs, gaps and accounting
+health. These are separate from canonical Human decision counters. Source kind
+is the operator's declaration with `machine_verifiable=false`; it does not prove
+Human origin, physical coverage, Commit, causal successor or research admission.
+Legacy controls retain their existing capture format. Source3 entry is a source
+candidate until its exact package/native runtime canaries pass.
+
+Direct native controls and the local TaskBridge share typed command composition.
+The bridge and async model preparation use the existing bounded native queue;
+queued cancellation can prove non-dispatch, while uncertain started work is never
+automatically retried. The browser/native Workbench lifecycle forms remain a
+follow-up in this same entry packet; the current browser still lists ended records.
+
 Agent Run uses only typed Policy Runtime controls. Its compact view keeps mode,
 controller, policy, last selected action, Receipt and **Return to Human** visible.
 It never resolves or submits a gameplay action directly. The Runtime loopback
