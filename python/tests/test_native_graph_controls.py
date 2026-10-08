@@ -15,6 +15,7 @@ from test_native_structured_model import (
 )
 from test_native_structured_training import data, origin
 from test_structured_resume import Authority, PauseControl, equal_tree, finish
+from test_structured_resume import dataset as legacy_data
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.local import LocalBlobStore
@@ -41,6 +42,7 @@ from stpd.policy.native_structured_export import (
     require_native_model_package,
 )
 from stpd.policy.structured_export import export_structured_package
+from stpd.structured_code_scope import LEGACY_SCOPE, TRAINING_SCOPE
 from stpd.structured_profiles import NATIVE_GRAPH_SCOPE, NATIVE_SCOPE
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.structured_control import StructuredWorkloadRequest
@@ -48,6 +50,7 @@ from stpd.workers.structured_execution import (
     execute_structured_workload,
     prepare_structured_workload,
 )
+from stpd.workers.structured_run import RUN_SCHEMA, prepare_structured_run
 
 
 @pytest.fixture(autouse=True)
@@ -241,3 +244,43 @@ def test_untrusted_control_domain_and_legacy_export_fail_before_publication(tmp_
         prepare_structured_workload(store, data(), origin(), StructuredTrainingConfig(),
             operation_id="1" * 32, code_scope=NATIVE_GRAPH_SCOPE)
     assert store.manifest_ids() == ()
+
+
+@pytest.mark.parametrize("operation_id", [None, "1" * 32])
+@pytest.mark.parametrize(
+    "native,scope,control,error",
+    [
+        (False, LEGACY_SCOPE, PRESETS[2], "control_scope_mismatch"),  # Original defect.
+        (False, TRAINING_SCOPE, PRESETS[0], "control_scope_mismatch"),
+        (True, NATIVE_SCOPE, PRESETS[0], "control_scope_mismatch"),
+        (True, NATIVE_GRAPH_SCOPE, None, "control_scope_mismatch"),
+        (True, NATIVE_GRAPH_SCOPE, PRESETS[0].to_dict(), "typed_control_required"),
+        (True, NATIVE_GRAPH_SCOPE, NativeGraphControl(GraphSpec(2)), "unsupported_graph"),
+        (True, NATIVE_GRAPH_SCOPE, NativeGraphControl(reset=ResetSpec("every_read")),
+         "unsupported_reset"),
+        (False, NATIVE_GRAPH_SCOPE, PRESETS[0], "input_spec_scope_mismatch"),
+    ],
+)
+def test_run_control_preflight_rejects_every_invalid_entry_before_store_publication(
+    tmp_path, operation_id, native, scope, control, error
+):
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    with pytest.raises(BoundaryError, match=error):
+        prepare_structured_run(store, data() if native else legacy_data(), origin(),
+            StructuredTrainingConfig(), operation_id=operation_id, code_scope=scope,
+            model_control=control)
+    assert store.manifest_ids() == ()
+    assert store.blobs.keys("objects/") == ()
+    assert store.blobs.keys("payload-indexes/") == ()
+
+
+def test_default_preoperation_legacy_run_keeps_its_original_namespace_and_graph(tmp_path):
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    run = prepare_structured_run(store, legacy_data(), origin(), StructuredTrainingConfig())
+    assert len(store.manifest_ids()) == 4
+    assert run.parameters.value()["schema"] == RUN_SCHEMA
+    assert "execution_identity" not in run.parameters.value()
+    from stpd.models.structured_m2 import GRAPH_ID
+
+    experiment = store.get_manifest(run.parent("experiment"))
+    assert experiment.parameters.value()["graph_id"] == GRAPH_ID

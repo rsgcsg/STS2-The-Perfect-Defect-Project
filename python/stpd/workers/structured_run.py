@@ -34,7 +34,7 @@ from ..fullrun.structured_sequences import (
 from ..models.structured_m2 import GRAPH_ID
 from ..models.structured_training import StructuredTrainingConfig, train_structured_model
 from ..native_graph_spec import RUN_SCHEMA as GRAPH_RUN_SCHEMA
-from ..native_graph_spec import NativeGraphControl
+from ..native_graph_spec import NativeGraphControl, optional_control
 from ..structured_code_scope import LEGACY_SCOPE, ROOT, SCOPED_RUN_SCHEMA, TRAINING_SCOPE
 from ..structured_profiles import (
     NATIVE_GRAPH_SCOPE,
@@ -68,6 +68,9 @@ def prepare_structured_run(
 ) -> Manifest:
     """Persist a caller-authorized input using existing immutable artifact kinds."""
     config.validate()
+    model_control = optional_control(model_control)
+    if (model_control is not None) != (code_scope == NATIVE_GRAPH_SCOPE):
+        raise BoundaryError("structured_run", "control_scope_mismatch")
     native = validate_profile(dataset, code_scope)
     scoped = code_scope in {TRAINING_SCOPE, *NATIVE_SCOPES}
     if (parse_dataset(dataset.source_bytes, code_scope) != dataset
