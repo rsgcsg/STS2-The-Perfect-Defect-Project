@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { RuntimeLifecycleOwner, RuntimeControlPreconditionError } from "./runtime-owner.js";
+export { RuntimeControlPreconditionError } from "./runtime-owner.js";
 import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvironmentSnapshot, TextMenuV2Snapshot } from "@rsgcsg/sts2-connector-client";
 import { admitWholeDecision } from "./admission.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
@@ -6,11 +8,6 @@ import { candidateOrderDigest } from "./digest.js";
 import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type ConfirmedInteraction, type DecisionAction, type ManagedCapabilities, type ManagedControlConfirmation, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
 import { StaleWholeBundleError } from "./connector.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
-
-/** A known-unapplied control request, not an uncertain gameplay delivery. */
-export class RuntimeControlPreconditionError extends Error {
-  constructor(readonly code: string, readonly httpStatus: number) { super(code); }
-}
 
 export interface RuntimeOptions {
   manifest: PolicyManifest;
@@ -89,16 +86,15 @@ export class PolicyRuntime {
   private consecutiveStaleSubmissions = 0;
   private nativeSubmissionsUsed = 0;
   private menuNavigationsUsed = 0;
-  private operation: Promise<unknown> = Promise.resolve();
   private requestedMode: RuntimeMode | null = null;
   private stopRequested = false;
-  private recoveryEpoch = 0;
-  private recoveryEpochExhausted = false;
-  private activePolicy: { controller: AbortController } | null = null;
+  private readonly owner: RuntimeLifecycleOwner;
+  private get recoveryEpoch(): number { return this.owner.epoch; }
+  private get activePolicy(): { controller: AbortController } | null { return this.owner.active; }
+  private set activePolicy(value: { controller: AbortController } | null) { this.owner.active = value; }
   private continuity: { token: string; gameId: string; runtimeId: string; environment: string } | null = null;
   private confirmedInteraction: { value: ConfirmedInteraction; sequence: number; epoch: number } | null = null;
-  private autonomyBudgetTimer: ReturnType<typeof setTimeout> | undefined;
-  private autonomyBudgetGeneration = 0;
+  private get autonomyBudgetGeneration(): number { return this.owner.generation; }
   private autonomyBudgetHandoffQueued = false;
   private autonomyBudgetRecoveryFenced = false;
   private autonomyBudgetHandoffFinished = false;
@@ -111,15 +107,7 @@ export class PolicyRuntime {
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly monotonicNow: () => number;
   private readonly autoBudget: AutonomyBudgetConfig;
-  private autonomyBudgetState: {
-    state: RuntimeStatus["autonomy_budget"]["state"];
-    submissionsUsed: number;
-    policyCallsUsed: number;
-    startedAt: number | null;
-    elapsedMs: number;
-    exhaustedReason: AutonomyBudgetExhaustionReason | null;
-    endedReason: AutonomyBudgetEndReason | null;
-  };
+  private get autonomyBudgetState() { return this.owner.state; }
 
   constructor(private readonly options: RuntimeOptions) {
     validatePolicyManifest(options.manifest);
@@ -148,17 +136,9 @@ export class PolicyRuntime {
     }
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.monotonicNow = options.monotonicNow ?? (() => performance.now());
-    this.autoBudget = normalizeAutonomyBudget(options.autoBudget);
+    this.owner = new RuntimeLifecycleOwner(options.autoBudget, this.monotonicNow, this.mode);
+    this.autoBudget = this.owner.budget;
     const started = isAutonomyMode(this.mode);
-    this.autonomyBudgetState = {
-      state: started ? "active" : "inactive",
-      submissionsUsed: 0,
-      policyCallsUsed: 0,
-      startedAt: started ? this.monotonicNow() : null,
-      elapsedMs: 0,
-      exhaustedReason: null,
-      endedReason: null
-    };
     if (started) this.scheduleAutonomyBudgetDeadline();
   }
 
@@ -223,18 +203,9 @@ export class PolicyRuntime {
       runtime_instance_id: runtimeInstanceId, recovery_epoch: recoveryEpoch };
   }
 
-  private advanceRecoveryEpoch(): void {
-    if (this.recoveryEpoch === Number.MAX_SAFE_INTEGER) this.recoveryEpochExhausted = true;
-    else this.recoveryEpoch += 1;
-  }
+  private advanceRecoveryEpoch(): void { this.owner.advanceEpoch(); }
 
-  private checkRecoveryEpoch(expected: number | undefined): void {
-    if (expected === undefined) return;
-    if (!Number.isSafeInteger(expected) || expected < 0)
-      throw new RuntimeControlPreconditionError("runtime_recovery_precondition_required", 428);
-    if (this.recoveryEpochExhausted || expected !== this.recoveryEpoch)
-      throw new RuntimeControlPreconditionError("runtime_recovery_epoch_mismatch", 409);
-  }
+  private checkRecoveryEpoch(expected: number | undefined): void { this.owner.checkEpoch(expected); }
 
   private async freshGameInstance(): Promise<string> {
     let identity: string;
@@ -864,118 +835,24 @@ export class PolicyRuntime {
   private async appendEvidence(kind: string, payload: Record<string, unknown>): Promise<boolean> { try { await this.options.evidence?.append(kind, payload, this.now()); return true; } catch (error) { const reason = `agent_evidence_write_failed:${message(error)}`; this.errors = [...this.errors, reason].slice(-20); this.invalidations = [...this.invalidations, reason].slice(-20); return false; } }
 
   private beginAutonomyBudget(): void {
-    this.clearAutonomyBudgetDeadline();
     this.nativeSubmissionsUsed = 0;
     this.menuNavigationsUsed = 0;
-    this.autonomyBudgetGeneration += 1;
     this.autonomyBudgetHandoffQueued = false;
     this.autonomyBudgetRecoveryFenced = false;
     this.autonomyBudgetHandoffFinished = false;
-    this.autonomyBudgetState = {
-      state: "active",
-      submissionsUsed: 0,
-      policyCallsUsed: 0,
-      startedAt: this.monotonicNow(),
-      elapsedMs: 0,
-      exhaustedReason: null,
-      endedReason: null
-    };
-    this.scheduleAutonomyBudgetDeadline();
+    this.owner.begin(() => this.requestAutonomyBudgetHandoff());
   }
 
-  private endAutonomyBudget(reason: AutonomyBudgetEndReason): void {
-    if (this.autonomyBudgetState.state === "active") {
-      this.autonomyBudgetState.elapsedMs = this.budgetElapsedMs();
-      this.autonomyBudgetState.startedAt = null;
-      this.autonomyBudgetState.state = "inactive";
-      this.autonomyBudgetState.endedReason = reason;
-    }
-    this.clearAutonomyBudgetDeadline();
-  }
-
-  private budgetElapsedMs(): number {
-    const state = this.autonomyBudgetState;
-    if (state.startedAt === null) return state.elapsedMs;
-    const current = this.monotonicNow();
-    const elapsed = Number.isFinite(current) ? Math.max(0, current - state.startedAt) : state.elapsedMs;
-    return Math.max(state.elapsedMs, elapsed);
-  }
-
+  private endAutonomyBudget(reason: AutonomyBudgetEndReason): void { this.owner.end(reason); }
+  private budgetElapsedMs(): number { return this.owner.elapsed(); }
   private autonomyBudgetStatus(): RuntimeStatus["autonomy_budget"] {
-    const state = this.autonomyBudgetState;
-    const elapsedMs = this.budgetElapsedMs();
-    if (state.state === "active" && state.exhaustedReason === null && elapsedMs >= this.autoBudget.deadlineMs) {
-      this.markBudgetExhausted("deadline");
-      this.requestAutonomyBudgetHandoff();
-    }
-    const effectiveElapsed = state.state === "active" ? Math.min(elapsedMs, this.autoBudget.deadlineMs) : Math.min(state.elapsedMs, this.autoBudget.deadlineMs);
-    return {
-      state: state.state,
-      max_submissions: this.autoBudget.maxSubmissions,
-      submissions_used: state.submissionsUsed,
-      max_policy_calls: this.autoBudget.maxPolicyCalls,
-      policy_calls_used: state.policyCallsUsed,
-      deadline_ms: this.autoBudget.deadlineMs,
-      elapsed_ms: Math.max(0, Math.round(effectiveElapsed)),
-      remaining_ms: Math.max(0, this.autoBudget.deadlineMs - Math.round(effectiveElapsed)),
-      exhausted_reason: state.exhaustedReason,
-      ended_reason: state.endedReason
-    };
+    return this.owner.status(() => this.requestAutonomyBudgetHandoff());
   }
-
-  private markBudgetExhausted(reason: AutonomyBudgetExhaustionReason): void {
-    if (this.autonomyBudgetState.state === "active") {
-      this.clearAutonomyBudgetDeadline();
-      this.autonomyBudgetState.state = "exhausted";
-      this.autonomyBudgetState.exhaustedReason = reason;
-      this.autonomyBudgetState.elapsedMs = Math.min(this.budgetElapsedMs(), this.autoBudget.deadlineMs);
-      this.autonomyBudgetState.startedAt = null;
-    }
-  }
-
-  private autonomyBudgetAvailable(): boolean {
-    if (this.autonomyBudgetState.state !== "active") return false;
-    if (this.budgetElapsedMs() >= this.autoBudget.deadlineMs) { this.markBudgetExhausted("deadline"); return false; }
-    if (this.autonomyBudgetState.submissionsUsed >= this.autoBudget.maxSubmissions) { this.markBudgetExhausted("submission_attempt_limit"); return false; }
-    if (this.autonomyBudgetState.policyCallsUsed >= this.autoBudget.maxPolicyCalls) { this.markBudgetExhausted("policy_call_limit"); return false; }
-    return true;
-  }
-
-  private consumePolicyCall(): boolean {
-    if (!this.autonomyBudgetAvailable()) return false;
-    this.autonomyBudgetState.policyCallsUsed += 1;
-    return true;
-  }
-
-  private consumeSubmissionAttempt(): boolean {
-    if (this.autonomyBudgetState.state !== "active") return false;
-    if (this.budgetElapsedMs() >= this.autoBudget.deadlineMs) { this.markBudgetExhausted("deadline"); return false; }
-    if (this.autonomyBudgetState.submissionsUsed >= this.autoBudget.maxSubmissions) { this.markBudgetExhausted("submission_attempt_limit"); return false; }
-    this.autonomyBudgetState.submissionsUsed += 1;
-    return true;
-  }
-
-  private clearAutonomyBudgetDeadline(): void {
-    if (this.autonomyBudgetTimer !== undefined) clearTimeout(this.autonomyBudgetTimer);
-    this.autonomyBudgetTimer = undefined;
-  }
-
-  private scheduleAutonomyBudgetDeadline(): void {
-    if (this.autonomyBudgetState.state !== "active") return;
-    const generation = this.autonomyBudgetGeneration;
-    const remaining = this.autoBudget.deadlineMs - this.budgetElapsedMs();
-    if (remaining <= 0) {
-      this.requestAutonomyBudgetHandoff();
-      return;
-    }
-    const timer = setTimeout(() => {
-      if (generation !== this.autonomyBudgetGeneration || this.autonomyBudgetState.state !== "active") return;
-      this.markBudgetExhausted("deadline");
-      this.requestAutonomyBudgetHandoff();
-    }, remaining);
-    this.autonomyBudgetTimer = timer;
-    if (typeof timer === "object" && timer !== null && "unref" in timer && typeof timer.unref === "function") timer.unref();
-  }
+  private markBudgetExhausted(reason: AutonomyBudgetExhaustionReason): void { this.owner.exhaust(reason); }
+  private autonomyBudgetAvailable(): boolean { return this.owner.available(); }
+  private consumePolicyCall(): boolean { return this.owner.consumeCall(); }
+  private consumeSubmissionAttempt(): boolean { return this.owner.consumeSubmission(); }
+  private scheduleAutonomyBudgetDeadline(): void { this.owner.scheduleDeadline(() => this.requestAutonomyBudgetHandoff()); }
 
   private requestAutonomyBudgetHandoff(): void {
     if (this.autonomyBudgetState.state === "active") this.markBudgetExhausted("deadline");
@@ -1092,7 +969,7 @@ export class PolicyRuntime {
       || this.autonomyBudgetRecoveryFenced;
   }
   private cancelActivePolicy(): void {
-    if (this.activePolicy && !this.activePolicy.controller.signal.aborted) this.activePolicy.controller.abort();
+    this.owner.cancelActive();
   }
   private policyRecoveryCancelled(expectedEpoch: number, error: unknown): boolean {
     return this.recoveryEpoch !== expectedEpoch
@@ -1102,9 +979,7 @@ export class PolicyRuntime {
       || error instanceof PolicyRecoveryCancelledError;
   }
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const current = this.operation.then(operation, operation);
-    this.operation = current.then(() => undefined, () => undefined);
-    return current;
+    return this.owner.serialize(operation);
   }
 }
 
@@ -1206,19 +1081,6 @@ function message(error: unknown): string { return error instanceof Error ? error
 function assertNever(value: never): never { throw new Error(`unknown runtime command: ${JSON.stringify(value)}`); }
 function isAutonomyMode(mode: RuntimeMode): boolean { return mode === "auto" || mode === "shadow" || mode === "one_step"; }
 function isDrivenMode(mode: RuntimeMode): boolean { return mode === "auto" || mode === "shadow"; }
-function normalizeAutonomyBudget(value: Partial<AutonomyBudgetConfig> | undefined): AutonomyBudgetConfig {
-  const budget = {
-    maxSubmissions: value?.maxSubmissions ?? DEFAULT_AUTONOMY_BUDGET.maxSubmissions,
-    maxPolicyCalls: value?.maxPolicyCalls ?? DEFAULT_AUTONOMY_BUDGET.maxPolicyCalls,
-    deadlineMs: value?.deadlineMs ?? DEFAULT_AUTONOMY_BUDGET.deadlineMs
-  };
-  if (!Number.isSafeInteger(budget.maxSubmissions) || budget.maxSubmissions < 1
-      || !Number.isSafeInteger(budget.maxPolicyCalls) || budget.maxPolicyCalls < 1
-      || !Number.isSafeInteger(budget.deadlineMs) || budget.deadlineMs < 1) {
-    throw new Error("autoBudget requires positive safe integer maxSubmissions, maxPolicyCalls and deadlineMs");
-  }
-  return budget;
-}
 class PolicyRecoveryCancelledError extends Error {
   constructor() { super("policy decision cancelled for recovery"); }
 }

@@ -21,16 +21,24 @@ the gaps. Old design proposals are history; retained requirements remain active.
 ## Actual starting point and work
 
 Start: `develop@4256f952e6db3983b259f805121571c8d71a7f6c`.
-Lead topic: `codex/g2-v1-convergence`; reuse its development checkout and preserve
+Lead topic: `codex/g2-v1-core-integration`; reuse its development checkout and preserve
 private `.local/s0` receipts. Five independent audit views found incomplete native
 profile/events/terminal/catalogs, source-aware recording, model/product integration,
 checkpoint recovery, autonomous reward progression, performance and user journeys.
 
-Active source packets: E1.1 native selector fidelity; E3.1 public reward teacher
-and actual Host exit receipts; E4.1 structured checkpoint/resume. Separate branches
-and writers; lead owns shared contracts/integration. One native build/train slot,
-one game/install owner. Shared wire and application interfaces are being reviewed.
-No new game, real-data training, installation or paid provider operation yet.
+Integrated, independently reviewed source packets include native selector and
+delivery fidelity, bounded main-thread queue, opaque public aliases, structured
+checkpoint/resume and scoped code identity, shared training/model application
+services and browser controls, and native logical capture/catalog/publication
+Core through `18af56cc`. Core renewal and strict Current envelopes passed 49
+independent portable tests; this is not REST/SDK or live-game qualification.
+
+Active integration: native bridge/SDK, full logical grid bindings, source-aware
+recording, AgentSession Runtime, direct native structured Model and five-page
+native Workbench. Independent reviews have found defects and repairs continue;
+candidate commits are not accepted merely because their own tests passed.
+One native build/train slot and one game/install owner remain. No new game,
+real-data training, installation or paid provider operation in this packet yet.
 
 ## Remaining Platform non-claims
 

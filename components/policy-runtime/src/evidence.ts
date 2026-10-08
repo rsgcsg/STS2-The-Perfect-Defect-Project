@@ -4,6 +4,9 @@ import { createReadStream } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { validateManagedEnvironmentBinding, type AgentRunManifest, type EvidenceFileEntry, type ImmutableEvidenceManifest, type ManagedEnvironmentBinding, type PolicyManifest, type RuntimeMode } from "./contracts.js";
 import { AGENT_RUN_SCHEMA, EVIDENCE_MANIFEST_SCHEMA } from "./contracts.js";
+import { validateAgentManifest, type AgentAdapterIdentity, type AgentManifest } from "./agent-session-contracts.js";
+import { validateAgentStateMetadata, type AgentStateMetadata } from "./agent-session-state.js";
+import { encodeBoundedAgentJson } from "./agent-session-json.js";
 
 export interface EvidenceOptions {
   root: string;
@@ -15,6 +18,16 @@ export interface EvidenceOptions {
   managedEnvironmentBinding?: ManagedEnvironmentBinding;
   now?: () => string;
 }
+export interface AgentSessionEvidenceOptions extends Omit<EvidenceOptions, "policyManifest" | "managedEnvironmentBinding"> {
+  agentManifest: AgentManifest;
+}
+interface AgentSessionRunManifest extends Omit<AgentRunManifest, "schema" | "policy_manifest_sha256" | "policy_id" | "policy_version" | "policy_artifact_sha256"> {
+  schema: "sts2.policy-runtime/agent-session-run-1";
+  agent_manifest_sha256: string;
+  agent_id: string;
+  agent_version: string;
+  agent_artifact_sha256: string;
+}
 
 export class AgentRunEvidence {
   readonly directory: string;
@@ -23,18 +36,23 @@ export class AgentRunEvidence {
   private readonly eventsPath: string;
   private readonly policyManifestPath: string;
   private readonly adapterAttestationPath: string;
-  private readonly policyManifest: PolicyManifest;
+  private readonly policyManifest: PolicyManifest | AgentManifest;
   private readonly policyManifestSha256: string;
   private adapterAttested = false;
   private sequence = 0;
   private sealed = false;
   private operation: Promise<unknown> = Promise.resolve();
-  private manifest: AgentRunManifest;
+  private manifest: AgentRunManifest | AgentSessionRunManifest;
+  private readonly stateFiles = new Set<string>();
+  private stateBytes = 0;
+  private stateStorageFailed = false;
+  private pendingStateBytes = 0;
+  private pendingStateFiles = 0;
 
   private constructor(
     directory: string,
-    manifest: AgentRunManifest,
-    policyManifest: PolicyManifest,
+    manifest: AgentRunManifest | AgentSessionRunManifest,
+    policyManifest: PolicyManifest | AgentManifest,
     policyManifestSha256: string
   ) {
     this.directory = directory;
@@ -42,7 +60,7 @@ export class AgentRunEvidence {
     this.manifest = manifest;
     this.manifestPath = join(directory, "manifest.json");
     this.eventsPath = join(directory, "events.jsonl");
-    this.policyManifestPath = join(directory, "policy-manifest.json");
+    this.policyManifestPath = join(directory, policyManifest.schema === "sts2.policy-runtime/agent-manifest-1" ? "agent-manifest.json" : "policy-manifest.json");
     this.adapterAttestationPath = join(directory, "adapter-attestation.json");
     this.policyManifest = policyManifest;
     this.policyManifestSha256 = policyManifestSha256;
@@ -93,7 +111,31 @@ export class AgentRunEvidence {
     return evidence;
   }
 
-  async attestAdapter(adapter: PolicyManifest["adapter"], now = new Date().toISOString()): Promise<void> {
+  static async createSession(options: AgentSessionEvidenceOptions): Promise<AgentRunEvidence> {
+    const agent = validateAgentManifest(options.agentManifest);
+    if (!options.runtimeVersion || !/^[a-f0-9]{64}$/u.test(options.runtimeCodeSha256)) throw new Error("exact Runtime identity required");
+    const runId = options.runId ?? `run-${randomUUID()}`;
+    const directory = join(options.root, runId);
+    await mkdir(directory, { recursive: false });
+    const manifestSha = sha256Bytes(Buffer.from(canonicalJson(agent), "utf8"));
+    const manifest: AgentSessionRunManifest = {
+      schema: "sts2.policy-runtime/agent-session-run-1", run_id: runId,
+      manifest_id: agent.manifest_id, agent_manifest_sha256: manifestSha,
+      agent_id: agent.agent.id, agent_version: agent.agent.version,
+      agent_artifact_sha256: agent.artifact.sha256, runtime_version: options.runtimeVersion,
+      runtime_code_sha256: options.runtimeCodeSha256,
+      started_at: (options.now ?? (() => new Date().toISOString()))(), ended_at: null,
+      status: "running", mode: options.mode, tainted: false, append_only: true
+    };
+    const evidence = new AgentRunEvidence(directory, manifest, agent, manifestSha);
+    await writeFile(evidence.manifestPath, `${canonicalJson(manifest)}\n`, { flag: "wx" });
+    await writeFile(evidence.eventsPath, "", { flag: "wx" });
+    await writeFile(evidence.policyManifestPath, `${canonicalJson(agent)}\n`, { flag: "wx" });
+    await writeFile(evidence.adapterAttestationPath, `${canonicalJson(evidence.adapterAttestation(null, null))}\n`, { flag: "wx" });
+    return evidence;
+  }
+
+  async attestAdapter(adapter: PolicyManifest["adapter"] | AgentAdapterIdentity, now = new Date().toISOString()): Promise<void> {
     return this.serialize(async () => {
       if (this.sealed) throw new Error("agent run evidence is sealed");
       if (canonicalJson(adapter) !== canonicalJson(this.policyManifest.adapter)) {
@@ -111,7 +153,8 @@ export class AgentRunEvidence {
       if (!kind || kind.includes("\n")) throw new Error("evidence event kind must be a single non-empty line");
       this.sequence += 1;
       const event = {
-        schema: "sts2.policy-runtime/agent-run-event-1",
+        schema: this.policyManifest.schema === "sts2.policy-runtime/agent-manifest-1"
+          ? "sts2.policy-runtime/agent-session-event-1" : "sts2.policy-runtime/agent-run-event-1",
         sequence: this.sequence,
         recorded_at: now,
         kind,
@@ -127,16 +170,59 @@ export class AgentRunEvidence {
     });
   }
 
+  /** Immutable opaque inference state; metadata is validated, Model bytes are never decoded. */
+  async storeAgentState(metadata: AgentStateMetadata, bytes: Uint8Array, expectedSha256: string): Promise<{ path: string; metadata_path: string; bytes: number; sha256: string }> {
+    if (this.sealed || this.policyManifest.schema !== "sts2.policy-runtime/agent-manifest-1") throw new Error("state store requires an active Agent session");
+    const manifest = this.policyManifest;
+    validateAgentStateMetadata(metadata, manifest);
+    if (manifest.input.state_recovery.mode !== "opaque" || bytes.byteLength < 1
+      || bytes.byteLength > manifest.input.state_recovery.max_state_bytes
+      || this.stateFiles.size + this.pendingStateFiles + 2 > 256
+      || this.stateBytes + this.pendingStateBytes + bytes.byteLength > 256 * 1024 * 1024)
+      throw new Error("opaque state storage capacity");
+    // Snapshot before entering an async queue: callers cannot change saved bytes/meta.
+    const snapshot = JSON.parse(encodeBoundedAgentJson(metadata, 64 * 1024).toString("utf8")) as AgentStateMetadata;
+    const buffer = Buffer.from(bytes);
+    const sha = sha256Bytes(buffer);
+    if (!/^[a-f0-9]{64}$/u.test(expectedSha256) || sha !== expectedSha256) throw new Error("opaque state integrity");
+    this.pendingStateBytes += buffer.length;
+    this.pendingStateFiles += 2;
+    return this.serialize(async () => {
+      if (this.sealed) throw new Error("state store requires an active Agent session");
+      const id = sha256Bytes(Buffer.from(canonicalJson({ metadata: snapshot, sha256: sha }), "utf8"));
+      const path = `agent-state-${id}.bin`, metadataPath = `agent-state-${id}.json`;
+      const record = { schema: "sts2.policy-runtime/agent-state-snapshot-1", metadata: snapshot,
+        payload: { path, bytes: buffer.length, sha256: sha } };
+      if (this.stateFiles.has(path)) {
+        if (sha256Bytes(await readFile(join(this.directory, path))) !== sha
+          || (await readFile(join(this.directory, metadataPath), "utf8")) !== `${canonicalJson(record)}\n`)
+          throw new Error("immutable state collision");
+        return { path, metadata_path: metadataPath, bytes: buffer.length, sha256: sha };
+      }
+      if (this.stateFiles.size + 2 > 256) throw new Error("opaque state storage capacity");
+      try {
+        const handle = await open(join(this.directory, path), "wx");
+        try { await handle.writeFile(buffer); await handle.sync(); } finally { await handle.close(); }
+        const meta = await open(join(this.directory, metadataPath), "wx");
+        try { await meta.writeFile(`${canonicalJson(record)}\n`); await meta.sync(); } finally { await meta.close(); }
+      } catch (error) { this.stateStorageFailed = true; throw error; }
+      this.stateFiles.add(path); this.stateFiles.add(metadataPath); this.stateBytes += buffer.length;
+      return { path, metadata_path: metadataPath, bytes: buffer.length, sha256: sha };
+    }).finally(() => { this.pendingStateBytes -= buffer.length; this.pendingStateFiles -= 2; });
+  }
+
   async finalize(input: { status: "completed" | "stopped" | "tainted"; tainted: boolean; mode: RuntimeMode; now?: string }): Promise<ImmutableEvidenceManifest> {
     return this.serialize(async () => {
       if (this.sealed) throw new Error("agent run evidence is already sealed");
+      if (this.stateStorageFailed) throw new Error("opaque state storage incomplete; evidence cannot be sealed");
       this.manifest = { ...this.manifest, ended_at: input.now ?? new Date().toISOString(), status: input.status, tainted: input.tainted, mode: input.mode };
       await writeFile(this.manifestPath, `${canonicalJson(this.manifest)}\n`);
+      const executionManifestName = this.policyManifest.schema === "sts2.policy-runtime/agent-manifest-1" ? "agent-manifest.json" : "policy-manifest.json";
       const files = await fileEntries([
         "adapter-attestation.json",
         "events.jsonl",
         "manifest.json",
-        "policy-manifest.json"
+        executionManifestName, ...this.stateFiles
       ], this.directory);
       const manifestSha256 = sha256Bytes(Buffer.from(canonicalJson({ run_id: this.runId, files }), "utf8"));
       const evidenceManifest: ImmutableEvidenceManifest = {
@@ -153,7 +239,7 @@ export class AgentRunEvidence {
         "events.jsonl",
         "evidence-manifest.json",
         "manifest.json",
-        "policy-manifest.json"
+        executionManifestName, ...this.stateFiles
       ], this.directory);
       const lines = checksummed.map((entry) => `${entry.sha256}  ${entry.path}`).join("\n");
       await writeFile(join(this.directory, "checksums.sha256"), `${lines}\n`, { flag: "wx" });
@@ -168,12 +254,15 @@ export class AgentRunEvidence {
     return current;
   }
 
-  private adapterAttestation(actual: PolicyManifest["adapter"] | null, attestedAt: string | null): Record<string, unknown> {
+  private adapterAttestation(actual: PolicyManifest["adapter"] | AgentAdapterIdentity | null, attestedAt: string | null): Record<string, unknown> {
     return {
-      schema: "sts2.policy-runtime/adapter-attestation-1",
+      schema: this.policyManifest.schema === "sts2.policy-runtime/agent-manifest-1"
+        ? "sts2.policy-runtime/agent-session-adapter-attestation-1" : "sts2.policy-runtime/adapter-attestation-1",
       run_id: this.runId,
       manifest_id: this.policyManifest.manifest_id,
-      policy_manifest_sha256: this.policyManifestSha256,
+      ...(this.policyManifest.schema === "sts2.policy-runtime/agent-manifest-1"
+        ? { agent_manifest_sha256: this.policyManifestSha256 }
+        : { policy_manifest_sha256: this.policyManifestSha256 }),
       status: actual === null ? "not_attested" : "attested",
       expected: this.policyManifest.adapter,
       actual,

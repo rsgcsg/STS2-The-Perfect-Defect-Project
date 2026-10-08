@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -824,6 +825,49 @@ def _install_open_launcher(
     _write_executable(executable_path, script)
 
 
+def configure_native_access(directory: Path, config_path: Path, prepared: dict[str, Any], *,
+                            enabled: bool) -> dict[str, Any]:
+    """Explicit selected-kit setting; no game, job, account or upload action."""
+    from spireagent.workbench.developer import atomic_json
+    from spireagent.workbench.native_workbench_access import (
+        BOOTSTRAP_SCHEMA,
+        NativeBootstrap,
+        private_bytes,
+    )
+
+    if type(enabled) is not bool:
+        reject("explicit_native_access_setting_required")
+    root = _launcher_directory()
+    _check_no_symlink(root, "launcher_path_unsafe")
+    private_bytes(config_path)
+    selected = _launcher_binding(directory, config_path.resolve(), prepared)
+    launcher_raw = private_bytes(root / "launcher.json")
+    if json.loads(launcher_raw) != selected:
+        reject("launcher_config_binding_mismatch")
+    digest(prepared.get("mod_sha256"), "kit_install.native_mod")
+    secret = secrets.token_hex(32)
+    path = root / "native-access.json"
+    if path.exists() or path.is_symlink():
+        raw = json.loads(private_bytes(path))
+        if (not isinstance(raw, dict) or set(raw) != {"schema", "enabled", "config_path",
+                "launcher_sha256", "game_mod_sha256", "secret"}
+                or raw.get("schema") != BOOTSTRAP_SCHEMA
+                or raw.get("config_path") != str(config_path.resolve())):
+            reject("native_access_recovery_required")
+        digest(raw["secret"], "kit_install.native_secret")
+        if (raw["launcher_sha256"] == sha(launcher_raw)
+                and raw["game_mod_sha256"] == prepared["mod_sha256"]):
+            secret = raw["secret"]
+    atomic_json(path, {"schema": BOOTSTRAP_SCHEMA, "enabled": enabled,
+                      "config_path": str(config_path.resolve()),
+                      "launcher_sha256": sha(launcher_raw),
+                      "game_mod_sha256": prepared["mod_sha256"], "secret": secret})
+    if enabled:
+        NativeBootstrap.read(root, config_path.resolve())
+    return {"status": "native_access_enabled" if enabled else "native_access_disabled",
+            "scope": "selected_local_application", "gameplay_started": False}
+
+
 def launch_workbench() -> dict[str, Any]:
     """Validate this exact prepared release and open only its installed profile."""
     if sys.platform != "darwin":
@@ -1067,7 +1111,7 @@ def main() -> int:
     parser.add_argument(
         "command", choices=(
             "plan", "prepare", "status", "preflight", "initialize", "deploy", "register",
-            "launch", "install-launcher",
+            "launch", "install-launcher", "native-access",
         )
     )
     parser.add_argument("--archive", type=Path)
@@ -1076,9 +1120,20 @@ def main() -> int:
     parser.add_argument("--directory", type=Path)
     parser.add_argument("--game-directory", type=Path)
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--enable-native-access", action="store_true")
     args = parser.parse_args()
     try:
-        if args.command == "launch":
+        if args.enable_native_access and args.command != "native-access":
+            reject("native_access_arguments_invalid")
+        if args.command == "native-access":
+            if (args.config is None or any(value is not None for value in (
+                    args.archive, args.sha256, args.releases, args.directory,
+                    args.game_directory))):
+                reject("native_access_arguments_invalid")
+            directory = Path(__file__).resolve().parents[3]
+            result = configure_native_access(directory, args.config, status(directory),
+                                             enabled=args.enable_native_access)
+        elif args.command == "launch":
             if any(value is not None for value in (
                 args.archive, args.sha256, args.releases, args.directory,
                 args.game_directory, args.config,

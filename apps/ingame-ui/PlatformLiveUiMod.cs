@@ -169,6 +169,8 @@ internal sealed class PlatformLivePanel : IDisposable
     private string? _displayedPolicyRunId;
     private Button _endTestButton = null!;
     private Button _workbenchButton = null!;
+    private Button _externalWorkbenchButton = null!;
+    private PlatformNativeWorkbenchPanel _nativeWorkbench = null!;
     private bool _policyCommandPending;
     private readonly PlatformPolicyCommands _policyCommands = new();
     private readonly HttpClient _workbenchHttpClient = PlatformWorkbenchOpenClient.CreateHttpClient();
@@ -231,6 +233,7 @@ internal sealed class PlatformLivePanel : IDisposable
             _tree.ProcessFrame -= _processFrameHandler;
         Root.Resized -= ApplyWorkspaceBounds;
         _statusClient.Dispose();
+        _nativeWorkbench.Dispose();
         _workbenchHttpClient.Dispose();
         Task<PlatformWorkbenchOpenResult>? pendingOpen = _workbenchOpenCheck;
         if (pendingOpen is null)
@@ -322,8 +325,10 @@ internal sealed class PlatformLivePanel : IDisposable
         _workspaceTitle.AddThemeFontSizeOverride("font_size", 18);
         _workspaceTitle.AddThemeColorOverride("font_color", TextPrimary);
         titleRow.AddChild(_workspaceTitle);
-        _workbenchButton = BuildHeaderButton("工作台", BeginOpenWorkbench, "Open the connected local Workbench in your default browser.");
+        _workbenchButton = BuildHeaderButton("工作台", () => SelectSurface(2), "Open the native project Workbench.");
         titleRow.AddChild(_workbenchButton);
+        _externalWorkbenchButton = BuildHeaderButton("外部窗口", BeginOpenWorkbench, "Open the connected Workbench browser entry.");
+        titleRow.AddChild(_externalWorkbenchButton);
         titleRow.AddChild(BuildHeaderButton("Minimize", MinimizePanel, "Keep a small live view during play."));
         titleRow.AddChild(BuildHeaderButton("Reset", ResetLayout, "Restore position, size and active surface."));
         var closeButton = BuildHeaderButton("收起", HidePanel, "Close workspace and return to gameplay.");
@@ -350,7 +355,7 @@ internal sealed class PlatformLivePanel : IDisposable
         _tabBar.AddThemeFontSizeOverride("font_size", 13);
         _tabBar.AddThemeColorOverride("font_selected_color", TextPrimary);
         _tabBar.AddThemeColorOverride("font_unselected_color", TextSecondary);
-        foreach (string name in new[] { "模型实战", "真人采集" })
+        foreach (string name in new[] { "模型实战", "真人采集", "工作台" })
             _tabBar.AddTab(name);
         _tabBar.TabClicked += OnTabClicked;
         _workspaceContent.AddChild(_tabBar);
@@ -366,6 +371,9 @@ internal sealed class PlatformLivePanel : IDisposable
         _workspaceContent.AddChild(_surfaceViewport);
         BuildAgentRunPage(_surfaceViewport);
         BuildRecorderPage(_surfaceViewport);
+        _nativeWorkbench = new PlatformNativeWorkbenchPanel(command => _ = RunPolicyCommandAsync(command));
+        _surfaceViewport.AddChild(_nativeWorkbench.Root);
+        _surfaces.Add(_nativeWorkbench.Root);
 
         _toastStack = new VBoxContainer
         {
@@ -883,7 +891,7 @@ internal sealed class PlatformLivePanel : IDisposable
 
     private void SelectSurface(int surface)
     {
-        string selectedSurface = surface == 0 ? "agent_run" : "human_recorder";
+        string selectedSurface = surface switch { 0 => "agent_run", 1 => "human_recorder", _ => "workbench" };
         PlatformLiveLayoutState next = PlatformLiveLayout.SelectSurface(_layout, selectedSurface);
         if (next == _layout)
             return;
@@ -895,7 +903,7 @@ internal sealed class PlatformLivePanel : IDisposable
 
     private void ApplySurfacePresentation(bool resizeWorkspace = true)
     {
-        int activeSurface = _layout.ActiveSurface == "human_recorder" ? 1 : 0;
+        int activeSurface = _layout.ActiveSurface switch { "human_recorder" => 1, "workbench" => 2, _ => 0 };
         _tabBar.CurrentTab = activeSurface;
         for (int index = 0; index < _surfaces.Count; index++)
             _surfaces[index].Visible = index == activeSurface;
@@ -940,7 +948,7 @@ internal sealed class PlatformLivePanel : IDisposable
         _normalView.Visible = !_layout.Compact;
         _compactView.Visible = _layout.Compact;
         _resizeHandle.Visible = !_layout.Compact;
-        _compactHumanButton.Visible = _layout.ActiveSurface == "agent_run";
+        _compactHumanButton.Visible = _layout.ActiveSurface == "agent_run" || _layout.ActiveSurface == "workbench";
         _toastViewport.Visible = workspaceVisible && !_layout.Compact && _toasts.Count > 0;
     }
 
@@ -1049,6 +1057,16 @@ internal sealed class PlatformLivePanel : IDisposable
             var recording = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance.QueryStatus();
             RefreshActionFeed(recording);
             ApplyRecordingAvailability(recording);
+        }
+        else if (_layout.ActiveSurface == "workbench")
+        {
+            _nativeWorkbench.Refresh(!_layout.Compact);
+            _ = PollAsync(); // Direct Policy recovery stays independent of Workbench pairing.
+            if (_layout.Compact)
+            {
+                _compactSummary.Text = "本机工作台 · 独立后台任务";
+                _compactRecent.Text = "训练/上传由工作台服务拥有。\n关闭面板不会停止任务。";
+            }
         }
         else
             _ = PollAsync();
@@ -1405,6 +1423,7 @@ internal sealed class PlatformLivePanel : IDisposable
     private void OnProcessFrame()
     {
         CompleteWorkbenchOpenCheck();
+        _nativeWorkbench.OnFrame(_workspace.Visible && _layout.ActiveSurface == "workbench" && !_layout.Compact);
         ApplyPendingStatus();
         ApplyPendingPollError();
         ExpireToasts();
@@ -1414,7 +1433,7 @@ internal sealed class PlatformLivePanel : IDisposable
     {
         if (_disposed || _workbenchOpenCheck is { IsCompleted: false })
             return;
-        _workbenchButton.Disabled = true;
+        _externalWorkbenchButton.Disabled = true;
         CancellationToken token = _workbenchOpenLifetime.Token;
         _workbenchOpenCheck = Task.Run(() => PlatformWorkbenchOpenClient.OpenAsync(
             _workbenchHttpClient, token));
@@ -1428,7 +1447,7 @@ internal sealed class PlatformLivePanel : IDisposable
             return;
 
         _workbenchOpenCheck = null;
-        _workbenchButton.Disabled = false;
+        _externalWorkbenchButton.Disabled = false;
         PlatformWorkbenchOpenResult result;
         try
         {

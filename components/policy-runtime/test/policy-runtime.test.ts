@@ -568,7 +568,7 @@ describe("cross-interface Runtime control preconditions", () => {
 
   it("bounds epoch exhaustion without blocking Human/Stop", async () => {
     const runtime = makeRuntime();
-    (runtime as unknown as { recoveryEpoch: number }).recoveryEpoch = Number.MAX_SAFE_INTEGER;
+    (runtime as unknown as { owner: { epoch: number } }).owner.epoch = Number.MAX_SAFE_INTEGER;
     await runtime.setMode("human");
     await expect(runtime.readEnvironment()).rejects.toMatchObject({ code: "runtime_recovery_epoch_mismatch" });
     await expect(runtime.setMode("auto", { ...binding, recoveryEpoch: Number.MAX_SAFE_INTEGER })).rejects.toMatchObject({ code: "runtime_recovery_epoch_mismatch" });

@@ -12,12 +12,18 @@ import sys
 import time
 from typing import Any
 
+from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, decode_json, digest
 from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.workbench.developer import ROOT
 from spireagent.workbench.research_process import private_child
 from spireagent.workbench.training_scratch import retained_scratch_bytes
+from spireagent.workbench.trusted_recipes import (
+    STRUCTURED_SCOPED_RECIPE,
+    structured_recipe_run_schema,
+    structured_recipe_scope,
+)
 
 _private_child = private_child
 
@@ -25,25 +31,44 @@ _private_child = private_child
 def verify_resume_checkpoint(store: Any, operation: dict[str, Any], checkpoint_id: Any) -> None:
     checkpoint = store.get_manifest(checkpoint_id)
     run = store.get_manifest(operation["run_id"])
+    from stpd.structured_code_scope import TRAINING_SCOPE, checkpoint_schema, run_code_scope
+
     info = checkpoint.parameters.value()
-    if (checkpoint.kind != "checkpoint" or checkpoint.producer != run.producer
+    scope = structured_recipe_scope(operation["recipe"])
+    scoped = scope == TRAINING_SCOPE
+    if (run.parameters.value().get("schema") != structured_recipe_run_schema(operation["recipe"])
+            or run_code_scope(run.parameters.value().get("schema")) != scope
+            or checkpoint.kind != "checkpoint"
+            or not scoped and checkpoint.producer != run.producer
             or checkpoint.parent("run") != run.artifact_id
             or checkpoint.parent("training_input") != operation["input_id"]
-            or info.get("schema") != "stpd/structured-m2-training-checkpoint-v2"):
+            or info.get("schema") != checkpoint_schema(scope)):
         raise BoundaryError("local_training", "checkpoint_run_identity_mismatch")
-    prior = {item["attempt_id"] for item in operation["attempts"]
+    if scoped and (info.get("attempt_producer") != checkpoint.producer.to_dict()
+            or checkpoint.producer.uv_lock_sha256 != run.parameters.value()[
+                "execution_identity"]["code_identity"]["dependency_lock_sha256"]):
+        raise BoundaryError("local_training", "checkpoint_attempt_producer_mismatch")
+    prior = {item["attempt_id"]: item for item in operation["attempts"]
              if item["writer_terminal"]}
     if operation["writer_terminal"]:
-        prior.add(operation["attempt_id"])
-    if info.get("attempt") not in prior:
+        prior[operation["attempt_id"]] = operation
+    creator = prior.get(info.get("attempt"))
+    if creator is None:
         raise BoundaryError("local_training", "checkpoint_writer_terminal_required")
-    # A published checkpoint absent its owning event is an uncertain publication,
-    # not a selectable recovery point.
+    if scoped and Producer.decode(creator["attempt_producer"]) != checkpoint.producer:
+        raise BoundaryError("local_training", "checkpoint_attempt_producer_mismatch")
+    # A copied or partially published checkpoint needs its exact historical event,
+    # never a relabelled current writer or the run's original producer.
     events = ObjectStoreRunReporter(store, store.blobs).events(run.artifact_id)
-    if not any(event.parameters.value().get("kind") == "checkpoint"
+    if not any(event.kind == "run_event" and event.parent("run") == run.artifact_id
+               and event.producer == checkpoint.producer
+               and event.parameters.value().get("schema") == "stpd/run-event-v1"
+               and event.parameters.value().get("kind") == "checkpoint"
                and event.parameters.value().get("attempt") == info["attempt"]
-               and event.parameters.value().get("details", {}).get("checkpoint_id")
-               == checkpoint_id for event in events):
+               and event.parameters.value().get("details", {}).get("checkpoint_id") == checkpoint_id
+               and (not scoped or
+                    event.parameters.value().get("details", {}).get("attempt_producer")
+                    == checkpoint.producer.to_dict()) for event in events):
         raise BoundaryError("local_training", "checkpoint_event_required")
 
 
@@ -97,6 +122,10 @@ class StructuredRecipeAdapter:
         dataset = self.preflight(store, owner, operation["dataset_id"])
         runs = {run.run_id for run in dataset.runs}
         source_id, attempt_id = operation["dataset_id"], operation["attempt_id"]
+        scoped = operation["recipe"] == STRUCTURED_SCOPED_RECIPE
+        attempt_producer = (Producer.decode(operation["attempt_producer"]) if scoped else
+                            source_identity(ROOT))
+        expected_run_schema = structured_recipe_run_schema(operation["recipe"])
         protocol_source = "partition_schema" in store.get_manifest(source_id).parameters.value()
         if protocol_source:
             if operation["mode"] == "start":
@@ -139,7 +168,9 @@ class StructuredRecipeAdapter:
             with service._lock:
                 recorded = current()
                 if kind == "started":
-                    if sequence != 1 or details or handshake:
+                    expected_started = ({"attempt_producer": attempt_producer.to_dict()}
+                                        if scoped else {})
+                    if sequence != 1 or details != expected_started or handshake:
                         raise BoundaryError("local_training", "child_handshake_invalid")
                     handshake = True
                     service._advance(path, identity, child_handshake=True)
@@ -166,8 +197,8 @@ class StructuredRecipeAdapter:
                     input_id = digest(details["input_id"], "local_training.input_id")
                     run, training = store.get_manifest(run_id), store.get_manifest(input_id)
                     if (recorded["mode"] != "start" or recorded.get("run_id")
-                            or run.kind != "run" or run.producer != source_identity(ROOT)
-                            or run.parameters.value().get("schema") != "stpd/structured-m2-run-v2"
+                            or run.kind != "run" or run.producer != attempt_producer
+                            or run.parameters.value().get("schema") != expected_run_schema
                             or run.parameters.value().get("operation_id") != identity
                             or run.parent("training_input") != input_id
                             or training.kind != "training_input"
@@ -183,7 +214,11 @@ class StructuredRecipeAdapter:
                         details["event_id"], "local_training.event_id"))
                     info = event.parameters.value()
                     run = store.get_manifest(recorded["run_id"])
-                    if (event.kind != "run_event" or event.producer != run.producer
+                    if (run.parameters.value().get("schema") != expected_run_schema
+                            or event.kind != "run_event"
+                            or event.producer != (attempt_producer if scoped else run.producer)
+                            or scoped and info.get("details", {}).get("attempt_producer")
+                            != attempt_producer.to_dict()
                             or event.parent("run") != run.artifact_id
                             or info.get("schema") != "stpd/run-event-v1"
                             or info.get("attempt") != attempt_id
@@ -196,7 +231,15 @@ class StructuredRecipeAdapter:
                         cp_id = digest(event_details.get("checkpoint_id"),
                                        "local_training.checkpoint")
                         checkpoint = store.get_manifest(cp_id)
-                        if (checkpoint.kind != "checkpoint" or checkpoint.producer != run.producer
+                        from stpd.structured_code_scope import checkpoint_schema
+
+                        cp_info = checkpoint.parameters.value()
+                        if (checkpoint.kind != "checkpoint"
+                                or checkpoint.producer != event.producer
+                                or cp_info.get("schema") != checkpoint_schema(
+                                    structured_recipe_scope(operation["recipe"]))
+                                or scoped and cp_info.get("attempt_producer")
+                                != attempt_producer.to_dict()
                                 or checkpoint.parent("run") != run.artifact_id
                                 or checkpoint.parent("training_input") != recorded["input_id"]
                                 or checkpoint.parameters.value().get("attempt") != attempt_id):

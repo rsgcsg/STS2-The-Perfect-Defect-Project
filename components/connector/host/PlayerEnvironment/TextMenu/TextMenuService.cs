@@ -39,6 +39,21 @@ internal static partial class PlayerEnvironmentService
     private static TextMenuFrame CaptureTextMenuV2Frame()
         => CaptureTextMenuFrame(includeSemanticCardPlays: true);
 
+    // Called only by the opt-in native-logical owner. It does not use either
+    // text-menu session, their virtual cursors, or v2 semantic card staging.
+    internal static TextMenuFrame CaptureNativeLogicalFrame() => CaptureWithRunIdentity(
+        () => RunManager.Instance.DebugOnlyGetState(),
+        () =>
+        {
+            SnapshotBuildResult native = BuildSnapshot(textMenuCapture: true,
+                maximumBoundActions: NativeLogicalCapture.MaximumActions);
+            TextMenuFrame frame = NativeTextMenuFrameBuilder.Capture(native, Entities,
+                binding => StartPlayerEnvironmentInput(native, binding.NativeAction,
+                    binding.ExactOperands), nativeLogical: true);
+            return NativeLogicalCapture.Prepare(frame, Entities);
+        },
+        run => Entities.GetId(run, "run"));
+
     private static TextMenuFrame CaptureTextMenuFrame(bool includeSemanticCardPlays)
     {
         return CaptureWithRunIdentity(
