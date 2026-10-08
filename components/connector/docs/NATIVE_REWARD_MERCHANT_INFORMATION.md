@@ -33,8 +33,12 @@ All three variants may focus for native tips. Only card and relic variants
 have a meaningful native preview override: a fresh disposable confirm
 InputEventAction goes through the exact slot's public _GuiInput to OnPreview.
 Both open a native singleton inspector. Potion has no preview override and no
-invented inspect action. Existing purchase/removal/close leaves and public
-offer price/eligibility facts are retained. Sold/replaced stock, changed model,
+invented inspect action. Native Open enables Back before publishing its open/current context.
+BlockInput redirects input to its native blocker and disables Back. This exact
+blocker/Back tuple is rechecked; known blocking excludes stock information even
+if individual hitboxes remain enabled, and an unknown tuple fails closed.
+Existing purchase/removal/close leaves and public offer price/eligibility facts
+are retained. Sold/replaced stock, changed model,
 disabled/unmounted control, owner replacement or an entered inspector rejects
 the stale input.
 

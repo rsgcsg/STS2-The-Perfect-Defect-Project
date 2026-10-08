@@ -8,6 +8,7 @@ using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Entities.UI;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.Cards;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Potions;
 using MegaCrit.Sts2.Core.Nodes.Relics;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
@@ -29,9 +30,11 @@ internal sealed record NativeMerchantInformationEntry(
 /// purchase eligibility are intentionally absent: native previews do not buy.</summary>
 internal sealed record NativeMerchantInformation(
     MerchantRoom Room, NMerchantRoom RoomNode, MerchantInventory Inventory, NMerchantInventory Owner,
+    NBackButton Back, Control InputBlocker, bool InputBlocked,
     IReadOnlyList<NativeMerchantInformationEntry> Entries)
 {
     private const BindingFlags Fields = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+    private static readonly FieldInfo? InputBlockedField = typeof(NMerchantInventory).GetField("_isInputBlocked", Fields);
     private static readonly FieldInfo? CardDisplay = typeof(NMerchantCard).GetField("_cardNode", Fields);
     private static readonly FieldInfo? RelicDisplay = typeof(NMerchantRelic).GetField("_relicNode", Fields);
     private static readonly FieldInfo? PotionDisplay = typeof(NMerchantPotion).GetField("_potionNode", Fields);
@@ -41,7 +44,14 @@ internal sealed record NativeMerchantInformation(
         if (!ShopSurfaceFacts.TryGetCurrent(out var room, out var node, out var inventory)
             || room == null || node == null || inventory == null
             || !ShopSurfaceFacts.IsCurrentInventory(room, node, inventory)
-            || !NativeInformationInput.Mounted(node.Inventory)) return null;
+            || !NativeInformationInput.Mounted(node.Inventory)
+            || InputBlockedField?.GetValue(node.Inventory) is not bool blocked
+            || node.Inventory.GetNodeOrNull<NBackButton>("%BackButton") is not { } back
+            || !NativeInformationInput.Mounted(back)
+            || node.Inventory.GetNodeOrNull<Control>("%InputBlocker") is not { } blocker
+            || !NativeInformationInput.Mounted(blocker)
+            || !ControlsCoherent(blocked, back.IsEnabled, blocker.MouseFilter)
+            || !blocked && !ConnectorMod.IsNodeVisible(back)) return null;
         NMerchantSlot[] slots = node.Inventory.GetAllSlots().ToArray();
         var entries = new List<NativeMerchantInformationEntry>();
         foreach (MerchantEntry entry in inventory.AllEntries)
@@ -81,14 +91,22 @@ internal sealed record NativeMerchantInformation(
             }
             if (model == null || display == null || !NativeInformationInput.Mounted(display)
                 || !ConnectorMod.IsNodeVisible((CanvasItem)display) || !slot.IsAncestorOf(display)) return null;
-            entries.Add(new(entry, slot, slot.Hitbox, display, model, kind, slot.Hitbox.IsEnabled));
+            entries.Add(new(entry, slot, slot.Hitbox, display, model, kind, !blocked && slot.Hitbox.IsEnabled));
         }
-        return new(room, node, inventory, node.Inventory, entries);
+        return new(room, node, inventory, node.Inventory, back, blocker, blocked, entries);
     }
+
+    // Native Open enables Back before publishing IsOpen/context; native
+    // BlockInput disables Back and redirects mouse/controller input to blocker.
+    // A different tuple is unresolved, not an excuse to bypass legacy readiness.
+    internal static bool ControlsCoherent(bool blocked, bool backEnabled, Control.MouseFilterEnum filter) =>
+        blocked ? !backEnabled && filter == Control.MouseFilterEnum.Stop
+            : backEnabled && filter == Control.MouseFilterEnum.Ignore;
 
     internal bool SameOccurrence(NativeMerchantInformation? current) => current != null
         && ReferenceEquals(Room, current.Room) && ReferenceEquals(RoomNode, current.RoomNode)
         && ReferenceEquals(Inventory, current.Inventory) && ReferenceEquals(Owner, current.Owner)
+        && ReferenceEquals(Back, current.Back) && ReferenceEquals(InputBlocker, current.InputBlocker)
         && Entries.Count == current.Entries.Count
         && Entries.Zip(current.Entries).All(pair =>
             ReferenceEquals(pair.First.Entry, pair.Second.Entry)
@@ -99,7 +117,7 @@ internal sealed record NativeMerchantInformation(
             && pair.First.Kind == pair.Second.Kind);
 
     internal bool Allows(NativeMerchantInformation? current, NativeMerchantInformationEntry entry, bool inspect) =>
-        SameOccurrence(current) && current!.Entries.Any(value =>
+        SameOccurrence(current) && !current!.InputBlocked && current.Entries.Any(value =>
             ReferenceEquals(value.Slot, entry.Slot) && value.Enabled && (!inspect || value.CanInspect));
 
     internal bool Current(NativeMerchantInformationEntry entry, bool inspect = false) =>

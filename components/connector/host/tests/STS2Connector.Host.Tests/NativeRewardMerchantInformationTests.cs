@@ -6,6 +6,7 @@ using MegaCrit.Sts2.Core.Entities.CardRewardAlternatives;
 using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Potions;
 using MegaCrit.Sts2.Core.Nodes.Relics;
@@ -104,7 +105,7 @@ public sealed class NativeRewardMerchantInformationTests
             _ => (Bare<MerchantPotionEntry>(), Bare<NMerchantPotion>(), Bare<NPotion>())
         };
         return new(Bare<MerchantRoom>(), Bare<NMerchantRoom>(), Bare<MerchantInventory>(), Bare<NMerchantInventory>(),
-            new[] { new NativeMerchantInformationEntry(entry, slot, Bare<Control>(), display, new object(), kind, true) });
+            Bare<NBackButton>(), Bare<Control>(), false, new[] { new NativeMerchantInformationEntry(entry, slot, Bare<Control>(), display, new object(), kind, true) });
     }
 
     [Theory]
@@ -129,6 +130,9 @@ public sealed class NativeRewardMerchantInformationTests
     [InlineData("hitbox")]
     [InlineData("display")]
     [InlineData("model")]
+    [InlineData("back")]
+    [InlineData("blocker")]
+    [InlineData("blocked")]
     [InlineData("sold")]
     public void MerchantOwnerStockOrRenderedModelChangeRejectsStaleInput(string changed)
     {
@@ -136,6 +140,9 @@ public sealed class NativeRewardMerchantInformationTests
         var entry = merchant.Entries[0];
         var current = changed switch
         {
+            "back" => merchant with { Back = Bare<NBackButton>() },
+            "blocker" => merchant with { InputBlocker = Bare<Control>() },
+            "blocked" => merchant with { InputBlocked = true },
             "inventory" => merchant with { Inventory = Bare<MerchantInventory>() },
             "room" => merchant with { Room = Bare<MerchantRoom>() },
             "owner" => merchant with { Owner = Bare<NMerchantInventory>() },
@@ -150,6 +157,23 @@ public sealed class NativeRewardMerchantInformationTests
         var result = NativeInformationInput.Dispatch(() => merchant.Allows(current, entry, inspect: true), () => calls++, "inspect");
         Assert.Equal(0, calls);
         Assert.False(result.Accepted);
+    }
+
+    [Theory]
+    [InlineData(false, true, (int)Control.MouseFilterEnum.Ignore, true)]
+    [InlineData(true, false, (int)Control.MouseFilterEnum.Stop, true)]
+    [InlineData(false, false, (int)Control.MouseFilterEnum.Ignore, false)]
+    [InlineData(true, true, (int)Control.MouseFilterEnum.Stop, false)]
+    [InlineData(false, true, (int)Control.MouseFilterEnum.Stop, false)]
+    [InlineData(true, false, (int)Control.MouseFilterEnum.Ignore, false)]
+    [InlineData(false, true, (int)Control.MouseFilterEnum.Pass, false)]
+    public void MerchantOpeningAndBlockInputRetainTheNativeControlTuple(bool blocked, bool back, int mouseFilter, bool coherent)
+    {
+        Assert.Equal(coherent, NativeMerchantInformation.ControlsCoherent(blocked, back, (Control.MouseFilterEnum)mouseFilter));
+        var merchant = Merchant(NativeMerchantInformationKind.Card);
+        // A native blocker closes input even when the stock slot itself stayed enabled.
+        Assert.False(merchant.Allows(merchant with { InputBlocked = true }, merchant.Entries[0], inspect: false));
+        Assert.False(merchant.Allows(merchant with { InputBlocked = true }, merchant.Entries[0], inspect: true));
     }
 
     [Fact]
@@ -180,6 +204,7 @@ public sealed class NativeRewardMerchantInformationTests
         const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
         Assert.Equal(typeof(TaskCompletionSource<int?>), typeof(NCardRewardSelectionScreen).GetField("_completionSource", fields)!.FieldType);
         Assert.Equal(typeof(bool), typeof(NCardHolder).GetField("_isClickable", fields)!.FieldType);
+        Assert.Equal(typeof(bool), typeof(NMerchantInventory).GetField("_isInputBlocked", fields)!.FieldType);
         Assert.Equal(typeof(NCard), typeof(NMerchantCard).GetField("_cardNode", fields)!.FieldType);
         Assert.Equal(typeof(NRelic), typeof(NMerchantRelic).GetField("_relicNode", fields)!.FieldType);
         Assert.Equal(typeof(NPotion), typeof(NMerchantPotion).GetField("_potionNode", fields)!.FieldType);

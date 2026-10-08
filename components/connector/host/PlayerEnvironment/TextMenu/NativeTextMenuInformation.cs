@@ -774,6 +774,8 @@ internal static class NativeTextMenuInformation
         if (!STS2Connector.Authority.EnvironmentIdentityRuntime.ExecutionAvailable(source.HostObservation.Game)
             || NativeMerchantInformation.Capture() is not { } merchant)
         { bindings.Missing("merchant_information_owner"); return; }
+        if (!merchant.InputBlocked && source.Snapshot.Status != "interactive")
+        { bindings.Missing("merchant_current_catalog"); return; }
         foreach (NativeMerchantInformationEntry entry in merchant.Entries)
         {
             if (!entry.Enabled) continue;
