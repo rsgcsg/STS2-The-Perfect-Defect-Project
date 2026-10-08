@@ -104,7 +104,11 @@ internal static class NativeTextMenuFrameBuilder
         // An entered native information page owns input over the room. Do not
         // accidentally append combat actions from the legacy underlying room.
         if (page.Interaction.Kind == "native_map")
-            return AppendMapActions(new TextMenuFrame(page, owner, leaves), legacy, executeLegacy);
+        {
+            var map = nativeLogical ? MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance : null;
+            return AppendMapActions(new TextMenuFrame(page, owner, leaves), legacy, executeLegacy,
+                map == null ? null : transition => NativeTextMenuInformation.ExecuteMapTransition(map, transition));
+        }
 
         if (page.Interaction.Stage == "native_information_page"
             || page.Interaction.Kind == "native_information_unresolved")
@@ -358,7 +362,8 @@ internal static class NativeTextMenuFrameBuilder
     }
 
     internal static TextMenuFrame AppendMapActions(TextMenuFrame frame, SnapshotBuildResult source,
-        Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy)
+        Func<PlayerEnvironmentNativeBinding, NativeInputResult> executeLegacy,
+        Func<Func<NativeInputResult>, NativeInputResult>? mapDeparture = null)
     {
         if (source.HostObservation.Surface is not MapNavigationSurface
             || source.Snapshot.BoundActions.Status != "complete") return frame;
@@ -368,7 +373,9 @@ internal static class NativeTextMenuFrameBuilder
                      source.Snapshot.BoundActions.Actions))
             if (source.Bindings.TryGetValue(action.BoundActionId, out PlayerEnvironmentNativeBinding? binding))
             {
-                leaves.Add(FromLegacy(action, binding, executeLegacy));
+                TextMenuLeaf leaf = FromLegacy(action, binding, executeLegacy);
+                leaves.Add(mapDeparture != null && binding.NativeAction.Candidate.Operation == "choose_map_node"
+                    ? leaf with { Dispatch = () => mapDeparture(leaf.Dispatch) } : leaf);
                 foreach (string id in action.Arguments.Select(value => value.ReferentId)
                              .Concat(action.SubjectReferentId is { } subject ? new[] { subject } : Array.Empty<string>()))
                     if (!referents.Any(value => value.ReferentId == id)

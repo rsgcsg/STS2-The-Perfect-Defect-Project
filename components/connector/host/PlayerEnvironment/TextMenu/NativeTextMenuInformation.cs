@@ -491,6 +491,13 @@ internal static class NativeTextMenuInformation
             leaves.AddRange(globals);
             page = bindings.Page;
         }
+        if (nativeLogical)
+            for (int index = 0; index < leaves.Count; index++)
+            {
+                NativeTextMenuInformationLeaf leaf = leaves[index];
+                if (leaf.Verb is "open_run_deck" or "inspect_relic" or "return_native_map")
+                    leaves[index] = leaf with { Dispatch = () => ExecuteMapTransition(map, leaf.Dispatch) };
+            }
         bool complete = CanPublishMapPage(legacy.Snapshot.Status, legacy.Snapshot.BoundActions.Status,
             legacy.Snapshot.BoundActions.MaterializedCount, legacy.Snapshot.BoundActions.TotalCount,
             legacy.HostObservation.Readiness, legacy.HostObservation.Completeness, surface, backAvailable,
@@ -505,6 +512,24 @@ internal static class NativeTextMenuInformation
                     : "current_native_map_travel_and_back"
             }
         }, key, leaves);
+    }
+
+    internal static NativeInputResult ExecuteMapTransition(NMapScreen map, Func<NativeInputResult> transition)
+    {
+        if (!NativeMapInformation.Current(map))
+            return NativeInputResult.Rejected("native_map_owner_changed",
+                "The exact native Map no longer owns this departure.");
+        Control? source = _nativeTipSource;
+        NativeTipEntry? entry = _nativeTipEntry;
+        Func<bool>? sourceCurrent = _nativeTipSourceCurrent;
+        return NativeTipReturn.BeforeTransition(sourceCurrent != null,
+            () => source != null && entry != null && ReferenceEquals(_nativeTipSource, source)
+                && _nativeTipEntry == entry && ReferenceEquals(_nativeTipSourceCurrent, sourceCurrent)
+                && ConnectorMod.IsLiveNode(source) && ConnectorMod.IsNodeVisible(source) && sourceCurrent!(),
+            () => source!.EmitSignal(entry == NativeTipEntry.Focus
+                ? Control.SignalName.FocusExited : Control.SignalName.MouseExited),
+            ClearOwner, () => NativeMapInformation.Current(map) ? transition()
+                : NativeInputResult.Rejected("native_map_owner_changed", "Native Map changed after tip exit."));
     }
 
     internal static bool CanPublishMapPage(

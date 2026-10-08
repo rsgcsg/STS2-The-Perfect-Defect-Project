@@ -101,9 +101,10 @@ public sealed class NativeMapInformationTests
             () => NativeInputResult.Delivered("native Back")));
         var frame = new TextMenuFrame(Page() with { Referents = globalKeys.Select(key => Ref(key + "-subject", "information")).ToArray() },
             "exact-map", globals);
-        int delivered = 0;
+        int delivered = 0, departures = 0;
         var complete = NativeTextMenuFrameBuilder.AppendMapActions(frame, source,
-            _ => { delivered++; return NativeInputResult.Delivered("original native Map path"); });
+            _ => { delivered++; return NativeInputResult.Delivered("original native Map path"); },
+            transition => { departures++; return transition(); });
         Assert.Equal(globals.Count + 1 + (annotation ? 1 : 0), complete.Leaves.Count);
         foreach (var leaf in globals) Assert.Contains(complete.Leaves, value => ReferenceEquals(value, leaf));
         Assert.Contains(complete.Page.Referents, value => value.ReferentId == "node");
@@ -120,6 +121,7 @@ public sealed class NativeMapInformationTests
             id => Assert.Contains(complete.Page.Referents, value => value.ReferentId == id)));
         Assert.True(complete.Leaves.Single(value => value.SubjectReferentId == "node").Dispatch().Accepted);
         Assert.Equal(annotation ? 2 : 1, delivered);
+        Assert.Equal(1, departures); // Only travel departs; annotation retains its original input path.
         Assert.DoesNotContain(complete.Leaves, value => value.Verb is "play_card" or "open_draw_pile" or "open_discard_pile");
 
         foreach (string gap in new[] { "persistent_hud_missing", "public_information_binding_relic_subject", "native_consistency" })

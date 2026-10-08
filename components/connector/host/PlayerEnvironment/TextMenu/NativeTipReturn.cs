@@ -16,6 +16,33 @@ internal static class NativeTipReturn
         && ReferenceEquals(previousSource, source) && previousEntry == entry
         && ReferenceEquals(previousSet, currentSet);
 
+    // Departure is an existing submitted input, never a Capture/Read side effect.
+    // Once exit starts, a failed transition cannot be reported as no input.
+    internal static NativeInputResult BeforeTransition(bool signalEntered,
+        Func<bool> exactSource, Action emitExit, Action clearOwner,
+        Func<NativeInputResult> transition)
+    {
+        if (!signalEntered) return transition();
+        if (!exactSource())
+            return NativeInputResult.Rejected("native_tip_source_changed",
+                "The retained native tip source changed before departure.");
+        try
+        {
+            emitExit();
+            clearOwner();
+            NativeInputResult result = transition();
+            return result.LegacyDisposition == LegacyNativeInputDisposition.NotDelivered
+                ? NativeInputResult.Unknown("native_information_departure_after_exit",
+                    "Native tip exit was delivered, but the requested transition was rejected: " + result.ErrorCode)
+                : result;
+        }
+        catch (Exception)
+        {
+            return NativeInputResult.Unknown("native_information_departure_unknown",
+                "The native tip exit or subsequent transition may have received input before throwing.");
+        }
+    }
+
     internal static NativeInputResult Close(bool signalEntered,
         Func<bool> exactOwner, Func<bool> exactSource,
         Action emitExit, Action remove, Action clearOwner)
