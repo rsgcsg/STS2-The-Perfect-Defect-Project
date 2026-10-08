@@ -5,6 +5,7 @@ using STS2Connector.PlayerEnvironment;
 using STS2Connector.PlayerEnvironment.NativeLogical;
 using STS2Connector.PlayerEnvironment.Protocol;
 using Xunit;
+using STS2Platform.GameMod;
 
 namespace STS2Connector;
 
@@ -122,4 +123,71 @@ public sealed class NativeLogicalFamilyPublicationTests
         Assert.Equal(Enumerable.Range(2, 9).Select(i => i.ToString()), events.Events.Select(e => e.Event.PublicationIndex));
         Assert.All(events.Events, e => { Assert.Null(e.Event.CaptureRef); Assert.Equal("encoding_capacity_exceeded", e.Event.MissingReason); });
     }
+    [Theory]
+    [InlineData("card_reward")]
+    [InlineData("combat_turn")]
+    [InlineData("map_navigation")]
+    public void ActualVisibilityBeforeUpdateOrderingPublishesNonInformationReturnOnce(string underlying)
+    {
+        using var fixture = new Fixture();
+        var initial = fixture.Next(fixture.Subscription.StartingCursor, 1);
+        object inspect = new(), context = new();
+        // Native callback begins with the exact current visible inspector.
+        using var witness = ConnectorNativeLogicalInspectionDeparture.Begin(inspect, inspect, inspect, context, true, true, true);
+        Assert.NotNull(witness);
+        // Exact native body changes Visible=false BEFORE Update. Both old
+        // information-family guards are already false for these real owner types.
+        fixture.Frame = MakeFrame(underlying, true);
+        ConnectorNativeLogicalInspectionDeparture.ContextReturned(context, false);
+        Assert.Equal(InspectionDepartureDisposition.Publish, witness.Returned(inspect, inspect, true, false, false));
+        Assert.True(fixture.Owner.PublishTracked("native_information_owner", "information_context_update_returned"));
+        var returned = fixture.Next(initial.Event.Cursor, 2);
+        Assert.Equal(underlying, fixture.Observe(returned).Interaction!.Content.Surface["kind"]!.GetValue<string>());
+        Assert.Single(fixture.Owner.Hub.Events("reader", fixture.Subscription.SubscriptionId,
+            fixture.Subscription.ScopeId, initial.Event.Cursor).Events);
+        // No later current read, clock, timer, or remembered-family marker repairs history.
+        witness.Dispose();
+        ConnectorNativeLogicalInspectionDeparture.ContextReturned(context, true);
+        Assert.Equal(InspectionDepartureDisposition.Missing, witness.Returned(inspect, inspect, true, false, false));
+    }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ActualUpdateAccountingPreventsDeckAndSubscriberChangedOwnerDuplicate(bool subscriberChangesOwner)
+    {
+        using var fixture = new Fixture();
+        var initial = fixture.Next(fixture.Subscription.StartingCursor, 1);
+        object inspect = new(), context = new();
+        using var witness = ConnectorNativeLogicalInspectionDeparture.Begin(inspect, inspect, inspect, context, true, true, true);
+        fixture.Frame = MakeFrame(subscriberChangesOwner ? "combat_turn" : "deck", true);
+        // Update prefix saw deck. Updated subscribers may switch to combat;
+        // existing postfix still publishes because its issued __state is true.
+        bool accounted = fixture.Owner.PublishTracked("native_information_owner", "information_context_update_returned");
+        ConnectorNativeLogicalInspectionDeparture.ContextReturned(context, accounted);
+        Assert.Equal(InspectionDepartureDisposition.ExistingContextPublication, witness!.Returned(inspect, inspect, true, false, false));
+        var returned = fixture.Next(initial.Event.Cursor, 2);
+        Assert.Equal(subscriberChangesOwner ? "combat_turn" : "deck",
+            fixture.Observe(returned).Interaction!.Content.Surface["kind"]!.GetValue<string>());
+        Assert.Single(fixture.Owner.Hub.Events("reader", fixture.Subscription.SubscriptionId,
+            fixture.Subscription.ScopeId, initial.Event.Cursor).Events);
+    }
+    [Fact]
+    public void ExplicitMissingOriginalUpdateIsNeverRecapturedByDepartureFinalizer()
+    {
+        using var fixture = new Fixture();
+        var initial = fixture.Next(fixture.Subscription.StartingCursor, 1);
+        object inspect = new(), context = new();
+        using var witness = ConnectorNativeLogicalInspectionDeparture.Begin(inspect, inspect, inspect, context, true, true, true);
+        fixture.Frame = fixture.Frame with { Page = fixture.Frame.Page with { Completeness = fixture.Frame.Page.Completeness with
+            { Status = "partial", Missing = new[] { "native_reward_owner" } } } };
+        bool accounted = fixture.Owner.PublishTracked("native_information_owner", "information_context_update_returned");
+        ConnectorNativeLogicalInspectionDeparture.ContextReturned(context, accounted);
+        fixture.Frame = MakeFrame("combat_turn", true);
+        Assert.Equal(InspectionDepartureDisposition.ExistingContextPublication, witness!.Returned(inspect, inspect, true, false, false));
+        var missing = fixture.Next(initial.Event.Cursor, 2);
+        Assert.Null(missing.Event.CaptureRef); Assert.Equal("source_capture_incomplete", missing.Event.MissingReason);
+        Assert.Single(fixture.Owner.Hub.Events("reader", fixture.Subscription.SubscriptionId,
+            fixture.Subscription.ScopeId, initial.Event.Cursor).Events);
+    }
+
 }

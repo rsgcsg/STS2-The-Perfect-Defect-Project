@@ -1,4 +1,6 @@
 using System.Reflection;
+using System.Security.Cryptography;
+using STS2Platform.GameMod;
 using Godot;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.CardRewardAlternatives;
@@ -62,4 +64,33 @@ public sealed class NativeLogicalFamilyMethodTests
         foreach (string name in new[] { nameof(NClickableControl.Enable), nameof(NClickableControl.Disable) })
             Assert.Equal(typeof(void), Method(typeof(NClickableControl), name).ReturnType);
     }
+    [Fact]
+    public void DelayedCloseCallbackIsExactlyThePinnedVisibilityThenContextNativeBody()
+    {
+        Type owner = typeof(NInspectCardScreen);
+        MethodInfo callback = Assert.IsAssignableFrom<MethodInfo>(owner.GetMethod(
+            ConnectorNativeLogicalInspectionDeparture.NativeCallbackName,
+            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly, Type.EmptyTypes));
+        Assert.Equal(owner, callback.DeclaringType); Assert.False(callback.IsStatic);
+        Assert.Equal(typeof(void), callback.ReturnType);
+        Assert.Equal(ConnectorNativeLogicalInspectionDeparture.GameModuleVersionId, owner.Assembly.ManifestModule.ModuleVersionId.ToString("D"));
+        Assert.Equal(ConnectorNativeLogicalInspectionDeparture.GameAssemblySha256,
+            Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(owner.Assembly.Location))).ToLowerInvariant());
+        byte[] body = callback.GetMethodBody()!.GetILAsByteArray()!;
+        Assert.Equal(18, body.Length);
+        Assert.Equal(new byte[] { 0x02, 0x16, 0x28, 0x28, 0x6f, 0x2a },
+            new[] { body[0], body[1], body[2], body[7], body[12], body[17] });
+        Assert.Equal(typeof(CanvasItem).GetProperty(nameof(CanvasItem.Visible))!.SetMethod,
+            callback.Module.ResolveMethod(BitConverter.ToInt32(body, 3)));
+        Assert.Equal(typeof(ActiveScreenContext).GetProperty(nameof(ActiveScreenContext.Instance))!.GetMethod,
+            callback.Module.ResolveMethod(BitConverter.ToInt32(body, 8)));
+        Assert.Equal(Method(typeof(ActiveScreenContext), nameof(ActiveScreenContext.Update)),
+            callback.Module.ResolveMethod(BitConverter.ToInt32(body, 13)));
+        // Pin the actual Close TweenCallback delegate target, not a same-named
+        // unused helper or a searched alternative compiler-generated method.
+        byte[] close = Method(owner, nameof(NInspectCardScreen.Close)).GetMethodBody()!.GetILAsByteArray()!;
+        Assert.Single(Enumerable.Range(0, close.Length - 5), i => close[i] == 0xfe && close[i + 1] == 0x06
+            && BitConverter.ToInt32(close, i + 2) == callback.MetadataToken);
+    }
+
 }

@@ -66,7 +66,44 @@ failures before qualification; this receipt does not hide them.
 and await actual later source events; this producer adds no status rewrite,
 causal successor, terminal status, task end or success inference.
 
-## Validation and non-claims
+## Independent finding and repair
+
+Independent review of `bbfed107e4d3c759353c082bea2026ab13ad84fc` found one P1:
+the delayed inspect close sets Visible=false before native Update, so both old
+current-information guards are false on return to reward, combat or map. The
+previous code candidate and artifact below do not qualify this promised return.
+
+The repair patches exactly `NInspectCardScreen.<Close>b__23_0`, the native Close
+TweenCallback. Its pinned 18-byte IL body sets visibility false, calls native
+ActiveScreenContext.Update and returns. Exact game SHA/MVID, declared owner,
+private instance name and void/no-argument signature are mandatory; there is no
+compiler-name search, inherited method lookup or fallback for another assembly.
+
+A synchronous callback-local witness binds the exact live mounted current visible
+inspector before that body. The actual typed Update return explicitly records
+whether the shared Service reserved and accepted its original publication,
+including an explicit missing outcome. The body's direct Update is its last
+operation, so its returned acknowledgment supersedes earlier nested callbacks.
+The native callback finalizer then preserves that existing position or captures
+the actual hidden-inspector return to any owner, after all visibility/Update
+listeners ran. Final-current-family guesses cannot suppress or duplicate it.
+Stale/replaced/reopened/failed witnesses become missing; cleanup expires the
+scope in finally. No pending marker is correlated with a later event or Current.
+
+The Service owner's narrow private `PublishTracked` addition retains void Publish
+and changes no action authority. Its boolean acknowledges source accounting only;
+it is not complete input, readiness, dispatch acceptance, effects or Commit.
+The fixed JSON contract and four-encoding resource bound are unchanged.
+
+Repair validation so far: 34 focused Host tests, 84 Mod tests and exact native
+compilation passed. New tests pin the actual Close delegate target and body,
+exercise reward/combat/map native ordering, deck and subscriber-changed-owner
+exactly-once behavior, original missing/no recapture, stale/mount/visibility,
+wrong/nested context, replacement/reopening, exceptions and scope expiration.
+These are source/metadata/production-Service fixtures; actual loaded Harmony
+registration and native UI execution still require the root canary.
+
+## Previous candidate validation and retained non-claims
 
 Code candidate: `2ba75066c656365fa6a6a69e05390533d8ad1cb4`, after normal-merging
 shared Service/Hub dependency `1725f5ea164d62ae93b665451b69a06b38597758`

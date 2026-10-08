@@ -59,3 +59,29 @@ test('composition advertises the whole fixed profile only after all hook registr
   for (const seam of profile.required_seams) assert.ok(hooks.includes(`"${seam.source_seam}"`));
   assert.doesNotMatch(setup, /catch|unsupported|sampled/u);
 });
+test('inspect departure is bound to one exact native callback and expires at its finalizer', () => {
+  const hooks = source('apps/game-mod/ConnectorNativeLogicalPatches.cs');
+  const family = source('apps/game-mod/ConnectorNativeLogicalFamily.cs');
+  const departure = source('apps/game-mod/ConnectorNativeLogicalInspectionDeparture.cs');
+  assert.match(hooks, /game\.MainAssemblySha256 != ConnectorNativeLogicalInspectionDeparture\.GameAssemblySha256/u);
+  assert.match(hooks, /game\.MainAssemblyMvid != ConnectorNativeLogicalInspectionDeparture\.GameModuleVersionId/u);
+  assert.match(hooks, /GetMethod\(ConnectorNativeLogicalInspectionDeparture\.NativeCallbackName,\s*BindingFlags\.Instance \| BindingFlags\.NonPublic \| BindingFlags\.DeclaredOnly, none\)/u);
+  assert.match(hooks, /FamilyPatch\(harmony, departure, nameof\(ConnectorNativeLogicalFamily\.InspectDepartureReturned\),\s*nameof\(ConnectorNativeLogicalFamily\.InspectDepartureBefore\), finalizer: true\)/u);
+  assert.doesNotMatch(hooks, /PropertySetter\(typeof\(CanvasItem\)|GetMethods\(|<Close>.*StartsWith/u);
+  assert.match(departure, /NativeCallbackName = "<Close>b__23_0"/u);
+  assert.doesNotMatch(departure, /Task|Timer|DateTime|Stopwatch|File\.|Dictionary|Queue|PublicationIndex/u);
+  assert.match(family, /NGame\.Instance\?\.InspectCardScreen, ActiveScreenContext\.Instance\.GetCurrentScreen\(\), ActiveScreenContext\.Instance/u);
+  assert.match(family, /finally \{ __state\.Dispose\(\); \}/u);
+});
+test('departure duplicate avoidance uses actual Update accounting including missing and no stale recapture', () => {
+  const family = source('apps/game-mod/ConnectorNativeLogicalFamily.cs');
+  const departure = source('apps/game-mod/ConnectorNativeLogicalInspectionDeparture.cs');
+  assert.match(family, /bool accounted = eligible && PlayerEnvironmentService\.NativeLogical\.PublishTracked/u);
+  assert.match(family, /ConnectorNativeLogicalInspectionDeparture\.ContextReturned\(__instance, accounted\)/u);
+  assert.match(departure, /if \(publicationAccounted\) return InspectionDepartureDisposition\.ExistingContextPublication;/u);
+  assert.match(departure, /if \(disposed \|\| nativeFailed \|\| !contextReturned\) return InspectionDepartureDisposition\.Missing;/u);
+  const finalized = family.slice(family.indexOf('internal static Exception? InspectDepartureReturned'), family.indexOf('internal static void RewardBefore'));
+  assert.doesNotMatch(finalized, /CurrentFamily/u);
+  assert.match(finalized, /NativeLogical\.PublishMissing\("native_information_owner", "inspect_delayed_close_failed"/u);
+  assert.match(finalized, /return __exception;/u);
+});

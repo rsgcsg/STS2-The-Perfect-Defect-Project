@@ -17,8 +17,8 @@ using STS2Connector.PlayerEnvironment;
 
 namespace STS2Platform.GameMod;
 
-// Stateless native routing only. Per-call eligibility survives a native hide or
-// removal; it is never retained as a lifecycle, binding or causal registry.
+// Native routing with callback-local witnesses only. Eligibility survives hide
+// or removal; no instance is retained as a lifecycle or causal registry.
 internal static class ConnectorNativeLogicalFamily
 {
     internal static bool Information(object? value) => value is NCardsViewScreen or NInspectCardScreen;
@@ -69,9 +69,50 @@ internal static class ConnectorNativeLogicalFamily
         Publish(__state, "native_information_owner", "capstone_" + __originalMethod.Name + "_returned");
     internal static void ContextBefore(ActiveScreenContext __instance, out bool __state) =>
         __state = ReferenceEquals(ActiveScreenContext.Instance, __instance) && CurrentFamily(false);
-    internal static void ContextReturned(ActiveScreenContext __instance, bool __state) =>
-        Publish(ReferenceEquals(ActiveScreenContext.Instance, __instance) && (__state || CurrentFamily(false)),
+    internal static void ContextReturned(ActiveScreenContext __instance, bool __state)
+    {
+        bool eligible = ReferenceEquals(ActiveScreenContext.Instance, __instance) && (__state || CurrentFamily(false));
+        bool accounted = eligible && PlayerEnvironmentService.NativeLogical.PublishTracked(
             "native_information_owner", "information_context_update_returned");
+        ConnectorNativeLogicalInspectionDeparture.ContextReturned(__instance, accounted);
+    }
+
+    internal static void InspectDepartureBefore(NInspectCardScreen __instance,
+        out ConnectorNativeLogicalInspectionDeparture? __state)
+    {
+        __state = null;
+        try
+        {
+            __state = ConnectorNativeLogicalInspectionDeparture.Begin(__instance,
+                NGame.Instance?.InspectCardScreen, ActiveScreenContext.Instance.GetCurrentScreen(), ActiveScreenContext.Instance,
+                Live(__instance), __instance.IsNodeReady(), ConnectorMod.IsNodeVisible(__instance));
+        }
+        catch { /* An unproved stale or non-owning callback cannot claim departure. */ }
+    }
+    internal static Exception? InspectDepartureReturned(NInspectCardScreen __instance,
+        ConnectorNativeLogicalInspectionDeparture? __state, Exception? __exception)
+    {
+        if (__state is null) return __exception;
+        try
+        {
+            // Exact 9cb4 callback: Visible=false, Update(), return. All visibility
+            // and Update listeners have completed before this finalizer freezes.
+            InspectionDepartureDisposition disposition;
+            try
+            {
+                disposition = __state.Returned(__instance, NGame.Instance?.InspectCardScreen,
+                    Live(__instance), __instance.Visible, __exception is not null);
+            }
+            catch { disposition = InspectionDepartureDisposition.Missing; }
+            if (disposition == InspectionDepartureDisposition.Publish)
+                Publish(true, "native_information_owner", "information_context_update_returned");
+            else if (disposition == InspectionDepartureDisposition.Missing)
+                PlayerEnvironmentService.NativeLogical.PublishMissing("native_information_owner", "inspect_delayed_close_failed",
+                    __exception is null ? "native_inspect_departure_binding_changed" : "native_callback_failed");
+        }
+        finally { __state.Dispose(); }
+        return __exception;
+    }
 
     internal static void RewardBefore(Node __instance, out bool __state) => __state = Reward(__instance) && Current(__instance);
     internal static void RewardOwnerReturned(Node __instance, bool __state, MethodBase __originalMethod) =>

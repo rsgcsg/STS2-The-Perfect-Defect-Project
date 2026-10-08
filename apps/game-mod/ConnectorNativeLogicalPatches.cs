@@ -24,6 +24,7 @@ using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Runs;
 using STS2Connector;
+using STS2Connector.Authority;
 using STS2Connector.PlayerEnvironment;
 using STS2Connector.PlayerEnvironment.Protocol;
 using STS2Connector.PlayerEnvironment.NativeLogical;
@@ -39,6 +40,12 @@ internal static class ConnectorNativeLogicalPatches
     internal static void Initialize()
     {
         if (initialized) return;
+        var game = EnvironmentIdentityRuntime.ReadGame();
+        if (game.MainAssemblySha256 != ConnectorNativeLogicalInspectionDeparture.GameAssemblySha256
+            || game.MainAssemblyMvid != ConnectorNativeLogicalInspectionDeparture.GameModuleVersionId
+            || typeof(NInspectCardScreen).Assembly.ManifestModule.ModuleVersionId.ToString("D")
+                != ConnectorNativeLogicalInspectionDeparture.GameModuleVersionId)
+            throw new NotSupportedException("The exact native inspection publication source requires the pinned game identity.");
         var harmony = new Harmony("rsgcsg.sts2-platform.connector.native-logical");
         Patch(harmony, typeof(NTargetManager), nameof(NTargetManager.OnNodeHovered), new[] { typeof(Node) }, nameof(TargetReturned));
         Patch(harmony, typeof(NTargetManager), nameof(NTargetManager.OnNodeUnhovered), new[] { typeof(Node) }, nameof(TargetReturned));
@@ -97,6 +104,14 @@ internal static class ConnectorNativeLogicalPatches
             nameof(ConnectorNativeLogicalFamily.InformationReturned), nameof(ConnectorNativeLogicalFamily.InformationBefore));
         FamilyPatch(harmony, typeof(ActiveScreenContext), nameof(ActiveScreenContext.Update), none,
             nameof(ConnectorNativeLogicalFamily.ContextReturned), nameof(ConnectorNativeLogicalFamily.ContextBefore));
+        // Exact native Close TweenCallback; no inherited/compiler-name search or fallback.
+        var departure = typeof(NInspectCardScreen).GetMethod(ConnectorNativeLogicalInspectionDeparture.NativeCallbackName,
+            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly, none)
+            ?? throw new MissingMethodException(typeof(NInspectCardScreen).FullName, ConnectorNativeLogicalInspectionDeparture.NativeCallbackName);
+        if (departure.DeclaringType != typeof(NInspectCardScreen) || departure.IsStatic || departure.ReturnType != typeof(void))
+            throw new MissingMethodException("The exact native inspection departure signature is unsupported.");
+        FamilyPatch(harmony, departure, nameof(ConnectorNativeLogicalFamily.InspectDepartureReturned),
+            nameof(ConnectorNativeLogicalFamily.InspectDepartureBefore), finalizer: true);
         FamilyPatch(harmony, typeof(NDeckViewScreen), "DisplayCards", none, nameof(ConnectorNativeLogicalFamily.InformationContentReturned));
         FamilyPatch(harmony, AccessTools.PropertySetter(typeof(NCardGrid), nameof(NCardGrid.IsShowingUpgrades))
             ?? throw new MissingMethodException(nameof(NCardGrid.IsShowingUpgrades)), nameof(ConnectorNativeLogicalFamily.InformationContentReturned));
