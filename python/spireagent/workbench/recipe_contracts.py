@@ -17,12 +17,16 @@ def validate_limits(value: object) -> dict[str, int]:
     # unenforced memory, scratch or provider limits as executable capabilities.
     if value == {}:
         return {}
-    if not isinstance(value, dict) or set(value) != {"wall_seconds"}:
+    if (not isinstance(value, dict) or "wall_seconds" not in value
+            or set(value) - {"wall_seconds", "scratch_bytes"}):
         raise BoundaryError("local_training", "unsupported_resource_limits")
     seconds = value["wall_seconds"]
     if type(seconds) is not int or not 1 <= seconds <= 3600:
         raise BoundaryError("local_training", "invalid_wall_seconds")
-    return {"wall_seconds": seconds}
+    scratch = value.get("scratch_bytes", 512 * 1024 * 1024)
+    if type(scratch) is not int or not 16 * 1024 * 1024 <= scratch <= 1024 * 1024 * 1024:
+        raise BoundaryError("local_training", "invalid_scratch_bytes")
+    return {"wall_seconds": seconds, "scratch_bytes": scratch}
 
 
 @dataclass(frozen=True)

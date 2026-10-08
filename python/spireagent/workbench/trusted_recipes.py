@@ -10,6 +10,8 @@ from spireagent.workbench.memory_recipe import MEMORY_RECIPES
 
 DEFAULT_RECIPE = "stage1a.dsimple.s.v1"
 STRUCTURED_RECIPE = "structured-m2-cpu-v2"
+MAX_TOTAL_ATTEMPTS = 32
+DEFAULT_CHECKPOINT_CADENCE = 100
 TRUSTED_RECIPES = frozenset({DEFAULT_RECIPE, STRUCTURED_RECIPE, *MEMORY_RECIPES})
 
 
@@ -24,20 +26,32 @@ def describe_recipe(recipe_id: str) -> dict[str, Any]:
         "supported_actions": ["cancel", "pause", "resume", "reconcile"] if structured else [],
         "result_type": "evaluated" if recipe_id == DEFAULT_RECIPE else "train_only",
         "config_defaults": {}, "config_fields": {},
-        "limits": {"wall_seconds": {"minimum": 1, "maximum": 3600}},
+        "limits": {"wall_seconds": {"minimum": 1, "maximum": 3600},
+                   "scratch_bytes": {"minimum": 16 * 1024 * 1024,
+                                     "maximum": 1024 * 1024 * 1024,
+                                     "default": 512 * 1024 * 1024}},
     }
     if structured:
         from stpd.structured_workload_contracts import structured_workload_capabilities
 
         domain = structured_workload_capabilities()
-        descriptor.update(result_type="evaluated", config_defaults=domain["config_defaults"],
+        descriptor.update(result_type="train_only", config_defaults=domain["config_defaults"],
                           config_fields=domain["config_bounds"],
                           fixed_config_fields=domain["fixed_config_fields"],
                           control_boundary=domain["control_boundary"],
+                          worker_isolation="private_child-v1", cancel_grace_seconds=1,
+                          training_partition="train_only", fixed_model_evaluation="domain_seam",
+                          max_total_attempts=MAX_TOTAL_ATTEMPTS,
+                          cumulative_limits=True, scratch_monitor_seconds=0.25,
+                          artifact_budget="conservative_parent_reservation_before_every_write",
                           source_profile="s0-admitted-policy-offers-v1",
-                          source_admission={"synthetic_fixture": "supported_engineering_only",
-                                            "agent": "structured_source_verifier_required"},
+                          source_admission={
+                              "synthetic_fixture": "supported_engineering_only",
+                              "typed_protocol_partition": "replay_verified_sampled_s0",
+                              "ordinary_agent_json": "structured_source_verifier_required"},
                           legacy_v1="final_only_not_resumable")
+        descriptor["config_defaults"]["checkpoint_every_boundaries"] = DEFAULT_CHECKPOINT_CADENCE
+        descriptor["config_fields"]["checkpoint_every_boundaries"] = [1, 100]
     else:
         descriptor["limits"] = {}
     return descriptor
@@ -53,11 +67,16 @@ def validate_recipe_config(recipe_id: str, config: object) -> dict[str, Any]:
 
         from stpd.structured_workload_contracts import StructuredTrainingConfig
 
-        if set(config) - set(asdict(StructuredTrainingConfig())):
+        fields = set(asdict(StructuredTrainingConfig())) | {"checkpoint_every_boundaries"}
+        if set(config) - fields:
             raise BoundaryError("local_training", "invalid_recipe_config")
-        selected = StructuredTrainingConfig(**config)
+        cadence = config.get("checkpoint_every_boundaries", DEFAULT_CHECKPOINT_CADENCE)
+        if type(cadence) is not int or not 1 <= cadence <= 100:
+            raise BoundaryError("local_training", "invalid_checkpoint_cadence")
+        selected = StructuredTrainingConfig(**{key: value for key, value in config.items()
+                                              if key != "checkpoint_every_boundaries"})
         selected.validate()
-        return asdict(selected)
+        return {**asdict(selected), "checkpoint_every_boundaries": cadence}
     if config:
         raise BoundaryError("local_training", "fixed_recipe_config_required")
     return {}

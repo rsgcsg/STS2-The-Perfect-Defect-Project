@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
+import subprocess as subprocess
 import threading
 import time
 import traceback
@@ -50,6 +50,7 @@ from spireagent.workbench.recipe_contracts import (
 )
 from spireagent.workbench.research_process import private_child
 from spireagent.workbench.trusted_recipes import (
+    MAX_TOTAL_ATTEMPTS,
     STRUCTURED_RECIPE,
     TRUSTED_RECIPES,
     describe_recipe,
@@ -115,6 +116,9 @@ class LocalTrainingService:
         self._failure_diagnostic: dict[str, Any] | None = None
         self._active_attempt: str | None = None
         self._attempt_started_monotonic: float | None = None
+        self._active_child_exit: dict[str, Any] | None = None
+        self._child_failure_diagnostic: dict[str, str] | None = None
+        self._cancel_requested_monotonic: float | None = None
 
     def _selected(self):
         return self._selection._selected()
@@ -288,7 +292,8 @@ class LocalTrainingService:
             request.validate()
             canonical = validate_recipe_config(request.recipe_id, request.config)
             request = TrainingRequest(request.intent_id, request.recipe_id, request.source_id,
-                                      canonical, request.placement_id, dict(request.limits),
+                                      canonical, request.placement_id,
+                                      validate_limits(request.limits),
                                       request.after_completed_operation_id)
             if request.recipe_id == STRUCTURED_RECIPE:
                 if not request.limits:
@@ -425,8 +430,7 @@ class LocalTrainingService:
 
             recipe_adapter(operation.get("recipe", DEFAULT_RECIPE)).execute(
                 self, path, identity, owner, store, mark_started)
-        except (BoundaryError, OSError, ValueError, KeyError, TypeError,
-                subprocess.SubprocessError) as error:
+        except Exception as error:
             code = (error.code if isinstance(error, BoundaryError)
                     else "training_storage_or_process_error")
             stage = "unavailable"
@@ -436,6 +440,8 @@ class LocalTrainingService:
                     stage = recorded["stage"]
             with suppress(Exception):
                 self._failure_diagnostic = _safe_parent_failure(error, stage)
+                if self._child_failure_diagnostic is not None:
+                    self._failure_diagnostic["child"] = dict(self._child_failure_diagnostic)
             with suppress(Exception):
                 _write_parent_failure(path, identity, error)
             # The last durable pending operation remains blocking if terminal
@@ -514,11 +520,17 @@ class LocalTrainingService:
                      "worker_state": "terminal" if value["writer_terminal"] else
                                      "unknown" if value["status"] == "interrupted_unknown" else
                                      "running",
-                     "validation_state": "verified" if value["status"] == "completed" else
+                     "validation_state": "verified" if value.get("domain_completion_state") ==
+                                         "completed" or value["status"] == "completed" else
                                          "not_completed",
+                     "domain_completion_state": value.get("domain_completion_state", "unknown"),
+                     "selected_result": value.get("selected_result",
+                                                  value["status"] != "cancelled"),
+                     "application_disposition": value.get("application_disposition", "authorized"),
                      "use_state": value.get("use_state", "not_reserved"),
                      "elapsed_seconds": value["elapsed_seconds"]}
-        for key in {*IDS, "stage", "dataset_id", "recipe", "result_type", "evaluation_status"}:
+        for key in {*IDS, "stage", "dataset_id", "recipe", "result_type", "evaluation_status",
+                    "child_exit", "worker_isolation", "artifact_reserved_bytes"}:
             if key in value:
                 operation[key] = value[key]
         if value.get("error_code"):
@@ -548,10 +560,16 @@ class LocalTrainingService:
             "_owner": list(owner.identity), "writer_terminal": False,
             "requested_action": "continue", "created_at": now,
             "attempt_started_at": now, "updated_at": now, "elapsed_seconds": 0.0,
-            "attempts": [], "mode": "start",
+            "attempts": [], "mode": "start", "selected_result": True,
+            "artifact_reserved_bytes": 0,
+            "application_disposition": "authorized", "domain_completion_state": "not_completed",
             "result_type": "train_only" if request.recipe_id in MEMORY_RECIPES else "evaluated",
             "evaluation_status": "not_run" if request.recipe_id in MEMORY_RECIPES else "pending",
         }
+        if request.recipe_id == STRUCTURED_RECIPE:
+            value.update(worker_isolation="private_child-v1",
+                         child_lock_name="local-training-"+value["attempt_id"]+".child.lock",
+                         result_type="train_only", evaluation_status="not_run")
         if previous["status"] == "completed":
             value["previous_completed"] = LocalTrainingService._public(previous)
         return value
@@ -596,6 +614,7 @@ class LocalTrainingService:
 
             StructuredRecipeAdapter().preflight(store, owner, request.source_id)
             operation = self._new_operation(request, owner, uuid.uuid4().hex, previous=previous)
+            self._prepare_child_ownership(path, operation)
             write_replaceable_json(path, operation)
             self._launch_attempt(held, path, operation, owner, store)
             held = None
@@ -614,6 +633,9 @@ class LocalTrainingService:
             self._attempt_started_monotonic = time.monotonic()
             self._thread = thread
             self._failure_diagnostic = None
+            self._active_child_exit = None
+            self._child_failure_diagnostic = None
+            self._cancel_requested_monotonic = None
         thread.start()
 
     def _command_operation(self, path: Path, owner: LocalCurationOwner,
@@ -646,6 +668,10 @@ class LocalTrainingService:
             if value["requested_action"] == "cancel" and action != "cancel":
                 raise BoundaryError("local_training", "cancel_already_requested")
             value.update(requested_action=action, updated_at=time.time())
+            if action == "cancel":
+                if self._cancel_requested_monotonic is None:
+                    self._cancel_requested_monotonic = time.monotonic()
+                value.update(selected_result=False, application_disposition="cancel_requested")
             write_replaceable_json(path, value)
             # ACK records intent only. The worker is pending until a safe boundary
             # produces a terminal receipt; this method never reports terminated.
@@ -662,14 +688,29 @@ class LocalTrainingService:
                 raise BoundaryError("local_training", "attempt_clock_required")
             seconds = value["elapsed_seconds"] + max(
                 0.0, time.monotonic()-self._attempt_started_monotonic)
+            domain_status = updates.get("status")
             value.update(updates, elapsed_seconds=seconds, updated_at=time.time())
-            if value["requested_action"] == "cancel" and value["status"] == "completed":
-                value.update(status="cancelled", error_code="cancel_requested_during_completion",
-                             selected_result=False)
-            # The structured worker is synchronous, no subprocess can survive
-            # this return. Legacy subprocess uncertainty stays unproved.
-            value["writer_terminal"] = (value["recipe"] == STRUCTURED_RECIPE or
-                                        value["status"] == "completed")
+            value["domain_completion_state"] = ("completed" if domain_status == "completed" else
+                                                "unknown" if domain_status == "interrupted_unknown"
+                                                else "not_completed")
+            cancelled = (value.get("selected_result") is False or
+                         value["requested_action"] == "cancel")
+            if cancelled:
+                value.update(selected_result=False, application_disposition="cancel_requested")
+                if value["status"] in {"completed", "interrupted_unknown", "cancelled"}:
+                    value["status"] = "cancelled"
+                if domain_status == "completed":
+                    value["error_code"] = "cancel_requested_during_completion"
+            if value.get("worker_isolation") == "private_child-v1":
+                receipt = self._active_child_exit
+                actual_exit = (receipt is not None and
+                               receipt.get("attempt_id") == expected_attempt_id)
+                if actual_exit:
+                    value["child_exit"] = receipt
+                value["writer_terminal"] = actual_exit or not value.get("child_spawned", False)
+            else:
+                # Legacy subprocess uncertainty retains its historical meaning.
+                value["writer_terminal"] = value["status"] == "completed"
             write_replaceable_json(path, value)
 
     def reconcile(self, operation_id: object, expected_attempt_id: object) -> dict[str, Any]:
@@ -690,6 +731,7 @@ class LocalTrainingService:
         if lock_path.is_symlink():
             raise BoundaryError("local_training", "operation_recovery_required")
         held: Any = instance_lock(lock_path, create=False)
+        prior_child_lock: Any = None
         try:
             held.__enter__()
         except BoundaryError as error:
@@ -697,13 +739,25 @@ class LocalTrainingService:
         try:
             with self._lock:
                 value = self._command_operation(path, owner, operation_id, expected_attempt_id)
+                if value.get("worker_isolation") == "private_child-v1":
+                    child_path = self._child_path(path, value)
+                    prior_child_lock = instance_lock(child_path, create=False)
+                    try:
+                        prior_child_lock.__enter__()
+                    except BoundaryError as error:
+                        prior_child_lock = None
+                        raise BoundaryError(
+                            "local_training", "orphan_child_still_running") from error
+                if len(value["attempts"])+1 >= MAX_TOTAL_ATTEMPTS:
+                    raise BoundaryError("local_training", "operation_attempt_limit")
                 if mode == "resume":
                     if (not value["writer_terminal"] or value["status"] not in
                             {"paused", "cancelled", "interrupted_unknown"}):
                         raise BoundaryError("local_training", "prior_writer_terminal_required")
                     if limits != value["request"]["limits"] or not limits:
                         raise BoundaryError("local_training", "cumulative_limits_must_be_preserved")
-                    if value["elapsed_seconds"] >= limits["wall_seconds"]:
+                    if (value["elapsed_seconds"] >= limits["wall_seconds"] or
+                            value.get("artifact_reserved_bytes", 0) >= limits["scratch_bytes"]):
                         raise BoundaryError("local_training", "cumulative_budget_exhausted")
                     from spireagent.workbench.recipes.structured import verify_resume_checkpoint
 
@@ -713,15 +767,27 @@ class LocalTrainingService:
                     ):
                         raise BoundaryError("local_training", "new_resume_intent_required")
                 elif not value.get("run_id"):
-                    raise BoundaryError("local_training", "run_required_for_reconciliation")
-                elif value["status"] == "completed":
-                    return self._snapshot(value)
+                    resolved = self._resolve_prepared_run(store, value)
+                    if resolved is None:
+                        value.update(status=("cancelled" if value.get("selected_result") is False
+                                             else "failed"), writer_terminal=True,
+                                     error_code="reconciled_preparation_without_run",
+                                     domain_completion_state="not_completed",
+                                     updated_at=time.time())
+                        write_replaceable_json(path, value)
+                        return self._snapshot(value)
+                    value.update(run_id=resolved[0], input_id=resolved[1])
+                    value["writer_terminal"] = True
                 else:
                     # Acquiring the same owner lock proves no prior writer retains
                     # publication authority. Keep its outcome unknown until verified.
                     value["writer_terminal"] = True
+                if "selected_result" not in value:
+                    value["selected_result"] = value["status"] != "cancelled"
                 prior = {key: value.get(key) for key in ("attempt_id", "intent_id", "status",
-                         "writer_terminal", "checkpoint_id", "attempt_started_at")}
+                         "writer_terminal", "checkpoint_id", "attempt_started_at", "child_exit")}
+                if value.get("worker_isolation") == "private_child-v1":
+                    prior["terminal_proof"] = "child_ownership_reconciled"
                 value["attempts"].append(prior)
                 if value["status"] == "pending":
                     # A restarted process has no prior monotonic clock. Account
@@ -735,7 +801,15 @@ class LocalTrainingService:
                              requested_action="continue", mode=mode, attempt_started_at=time.time(),
                              updated_at=time.time())
                 value.pop("error_code", None)
+                value.pop("child_exit", None)
+                value.pop("child_spawned", None)
+                value.pop("child_handshake", None)
+                value.pop("artifact_reservation", None)
+                value.update(worker_isolation="private_child-v1",
+                             child_lock_name="local-training-"+value["attempt_id"]+".child.lock")
+                self._prepare_child_ownership(path, value)
                 if mode == "resume":
+                    value.update(selected_result=True, application_disposition="explicit_resume")
                     value["intent_id"] = intent_id
                     value["request"]["intent_id"] = intent_id
                     value["resume_checkpoint_id"] = checkpoint_id
@@ -744,5 +818,53 @@ class LocalTrainingService:
                 held = None
                 return self._snapshot(value)
         finally:
+            if prior_child_lock is not None:
+                prior_child_lock.__exit__(None, None, None)
             if held is not None:
                 held.__exit__(None, None, None)
+
+    @staticmethod
+    def _child_path(path: Path, operation: dict[str, Any]) -> Path:
+        name = "local-training-"+operation["attempt_id"]+".child.lock"
+        if operation.get("child_lock_name") != name:
+            raise BoundaryError("local_training", "child_ownership_identity_mismatch")
+        child_path = path.parent/name
+        if child_path.is_symlink() or not child_path.is_file():
+            raise BoundaryError("local_training", "child_ownership_recovery_required")
+        return child_path
+
+    @staticmethod
+    def _prepare_child_ownership(path: Path, operation: dict[str, Any]) -> None:
+        name = "local-training-"+operation["attempt_id"]+".child.lock"
+        if operation.get("child_lock_name") != name:
+            raise BoundaryError("local_training", "child_ownership_identity_mismatch")
+        descriptor = os.open(path.parent/name, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        os.close(descriptor)
+        scratch_name = "local-training-"+operation["attempt_id"]+".scratch"
+        (path.parent/scratch_name).mkdir(mode=0o700)
+        operation["scratch_name"] = scratch_name
+
+    @staticmethod
+    def _resolve_prepared_run(store: ManifestArtifactStore,
+                              operation: dict[str, Any]) -> tuple[str, str] | None:
+        # Explicit orphan reconciliation only. Numeric execution cannot start
+        # before the parent's prepared-run ACK, so no run publication means no
+        # numerical execution in this fixed private-child protocol.
+        identities = store.manifest_ids()
+        if len(identities) > 10000:
+            raise BoundaryError("local_training", "run_reconciliation_inventory_limit")
+        matches = []
+        for identity in identities:
+            run = store.get_manifest(identity)
+            info = run.parameters.value()
+            if (run.kind != "run" or info.get("schema") != "stpd/structured-m2-run-v2"
+                    or info.get("operation_id") != operation["operation_id"]):
+                continue
+            training = store.get_manifest(run.parent("training_input"))
+            if (training.kind != "training_input" or training.producer != run.producer
+                    or training.parent("source") != operation["dataset_id"]):
+                raise BoundaryError("local_training", "prepared_run_binding_mismatch")
+            matches.append((run.artifact_id, training.artifact_id))
+        if len(matches) > 1:
+            raise BoundaryError("local_training", "multiple_operation_runs_recovery_required")
+        return matches[0] if matches else None
