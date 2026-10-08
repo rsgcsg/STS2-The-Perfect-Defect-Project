@@ -16,7 +16,7 @@ from spireagent.json_boundary import BoundaryError, decode_json, digest, json_by
 
 from ..fullrun.native_structured_inputs import INPUT_SPEC, PROFILE, PROJECTION_VERSION, SCOPE
 from ..models.native_structured_scorer import NativeStructuredScorer
-from ..native_code_scope import native_code_sha256
+from ..native_code_scope import REQUIRED_METHODS, native_code_sha256
 from ..structured_code_scope import ROOT
 from ..workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .native_structured_export import (
@@ -250,8 +250,9 @@ class NativeStructuredAgent:
         methods = requirements["required_methods"]
         if (
             not isinstance(methods, list)
+            or any(not isinstance(method, str) or not method for method in methods)
             or len(set(methods)) != len(methods)
-            or not {"attach", "events", "read", "catalog", "submit", "await"} <= set(methods)
+            or not set(REQUIRED_METHODS) <= set(methods)
         ):
             raise BoundaryError("native_agent", "required_native_methods")
         recovery = input_spec["state_recovery"]

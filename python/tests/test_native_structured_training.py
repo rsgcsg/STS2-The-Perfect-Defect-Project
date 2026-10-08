@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import subprocess
+import sys
 from dataclasses import replace
 
 import pytest
 import torch
-from test_native_structured_model import agent_files as agent_files
 from test_native_structured_model import (
+    ack,
     offer,
     snapshot,
 )
+from test_native_structured_model import agent_files as agent_files
 from test_native_structured_model import (
     test_actual_stdio_agent_session_consume_ack_act_and_empty_c_await as stdio_loop,
 )
@@ -37,8 +40,11 @@ from stpd.models.structured_engine import StructuredTrainingEngine
 from stpd.models.structured_m2 import StructuredM2
 from stpd.models.structured_training import StructuredTrainingConfig
 from stpd.native_code_scope import (
+    MODEL_SCHEMA,
     PATHS,
+    REQUIRED_METHODS,
     TRAINING_PATHS_NATIVE,
+    is_native_model_schema,
     native_code_identity,
     native_training_code_identity,
 )
@@ -272,6 +278,112 @@ def test_dto_nullable_fields_generic_json_nodes_and_unknown_valid_words_are_pres
     assert frame.action_ids == tuple(action["action_id"] for action in actions)
     observation["persistent"] = None
     project_native_structured(observation, actions)
+
+
+def test_observed_public_view_replays_once_without_readiness_or_terminal_inference(agent_files):
+    folder, path, _, _ = agent_files
+    agent = NativeStructuredAgent(folder, path)
+    one, c1 = snapshot(empty=True)
+    two, c2 = snapshot(2)
+    one["status"] = two["status"] = "observed"
+    value = source()
+    value["runs"][0]["steps"] = [
+        {
+            "observation": observation,
+            "catalog": catalog,
+            "continuity_token": "segment",
+            "reset_before": position == 0,
+            "chosen_action_id": catalog[0]["action_id"] if catalog else None,
+        }
+        for position, (observation, catalog) in enumerate(((one, c1), (one, c1), (two, c2)))
+    ]
+    dataset = parse_native_training_dataset(json_bytes(value))
+    assert [step.advance for step in dataset.runs[0].steps] == [True, False, True]
+    memory = agent.scorer.model.initial_memory()
+    for position, step in enumerate(dataset.runs[0].steps):
+        original = value["runs"][0]["steps"][position]
+        with torch.inference_mode():
+            entities = agent.scorer.model.encode(step.frame)
+            if step.advance:
+                memory = agent.scorer.model.advance(entities, memory)
+        report = agent.consume(
+            offer(
+                original["observation"],
+                original["catalog"],
+                f"observed-acquisition-{position}",
+                agent.scorer.consumption_id,
+            )
+        )
+        agent.scorer.acknowledge(ack(report, str(position + 1)))
+        assert torch.equal(memory, agent.scorer.memory)
+        output = agent.next(
+            {
+                "continuity_token": "segment",
+                "consumption_id": report["consumption_id"],
+                "state_version": report["state_version"],
+                "basis_acquisition_id": f"observed-acquisition-{position}",
+                "received_cursor": "observed-cursor",
+            }
+        )
+        assert output["directive"]["type"] == ("act" if original["catalog"] else "await")
+        assert original["observation"]["status"] == "observed"
+    assert agent.scorer.state_version == 2
+
+
+def test_actual_stdio_observed_empty_catalog_returns_await(agent_files, monkeypatch):
+    import test_native_structured_model as fixture_module
+
+    def observed_snapshot(*args, **kwargs):
+        observation, actions = snapshot(*args, **kwargs)
+        observation["status"] = "observed"
+        return observation, actions
+
+    monkeypatch.setattr(fixture_module, "snapshot", observed_snapshot)
+    stdio_loop(agent_files)
+
+
+def test_native_schema_gate_is_lightweight_exact_and_exporter_reexports_it():
+    from stpd.policy.native_structured_export import is_native_model_schema as exported
+
+    assert exported is is_native_model_schema and exported(MODEL_SCHEMA)
+    assert not any(exported(value) for value in (None, [], {}, "stpd/structured-m2-model-v3"))
+    body = f"""
+import importlib.abc, sys
+sys.path.insert(0, {str(ROOT)!r})
+class NoNumericalBackend(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        blocked = {{'torch', 'numpy', 'safetensors', 'tokenizers', 'transformers'}}
+        if fullname.split('.')[0] in blocked:
+            raise AssertionError('lightweight gate imported numerical backend: '+fullname)
+sys.meta_path.insert(0, NoNumericalBackend())
+from stpd.native_code_scope import MODEL_SCHEMA, REQUIRED_METHODS, is_native_model_schema
+assert MODEL_SCHEMA == 'stpd/native-structured-m2-model-v1'
+assert is_native_model_schema(MODEL_SCHEMA)
+assert not is_native_model_schema('stpd/structured-m2-model-v1')
+assert len(REQUIRED_METHODS) == 15 and {{'retain', 'renew', 'release'}} <= set(REQUIRED_METHODS)
+assert not any(name.startswith('stpd.qwen') for name in sys.modules)
+"""
+    child = subprocess.run([sys.executable, "-I", "-c", body], capture_output=True, text=True)
+    assert child.returncode == 0, child.stderr
+
+
+@pytest.mark.parametrize("method", ["retain", "renew", "release"])
+def test_native_binder_requires_declared_retention_lifecycle_methods(agent_files, tmp_path, method):
+    folder, _, _, template = agent_files
+    requirements = copy.deepcopy(template["requirements"])
+    requirements["required_methods"].remove(method)
+    path = tmp_path / ("without-" + method + ".json")
+    with pytest.raises(BoundaryError, match="required_native_methods"):
+        bind_native_agent(
+            folder,
+            path,
+            manifest_id="incomplete-methods",
+            requirements=requirements,
+            support=template["support"],
+            required_seams=template["input"]["attachment"]["required_seams"],
+        )
+    assert not path.exists()
+    assert len(REQUIRED_METHODS) == len(set(REQUIRED_METHODS)) == 15
 
 
 def test_native_units_feed_same_engine_with_empty_advance_and_no_fake_wait():
