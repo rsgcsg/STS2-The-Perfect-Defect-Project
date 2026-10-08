@@ -5,7 +5,7 @@ using System.Runtime.CompilerServices;
 
 namespace STS2HumanAnnotator.Core;
 
-public sealed class RecordingSessionStore : IDisposable
+public sealed partial class RecordingSessionStore : IDisposable
 {
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
     private readonly object _gate = new();
@@ -51,6 +51,7 @@ public sealed class RecordingSessionStore : IDisposable
     private bool _closed;
     private readonly HumanCaptureProfile? _humanCaptureProfile;
     private readonly SourceSessionStreams? _sourceSession;
+    private readonly SourceSessionStreamsV2? _sourceSessionV2;
 
     private RecordingSessionStore(
         string directory,
@@ -58,7 +59,9 @@ public sealed class RecordingSessionStore : IDisposable
         HumanCaptureProfile? captureProfile,
         SourceCaptureProfile? sourceProfile = null,
         SourceDeclaration? initialSource = null,
-        SourceClockReference? initialClock = null)
+        SourceClockReference? initialClock = null,
+        SourceCaptureProfileV2? sourceProfileV2 = null,
+        SourceEpochPacketV2? initialEpoch = null)
     {
         DirectoryPath = directory;
         Manifest = manifest;
@@ -74,7 +77,7 @@ public sealed class RecordingSessionStore : IDisposable
                 JsonSerializer.Serialize(manifest, EvidenceJson.IndentedOptions));
             WriteCreateNew(
                 Path.Combine(directory, "capture-profile.json"),
-                sourceProfile == null
+                sourceProfileV2 != null ? JsonSerializer.Serialize(sourceProfileV2, SourceSessionJson.Options) : sourceProfile == null
                     ? JsonSerializer.Serialize(captureProfile, EvidenceJson.IndentedOptions)
                     : JsonSerializer.Serialize(sourceProfile, SourceSessionJson.Options));
             _invalidations = OpenBufferedAppend(Path.Combine(directory, "invalidations.jsonl"));
@@ -91,6 +94,8 @@ public sealed class RecordingSessionStore : IDisposable
             if (sourceProfile != null)
                 _sourceSession = new SourceSessionStreams(directory, manifest, sourceProfile,
                     initialSource!, initialClock!);
+            if (sourceProfileV2 != null)
+                _sourceSessionV2 = new SourceSessionStreamsV2(directory, manifest, sourceProfileV2, initialSource!, initialEpoch!);
             WriteCoverage();
         }
         catch
@@ -99,6 +104,7 @@ public sealed class RecordingSessionStore : IDisposable
             _canonicalTransitions?.Dispose(); _nativeSemanticDiscriminator?.Dispose(); _ownerLease?.Dispose();
             _humanTextInputs?.Dispose();
             _sourceSession?.Dispose();
+            _sourceSessionV2?.Dispose();
             throw;
         }
     }
@@ -107,7 +113,7 @@ public sealed class RecordingSessionStore : IDisposable
     public CurrentRecordingManifest Manifest { get; }
     public HumanCaptureProfile CaptureProfile => _humanCaptureProfile
         ?? throw new InvalidOperationException("A source profile is not a Human capture profile.");
-    public bool IsSourceSession => _sourceSession != null;
+    public bool IsSourceSession => _sourceSession != null || _sourceSessionV2 != null;
     public SourceCaptureProfile? SourceProfile => _sourceSession?.Profile;
     public SourceSessionStatus? GetSourceStatus() { lock (_gate) return _sourceSession?.Status; }
 
@@ -684,6 +690,7 @@ public sealed class RecordingSessionStore : IDisposable
             try
             {
                 _sourceSession?.PrepareClose();
+                _sourceSessionV2?.RequirePreparedClose();
                 WriteCoverage();
                 _performance.Measure("close_evidence_durable_flush", () =>
                 {
@@ -711,6 +718,8 @@ public sealed class RecordingSessionStore : IDisposable
                 _humanTextInputs?.Dispose();
                 _sourceSession?.WriteCloseReceipt();
                 _sourceSession?.Dispose();
+                _sourceSessionV2?.WriteCloseReceipt();
+                _sourceSessionV2?.Dispose();
                 if (_humanTextInputAppendFailed)
                 {
                     _ownerLease?.Dispose();
@@ -821,6 +830,11 @@ public sealed class RecordingSessionStore : IDisposable
 
     private void WriteCoverage()
     {
+        if (_sourceSessionV2 != null)
+        {
+            _sourceSessionV2.WriteCoverage();
+            return;
+        }
         if (_sourceSession != null)
         {
             _sourceSession.WriteCoverage();
