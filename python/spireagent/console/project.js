@@ -3572,6 +3572,177 @@ window.SpireProject = (() => {
     return card;
   }
 
+  function trainingCapabilitiesValid(value) {
+    const object = item => item && typeof item === "object" && !Array.isArray(item);
+    const boundsValid = bounds => Array.isArray(bounds) && bounds.length === 2
+      && bounds.every(Number.isSafeInteger) && bounds[0] <= bounds[1];
+    return value?.schema === "spireagent/training-capabilities-v1"
+      && value.automatic_retry === false && Array.isArray(value.recipes)
+      && Array.isArray(value.placements)
+      && value.recipes.every(item => typeof item?.recipe_id === "string"
+        && typeof item.dependencies_available === "boolean" && Array.isArray(item.placement_ids)
+        && Array.isArray(item.supported_actions) && object(item.config_defaults)
+        && object(item.config_fields) && Object.values(item.config_fields).every(boundsValid)
+        && object(item.limits) && Object.values(item.limits).every(bounds => object(bounds)
+          && Number.isSafeInteger(bounds.minimum) && Number.isSafeInteger(bounds.maximum)
+          && bounds.minimum <= bounds.maximum))
+      && value.placements.every(item => typeof item?.placement_id === "string");
+  }
+
+  function trainingIntent() {
+    if (!globalThis.crypto?.randomUUID) throw new Error("training_intent_unavailable");
+    return globalThis.crypto.randomUUID().replaceAll("-", "");
+  }
+
+  function trainingRequestForm(ctx, card, dataset, capabilities, choices, selected, name, actionName,
+    label, csrfToken, after = null) {
+    const form = el("div", null, "project-form");
+    const recipe = select(form, "训练配方", name, choices, selected);
+    const source = select(form, "训练来源（当前资料）", "local-training-source",
+      [[dataset.artifact_id, dataset.parameters?.display_name || dataset.artifact_id.slice(0, 16)]], dataset.artifact_id);
+    source.disabled = true;
+    const options = {primary:true};
+    const details = el("div", null, "project-form");
+    const reason = el("p", "", "small muted");
+    let descriptor, placement, configControls, limitControls;
+    let button;
+    const update = () => {
+      descriptor = capabilities.recipes.find(item => item.recipe_id === recipe.value);
+      details.replaceChildren();
+      configControls = new Map(); limitControls = new Map();
+      const placements = capabilities.placements.filter(item => descriptor?.placement_ids.includes(item.placement_id));
+      placement = select(details, "计算资源", "local-training-placement", placements.map(item =>
+        [item.placement_id, `${item.placement_id} · ${item.device || "设备未声明"}${item.remote ? " · 远端" : " · 本机"}`]), placements[0]?.placement_id || "");
+      for (const [key, bounds] of Object.entries(descriptor?.config_fields || {})) {
+        const control = input(details, `训练配置 · ${key}`, `local-training-config-${key}`,
+          descriptor.config_defaults[key], "number");
+        control.min = bounds[0]; control.max = bounds[1]; control.step = 1;
+        configControls.set(key, control);
+      }
+      for (const key of descriptor?.fixed_config_fields || [])
+        details.append(el("p", `${key}：${descriptor.config_defaults[key]}（配方固定）`, "small muted"));
+      for (const [key, bounds] of Object.entries(descriptor?.limits || {})) {
+        const control = input(details, key === "wall_seconds" ? "累计运行时间上限（秒）" : `资源上限 · ${key}`,
+          `local-training-limit-${key}`, bounds.default ?? Math.min(600, bounds.maximum), "number");
+        control.min = bounds.minimum; control.max = bounds.maximum; control.step = 1;
+        limitControls.set(key, control);
+      }
+      options.disabled = !descriptor || !descriptor.dependencies_available || placements.length === 0;
+      reason.textContent = !descriptor ? "此配方未被服务声明，不能启动。"
+        : !descriptor.dependencies_available ? localTrainingReason("local_models_extra_required")
+          : !placements.length ? "此配方没有可用计算资源，不能启动。"
+            : descriptor.supported_actions.length ? "可在服务声明的安全边界暂停、取消及恢复；用途与来源资格仍由服务核对。"
+              : "此固定配方不支持暂停、取消或 checkpoint 恢复。";
+      if (button) button.disabled = options.disabled;
+    };
+    recipe.onchange = update;
+    form.append(details, reason); card.append(form);
+    update();
+    button = command(ctx, actionName, label, async () => {
+      if (!live(ctx) || options.disabled || !choices.some(([id]) => id === recipe.value)) return;
+      if (descriptor?.recipe_id !== recipe.value) update();
+      if (options.disabled || !descriptor || !hex(source.value)
+          || !descriptor.placement_ids.includes(placement.value)) return;
+      const config = {...descriptor.config_defaults}, limits = {};
+      for (const [key, control] of configControls) {
+        const number = Number(control.value), bounds = descriptor.config_fields[key];
+        if (!control.value || !Number.isSafeInteger(number) || number < bounds[0] || number > bounds[1])
+          throw new Error("invalid_recipe_config");
+        config[key] = number;
+      }
+      for (const [key, control] of limitControls) {
+        const number = Number(control.value), bounds = descriptor.limits[key];
+        if (!control.value || !Number.isSafeInteger(number) || number < bounds.minimum || number > bounds.maximum)
+          throw new Error("unsupported_resource_limits");
+        limits[key] = number;
+      }
+      const payload = {schema:"spireagent/training-request-v1", intent_id:trainingIntent(),
+        recipe_id:descriptor.recipe_id, source_id:source.value, config, placement_id:placement.value,
+        limits, after_completed_operation_id:after};
+      options.disabled = true; recipe.disabled = true;
+      await request(ctx, "/api/local-training/start", payload, csrfToken);
+      await reload(ctx);
+    }, options);
+    card.append(button);
+  }
+
+  function typedTrainingCard(ctx, dataset, data, capabilities) {
+    const card = panel("本机训练与恢复", "使用本机服务声明的配方、配置与资源。训练用途和来源由既有服务核对；关闭游戏或面板不等于停止训练。不会自动重试未知结果。");
+    const operation = data.operation;
+    if (data.availability !== "ready") {
+      card.append(el("p", localTrainingReason(data.reason || data.availability), "small muted"));
+      return card;
+    }
+    const csrfToken = data.csrf_token;
+    const task = hex(operation.operation_id, 32) && hex(operation.attempt_id, 32);
+    const currentSource = operation.input_refs?.source_id || operation.dataset_id;
+    const descriptor = capabilities.recipes.find(item => item.recipe_id === operation.recipe_id);
+    const actions = Array.isArray(operation.supported_actions) ? operation.supported_actions : [];
+    if (operation.status !== "idle") {
+      const labels = {pending:"正在执行", paused:"已暂停", cancelled:"已取消", completed:"已完成", failed:"未完成", interrupted_unknown:"结果未知"};
+      card.append(fields([["任务状态", labels[operation.status] || "状态未声明"],
+        ["执行阶段", localTrainingStage(operation.phase || operation.stage)],
+        ["Worker", operation.worker_state || "未知"], ["结果验证", operation.validation_state || "未知"],
+        ["领域完成", operation.domain_completion_state || "未知"],
+        ["结果是否选用", operation.selected_result === true ? "是" : operation.selected_result === false ? "否" : "未知"],
+        ["训练配方", operation.recipe_id || "未知"], ["累计用时（秒）", operation.elapsed_seconds ?? "未知"]]));
+      if (["pause", "cancel"].includes(operation.requested_action) && operation.status === "pending")
+        card.append(el("p", `${operation.requested_action === "pause" ? "暂停" : "取消"}请求已登记，等待 Worker 的明确停止回执；尚未终止。`, "small muted"));
+      const progress = operation.progress;
+      if (progress && Number.isSafeInteger(progress.completed) && progress.completed >= 0)
+        card.append(el("p", `训练进度：${progress.completed} / ${Number.isSafeInteger(progress.total) ? progress.total : "总量未知"} · ${progress.unit || "单位未知"}`, "small muted"));
+      if (operation.status === "interrupted_unknown" || operation.worker_state === "unknown")
+        card.append(el("p", "结果未知。先明确核对原 attempt；本页不会重发训练或自动恢复。", "small muted"));
+      if (operation.error?.code) card.append(technical({error:operation.error}, "查看任务错误"));
+      card.append(technical({operation_id:operation.operation_id, attempt_id:operation.attempt_id,
+        checkpoint_id:operation.checkpoint_id, config:operation.config, limits:operation.limits}, "查看运行身份与累计预算"));
+      if (hex(currentSource) && currentSource !== dataset.artifact_id)
+        card.append(link("打开当前训练来源", route("local-workspace", currentSource)));
+      if (operation.status === "completed") for (const [key, label] of [["result_id","查看训练结果"],["model_id","查看本机模型"]])
+        if (hex(operation[key])) card.append(link(label, route("local-workspace", operation[key])));
+      for (const [action, label] of [["pause","请求暂停"],["cancel","请求取消"],["resume","从此 checkpoint 明确恢复"],["reconcile","核对原 attempt 结果"]]) {
+        const resumeReady = action !== "resume" || (operation.status !== "interrupted_unknown"
+          && operation.worker_state === "terminal"
+          && hex(operation.checkpoint_id) && operation.limits && Object.keys(operation.limits).length > 0);
+        const enabled = task && csrfToken && actions.includes(action)
+          && descriptor?.supported_actions.includes(action) && resumeReady
+          && !(operation.status === "pending" && (operation.requested_action === action
+            || operation.requested_action === "cancel"));
+        const options = {type:"secondary", disabled:!enabled};
+        card.append(command(ctx, `local-training-${action}`, label, async () => {
+          if (!live(ctx) || options.disabled) return;
+          const body = {operation_id:operation.operation_id, expected_attempt_id:operation.attempt_id};
+          if (action === "resume") Object.assign(body, {checkpoint_id:operation.checkpoint_id,
+            intent_id:trainingIntent(), limits:{...operation.limits}});
+          options.disabled = true;
+          await request(ctx, `/api/local-training/${action}`, body, csrfToken);
+          await reload(ctx);
+        }, options));
+        if (!enabled) card.append(el("p", `${label}不可用：${!descriptor?.supported_actions.includes(action)
+          ? "配方未声明此能力" : !actions.includes(action) ? "当前 attempt 未声明此能力" : !resumeReady
+            ? "需要先核对未知结果、明确停止回执、checkpoint 与原累计预算" : "控制意图已登记或浏览器保护令牌不可用"}。`, "small muted"));
+      }
+    }
+    const same = currentSource === dataset.artifact_id;
+    const mayStart = operation.status === "idle" || operation.status === "completed"
+      || (operation.status === "failed" && !operation.run_id);
+    if (mayStart && csrfToken && hex(dataset.artifact_id)) {
+      const choices = capabilities.recipes.map(item => [item.recipe_id, item.recipe_id]);
+      const selected = choices.some(([id]) => id === operation.recipe_id) ? operation.recipe_id
+        : choices.find(([id]) => id === "structured-m2-cpu-v2")?.[0] || choices[0]?.[0];
+      if (choices.length) trainingRequestForm(ctx, card, dataset, capabilities, choices, selected,
+        same && operation.status === "completed" ? "local-training-new-recipe" : "local-training-recipe",
+        same && operation.status === "completed" ? "start-local-training-new" : "start-local-training",
+        same && operation.status === "completed" ? "新建一次训练" : "明确开始本机训练", csrfToken,
+        same && operation.status === "completed" ? operation.operation_id : null);
+    }
+    card.append(command(ctx, "refresh-local-training-status", "刷新训练状态", async () => {
+      if (task) await request(ctx, `/api/local-training/status?operation_id=${operation.operation_id}`);
+      await reload(ctx);
+    }, {type:"secondary"}));
+    return card;
+  }
+
   async function localTrainingCard(ctx, dataset) {
     const card = panel(
       "本机短训练",
@@ -3591,7 +3762,7 @@ window.SpireProject = (() => {
     }
     if (!live(ctx)) return card;
     if (!data || typeof data !== "object" || Array.isArray(data)
-        || !["stpd/local-training-operation-v1", "stpd/local-training-operation-v2"].includes(data.schema)
+        || !["stpd/local-training-operation-v1", "stpd/local-training-operation-v2", "spireagent/training-operation-snapshot-v1"].includes(data.schema)
         || !data.operation || typeof data.operation !== "object") {
       card.append(el("p", "本机训练状态格式未知，当前不能启动训练。", "small muted"));
       card.append(technical({error_code:"unknown_local_training_status_schema"}, "查看状态格式错误"));
@@ -3606,6 +3777,18 @@ window.SpireProject = (() => {
         card.append(link("打开本机资料与准备状态", route("local-workspace")));
       return card;
     }
+    let capabilities;
+    try {
+      capabilities = await request(ctx, "/api/local-training/capabilities");
+    } catch {}
+    if (!live(ctx)) return card;
+    if (!trainingCapabilitiesValid(capabilities)) {
+      card.append(el("p", "训练能力声明暂不可用；无法启动或控制任务。", "small muted"));
+      return card;
+    }
+    if (data.schema === "spireagent/training-operation-snapshot-v1"
+        || dataset.parameters?.schema === "stpd/structured-sequence-source-v1")
+      return typedTrainingCard(ctx, dataset, data, capabilities);
     const operation = data.operation;
     const currentForDataset = operation.dataset_id === dataset.artifact_id;
     const taskId = hex(operation.operation_id, 32) ? operation.operation_id : null;
@@ -3619,6 +3802,8 @@ window.SpireProject = (() => {
       .filter(([, view]) => memoryRecipePageProfile(view) === (managed ? "text-menu-v2" : "text-menu-v1"))
       .map(([id, view]) => [id, `${memoryRecipeLabel(view)} · 仅训练`]);
     if (!managed) choices.unshift([defaultRecipe, "D-Simple-S v1（默认，短训练）"]);
+    for (let i = choices.length - 1; i >= 0; i--)
+      if (!capabilities.recipes.some(item => item.recipe_id === choices[i][0])) choices.splice(i, 1);
     if (operation.status !== "idle") card.append(el("p", `当前任务配方：${recipeLabel}。${operation.result_type === "train_only" ? "此训练任务不执行独立评估。" : ""}`, "small muted"));
     if (operation.status === "pending") {
       const stage = localTrainingStage(operation.stage);
@@ -3690,44 +3875,18 @@ window.SpireProject = (() => {
     const canStart = !blocksStart && hasCsrf && hex(dataset.artifact_id);
     if (!hasCsrf)
       card.append(el("p", "本机浏览器保护令牌暂不可用，请刷新后重试。", "small muted"));
-    if (canStart) {
-      const form = el("div");
-      const recipe = select(form, "训练配方", "local-training-recipe", choices,
-        managed ? v2MemoryRecipe : defaultRecipe);
-      card.append(form);
-      const startOptions = {primary:true};
-      card.append(command(ctx, "start-local-training",
-        currentForDataset && operation.status === "failed" ? "重新尝试一次短训练" : "开始本机短训练",
-        async () => {
-          if (!live(ctx) || startOptions.disabled || !hex(dataset.artifact_id)
-              || !choices.some(([id]) => id === recipe.value)) return;
-          startOptions.disabled = true;
-          await request(ctx, "/api/local-training/start", {
-            dataset_id:dataset.artifact_id,
-            ...(memoryRecipeView(recipe.value) ? {recipe:recipe.value} : {}),
-          }, csrfToken);
-          await reload(ctx);
-        }, startOptions));
+    if (canStart && choices.length) {
+      trainingRequestForm(ctx, card, dataset, capabilities, choices,
+        managed ? v2MemoryRecipe : defaultRecipe, "local-training-recipe", "start-local-training",
+        currentForDataset && operation.status === "failed" ? "重新尝试一次短训练" : "开始本机短训练", csrfToken);
     }
     if (currentForDataset && operation.status === "completed" && taskId && hasCsrf
         && hex(operation.run_id) && hex(operation.result_id) && hex(operation.model_id)
-        && (hex(operation.evaluation_id) || operation.result_type === "train_only")) {
-      const form = el("div");
-      const recipe = select(form, "新实验配方", "local-training-new-recipe", choices,
+        && (hex(operation.evaluation_id) || operation.result_type === "train_only") && choices.length) {
+      trainingRequestForm(ctx, card, dataset, capabilities, choices,
         choices.some(([id]) => id === operation.recipe) ? operation.recipe
-          : managed ? v2MemoryRecipe : defaultRecipe);
-      card.append(form);
-      const newOptions = {type:"secondary"};
-      card.append(command(ctx, "start-local-training-new", "新建一次训练", async () => {
-        if (!live(ctx) || newOptions.disabled || !hex(dataset.artifact_id)
-            || !choices.some(([id]) => id === recipe.value)) return;
-        newOptions.disabled = true;
-        await request(ctx, "/api/local-training/start", {
-          dataset_id:dataset.artifact_id, after_completed_operation_id:taskId,
-          ...(memoryRecipeView(recipe.value) ? {recipe:recipe.value} : {}),
-        }, csrfToken);
-        await reload(ctx);
-      }, newOptions));
+          : managed ? v2MemoryRecipe : defaultRecipe, "local-training-new-recipe", "start-local-training-new",
+        "新建一次训练", csrfToken, taskId);
     }
     card.append(command(ctx, "refresh-local-training-status", "刷新训练状态", async () => {
       await reload(ctx);
@@ -4629,6 +4788,8 @@ window.SpireProject = (() => {
         box.append(await localOfflineEvaluationDetail(ctx, value));
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1"
           && value.parameters?.purpose === "training")
+        box.append(await localTrainingCard(ctx, value));
+      if (value.kind === "dataset" && value.parameters?.schema === "stpd/structured-sequence-source-v1")
         box.append(await localTrainingCard(ctx, value));
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/human-text-input-source-v1") {
         const bindingCard = panel("操作标签训练入口", "只在本机用途账本明确登记此来源用于训练后显示训练入口；操作标签不补成完整决策。");

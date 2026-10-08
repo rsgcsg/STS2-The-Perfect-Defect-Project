@@ -702,5 +702,47 @@ The structured Agent registry entry still reports
 `structured_installation_adapter_required`: STPD must supply its public package
 verifier/installation builder before Workbench export/registration can offer it.
 Typed source admission and training are therefore distinct from structured model
-installation support. These source/test seams do not complete the ordinary UI
-journey, runtime/Human qualification or final G2/V1 user acceptance.
+installation support. Training HTTP/console consumption is implemented below;
+source/test seams do not complete the ordinary end-to-end model journey,
+runtime/Human qualification or final G2/V1 user acceptance.
+
+
+## Local training browser boundary
+
+The existing loopback Workbench exposes authenticated `GET /api/local-training/capabilities`
+and `GET /api/local-training/status`. An optional exact `operation_id` query on status
+rejects a different current operation. Discovery is metadata-only; opening the page
+or refreshing does not start, reconcile or resume training.
+
+`POST /api/local-training/start` accepts the exact `spireagent/training-request-v1`
+JSON contract, including a fresh intent, recipe, selected source, advertised config,
+placement, resource limits and explicit completed-operation precondition. The existing
+bounded legacy `dataset_id`/`recipe` body remains compatible. `POST` to `pause`,
+`cancel` or `reconcile` requires exactly `operation_id` and `expected_attempt_id`.
+`resume` additionally requires the exact `checkpoint_id`, a new `intent_id`, and
+unchanged original `limits`. Every mutation uses the existing browser cookie,
+Origin/CSRF checks and running configuration/instance guard. Remote compute is
+unavailable unless declared by an owning service; the current service advertises
+only local CPU.
+
+The ordinary local artifact detail offers capability-driven recipe, source,
+placement, numeric configuration and cumulative time/scratch controls. Fixed
+legacy recipes expose fixed configuration and no recovery controls. Structured
+sequence sources expose the same explicit training form; showing a form does not
+admit a source or grant training use. Existing recipe preflight, source verification
+and curation/use owners remain authoritative. Missing or unknown capability/status
+schemas disable mutations and preserve browsing.
+
+Typed task presentation separately reports progress, requested pause/cancel,
+worker state, domain completion, validation and result selection. Control ACK means
+intent recorded while the worker remains pending. Unsupported/currently unavailable
+controls are disabled with reasons. Unknown outcomes require explicit reconciliation;
+there is no automatic restart or retry. Resume uses the snapshot's copied canonical
+configuration and original cumulative limits, including after a browser/service
+reload, and targets the old exact attempt and checkpoint with a new intent. A
+single uncertain submission cannot be resent from the same rendered control.
+
+Focused HTTP tests exercise the real service with immutable synthetic fixtures,
+CPU 2 and a private child; JavaScript tests verify presentation and exact requests.
+This is source/test evidence, not real-data training, installed/game execution,
+Human origin, model quality, remote placement or complete G2/V1 acceptance.
