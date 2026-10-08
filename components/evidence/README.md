@@ -11,6 +11,14 @@ is never machine proof of Human origin; this format cannot enter the strict
 Human bundle verifier. Native exposure, causal transition proof and research
 admission remain separate gates.
 
+The additive `SourceSessionBundleV2Verifier` verifies `source-session-bundle-v2`
+through `verify_source_session_bundle_v2(path)` or `verify-source-bundle-v2`.
+It checks immutable attachment epochs, original actor/input bindings, native
+position coverage and all final drain seals. Typed receive uses
+`--verify-type source-session-bundle-v2` and verifies staged bytes and their
+content identity before promotion. Source v1 and Human readers retain their
+original schemas; Source v2 does not attest Human origin or research admission.
+
 For an explicit Managed text-v2 Agent run, the verifier requires the sealed
 public `environment_binding` alongside the Host-independent model Manifest.
 It recomputes the binding's canonical SHA-256 from the manifest bytes and

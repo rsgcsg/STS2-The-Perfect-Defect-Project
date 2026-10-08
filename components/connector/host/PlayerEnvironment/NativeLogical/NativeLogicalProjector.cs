@@ -44,22 +44,24 @@ public sealed class NativeLogicalProjector
     public NativeLogicalProjector(NativeLogicalLimits? limits = null) { this.limits = limits ?? new(); }
     public NativeLogicalFrozenProjection Freeze(NativeLogicalPublicFrame frame, IReadOnlyList<string> scope,
         string scopeId, DateTimeOffset observedAt, long retentionDeadline, Func<long> clock,
-        Func<bool>? retained = null)
+        Func<bool>? retained = null, int? maxEncodingBytes = null)
     {
+        int byteLimit = maxEncodingBytes ?? limits.MaxCaptureBytes;
+        if (byteLimit is < 1 || byteLimit > limits.MaxCaptureBytes) throw new NativeLogicalException("invalid_limit", "Optional producer encoding limit must stay inside normal capture admission.");
         if (frame.SourceCompleteness is null || frame.SourceCompleteness.Status != "complete" || frame.SourceCompleteness.Missing is null || frame.SourceCompleteness.Missing.Count != 0)
             throw new NativeLogicalException("source_capture_incomplete", "The native producer has not certified complete public fields and the full native relation.");
         ValidateScope(scope);
         ValidateFrameScalars(frame);
         // Freeze nested JsonNodes and mutable input collections before deriving identity.
         if (frame.Leaves.Count > limits.MaxActions) throw new NativeLogicalException("capacity_exceeded", "The native relation exceeds its announced limit.");
-        byte[] facts = NativeLogicalWire.EncodeBounded(frame, limits.MaxCaptureBytes);
+        byte[] facts = NativeLogicalWire.EncodeBounded(frame, byteLimit);
         NativeLogicalPublicFrame frozen = System.Text.Json.JsonSerializer.Deserialize<NativeLogicalPublicFrame>(facts, NativeLogicalWire.Options)!;
         if (frozen.Leaves.Count > limits.MaxActions) throw new NativeLogicalException("capacity_exceeded", "The native relation exceeds its announced limit.");
 
-        if (facts.Length > limits.MaxCaptureBytes) throw new NativeLogicalException("capacity_exceeded", "Public facts exceed capture capacity.");
+        if (facts.Length > byteLimit) throw new NativeLogicalException("capacity_exceeded", "Public facts exceed capture capacity.");
         var keys = frame.Leaves.Select(a => a.BindingKey).ToArray();
         foreach (string key in keys) NativeLogicalWire.Text(key, limits.MaxFieldBytes);
-        string changed = NativeLogicalWire.Hash(facts) + NativeLogicalWire.Hash(NativeLogicalWire.EncodeBounded(keys, limits.MaxCaptureBytes));
+        string changed = NativeLogicalWire.Hash(facts) + NativeLogicalWire.Hash(NativeLogicalWire.EncodeBounded(keys, byteLimit));
         lock (gate)
         {
             if (signature != changed)
@@ -79,7 +81,7 @@ public sealed class NativeLogicalProjector
             }
             bool catalogIncluded = scope.Contains("catalog");
             var catalog = new NativeLogicalCatalog(snapshotId!, frame.StreamGeneration, scopeId,
-                catalogIncluded ? currentActions : Array.Empty<NativeLogicalAction>(), retentionDeadline, clock, retained, limits);
+                catalogIncluded ? currentActions : Array.Empty<NativeLogicalAction>(), retentionDeadline, clock, retained, limits with { MaxCaptureBytes = byteLimit });
             var missing = ScopeFields.Where(s => !scope.Contains(s)).ToArray();
             var descriptor = catalogIncluded ? catalog.Descriptor : catalog.Descriptor with { Status = "not_captured", TotalCount = null, Digest = null, AccessMethods = Array.Empty<string>() };
             var observation = new NativeLogicalObservation(PlayerEnvironmentContract.ProtocolVersion,
@@ -89,17 +91,17 @@ public sealed class NativeLogicalProjector
                 scope.Contains("referents") ? frozen.Referents : Array.Empty<PlayerEnvironmentReferent>(),
                 new(missing.Length == 0 ? "complete" : "partial", Array.AsReadOnly(scope.ToArray()), Array.AsReadOnly(missing), missing.Length == 0),
                 frozen.Session, frozen.InformationPolicy, frozen.OwnerOccurrence, descriptor);
-            var projection = new NativeLogicalFrozenProjection(observation, catalog, limits.MaxCaptureBytes);
-            if (projection.Payload.Length > limits.MaxCaptureBytes) throw new NativeLogicalException("capacity_exceeded", "Encoded capture exceeds capacity.");
+            var projection = new NativeLogicalFrozenProjection(observation, catalog, byteLimit);
+            if (projection.Payload.Length > byteLimit) throw new NativeLogicalException("capacity_exceeded", "Encoded capture exceeds capacity.");
             return projection;
         }
     }
     // Consumes the standalone projection's actual buffer; no duplicate retained byte array remains.
     public NativeLogicalCapturedProjection Capture(NativeLogicalPublicFrame frame, IReadOnlyList<string> scope,
         string scopeId, DateTimeOffset observedAt, long retentionDeadline, Func<long> clock,
-        NativeLogicalCaptureStore store)
+        NativeLogicalCaptureStore store, int? maxEncodingBytes = null)
     {
-        var projection = Freeze(frame, scope, scopeId, observedAt, retentionDeadline, clock);
+        var projection = Freeze(frame, scope, scopeId, observedAt, retentionDeadline, clock, maxEncodingBytes: maxEncodingBytes);
         return store.SealProjection(projection, frame.Session, frame.StreamGeneration, scopeId, observedAt);
     }
     // Source owner supplies an already-frozen current frame; this performs no native getter or input.

@@ -156,7 +156,7 @@ public sealed partial class NativeLogicalPublicationHub
         catch (NativeLogicalException error) when (error.Code == "source_retiring_epoch_capacity")
         {
             // No oldest-view eviction and no third retirement allocation. Gameplay generation turnover still proceeds.
-            owner.Failure = error.Code; owner.ActiveSubscription = null;
+            owner.Failure ??= error.Code; owner.ActiveSubscription = null;
             RemoveSubscription(id, "generation_changed"); SignalSourceProgress();
         }
     }
@@ -349,6 +349,11 @@ public sealed partial class NativeLogicalPublicationHub
         {
             TickLocked(); var owner = GetSourceRegistration(registrationId);
             var sub = SourceActive(owner, subscriptionId);
+            if (!TryTouchClient(sub.Client))
+            {
+                owner.Failure ??= "source_client_expired"; SignalSourceProgress();
+                throw new NativeLogicalException("source_client_expired", "The original source client is no longer active.");
+            }
             sub.Deadline = checked(clock() + limits.RetentionMs);
             sub.Value = sub.Value with { ExpiresAt = DateTimeOffset.UtcNow.AddMilliseconds(limits.RetentionMs) };
             return sub.Value;
@@ -358,6 +363,15 @@ public sealed partial class NativeLogicalPublicationHub
     {
         if (sourceRegistration is not { } owner) return;
         var old = owner.Progress; owner.Progress = NewProgress(); old.TrySetResult(true);
+    }
+    partial void OnClientClosingLocked(string clientSessionId, string reason)
+    {
+        if (sourceRegistration is not { } owner) return;
+        bool originalOwner = owner.ActiveSubscription is { } active && subscriptions.TryGetValue(active, out var sub) && sub.Client == clientSessionId
+            || SourceViews(owner).Any(view => view.Subscription.Client == clientSessionId);
+        if (!originalOwner) return;
+        owner.Failure ??= "source_client_expired";
+        SignalSourceProgress();
     }
     private SourceRegistration GetSourceRegistration(string id) => sourceRegistration is { } owner && owner.Id == id
         ? owner : throw new NativeLogicalException("source_attachment_expired", "No exact live source registration exists.");

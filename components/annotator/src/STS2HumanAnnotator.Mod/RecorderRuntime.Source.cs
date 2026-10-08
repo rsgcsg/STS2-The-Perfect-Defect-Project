@@ -12,7 +12,7 @@ internal static partial class RecorderRuntime
     private static SourceSessionStatus? _lastSourceStatus;
     private static string _activeCaptureProfileId = HumanCaptureProfiles.FullRunReadRich.ProfileId;
     private static readonly Dictionary<string, (string Fingerprint, RecordingCommandResult Result)> SourceCommands = new(StringComparer.Ordinal);
-    private static bool IsSourceRecording => _activeCaptureProfileId == SourceSessionContract.ProfileId;
+    private static bool IsSourceRecording => _activeCaptureProfileId is SourceSessionContract.ProfileId or SourceSessionContractV2.ProfileId;
 
     internal static void ConfigureSourceBridge(ISourceRecordingBridge bridge)
     {
@@ -26,14 +26,17 @@ internal static partial class RecorderRuntime
     }
 
     private static bool IsSourceCommand(RecordingCommand command) =>
-        command.Schema == RecordingApplicationContract.SourceCommandSchema
-        || command.CaptureProfileId == SourceSessionContract.ProfileId
+        command.Schema is RecordingApplicationContract.SourceCommandSchema or SourceSessionContractV2.CommandSchema
+        || command.CaptureProfileId is SourceSessionContract.ProfileId or SourceSessionContractV2.ProfileId
         || command.Kind == RecordingCommandKind.ChangeSource
         || IsSourceRecording && command.Kind != RecordingCommandKind.StartNewSession;
 
     private static RecordingCommandResult ExecuteSourceCommand(
         RecordingCommand command, RecordingSessionExpectation? expectedSession)
     {
+        if (command.Schema == SourceSessionContractV2.CommandSchema || command.CaptureProfileId == SourceSessionContractV2.ProfileId
+            || IsSourceRecordingV2 && command.Kind != RecordingCommandKind.StartNewSession)
+            return ExecuteSourceCommandV2(command, expectedSession);
         if (command.Schema != RecordingApplicationContract.SourceCommandSchema)
             return RejectedCommand("source_command_schema_required", "Use the explicit source recording command schema.");
         if (string.IsNullOrWhiteSpace(command.CommandId))
@@ -248,6 +251,7 @@ internal static partial class RecorderRuntime
 
     private static void FinalizeSourceClose()
     {
+        if (IsSourceRecordingV2) { FinalizeSourceCloseV2(); return; }
         lock (Gate)
         {
             if (_lifecycle.State != RecordingLifecycleState.Closing || _store?.IsSourceSession != true

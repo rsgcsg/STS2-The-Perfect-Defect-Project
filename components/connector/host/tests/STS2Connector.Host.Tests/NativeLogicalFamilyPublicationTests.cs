@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using STS2Connector.Authority;
 using System.Text.Json.Nodes;
 using STS2Connector.NativeUi;
 using STS2Connector.PlayerEnvironment;
@@ -21,26 +21,30 @@ public sealed class NativeLogicalFamilyPublicationTests
         internal readonly MainThreadWorkQueue Queue = new();
         internal readonly NativeLogicalService Owner;
         internal readonly NativeLogicalSubscription Subscription;
+        private readonly RequestNamespace requests = RequestTestDriver.Namespace();
+        private readonly MutationControllerCoordinator authority = new("runtime", enableDeadlineTimer: false);
+        internal readonly string Reader;
         internal Fixture()
         {
-            Owner = new(() => { Captures++; return Frame; }, () => "run", new object(), new ConcurrentDictionary<string, string>(),
-                (work, cancellation) => Queue.Enqueue(work, cancellation), () => true);
+            Reader = authority.Register(new("family-reader", "test", "Family reader", "1")).Client.ClientSessionId;
+            Owner = new(() => { Captures++; return Frame; }, () => "run", requests,
+                (work, cancellation) => Queue.Enqueue(work, cancellation), () => true, clientActive: authority.IsActiveClient);
             Owner.Initialize();
             Owner.InstallPublicationProfile(NativeLogicalPublicationProfile.ProfileId, NativeLogicalPublicationProfile.DefinitionSha256,
                 NativeLogicalPublicationProfile.RequiredCoverage);
-            Subscription = Owner.Attach(new("reader", NativeLogicalProjector.ScopeFields,
+            Subscription = Owner.Attach(new(Reader, NativeLogicalProjector.ScopeFields,
                 NativeLogicalPublicationProfile.RequiredCoverage, "full_reference")).Subscription!;
         }
         internal NativeLogicalEventAvailability Next(string after, int number)
         {
-            var reply = Owner.Hub.AwaitAsync("reader", Subscription.SubscriptionId, Subscription.ScopeId, after,
+            var reply = Owner.Hub.AwaitAsync(Reader, Subscription.SubscriptionId, Subscription.ScopeId, after,
                 number.ToString("x32"), "any_event", 2000).GetAwaiter().GetResult();
             Assert.Equal("event", reply.Status);
             return Assert.IsType<NativeLogicalEventAvailability>(reply.Event);
         }
         internal NativeLogicalObservation Observe(NativeLogicalEventAvailability value) =>
             NativeLogicalDecoder.Decode<NativeLogicalObservation>(Owner.Store.ExportFrozen(value.Event.CaptureRef!).CopyCaptureBytes());
-        public void Dispose() => Owner.Dispose();
+        public void Dispose() { Owner.Dispose(); requests.Dispose(); }
     }
     private static TextMenuFrame MakeFrame(string owner, bool offered)
     {
@@ -112,13 +116,13 @@ public sealed class NativeLogicalFamilyPublicationTests
         var initial = fixture.Next(fixture.Subscription.StartingCursor, 1);
         using var cancellation = new CancellationTokenSource();
         var queued = Enumerable.Range(0, 4).Select(_ => fixture.Owner.CurrentAsync(
-            new("reader", NativeLogicalProjector.ScopeFields, null), cancellation.Token)).ToArray();
+            new(fixture.Reader, NativeLogicalProjector.ScopeFields, null), cancellation.Token)).ToArray();
         int captures = fixture.Captures;
         for (int i = 0; i < 9; i++) fixture.Owner.Publish("native_reward_input_availability", "reward_holder_clickability_returned");
         cancellation.Cancel();
         foreach (var task in queued) Assert.ThrowsAny<OperationCanceledException>(() => task.GetAwaiter().GetResult());
         Assert.Equal(captures, fixture.Captures);
-        var events = fixture.Owner.Hub.Events("reader", fixture.Subscription.SubscriptionId, fixture.Subscription.ScopeId, initial.Event.Cursor);
+        var events = fixture.Owner.Hub.Events(fixture.Reader, fixture.Subscription.SubscriptionId, fixture.Subscription.ScopeId, initial.Event.Cursor);
         Assert.Null(events.Gap); Assert.Equal(9, events.Events.Count);
         Assert.Equal(Enumerable.Range(2, 9).Select(i => i.ToString()), events.Events.Select(e => e.Event.PublicationIndex));
         Assert.All(events.Events, e => { Assert.Null(e.Event.CaptureRef); Assert.Equal("encoding_capacity_exceeded", e.Event.MissingReason); });
@@ -143,7 +147,7 @@ public sealed class NativeLogicalFamilyPublicationTests
         Assert.True(fixture.Owner.PublishTracked("native_information_owner", "information_context_update_returned"));
         var returned = fixture.Next(initial.Event.Cursor, 2);
         Assert.Equal(underlying, fixture.Observe(returned).Interaction!.Content.Surface["kind"]!.GetValue<string>());
-        Assert.Single(fixture.Owner.Hub.Events("reader", fixture.Subscription.SubscriptionId,
+        Assert.Single(fixture.Owner.Hub.Events(fixture.Reader, fixture.Subscription.SubscriptionId,
             fixture.Subscription.ScopeId, initial.Event.Cursor).Events);
         // No later current read, clock, timer, or remembered-family marker repairs history.
         witness.Dispose();
@@ -168,7 +172,7 @@ public sealed class NativeLogicalFamilyPublicationTests
         var returned = fixture.Next(initial.Event.Cursor, 2);
         Assert.Equal(subscriberChangesOwner ? "combat_turn" : "deck",
             fixture.Observe(returned).Interaction!.Content.Surface["kind"]!.GetValue<string>());
-        Assert.Single(fixture.Owner.Hub.Events("reader", fixture.Subscription.SubscriptionId,
+        Assert.Single(fixture.Owner.Hub.Events(fixture.Reader, fixture.Subscription.SubscriptionId,
             fixture.Subscription.ScopeId, initial.Event.Cursor).Events);
     }
     [Fact]
@@ -186,7 +190,7 @@ public sealed class NativeLogicalFamilyPublicationTests
         Assert.Equal(InspectionDepartureDisposition.ExistingContextPublication, witness!.Returned(inspect, inspect, true, false, false));
         var missing = fixture.Next(initial.Event.Cursor, 2);
         Assert.Null(missing.Event.CaptureRef); Assert.Equal("source_capture_incomplete", missing.Event.MissingReason);
-        Assert.Single(fixture.Owner.Hub.Events("reader", fixture.Subscription.SubscriptionId,
+        Assert.Single(fixture.Owner.Hub.Events(fixture.Reader, fixture.Subscription.SubscriptionId,
             fixture.Subscription.ScopeId, initial.Event.Cursor).Events);
     }
 

@@ -176,6 +176,15 @@ public sealed class NativeLogicalCaptureStore
         }
         finally { Drop(entry.Buffer); }
     }
+    // Admission reads immutable lengths before any recorder-owned copy or decoder scratch allocation.
+    internal (NativeLogicalCapture Descriptor, long ByteCount) FrozenExportMetadata(string captureId)
+    {
+        lock (gate)
+        {
+            SweepLocked(); var entry = Find(captureId);
+            return (entry.Capture, entry.Buffer.Bytes.LongLength + (entry.CatalogStorage?.Values.Bytes.LongLength ?? 0));
+        }
+    }
     // A passive recorder receives copies of one coherent retained occurrence, never live state.
     public NativeLogicalFrozenInput ExportFrozen(string captureId, bool catalogRequired = true)
     {

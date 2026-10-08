@@ -201,7 +201,10 @@ internal static partial class RecorderRuntime
                 _lastBlockers.ToArray(),
                 ApplicationEvents.LatestSequence,
                 Continuous.Snapshot())
-            { Source = _store?.GetSourceStatus() ?? _lastSourceStatus };
+            {
+                Source = _activeCaptureProfileId == SourceSessionContract.ProfileId ? _store?.GetSourceStatus() ?? _lastSourceStatus : null,
+                SourceV2 = IsSourceRecordingV2 ? _store?.GetSourceStatusV2() ?? _lastSourceStatusV2 : null
+            };
         }
     }
 
@@ -4758,6 +4761,7 @@ internal static partial class RecorderRuntime
     /// </summary>
     internal static void ObserveNativeRunEnded(bool isVictory)
     {
+        if (IsSourceRecordingV2) return; // The neutral native lifecycle seam records V2 without legacy automatic Close.
         string detail = $"RunManager.OnEnded(isVictory={isVictory.ToString().ToLowerInvariant()})";
         lock (Gate)
         {
@@ -4786,6 +4790,7 @@ internal static partial class RecorderRuntime
     /// </summary>
     internal static void ObserveNativeRunStarted(string journalKind)
     {
+        if (IsSourceRecordingV2) return; // The neutral native lifecycle seam records V2 without legacy automatic Close.
         bool closePrevious;
         string? previousSession;
         lock (Gate)
@@ -4855,6 +4860,7 @@ internal static partial class RecorderRuntime
 
     internal static void ObserveNativeRunCleanup(bool graceful)
     {
+        if (IsSourceRecordingV2) return; // The neutral native lifecycle seam records V2 without legacy automatic Close.
         // Cleanup is an observed exit boundary, not victory/defeat evidence.
         lock (Gate)
         {
@@ -4870,6 +4876,7 @@ internal static partial class RecorderRuntime
 
     internal static void ObserveGameExiting()
     {
+        if (IsSourceRecordingV2) { _store?.MarkSourceV2AccountingFailed("source_process_exit_unproduced"); return; }
         try { ObserveNativeRunCleanup(false); }
         catch (Exception exception) { NativeUiObservationSafety.Report("recording.game_exit", exception); }
     }
