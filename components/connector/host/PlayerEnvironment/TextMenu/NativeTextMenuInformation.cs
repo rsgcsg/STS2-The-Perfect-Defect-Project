@@ -392,7 +392,7 @@ internal static class NativeTextMenuInformation
         if (screen is NInspectRelicScreen relicScreen)
             return CaptureRelic(legacy, relicScreen, key);
         if (screen is NInspectCardScreen cardScreen)
-            return CaptureCardInspect(legacy, cardScreen, key);
+            return CaptureCardInspect(legacy, cardScreen, key, entities, nativeLogical);
         if (screen is NHoverTipSet)
             return CaptureTip(legacy, key);
 
@@ -1203,7 +1203,8 @@ internal static class NativeTextMenuInformation
     }
 
     private static NativeTextMenuInformationCapture CaptureCardInspect(
-        SnapshotBuildResult legacy, NInspectCardScreen screen, string key)
+        SnapshotBuildResult legacy, NInspectCardScreen screen, string key,
+        NativeEntityRegistry entities, bool nativeLogical)
     {
         NCard? card = screen.GetNodeOrNull<NCard>("Card");
         var title = card?.GetNodeOrNull<MegaCrit.Sts2.addons.mega_text.MegaLabel>("%TitleLabel");
@@ -1218,6 +1219,17 @@ internal static class NativeTextMenuInformation
             return FailClosedPage(legacy, key, "native_card_inspect_display_unresolved");
         PlayerEnvironmentSnapshot page = ProjectCardInspectPage(legacy.Snapshot, title.Text, cost.Text,
             description.Text, upgrade.IsTicked);
+        if (nativeLogical)
+        {
+            if (NativeCardInspectionBinding.Capture(screen, card) is not { } sourceBinding)
+            {
+                TextMenuFrame partial = NativeLogicalCapturePolicy.Partial(page, key, "native_inspection_source_display_binding_unproved");
+                return new(partial.Page, key, Array.Empty<NativeTextMenuInformationLeaf>());
+            }
+            page = ProjectCardInspectionRelation(page,
+                entities.GetId(sourceBinding.Source.Original, "card"),
+                entities.GetId(sourceBinding.Source.DisplayModel!, "card"));
+        }
         var leaves = new List<NativeTextMenuInformationLeaf>
         {
             Leaf("return_card_inspect", "root", "return_card_inspect",
@@ -1265,6 +1277,28 @@ internal static class NativeTextMenuInformation
                 Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
             }
         };
+    }
+
+    internal static PlayerEnvironmentSnapshot ProjectCardInspectionRelation(PlayerEnvironmentSnapshot page,
+        string originalId, string displayId)
+    {
+        var surface = (JsonObject)page.Interaction.Content.Surface.DeepClone();
+        surface["source_card_referent_id"] = originalId;
+        surface["display_card_referent_id"] = displayId;
+        surface["source_display_relation_basis"] = "completed_native_inspection_display";
+        var referents = page.Referents.ToList();
+        string? label = surface["title"]?.GetValue<string>();
+        foreach ((string id, string basis) in new[]
+        {
+            (originalId, "native_current_inspection_source"), (displayId, "native_current_inspection_display")
+        })
+            if (!referents.Any(referent => referent.ReferentId == id))
+                referents.Add(new(id, "card", "entity", label, new(true, false, false, false, basis),
+                    "sts2.player-environment/referent/native_current_inspection_relation-1",
+                    new JsonObject { ["source_card_referent_id"] = originalId, ["display_card_referent_id"] = displayId,
+                        ["relation_basis"] = "completed_native_inspection_display" }));
+        return page with { Referents = referents,
+            Interaction = page.Interaction with { Content = page.Interaction.Content with { Surface = surface } } };
     }
 
     private static NativeInputResult ClickCardInspectControl(

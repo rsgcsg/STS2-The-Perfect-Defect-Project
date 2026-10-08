@@ -239,23 +239,32 @@ internal static class NativeTextMenuFrameBuilder
             bool controllerHeld = play is NControllerCardPlay;
             bool mouseTargetHeld = play is NMouseCardPlay mouse
                 && mouse.Holder.CardModel is { } mouseCard
+                && (nativeLogical || mouseCard.TargetType == TargetType.AnyEnemy)
                 && NativeTextMenuCombat.OwnsMouseTarget(hand, mouse, mouseCard)
                 && NativeTextMenuCombat.CurrentTargets(hand, mouse, mouseCard).Count > 0;
-            if ((controllerHeld || mouseTargetHeld)
+            bool mouseOperationHeld = nativeLogical && play is NMouseCardPlay mouseOperation
+                && mouseOperation.Holder.CardModel is { } mouseOperationCard
+                && NativeMouseCardConfirmation.KnownOperation(mouseOperation, hand, mouseOperationCard);
+            if ((controllerHeld || mouseTargetHeld || mouseOperationHeld)
                 && play?.Holder.CardModel is { } card
                 && NativeTextMenuCombat.Owns(hand, play, card))
             {
                 string cardId = entities.GetId(card, "card");
+                bool actualSingleTarget = play is NMouseCardPlay
+                    ? mouseTargetHeld : NTargetManager.Instance.IsInSelection;
+                NativeMouseCardConfirmation.Binding? mouseConfirmation = nativeLogical && play is NMouseCardPlay mouseConfirm
+                    ? NativeMouseCardConfirmation.Capture(mouseConfirm, hand, card) : null;
                 page = CardOperationPage(page, hand, play, card, cardId, entities,
-                    NTargetManager.Instance.IsInSelection
-                        ? "card_targeting" : "card_confirm", nativeLogical);
+                    actualSingleTarget ? "card_targeting" : play is NMouseCardPlay
+                        ? mouseConfirmation != null ? "card_confirm" : "native_mouse_operation"
+                        : "card_confirm", nativeLogical);
                 leaves.Add(Leaf("cancel_card:" + cardId, "cancel_card_play",
                     "Cancel held card", cardId,
                     () => NativeTextMenuCombat.Cancel(hand, play, card)) with
                 {
                     NativeWitness = HeldCardWitness(play, card)
                 });
-                if (NTargetManager.Instance.IsInSelection)
+                if (actualSingleTarget)
                 {
                     if (nativeLogical && NativeTextMenuCombat.FocusedTarget(hand, play, card) is { } focused
                         && NativeTextMenuCombat.CanUnfocusTarget(hand, play, card, focused))
@@ -301,8 +310,15 @@ internal static class NativeTextMenuFrameBuilder
                         NativeWitness = HeldCardWitness(controller, card)
                     });
                 }
+                if (mouseConfirmation is { } exactMouseConfirmation)
+                    leaves.Add(Leaf("confirm_mouse_card:" + cardId, "confirm_card", "Confirm held card", cardId,
+                        () => NativeMouseCardConfirmation.Confirm(exactMouseConfirmation)) with
+                    { NativeWitness = HeldCardWitness(play, card) });
                 return new TextMenuFrame(page, owner, leaves);
             }
+
+            if (nativeLogical && play is NMouseCardPlay)
+                return NativeLogicalCapturePolicy.Partial(page, owner, "native_mouse_operation_source_unobserved");
 
             // Mouse drag or an unbound card operation is not a deterministic
             // text stage. No card-play claim is made from legacy settling data.
