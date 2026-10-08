@@ -43,6 +43,13 @@ _CONTEXT = {"session_id", "recovery_epoch"}
 _EVENT_FIELDS = {
     "native_session_attached": {"subscription", "environment"},
     "native_event_received": {"original", "received_cursor"},
+    "native_event_batch_received": {
+        "after_cursor",
+        "next_cursor",
+        "high_watermark",
+        "retained_start_cursor",
+        "event_count",
+    },
     "native_acquisition_registered": {"witness"},
     "agent_consumed": {"report", "acknowledgement", "witness"},
     "agent_directive": {"output"},
@@ -463,11 +470,57 @@ class _DeclaredConsumptionStream:
         self.consumed_publication: str | None = None
         self.received_unconsumed = 0
         self.gap: dict[str, Any] | None = None
+        self.received_cursor: str | None = None
+        self.batch_after: str | None = None
+        self.batch_count = 0
+        self.source_publications: dict[str, dict[str, Any]] = {}
 
-    def received(self) -> None:
+    def attached(self, starting_cursor: str) -> None:
+        self.received_cursor = self.batch_after = starting_cursor
+
+    def received(self, original: dict[str, Any]) -> None:
         # All source publication entries are views, including terminal and
         # unavailable entries. Their kind does not declare a task completion.
         self.received_unconsumed += 1
+        self.batch_count += 1
+        event = original["event"]
+        self.received_cursor = event["cursor"]
+        self.source_publications[event["publication_index"]] = original
+
+    def completed_batch(self, payload: dict[str, Any]) -> None:
+        for key in (
+            "after_cursor",
+            "next_cursor",
+            "high_watermark",
+            "retained_start_cursor",
+        ):
+            _text(payload[key], maximum=1024)
+        _integer(payload["event_count"], maximum=64)
+        _require(
+            payload["after_cursor"] == self.batch_after
+            and payload["event_count"] == self.batch_count,
+            "native_session_batch_prefix",
+        )
+        # Cursor strings are opaque. The owning completed-batch fact is the
+        # authority for a tail advance, including a batch with no owned entries.
+        self.received_cursor = self.batch_after = payload["next_cursor"]
+        self.batch_count = 0
+
+    def interrupted_batch(self) -> None:
+        self.batch_after = self.received_cursor
+        self.batch_count = 0
+
+    def associate(self, witness: dict[str, Any]) -> None:
+        publication = witness["publication_index"]
+        if publication is None:
+            return  # Current is a query; it does not invent a source publication.
+        original = self.source_publications.get(publication)
+        _require(
+            original is not None
+            and original["availability"] == "available"
+            and original["event"]["payload_reference"] == witness["capture"],
+            "native_session_acquisition_source_position",
+        )
 
     def record_gap(self, value: dict[str, Any]) -> None:
         self.gap = value
@@ -556,6 +609,7 @@ class _DeclaredConsumptionStream:
         omissions = prefix["omissions"]
         _require(
             prefix["consumed_publication_index"] == self.consumed_publication
+            and prefix["received_cursor"] == self.received_cursor
             and omissions["missing_scopes"] == witness["missing"]
             and omissions["gap"] == self.gap
             and omissions["received_unconsumed_count"]
@@ -1151,6 +1205,8 @@ class AgentSessionRunEvidenceVerifier:
                 session_id in {None, current_session} and current_epoch >= epoch,
                 "native_session_context_order",
             )
+            if current_epoch > epoch:
+                stream.interrupted_batch()
             session_id, epoch = current_session, current_epoch
             _require(
                 sequence == 1 or events[sequence - 2]["kind"] != "stopped",
@@ -1167,9 +1223,13 @@ class AgentSessionRunEvidenceVerifier:
             if kind == "native_session_attached":
                 _require(attachment is None, "native_session_duplicate_attachment")
                 attachment = self._attachment(payload, agent)
+                stream.attached(attachment[0]["starting_cursor"])
             elif kind == "native_acquisition_registered":
                 witness = _witness(payload["witness"])
-                _require(attachment is not None, "native_session_acquisition_before_attachment")
+                _require(
+                    attachment is not None,
+                    "native_session_acquisition_before_attachment",
+                )
                 assert attachment is not None
                 subscription, environment = attachment
                 capture = witness["capture"]
@@ -1180,8 +1240,10 @@ class AgentSessionRunEvidenceVerifier:
                     and capture["stream_generation"] == subscription["stream_generation"],
                     "native_session_acquisition_environment",
                 )
+                stream.associate(witness)
                 _require(
-                    witness["acquisition_id"] not in witnesses, "native_session_acquisition_reused"
+                    witness["acquisition_id"] not in witnesses,
+                    "native_session_acquisition_reused",
                 )
                 _require(
                     witness["capture"]["byte_count"] <= agent["limits"]["max_capture_bytes"]
@@ -1309,11 +1371,16 @@ class AgentSessionRunEvidenceVerifier:
                     payload["original"], run["run_id"], current_session, submissions
                 )
                 _require(
-                    pending == original and mode == "human", "native_session_reconcile_original"
+                    pending == original and mode == "human",
+                    "native_session_reconcile_original",
                 )
                 if kind == "native_request_unresolved":
                     _text(payload["reason"])
-                    pending = {**original, "status": "unresolved", "reason": payload["reason"]}
+                    pending = {
+                        **original,
+                        "status": "unresolved",
+                        "reason": payload["reason"],
+                    }
                 else:
                     resolution = payload["resolution"]
                     _require(
@@ -1321,10 +1388,16 @@ class AgentSessionRunEvidenceVerifier:
                         "native_session_reconcile_resolution",
                     )
                     if resolution in {"pending", "unresolved"}:
-                        _require(payload["result"] is None, "native_session_pending_is_not_result")
+                        _require(
+                            payload["result"] is None,
+                            "native_session_pending_is_not_result",
+                        )
                     else:
                         result = _result(payload["result"], submissions[original["request_id"]])
-                        unknown = result["delivery"] in {"partially_delivered", "unknown"}
+                        unknown = result["delivery"] in {
+                            "partially_delivered",
+                            "unknown",
+                        }
                         _require(
                             resolution in {"resolved", "tainted"}
                             and (resolution == "tainted") == unknown,
@@ -1385,14 +1458,38 @@ class AgentSessionRunEvidenceVerifier:
             elif kind == "fail_closed":
                 _text(payload["reason"])
                 _require(
-                    payload["agent_state"] in {"known", "uncertain"}, "native_session_agent_state"
+                    payload["agent_state"] in {"known", "uncertain"},
+                    "native_session_agent_state",
                 )
                 agent_uncertain = payload["agent_state"] == "uncertain"
+                stream.interrupted_batch()
             elif kind == "native_gap":
                 stream.record_gap(_object(payload["gap"]))
             elif kind == "native_event_received":
                 self._event_availability(payload["original"], payload["received_cursor"])
-                stream.received()
+                _require(attachment is not None, "native_session_event_before_attachment")
+                assert attachment is not None
+                subscription, environment = attachment
+                original = payload["original"]
+                source = original["event"]
+                _require(
+                    source["stream_generation"] == subscription["stream_generation"]
+                    and source["scope_id"] == subscription["scope_id"],
+                    "native_session_event_attachment",
+                )
+                capture = source["payload_reference"]
+                if capture is not None:
+                    _require(
+                        capture["session"]["runtime_instance_id"]
+                        == environment["runtime_instance_id"]
+                        and capture["session"]["environment_fingerprint"]
+                        == environment["environment_fingerprint"],
+                        "native_session_event_environment",
+                    )
+                stream.received(original)
+            elif kind == "native_event_batch_received":
+                _require(attachment is not None, "native_session_event_before_attachment")
+                stream.completed_batch(payload)
             elif kind == "native_await_result":
                 self._await(payload)
             elif kind in {"agent_state_stored", "agent_state_restored"}:

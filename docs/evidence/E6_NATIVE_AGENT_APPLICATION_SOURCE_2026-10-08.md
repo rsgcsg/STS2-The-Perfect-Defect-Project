@@ -160,3 +160,39 @@ scope is separate from independent Runtime acceptance and installed/native
 qualification. The private 9f+73 application composition previously passed a
 16-event real child/SDK/HTTP/service journey; a new private wheel and repaired
 candidate journey are required before final application acceptance.
+
+## Recorded source-prefix association repair
+
+Independent re-review of `477eeca60d88e88c1e29b607ba42a19ca008b30f`
+confirmed the three earlier repair families and found one remaining P2:
+rehashed actual producer runs still accepted an invented ACK received cursor or
+a witness/ACK publication changed to 123 while the recorded source remained 1.
+
+The verifier now joins every non-null acquisition publication to its previously
+recorded available native source event and exact capture metadata. Source events
+also bind the attachment scope, stream generation and environment. ACK received
+cursor equals the latest actual source receipt or declared completed batch tail.
+Cursor strings are opaque and are compared only for equality.
+
+The Runtime owner and lead approved `native_event_batch_received` with the common
+context plus `after_cursor`, `next_cursor`, `high_watermark`,
+`retained_start_cursor` and `event_count`. It records the actual SDK batch after
+all individual event receipts and full-reference Consume/ACKs, before Next.
+The verifier checks the previous batch position and recorded item count. An
+empty batch can advance the operational cursor without consuming a new Model
+input; the last accepted Model ACK and stored state metadata retain their
+original prefix. Interrupted consumption does not invent a completed batch.
+Current's null publication remains a query, and neutral/incremental/historical
+source semantics remain valid.
+
+The two original rehashed source-prefix counterexamples now fail at their owning
+association checks. Working-source verification passed 28 native Evidence tests
+and 234 complete Evidence tests in 7.380 s. All 13 latest actual Runtime draft
+alternative runs passed, including both empty global-tail cases, interrupted
+consumption and actual numerical terminal input. All ten frozen historical 491
+alternatives and historical Current/scoped/Human positives remain valid; the
+previously approved older unclosed-intent case remains negative. Ruff, scoped
+Evidence typing and diff hygiene passed. The latest exact Runtime freeze,
+private package/wheel, fresh application journey and independent paired
+re-review remain separate next gates. None of these typed metadata checks prove
+native content, decoded numerical W or research admission.

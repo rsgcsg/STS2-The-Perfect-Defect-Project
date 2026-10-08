@@ -117,7 +117,10 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
             )
         }
         self.original.update(
-            session_id="session-fixture", submission_epoch=0, status="pending", reason=None
+            session_id="session-fixture",
+            submission_epoch=0,
+            status="pending",
+            reason=None,
         )
         self.result = {
             **wire["result"],
@@ -139,7 +142,11 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
             "consumption_mode": "once_per_occurrence",
             "received_cursor": "cursor-fixture",
             "consumed_publication_index": a["publication_index"],
-            "omissions": {"received_unconsumed_count": 0, "missing_scopes": [], "gap": None},
+            "omissions": {
+                "received_unconsumed_count": 0,
+                "missing_scopes": [],
+                "gap": None,
+            },
         }
         report = {
             "acquisition_id": a["acquisition_id"],
@@ -183,12 +190,25 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
             "stream_generation": capture["stream_generation"],
             "scope_id": capture["scope_id"],
         }
-        self.add("native_session_attached", subscription=subscription, environment=environment)
         self.add(
-            "mode_changed", mode="one_step", autonomy_budget=self.budget, controller="released"
+            "native_session_attached",
+            subscription=subscription,
+            environment=environment,
         )
+        self.add(
+            "mode_changed",
+            mode="one_step",
+            autonomy_budget=self.budget,
+            controller="released",
+        )
+        self.source_received(self.witness, "cursor-fixture")
         self.add("native_acquisition_registered", witness=self.witness)
-        self.add("agent_consumed", report=report, acknowledgement=self.ack, witness=self.witness)
+        self.add(
+            "agent_consumed",
+            report=report,
+            acknowledgement=self.ack,
+            witness=self.witness,
+        )
         self.add(
             "agent_directive",
             output={
@@ -235,6 +255,26 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
                 "payload": {"session_id": "session-fixture", "recovery_epoch": 0, **payload},
             }
         )
+
+    def source_received(self, witness: dict[str, Any], cursor: str) -> None:
+        wire = json.loads(
+            (ROOT / "connector/contracts/fixtures/native-logical-v1.json").read_bytes()
+        )["wire_samples"]
+        original = copy.deepcopy(wire["event_batch"]["events"][0])
+        original["availability"] = "available"
+        original["event"].update(
+            cursor=cursor,
+            publication_index=witness["publication_index"],
+            stream_generation=witness["capture"]["stream_generation"],
+            scope_id=witness["capture"]["scope_id"],
+            capture_ref=witness["capture"]["capture_id"],
+            payload_reference=copy.deepcopy(witness["capture"]),
+            missing_reason=None,
+        )
+        self.add("native_event_received", original=original, received_cursor=cursor)
+
+    def event(self, kind: str) -> dict[str, Any]:
+        return next(event for event in self.events if event["kind"] == kind)
 
     def write(self) -> None:
         self.run["agent_manifest_sha256"] = sha(canonical(self.agent))
@@ -299,15 +339,17 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
         return result
 
     def pending(self) -> None:
-        self.events[7] = {
-            **self.events[7],
-            "kind": "native_request_pending",
-            "payload": {
-                "session_id": "session-fixture",
-                "recovery_epoch": 0,
-                "original": self.original,
-            },
-        }
+        result_event = self.event("native_result")
+        result_event.update(
+            {
+                "kind": "native_request_pending",
+                "payload": {
+                    "session_id": "session-fixture",
+                    "recovery_epoch": 0,
+                    "original": self.original,
+                },
+            }
+        )
         self.events[-1]["payload"]["pending_request"] = self.original
         self.run.update(tainted=True, status="tainted")
         self.write()
@@ -323,7 +365,7 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
         self.assertFalse(registry().verify("policy-runtime-agent-run", self.directory).passed)
 
     def test_rehashed_foreign_event_does_not_pass_checksums_alone(self) -> None:
-        self.events[3]["kind"] = "decision"
+        self.event("agent_consumed")["kind"] = "decision"
         self.write()
         self.check(False)
 
@@ -496,12 +538,12 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
         self.check(False)
 
     def test_act_without_accepted_consumption_is_rejected_after_rehash(self) -> None:
-        self.events.pop(3)
+        self.events.remove(self.event("agent_consumed"))
         self.write()
         self.check(False)
 
     def test_once_occurrence_cannot_claim_another_advance(self) -> None:
-        event = copy.deepcopy(self.events[3])
+        event = copy.deepcopy(self.event("agent_consumed"))
         payload = event["payload"]
         payload["report"].update(
             previous_consumption_id="consumed-1",
@@ -514,8 +556,10 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
             state_version=2,
             advanced=True,
         )
-        self.events.insert(4, event)
-        self.events[5]["payload"]["output"].update(consumption_id="consumed-2", state_version=2)
+        self.events.insert(self.events.index(self.event("agent_consumed")) + 1, event)
+        self.event("agent_directive")["payload"]["output"].update(
+            consumption_id="consumed-2", state_version=2
+        )
         self.write()
         self.check(False)
 
@@ -531,7 +575,96 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
                 self.check(False)
                 self.ack["prefix"] = copy.deepcopy(original)
 
-    def test_scoped_terminal_view_is_an_omission_until_a_source_position_is_consumed(self) -> None:
+    def test_ack_cursor_must_be_the_latest_recorded_source_position(self) -> None:
+        self.ack["prefix"]["received_cursor"] = "never-received-cursor"
+        self.write()
+        result = self.check(False)
+        self.assertEqual(result.findings[0].code, "native_session_acknowledged_prefix")
+
+    def test_publication_and_capture_must_join_the_original_received_source(
+        self,
+    ) -> None:
+        baseline = copy.deepcopy(self.witness)
+        for field in ("publication_index", "capture_id", "scope_id", "capture_ordinal"):
+            with self.subTest(field=field):
+                self.witness.clear()
+                self.witness.update(copy.deepcopy(baseline))
+                if field == "publication_index":
+                    self.witness[field] = "123"
+                    self.ack["prefix"]["consumed_publication_index"] = "123"
+                else:
+                    self.witness["capture"][field] = (
+                        "replacement" if field != "capture_ordinal" else "123"
+                    )
+                self.write()
+                result = self.check(False)
+                self.assertEqual(
+                    result.findings[0].code,
+                    "native_session_acquisition_source_position",
+                )
+        self.witness.clear()
+        self.witness.update(baseline)
+
+    def test_completed_empty_batch_can_advance_opaque_cursor_without_an_input(
+        self,
+    ) -> None:
+        consumed = self.event("agent_consumed")
+        position = self.events.index(consumed) + 1
+        self.events.insert(
+            position,
+            {
+                **copy.deepcopy(consumed),
+                "kind": "native_event_batch_received",
+                "payload": {
+                    "session_id": "session-fixture",
+                    "recovery_epoch": 0,
+                    "after_cursor": self.events[0]["payload"]["subscription"]["starting_cursor"],
+                    "next_cursor": "global-Z",
+                    "high_watermark": "global-Z",
+                    "retained_start_cursor": "opaque-A",
+                    "event_count": 1,
+                },
+            },
+        )
+        tail = copy.deepcopy(self.events[position])
+        tail["payload"].update(
+            after_cursor="global-Z",
+            next_cursor="global-A",
+            high_watermark="global-A",
+            event_count=0,
+        )
+        self.events.insert(position + 1, tail)
+        # A subsequent Current acquisition is neutral, but its new ACK reflects
+        # the operational tail. The earlier accepted ACK remains unchanged.
+        witness = copy.deepcopy(self.witness)
+        witness.update(acquisition_id="current-query", publication_index=None)
+        report = {
+            **self.report,
+            "acquisition_id": "current-query",
+            "previous_consumption_id": "consumed-1",
+            "advanced": False,
+        }
+        ack = {
+            **copy.deepcopy(self.ack),
+            "acquisition_id": "current-query",
+            "advanced": False,
+        }
+        ack["prefix"]["received_cursor"] = "global-A"
+        saved = [self.events[-1]]
+        self.events = self.events[: position + 2]
+        self.add("native_acquisition_registered", witness=witness)
+        self.add("agent_consumed", report=report, acknowledgement=ack, witness=witness)
+        self.events += saved
+        self.write()
+        self.check()
+        self.assertEqual(self.ack["prefix"]["received_cursor"], "cursor-fixture")
+        tail["payload"]["event_count"] = 1
+        self.write()
+        self.assertEqual(self.check(False).findings[0].code, "native_session_batch_prefix")
+
+    def test_scoped_terminal_view_is_an_omission_until_a_source_position_is_consumed(
+        self,
+    ) -> None:
         wire = json.loads(
             (ROOT / "connector/contracts/fixtures/native-logical-v1.json").read_bytes()
         )["wire_samples"]
@@ -555,9 +688,14 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
             capture_ref=self.witness["capture"]["capture_id"],
             payload_reference=copy.deepcopy(self.witness["capture"]),
         )
-        existing = self.events
+        existing = [item for item in self.events if item["kind"] != "native_event_received"]
         self.events = existing[:2]
-        self.add("native_event_received", original=event, received_cursor=event["event"]["cursor"])
+        self.add(
+            "native_event_received",
+            original=event,
+            received_cursor=event["event"]["cursor"],
+        )
+        self.ack["prefix"]["received_cursor"] = event["event"]["cursor"]
         self.events += existing[2:]
         self.write()
         self.check()
@@ -568,7 +706,10 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
     def _replacement_intent(self) -> None:
         stopped = self.events.pop()
         self.add("mode_changed", mode="auto", autonomy_budget=self.budget, controller="held")
-        self.add("agent_directive", output=copy.deepcopy(self.events[4]["payload"]["output"]))
+        self.add(
+            "agent_directive",
+            output=copy.deepcopy(self.event("agent_directive")["payload"]["output"]),
+        )
         replacement = {**self.attempt, "request_id": "replacement-request"}
         self.add("native_submission_requested", **replacement)
         self.events.append(stopped)
@@ -586,12 +727,14 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
         self.check(False)
 
     def test_missing_terminal_result_cannot_end_as_clean_stop(self) -> None:
-        self.events.pop(7)
+        self.events.remove(self.event("native_result"))
         self.write()
         self.check(False)
 
-    def test_pre_submit_closure_is_original_bound_and_is_not_a_native_result(self) -> None:
-        self.events.pop(7)
+    def test_pre_submit_closure_is_original_bound_and_is_not_a_native_result(
+        self,
+    ) -> None:
+        self.events.remove(self.event("native_result"))
         stopped = self.events.pop()
         self.add(
             "native_submission_not_started",
@@ -675,7 +818,9 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
                 self.write()
                 self.check()
 
-    def test_actual_owner_ledger_vectors_preserve_neutral_incremental_and_null_input(self) -> None:
+    def test_actual_owner_ledger_vectors_preserve_neutral_incremental_and_null_input(
+        self,
+    ) -> None:
         vectors = json.loads(
             (
                 Path(__file__).parent
@@ -700,6 +845,7 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
                     current.events = [attachment]
                     current.budget["submissions_used"] = 0
                     previous_ack = None
+                    cursor = attachment["payload"]["subscription"]["starting_cursor"]
                     for message in record["messages"]:
                         witness, report = (
                             copy.deepcopy(message["witness"]),
@@ -718,10 +864,35 @@ class NativeAgentSessionEvidenceTests(unittest.TestCase):
                                 )
                             }
                             ack["prefix"] = copy.deepcopy(previous_ack["prefix"])
+                        next_cursor = ack["prefix"]["received_cursor"]
+                        if witness["publication_index"] is not None:
+                            current.source_received(witness, next_cursor)
+                        else:
+                            current.add(
+                                "native_event_batch_received",
+                                after_cursor=cursor,
+                                next_cursor=next_cursor,
+                                high_watermark=next_cursor,
+                                retained_start_cursor=cursor,
+                                event_count=0,
+                            )
                         current.add("native_acquisition_registered", witness=witness)
                         current.add(
-                            "agent_consumed", witness=witness, report=report, acknowledgement=ack
+                            "agent_consumed",
+                            witness=witness,
+                            report=report,
+                            acknowledgement=ack,
                         )
+                        if witness["publication_index"] is not None:
+                            current.add(
+                                "native_event_batch_received",
+                                after_cursor=cursor,
+                                next_cursor=next_cursor,
+                                high_watermark=next_cursor,
+                                retained_start_cursor=cursor,
+                                event_count=1,
+                            )
+                        cursor = next_cursor
                         previous_ack = ack
                     current.add(
                         "stopped",
