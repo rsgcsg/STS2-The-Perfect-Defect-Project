@@ -25,7 +25,7 @@ public sealed class SourceNativeProducerTests
     private sealed class Lifetime(MutationControllerCoordinator owner) : INativeLogicalClientLifetimeDependency
     { public bool TryTouchActiveClient(string clientSessionId) => owner.TryTouchActiveClient(clientSessionId); }
     private static readonly JsonSerializerOptions Json = new(EvidenceJson.Options) { DefaultIgnoreCondition = JsonIgnoreCondition.Never };
-    private sealed class Fixture : IDisposable
+    internal sealed class Fixture : IDisposable
     {
         private readonly BlockingCollection<Action> nativeCommands = new();
         private readonly Thread nativeThread;
@@ -47,7 +47,7 @@ public sealed class SourceNativeProducerTests
         internal readonly MutationControllerCoordinator Controller = new("runtime-fixture", enableDeadlineTimer: false);
         internal readonly MutationClientRegistrationResult client;
         private readonly MutationLease lease;
-        internal Fixture()
+        internal Fixture(int version = 2)
         {
             client = Controller.Register(new("source-producer-test", "test", "Source producer", "1"));
             lease = Controller.Acquire(new(client.Client.ClientSessionId, null, null)).Controller!;
@@ -65,15 +65,16 @@ public sealed class SourceNativeProducerTests
                 Owner.Initialize();
                 Owner.InstallPublicationProfile(NativeLogicalPublicationProfile.ProfileId, NativeLogicalPublicationProfile.DefinitionSha256,
                     NativeLogicalPublicationProfile.RequiredCoverage);
-                Attachment = Owner.AttachSource();
+                Attachment = Owner.AttachSource(version == 3);
                 var epoch = SourceRecordingWorkerV2.Packet(Attachment.InitialEpoch, EnvironmentIdentity);
-                var profile = new SourceCaptureProfileV2(SourceSessionContractV2.ProfileSchema, SourceSessionContractV2.ProfileId,
+                var profile = new SourceCaptureProfileV2("sts2.annotator/source-capture-profile-" + version, "native-logical-source-v" + version,
                     "native-logical-v1", epoch.Context.PublicationProfileId, epoch.Context.PublicationProfileDefinitionSha256,
                     epoch.Context.EagerScope, new(), SourceSessionContractV2.NonClaims);
-                var manifest = new CurrentRecordingManifest(2, SourceSessionContractV2.ManifestSchema, "session-fixture", "timeline-fixture", DateTimeOffset.UnixEpoch,
+                var manifest = new CurrentRecordingManifest(version, "sts2.annotator/source-session-manifest-" + version, "session-fixture", "timeline-fixture", DateTimeOffset.UnixEpoch,
                     "fixture", new string('e', 40), "fixture-platform", profile.ProfileId, SourceSessionContractV2.ProfileDigest(profile),
-                    Array.Empty<string>(), SourceSessionContractV2.NonClaims) { SourceSchemaVersion = 2, SourceEnvironment = EnvironmentIdentity, RecoverySchemaVersion = 1 };
-                Store = RecordingSessionStore.CreateSourceV2(Root, manifest, profile, new("agent_protocol", "actor-original", "declaration-original"), epoch);
+                    Array.Empty<string>(), SourceSessionContractV2.NonClaims) { SourceSchemaVersion = version, SourceEnvironment = EnvironmentIdentity, RecoverySchemaVersion = 1 };
+                Store = version == 3 ? RecordingSessionStore.CreateSourceV3(Root, manifest, profile, new("agent_protocol", "actor-original", "declaration-original"), epoch)
+                    : RecordingSessionStore.CreateSourceV2(Root, manifest, profile, new("agent_protocol", "actor-original", "declaration-original"), epoch);
                 Worker = new(Store, Attachment, EnvironmentIdentity);
             });
         }
@@ -136,10 +137,12 @@ public sealed class SourceNativeProducerTests
             try { Directory.Delete(Root, true); } catch (IOException) { }
         }
     }
-    [Fact]
-    public async Task TitlePreparedLaunchTerminalAndSummaryRemainOneStoreWithOriginalInputEpochAndActor()
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task TitlePreparedLaunchTerminalAndSummaryRemainOneStoreWithOriginalInputEpochAndActor(int version)
     {
-        using var f = new Fixture(); string originalEpoch = f.Attachment.InitialEpoch.EpochId;
+        using var f = new Fixture(version); string originalEpoch = f.Attachment.InitialEpoch.EpochId;
         f.Invoke(() => f.OnDispatch = () =>
         {
             f.Setup(true); f.Owner.Publish("native_owner_ready", "inside_Launch");
@@ -168,11 +171,12 @@ public sealed class SourceNativeProducerTests
         Assert.Equal(2, receipt.RootElement.GetProperty("final_drains").GetArrayLength()); Assert.True(receipt.RootElement.GetProperty("accounting_complete").GetBoolean());
         Assert.Equal(1, f.SourceRegistrations);
         Assert.Equal(1, f.Dispatches); Assert.False(File.Exists(Path.Combine(f.Store.DirectoryPath, "human-session-attestation.json")));
-        var audit = SourceSessionAuditV2.Audit(f.Store.DirectoryPath); Assert.True(audit.Status == "pass", string.Join(",", audit.Errors));
+        var audit = version == 3 ? SourceSessionAuditV3.Audit(f.Store.DirectoryPath) : SourceSessionAuditV2.Audit(f.Store.DirectoryPath); Assert.True(audit.Status == "pass", string.Join(",", audit.Errors));
         string bundle = Path.Combine(f.Root, "bundle");
-        var packed = SourceSessionBundlePackerV2.Pack(f.Store.DirectoryPath, "worker-synthetic", "campaign-source-v2", bundle, new string('e', 40));
+        var packed = version == 3 ? SourceSessionBundlePackerV3.Pack(f.Store.DirectoryPath, "worker-synthetic", "campaign-source-v3", bundle, new string('e', 40))
+            : SourceSessionBundlePackerV2.Pack(f.Store.DirectoryPath, "worker-synthetic", "campaign-source-v2", bundle, new string('e', 40));
         Assert.Equal("pass", packed.Status);
-        string? golden = Environment.GetEnvironmentVariable("STS2_SOURCE_V2_SYNTHETIC_GOLDEN");
+        string? golden = Environment.GetEnvironmentVariable(version == 3 ? "STS2_SOURCE_V3_SYNTHETIC_GOLDEN" : "STS2_SOURCE_V2_SYNTHETIC_GOLDEN");
         if (!string.IsNullOrEmpty(golden)) CopyGolden(bundle, Path.GetFullPath(golden));
 
     }

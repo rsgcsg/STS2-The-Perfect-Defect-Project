@@ -18,10 +18,10 @@ public sealed class SourceSessionV2Tests
     private static SourceNativeSealV2 Seal(string epoch, int reserved, int completed) => new(epoch, "generation-" + epoch, reserved.ToString(), completed.ToString());
     private static SourceNativeTransitionV2 Setup(string previous, string current) => new("setup-witness", "setup_handoff",
         "RunManager.SetUpNewSingleplayer.prefix->actual_State", previous, current, "new", null, null);
-    private static readonly SourcePublicAction Action = new("action-fixture", "native_input", "focus_target", "目标 🧪",
+    internal static readonly SourcePublicAction Action = new("action-fixture", "native_input", "focus_target", "目标 🧪",
         "referent-fixture", Array.Empty<SourceActionArgument>(), "native");
 
-    private sealed class Fixture : IDisposable
+    internal sealed class Fixture : IDisposable
     {
         internal readonly string Root = Path.Combine(Path.GetTempPath(), "source-v2-tests-" + Guid.NewGuid().ToString("N"));
         internal readonly RecorderEnvironmentIdentity Environment = new(new("fixture-game", "fixture-commit", new string('a', 64), "game-mvid"),
@@ -30,16 +30,17 @@ public sealed class SourceSessionV2Tests
             "1.0.0", "runtime-fixture", "environment-fixture", "fixture", "modset-fixture");
         internal readonly SourceCaptureProfileV2 Profile;
         internal readonly RecordingSessionStore Store;
-        internal Fixture(SourceSessionLimitsV2? limits = null)
+        internal Fixture(SourceSessionLimitsV2? limits = null, int version = 2)
         {
-            Profile = new(SourceSessionContractV2.ProfileSchema, SourceSessionContractV2.ProfileId, "native-logical-v1",
+            Profile = new("sts2.annotator/source-capture-profile-" + version, "native-logical-source-v" + version, "native-logical-v1",
                 SourceSessionContractV2.PublicationProfileId, SourceSessionContractV2.PublicationProfileDefinitionSha256,
                 new[] { "persistent", "interaction", "referents", "catalog" }, limits ?? new(), SourceSessionContractV2.NonClaims);
-            var manifest = new CurrentRecordingManifest(2, SourceSessionContractV2.ManifestSchema, "session-source-v2", "timeline-source-v2",
+            var manifest = new CurrentRecordingManifest(version, "sts2.annotator/source-session-manifest-" + version, "session-source-v2", "timeline-source-v2",
                 DateTimeOffset.UnixEpoch, "fixture", new string('e', 40), "fixture-platform", Profile.ProfileId,
                 SourceSessionContractV2.ProfileDigest(Profile), Array.Empty<string>(), SourceSessionContractV2.NonClaims)
-            { SourceSchemaVersion = 2, SourceEnvironment = Environment, RecoverySchemaVersion = 1 };
-            Store = RecordingSessionStore.CreateSourceV2(Root, manifest, Profile, Agent(), Epoch("title", null, null, null, "title-continuity"));
+            { SourceSchemaVersion = version, SourceEnvironment = Environment, RecoverySchemaVersion = 1 };
+            Store = version == 3 ? RecordingSessionStore.CreateSourceV3(Root, manifest, Profile, Agent(), Epoch("title", null, null, null, "title-continuity"))
+                : RecordingSessionStore.CreateSourceV2(Root, manifest, Profile, Agent(), Epoch("title", null, null, null, "title-continuity"));
         }
         internal SourceEpochPacketV2 Epoch(string id, string? previous, SourceNativeSealV2? seal,
             SourceNativeTransitionV2? transition, string continuity) => new(id, previous,

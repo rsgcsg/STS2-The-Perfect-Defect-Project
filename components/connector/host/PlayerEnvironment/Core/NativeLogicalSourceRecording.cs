@@ -17,16 +17,21 @@ public sealed record NativeLogicalSourceEpoch(string EpochId, string? PreviousEp
 public sealed record NativeLogicalSourceBoundary(NativeLogicalSourcePosition Position, string CompletedThrough,
     long EncodingDeadlineMonotonicMs);
 public sealed record NativeLogicalSourceInputPrefix(string RequestId, string ClientSessionId, string ActionId,
-    NativeLogicalSourcePosition PrePosition, long EncodingDeadlineMonotonicMs);
+    NativeLogicalSourcePosition PrePosition, long EncodingDeadlineMonotonicMs, string NativeMechanism = "connector_native_logical_input");
+public sealed record NativeLogicalSourceBasisOrder(string Status, string? ReasonCode);
+public sealed record NativeLogicalSourceBasisMapping(string MappingStatus, int MatchCount, string? ActionId);
 public sealed record NativeLogicalSourceInputTerminal(string Delivery, string? Reason, IReadOnlyList<NativeLogicalInputStage> Stages);
 
 /// <summary>Passive typed sink. Prefix and native metadata callbacks must perform no I/O or native input.</summary>
 public interface INativeLogicalSourceSink
 {
+    bool RequiresOrderedBasis => false;
     void Epoch(NativeLogicalSourceEpoch epoch);
     void Boundary(NativeLogicalSourceTransition transition, NativeLogicalSourcePosition position);
     object? AdmitInput(NativeLogicalSourceInputPrefix prefix);
     void InputBasis(object originalToken, string? captureId, IDisposable? retainedInput, string? missingReason);
+    void InputFrozen(object originalToken, NativeLogicalSourceBasisOrder order) { }
+    void InputMapping(object originalToken, NativeLogicalSourceBasisMapping mapping) { }
     void InputTerminal(object originalToken, NativeLogicalSourceInputTerminal terminal);
     void AccountingFailed(string code);
 }
@@ -38,17 +43,19 @@ public sealed class NativeLogicalSourceRecordingAttachment : IDisposable
     internal readonly string RegistrationId, ClientId;
     internal INativeLogicalSourceSink? Sink;
     internal bool Closing, Disposed;
+    internal readonly bool OrderedBasis;
     internal string? Failure;
     private readonly NativeLogicalSourceEpoch initialEpoch;
     internal NativeLogicalSourceEpoch Current;
     internal readonly Dictionary<string, NativeLogicalSourceEpoch> IssuedEpochs = new(StringComparer.Ordinal);
     internal NativeLogicalSourceRecordingAttachment(NativeLogicalService owner, string registrationId, string clientId,
-        NativeLogicalSourceEpoch epoch, PlayerEnvironmentCapabilitiesResponse capabilities, string sourceDigest)
-    { this.owner = owner; RegistrationId = registrationId; ClientId = clientId; Current = initialEpoch = epoch; Capabilities = capabilities; ConnectorSourceDigest = sourceDigest; IssuedEpochs.Add(epoch.EpochId, epoch); }
+        NativeLogicalSourceEpoch epoch, PlayerEnvironmentCapabilitiesResponse capabilities, string sourceDigest, bool orderedBasis)
+    { OrderedBasis = orderedBasis; this.owner = owner; RegistrationId = registrationId; ClientId = clientId; Current = initialEpoch = epoch; Capabilities = capabilities; ConnectorSourceDigest = sourceDigest; IssuedEpochs.Add(epoch.EpochId, epoch); }
     public NativeLogicalSourceEpoch InitialEpoch => initialEpoch;
     public PlayerEnvironmentCapabilitiesResponse Capabilities { get; }
     public string ConnectorSourceDigest { get; }
     public void Activate(INativeLogicalSourceSink sink) => owner.ActivateSource(this, sink);
+    public NativeLogicalSourceBoundary ReadCommandBoundary() => owner.ReadSourceCommandBoundary(this);
     public NativeLogicalSourceBoundary ReadBoundary() => owner.ReadSourceBoundary(this);
     public IReadOnlyList<NativeLogicalSourceSeal> Close() => owner.CloseSource(this);
     public NativeLogicalEventBatch Events(NativeLogicalSourceEpoch original, string afterCursor) => owner.SourceEvents(this, original, afterCursor);
@@ -74,5 +81,5 @@ public sealed class NativeLogicalSourceCopy : IDisposable
 public static class NativeLogicalSourceRecording
 {
     // The recording application invokes this in its native command turn, before activating any sink.
-    public static NativeLogicalSourceRecordingAttachment Attach() => PlayerEnvironmentService.NativeLogical.AttachSource();
+    public static NativeLogicalSourceRecordingAttachment Attach(bool requireOrderedBasis = false) => PlayerEnvironmentService.NativeLogical.AttachSource(requireOrderedBasis);
 }

@@ -14,6 +14,7 @@ from pathlib import Path
 from .agent_run_evidence import AgentRunEvidenceVerifier
 from .core import VerifierRegistry
 from .source_session_bundle_v2 import SourceSessionBundleV2Verifier
+from .source_session_bundle_v3 import SourceSessionBundleV3Verifier
 from .human_session_bundle import (
     HumanSessionBundleVerifier,
     HumanSessionBundleV2Verifier,
@@ -32,6 +33,7 @@ def registry() -> VerifierRegistry:
         HumanSessionBundleV2Verifier(),
         AgentRunEvidenceVerifier(),
         SourceSessionBundleV2Verifier(),
+        SourceSessionBundleV3Verifier(),
     ):
         result.register(verifier.descriptor, verifier.verify)
     return result
@@ -50,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
 
     source_v2 = commands.add_parser("verify-source-bundle-v2")
     source_v2.add_argument("directory", type=Path)
+    source_v3 = commands.add_parser("verify-source-bundle-v3")
+    source_v3.add_argument("directory", type=Path)
 
     manifest = commands.add_parser("transfer-manifest")
     manifest.add_argument("directory", type=Path)
@@ -65,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     receive.add_argument("directory", type=Path)
     receive.add_argument("manifest", type=Path)
     receive.add_argument("--root", type=Path, required=True)
-    receive.add_argument("--verify-type", choices=["human-session-bundle", "policy-runtime-agent-run", "source-session-bundle-v2"])
+    receive.add_argument("--verify-type", choices=["human-session-bundle", "policy-runtime-agent-run", "source-session-bundle-v2", "source-session-bundle-v3"])
     receive.add_argument("--receipt", type=Path)
 
     args = parser.parse_args(argv)
@@ -78,8 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         result = registry().verify("policy-runtime-agent-run", args.directory)
         print(json.dumps(_jsonable(result), indent=2, sort_keys=True))
         return 0 if result.passed else 1
-    if args.command == "verify-source-bundle-v2":
-        result = registry().verify("source-session-bundle-v2", args.directory)
+    if args.command in {"verify-source-bundle-v2", "verify-source-bundle-v3"}:
+        result = registry().verify("source-session-bundle-v" + args.command[-1], args.directory)
         print(json.dumps(_jsonable(result), indent=2, sort_keys=True))
         return 0 if result.passed else 1
     if args.command == "transfer-manifest":
@@ -100,8 +104,8 @@ def main(argv: list[str] | None = None) -> int:
         promotion_verifier = _verify_human_bundle_promotion
     elif args.verify_type == "policy-runtime-agent-run":
         promotion_verifier = _verify_agent_run_promotion
-    elif args.verify_type == "source-session-bundle-v2":
-        promotion_verifier = _verify_source_v2_promotion
+    elif args.verify_type in {"source-session-bundle-v2", "source-session-bundle-v3"}:
+        promotion_verifier = _verify_source_v2_promotion if args.verify_type.endswith("v2") else _verify_source_v3_promotion
     receipt = DirectoryReceiver(
         ContentAddressedStore(args.root), promotion_verifier=promotion_verifier
     ).receive(args.directory, args.manifest)
@@ -138,11 +142,19 @@ def _verify_agent_run_promotion(directory: Path, manifest: DirectoryTransferMani
 
 
 def _verify_source_v2_promotion(directory: Path, manifest: DirectoryTransferManifest) -> None:
-    if manifest.artifact_type != "source-session-bundle-v2":
-        raise ValueError("typed Source V2 verification requires artifact_type=source-session-bundle-v2")
-    verified = SourceSessionBundleV2Verifier().verify(directory).require_value()
+    _verify_source_promotion(directory, manifest, SourceSessionBundleV2Verifier())
+
+
+def _verify_source_v3_promotion(directory: Path, manifest: DirectoryTransferManifest) -> None:
+    _verify_source_promotion(directory, manifest, SourceSessionBundleV3Verifier())
+
+
+def _verify_source_promotion(directory: Path, manifest: DirectoryTransferManifest, verifier: SourceSessionBundleV2Verifier) -> None:
+    if manifest.artifact_type != verifier.descriptor.type_id:
+        raise ValueError("typed Source verification requires artifact_type=" + verifier.descriptor.type_id)
+    verified = verifier.verify(directory).require_value()
     if verified.content_id != manifest.content_id:
-        raise ValueError("transfer content ID differs from verified Source V2 bundle content ID")
+        raise ValueError("transfer content ID differs from verified Source bundle content ID")
 
 
 def _write_json_atomic(path: Path, value: object) -> None:
