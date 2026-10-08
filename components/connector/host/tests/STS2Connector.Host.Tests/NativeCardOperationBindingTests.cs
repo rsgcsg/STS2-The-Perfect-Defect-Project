@@ -53,6 +53,40 @@ public sealed class NativeCardOperationBindingTests
     public void OnlyActualModePendingTransitionCanOfferConfirmation(TargetMode mode, bool down, bool expected) =>
         Assert.Equal(expected, NativeMouseCardConfirmation.TransitionPending(mode, down));
 
+    [Theory]
+    [InlineData(TargetMode.ReleaseMouseToTarget)]
+    [InlineData(TargetMode.ClickMouseToTarget)]
+    public void MouseDispatchRejectsReentrantEntryButAcceptsItsSameUnfinishedReturn(TargetMode mode)
+    {
+        // Real source-ticket lifecycle and the production dispatch predicate.
+        // Bare native references are identity only: no mocked Capture, input or
+        // Godot scene execution is used or claimed by this fixture.
+        using var cancellation = new CancellationTokenSource();
+        var origin = new NativeMouseCardConfirmation.Origin(Bare<NPlayerHand>(), Bare<NHandCardHolder>(), Card(), cancellation);
+        var source = new NativeSourceInvocation<NativeMouseCardConfirmation.Phase>();
+        var ticket = source.Begin(new(origin, mode));
+        var entryBinding = new NativeMouseCardConfirmation.Binding(Bare<NMouseCardPlay>(), ticket, ticket.Fact,
+            mode == TargetMode.ClickMouseToTarget);
+        Assert.Same(ticket, source.Active); // Initial preview remains capturable.
+        Assert.False(NativeMouseCardConfirmation.CanDispatch(entryBinding, entryBinding));
+        var native = new TaskCompletionSource();
+        source.Returned(ticket, native.Task);
+        source.Finalized(ticket, null);
+        Assert.Same(ticket, source.Active);
+        Assert.True(NativeMouseCardConfirmation.CanDispatch(entryBinding, entryBinding));
+        Assert.False(NativeMouseCardConfirmation.CanDispatch(null, entryBinding));
+        Assert.False(NativeMouseCardConfirmation.CanDispatch(entryBinding with { Pressed = !entryBinding.Pressed }, entryBinding));
+        Assert.False(NativeMouseCardConfirmation.CanDispatch(entryBinding with
+        { Source = ticket.Fact with { Mode = mode == TargetMode.ClickMouseToTarget
+            ? TargetMode.ReleaseMouseToTarget : TargetMode.ClickMouseToTarget } }, entryBinding));
+        native.SetResult();
+        Assert.False(NativeMouseCardConfirmation.CanDispatch(entryBinding, entryBinding));
+        var replacement = source.Begin(new(origin, mode));
+        source.Returned(replacement, new TaskCompletionSource().Task);
+        Assert.False(NativeMouseCardConfirmation.CanDispatch(entryBinding with { Ticket = replacement }, entryBinding));
+        Assert.False(NativeMouseCardConfirmation.CanDispatch(entryBinding, entryBinding));
+    }
+
     [Fact]
     public void InspectorRequiresCurrentOriginalListIndexNodeUpgradeAndRenderedModel()
     {

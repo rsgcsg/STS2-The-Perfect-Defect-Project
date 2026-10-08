@@ -123,11 +123,18 @@ internal static class NativeMouseCardConfirmation
     [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "IsCardInPlayZone")]
     internal static extern bool ReadNativePlayZone(NMouseCardPlay owner);
 
+    // Capture admits synchronous METHOD_ENTRY so the initial native preview has
+    // its full catalog. Dispatch must wait for this same invocation's actual
+    // unfinished return; reentrant Act in that preview cannot deliver input.
+    internal static bool CanDispatch(Binding? current, Binding expected) =>
+        current != null && current.Ticket is { InMethod: false, IsActive: true }
+        && ReferenceEquals(current.Ticket, expected.Ticket)
+        && current.Source.Mode == expected.Source.Mode && current.Pressed == expected.Pressed;
+
     internal static NativeInputResult Confirm(Binding expected)
     {
         Binding? current = Capture(expected.Play, expected.Source.Original.Hand, expected.Source.Original.Card);
-        if (current == null || !ReferenceEquals(current.Ticket, expected.Ticket)
-            || current.Source.Mode != expected.Source.Mode || current.Pressed != expected.Pressed)
+        if (!CanDispatch(current, expected))
             return NativeInputResult.Rejected("native_mouse_confirm_changed", "The exact native mouse confirmation scope changed before input.");
         try
         {

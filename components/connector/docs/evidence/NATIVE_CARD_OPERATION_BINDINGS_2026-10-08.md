@@ -19,6 +19,11 @@ completion, fault or cancellation withdraws the confirmation proof; none proves
 native Commit or an effect. Start, cancel, exit, replacement and old finalizers
 cannot revive or overwrite another invocation's proof.
 
+Capture retains METHOD_ENTRY for the initial complete native preview. Execute
+additionally requires that same invocation ticket in RETURNED_TASK with its
+actual Task still unfinished; reentrant confirmation during METHOD_ENTRY rejects
+before constructing or delivering the input.
+
 Capture and execute both revalidate the current exact original references,
 cancellation source, native mouse mode, pending left-button transition, modal
 absence and native pure `IsCardInPlayZone` result. A prospective mouse-button
@@ -69,7 +74,8 @@ play-zone access and position-independent native input to the pinned game.
 These fixtures are source/test evidence; actual input-map collision, Godot scene
 behavior and native card effects still require the exact loaded-game canary.
 
-Validation at clean source `cfea8822c739da3389e8afc307051008ca4276b5`:
+Historical validation at clean source `cfea8822c739da3389e8afc307051008ca4276b5`
+(before the dispatch guard repair below):
 
 - 19 focused Host cases and all 523 Host tests pass, with zero skips.
 - All 87 Mod static boundary/packaging tests pass.
@@ -87,8 +93,9 @@ MVID `1b64e63a-1e8a-413a-b296-21542bf0a206`. The unified compiled source digest 
 `fca9703e3cb52d8ed1e252dafd5c6bf5e85a019ea933a52e1b28acea40597cc6`,
 artifact SHA-256
 `80ca8e549c46d700d8ff7e43e51544870f63980a0ac8b43752cc6c5f824eeb6b`,
-MVID `d73a9249-3dec-4e27-802e-7a7c8448bcfc`. Documentation edits retain these
-component source identities. These artifacts were built locally; they were not
+MVID `d73a9249-3dec-4e27-802e-7a7c8448bcfc`. Those identities describe the pre-repair source only; the dispatch guard repair
+changes Connector source and requires new build evidence. These artifacts were
+built locally; they were not
 installed, loaded or exercised in a game.
 
 Normal drag/release and shortcut-start/click paths, intermediate/nonplay/cancel
@@ -97,3 +104,29 @@ preview opportunities remain runtime checks. The separate full offscreen grid
 upgrade presentation obligation remains active; this packet neither implements
 nor qualifies eager materialization. No install, game, provider, training, Human
 recording or scientific qualification claim is made here.
+
+## METHOD_ENTRY dispatch guard repair
+
+Independent source review of `c7192d6ec51ab391568e371bccdf2a507694def6`
+found that Confirm reused Capture's entry-capable proof without the required
+returned-Task dispatch fence. The native initial ShowMulti preview precedes the
+first await/Task return; the public executor's stale/authority checks do not own
+this private invocation distinction. NativeUi now checks the same active ticket,
+returned phase, actual mode and prospective button bit before input. Native
+cancel/input behavior, AnyAlly and inspector relations are unchanged.
+
+The focused regression uses real NativeSourceInvocation tickets and the actual
+production dispatch predicate. It covers both native modes, readable entry with
+reentrant dispatch rejected, same-ticket unfinished return accepted, completion,
+replacement, mode/button mismatch and missing current capture. The compiled
+Confirm IL check verifies capture and this predicate precede the rejection return
+and input construction/delivery. These are lifecycle/predicate and compiled-path
+checks, not a mocked scene or a claim of actual native input execution.
+
+Repair validation: replaying the exact pre-repair boolean dispatch condition
+inside the extracted production predicate fails both mode cases at the entry
+rejection assertion (expected false, actual true). Restoring the returned-phase
+guard passes all 22 focused Host cases, zero skips; the 87 Mod static tests and
+project/docs/contract/boundary checks pass. This is an original-condition replay,
+not a full old checkout or Godot scene replay. Full root, install/load and native
+runtime acceptance remain separate lead-owned gates.

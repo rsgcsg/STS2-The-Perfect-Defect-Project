@@ -78,6 +78,41 @@ public sealed class NativeCardOperationMethodTests
     }
 
     [Fact]
+    public void MouseConfirmUsesProductionDispatchGuardBeforeConstructingOrDeliveringInput()
+    {
+        var confirm = typeof(NativeMouseCardConfirmation).GetMethod(nameof(NativeMouseCardConfirmation.Confirm),
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        var body = Instructions(confirm).ToArray();
+        int capture = Array.FindIndex(body, i => i.Member?.Name == nameof(NativeMouseCardConfirmation.Capture));
+        int guard = Array.FindIndex(body, i => i.Member?.Name == nameof(NativeMouseCardConfirmation.CanDispatch));
+        int rejection = Array.FindIndex(body, i => i.Member?.Name == nameof(NativeInputResult.Rejected));
+        int input = Array.FindIndex(body, i => i.Op == OpCodes.Newobj && i.Member?.DeclaringType == typeof(InputEventMouseButton));
+        int delivery = Array.FindIndex(body, i => i.Member?.Name == nameof(NMouseCardPlay._Input));
+        Assert.True(capture >= 0 && guard > capture && rejection > guard && input > rejection && delivery > input);
+        // A false predicate reaches the existing rejection return; its true
+        // branch jumps past rejection to input construction. Debug may route
+        // the rejection through a common return block after the try/finally.
+        var branch = body.Skip(guard + 1).First(i => i.Op.FlowControl == FlowControl.Cond_Branch);
+        bool negated = body.Skip(guard + 1).TakeWhile(i => i != branch).Any(i => i.Op == OpCodes.Ceq);
+        Assert.True(negated ? branch.Op == OpCodes.Brfalse || branch.Op == OpCodes.Brfalse_S
+            : branch.Op == OpCodes.Brtrue || branch.Op == OpCodes.Brtrue_S);
+        Assert.True(branch.Target > body[rejection].Offset && branch.Target <= body[input].Offset);
+        int cursor = Array.IndexOf(body, branch) + 1;
+        var visited = new HashSet<int>();
+        bool rejected = false;
+        while (body[cursor].Op != OpCodes.Ret)
+        {
+            Assert.True(visited.Add(cursor));
+            Assert.NotEqual(input, cursor); Assert.NotEqual(delivery, cursor);
+            rejected |= cursor == rejection;
+            cursor = body[cursor].Op.FlowControl == FlowControl.Branch
+                ? Array.FindIndex(body, i => i.Offset == body[cursor].Target) : cursor + 1;
+            Assert.InRange(cursor, 0, body.Length - 1);
+        }
+        Assert.True(rejected);
+    }
+
+    [Fact]
     public void InspectorCompletedDisplayAndAllReplacementSeamsExistAtExactNativeApis()
     {
         Type owner = typeof(NInspectCardScreen);
@@ -96,7 +131,7 @@ public sealed class NativeCardOperationMethodTests
         Assert.DoesNotContain(display, i => i.Member is MethodInfo m && m.Name == "set_IsTicked");
     }
 
-    private sealed record Instruction(OpCode Op, MemberInfo? Member);
+    private sealed record Instruction(OpCode Op, MemberInfo? Member, int Offset, int? Target);
     private static readonly Dictionary<short, OpCode> Ops = typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static)
         .Where(field => field.FieldType == typeof(OpCode)).Select(field => (OpCode)field.GetValue(null)!).ToDictionary(op => op.Value);
     private static IEnumerable<Instruction> Instructions(MethodInfo method)
@@ -104,6 +139,7 @@ public sealed class NativeCardOperationMethodTests
         byte[] bytes = method.GetMethodBody()!.GetILAsByteArray()!;
         for (int offset = 0; offset < bytes.Length;)
         {
+            int start = offset;
             short code = bytes[offset++];
             if (code == 0xfe) code = unchecked((short)(0xfe00 | bytes[offset++]));
             OpCode op = Ops[code]; MemberInfo? member = null;
@@ -118,7 +154,13 @@ public sealed class NativeCardOperationMethodTests
                 OperandType.InlineSwitch => 4 + 4 * BitConverter.ToInt32(bytes, offset),
                 _ => 4
             };
-            offset += length; yield return new(op, member);
+            int? target = op.OperandType switch
+            {
+                OperandType.ShortInlineBrTarget => offset + 1 + unchecked((sbyte)bytes[offset]),
+                OperandType.InlineBrTarget => offset + 4 + BitConverter.ToInt32(bytes, offset),
+                _ => null
+            };
+            offset += length; yield return new(op, member, start, target);
         }
     }
 }
