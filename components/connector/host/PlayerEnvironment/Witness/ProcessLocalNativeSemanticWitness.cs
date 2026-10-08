@@ -125,6 +125,9 @@ public static class PlayerEnvironmentNativeSemanticWitness
 
             NativeEntityRegistry entities = NativeUiRuntime.Entities;
             CombatLiveContext context = LiveContextReader.BuildCombat(run, combatRoom, entities);
+            if (context.CaptureMissing.Count != 0)
+                return Unavailable(phase, LiveContextReader.RequiredPowerCaptureMissing,
+                    observedAction, ui, "Required public combat power facts could not be captured.");
             NativeCombatDecision decision = NativeCombatDecisionProvider.Capture(entities);
             bool localPlayPhase = decision.IsDecisionOpen;
             IReadOnlyList<VisibleCombatPotionState> semanticPotions =
@@ -177,6 +180,8 @@ public static class PlayerEnvironmentNativeSemanticWitness
                         companion.HealthBarVisible,
                         companion.Hp,
                         companion.MaxHp,
+                        companion.HpDisplayMode,
+                        companion.HpNumbersAvailable,
                         companion.Block,
                         statuses = companion.Statuses.Select(status => new
                         {
@@ -204,6 +209,9 @@ public static class PlayerEnvironmentNativeSemanticWitness
                     enemy.DefinitionId,
                     enemy.Hp,
                     enemy.MaxHp,
+                    enemy.HealthBarVisible,
+                    enemy.HpDisplayMode,
+                    enemy.HpNumbersAvailable,
                     enemy.Block,
                     statuses = enemy.Statuses.Select(status => new
                     {

@@ -210,11 +210,14 @@ public sealed record VisibleEnemy(
     uint? CombatId,
     string DefinitionId,
     string? Name,
-    decimal Hp,
-    decimal MaxHp,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] decimal? Hp,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] decimal? MaxHp,
     decimal Block,
     IReadOnlyList<VisibleStatus> Statuses,
-    IReadOnlyList<VisibleIntent> Intents);
+    IReadOnlyList<VisibleIntent> Intents,
+    bool HealthBarVisible,
+    string HpDisplayMode,
+    bool HpNumbersAvailable);
 
 public sealed record VisibleCombatPlayer(
     string PlayerEntityId,
@@ -238,10 +241,12 @@ public sealed record VisibleCombatCompanion(
     string? Name,
     bool IsAlive,
     bool HealthBarVisible,
-    decimal? Hp,
-    decimal? MaxHp,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] decimal? Hp,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] decimal? MaxHp,
     decimal Block,
-    IReadOnlyList<VisibleStatus> Statuses);
+    IReadOnlyList<VisibleStatus> Statuses,
+    string HpDisplayMode,
+    bool HpNumbersAvailable);
 
 public sealed record VisibleCombatPotionState(
     string EntityId,
@@ -398,7 +403,13 @@ public sealed record CombatLiveContext(
     string TurnOwner,
     bool IsPlayPhase,
     VisibleCombatPlayer Player,
-    IReadOnlyList<VisibleEnemy> Enemies) : ILiveContext;
+    IReadOnlyList<VisibleEnemy> Enemies) : ILiveContext
+{
+    // Host-private capture accounting follows this context across input owners.
+    // It is merged into public completeness, never serialized as gameplay facts.
+    [JsonIgnore]
+    internal IReadOnlyList<string> CaptureMissing { get; init; } = Array.Empty<string>();
+}
 
 public sealed record RewardFlowLiveContext(
     string Kind,
@@ -467,7 +478,11 @@ public sealed record RunTransitionLiveContext(
 public sealed record UnknownLiveContext(
     string Kind,
     string SourceType,
-    string Reason) : ILiveContext;
+    string Reason) : ILiveContext
+{
+    [JsonIgnore]
+    internal IReadOnlyList<string> CaptureMissing { get; init; } = Array.Empty<string>();
+}
 
 [JsonConverter(typeof(LiveSurfaceJsonConverter))]
 public interface ILiveSurface

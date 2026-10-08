@@ -186,6 +186,48 @@ therefore derives combat actionability from the current native hand/control
 state, excludes cards already moved to the native play queue, and binds every
 remaining action to that exact visible UI state.
 
+### Combat health and power facts
+
+Current combat enemy and companion facts use the same public health eligibility.
+`health_bar_visible` is the native semantic health exposure (including
+`MonsterModel.IsHealthBarVisible`), not a tween-alpha measurement.
+`hp_display_mode` is `normal`, `infinite_with_numbers`, or
+`infinite_without_numbers`, from the native `Creature.HpDisplay` value.
+`hp_numbers_available` is true only when health exposure is eligible and native
+`HpDisplay.ShowsNumbers()` permits numbers. `hp` and `max_hp` are nullable numeric
+fields: both are explicitly null when numbers are unavailable. Zero, a hidden
+numeric sentinel and a previously remembered value are not substitutes for null.
+Normal and `infinite_with_numbers` retain actual public logical numbers even if
+the currently mounted label is older. That difference alone does not imply
+settling or withdraw otherwise admitted controls.
+An unsupported native HP mode fails capture with
+`public_combat_health_display`; it is not treated as Normal or as successful
+number suppression, including when a nested selector owns input.
+
+These fields appear identically in combat context and its mirrored enemy or
+companion referent properties. The context/referent wire permits JSON null;
+the Host's `VisibleEnemy` typed contract now uses nullable HP/max HP and the
+explicit mode/availability fields. Current supported public profiles use this
+shared correction. Historical frozen bytes retain their original producer and
+exposure identity; they are not rewritten or retroactively qualified. Transport
+schema/profile names and the immutable 13-seam publication definition are
+unchanged. This information fix does not add continuous L34 event coverage.
+
+Visible powers require a captured roster, native visibility, definition, the native
+`DisplayAmount` scalar and type. This scalar is not a certificate of the current
+mounted amount label. Failure in those required facts reports
+`public_combat_power_facts` in completeness and fails the input owner closed,
+including nested selectors using that combat context. Hidden native powers are
+ineligible and do not invoke scalar/detail projection. Rich description and title
+text remain optional; missing tooltip text cannot erase captured required scalar
+facts. Successful legacy rich descriptions remain available under their existing
+profile, while native/text-v2 continue to remove unopened bodies. Host-private
+capture accounting is not serialized into gameplay context.
+
+Consumers must handle unavailable health explicitly. Treating null as zero or
+deriving damage from a suppressed numeric value is outside this public contract;
+research reward semantics and historical-data compatibility remain consumer owned.
+
 `reads[]` advertises all bounded, non-authorizing information reads. Consumers
 send the opaque `read_id`; C rejects stale snapshots and arbitrary fields.
 Interactive consumers may read lazily. Memoryless consumers may prefetch and
