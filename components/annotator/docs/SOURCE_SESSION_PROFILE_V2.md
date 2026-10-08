@@ -1,6 +1,7 @@
 # Source recording v2: attachment epochs and real passive producer
 
-Status: proposed wire freeze for the approved E2 producer work, 2026-10-08.
+Status: revised wire freeze for the approved E2 producer work, 2026-10-08.
+Revision addresses exact early setup continuity and Launch-internal callback ordering.
 Implementation base is the normal dependency merge `f5a435892b6e90068e1070e20d163b67e7f69f0b`
 of accepted root `fa414996f453db765884a54dc6e00f1fe880f828`.
 Source v1 repair `a082862176c8b8df92d2b887d3bef3111be146a7` remains an accepted ancestor.
@@ -37,8 +38,13 @@ No Source bundle is research admission.
 | Generic bundle | `sts2.annotator/source-session-bundle-2`, descriptor `source-session-bundle-v2` |
 | Recording command | `sts2.ai-platform/recording-command-3` |
 
-Profile v2 declares `input_profile:native-logical-v1`, canonical requested full
-scope `persistent, interaction, referents, catalog`, limits and fixed non-claims.
+Profile v2 declares `input_profile:native-logical-v1`,
+`publication_profile_id:native-logical-publication-profile-v1` and
+`publication_profile_definition_sha256:c060cfd354c6702e10711e6329848836ec133f2117841750e317b6ab27b244cf`,
+canonical requested full scope `persistent, interaction, referents, catalog`, limits
+and fixed non-claims. The canonical publication definition is the Connector contract
+`native-logical-publication-profile-v1.json`; its target is distinct from the actual
+accepted seam coverage. Every immutable epoch binds the same definition identity.
 Accepted scope, generation, coverage and continuity belong to immutable epoch rows,
 not to a rewritten manifest/profile. Producer environment and initial declaration
 are manifest-bound. The same game process/build is required across epochs.
@@ -55,7 +61,8 @@ inside the same epoch/generation. Epoch ordering comes from their immutable chai
 
 ```text
 schema, sequence, session_id, timeline_id, epoch_id, previous_epoch_id,
-context { scope_id, stream_generation, eager_scope, seam_coverage,
+context { publication_profile_id, publication_profile_definition_sha256,
+          scope_id, stream_generation, eager_scope, seam_coverage,
           environment, game_continuity_id },
 starting_position, initial_position,
 predecessor_seal or null, transition or null, recorded_at
@@ -63,6 +70,10 @@ predecessor_seal or null, transition or null, recorded_at
 
 The first epoch has no predecessor/transition. Atomic Attach returns native N and
 reserves initial observation N+1 on the same native turn before callback interleave.
+While recording is attached, its internal source subscription is also selected for
+bootstrap reservations requested by other observers. A non-selected position, if any,
+requires explicit `not_in_scope` accounting; it is never labelled a missing native
+exposure or repaired by Current.
 A successor epoch has an exact predecessor seal and a typed transition witness.
 `NativeSeal` has `epoch_id`, `stream_generation`, `reserved_through`,
 `completed_through`; the two indexes are original hub watermarks, and completion
@@ -71,14 +82,45 @@ because a later Current read happened.
 
 `NativeTransition` has `witness_id`, `kind`, `mechanism`,
 `previous_game_continuity_id`, `game_continuity_id`, `start_provenance`,
-`graceful`, `victory`. Nullable fields are explicit. Kinds are `launch`,
-`terminal`, `cleanup`, `process_exit`; provenance is `new`, `saved`, `unknown`
-for Launch and null otherwise. Only Launch/Cleanup that changes actual native
-continuity creates an epoch. Terminal entry retains the current epoch and permits
-required summary navigation. Exact existing Launch/setup/OnEnded/CleanUp patches
-produce these facts. Unknown setup provenance cannot claim a new native start.
-A run identity mismatch without an exact boundary fails accounting; polling,
-status changes, elapsed time and equality of unrelated callbacks are not witnesses.
+`graceful`, `victory`. Nullable fields are explicit. Emitted kinds are
+`setup_handoff`, `launch`, `terminal`, `cleanup`; provenance is `new`, `saved`,
+`unknown` for setup/Launch and null otherwise. `setup_handoff` proves only that
+an exactly staged native setup invocation's actual RunState now owns continuity;
+it never proves native Launch or a fresh start. Only exact setup handoff or Cleanup
+that changes actual continuity creates an epoch. Launch and terminal entry retain
+the existing epoch, including required terminal summary navigation. `process_exit`
+is reserved and unproduced in this implementation: only an actual Host-exit witness
+could support it; ExitTree, Task completion or a cleanup callback cannot do so.
+
+The exact native order matters. SetUpNewSingleplayer assigns State before its
+initialization calls. SetUpSavedSingleplayer assigns State before its first await.
+Launch invokes RunStarted synchronously before the existing Launch postfix.
+The existing typed setup patches therefore stage a bounded exact invocation context
+at Prefix, binding its RunState object and new/saved provenance before the body can
+publish new-continuity callbacks. The sole native owner consumes that context only
+when its actual current RunState is the same exact staged object. It seals the old
+Hub generation and creates the prepared epoch before capturing that first callback.
+Staging alone neither turns over the stream nor claims that assignment succeeded.
+If no earlier public callback occurred, the typed setup postfix verifies that its
+actual State is the staged object and consumes the same handoff before clearing the
+invocation context. Saved setup returning its Task is not initialization completion.
+Failure or abandonment clears an unconsumed exact context; Task completion may clean
+up that context but cannot produce a native Launch or process-exit witness.
+A failing setup which never owns State creates no epoch; a prepared state that fails
+later remains prepared and cannot acquire a Launch proof from timing or Task state.
+
+This per-invocation/per-object context is not a global last-root or inferred run match.
+Unknown/conflicting setup remains unknown or fails accounting; it cannot claim a new
+native start. The existing exact Launch postfix supplies a separate `launch` boundary
+with its original invocation and provenance after native RunStarted callbacks; those
+earlier callbacks already belong to the prepared epoch and are never relabelled or
+backfilled by that later witness. Exact existing setup/Launch/OnEnded/CleanUp patches
+are reused; no duplicate native hook or causal tracker is introduced. Cleanup source
+forwarding uses actual pre/post continuity before the legacy IsInProgress gate, since
+terminal cleanup can occur after in-progress ended; legacy Human behavior is preserved.
+An actual continuity change with no matching typed staged setup/cleanup witness fails
+accounting before the old generation is discarded. Polling, status changes, elapsed
+time and equality of unrelated callbacks are not witnesses.
 
 Connector seals a source attachment before generation turnover, preserving only
 its bounded selected reservations, original event metadata and payload pins.
@@ -125,6 +167,11 @@ are reused without changing its old schema interpretation.
 
 ## Observation, pause and close accounting
 
+Delayed observations, including encodes completing after epoch rollover and paused
+ChangeSource, retain the original epoch and declaration segment selected at their
+original native position. The disk worker never uses the current actor to classify
+a prior reserved occurrence.
+
 `public-observations.jsonl` v2 fields are `schema, sequence, session_id,
 timeline_id, epoch_id, segment_id, position, source_seam, source_index, phase,
 snapshot_id, owner_occurrence, game_continuity_id, completeness, capture, catalog,
@@ -136,12 +183,14 @@ identity are checked; old epoch completion cannot become a current epoch event.
 Pause stops new recording admissions, not gameplay or already admitted work.
 `source-boundaries.jsonl` v2 contains `schema, sequence, session_id, timeline_id,
 kind, segment_id, position, sealed_epochs, paused_intervals, transition, recorded_at`.
-Kinds are pause/resume/epoch_transition/terminal/close. Each paused interval is
+Kinds are pause/resume/epoch_transition/launch/terminal/close. Each paused interval is
 `{epoch_id, stream_generation, after_index, through_index, reason:recording_paused}`.
 A pause crossing rollover records one original interval per affected epoch.
 Pre-pause admitted scopes and reservations may finish with their original token.
 New occurrences in paused intervals are excluded explicitly, including a successor
 bootstrap reserved during Pause. Resume does not read Current to fill that interval.
+Close while Paused closes the final open interval in every touched epoch through
+that epoch's exact original reserved boundary; leaving it open cannot yield a clean Close.
 
 Close atomically disables new admissions and seals the current actual reserved
 position, then drains all current/retiring seals and admitted tokens off-thread.
@@ -156,7 +205,15 @@ to conceal an epoch gap.
 
 The v2 close receipt freezes session/timeline, every epoch's original seal, final
 position, per-stream counts/hashes, gap/input/epoch summary, source kinds and
-accounting_complete/status. Success means durable accounting of the stated facts,
+accounting_complete/status. It also freezes `final_drains`: one row per epoch with
+`epoch_id, stream_generation, sealed_reserved_through, completed_through,
+durable_through, admitted_inputs_terminal`. The first value is the unchanged requested
+seal boundary. The completion value is the actual final Hub watermark in that original
+generation, not the seal's earlier completion watermark. Durable through is the writer's
+acknowledgement of original positions, not a new native clock. Successful audit verifies
+original-position rows/gaps/paused or explicit not-in-scope accounting through every
+sealed reserved watermark and all admitted tokens terminal. An initial 12/10 seal,
+aggregate row count or a later epoch's watermark cannot prove that drain. Success means durable accounting of the stated facts,
 not zero-gap native qualification. Old callbacks are fenced to exact store,
 attachment/session/timeline/epoch. Obsolete callbacks are ignored before packet
 validation or failure marking; queued old work retains its original live epoch.
@@ -166,9 +223,16 @@ validation or failure marking; queued old work retains its original live epoch.
 Connector's public passive SourceRecording API exposes only atomic Attach, accepted
 context, retained Events/Await replay, original ExportFrozen, exact native boundary
 and input witness notifications, Renew, Seal/IsDrained/Release/Dispose. It exposes
-no Submit, controller lease acquisition, native object, delegate or executable
-operand. Native Foundation/Game Mod composition owns witness emission; consumer
+no Submit, controller lease acquisition, native object, native dispatch delegate
+or executable operand. Bounded typed observer/token-admission callbacks are passive
+notification seams and cannot authorize input or create native source positions. Native Foundation/Game Mod composition owns witness emission; consumer
 calls cannot claim a new native witness.
+
+After all named typed native hooks register successfully, the single Service/Hub
+owner installs the reviewed publication profile and actual coverage atomically.
+Capabilities and source Attach read that same Hub declaration. This composition-only
+registration seam is internal; passive consumers cannot claim native hook registration.
+An already issued epoch never receives a retroactive coverage or definition upgrade.
 
 One bounded encoder-to-recorder worker persists off the game thread. Pins are
 acknowledged/released after append or explicit failure. Resource limits include
@@ -182,8 +246,9 @@ if durable loss accounting cannot be written, the session fails instead of guess
 ## Contract fixture and next validation
 
 `contracts/fixtures/source-session-v2.json` is synthetic contract conformance,
-not a packer-emitted v2 bundle or actual native history. It fixes Title/Launch/run
-positions, delayed old-epoch token/source declarations, pause intervals, partial
+not a packer-emitted v2 bundle or actual native history. It fixes Title/prepared/Launch/run
+positions, early new/saved setup callbacks and native RunStarted inside Launch, delayed
+old-epoch observation/token source declarations, paused Close intervals, partial
 promotion rejection, generation mismatch without a native witness, finite close
 barriers and resource errors. Production serializer/packer/verifier will later
 emit and independently verify their own immutable synthetic bundle.

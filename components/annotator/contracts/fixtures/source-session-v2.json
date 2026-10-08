@@ -44,6 +44,8 @@
       "epoch_id": "epoch-title",
       "previous_epoch_id": null,
       "context": {
+        "publication_profile_id": "native-logical-publication-profile-v1",
+        "publication_profile_definition_sha256": "c060cfd354c6702e10711e6329848836ec133f2117841750e317b6ab27b244cf",
         "scope_id": "scope-title",
         "stream_generation": "stream-title",
         "eager_scope": [
@@ -119,6 +121,8 @@
       "epoch_id": "epoch-run",
       "previous_epoch_id": "epoch-title",
       "context": {
+        "publication_profile_id": "native-logical-publication-profile-v1",
+        "publication_profile_definition_sha256": "c060cfd354c6702e10711e6329848836ec133f2117841750e317b6ab27b244cf",
         "scope_id": "scope-run",
         "stream_generation": "stream-run",
         "eager_scope": [
@@ -189,9 +193,9 @@
         "completed_through": "10"
       },
       "transition": {
-        "witness_id": "native-witness-launch",
-        "kind": "launch",
-        "mechanism": "RunManager.Launch.postfix+exact-new-setup-owner",
+        "witness_id": "native-witness-setup-handoff",
+        "kind": "setup_handoff",
+        "mechanism": "RunManager.SetUpNewSingleplayer.prefix->exact-staged-current-RunState",
         "previous_game_continuity_id": null,
         "game_continuity_id": "run-synthetic",
         "start_provenance": "new",
@@ -354,6 +358,34 @@
     {
       "name": "v1_reader_v2_manifest",
       "expected": "unsupported_schema"
+    },
+    {
+      "name": "prepared_setup_used_as_native_Launch_proof",
+      "expected": "source_launch_witness_required"
+    },
+    {
+      "name": "staged_RunState_not_actual_current_reference",
+      "expected": "source_native_boundary_missing"
+    },
+    {
+      "name": "final_close_relies_on_original_completed_10_with_reserved_12",
+      "expected": "source_close_drain_incomplete"
+    },
+    {
+      "name": "delayed_observation_relabelled_current_actor",
+      "expected": "source_observation_original_segment_mismatch"
+    },
+    {
+      "name": "paused_close_leaves_open_interval",
+      "expected": "source_pause_interval_unclosed"
+    },
+    {
+      "name": "publication_profile_definition_rewritten",
+      "expected": "source_publication_profile_mismatch"
+    },
+    {
+      "name": "ExitTree_used_as_process_exit",
+      "expected": "source_process_exit_unproduced"
     }
   ],
   "close_case": {
@@ -373,6 +405,197 @@
     ],
     "before_old_completion": "pending",
     "after_original_slots_completed_or_gapped": "closed_if_durable",
-    "after_drain_deadline": "failed_no_close_receipt"
+    "after_drain_deadline": "failed_no_close_receipt",
+    "final_drains": [
+      {
+        "epoch_id": "epoch-title",
+        "stream_generation": "stream-title",
+        "sealed_reserved_through": "12",
+        "completed_through": "12",
+        "durable_through": "12",
+        "admitted_inputs_terminal": true
+      },
+      {
+        "epoch_id": "epoch-run",
+        "stream_generation": "stream-run",
+        "sealed_reserved_through": "9",
+        "completed_through": "9",
+        "durable_through": "9",
+        "admitted_inputs_terminal": true
+      }
+    ],
+    "original_completed_through_is_not_final_drain_proof": true
+  },
+  "publication_profile_id": "native-logical-publication-profile-v1",
+  "publication_profile_definition_sha256": "c060cfd354c6702e10711e6329848836ec133f2117841750e317b6ab27b244cf",
+  "producer_unproduced_reserved_kinds": [
+    "process_exit"
+  ],
+  "early_setup_cases": [
+    {
+      "name": "new_setup_callback_before_setup_postfix",
+      "setup_kind": "new",
+      "exact_invocation_id": "setup-new-invocation",
+      "exact_staged_run_id": "run-new-prepared",
+      "native_order": [
+        "setup_prefix_stages_exact_RunState",
+        "State_assigned_to_exact_staged_RunState",
+        "initialization_public_callback",
+        "setup_postfix"
+      ],
+      "epoch_transition_kind": "setup_handoff",
+      "first_callback_epoch": "epoch-new-prepared",
+      "launch_proven": false
+    },
+    {
+      "name": "saved_setup_callback_before_async_setup_completion",
+      "setup_kind": "saved",
+      "exact_invocation_id": "setup-saved-invocation",
+      "exact_staged_run_id": "run-saved-prepared",
+      "native_order": [
+        "setup_prefix_stages_exact_RunState",
+        "State_assigned_to_exact_staged_RunState",
+        "await_IncrementNumReloads",
+        "public_callback_before_setup_completion",
+        "exact_setup_context_cleanup"
+      ],
+      "epoch_transition_kind": "setup_handoff",
+      "first_callback_epoch": "epoch-saved-prepared",
+      "launch_proven": false
+    },
+    {
+      "name": "no_early_callback_setup_postfix_handoff",
+      "setup_kind": "new",
+      "exact_invocation_id": "setup-no-callback-invocation",
+      "exact_staged_run_id": "run-no-callback-prepared",
+      "native_order": [
+        "setup_prefix_stages_exact_RunState",
+        "State_assigned_to_exact_staged_RunState",
+        "setup_postfix_matches_actual_State_before_context_cleanup"
+      ],
+      "epoch_transition_kind": "setup_handoff",
+      "launch_proven": false
+    },
+    {
+      "name": "setup_fails_before_actual_assignment",
+      "setup_kind": "new",
+      "native_order": [
+        "setup_prefix_stages_exact_RunState",
+        "native_setup_throws_before_assignment",
+        "exact_scope_cleared"
+      ],
+      "epoch_created": false,
+      "launch_proven": false
+    },
+    {
+      "name": "unknown_or_conflicting_setup",
+      "setup_kind": "unknown",
+      "native_order": [
+        "typed_setup_context_conflict",
+        "actual_RunState_reference_matching"
+      ],
+      "allowed": [
+        "unknown_prepared_provenance",
+        "source_native_boundary_missing"
+      ],
+      "launch_proven": false,
+      "fresh_native_start_proven": false
+    }
+  ],
+  "launch_internal_callback_case": {
+    "existing_prepared_epoch": "epoch-run",
+    "native_order": [
+      "exact_setup_handoff_epoch_created",
+      "Launch_prefix",
+      "RunStarted_callback_inside_Launch",
+      "Launch_returns",
+      "exact_Launch_postfix_witness"
+    ],
+    "internal_callback_position": {
+      "epoch_id": "epoch-run",
+      "stream_generation": "stream-run",
+      "publication_index": "2"
+    },
+    "postfix_boundary": {
+      "kind": "launch",
+      "epoch_id": "epoch-run",
+      "position": {
+        "epoch_id": "epoch-run",
+        "stream_generation": "stream-run",
+        "publication_index": "3"
+      },
+      "transition": {
+        "witness_id": "native-witness-launch",
+        "kind": "launch",
+        "mechanism": "RunManager.Launch.postfix",
+        "previous_game_continuity_id": "run-synthetic",
+        "game_continuity_id": "run-synthetic",
+        "start_provenance": "new",
+        "graceful": null,
+        "victory": null
+      }
+    },
+    "expected_internal_callback_epoch": "epoch-run",
+    "callback_relabelled_by_postfix": false,
+    "new_epoch_at_Launch": false
+  },
+  "delayed_observation_case": {
+    "original_position": {
+      "epoch_id": "epoch-title",
+      "stream_generation": "stream-title",
+      "publication_index": "10"
+    },
+    "original_segment_id": "segment-original",
+    "source_seam": "native_card_preview",
+    "append_after": {
+      "epoch_id": "epoch-run",
+      "operation": "paused_ChangeSource",
+      "new_segment_id": "segment-next"
+    },
+    "expected_epoch_id": "epoch-title",
+    "expected_segment_id": "segment-original",
+    "original_position_is_before_or_at_pause_boundary": true
+  },
+  "paused_close_case": {
+    "pause_position": {
+      "epoch_id": "epoch-title",
+      "stream_generation": "stream-title",
+      "publication_index": "10"
+    },
+    "close_position": {
+      "epoch_id": "epoch-run",
+      "stream_generation": "stream-run",
+      "publication_index": "6"
+    },
+    "resume_observed": false,
+    "expected_closed_intervals": [
+      {
+        "epoch_id": "epoch-title",
+        "stream_generation": "stream-title",
+        "after_index": "10",
+        "through_index": "12",
+        "reason": "recording_paused"
+      },
+      {
+        "epoch_id": "epoch-run",
+        "stream_generation": "stream-run",
+        "after_index": "0",
+        "through_index": "6",
+        "reason": "recording_paused"
+      }
+    ],
+    "open_interval_remaining": false
+  },
+  "bootstrap_selection_case": {
+    "existing_recording_subscription": "subscription-source",
+    "new_observer_subscription": "subscription-other",
+    "reserved_original_publication_index": "5",
+    "expected_selected_subscriptions": [
+      "subscription-other",
+      "subscription-source"
+    ],
+    "permitted_exclusion_if_not_selected": "explicit_not_in_scope",
+    "exclusion_means_missing_native_exposure": false,
+    "Current_backfill_allowed": false
   }
 }
