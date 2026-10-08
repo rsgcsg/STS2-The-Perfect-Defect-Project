@@ -17,6 +17,15 @@ from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import BoundaryError, digest
 
 from .canonical import semantic_hash
+from .native_graph_spec import (
+    CHECKPOINT_SCHEMA as GRAPH_CHECKPOINT_SCHEMA,
+)
+from .native_graph_spec import (
+    RUN_SCHEMA as GRAPH_RUN_SCHEMA,
+)
+from .native_graph_spec import (
+    TRAINING_SCOPE as GRAPH_TRAINING_SCOPE,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 LEGACY_SCOPE = "python-structured-owner-source-and-lock-v1"
@@ -95,6 +104,7 @@ _SHARED_PATHS = (
     "stpd/models/structured_weights.py",
     "stpd/representation.py",
     "stpd/structured_code_scope.py",
+    "stpd/native_graph_spec.py",
     "stpd/workers/__init__.py",
     "stpd/workers/checkpoint_codec.py",
 )
@@ -163,6 +173,8 @@ def exporter_runtime() -> dict[str, str]:
 
 
 def run_code_scope(schema: object) -> str:
+    if schema == GRAPH_RUN_SCHEMA:
+        return GRAPH_TRAINING_SCOPE
     if schema == "stpd/native-structured-m2-run-v1":
         return "native-structured-numerical-training-code-closure-v1"
     if schema == "stpd/structured-m2-run-v2":
@@ -173,6 +185,8 @@ def run_code_scope(schema: object) -> str:
 
 
 def checkpoint_schema(scope: str) -> str:
+    if scope == GRAPH_TRAINING_SCOPE:
+        return GRAPH_CHECKPOINT_SCHEMA
     if scope == "native-structured-numerical-training-code-closure-v1":
         return "stpd/native-structured-m2-training-checkpoint-v1"
     if scope == LEGACY_SCOPE:

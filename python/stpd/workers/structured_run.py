@@ -33,11 +33,14 @@ from ..fullrun.structured_sequences import (
 )
 from ..models.structured_m2 import GRAPH_ID
 from ..models.structured_training import StructuredTrainingConfig, train_structured_model
+from ..native_graph_spec import RUN_SCHEMA as GRAPH_RUN_SCHEMA
+from ..native_graph_spec import NativeGraphControl, optional_control
 from ..structured_code_scope import LEGACY_SCOPE, ROOT, SCOPED_RUN_SCHEMA, TRAINING_SCOPE
 from ..structured_profiles import (
+    NATIVE_GRAPH_SCOPE,
     NATIVE_INPUT_SCHEMA,
     NATIVE_RUN_SCHEMA,
-    NATIVE_SCOPE,
+    NATIVE_SCOPES,
     NATIVE_SOURCE_SCHEMA,
     parse_dataset,
     profile_projection,
@@ -61,11 +64,15 @@ def prepare_structured_run(
     source_id: str | None = None,
     operation_id: str | None = None,
     code_scope: str = LEGACY_SCOPE,
+    model_control: NativeGraphControl | None = None,
 ) -> Manifest:
     """Persist a caller-authorized input using existing immutable artifact kinds."""
     config.validate()
+    model_control = optional_control(model_control)
+    if (model_control is not None) != (code_scope == NATIVE_GRAPH_SCOPE):
+        raise BoundaryError("structured_run", "control_scope_mismatch")
     native = validate_profile(dataset, code_scope)
-    scoped = code_scope in {TRAINING_SCOPE, NATIVE_SCOPE}
+    scoped = code_scope in {TRAINING_SCOPE, *NATIVE_SCOPES}
     if (parse_dataset(dataset.source_bytes, code_scope) != dataset
             or scoped and operation_id is None):
         raise BoundaryError("structured_run", "unsupported_code_scope")
@@ -77,7 +84,9 @@ def prepare_structured_run(
 
         digest(operation_id, "structured_run.operation_id", length=32)
         torch.set_num_threads(config.cpu_threads)
-        identity = execution_identity(dataset, config, code_scope=code_scope)
+        identity = execution_identity(
+            dataset, config, code_scope=code_scope, model_control=model_control
+        )
         if (scoped
                 and producer.uv_lock_sha256 != identity["code_identity"]["dependency_lock_sha256"]):
             raise BoundaryError("structured_run", "producer_lock_identity_mismatch")
@@ -145,7 +154,7 @@ def prepare_structured_run(
                            if native else "stpd/experiment-v1"),
                 "purpose": ("native_synthetic_teacher_imitation"
                             if native else "s0_agent_teacher_imitation"),
-                "graph_id": GRAPH_ID,
+                "graph_id": GRAPH_ID if model_control is None else model_control.id,
                 "config": asdict(config),
             }
         ),
@@ -160,7 +169,9 @@ def prepare_structured_run(
         ),
         parameters=FrozenObject.of(
             {
-                "schema": (NATIVE_RUN_SCHEMA if native else
+                "schema": (GRAPH_RUN_SCHEMA
+                           if code_scope == NATIVE_GRAPH_SCOPE else
+                           NATIVE_RUN_SCHEMA if native else
                            SCOPED_RUN_SCHEMA if code_scope == TRAINING_SCOPE else
                            "stpd/structured-m2-run-v2" if operation_id is not None else RUN_SCHEMA),
                 "config": asdict(config),

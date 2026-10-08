@@ -39,6 +39,9 @@ from ..models.structured_engine import (
     execution_identity,
 )
 from ..models.structured_training import StructuredTrainingConfig
+from ..native_graph_spec import MODEL_SCHEMA as GRAPH_MODEL_SCHEMA
+from ..native_graph_spec import REPORT_SCHEMA as GRAPH_REPORT_SCHEMA
+from ..native_graph_spec import NativeGraphControl, control_from_identity
 from ..structured_code_scope import (
     INFERENCE_SCOPE,
     LEGACY_SCOPE,
@@ -52,10 +55,11 @@ from ..structured_code_scope import (
     run_code_scope,
 )
 from ..structured_profiles import (
+    NATIVE_GRAPH_SCOPE,
     NATIVE_INPUT_SCHEMA,
     NATIVE_MODEL_SCHEMA,
     NATIVE_REPORT_SCHEMA,
-    NATIVE_SCOPE,
+    NATIVE_SCOPES,
     NATIVE_SOURCE_SCHEMA,
     parse_dataset,
     qualification,
@@ -85,13 +89,14 @@ def prepare_structured_workload(
     operation_id: str,
     source_id: str | None = None,
     code_scope: str = LEGACY_SCOPE,
+    model_control: NativeGraphControl | None = None,
 ) -> Manifest:
     """Freeze caller-authorized source/config/execution identity; numerical work is separate."""
     if parse_dataset(dataset.source_bytes, code_scope) != dataset:
         raise BoundaryError("structured_workload", "source_projection_mismatch")
     return prepare_structured_run(
         store, dataset, producer, config, source_id=source_id, operation_id=operation_id,
-        code_scope=code_scope
+        code_scope=code_scope, model_control=model_control
     )
 
 
@@ -145,14 +150,17 @@ def _load(
         raise BoundaryError("structured_workload", "training_source_binding_mismatch")
     raw = _read_payload(store, payload, MAX_SOURCE_BYTES)
     dataset = parse_dataset(raw, scope)
-    native = scope == NATIVE_SCOPE
+    native = scope in NATIVE_SCOPES
     if (
         dataset.source_sha256 != info["source_sha256"]
         or training.parameters.value().get("source_sha256") != dataset.source_sha256
         or source.parameters.value().get("source_sha256", dataset.source_sha256)
         != dataset.source_sha256
         or source.parameters.value().get("source_kind", dataset.source_kind) != dataset.source_kind
-        or execution_identity(dataset, config, code_scope=scope) != info.get("execution_identity")
+        or execution_identity(
+            dataset, config, code_scope=scope,
+            model_control=control_from_identity(info["execution_identity"])
+        ) != info.get("execution_identity")
     ):
         raise BoundaryError("structured_workload", "source_config_code_or_runtime_changed")
     expected_training_info = {
@@ -235,7 +243,9 @@ def _checkpoint_manifest(
     store: ArtifactStore, checkpoint_id: str, run: Manifest, training: Manifest
 ) -> Manifest:
     saved = store.get_manifest(checkpoint_id)
-    scoped = run_code_scope(run.parameters.value().get("schema")) in {TRAINING_SCOPE, NATIVE_SCOPE}
+    scoped = run_code_scope(run.parameters.value().get("schema")) in {
+        TRAINING_SCOPE, *NATIVE_SCOPES
+    }
     parent_roles = {"run", "training_input"}
     if any(parent.role == "resume_checkpoint" for parent in saved.parents):
         parent_roles.add("resume_checkpoint")
@@ -357,8 +367,8 @@ def _completed(
     from ..policy.structured_export import load_structured_package
 
     scope = run_code_scope(run.parameters.value().get("schema"))
-    scoped = scope in {TRAINING_SCOPE, NATIVE_SCOPE}
-    native = scope == NATIVE_SCOPE
+    scoped = scope in {TRAINING_SCOPE, *NATIVE_SCOPES}
+    native = scope in NATIVE_SCOPES
     _checkpoint_manifest(store, result.parent("checkpoint"), run, training)
     # A publication-phase resume may export already-complete numerical state
     # from an earlier writer's immutable checkpoint. Bind the actual exporter
@@ -397,7 +407,8 @@ def _completed(
         or result.parent("training_input") != training.artifact_id
     ):
         raise BoundaryError("structured_workload", "completed_result_identity_mismatch")
-    engine = StructuredTrainingEngine(dataset, config, code_scope=scope)
+    engine = StructuredTrainingEngine(dataset, config, code_scope=scope,
+        model_control=control_from_identity(run.parameters.value()["execution_identity"]))
     engine.restore(_checkpoint_bytes(store, result.parent("checkpoint"), run, training))
     if engine.phase != "publication":
         raise BoundaryError("structured_workload", "completed_checkpoint_phase")
@@ -418,7 +429,9 @@ def _completed(
     if (
         model.kind != "model"
         or model.producer != completed_producer
-        or model_info["schema"] != (NATIVE_MODEL_SCHEMA if native else
+        or model_info["schema"] != ((GRAPH_MODEL_SCHEMA
+                                      if scope == NATIVE_GRAPH_SCOPE else NATIVE_MODEL_SCHEMA)
+                                     if native else
                                      SCOPED_MODEL_SCHEMA if scoped else MODEL_SCHEMA)
         or model_info["graph_id"] != engine.identity["graph_id"]
         or model_info["qualification"] != qualification(dataset)
@@ -509,7 +522,9 @@ def _completed(
     if type(seconds) not in {int, float} or not math.isfinite(seconds) or seconds < 0:
         raise BoundaryError("structured_workload", "report_attempt_seconds_mismatch")
     expected_report = {
-        "schema": (NATIVE_REPORT_SCHEMA if native else SCOPED_REPORT_SCHEMA if scoped
+        "schema": (GRAPH_REPORT_SCHEMA
+                   if scope == NATIVE_GRAPH_SCOPE else
+                   NATIVE_REPORT_SCHEMA if native else SCOPED_REPORT_SCHEMA if scoped
                    else "stpd/structured-m2-training-report-v2"),
         "producer": completed_producer.to_dict(),
         **({"training_producer": run.producer.to_dict()} if scoped else {}),
@@ -544,8 +559,8 @@ def execute_structured_workload(
     started = time.perf_counter()
     run, training, dataset, config = _load(store, request, producer)
     scope = run_code_scope(run.parameters.value().get("schema"))
-    scoped = scope in {TRAINING_SCOPE, NATIVE_SCOPE}
-    native = scope == NATIVE_SCOPE
+    scoped = scope in {TRAINING_SCOPE, *NATIVE_SCOPES}
+    native = scope in NATIVE_SCOPES
     if scoped:
         if (not isinstance(attempt_producer, Producer) or attempt_producer.uv_lock_sha256 !=
                 run.parameters.value()["execution_identity"]["code_identity"]["dependency_lock_sha256"]):
@@ -624,7 +639,8 @@ def execute_structured_workload(
         ):
             raise BoundaryError("structured_workload", "resume_attempt_limit")
     checkpoint_id = request.resume_checkpoint_id
-    engine = StructuredTrainingEngine(dataset, config, code_scope=scope)
+    engine = StructuredTrainingEngine(dataset, config, code_scope=scope,
+        model_control=control_from_identity(run.parameters.value()["execution_identity"]))
     if checkpoint_id is not None:
         engine.restore(_checkpoint_bytes(store, checkpoint_id, run, training))
 
@@ -862,7 +878,9 @@ def execute_structured_workload(
         )
         store.publish(model)
         report = {
-            "schema": (NATIVE_REPORT_SCHEMA if native else SCOPED_REPORT_SCHEMA if scoped
+            "schema": (GRAPH_REPORT_SCHEMA
+                   if scope == NATIVE_GRAPH_SCOPE else
+                   NATIVE_REPORT_SCHEMA if native else SCOPED_REPORT_SCHEMA if scoped
                    else "stpd/structured-m2-training-report-v2"),
             "run_id": run.artifact_id,
             "training_input_id": training.artifact_id,
