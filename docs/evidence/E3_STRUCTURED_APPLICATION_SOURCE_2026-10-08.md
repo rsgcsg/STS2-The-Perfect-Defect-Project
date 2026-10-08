@@ -89,3 +89,16 @@ assertions and fixed wall-bound changes, the directly affected application and
 registration tests passed again: 35 tests in 6.00 seconds. This fresh receipt
 covers those final changes; the earlier combined receipt remains scoped to its
 then-current tree.
+
+Independent review repair: the private process owner's second exit-callback
+argument is `forced`, encompassing callback/read/control failures and deadline
+kills. The application receipt now records that exact fact, without a
+`timed_out` field. A timeout is recognized only through the process owner's
+actual `private_child_timeout` exception code. A real child-start callback
+failure regression failed against the original candidate, then passed after
+this repair; forced early exit remains unknown and cannot be replayed.
+
+Repair receipt: all 10 structured application tests passed in 3.93 seconds;
+Ruff passed the two affected Python files; targeted mypy passed the application
+owner; `git diff --check` passed. No broad suite, native operation, push or merge
+was performed for the repair.

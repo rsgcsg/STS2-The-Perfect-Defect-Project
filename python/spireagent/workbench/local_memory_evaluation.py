@@ -298,9 +298,9 @@ class LocalMemoryEvaluationService:
             command = [sys.executable, "-m", "spireagent.workbench.structured_evaluation_child",
                        "--operation-file", str(path), "--ledger", str(owner.path),
                        "--operation", identity]
-            def mark_exited(exit_code: int, timed_out: bool, elapsed: float) -> None:
+            def mark_exited(exit_code: int, forced: bool, elapsed: float) -> None:
                 self._advance(path, identity, child_exit={
-                    "exit_code": exit_code, "timed_out": timed_out,
+                    "exit_code": exit_code, "forced": forced,
                     "elapsed_seconds": elapsed})
 
             exit_code, captured = _private_child(command,

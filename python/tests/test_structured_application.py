@@ -193,7 +193,8 @@ def test_existing_eval_slot_actual_child_fixed_weights_use_and_result(
     completed = settle(service)
     assert completed["status"] == "completed", completed
     assert completed["child_exit"]["exit_code"] == 0
-    assert completed["child_exit"]["timed_out"] is False
+    assert completed["child_exit"]["forced"] is False
+    assert "timed_out" not in completed["child_exit"]
     assert torch.equal(before_rng, torch.get_rng_state())
     assert torch.get_num_threads() == before_threads
     recorded = summary(store, completed["evaluation_id"])
@@ -263,3 +264,27 @@ def test_eval_source_admission_precedes_any_child(tmp_path, exported, monkeypatc
         service.start(model.artifact_id, source_id)
     assert service._thread is None
     assert service.status()["operation"]["status"] == "idle"
+
+
+def test_actual_child_start_callback_failure_records_forced_exit_without_timeout(
+    tmp_path, exported, monkeypatch
+):
+    config, _, _, model, source, _ = setup(tmp_path, exported)
+    actual_child(monkeypatch)
+    service = LocalMemoryEvaluationService(config)
+
+    def failed_started_receipt(*_):
+        raise OSError("synthetic child-start journal write failure")
+
+    monkeypatch.setattr(service, "_mark_child_started", failed_started_receipt)
+    service.start(model.artifact_id, source.manifest.artifact_id)
+    operation = settle(service)
+    assert operation["status"] == "interrupted_unknown"
+    receipt = operation["child_exit"]
+    assert receipt["exit_code"] != 0
+    assert receipt["elapsed_seconds"] < operation["wall_seconds"]
+    assert receipt["forced"] is True
+    assert "timed_out" not in receipt
+    assert operation["error_code"] == "evaluation_storage_or_process_error"
+    with pytest.raises(BoundaryError, match="previous_evaluation_outcome_unknown"):
+        service.start(model.artifact_id, source.manifest.artifact_id)
