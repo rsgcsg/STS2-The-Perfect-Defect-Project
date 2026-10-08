@@ -5,6 +5,8 @@ using STS2Connector.PlayerEnvironment.Protocol;
 
 namespace STS2Connector.PlayerEnvironment.NativeLogical;
 
+using NativeLogicalCapture = global::STS2Connector.PlayerEnvironment.Protocol.NativeLogicalCapture;
+
 /// <summary>Input already extracted at an actual native seam; no getters or dispatch callbacks.</summary>
 public sealed record NativeLogicalSourceCompleteness(string Status, IReadOnlyList<string> Missing);
 
