@@ -14,6 +14,7 @@ using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.addons.mega_text;
 using STS2Connector.LiveHost.Contracts;
+using STS2Connector.LiveHost;
 using STS2Connector.NativeUi;
 using STS2Connector.PlayerEnvironment.Protocol;
 
@@ -204,7 +205,7 @@ internal static class NativeTextMenuFrameBuilder
                         ? PotionFocusId(focusedPotionTarget, entities) : null,
                     ["target_count"] = targets.Count
                         + (NativeTextMenuPotions.MerchantTarget(nativePotionBinding) == null ? 0 : 1)
-                }), NativeLogicalProjectionReplacement.PotionTarget, nativeLogical);
+                }, nativeLogical), NativeLogicalProjectionReplacement.PotionTarget, nativeLogical);
             if (!nativeLogical && page.Interaction.Content.Surface is JsonObject potionSurface)
                 potionSurface.Remove("focused_target_referent_id");
             return new TextMenuFrame(page, owner, leaves);
@@ -622,24 +623,48 @@ internal static class NativeTextMenuFrameBuilder
                 Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
             }
         };
+        if (!nativeLogical) projected = PreserveRequiredPublicCombatFacts(source, projected);
         return NativeLogicalCapturePolicy.PreserveNativeScope(source, projected,
             NativeLogicalProjectionReplacement.HeldCard, nativeLogical);
     }
 
     internal static PlayerEnvironmentSnapshot ProjectPotionTargetPage(PlayerEnvironmentSnapshot source,
-        IReadOnlyList<PlayerEnvironmentReferent> referents, JsonObject surface) => source with
+        IReadOnlyList<PlayerEnvironmentReferent> referents, JsonObject surface, bool nativeLogical = false)
     {
-        Status = "interactive", Referents = referents,
-        Completeness = new("complete", "current_native_potion_targeting",
-            "exact_native_potion_target_controls", Array.Empty<string>(), Array.Empty<string>()),
-        Interaction = source.Interaction with
+        PlayerEnvironmentSnapshot projected = source with
         {
-            Kind = "potion_targeting", Stage = "native_targeting", Prompt = "Choose potion target",
-            ContentSchema = "sts2.player-environment/surface/potion_targeting_text_menu-1",
-            Content = new(surface, ValidContext(source.Interaction.Content.Context, "combat_potion_targeting")),
-            Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
-        }
-    };
+            Status = "interactive", Referents = referents,
+            Completeness = new("complete", "current_native_potion_targeting",
+                "exact_native_potion_target_controls", Array.Empty<string>(), Array.Empty<string>()),
+            Interaction = source.Interaction with
+            {
+                Kind = "potion_targeting", Stage = "native_targeting", Prompt = "Choose potion target",
+                ContentSchema = "sts2.player-environment/surface/potion_targeting_text_menu-1",
+                Content = new(surface, ValidContext(source.Interaction.Content.Context, "combat_potion_targeting")),
+                Capabilities = Array.Empty<PlayerEnvironmentInteractionCapability>()
+            }
+        };
+        return nativeLogical ? projected : PreserveRequiredPublicCombatFacts(source, projected);
+    }
+
+    private static PlayerEnvironmentSnapshot PreserveRequiredPublicCombatFacts(
+        PlayerEnvironmentSnapshot source, PlayerEnvironmentSnapshot projected)
+    {
+        // Compatibility owners may replace the old owner's action/readiness gaps,
+        // but cannot supply failed public health/power facts retained in context.
+        string[] required = source.Completeness.Missing.Where(reason => reason is
+            LiveContextReader.RequiredPowerCaptureMissing or LiveContextReader.RequiredHealthCaptureMissing).ToArray();
+        if (required.Length == 0) return projected;
+        return projected with
+        {
+            Status = NativeLogicalCapturePolicy.FailureStatus(projected.Status),
+            Completeness = projected.Completeness with
+            {
+                Status = "partial",
+                Missing = projected.Completeness.Missing.Concat(required).Distinct(StringComparer.Ordinal).ToArray()
+            }
+        };
+    }
 
     private static JsonNode ValidContext(JsonNode source, string fallbackKind)
     {

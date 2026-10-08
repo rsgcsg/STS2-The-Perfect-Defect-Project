@@ -13,7 +13,11 @@ native semantic leaves, including information and held-card operations, without
 the text-menu presentation-group cursor or text-v2 virtual card/target staging.
 Reuse `NativeTextMenuFrame`/typed NativeUi facts and exact closures; do not derive
 another legality engine or create native operands from client expressions.
-Legacy snapshot/text-v1/text-v2/S0 retain their original schema and behavior.
+Legacy snapshot/text-v1/text-v2/S0 retain their original transport schema and
+interaction/exposure policy. Corrections to shared public combat facts apply to
+current supported producers: see [health number eligibility and required power
+capture](player-environment/PROTOCOL.md#combat-health-and-power-facts). Historical
+frozen inputs retain their original producer identity and bytes.
 
 One Connector owner captures, binds, publishes and resolves. REST/MCP/SDK only
 transport and validate. Native references/dispatch callbacks stay process-local;
