@@ -26,3 +26,36 @@ test('native queries use strict frozen wire and keep read operations off the nat
     assert.doesNotMatch(block, /RunOnMainThread|\.Dispatch\(/u);
   }
 });
+test('family publication routes are typed native observations with no independent clocks or dispatch', () => {
+  const hooks = source('apps/game-mod/ConnectorNativeLogicalPatches.cs');
+  const family = source('apps/game-mod/ConnectorNativeLogicalFamily.cs');
+  assert.doesNotMatch(family, /Recorder|Annotator|Task\.Run|await |JsonSerializer|File\.|Dispatch\(|Timer|DateTime|Stopwatch|ContinueWith|GetInstanceField|SetValue|Dictionary/u);
+  assert.doesNotMatch(hooks, /PatchAll|transpiler|AccessTools\.TypeByName/u);
+  assert.match(family, /ReferenceEquals\(ActiveScreenContext\.Instance\.GetCurrentScreen\(\), node\)/u);
+  assert.match(family, /ConnectorMod\.IsLiveNode\(node\)/u);
+  assert.match(family, /Live\(node\) && node\.IsNodeReady\(\)/u);
+  assert.match(family, /ConnectorMod\.IsNodeVisible\(canvas\)/u);
+  assert.match(family, /ReferenceEquals\(node\.GetParent\(\), __instance\)/u);
+  assert.match(family, /__state \|\| \(Reward\(__instance\) && Current\(__instance\)\)/u);
+  assert.match(family, /__state \|\| \(Information\(__instance\) && Current\(__instance\)\)/u);
+  assert.match(family, /node is NRewardButton or NProceedButton or NCardRewardAlternativeButton/u);
+  assert.match(family, /__instance is NGridCardHolder && OwnedControl\(__instance, true\)/u);
+});
+test('reward publication waits for native owner registration and presentation finalization', () => {
+  const hooks = source('apps/game-mod/ConnectorNativeLogicalPatches.cs');
+  const family = source('apps/game-mod/ConnectorNativeLogicalFamily.cs');
+  assert.match(hooks, /RewardShown\), after: new\[\] \{ foundation \}/u);
+  assert.match(hooks, /CardRewardShown\), after: new\[\] \{ foundation \}/u);
+  assert.match(hooks, /CardRewardRefreshReturned\), nameof\(ConnectorNativeLogicalFamily\.RewardBefore\),\s*finalizer: true, after: new\[\] \{ foundation, presentation \}/u);
+  assert.match(family, /if \(__exception is null\) Publish\(true, "native_reward_catalog", "card_reward_refresh_finalized"\);\s*else PlayerEnvironmentService\.NativeLogical\.PublishMissing/u);
+  assert.match(family, /return __exception;/u);
+});
+test('composition advertises the whole fixed profile only after all hook registrations', () => {
+  const hooks = source('apps/game-mod/ConnectorNativeLogicalPatches.cs');
+  const setup = hooks.slice(hooks.indexOf('internal static void Initialize()'), hooks.indexOf('private static void Patch('));
+  assert.ok(setup.indexOf('RegisterFamilies(harmony);') < setup.indexOf('InstallNativeLogicalPublicationProfile('));
+  assert.ok(setup.indexOf('InstallNativeLogicalPublicationProfile(') < setup.indexOf('initialized = true;'));
+  const profile = JSON.parse(source('components/connector/contracts/native-logical-publication-profile-v1.json'));
+  for (const seam of profile.required_seams) assert.ok(hooks.includes(`"${seam.source_seam}"`));
+  assert.doesNotMatch(setup, /catch|unsupported|sampled/u);
+});
