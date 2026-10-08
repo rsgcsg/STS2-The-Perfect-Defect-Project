@@ -116,14 +116,12 @@ def test_http_real_service_pending_controls_reload_exact_resume_and_limits(tmp_p
                      409, "stale_operation_attempt")
             ack = call("pause", body)["operation"]
             assert ack["status"] == "pending" and ack["requested_action"] == "pause"
-            ack = call("cancel", body)["operation"]
-            assert ack["status"] == "pending" and ack["worker_state"] == "running"
-            assert ack["requested_action"] == "cancel" and ack["selected_result"] is False
+            assert ack["worker_state"] == "running" and ack["selected_result"] is True
             rejected(call, "reconcile", body, 409, "writer_still_running")
         finally:
             released.set()
         stopped = settle(service)
-        assert stopped["status"] == "cancelled" and stopped["worker_state"] == "terminal"
+        assert stopped["status"] == "paused" and stopped["worker_state"] == "terminal"
         assert stopped["checkpoint_id"]
         app.local_training = LocalTrainingService(service.config)
         reloaded = call("status?operation_id=" + operation_id)["operation"]
@@ -152,3 +150,47 @@ def test_snapshot_config_and_limits_are_public_copies(tmp_path, monkeypatch):
     again = service._snapshot(journal)["operation"]
     assert again["config"] == request.config
     assert again["limits"] == canonical.limits
+
+
+def test_http_cancel_ack_retains_unknown_or_checkpoint_without_automatic_restart(
+    tmp_path, monkeypatch,
+):
+    service, request, _owner, _store = ready(tmp_path, monkeypatch)
+    original = adapter_module._private_child
+    entered, released = threading.Event(), threading.Event()
+
+    def delayed(command, *args, **kwargs):
+        on_line = kwargs["on_stdout_line"]
+
+        def message(raw):
+            if json.loads(raw)["kind"] == "prepared":
+                entered.set()
+                assert released.wait(10)
+            on_line(raw)
+
+        return original(command, *args, **{**kwargs, "on_stdout_line": message})
+
+    monkeypatch.setattr(adapter_module, "_private_child", delayed)
+    with browser(service.config, tmp_path) as (app, call, _headers, _runtime):
+        app.local_training = service
+        try:
+            started = call("start", request.to_dict())["operation"]
+            assert entered.wait(15)
+            body = {"operation_id": started["operation_id"],
+                    "expected_attempt_id": started["attempt_id"]}
+            ack = call("cancel", body)["operation"]
+            assert ack["status"] == "pending" and ack["worker_state"] == "running"
+            assert ack["requested_action"] == "cancel" and ack["selected_result"] is False
+        finally:
+            released.set()
+        terminal = settle(service)
+        assert terminal["status"] == "cancelled" and terminal["worker_state"] == "terminal"
+        assert terminal["selected_result"] is False
+        assert terminal["child_exit"]["attempt_id"] == started["attempt_id"]
+        # Initialization can exceed cancel grace before any checkpoint exists.
+        # Actual exit proves worker terminality; it does not invent domain completion.
+        if terminal["child_exit"]["forced"]:
+            assert terminal["domain_completion_state"] == "unknown"
+        rejected(call, "start", replace(request, intent_id="3" * 32).to_dict(),
+                 409, "previous_training_outcome_unknown")
+        assert call("status")["operation"]["attempt_id"] == started["attempt_id"]
