@@ -84,6 +84,11 @@ public static partial class ConnectorMod
         string code,
         Exception exception)
     {
+        if (exception is MainThreadQueueFullException)
+        {
+            SendApiError(response, 503, "main_thread_queue_full", "No native work was admitted because the pending queue is full.");
+            return;
+        }
         GD.PrintErr($"[STS2 Player Environment Host] {code}: {exception}");
         SendApiError(
             response,

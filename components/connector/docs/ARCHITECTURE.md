@@ -105,6 +105,20 @@ Receipt delivery is deliberately narrower than business completion. Consumers
 use the immediate successor and later observation for progress without
 recreating game rules.
 
+The Connector composition root admits at most 256 pending main-thread callbacks
+and starts at most ten per process-frame drain. Full admission fails immediately
+with `MainThreadQueueFullException`; the existing REST error boundary returns
+HTTP 503 with `main_thread_queue_full`, before that callback has run. There is
+no implicit retry. Pending work retains FIFO order across frame budgets.
+
+Internal `RunOnMainThread` callers may supply a cancellation token. Cancellation
+and start share one gate: cancellation that wins removes the pending callback,
+releases capacity and cancels its task without executing native input. After
+start, cancellation does not erase the actual result or exception, including
+an uncertain native outcome. This dispatch boundary creates neither gameplay
+legality nor controller authority. Legacy REST callers currently supply no token;
+this seam alone does not detect disconnected HTTP clients or revoke a controller.
+
 ## Information Boundary
 
 The information policy is fair-player only. Stable visible facts and
@@ -133,6 +147,14 @@ durable support by declaration.
 The installed Mod implementation ID and DLL remain `STS2_MCP` for upgrade and
 rollback compatibility. Current source naming is `STS2Connector`; MCP is only
 an optional transport.
+
+Native object aliases retain a public kind prefix followed by 192 cryptographically
+random bits. They are opaque and carry no allocation counter, session sequence,
+object hash or hidden enumeration order. One exact native object retains its alias
+inside one registry/runtime lifetime; another runtime receives independent aliases.
+Host-private exact object references still bind observation and delivery. SDK and
+recording consumers compare IDs as opaque strings; historical recorded IDs and
+their original producers are preserved without rewriting or rebinding.
 
 ## Extension Rules
 

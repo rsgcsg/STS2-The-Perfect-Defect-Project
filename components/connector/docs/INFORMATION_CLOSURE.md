@@ -90,6 +90,14 @@ Hidden RNG, true draw order, future rewards/events, unrevealed options and
 other information unavailable to a normal player are excluded even if native
 objects are reachable by reflection.
 
+Public native aliases use cryptographic entropy independent of native enumeration.
+Sorting a pile after allocating IDs must not leak its prior draw order through
+an allocation counter. The exact native draw-pile screen sorts its visible cards;
+the Connector's declared unordered multiset keeps stable object aliases without
+encoding that hidden order. Alias tests inject deterministic entropy to verify
+this construction and continuity; random uniqueness checks do not prove privacy
+statistically. Existing immutable recordings keep their producer's original IDs.
+
 ## Closure Gate
 
 A supported Surface may be called information-complete only when its hot facts,
