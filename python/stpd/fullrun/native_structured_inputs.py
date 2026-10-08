@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import struct
 from typing import Any
 
@@ -148,6 +149,63 @@ def _text(value: Any, *, empty: bool = False, maximum: int = 65536) -> str:
     return value
 
 
+def _public_json(value: Any, *, nullable: bool = False) -> None:
+    """The DTO's generic JsonNode domain, without inventing a content schema."""
+    if value is None and not nullable:
+        raise BoundaryError("native_structured_input", "required_public_json_node")
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if item is None or type(item) in {bool, int}:
+            continue
+        if isinstance(item, str):
+            _text(item, empty=True)
+        elif type(item) is float:
+            if not math.isfinite(item):
+                raise BoundaryError("native_structured_input", "nonfinite_public_number")
+        elif isinstance(item, dict):
+            for key, child in item.items():
+                _text(key, empty=True)
+                pending.append(child)
+        elif isinstance(item, list):
+            pending.extend(item)
+        else:
+            raise BoundaryError("native_structured_input", "invalid_public_json_node")
+
+
+def _interaction(value: Any) -> dict[str, Any]:
+    page = object_fields(value,
+        {"interaction_id", "kind", "stage", "prompt", "content_schema", "content", "capabilities"},
+        "native_structured_input.page")
+    for field in ("interaction_id", "kind", "stage", "content_schema"):
+        _text(page[field], empty=True)
+    if page["prompt"] is not None:
+        _text(page["prompt"], empty=True)
+    content = object_fields(page["content"], {"surface", "context"},
+                            "native_structured_input.interaction_content")
+    _public_json(content["surface"])
+    _public_json(content["context"])
+    capabilities = page["capabilities"]
+    if not isinstance(capabilities, list):
+        raise BoundaryError("native_structured_input", "capabilities_required")
+    for raw in capabilities:
+        capability = object_fields(raw, {"verb", "subject_role", "arguments", "availability_basis"},
+                                   "native_structured_input.capability")
+        _text(capability["verb"], empty=True)
+        _text(capability["availability_basis"], empty=True)
+        if capability["subject_role"] is not None:
+            _text(capability["subject_role"], empty=True)
+        if not isinstance(capability["arguments"], list):
+            raise BoundaryError("native_structured_input", "capability_arguments_required")
+        for raw_argument in capability["arguments"]:
+            argument = object_fields(raw_argument, {"role", "required"},
+                                     "native_structured_input.capability_argument")
+            _text(argument["role"], empty=True)
+            if type(argument["required"]) is not bool:
+                raise BoundaryError("native_structured_input", "required_argument_boolean")
+    return {key: page[key] for key in ("kind", "stage", "prompt", "content")}
+
+
 def native_catalog_digest(actions: list[dict[str, Any]]) -> str:
     """Mechanical consumer validation of the Connector-owned binary digest grammar."""
     if not isinstance(actions, list) or len(actions) > 65536:
@@ -222,6 +280,7 @@ def project_native_structured(
     observation = object_fields(
         observation, OBSERVATION_FIELDS, "native_structured_input.observation"
     )
+    _text(observation["observed_at"])
     if len(json_bytes({"observation": observation, "catalog": actions})) > MAX_SNAPSHOT_BYTES:
         raise BoundaryError("native_structured_input", "input_byte_limit")
     policy = object_fields(
@@ -262,6 +321,7 @@ def project_native_structured(
         or completeness["full_reference_complete"] is not True
         or type(observation["revision"]) is not int
         or observation["revision"] < 1
+        or observation["revision"] > (1 << 63) - 1
     ):
         raise BoundaryError("native_structured_input", "complete_native_reference_required")
     descriptor = object_fields(
@@ -279,6 +339,12 @@ def project_native_structured(
         },
         "native_structured_input.catalog",
     )
+    for field in ("catalog_ref", "scope_id", "ordering_semantics"):
+        _text(descriptor[field], empty=True)
+    if not isinstance(descriptor["access_methods"], list):
+        raise BoundaryError("native_structured_input", "catalog_access_methods_required")
+    for method in descriptor["access_methods"]:
+        _text(method, empty=True)
     checksum = native_catalog_digest(actions)
     if (
         descriptor["status"] != "complete"
@@ -310,6 +376,9 @@ def project_native_structured(
         _text(ref["kind"])
         if ref["label"] is not None:
             _text(ref["label"], empty=True)
+        if ref["properties_schema"] is not None:
+            _text(ref["properties_schema"], empty=True)
+        _public_json(ref["properties"], nullable=True)
         state = object_fields(
             ref["state"],
             {"visible", "enabled", "selected", "focused", "observation_basis"},
@@ -340,16 +409,13 @@ def project_native_structured(
             raise BoundaryError("native_structured_input", "public_action_binding_required")
     persistent = observation["persistent"]
     if persistent is not None:
-        persistent = object_fields(
+        persistent_record = object_fields(
             persistent, {"content_schema", "content"}, "native_structured_input.persistent"
-        )["content"]
-    page = observation["interaction"]
-    page = object_fields(
-        page,
-        {"interaction_id", "kind", "stage", "prompt", "content_schema", "content", "capabilities"},
-        "native_structured_input.page",
-    )
-    page = {key: page[key] for key in ("kind", "stage", "prompt", "content")}
+        )
+        _text(persistent_record["content_schema"], empty=True)
+        _public_json(persistent_record["content"])
+        persistent = persistent_record["content"]
+    page = _interaction(observation["interaction"])
     roots = {
         "CURRENT_PERSISTENT": persistent,
         "CURRENT_PAGE": page,

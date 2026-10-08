@@ -32,7 +32,9 @@ from stpd.fullrun.native_structured_inputs import (
     project_native_structured,
 )
 from stpd.fullrun.native_training_sequences import parse_native_training_dataset
+from stpd.models.native_structured_scorer import NativeStructuredScorer
 from stpd.models.structured_engine import StructuredTrainingEngine
+from stpd.models.structured_m2 import StructuredM2
 from stpd.models.structured_training import StructuredTrainingConfig
 from stpd.native_code_scope import (
     PATHS,
@@ -154,6 +156,122 @@ def origin():
         "a" * 40,
         hashlib.sha256((ROOT / "uv.lock").read_bytes()).hexdigest(),
     )
+
+
+MALFORMED_PUBLIC_FIELDS = [
+    ("interaction_id", lambda o: o["interaction"].update(interaction_id=False)),
+    ("kind", lambda o: o["interaction"].update(kind=123)),
+    ("stage", lambda o: o["interaction"].update(stage=False)),
+    ("prompt", lambda o: o["interaction"].update(prompt=123)),
+    ("content_scalar", lambda o: o["interaction"].update(content="not-a-content-object")),
+    ("content_context_missing", lambda o: o["interaction"].update(content={"surface": {}})),
+    ("content_surface_null", lambda o: o["interaction"]["content"].update(surface=None)),
+    ("content_context_null", lambda o: o["interaction"]["content"].update(context=None)),
+    ("content_schema", lambda o: o["interaction"].update(content_schema=123)),
+    ("capabilities_container", lambda o: o["interaction"].update(capabilities="pick")),
+    ("capabilities_null_member", lambda o: o["interaction"].update(capabilities=[None])),
+    ("persistent_schema", lambda o: o["persistent"].update(content_schema=123)),
+    ("persistent_content_null", lambda o: o["persistent"].update(content=None)),
+    ("referent_schema", lambda o: o["referents"][0].update(properties_schema=123)),
+    ("referent_kind", lambda o: o["referents"][0].update(kind=False)),
+    ("referent_role", lambda o: o["referents"][0].update(role=123)),
+    ("referent_label", lambda o: o["referents"][0].update(label=True)),
+    ("referent_visible", lambda o: o["referents"][0]["state"].update(visible=1)),
+    ("referent_enabled", lambda o: o["referents"][0]["state"].update(enabled=0)),
+    ("referent_selected", lambda o: o["referents"][0]["state"].update(selected=0)),
+    ("referent_focused", lambda o: o["referents"][0]["state"].update(focused=0)),
+    ("referent_basis", lambda o: o["referents"][0]["state"].update(observation_basis=True)),
+    ("catalog_ref", lambda o: o["catalog"].update(catalog_ref=123)),
+    ("catalog_order", lambda o: o["catalog"].update(ordering_semantics=123)),
+    ("catalog_access_container", lambda o: o["catalog"].update(access_methods="catalog")),
+    ("catalog_access_member", lambda o: o["catalog"].update(access_methods=[123])),
+    ("catalog_scope", lambda o: o["catalog"].update(scope_id=False)),
+    ("observed_at", lambda o: o.update(observed_at=123)),
+    ("revision_long_overflow", lambda o: o.update(revision=1 << 63)),
+]
+
+
+@pytest.mark.parametrize(
+    "name,mutate", MALFORMED_PUBLIC_FIELDS, ids=[case[0] for case in MALFORMED_PUBLIC_FIELDS]
+)
+def test_declared_dto_domains_reject_before_dataset_qualification_or_memory(name, mutate):
+    value = copy.deepcopy(source())
+    value["runs"][0]["steps"] = value["runs"][0]["steps"][:1]
+    step = value["runs"][0]["steps"][0]
+    mutate(step["observation"])
+    with pytest.raises(BoundaryError):
+        parse_native_training_dataset(json_bytes(value))
+    model = NativeStructuredScorer(
+        model=StructuredM2(seed=0), model_id="a" * 64, weights_sha256="b" * 64
+    )
+    before = model.memory.clone()
+    with pytest.raises(BoundaryError):
+        model.propose_consume(offer(step["observation"], step["catalog"]))
+    assert model.pending is None and torch.equal(model.memory, before)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("verb", 123),
+        ("subject_role", False),
+        ("arguments", "role"),
+        ("availability_basis", 123),
+    ],
+)
+def test_capability_scalar_and_container_domains_are_not_legality_rules(field, value):
+    observation, actions = snapshot()
+    capability = {
+        "verb": "pick",
+        "subject_role": None,
+        "arguments": [],
+        "availability_basis": "public",
+    }
+    capability[field] = value
+    observation["interaction"]["capabilities"] = [capability]
+    with pytest.raises(BoundaryError):
+        project_native_structured(observation, actions)
+
+
+@pytest.mark.parametrize(
+    "argument", [None, {"role": 123, "required": True}, {"role": "card", "required": 1}]
+)
+def test_capability_arguments_require_their_declared_record_and_boolean(argument):
+    observation, actions = snapshot()
+    observation["interaction"]["capabilities"] = [
+        {
+            "verb": "pick",
+            "subject_role": None,
+            "arguments": [argument],
+            "availability_basis": "public",
+        }
+    ]
+    with pytest.raises(BoundaryError):
+        project_native_structured(observation, actions)
+
+
+def test_dto_nullable_fields_generic_json_nodes_and_unknown_valid_words_are_preserved():
+    observation, actions = snapshot()
+    observation["interaction"].update(
+        kind="future-public-kind",
+        stage="future-public-stage",
+        prompt=None,
+        content={"surface": [None, True, 7], "context": False},
+    )
+    observation["interaction"]["capabilities"] = [
+        {
+            "verb": "future-public-verb",
+            "subject_role": None,
+            "arguments": [{"role": "future-role", "required": False}],
+            "availability_basis": "future-public-basis",
+        }
+    ]
+    observation["referents"][0].update(properties_schema=None, properties=None, label=None)
+    observation["persistent"]["content"] = [None, True, 7, "public"]
+    frame = project_native_structured(observation, actions)
+    assert frame.action_ids == tuple(action["action_id"] for action in actions)
+    observation["persistent"] = None
+    project_native_structured(observation, actions)
 
 
 def test_native_units_feed_same_engine_with_empty_advance_and_no_fake_wait():

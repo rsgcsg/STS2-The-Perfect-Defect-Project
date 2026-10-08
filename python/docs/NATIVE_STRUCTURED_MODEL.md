@@ -148,3 +148,12 @@ paused/resumed weights/W/AdamW/budgets, immutable Model/checkpoint publication,
 closed export and the fresh fixed stdio Agent action/empty-C loop. They do not
 qualify native recording training, Human origin, installed Runtime behavior,
 model quality, provider execution or scientific independence.
+
+Native conformance admission checks the declared Core DTO scalar/container
+shape before typed tree projection: interaction content/capabilities and their
+argument records, persistent content, referent nullable schema/state, catalog
+metadata/method strings and observation scalar fields. Generic public JsonNode
+content remains generic; nullable fields retain their actual domains. Malformed
+kind/stage or metadata cannot receive a synthetic conformance stamp or reach
+training. Online rejection also preserves W and leaves no pending Consume.
+These checks validate input shape, not native legality or scientific admission.
