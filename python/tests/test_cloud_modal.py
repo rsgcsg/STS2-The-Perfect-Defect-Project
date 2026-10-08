@@ -4,6 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from modal import exception as modal_exceptions
 from test_artifact_store_v1 import PRODUCER
 
 from spireagent.json_boundary import BoundaryError
@@ -52,7 +53,8 @@ def sdk_for(function, selected):
         return function.call
 
     return SimpleNamespace(
-        Function=SimpleNamespace(from_name=lookup), FunctionCall=SimpleNamespace(from_id=from_id)
+        Function=SimpleNamespace(from_name=lookup), FunctionCall=SimpleNamespace(from_id=from_id),
+        exception=modal_exceptions,
     )
 
 
@@ -72,12 +74,64 @@ def test_submit_serialize_poll_and_cancel_use_exact_target_and_receipt() -> None
     assert provider.poll(handle) == receipt
     provider.cancel(handle)
     assert call.cancelled and len(function.requests) == 1
-    call.error = TimeoutError()
+    call.error = modal_exceptions.TimeoutError()
     assert provider.poll(handle) is None
     call.error = RuntimeError("signed-URL-should-never-be-exposed")
     with pytest.raises(BoundaryError, match="result_unavailable") as error:
         provider.poll(handle)
     assert "signed-URL" not in str(error.value)
+
+
+def test_sdk_poll_timeout_preserves_exact_handle_until_result_without_resubmission() -> None:
+    selected = target()
+    request = ComputeRequest("training", "a" * 64, PRODUCER, "attempt-1")
+    receipt = ComputeReceipt(
+        request.request_id, request.attempt_id, request.kind, request.input_id,
+        PRODUCER, "candidate_prepared", "b" * 64,
+    )
+    call = FakeCall(
+        {"target_id": selected.target_id, "receipt": receipt.to_dict()},
+        modal_exceptions.TimeoutError("no result yet"),
+    )
+    function = FakeFunction(call)
+    provider = ModalProvider(selected, sdk=sdk_for(function, selected))
+    handle = provider.submit(request)
+    saved = handle.to_dict()
+    restored = provider.restore_handle(saved)
+    for _ in range(2):
+        assert provider.poll(restored) is None
+        assert restored.to_dict() == saved
+    call.error = None
+    assert provider.poll(restored) == receipt
+    assert len(function.requests) == 1 and not call.cancelled
+
+
+@pytest.mark.parametrize(
+    "failure,code",
+    [
+        (modal_exceptions.FunctionTimeoutError, "execution_timeout"),
+        (TimeoutError, "result_unavailable"),
+        (ConnectionError, "result_unavailable"),
+        (RuntimeError, "result_unavailable"),
+    ],
+)
+def test_execution_timeout_and_transport_failures_remain_explicit_without_resubmission(
+    failure, code,
+) -> None:
+    selected = target()
+    request = ComputeRequest("training", "a" * 64, PRODUCER, "attempt-1")
+    call = FakeCall(error=failure("signed-URL-should-never-be-exposed"))
+    function = FakeFunction(call)
+    provider = ModalProvider(selected, sdk=sdk_for(function, selected))
+    handle = provider.submit(request)
+    saved = handle.to_dict()
+    for _ in range(2):
+        with pytest.raises(BoundaryError) as error:
+            provider.poll(handle)
+        assert error.value.code == code
+        assert "signed-URL" not in str(error.value)
+        assert handle.to_dict() == saved
+    assert len(function.requests) == 1 and not call.cancelled
 
 
 def test_ambiguous_submit_is_never_retried() -> None:
