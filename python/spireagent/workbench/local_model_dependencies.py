@@ -18,6 +18,8 @@ def require_local_models(owner: str) -> None:
 def recipe_dependencies_available(recipe_id: str) -> bool:
     if recipe_id == "structured-m2-cpu-v2":
         return find_spec("torch") is not None
+    if recipe_id == "structured-m2-cpu-v3":
+        return all(find_spec(name) is not None for name in ("torch", "safetensors"))
     return local_models_available()
 
 
