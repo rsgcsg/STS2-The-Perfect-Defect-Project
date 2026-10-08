@@ -41,8 +41,9 @@ Unsupported identity denies new IDs, with no serializer/reflection-copy fallback
 This approved prototype remains a portability liability and needs independent review
 and exact final loaded-framework qualification before promotion.
 
-Fresh source validation: Host Release compiled with zero warnings/errors; all 477
-Host tests and all 86 portable tests passed with zero skips. Portable coverage includes
+Fresh source validation before the owner-lifetime repair: Host Release compiled
+with zero warnings/errors; all 477 Host tests and all 86 portable tests passed
+with zero skips. Portable coverage includes
 17 lifecycle cases and 16 request/arena/codec cases: original serializer parity for
 escaped Unicode/raw numeric/nested property/null/date values, unsupported ABI before
 admission, exact envelope boundaries, charged loans through expiry and blocked IO,
@@ -60,3 +61,26 @@ owner. Cross-repository pins, component versions/BOM, install, game launch, sour
 recording integration, SDK final-revoke integration, model/training/research admission
 and Human/runtime qualification are outside this source packet. Tests here are source
 and exact-game-ABI checks; they do not prove native input, native Commit or G2/V1 readiness.
+
+Independent review of `0582258bb1d36e68842927c8edd8e041943f22ec` found two source gaps:
+public Renew did not invoke its bound idle/liveness touch, and early service activity
+checks could race closure cleanup before Current/Attach/Retain allocated resources.
+The successor validates Renew ownership/cursor before its existing Authority touch,
+and makes final no-touch admission and closure cleanup use the actual Hub/Store gates.
+Current pin ownership is one optional field on the existing capture Entry, with no new
+client registry. Source and foreign pins remain independent. Actual Host composition
+always binds the check; unbound standalone portable owners preserve their old semantics.
+
+The reviewer's original four probe sources were rerun unchanged against the actual
+Host project and all passed. The repair additionally exercises valid and invalid Renew,
+closed Store admission without retained charge, and a real admission-wins barrier:
+A closes after Store admission, B's pin and admitted catalog loan keep bytes charged,
+and the independent Source capture survives A cleanup. Final source checks and exact
+successor identity are recorded in the private frozen repair packet.
+
+The final owner-repair source compiled with zero warnings/errors. All 482 Host and
+94 portable tests passed with zero skips. Five Host barriers include all three
+closed-before-allocation cases plus Attach and Retain admission winning before
+closure: cleanup sees late resources, the service cannot return a stale success,
+and B's subscription/pin/controller lease survives. These are source tests against
+the actual queue, Hub, Store and Authority, not a loaded game or Human qualification.

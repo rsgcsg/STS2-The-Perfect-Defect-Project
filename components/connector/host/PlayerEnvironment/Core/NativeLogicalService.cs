@@ -100,7 +100,18 @@ internal sealed partial class NativeLogicalService : IDisposable
         Store = new(limits: Limits); projector = new(Limits);
         Hub = new(Store, Coverage, limits: Limits, controls: new ControlDependency());
         executor = new(requests, this);
-        if (clientLifetime is not null) Hub.BindClientLifetime(clientLifetime);
+        var lifetime = clientLifetime ?? new OwnedClientLifetimeDependency();
+        Hub.BindClientLifetime(lifetime, this.clientActive);
+        Store.BindClientLifetime(lifetime, this.clientActive);
+    }
+    private sealed class OwnedClientLifetimeDependency : INativeLogicalClientLifetimeDependency
+    {
+        public bool TryTouchActiveClient(string clientSessionId) => MutationControlRuntime.TryTouchActiveClient(clientSessionId);
+    }
+    internal void ExpireClient(string originalClient, string reason)
+    {
+        Hub.ExpireClient(originalClient, reason);
+        Store.ExpireClient(originalClient);
     }
     internal void Initialize()
     {
@@ -226,7 +237,13 @@ internal sealed partial class NativeLogicalService : IDisposable
     internal NativeLogicalRetainReply Retain(NativeLogicalRetainRequest request)
     {
         RequireActiveClient(request.ClientSessionId);
-        return Store.RetainPublic(request);
+        var reply = Store.RetainPublic(request);
+        if (!clientActive(request.ClientSessionId))
+        {
+            ExpireClient(request.ClientSessionId, "client_session_expired");
+            RequireActiveClient(request.ClientSessionId);
+        }
+        return reply;
     }
     internal async Task<NativeLogicalCurrentReply> CurrentAsync(NativeLogicalCurrentRequest request, CancellationToken cancellation = default)
     {
@@ -251,6 +268,11 @@ internal sealed partial class NativeLogicalService : IDisposable
                         RequireActiveClient(request.ClientSessionId);
                         var reply = projector.Current(prepared.Facts, request, prepared.Time, Environment.TickCount64 + Limits.RetentionMs,
                             () => Environment.TickCount64, Store, prepared.Continuity);
+                        if (!clientActive(request.ClientSessionId))
+                        {
+                            ExpireClient(request.ClientSessionId, "client_session_expired");
+                            RequireActiveClient(request.ClientSessionId);
+                        }
                         if (reply.Capture is { } value)
                             AcceptBasis(prepared, request.EagerScope.Contains("catalog") ? Store.Catalog(value.CaptureId) : null);
                         if (reply.Status == "source_capture_incomplete") reply = reply with { Reason = prepared.Facts.SourceCompleteness.Missing.FirstOrDefault() ?? reply.Reason };
@@ -270,6 +292,11 @@ internal sealed partial class NativeLogicalService : IDisposable
         RequireActiveClient(request.ClientSessionId);
         SynchronizeRun();
         var initial = Hub.AttachWithInitialReservation(request, Bootstrap);
+        if (!clientActive(request.ClientSessionId))
+        {
+            ExpireClient(request.ClientSessionId, "client_session_expired");
+            RequireActiveClient(request.ClientSessionId);
+        }
         if (initial.InitialReservation is { } reservation) CaptureReservation(reservation);
         return initial.Attach;
     }

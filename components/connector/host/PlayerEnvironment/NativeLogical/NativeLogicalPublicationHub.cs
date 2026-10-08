@@ -135,6 +135,8 @@ public sealed partial class NativeLogicalPublicationHub : IDisposable
             }
             if (request.DeliveryMode == "full_reference" && request.EagerScope.Count != 4) return new("unsupported_scope", null);
             if (subscriptions.Count >= limits.MaxSubscriptions || subscriptions.Values.Count(s => s.Client == request.ClientSessionId) >= limits.MaxClientSubscriptions) return new("capacity_exceeded", null);
+            if (!IsActiveClient(request.ClientSessionId))
+                throw new NativeLogicalException("client_session_expired", "The original client closed before subscription admission.");
             long deadline = checked(clock() + limits.RetentionMs);
             var value = new NativeLogicalSubscription(NativeLogicalWire.Id("subscription"), NativeLogicalWire.Id("scope"),
                 Array.AsReadOnly(request.EagerScope.ToArray()), Array.AsReadOnly(accepted.ToArray()), request.DeliveryMode,
@@ -157,6 +159,11 @@ public sealed partial class NativeLogicalPublicationHub : IDisposable
             catch (NativeLogicalException e) when (e.Code == "subscription_expired")
             { return new(NativeLogicalContract.RenewSchema, NativeLogicalContract.Profile, "subscription_expired", null, null, null, null, null, "subscription_expired"); }
             ulong after = Parse(sub, afterCursor);
+            if (!TryTouchClient(clientSessionId))
+            {
+                RemoveSubscription(subscriptionId, "subscription_expired");
+                return new(NativeLogicalContract.RenewSchema, NativeLogicalContract.Profile, "subscription_expired", null, null, null, null, null, "subscription_expired");
+            }
             sub.Deadline = checked(clock() + limits.RetentionMs);
             sub.Value = sub.Value with { ExpiresAt = DateTimeOffset.UtcNow.AddMilliseconds(limits.RetentionMs) };
             return new(NativeLogicalContract.RenewSchema, NativeLogicalContract.Profile, "renewed", sub.Value,

@@ -18,7 +18,7 @@ internal static partial class PlayerEnvironmentService
         MutationControlRuntime.ClientClosed += closure =>
         {
             owner.ClientClosed(closure);
-            if (NativeLogicalOwner.IsValueCreated) NativeLogical.Hub.ExpireClient(closure.ClientSessionId, closure.Reason);
+            if (NativeLogicalOwner.IsValueCreated) NativeLogical.ExpireClient(closure.ClientSessionId, closure.Reason);
         };
         return owner;
     }

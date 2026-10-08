@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Linq;
+using STS2Connector.Authority;
 using STS2Connector.PlayerEnvironment;
 using STS2Connector.PlayerEnvironment.NativeLogical;
 using STS2Connector.PlayerEnvironment.Protocol;
@@ -15,15 +16,17 @@ public sealed class NativeLogicalPublicationProfileTests
         internal int Captures;
         internal readonly NativeLogicalService Owner;
         private readonly RequestNamespace requests = RequestTestDriver.Namespace();
+        private readonly MutationControllerCoordinator authority = new("runtime", enableDeadlineTimer: false);
         internal Fixture()
         {
             Owner = new(() => { Captures++; throw new InvalidOperationException("No native capture belongs to this missing observation."); },
-                () => "run", requests, executionAllowed: () => true);
+                () => "run", requests, executionAllowed: () => true, clientActive: authority.IsActiveClient);
             Owner.Initialize();
         }
         internal void Install() => Owner.InstallPublicationProfile(NativeLogicalPublicationProfile.ProfileId,
             NativeLogicalPublicationProfile.DefinitionSha256, NativeLogicalPublicationProfile.RequiredCoverage.Reverse().ToArray());
-        internal NativeLogicalSubscription Attach(string reader) => Owner.Hub.Attach(new(reader,
+        internal string Client(string instance) => authority.Register(new(instance, "profile-test", "Profile test", "1")).Client.ClientSessionId;
+        internal NativeLogicalSubscription Attach(string reader) => Owner.Hub.Attach(new(Client(reader),
             NativeLogicalProjector.ScopeFields, new[] { NativeLogicalService.Coverage[0] }, "scoped")).Subscription!;
         public void Dispose() { Owner.Dispose(); requests.Dispose(); }
     }
@@ -44,7 +47,7 @@ public sealed class NativeLogicalPublicationProfileTests
     {
         using var f = new Fixture();
         Assert.Null(f.Owner.Hub.ReadDeclaration().PublicationProfileId);
-        var reply = f.Owner.Hub.Attach(new("reader", NativeLogicalProjector.ScopeFields,
+        var reply = f.Owner.Hub.Attach(new(f.Client("reader"), NativeLogicalProjector.ScopeFields,
             NativeLogicalPublicationProfile.RequiredCoverage, "full_reference"));
         Assert.Equal("coverage_insufficient", reply.Status); Assert.Null(reply.Subscription);
         var partial = NativeLogicalPublicationProfile.RequiredCoverage.Take(12).ToArray();
@@ -64,7 +67,7 @@ public sealed class NativeLogicalPublicationProfileTests
         Assert.Equal(NativeLogicalPublicationProfile.DefinitionSha256, actual.PublicationProfileDefinitionSha256);
         Assert.Equal(NativeLogicalPublicationProfile.RequiredCoverage, actual.Coverage.Take(13));
         Assert.Equal("unsupported", actual.Coverage.Single(s => s.SourceSeam == "other_native_exposures").Coverage);
-        var reply = f.Owner.Hub.Attach(new("reader", NativeLogicalProjector.ScopeFields,
+        var reply = f.Owner.Hub.Attach(new(f.Client("reader"), NativeLogicalProjector.ScopeFields,
             NativeLogicalPublicationProfile.RequiredCoverage, "full_reference"));
         Assert.Equal("attached", reply.Status);
         Assert.Equal(NativeLogicalPublicationProfile.RequiredCoverage, reply.Subscription!.Coverage);
@@ -93,7 +96,7 @@ public sealed class NativeLogicalPublicationProfileTests
     {
         using var f = new Fixture(); f.Install(); var sub = f.Attach("reader");
         f.Owner.PublishMissing("native_reward_catalog", "RefreshOptions_failed", "native_callback_failed");
-        var batch = f.Owner.Hub.Events("reader", sub.SubscriptionId, sub.ScopeId, sub.StartingCursor);
+        var batch = f.Owner.Hub.Events(f.Client("reader"), sub.SubscriptionId, sub.ScopeId, sub.StartingCursor);
         var observed = Assert.Single(batch.Events).Event;
         Assert.Equal("1", observed.PublicationIndex); Assert.Equal("1", observed.SourceIndex);
         Assert.Equal("native_reward_catalog", observed.SourceSeam);
@@ -111,8 +114,8 @@ public sealed class NativeLogicalPublicationProfileTests
         var original = f.Owner.Hub.ReadDeclaration(); f.Install(); var current = f.Attach("new-reader");
         f.Owner.PublishMissing("native_owner_ready", "native_failed", "native_callback_failed");
         f.Owner.PublishMissing("native_reward_catalog", "native_failed", "native_callback_failed");
-        var oldRows = f.Owner.Hub.Events("old-reader", old.SubscriptionId, old.ScopeId, old.StartingCursor).Events;
-        var newRows = f.Owner.Hub.Events("new-reader", current.SubscriptionId, current.ScopeId, current.StartingCursor).Events;
+        var oldRows = f.Owner.Hub.Events(f.Client("old-reader"), old.SubscriptionId, old.ScopeId, old.StartingCursor).Events;
+        var newRows = f.Owner.Hub.Events(f.Client("new-reader"), current.SubscriptionId, current.ScopeId, current.StartingCursor).Events;
         Assert.Equal("sampled", oldRows[0].Event.Coverage);
         Assert.Equal("unsupported", oldRows[1].Event.Coverage);
         Assert.All(newRows, row => Assert.Equal("complete_at_seam", row.Event.Coverage));

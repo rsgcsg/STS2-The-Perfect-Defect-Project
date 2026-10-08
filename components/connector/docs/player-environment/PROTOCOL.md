@@ -23,7 +23,8 @@ POST /api/player-environment/evidence/native-pages/sessions/{session_id}/return|
 ## Original client lifetime and final revocation (source foundation)
 
 An original client has a 30-minute idle deadline measured by the Host's
-monotonic clock. Valid registration or owned control operations extend it;
+monotonic clock. Valid registration, owned control operations and explicit
+owned passive subscription renewal extend it;
 invalid lease attempts, passive control watches (including capacity denial),
 and passive state/result lookups do not. Expiry permanently
 closes that original session and revokes only its owned lease, including while
@@ -101,6 +102,29 @@ pre-input selected-action body may use the existing truthful `action=null` rejec
 shell: request/snapshot IDs and the namespace's original immutable request retain
 the submitted bound-action identifier. No partial NativeAction is invented and no
 input or text effect begins. After input starts, action facts cannot be omitted.
+
+## Passive owner admission and original closure (source candidate)
+
+Public subscription Renew validates the exact original client/subscription/scope and
+cursor before touching the bound Authority idle deadline. Wrong ownership, expired
+subscription or malformed cursor cannot touch. A permanently closed original client
+cannot renew: its matching subscription is removed and the reply is
+`subscription_expired`. No renewal acquires a controller or changes another lease.
+
+Actual Host Hub and Store bind the same lifetime dependency and no-touch Authority
+activity predicate. Attach and public Retain recheck that original client under their
+resource-owner gate immediately before allocation. Current's retained seal does the
+same under Store. Post-Authority closure cleanup takes those same gates, so it cannot
+finish first and then miss a later resource allocation. Final service checks reject a
+response when closure has already won. Native reads/JSON encoding never hold Authority.
+
+An initial standalone Current pin identifies its original client in existing Store
+entry metadata. Closure drops that client's initial pins and public reader handles;
+other client handles and existing catalog/byte readers retain their original reference
+counts and backing-byte charge. Publication/source captures and private source/Hub pins
+keep their separate owner semantics. Source/recording accounting still belongs to its
+own producer. Explicit unbound standalone portable owners retain their prior semantics;
+production NativeLogicalService always binds the real original-client activity check.
 
 ## Snapshot
 
