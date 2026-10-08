@@ -7,6 +7,8 @@ using STS2Connector.PlayerEnvironment.Protocol;
 
 namespace STS2Connector.PlayerEnvironment.NativeLogical;
 
+using NativeLogicalCapture = global::STS2Connector.PlayerEnvironment.Protocol.NativeLogicalCapture;
+
 /// <summary>The controller owner validates and atomically subscribes under its own authority lock.
 /// Revocation callbacks must run after releasing that lock. Disposing a watch never releases a lease.</summary>
 public interface INativeLogicalControlDependency

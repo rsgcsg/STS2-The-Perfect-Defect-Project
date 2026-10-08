@@ -858,6 +858,118 @@
       "subscription_id": "subscription-fixture",
       "detached": false,
       "reason": null
+    },
+    "current_partial": {
+      "schema": "sts2.player-environment/native-logical-current-1",
+      "input_profile": "native-logical-v1",
+      "status": "partial",
+      "context": {
+        "schema": "sts2.player-environment/native-logical-context-1",
+        "input_profile": "native-logical-v1",
+        "observation_ref": "snapshot-fixture",
+        "capture_ref": "capture-partial-fixture",
+        "game_continuity_id": null,
+        "stream_generation": "stream-fixture",
+        "publication_cursor": null
+      },
+      "capture": {
+        "schema": "sts2.player-environment/native-logical-capture-1",
+        "capture_id": "capture-partial-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "input_profile": "native-logical-v1",
+        "session": {
+          "runtime_instance_id": "runtime-fixture",
+          "environment_fingerprint": "environment-fixture"
+        },
+        "stream_generation": "stream-fixture",
+        "scope_id": "scope-partial-fixture",
+        "capture_ordinal": "1",
+        "captured_at": "1970-01-01T00:00:00+00:00",
+        "expires_at": "1970-01-01T00:02:00+00:00",
+        "byte_count": 1369,
+        "sha256": "4723d3657f6eed94e34b2584ce02efa52be2c7eda94afabe1c5bc5b639f31d5b",
+        "read_cursor": "opaque-partial-read-fixture"
+      },
+      "retention": null,
+      "reason": "scope_omission"
+    },
+    "current_partial_observation": {
+      "protocol_version": "1.0.0",
+      "schema": "sts2.player-environment/native-logical-observation-1",
+      "input_profile": "native-logical-v1",
+      "snapshot_id": "snapshot-fixture",
+      "revision": 1,
+      "observed_at": "1970-01-01T00:00:00+00:00",
+      "status": "settling",
+      "persistent": null,
+      "interaction": {
+        "interaction_id": "interaction-fixture",
+        "kind": "selector",
+        "stage": "ready",
+        "prompt": null,
+        "content_schema": "public-surface-fixture",
+        "content": {
+          "surface": {
+            "kind": "selector",
+            "focus_referent_id": null
+          },
+          "context": {
+            "kind": "public-fixture"
+          }
+        },
+        "capabilities": []
+      },
+      "referents": [],
+      "completeness": {
+        "status": "partial",
+        "included": [
+          "interaction"
+        ],
+        "missing": [
+          "persistent",
+          "referents",
+          "catalog"
+        ],
+        "full_reference_complete": false
+      },
+      "session": {
+        "runtime_instance_id": "runtime-fixture",
+        "environment_fingerprint": "environment-fixture"
+      },
+      "information_policy": {
+        "id": "fair-player",
+        "scope": "entered-native-page",
+        "includes_hidden_information": false,
+        "unknown_field_behavior": "explicit"
+      },
+      "owner_occurrence": {
+        "owner_id": "owner-fixture",
+        "occurrence_id": "occurrence-fixture",
+        "binding_revision": "binding-fixture",
+        "focus_referent_id": null,
+        "focus_occurrence": null
+      },
+      "catalog": {
+        "catalog_ref": "catalog-partial-fixture",
+        "snapshot_id": "snapshot-fixture",
+        "status": "not_captured",
+        "total_count": null,
+        "digest": null,
+        "ordering_semantics": "native_public_order",
+        "access_methods": [],
+        "scope_id": "scope-partial-fixture",
+        "stream_generation": "stream-fixture"
+      }
+    },
+    "current_partial_read": {
+      "schema": "sts2.player-environment/native-logical-read-1",
+      "capture_id": "capture-partial-fixture",
+      "sha256": "4723d3657f6eed94e34b2584ce02efa52be2c7eda94afabe1c5bc5b639f31d5b",
+      "offset": 0,
+      "total_bytes": 1369,
+      "data_base64": "eyJwcm90b2NvbF92ZXJzaW9uIjoiMS4wLjAiLCJzY2hlbWEiOiJzdHMyLnBsYXllci1lbnZpcm9ubWVudC9uYXRpdmUtbG9naWNhbC1vYnNlcnZhdGlvbi0xIiwiaW5wdXRfcHJvZmlsZSI6Im5hdGl2ZS1sb2dpY2FsLXYxIiwic25hcHNob3RfaWQiOiJzbmFwc2hvdC1maXh0dXJlIiwicmV2aXNpb24iOjEsIm9ic2VydmVkX2F0IjoiMTk3MC0wMS0wMVQwMDowMDowMCswMDowMCIsInN0YXR1cyI6InNldHRsaW5nIiwicGVyc2lzdGVudCI6bnVsbCwiaW50ZXJhY3Rpb24iOnsiaW50ZXJhY3Rpb25faWQiOiJpbnRlcmFjdGlvbi1maXh0dXJlIiwia2luZCI6InNlbGVjdG9yIiwic3RhZ2UiOiJyZWFkeSIsInByb21wdCI6bnVsbCwiY29udGVudF9zY2hlbWEiOiJwdWJsaWMtc3VyZmFjZS1maXh0dXJlIiwiY29udGVudCI6eyJzdXJmYWNlIjp7ImtpbmQiOiJzZWxlY3RvciIsImZvY3VzX3JlZmVyZW50X2lkIjpudWxsfSwiY29udGV4dCI6eyJraW5kIjoicHVibGljLWZpeHR1cmUifX0sImNhcGFiaWxpdGllcyI6W119LCJyZWZlcmVudHMiOltdLCJjb21wbGV0ZW5lc3MiOnsic3RhdHVzIjoicGFydGlhbCIsImluY2x1ZGVkIjpbImludGVyYWN0aW9uIl0sIm1pc3NpbmciOlsicGVyc2lzdGVudCIsInJlZmVyZW50cyIsImNhdGFsb2ciXSwiZnVsbF9yZWZlcmVuY2VfY29tcGxldGUiOmZhbHNlfSwic2Vzc2lvbiI6eyJydW50aW1lX2luc3RhbmNlX2lkIjoicnVudGltZS1maXh0dXJlIiwiZW52aXJvbm1lbnRfZmluZ2VycHJpbnQiOiJlbnZpcm9ubWVudC1maXh0dXJlIn0sImluZm9ybWF0aW9uX3BvbGljeSI6eyJpZCI6ImZhaXItcGxheWVyIiwic2NvcGUiOiJlbnRlcmVkLW5hdGl2ZS1wYWdlIiwiaW5jbHVkZXNfaGlkZGVuX2luZm9ybWF0aW9uIjpmYWxzZSwidW5rbm93bl9maWVsZF9iZWhhdmlvciI6ImV4cGxpY2l0In0sIm93bmVyX29jY3VycmVuY2UiOnsib3duZXJfaWQiOiJvd25lci1maXh0dXJlIiwib2NjdXJyZW5jZV9pZCI6Im9jY3VycmVuY2UtZml4dHVyZSIsImJpbmRpbmdfcmV2aXNpb24iOiJiaW5kaW5nLWZpeHR1cmUiLCJmb2N1c19yZWZlcmVudF9pZCI6bnVsbCwiZm9jdXNfb2NjdXJyZW5jZSI6bnVsbH0sImNhdGFsb2ciOnsiY2F0YWxvZ19yZWYiOiJjYXRhbG9nLXBhcnRpYWwtZml4dHVyZSIsInNuYXBzaG90X2lkIjoic25hcHNob3QtZml4dHVyZSIsInN0YXR1cyI6Im5vdF9jYXB0dXJlZCIsInRvdGFsX2NvdW50IjpudWxsLCJkaWdlc3QiOm51bGwsIm9yZGVyaW5nX3NlbWFudGljcyI6Im5hdGl2ZV9wdWJsaWNfb3JkZXIiLCJhY2Nlc3NfbWV0aG9kcyI6W10sInNjb3BlX2lkIjoic2NvcGUtcGFydGlhbC1maXh0dXJlIiwic3RyZWFtX2dlbmVyYXRpb24iOiJzdHJlYW0tZml4dHVyZSJ9fQ==",
+      "next_cursor": null,
+      "complete": true
     }
   },
   "wire_fixture_note": "Fixed opaque fixture tokens demonstrate shape only; HMAC cursor authorization is tested independently in C#.",
@@ -1691,6 +1803,259 @@
             "evidence": "native_callback_declined"
           }
         ]
+      }
+    },
+    {
+      "name": "current_stale_cannot_carry_captured_refs",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "stale",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": {
+          "retention_handle_id": "retention-fixture",
+          "capture": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "capture-fixture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "runtime-fixture",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:00+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          },
+          "read_cursor": "opaque-fresh-retained-read-fixture",
+          "expires_at": "1970-01-01T00:03:00+00:00"
+        },
+        "reason": "stale"
+      }
+    },
+    {
+      "name": "current_capacity_exceeded_cannot_carry_captured_refs",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "capacity_exceeded",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": {
+          "retention_handle_id": "retention-fixture",
+          "capture": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "capture-fixture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "runtime-fixture",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:00+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          },
+          "read_cursor": "opaque-fresh-retained-read-fixture",
+          "expires_at": "1970-01-01T00:03:00+00:00"
+        },
+        "reason": "capacity_exceeded"
+      }
+    },
+    {
+      "name": "current_source_capture_incomplete_cannot_carry_captured_refs",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "source_capture_incomplete",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": {
+          "retention_handle_id": "retention-fixture",
+          "capture": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "capture-fixture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "runtime-fixture",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:00+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          },
+          "read_cursor": "opaque-fresh-retained-read-fixture",
+          "expires_at": "1970-01-01T00:03:00+00:00"
+        },
+        "reason": "source_capture_incomplete"
+      }
+    },
+    {
+      "name": "current_failed_cannot_carry_captured_refs",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "failed",
+        "context": {
+          "schema": "sts2.player-environment/native-logical-context-1",
+          "input_profile": "native-logical-v1",
+          "observation_ref": "snapshot-fixture",
+          "capture_ref": "capture-fixture",
+          "game_continuity_id": null,
+          "stream_generation": "stream-fixture",
+          "publication_cursor": null
+        },
+        "capture": {
+          "schema": "sts2.player-environment/native-logical-capture-1",
+          "capture_id": "capture-fixture",
+          "snapshot_id": "snapshot-fixture",
+          "input_profile": "native-logical-v1",
+          "session": {
+            "runtime_instance_id": "runtime-fixture",
+            "environment_fingerprint": "environment-fixture"
+          },
+          "stream_generation": "stream-fixture",
+          "scope_id": "scope-fixture",
+          "capture_ordinal": "1",
+          "captured_at": "1970-01-01T00:00:00+00:00",
+          "expires_at": "1970-01-01T00:02:00+00:00",
+          "byte_count": 1519,
+          "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+          "read_cursor": "opaque-read-fixture"
+        },
+        "retention": {
+          "retention_handle_id": "retention-fixture",
+          "capture": {
+            "schema": "sts2.player-environment/native-logical-capture-1",
+            "capture_id": "capture-fixture",
+            "snapshot_id": "snapshot-fixture",
+            "input_profile": "native-logical-v1",
+            "session": {
+              "runtime_instance_id": "runtime-fixture",
+              "environment_fingerprint": "environment-fixture"
+            },
+            "stream_generation": "stream-fixture",
+            "scope_id": "scope-fixture",
+            "capture_ordinal": "1",
+            "captured_at": "1970-01-01T00:00:00+00:00",
+            "expires_at": "1970-01-01T00:02:00+00:00",
+            "byte_count": 1519,
+            "sha256": "99f16482b215b331c1f47e5a76fe7e8c339b70727349dce8348331d55e9e0220",
+            "read_cursor": "opaque-read-fixture"
+          },
+          "read_cursor": "opaque-fresh-retained-read-fixture",
+          "expires_at": "1970-01-01T00:03:00+00:00"
+        },
+        "reason": "failed"
+      }
+    },
+    {
+      "name": "current_partial_requires_real_capture_and_omission_reason",
+      "type": "current",
+      "wire": {
+        "schema": "sts2.player-environment/native-logical-current-1",
+        "input_profile": "native-logical-v1",
+        "status": "partial",
+        "context": null,
+        "capture": null,
+        "retention": null,
+        "reason": null
       }
     }
   ],

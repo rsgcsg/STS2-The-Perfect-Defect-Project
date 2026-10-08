@@ -188,6 +188,14 @@ public sealed class NativeLogicalCoreTests
         Decode<NativeLogicalCatalogPage>("catalog_page"); Decode<NativeLogicalResolve>("resolve"); Decode<NativeLogicalAttachRequest>("attach_request"); Decode<NativeLogicalAttachReply>("attach");
         Decode<NativeLogicalEvent>("event"); Decode<NativeLogicalEventBatch>("event_batch"); Decode<NativeLogicalAwaitReply>("await"); Decode<NativeLogicalResult>("result"); Decode<NativeLogicalObservationContext>("observation_context");
         Decode<NativeLogicalCurrentRequest>("current_request"); Decode<NativeLogicalCurrentReply>("current"); Decode<NativeLogicalCurrentReply>("current_retained"); Decode<NativeLogicalCurrentReply>("current_failed");
+        var partialCurrent = Decode<NativeLogicalCurrentReply>("current_partial"); var partialObservation = Decode<NativeLogicalObservation>("current_partial_observation");
+        var partialRead = Decode<NativeLogicalReadChunk>("current_partial_read"); byte[] partialBytes = Convert.FromBase64String(partialRead.DataBase64);
+        Assert.Equal(partialCurrent.Capture!.Sha256, NativeLogicalWire.Hash(partialBytes)); Assert.Equal(partialCurrent.Capture.ByteCount, partialBytes.Length);
+        Assert.Equal(partialCurrent.Capture.CaptureId, partialRead.CaptureId); Assert.Equal(partialCurrent.Capture.Sha256, partialRead.Sha256);
+        Assert.Equal("partial", partialCurrent.Status); Assert.Equal("scope_omission", partialCurrent.Reason);
+        Assert.False(partialObservation.Completeness.FullReferenceComplete); Assert.Equal(new[] { "interaction" }, partialObservation.Completeness.Included);
+        Assert.Equal(new[] { "persistent", "referents", "catalog" }, partialObservation.Completeness.Missing);
+        Assert.Equal(partialObservation.SnapshotId, NativeLogicalDecoder.Decode<NativeLogicalObservation>(partialBytes).SnapshotId);
         Decode<NativeLogicalRetainRequest>("retain_request"); Decode<NativeLogicalRetainReply>("retain"); Decode<NativeLogicalRetainReply>("retain_expired");
         Decode<NativeLogicalReleaseRequest>("release_request"); Decode<NativeLogicalReleaseReply>("release");
         Decode<NativeLogicalRenewRequest>("renew_request"); Decode<NativeLogicalRenewReply>("renew"); Decode<NativeLogicalRenewReply>("renew_expired");
@@ -437,6 +445,7 @@ public sealed class NativeLogicalCoreTests
         Assert.Equal("stale", stale.Status); Assert.Null(stale.Context); Assert.Null(stale.Capture);
         var partial = projector.Current(Frame(), request with { EagerScope = new[] { "interaction" } }, DateTimeOffset.UnixEpoch, 100, () => now, store);
         Assert.Equal("partial", partial.Status); Assert.Equal("scope_omission", partial.Reason);
+        NativeLogicalDecoder.Decode<NativeLogicalCurrentReply>(NativeLogicalWire.Encode(partial));
         var incomplete = projector.Current(Frame() with { SourceCompleteness = new("partial", new[] { "native_list_items" }) }, request, DateTimeOffset.UnixEpoch, 100, () => now, store);
         Assert.Equal("source_capture_incomplete", incomplete.Status); Assert.Null(incomplete.Capture);
         now = 50;
@@ -504,6 +513,24 @@ public sealed class NativeLogicalCoreTests
         now = 100; store.Sweep(); Assert.Same(captured.Catalog, store.CatalogByReference(reference));
         store.ReleasePublic(new("reader", retention.RetentionHandleId));
         Assert.Equal("expired", Assert.Throws<NativeLogicalException>(() => store.CatalogByReference(reference)).Code); Assert.Equal(0, store.ChargedBytes);
+    }
+
+    [Fact]
+    public void CurrentFailureStatesCannotHideCapturedReferencesOrOmitReasons()
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "native-logical-v1.json")));
+        var sample = doc.RootElement.GetProperty("wire_samples").GetProperty("current_failed");
+        foreach (string status in new[] { "stale", "capacity_exceeded", "source_capture_incomplete", "failed" })
+        {
+            JsonNode valid = JsonNode.Parse(sample.GetRawText())!; valid["status"] = status; valid["reason"] = status;
+            var decoded = NativeLogicalDecoder.Decode<NativeLogicalCurrentReply>(Encoding.UTF8.GetBytes(valid.ToJsonString()));
+            Assert.Null(decoded.Context); Assert.Null(decoded.Capture); Assert.Null(decoded.Retention);
+            valid["reason"] = null;
+            Assert.Equal("invalid_wire", Assert.Throws<NativeLogicalException>(() => NativeLogicalDecoder.Decode<NativeLogicalCurrentReply>(Encoding.UTF8.GetBytes(valid.ToJsonString()))).Code);
+        }
+        JsonNode partial = JsonNode.Parse(doc.RootElement.GetProperty("wire_samples").GetProperty("current_partial").GetRawText())!;
+        partial["reason"] = "source_capture_incomplete";
+        Assert.Equal("invalid_wire", Assert.Throws<NativeLogicalException>(() => NativeLogicalDecoder.Decode<NativeLogicalCurrentReply>(Encoding.UTF8.GetBytes(partial.ToJsonString()))).Code);
     }
 
 }
