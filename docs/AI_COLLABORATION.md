@@ -27,10 +27,13 @@ broad autonomy does not permit silent changes of product goals or evidence claim
 ## Roles and actual access
 
 One local supervisor owns the work queue, architecture decisions, final evidence review
-and integration coordination. Use Sol for bounded complex implementation/native research
-and Luna for bounded reading, independent review or observing an actual task when useful.
-The current owner excludes Astra subagents. Model/tool availability must be observed,
-not inferred from these names. Do not delegate merely to fill slots or hide chains of
+and integration coordination. Owner update, 2026-10-09: new workers default to
+GPT-6.1-Sol with high reasoning, including implementation and independent review.
+Already-running workers may finish their current packets without a model restart.
+Astra is reserved for a material architecture, direction or fundamental-risk review;
+at most two Astra workers may run simultaneously. It is not the ordinary default.
+Model/tool availability must be observed, not inferred from these names.
+Do not delegate merely to fill slots or hide chains of
 workers. The lead may implement, but its own implementation and documentation require a
 separate review just as worker changes do. The author cannot self-accept a candidate.
 

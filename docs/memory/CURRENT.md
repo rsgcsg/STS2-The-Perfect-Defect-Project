@@ -43,21 +43,44 @@ native qualification remain outstanding. The graph/application adapter-identity
 correction (`18dde413`) is also integrated after independent five-configuration
 reproduction; this remains synthetic composition evidence.
 
-Source V2 protocol candidate `ffafc395` is **not accepted**: independent review
-found two cross-language strict-schema discrepancies. Repair and physical native
-input recording remain active. Map global information, held-card dispatch,
-public combat effects/events and remaining special mechanisms are also active.
-One native build/train slot and one game/install owner remain.
+Source V2 protocol repair `447f3008` is independently accepted for its
+source/test scope and integrated. Source3 adds original input ordering,
+capture-scope fences and physical native input; its producer and research
+consumer are under final implementation review. Development composition and
+synthetic C# golden/private-child training tests do not qualify real recordings
+or actual Human data. Source3 is not yet accepted or installed.
 
-A newer Mod candidate was built and installed with rollback preserved, and an
-isolated official-headless Defect A0 diagnostic actually ran. It verified owned
-load/readiness and obtained the initial native observation/catalogue, then failed
-the harness's `map_navigation` versus `native_map` assumption before any
-native-logical submission. Host shutdown returned exit 0 without forced kill.
-Installed artifact `ecc2daff8ff790d2a3d2581025c22aef3890f65019630844ff31a44fd22780d2`
-is older than the current integration source; it does not qualify the newly
-merged packets. No new native-model real-data training or paid provider compute
-has run in this integration phase.
+Map/reward information `2c87dfb3`, native card confirmation `637f2c2c`,
+and exact inspector opening/closing repair `a827029b` are integrated after
+independent review. The pure default ready-summary TaskSpec `b2c2023c` is also
+integrated with scoped source/test acceptance; real package/runtime completion
+remains pending. Public combat logical/presentation fields, special mechanisms,
+L64 and the full retained matrix remain active. One native build/train slot and
+one game/install owner remain.
+
+The exact clean `4ccf41a8` Mod build was installed with rollback preserved:
+artifact `9cf16011b639e8760c7857c113c0ee9362f91cb41f4dbd3370c1c458c8a1fdda`,
+MVID `afa427b4-46f9-48d0-b704-ee07b539a6db`. Later documentation/Python
+integration does not change those installed bytes. The fourth isolated official
+headless Defect A0 SDK browse pilot passed independent receipt review: eight
+native submissions and 26 original complete publications, Map→Deck→Inspect,
+four preview toggles, return to Deck and Map, lease release and Host exit 0.
+Maximum observed C was 16. Private receipt:
+`.local/g2-v1/qualification/4cc-native-sdk-pilot-4/report.json`.
+Earlier failed pilots remain preserved. This is bounded SDK/native evidence,
+not Model, Source3, Human, all-family, 200/500-item or whole-game qualification.
+No new native-model real-data training or paid provider compute has run in this
+integration phase.
+
+The immediate path is accepted Source3 producer/consumer → exact build and
+small real AI-origin recording → existing training/export/register path →
+actual Model/Runtime game canary → minimum Human recording check → larger
+collection/training. Do not wait for every unrelated final gate before the
+first scoped learning/run attempt; do not drop the remaining final obligations.
+The default publication-memory and separate recorded-capture pretraining views,
+explicit derived-target assumptions and ready-summary task scope are fixed in
+the sole specification. Context-truncated training and fresh-run warm starts
+are permitted designs, not currently qualified capabilities.
 
 Read the [data, cloud, Host and model planning update](../plans/BASELINE_DATA_HOST_MODEL_NEXT_2026-10-09.zh-CN.md)
 for the bounded live inventory, current data limitations and optional future

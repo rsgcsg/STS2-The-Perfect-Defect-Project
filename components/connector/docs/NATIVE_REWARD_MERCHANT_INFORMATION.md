@@ -55,7 +55,7 @@ Host tests exercise the actual composition, stale-reference/task guards,
 closed typed capabilities, native ABI, public stock subjects and inherited
 completeness failures. They do not execute a Godot scene. The exact combined
 candidate still requires the owning build/cold-load/canary gates from
-[Testing and Evidence](../../../docs/TESTING.md): opening focus, inspect and
+`docs/TESTING.md` at the project root: opening focus, inspect and
 return, reroll/stock invalidation, whole-catalog retention and no purchase or
 selection from information entry. The separate inspector original/display
 witness repair retains its own verification boundary.

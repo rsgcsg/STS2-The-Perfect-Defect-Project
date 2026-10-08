@@ -1,6 +1,6 @@
 # 当前基线实施规范：完整 G2／V1
 
-版本：v1.1 工作稿，2026-10-08。**实施与验证进行中；完整 G2、V1 均等待用户最终批准。** [执行与验收矩阵](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)管理本轮工作；[原任务表](plans/BASELINE_TASKS.zh-CN.md)保留唯一 19 个 P/E/G/V/R 编号。
+版本：v1.2 工作稿，2026-10-09。**实施与验证进行中；完整 G2、V1 均等待用户最终批准。** [执行与验收矩阵](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md)管理本轮工作；[原任务表](plans/BASELINE_TASKS.zh-CN.md)保留唯一 19 个 P/E/G/V/R 编号。
 
 本文件区分上层不变量、所选交互、具体消费者与验收。历史提案供查证，明确继承的需求不因文件成为历史而取消。冲突在这里和 owning 合同中修正，不通过不断叠加“其余不冲突部分仍有效”解决。规范描述目标及实施选择；实际支持范围看逐项证据。
 
@@ -48,6 +48,8 @@ H/P/A 是逻辑合同，不要求三个进程。共享库保证分页/校验/去
 
 终局区分 `game_outcome_known` 与 `agent_task_complete`；后者在任务要求的 summary/返回菜单完成后才成立。局结束后仍可有当前 summary owner 与导航，不能无条件清空目录。预算停止、断线、未知和进程关闭是任务删失，不是自然胜负。
 
+本轮默认 TaskSpec 为一次标准局至合格、ready 的公开终局总结页，胜负均可自然完成，不要求返回菜单。完整 Agent 在已确认消费的该观察上 Close，保留原 C/context，不为返回菜单制造 N 目标；其他任务终点须另行版本化。TaskSpec 的源码实现、包内组合和实际原生终局证据分别验收。
+
 ## 4. 读取、事件和操作合同
 
 新 profile/wire 由 Connector owning 合同单一维护，先核具体字段/样例再实现。旧 snapshot/text-v1/text-v2/S0 的字段、数据和资格保持原义；新客户端无静默 fallback。
@@ -90,7 +92,11 @@ Agent 状态恢复绑定模型/InputSpec/profile/generation、已消费前缀和
 
 ProjectionSpec 固定原件、目标 profile、字段、行为粒度、取得/消费、reset、假设、mask 和排除分母。允许明确有损/重表达监督，不冒充保真 Human 时机模仿。旧数据可只适用局部 N；缺浏览/preview/前缀时不补完整 sequence。用途/Gold/lineage 继续由既有 owner 判定。
 
-划分保存来源组、共同起点/模板、重复关联、角色/场景/长度/候选分布；不同 seed/process/run ID 本身不证明科学独立性。训练拟合、开发选择、测试用途分别登记。N/Z/O/RL TargetSpec 与模型输入分离；Z 只用有合格后果依据的实际分支，O 固定 metric/unit/horizon、known/censor、continuation policy 和来源。E4/V1 除接口、资格和反例，还完成原定有界训练尝试/比较并报告数据真实不足、负面结果与成本；缺 required 数据或未执行比较保持未完成。无需全笛卡尔积或每变体一万条，科学优势及进一步规模研究仍属 R2。不能伪造标签补数量。
+默认 Source3 publication-memory 视图只用有序公开 publication 推进 W；原始输入前 basis 与前一必需 publication 的 NativeUnit/一致性及完整 C 精确匹配时才提供 N，评分不重复推进 W。不匹配 basis 保留在原件及排除分母内，不偷偷加入默认历史。另一个显式 recorded-capture 预训练视图可消费可靠 input basis，须独立 ProjectionSpec/TargetSpec/recipe 身份，并报告与部署曝光的差异。两者复用同一训练引擎。
+
+缺口或暂停使连续历史证明中断。严格 recipe 排除未证明后缀；需要保留后续可靠片段时，可另设 context-truncated/W0 研究视图，明确截断和初始状态假设，并保持原 whole-run/use/split 关联。这不是原生新局或无缝恢复；该视图未实现、验证前不能按现有 recipe 接纳。混合来源原件完整保存，来源目标 mask 不删除上下文、暴露史或用途关联。
+
+划分保存来源组、共同起点/模板、重复关联、角色/场景/长度/候选分布；不同 seed/process/run ID 本身不证明科学独立性。训练拟合、开发选择、测试用途分别登记。N/Z/O/RL TargetSpec 与模型输入分离；直接事实型 Z 只用有合格后果依据的实际分支；推断、假设、teacher、合成或弱监督目标允许另设 TargetSpec，固定生成方法、所据事实、置信/适用限制及评价办法，不改原件或冒充实测反事实。O 固定 metric/unit/horizon、known/censor、continuation policy 和来源。E4/V1 除接口、资格和反例，还完成原定有界训练尝试/比较并报告数据真实不足、负面结果与成本；缺 required 数据或未执行比较保持未完成。无需全笛卡尔积或每变体一万条，科学优势及进一步规模研究仍属 R2。不能伪造标签补数量。
 
 ## 7. 学习与共同应用服务
 
@@ -99,6 +105,8 @@ ProjectionSpec 固定原件、目标 profile、字段、行为粒度、取得/�
 一个 training service/journal 负责 operation/attempt。静态可信 recipe/Agent 注册选择代码内准备、执行、验证、导出与加载适配；请求或下载 manifest 不能指定模块、shell、任意程序。legacy/token/memory/structured 保留旧身份，公共 owner 不复制全部领域编排。研究验证不进入 storage 或 UI。
 
 新 checkpoint 在安全边界保存模型、optimizer、RNG、累计步数、数据位置、W/reset/历史及指标，绑定 run/input/config/producer。v1 final-only checkpoint 不自动变成可恢复产物。resume 显式创建 attempt，先核原执行停止、用途和累计预算；unknown 先 reconcile 原 attempt，不隐式重训。cancel ack、worker terminal、领域验证、selected result 不混用。
+
+低质量数据预训练后转入新数据是一个新训练 run，可显式从旧模型权重初始化，保留父模型、原/新数据与用途链；默认重新初始化 optimizer、RNG、数据 cursor 和 W。不能把不同数据或目标塞入旧 checkpoint resume。此能力须由现有训练 owner 实现并单独验证，不因设计允许就宣称可用。
 
 库、CLI、API、外部和游戏内工作台调用同一用例：采集/import/verify、固定数据、prepare/train/cancel/resume、分析、export/download/register、load/run/pause/end/report、环境与场景。GUI 读能力和状态，不猜模型 schema 或自行启动子进程。独立训练/上传不因关面板/退出游戏消失；游戏绑定推理按 exact 实例停止。
 
@@ -111,6 +119,8 @@ ProjectionSpec 固定原件、目标 profile、字段、行为粒度、取得/�
 游戏内核心任务须可发现、操作、监测并返回结果，外部窗口保留同一任务上下文。独立后台服务、配置和登录沿原 authority；界面内不运行训练。安装、二次启动、更新、配对回退与数据保全有 actual-user-path 证据；单个浏览器首页链接不满足整个工作台要求。
 
 ## 9. 实施、验证与提交审批
+
+优先跑通小规模真实录制→训练→实际 Agent，再扩大至约 10k；小样本可靠前不要求 Human 大量重录。其余必需机制和最终验收继续推进，不作为首次限定训练/运行的统一前置。
 
 先恢复完整要求台账并核事实，再封共享合同/样例；E1 native、E2 capture/data、E3 Agent、E4/E5 学习/资源和 E6 展示按稳定接缝并行。真实反例否定抽象时先修 owner/消费者合同，再修代码，不靠私有字段、旁路 UI 或未知重试补洞。
 
