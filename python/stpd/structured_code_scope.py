@@ -104,6 +104,7 @@ INFERENCE_PATHS = tuple(sorted((*_SHARED_PATHS,
     "stpd/policy/structured_port.py",
 )))
 TRAINING_PATHS = tuple(sorted((*_SHARED_PATHS,
+    "stpd/structured_profiles.py",
     "spireagent/storage/__init__.py",
     "spireagent/storage/blobs.py",
     "spireagent/storage/local.py",
@@ -162,6 +163,8 @@ def exporter_runtime() -> dict[str, str]:
 
 
 def run_code_scope(schema: object) -> str:
+    if schema == "stpd/native-structured-m2-run-v1":
+        return "native-structured-numerical-training-code-closure-v1"
     if schema == "stpd/structured-m2-run-v2":
         return LEGACY_SCOPE
     if schema == SCOPED_RUN_SCHEMA:
@@ -170,6 +173,8 @@ def run_code_scope(schema: object) -> str:
 
 
 def checkpoint_schema(scope: str) -> str:
+    if scope == "native-structured-numerical-training-code-closure-v1":
+        return "stpd/native-structured-m2-training-checkpoint-v1"
     if scope == LEGACY_SCOPE:
         return "stpd/structured-m2-training-checkpoint-v2"
     if scope == TRAINING_SCOPE:

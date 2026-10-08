@@ -32,7 +32,6 @@ from ..canonical import semantic_hash
 from ..fullrun.structured_sequences import (
     MAX_SOURCE_BYTES,
     StructuredDataset,
-    parse_structured_dataset,
 )
 from ..models.structured_engine import (
     MAX_CHECKPOINT_BYTES,
@@ -51,6 +50,16 @@ from ..structured_code_scope import (
     checkpoint_schema,
     exporter_runtime,
     run_code_scope,
+)
+from ..structured_profiles import (
+    NATIVE_INPUT_SCHEMA,
+    NATIVE_MODEL_SCHEMA,
+    NATIVE_REPORT_SCHEMA,
+    NATIVE_SCOPE,
+    NATIVE_SOURCE_SCHEMA,
+    parse_dataset,
+    qualification,
+    source_verification,
 )
 from ..structured_workload_contracts import MAX_RESUME_ANCESTRY
 from .checkpoint_codec import decode_checkpoint
@@ -78,7 +87,7 @@ def prepare_structured_workload(
     code_scope: str = LEGACY_SCOPE,
 ) -> Manifest:
     """Freeze caller-authorized source/config/execution identity; numerical work is separate."""
-    if parse_structured_dataset(dataset.source_bytes) != dataset:
+    if parse_dataset(dataset.source_bytes, code_scope) != dataset:
         raise BoundaryError("structured_workload", "source_projection_mismatch")
     return prepare_structured_run(
         store, dataset, producer, config, source_id=source_id, operation_id=operation_id,
@@ -135,7 +144,8 @@ def _load(
     ):
         raise BoundaryError("structured_workload", "training_source_binding_mismatch")
     raw = _read_payload(store, payload, MAX_SOURCE_BYTES)
-    dataset = parse_structured_dataset(raw)
+    dataset = parse_dataset(raw, scope)
+    native = scope == NATIVE_SCOPE
     if (
         dataset.source_sha256 != info["source_sha256"]
         or training.parameters.value().get("source_sha256") != dataset.source_sha256
@@ -146,19 +156,31 @@ def _load(
     ):
         raise BoundaryError("structured_workload", "source_config_code_or_runtime_changed")
     expected_training_info = {
-        "schema": "stpd/structured-m2-training-input-v1",
+        "schema": NATIVE_INPUT_SCHEMA if native else "stpd/structured-m2-training-input-v1",
         "source_sha256": dataset.source_sha256,
         "projection": info["execution_identity"]["projection"],
         "splits": {
             split: [item.run_id for item in dataset.runs if item.split == split]
             for split in ("train", "dev", "test")
         },
-        "qualification": "engineering_only",
+        "qualification": qualification(dataset),
+        **({"input_spec": dataset.input_spec.value(),
+            "verification_identity": source_verification(dataset),
+            "code_identity": info["execution_identity"]["code_identity"]}
+           if native and dataset.input_spec else {}),
     }
     if json_bytes(training.parameters.value()) != json_bytes(expected_training_info) or info[
         "torch_version"
     ] != str(torch.__version__):
         raise BoundaryError("structured_workload", "training_input_metadata_mismatch")
+    if native and source.parameters.value() != {
+        "schema": NATIVE_SOURCE_SCHEMA, "source_kind": dataset.source_kind,
+        "source_sha256": dataset.source_sha256, "qualification": qualification(dataset),
+        "input_spec": expected_training_info["input_spec"],
+        "verification_identity": source_verification(dataset),
+        "code_identity": info["execution_identity"]["code_identity"],
+    }:
+        raise BoundaryError("structured_workload", "native_source_manifest_binding")
     experiment = store.get_manifest(run.parent("experiment"))
     _roles(experiment, {"training_input"}, set())
     if (
@@ -168,8 +190,10 @@ def _load(
         or json_bytes(experiment.parameters.value())
         != json_bytes(
             {
-                "schema": "stpd/experiment-v1",
-                "purpose": "s0_agent_teacher_imitation",
+                "schema": ("stpd/native-structured-experiment-v1"
+                           if native else "stpd/experiment-v1"),
+                "purpose": ("native_synthetic_teacher_imitation"
+                            if native else "s0_agent_teacher_imitation"),
                 "graph_id": info["execution_identity"]["graph_id"],
                 "config": asdict(config),
             }
@@ -211,7 +235,7 @@ def _checkpoint_manifest(
     store: ArtifactStore, checkpoint_id: str, run: Manifest, training: Manifest
 ) -> Manifest:
     saved = store.get_manifest(checkpoint_id)
-    scoped = run_code_scope(run.parameters.value().get("schema")) == TRAINING_SCOPE
+    scoped = run_code_scope(run.parameters.value().get("schema")) in {TRAINING_SCOPE, NATIVE_SCOPE}
     parent_roles = {"run", "training_input"}
     if any(parent.role == "resume_checkpoint" for parent in saved.parents):
         parent_roles.add("resume_checkpoint")
@@ -333,7 +357,8 @@ def _completed(
     from ..policy.structured_export import load_structured_package
 
     scope = run_code_scope(run.parameters.value().get("schema"))
-    scoped = scope == TRAINING_SCOPE
+    scoped = scope in {TRAINING_SCOPE, NATIVE_SCOPE}
+    native = scope == NATIVE_SCOPE
     _checkpoint_manifest(store, result.parent("checkpoint"), run, training)
     # A publication-phase resume may export already-complete numerical state
     # from an earlier writer's immutable checkpoint. Bind the actual exporter
@@ -365,7 +390,7 @@ def _completed(
             "state": "completed",
             "partition": "train",
             "source_sha256": dataset.source_sha256,
-            "qualification": "engineering_only",
+            "qualification": qualification(dataset),
             "attempt": attempt,
         }
         or result.parent("run") != run.artifact_id
@@ -386,15 +411,17 @@ def _completed(
             "graph_id",
             "qualification",
             "attempt",
-        },
+        } | ({"input_spec", "agent_spec", "state_format_version", "code_identity",
+              "source", "provenance"} if native else set()),
         "structured_completed_model",
     )
     if (
         model.kind != "model"
         or model.producer != completed_producer
-        or model_info["schema"] != (SCOPED_MODEL_SCHEMA if scoped else MODEL_SCHEMA)
+        or model_info["schema"] != (NATIVE_MODEL_SCHEMA if native else
+                                     SCOPED_MODEL_SCHEMA if scoped else MODEL_SCHEMA)
         or model_info["graph_id"] != engine.identity["graph_id"]
-        or model_info["qualification"] != "engineering_only"
+        or model_info["qualification"] != qualification(dataset)
         or model_info["attempt"] != attempt
         or model.parent("run") != run.artifact_id
         or model.parent("checkpoint") != result.parent("checkpoint")
@@ -416,7 +443,16 @@ def _completed(
             if payload.media_type != media:
                 raise BoundaryError("structured_workload", "model_media_type_mismatch")
             (package / name).write_bytes(_read_payload(store, payload, maximum))
-        metadata, restored = load_structured_package(package)
+        if native:
+            from ..policy.native_structured_export import (
+                load_native_package,
+                require_native_model_package,
+            )
+
+            metadata, restored = load_native_package(package)
+            require_native_model_package(model, metadata)
+        else:
+            metadata, restored = load_structured_package(package)
         if scoped and metadata.get("provenance") != {
             "training_producer": run.producer.to_dict(),
             "export_producer": completed_producer.to_dict(),
@@ -427,13 +463,17 @@ def _completed(
             raise BoundaryError("structured_workload", "completed_export_provenance_mismatch")
         if (
             metadata["model_id"] != model_info["model_id"]
-            or metadata["source"]
-            != {
+            or metadata["source"] != ({
+                "kind": dataset.source_kind, "data_sha256": dataset.source_sha256,
+                "source_artifact_id": training.parent("source"),
+                "training_input_id": training.artifact_id,
+                "verification_identity": source_verification(dataset),
+            } if native else {
                 "source_revision": run.producer.source_revision,
                 "data_sha256": dataset.source_sha256,
                 "source_kind": dataset.source_kind,
                 "teacher_sha256": semantic_hash(dataset.teacher.value()),
-            }
+            })
             or json_bytes(metadata["training"])
             != json_bytes({"config": asdict(config), "metrics": engine.metrics()})
             or any(
@@ -469,7 +509,8 @@ def _completed(
     if type(seconds) not in {int, float} or not math.isfinite(seconds) or seconds < 0:
         raise BoundaryError("structured_workload", "report_attempt_seconds_mismatch")
     expected_report = {
-        "schema": SCOPED_REPORT_SCHEMA if scoped else "stpd/structured-m2-training-report-v2",
+        "schema": (NATIVE_REPORT_SCHEMA if native else SCOPED_REPORT_SCHEMA if scoped
+                   else "stpd/structured-m2-training-report-v2"),
         "producer": completed_producer.to_dict(),
         **({"training_producer": run.producer.to_dict()} if scoped else {}),
         "source_sha256": dataset.source_sha256,
@@ -503,7 +544,8 @@ def execute_structured_workload(
     started = time.perf_counter()
     run, training, dataset, config = _load(store, request, producer)
     scope = run_code_scope(run.parameters.value().get("schema"))
-    scoped = scope == TRAINING_SCOPE
+    scoped = scope in {TRAINING_SCOPE, NATIVE_SCOPE}
+    native = scope == NATIVE_SCOPE
     if scoped:
         if (not isinstance(attempt_producer, Producer) or attempt_producer.uv_lock_sha256 !=
                 run.parameters.value()["execution_identity"]["code_identity"]["dependency_lock_sha256"]):
@@ -760,20 +802,35 @@ def execute_structured_workload(
 
         with tempfile.TemporaryDirectory(prefix="structured-export-") as folder:
             package = Path(folder) / "agent"
-            metadata = export_structured_package(
-                engine.model.eval(),
-                package,
-                source_revision=producer.source_revision,
-                data_sha256=dataset.source_sha256,
-                source_kind=dataset.source_kind,
-                teacher_sha256=semantic_hash(dataset.teacher.value()),
-                training={"config": asdict(config), "metrics": engine.metrics()},
-                code_scope=INFERENCE_SCOPE if scoped else LEGACY_SCOPE,
-                provenance=({"training_producer": run.producer.to_dict(),
-                             "export_producer": publisher.to_dict(), "run_id": run.artifact_id,
-                             "training_input_id": training.artifact_id,
-                             "checkpoint_id": checkpoint_id} if scoped else None),
-            )
+            if native:
+                from ..policy.native_structured_export import export_native_trained_package
+
+                metadata = export_native_trained_package(engine.model.eval(), package,
+                    producer=publisher, data_sha256=dataset.source_sha256,
+                    source={"kind": dataset.source_kind, "data_sha256": dataset.source_sha256,
+                            "source_artifact_id": training.parent("source"),
+                            "training_input_id": training.artifact_id,
+                            "verification_identity": source_verification(dataset)},
+                    training={"config": asdict(config), "metrics": engine.metrics()},
+                    provenance={"training_producer": run.producer.to_dict(),
+                        "export_producer": publisher.to_dict(), "run_id": run.artifact_id,
+                        "training_input_id": training.artifact_id, "checkpoint_id": checkpoint_id,
+                        "export_runtime": exporter_runtime()})
+            else:
+                metadata = export_structured_package(
+                    engine.model.eval(),
+                    package,
+                    source_revision=producer.source_revision,
+                    data_sha256=dataset.source_sha256,
+                    source_kind=dataset.source_kind,
+                    teacher_sha256=semantic_hash(dataset.teacher.value()),
+                    training={"config": asdict(config), "metrics": engine.metrics()},
+                    code_scope=INFERENCE_SCOPE if scoped else LEGACY_SCOPE,
+                    provenance=({"training_producer": run.producer.to_dict(),
+                                 "export_producer": publisher.to_dict(), "run_id": run.artifact_id,
+                                 "training_input_id": training.artifact_id,
+                                 "checkpoint_id": checkpoint_id} if scoped else None),
+                )
             payloads = []
             for role, filename, media in (
                 ("package_manifest", "model.json", "application/json"),
@@ -784,6 +841,14 @@ def execute_structured_workload(
                     store.put_payload(role, io.BytesIO((package / filename).read_bytes()), media)
                 )
         guard()
+        if native:
+            from ..policy.native_structured_export import native_model_parameters
+
+            model_parameters = native_model_parameters(metadata, request.attempt_id)
+        else:
+            model_parameters = {"schema": SCOPED_MODEL_SCHEMA if scoped else MODEL_SCHEMA,
+                "model_id": metadata["model_id"], "graph_id": engine.identity["graph_id"],
+                "qualification": "engineering_only", "attempt": request.attempt_id}
         model = Manifest(
             "model",
             publisher,
@@ -793,19 +858,12 @@ def execute_structured_workload(
                 Parent("training_input", training.artifact_id),
             ),
             tuple(payloads),
-            FrozenObject.of(
-                {
-                    "schema": SCOPED_MODEL_SCHEMA if scoped else MODEL_SCHEMA,
-                    "model_id": metadata["model_id"],
-                    "graph_id": engine.identity["graph_id"],
-                    "qualification": "engineering_only",
-                    "attempt": request.attempt_id,
-                }
-            ),
+            FrozenObject.of(model_parameters),
         )
         store.publish(model)
         report = {
-            "schema": SCOPED_REPORT_SCHEMA if scoped else "stpd/structured-m2-training-report-v2",
+            "schema": (NATIVE_REPORT_SCHEMA if native else SCOPED_REPORT_SCHEMA if scoped
+                   else "stpd/structured-m2-training-report-v2"),
             "run_id": run.artifact_id,
             "training_input_id": training.artifact_id,
             "checkpoint_id": checkpoint_id,
@@ -840,7 +898,7 @@ def execute_structured_workload(
                     "state": "completed",
                     "partition": "train",
                     "source_sha256": dataset.source_sha256,
-                    "qualification": "engineering_only",
+                    "qualification": qualification(dataset),
                     "attempt": request.attempt_id,
                 }
             ),
