@@ -20,7 +20,9 @@ internal enum NativeInputStageKind
     PotionPopupInput,
     PotionTargetConfirmInput,
     MerchantFocus,
-    MerchantConfirmInput
+    MerchantConfirmInput,
+    InspectionReturnControl,
+    CardInspectionOpen
 }
 
 internal enum LegacyNativeInputDisposition
