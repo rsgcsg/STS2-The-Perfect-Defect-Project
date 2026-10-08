@@ -364,7 +364,7 @@ export class PlayerEnvironmentRestClient {
     }
     let encodedByteCount = 0;
     let statusCode = 0;
-    const raw = await this.request(path, init, true, { ...options, maxResponseBytes,
+    const raw = await this.request(path, init, operation === "submit" || operation === "result", { ...options, maxResponseBytes,
       onResponseBytes: bytes => { encodedByteCount = bytes; }, onResponseStatus: status => { statusCode = status; } });
     return { raw, encodedByteCount, statusCode };
   }
@@ -409,8 +409,7 @@ export class PlayerEnvironmentRestClient {
       && (value.schema === "sts2.player-environment/receipt-1"
         || value.schema === TEXT_MENU_RESULT_SCHEMA
         || value.schema === TEXT_MENU_V2_RESULT_SCHEMA
-        || native !== undefined && typeof value.schema === "string" && value.schema.startsWith("sts2.player-environment/native-logical-")
-          && value.schema !== "sts2.player-environment/native-logical-error-1");
+        || native !== undefined && value.schema === "sts2.player-environment/native-logical-result-1");
     if (!response.ok && !(acceptReceiptOnError && isReceipt)) {
       throw new PlayerEnvironmentHttpError(
         `Player Environment request failed with HTTP ${response.status}: ${safeMessage(value)}`,

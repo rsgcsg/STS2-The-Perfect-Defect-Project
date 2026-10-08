@@ -81,4 +81,20 @@ describe("native logical synthetic HTTP boundary", () => {
     const client = new PlayerEnvironmentRestClient("http://127.0.0.1:15526", 2000, (async () => new Response("{}", { headers: { "content-length": "10000" } })) as typeof fetch);
     await expect(client.nativeLogicalRequest("capabilities", undefined, { maxResponseBytes: 100 })).rejects.toThrow(/byte budget/u);
   });
+
+  it("preserves terminal action receipts on HTTP errors without promoting failed read responses", async () => {
+    const source = nativeScenario();
+    const failedRead = new PlayerEnvironmentRestClient("http://127.0.0.1:15526", 2000,
+      (async () => new Response(JSON.stringify(source.fixture.wire_samples.capabilities), { status: 500 })) as typeof fetch);
+    await expect(failedRead.nativeLogicalRequest("capabilities")).rejects.toThrow(/HTTP 500/u);
+    const result = source.fixture.wire_samples.result!;
+    const failedAction = new PlayerEnvironmentRestClient("http://127.0.0.1:15526", 2000,
+      (async () => new Response(JSON.stringify(result), { status: 409 })) as typeof fetch);
+    const reply = await failedAction.nativeLogicalRequest("result", { request_id: String(result.request_id) });
+    expect(reply.statusCode).toBe(409);
+    expect(reply.raw).toEqual(result);
+    const wrongReceipt = new PlayerEnvironmentRestClient("http://127.0.0.1:15526", 2000,
+      (async () => new Response(JSON.stringify(source.fixture.wire_samples.capabilities), { status: 409 })) as typeof fetch);
+    await expect(wrongReceipt.nativeLogicalRequest("result", { request_id: "original" })).rejects.toThrow(/HTTP 409/u);
+  });
 });
