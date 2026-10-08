@@ -44,6 +44,9 @@ public sealed class SourceNativeProducerTests
         internal string Surface = "title";
         internal Action? OnDispatch;
         internal int Dispatches, SourceRegistrations;
+        internal Action? OnCapture;
+        internal readonly object PhysicalOwner = new();
+        internal int PhysicalMatchCount = 1;
         internal readonly MutationControllerCoordinator Controller = new("runtime-fixture", enableDeadlineTimer: false);
         internal readonly MutationClientRegistrationResult client;
         private readonly MutationLease lease;
@@ -113,14 +116,18 @@ public sealed class SourceNativeProducerTests
         }
         internal TextMenuFrame Frame()
         {
+            OnCapture?.Invoke();
             var page = new PlayerEnvironmentSnapshot("1.0.0", PlayerEnvironmentContract.SnapshotSchema, "fixture-source", 1, DateTimeOffset.UnixEpoch,
                 "interactive", null, new("interaction", Surface, "ready", null, "fixture-surface",
                     new(new JsonObject { ["kind"] = Surface }, new JsonObject { ["kind"] = "fixture-context" }), Array.Empty<PlayerEnvironmentInteractionCapability>()),
                 Array.Empty<PlayerEnvironmentReferent>(), new("sts2.player-environment/bound-actions-1", "complete", 0, 0, 65536, "native", Array.Empty<PlayerEnvironmentBoundAction>()),
                 Array.Empty<PlayerEnvironmentReadOpportunity>(), new("complete", "public", "complete", Array.Empty<string>(), Array.Empty<string>()),
                 new("runtime-fixture", "environment-fixture"), new("player_visible_v1", "current_page", false, "omit"));
-            return new(page, Surface, new[] { new TextMenuLeaf("binding-" + Surface, "root", "confirm", "Confirm", null,
-                Array.Empty<PlayerEnvironmentBoundActionArgument>(), () => { Dispatches++; OnDispatch?.Invoke(); return NativeInputResult.Delivered("synthetic_native_callback"); }) }) { GameContinuityId = Continuity };
+            var leaves = Enumerable.Range(0, Math.Max(1, PhysicalMatchCount)).Select(index => new TextMenuLeaf("binding-" + Surface + "-" + index,
+                "root", "confirm", "Confirm", null, Array.Empty<PlayerEnvironmentBoundActionArgument>(),
+                () => { Dispatches++; OnDispatch?.Invoke(); return NativeInputResult.Delivered("synthetic_native_callback"); },
+                PhysicalMatchCount == 0 ? null : new TextMenuNativeWitnessBinding(PhysicalOwner, null, new Dictionary<string, object>(StringComparer.Ordinal)))).ToArray();
+            return new(page, Surface, leaves) { GameContinuityId = Continuity };
         }
         private static PlayerEnvironmentCapabilitiesResponse Capabilities() => new(PlayerEnvironmentContract.ProtocolVersion, TextMenuContract.SnapshotSchema,
             PlayerEnvironmentContract.ActionSchema, TextMenuContract.ResultSchema, PlayerEnvironmentContract.ControlSchema, "implemented",
@@ -180,7 +187,7 @@ public sealed class SourceNativeProducerTests
         if (!string.IsNullOrEmpty(golden)) CopyGolden(bundle, Path.GetFullPath(golden));
 
     }
-    private static void CopyGolden(string source, string output)
+    internal static void CopyGolden(string source, string output)
     {
         Directory.CreateDirectory(output);
         foreach (var path in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))

@@ -1,9 +1,10 @@
 # Source recording v3: ordered original input bases
 
-Status: E2 contract candidate, 2026-10-09, based on accepted protocol Source2
+Status: E2 Source/test implementation candidate, 2026-10-09, based on accepted protocol Source2
 `447f30084765cd662afbdb744f30479b18cbc41e` and the independent Source order audit.
-This document freezes the new wire for consumer implementation. Producer, physical
-hooks, independent acceptance and native runtime qualification remain separate.
+The wire received independent acceptance at `2d1b1b84`; the shared implementation
+and physical typed-hook composition require their own independent review. Native
+runtime, physical coverage and non-interference qualification remain separate.
 
 One existing Source store, epoch ledger, worker, serial Connector projector,
 auditor and bundle packer select v2 or v3 through narrow format adapters. V2 bytes,
@@ -121,6 +122,22 @@ dedup scope around its original leaf.Dispatch; an unrelated later physical
 invocation is admitted normally. Source close turns pending original inputs
 unknown without changing their actor, epoch, ordinal or basis seal.
 
+The physical composition forwards through the existing CardStart/CardPlay,
+EndTurn/FTUE, Map, potion, generated-choice, selector and semantic UI patches.
+It adds no second Harmony patch. Native Source prefix admission runs before the
+Human-only admission gate. Source-only Postfix/finalizer handling never enters
+Human observer/causal bookkeeping, including an original callback after profile
+replacement. Existing overlapping selector observers share one original opaque
+invocation rather than emitting another Source root.
+
+Delivery is proved by an exact requested GameAction's OnEnqueued, a synchronous
+card factory/holder/held-operation match, or an existing positive native selector
+state-change/accepted callback. A generic void or Task return without such native
+acceptance stays unknown. Private witness absence remains unmapped and duplicate
+private witnesses remain ambiguous against the complete original C. Neither
+unknown nor a missing private mapping is silently upgraded into a training label.
+This candidate does not claim exact physical mapping for every native family.
+
 ## Evidence API and consumer merge
 
 The new public Evidence API is `SourceSessionBundleV3`,
@@ -158,3 +175,12 @@ copies/scratch, two-second original deadline, two retiring epochs, 256 epochs an
 three-second close barrier grace. Source/test acceptance precedes exact build,
 install/load/non-interference and a small physical canary. V3 format capability
 does not qualify native coverage or Human origin and does not approve G2/V1.
+
+The actual SourceNative worker/producer tests generate both protocol and ordered
+physical synthetic bundles under Evidence fixtures `source_session_v3` and
+`source_session_v3_ordered`. The ordered physical case retains same-cut original
+actor/epoch ownership with terminal rows2,1; both unsafe native acquisition cases
+emit original-position missing accounting. Encoder-only backlog, copy capacity,
+original encoding timeout, held disk, Pause, exact carrier replacement fencing,
+protocol lexical dedup, zero/many mapping and pending Close are exercised on the
+actual producer/worker paths. These source/test fixtures are not real game data.

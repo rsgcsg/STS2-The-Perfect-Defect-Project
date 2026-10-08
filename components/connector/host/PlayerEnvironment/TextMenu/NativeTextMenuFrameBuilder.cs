@@ -279,6 +279,15 @@ internal static class NativeTextMenuFrameBuilder
                                 new Dictionary<string, object>(StringComparer.Ordinal)
                                 {
                                     ["target"] = exactTarget
+                                }),
+                            // TryPlayCard's original native operand is the exact
+                            // Creature, while the unchanged UI witness retains
+                            // its NCreature target control. Neither is public.
+                            NativeSourceWitness = new TextMenuNativeWitnessBinding(
+                                play, card,
+                                new Dictionary<string, object>(StringComparer.Ordinal)
+                                {
+                                    ["target"] = exactTarget.Entity
                                 })
                         });
                     }

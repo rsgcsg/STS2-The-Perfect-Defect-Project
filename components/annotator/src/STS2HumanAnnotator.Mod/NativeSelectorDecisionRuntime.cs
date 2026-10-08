@@ -1,5 +1,6 @@
 using STS2Connector.PlayerEnvironment.Witness;
 using STS2HumanAnnotator.Core;
+using STS2Platform.NativeFoundation;
 
 namespace STS2HumanAnnotator.Mod;
 
@@ -12,17 +13,34 @@ internal static partial class RecorderRuntime
         ProcessLocalNativeMatch Match, CurrentDecisionFrame Pre,
         DecisionOccurrenceIdentity? Parent, string ActionId);
 
+    internal sealed record SelectorInputHandle(SelectorInput? Human, bool IsSource = false,
+        NativeSourceInputInvocation? SourceInvocation = null, object? SourceOwner = null,
+        string? SourceMechanism = null, SelectorInputHandle? PreviousSource = null);
+
     [ThreadStatic] private static SelectorInput? _selectorInput;
     [ThreadStatic] private static bool _selectorInputStaged;
     [ThreadStatic] private static object? _selectorInputOwner;
     [ThreadStatic] private static HumanActionOccurrenceEvidence? _selectorInputAttempt;
     [ThreadStatic] private static string? _selectorInputFailure;
     internal static bool SelectorInputOwns(object owner) => _selectorInputStaged && _selectorInputAttempt != null && ReferenceEquals(_selectorInputOwner, owner);
-    internal static bool SelectorInputActive => _selectorInputStaged;
+    internal static bool SelectorInputActive => _selectorInputStaged || SourceSelectorActive;
 
-    internal static SelectorInput? BeginSelectorInput(
-        object owner, string mechanism, object? subject, params string[] operations)
+    internal static SelectorInputHandle? BeginSelectorInput(
+        object owner, string mechanism, object? subject, params string[] operations) =>
+        BeginSelectorInputCore(owner, mechanism, subject, operations, null);
+    internal static SelectorInputHandle? BeginSelectorInputWithSourceVerb(object owner, string mechanism,
+        object? subject, string sourceVerb, string[] operations) => BeginSelectorInputCore(owner, mechanism, subject, operations, sourceVerb);
+    private static SelectorInputHandle? BeginSelectorInputCore(object owner, string mechanism, object? subject,
+        string[] operations, string? sourceVerb)
     {
+        if (IsSourceRecording)
+        {
+            var previous = sourceSelectorInput;
+            var token = IsOrderedSourceProfile ? NativeSourceInputProvider.Begin(new(sourceVerb ?? "unknown", owner, subject,
+                new Dictionary<string, object>(StringComparer.Ordinal), mechanism, mechanism)) : null;
+            var original = new SelectorInputHandle(null, true, token, owner, mechanism, previous);
+            sourceSelectorInput = original; return original;
+        }
         if (!AcceptingNewWitnesses() || SelectorInputActive)
             return null;
         _selectorInputStaged = true;
@@ -90,7 +108,7 @@ internal static partial class RecorderRuntime
                 new ProcessLocalObservedAction(matches[0].BoundAction!.Verb, subject, new Dictionary<string, object>()),
                 frame, environment, matches[0], pre, parent, actionId);
             _selectorInput = input;
-            return input;
+            return new SelectorInputHandle(input);
         }
         catch (Exception exception)
         {
@@ -99,8 +117,16 @@ internal static partial class RecorderRuntime
         }
     }
 
-    internal static void EndSelectorInput(SelectorInput? input, bool accepted, bool terminal)
+    internal static void EndSelectorInput(SelectorInputHandle? handle, bool accepted, bool terminal, bool sourceAcceptanceProven = false)
     {
+        if (handle?.IsSource == true)
+        {
+            if (sourceAcceptanceProven) NativeSourceInputProvider.Accepted(handle.SourceInvocation);
+            NativeSourceInputProvider.Finish(handle.SourceInvocation);
+            if (ReferenceEquals(sourceSelectorInput, handle)) sourceSelectorInput = handle.PreviousSource;
+            return;
+        }
+        var input = handle?.Human;
         if (input == null)
         {
             if (_selectorInputStaged && accepted && _selectorInputAttempt != null)

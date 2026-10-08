@@ -273,7 +273,7 @@ internal sealed partial class NativeLogicalService
         {
             AssertMainThread();
             using var nativeFreeze = BeginSourceNativeFreeze();
-            NativeLogicalWire.Text(witness.NativeMechanism, 128); NativeLogicalWire.Text(witness.ExpectedNativeActionType, 128);
+            NativeLogicalWire.Text(witness.Verb, 128); NativeLogicalWire.Text(witness.NativeMechanism, 128); NativeLogicalWire.Text(witness.ExpectedNativeActionType, 128);
             var boundary = ReadSourceBoundary(recorder);
             long deadline = checked(Environment.TickCount64 + Limits.EncodingDeadlineMs);
             var token = recorder.Sink?.AdmitInput(new(NativeLogicalWire.Id("physical_input"), recorder.ClientId, "",
@@ -305,8 +305,8 @@ internal sealed partial class NativeLogicalService
                     var leaves = currentNative!.Leaves;
                     physicalMatches = leaves.Select((leaf, index) => (leaf, index)).Where(pair =>
                     {
-                        var native = pair.leaf.NativeWitness;
-                        return native != null && ReferenceEquals(native.Owner, physicalWitness.Owner)
+                        var native = pair.leaf.NativeSourceWitness ?? pair.leaf.NativeWitness;
+                        return pair.leaf.Verb == physicalWitness.Verb && native != null && ReferenceEquals(native.Owner, physicalWitness.Owner)
                             && ReferenceEquals(native.Subject, physicalWitness.Subject)
                             && native.Arguments.Count == physicalWitness.Arguments.Count
                             && native.Arguments.All(argument => physicalWitness.Arguments.TryGetValue(argument.Key, out var operand)

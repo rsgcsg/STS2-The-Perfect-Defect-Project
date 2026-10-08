@@ -857,12 +857,12 @@ internal static partial class RecorderRuntime
 
     internal static NativeUiScopeEntry TryEnterCardScope(NCardPlay owner, CardModel card, Creature? target)
     {
-        if (!AcceptingNewWitnesses() || SelectorInputActive) return default;
         var arguments = new Dictionary<string, object>(StringComparer.Ordinal);
-        ProcessLocalObservedAction observed;
-        if (target != null)
-            arguments["target"] = target;
-        observed = new ProcessLocalObservedAction("play", card, arguments);
+        if (target != null) arguments["target"] = target;
+        var observed = new ProcessLocalObservedAction("play", card, arguments);
+        if (TryEnterSourceInputScope("NCardPlay.TryPlayCard", nameof(PlayCardAction), owner, observed, out var source,
+            target == null ? "confirm_card" : "confirm_target")) return source;
+        if (!AcceptingNewWitnesses() || SelectorInputActive) return default;
         return TryEnterScope(
             "native_card_play_ui",
             nameof(PlayCardAction),
@@ -976,6 +976,10 @@ internal static partial class RecorderRuntime
         PotionModel potion,
         Creature? target)
     {
+        var sourceArguments = new Dictionary<string, object>(StringComparer.Ordinal);
+        if (target != null) sourceArguments["target"] = target;
+        if (TryEnterSourceInputScope("PotionModel.EnqueueManualUse", nameof(UsePotionAction), potion,
+            new("use_potion", potion, sourceArguments), out var source)) return source;
         ArmedPotionUse? armed;
         lock (Gate)
         {
@@ -1082,7 +1086,7 @@ internal static partial class RecorderRuntime
                 "select",
                 screen,
                 holder.CardModel,
-                holder));
+                holder), sourceOwner: screen);
 
     internal static NativeUiScopeEntry TryEnterGeneratedChoiceSkipScope(
         NChooseACardSelectionScreen screen) =>
@@ -1096,10 +1100,12 @@ internal static partial class RecorderRuntime
             occurrence: GeneratedChoiceOccurrence(
                 "NChooseACardSelectionScreen.OnSkipButtonReleased",
                 "skip",
-                screen));
+                screen), sourceOwner: screen);
 
-    internal static void ObserveGeneratedChoiceCard(CardModel card) =>
-        ObserveAcceptedUiAction(
+    internal static void ObserveGeneratedChoiceCard(CardModel card, NativeSourceInputInvocation? sourceInvocation = null)
+    {
+        if (sourceInvocation != null) { NativeSourceInputProvider.Accepted(sourceInvocation); return; }
+        ObserveAcceptedSemanticUiAction(
             "NChooseACardSelectionScreen.SelectHolder",
             new ProcessLocalObservedAction(
                 "select",
@@ -1111,9 +1117,12 @@ internal static partial class RecorderRuntime
                 NativeWitnessIdentity.Get(card, "card"),
                 new Dictionary<string, string>(StringComparer.Ordinal),
                 DateTimeOffset.UtcNow));
+    }
 
-    internal static void ObserveGeneratedChoiceSkip() =>
-        ObserveAcceptedUiAction(
+    internal static void ObserveGeneratedChoiceSkip(NativeSourceInputInvocation? sourceInvocation = null)
+    {
+        if (sourceInvocation != null) { NativeSourceInputProvider.Accepted(sourceInvocation); return; }
+        ObserveAcceptedSemanticUiAction(
             "NChooseACardSelectionScreen.OnSkipButtonReleased",
             new ProcessLocalObservedAction(
                 "skip",
@@ -1125,6 +1134,7 @@ internal static partial class RecorderRuntime
                 null,
                 new Dictionary<string, string>(StringComparer.Ordinal),
                 DateTimeOffset.UtcNow));
+    }
 
     internal static NativeUiScopeEntry TryEnterScope(
         string origin,
@@ -1133,8 +1143,11 @@ internal static partial class RecorderRuntime
         CardModel? stagedCard = null,
         ProcessLocalObservedAction? semanticSelection = null,
         HumanActionOccurrenceEvidence? occurrence = null,
-        NCardPlay? stagedOwner = null)
+        NCardPlay? stagedOwner = null,
+        object? sourceOwner = null)
     {
+        if (TryEnterSourceInputScope(origin, expectedNativeActionType, sourceOwner ?? stagedOwner,
+            expectedAction ?? semanticSelection, out var source)) return source;
         if (!AcceptingNewWitnesses() || SelectorInputActive)
             return default;
         if (!CanOpenSemanticEvidenceWindow())
@@ -1270,8 +1283,11 @@ internal static partial class RecorderRuntime
         ProcessLocalObservedAction observed,
         NativePostCommitCompletionExpectation? completionExpectation = null,
         ProcessLocalObservedAction? nativeSemanticSelection = null,
-        object? nestedInputOwner = null)
+        object? nestedInputOwner = null,
+        object? sourceOwner = null)
     {
+        if (TryEnterSourceInputScope(nativeActionType, nativeActionType, sourceOwner ?? nestedInputOwner,
+            observed, out var source)) return source;
         if (!AcceptingNewWitnesses() || SelectorInputActive)
             return default;
         if (HumanActionScope.Current != null)
@@ -1383,8 +1399,13 @@ internal static partial class RecorderRuntime
         AppendJournal("native_human_input_rejected", null, _lastSnapshotId,
             $"{nativeActionType};native_operand={NativeWitnessIdentity.Get(operand, "native_operand")};native_result=false");
 
-    internal static void ExitNativeUiScope(NativeUiScopeEntry entry)
+    internal static void ExitNativeUiScope(NativeUiScopeEntry entry, Exception? nativeException = null)
     {
+        if (entry.SourceInvocation != null)
+        {
+            if (!entry.SourceInvocationBorrowed) NativeSourceInputProvider.Finish(entry.SourceInvocation, nativeException);
+            return;
+        }
         if (entry.Entered)
         {
             HumanActionContext? context = HumanActionScope.Current;
@@ -1648,8 +1669,15 @@ internal static partial class RecorderRuntime
         ProcessLocalObservedAction observed,
         NativeWitnessEvidence witness,
         bool captureImmediatePostCommitBoundary = true,
-        string? actionWitnessId = null)
+        string? actionWitnessId = null,
+        NativeSourceInputInvocation? sourceInvocation = null,
+        bool sourceAcceptanceProven = false)
     {
+        if (sourceInvocation != null)
+        {
+            if (sourceAcceptanceProven) NativeSourceInputProvider.Accepted(sourceInvocation);
+            return false; // Source completions never enter Human observer/bookkeeping.
+        }
         HumanActionContext? context = HumanActionScope.Current;
         try
         {

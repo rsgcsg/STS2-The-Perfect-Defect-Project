@@ -26,7 +26,7 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
         internal bool OrderReady;
         internal string? CaptureId, Missing;
         internal IDisposable? Retention, Budget;
-        internal bool BasisReady, BasisBound, Complete;
+        internal bool BasisReady, BasisBound, BasisCaptured, Complete;
         internal SourcePublicAction? Selected;
         internal NativeLogicalSourceInputTerminal? Terminal;
     }
@@ -331,12 +331,12 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
                 }
                 catch (NativeLogicalException exception) when (exception.Code is "payload_expired" or "not_captured") { input.Missing = exception.Code; }
             }
-            store.BindSourceInputBasisV2(input.Token, capture, catalog); input.BasisBound = true;
+            store.BindSourceInputBasisV2(input.Token, capture, catalog); input.BasisBound = true; input.BasisCaptured = capture != null && catalog != null;
             input.Retention?.Dispose(); input.Retention = null;
         }
         NativeLogicalSourceInputTerminal? terminal; lock (metadataGate) terminal = input.Terminal;
         if (terminal is null) return;
-        string mapping = input.CaptureId == null || input.Missing != null ? "capture_missing" : input.Mapping?.MappingStatus ?? "exact";
+        string mapping = !input.BasisCaptured ? "capture_missing" : input.Mapping?.MappingStatus ?? "exact";
         var outcome = new SourceInputOutcomeV2(mapping, mapping == "capture_missing" ? 0 : input.Mapping?.MatchCount ?? 1,
             mapping == "exact" ? input.Selected : null, input.Mechanism, terminal.Delivery, terminal.Reason ?? input.Missing,
             terminal.Stages.Select(x => new SourceInputStageV2(x.Stage, x.Delivery, x.Evidence)).ToArray());
@@ -345,8 +345,9 @@ internal sealed class SourceRecordingWorkerV2 : INativeLogicalSourceSink, IDispo
     private void CloseInput(Input input)
     {
         if (!input.BasisBound) { store.BindSourceInputBasisV2(input.Token, null, null); input.BasisBound = true; }
-        store.CompleteSourceInputV2(input.Token, new(input.Selected == null ? "capture_missing" : "exact", input.Selected == null ? 0 : 1,
-            input.Selected, input.Mechanism, "unknown", "session_closed_before_input_completion", Array.Empty<SourceInputStageV2>()));
+        string mapping = !input.BasisCaptured ? "capture_missing" : input.Mapping?.MappingStatus ?? "exact";
+        store.CompleteSourceInputV2(input.Token, new(mapping, mapping == "capture_missing" ? 0 : input.Mapping?.MatchCount ?? 1,
+            mapping == "exact" ? input.Selected : null, input.Mechanism, "unknown", "session_closed_before_input_completion", Array.Empty<SourceInputStageV2>()));
         input.Complete = true; input.Retention?.Dispose(); input.Retention = null; input.Budget?.Dispose(); input.Budget = null;
     }
     public void Dispose()

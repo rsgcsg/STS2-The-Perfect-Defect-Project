@@ -18,7 +18,8 @@ internal sealed record TextMenuLeaf(
     string? SubjectReferentId,
     IReadOnlyList<PlayerEnvironmentBoundActionArgument> Arguments,
     [property: JsonIgnore] Func<NativeInputResult> Dispatch,
-    [property: JsonIgnore] TextMenuNativeWitnessBinding? NativeWitness = null);
+    [property: JsonIgnore] TextMenuNativeWitnessBinding? NativeWitness = null,
+    [property: JsonIgnore] TextMenuNativeWitnessBinding? NativeSourceWitness = null);
 
 internal sealed record TextMenuFrame(
     PlayerEnvironmentSnapshot Page, string OwnerKey, IReadOnlyList<TextMenuLeaf> Leaves)

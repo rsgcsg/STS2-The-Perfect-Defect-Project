@@ -1,24 +1,32 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using Godot;
 using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
+using MegaCrit.Sts2.Core.Nodes.Combat;
 
 namespace STS2Platform.NativeFoundation;
 
 /// <summary>Transient process-private prefix witnesses; never serialized operands or action authority.</summary>
-public sealed record NativeSourceInputPrefix(object? Owner, object? Subject,
-    IReadOnlyDictionary<string, object> Arguments, string NativeMechanism, string ExpectedNativeActionType);
+public sealed record NativeSourceInputPrefix(string Verb, object? Owner, object? Subject,
+    IReadOnlyDictionary<string, object> Arguments, string NativeMechanism, string ExpectedNativeActionType,
+    Type? AcceptedCarrierType = null);
 
 /// <summary>Opaque original invocation. It retains no prefix owner/subject/argument graph.</summary>
 public sealed class NativeSourceInputInvocation
 {
-    internal NativeSourceInputInvocation(NativeSourceInputProvider.Registration registration, object token, string type)
-    { Registration = registration; Token = token; ExpectedType = type; }
+    internal NativeSourceInputInvocation(NativeSourceInputProvider.Registration registration, object token, string type, Type? acceptedCarrierType)
+    { Registration = registration; Token = token; ExpectedType = type; AcceptedCarrierType = acceptedCarrierType; }
     internal readonly NativeSourceInputProvider.Registration Registration;
     internal readonly object Token;
     internal readonly string ExpectedType;
+    internal readonly Type? AcceptedCarrierType;
     internal bool HasCarrier;
+    internal NCardPlay? CreatedCardPlay;
+    internal bool CreatedCardPlayConflict;
     internal int Terminal;
 }
 
@@ -76,14 +84,15 @@ public static class NativeSourceInputProvider
         object? token;
         try { token = callback(prefix); } catch { return null; }
         if (token == null) return null;
-        var invocation = new NativeSourceInputInvocation(original, token, prefix.ExpectedNativeActionType);
+        var invocation = new NativeSourceInputInvocation(original, token, prefix.ExpectedNativeActionType, prefix.AcceptedCarrierType);
         scopes ??= new(); scopes.Push(invocation); return invocation;
     }
     public static void BindSubmitted(GameAction exactAction)
     {
         if (scopes is not { Count: > 0 }) return;
         var original = scopes.Peek();
-        if (original.ExpectedType != exactAction.GetType().Name || Volatile.Read(ref original.Terminal) != 0) return;
+        if (original.AcceptedCarrierType == null || original.AcceptedCarrierType != exactAction.GetType()
+            || Volatile.Read(ref original.Terminal) != 0) return;
         bool conflict = false;
         lock (Gate)
         {
@@ -92,15 +101,16 @@ public static class NativeSourceInputProvider
         }
         if (conflict) Complete(original, "unknown", "native_source_carrier_conflict");
     }
-    public static void ObserveAccepted(GameAction exactAction)
+    public static bool ObserveAccepted(GameAction exactAction)
     {
         NativeSourceInputInvocation? original;
         lock (Gate)
         {
-            if (!Carriers.TryGetValue(exactAction, out var binding)) return;
+            if (!Carriers.TryGetValue(exactAction, out var binding)) return false;
             original = binding.Invocation; Carriers.Remove(exactAction);
         }
         Complete(original, "delivered", null);
+        return true;
     }
     public static void Accepted(NativeSourceInputInvocation? original) => Complete(original, "delivered", null);
     public static void Rejected(NativeSourceInputInvocation? original, string reason) => Complete(original, "rejected_before_input", reason);
@@ -111,9 +121,37 @@ public static class NativeSourceInputProvider
         lock (Gate) callback = original.Registration.Terminal;
         try { callback?.Invoke(original.Token, delivery, reason); } catch { /* Passive evidence cannot change native delivery. */ }
     }
+    public static void BindCreatedCardPlay(NCardPlay exactCarrier)
+    {
+        if (scopes is not { Count: > 0 }) return;
+        var original = scopes.Peek();
+        if (original.ExpectedType != "NPlayerHand.StartCardPlay") return;
+        if (original.CreatedCardPlay != null && !ReferenceEquals(original.CreatedCardPlay, exactCarrier))
+            original.CreatedCardPlayConflict = true;
+        else original.CreatedCardPlay = exactCarrier;
+    }
+    public static void ObserveCreatedCardPlay(NativeSourceInputInvocation? original, NPlayerHand exactHand, NHandCardHolder originalHolder)
+    {
+        if (original == null) return;
+        var carrier = original.CreatedCardPlay; original.CreatedCardPlay = null;
+        bool accepted = false;
+        try
+        {
+            accepted = !original.CreatedCardPlayConflict && carrier != null
+                && ReferenceEquals(carrier.Holder, originalHolder)
+                && ReferenceEquals(carrier.Holder.CardModel, originalHolder.CardModel)
+                && ReferenceEquals(carrier.GetParent(), exactHand) && exactHand.InCardPlay
+                && exactHand.GetChildren().OfType<NCardPlay>().Where(child => GodotObject.IsInstanceValid(child)
+                    && !child.IsQueuedForDeletion()).SingleOrDefault() is { } currentCarrier
+                && ReferenceEquals(currentCarrier, carrier);
+        }
+        catch { /* No native getter error supplies an acceptance witness. */ }
+        if (accepted) Accepted(original);
+    }
     public static void Finish(NativeSourceInputInvocation? original, Exception? nativeException = null)
     {
         if (original == null) return;
+        original.CreatedCardPlay = null;
         if (scopes is { Count: > 0 } && ReferenceEquals(scopes.Peek(), original)) scopes.Pop();
         // An exact requested carrier may be accepted later. Its original object
         // binding remains until OnEnqueued or the existing Source close owner.
