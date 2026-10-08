@@ -79,6 +79,16 @@ invocation passed. Neither event was treated as runtime evidence.
 
 ## Remaining gates, rollback and non-claims
 
+Independent review of `d6320465` found one P2: ordinary `LocalModelService.start`
+retained a failed native request's context and intent generation. Its old expiry
+grace proof could therefore recover a newly admitted browser/CLI start. The
+bounded repair advances the new ordinary intent and clears its native context
+and authorizer in the existing model-owner admission callback, after rejection
+checks under the owner lock. Rejected starts preserve the original pending native
+intent. Paired native prepare/load and ordinary Human-mode loading retain their
+existing behavior. The source checks above precede this repair; its exact head
+requires fresh Python validation and an independent paired-Application probe.
+
 The lead must independently review the exact committed candidate and compose it
 with the accepted native input/provenance/AgentSession/application packets. Root
 STATUS/CURRENT, contract versions, component identity and BOM updates remain with

@@ -966,13 +966,23 @@ class LocalModelService:
 
     def start(self, identity: str, run_profile: str = "short") -> dict[str, Any]:
         self._run_profile(identity, run_profile)
-        with self.lock:
+        intent = self.intent_generation
+
+        def admit() -> None:
+            nonlocal intent
             if self.process is not None and self.process.poll() is None:
                 raise BoundaryError("local_model", "runtime_already_running")
+            # A newly admitted ordinary start owns a new intent. It must not
+            # inherit native authorization or an old request's recovery proof.
+            # _begin runs this only after its rejection checks under our lock.
+            self.intent_generation += 1
             intent = self.intent_generation
+            self.state.pop("_native_intent", None)
+            self._native_authorizer = None
+
         return self._begin(
             "start", lambda: self._start(identity, intent) if run_profile == "short"
-            else self._start(identity, intent, run_profile)
+            else self._start(identity, intent, run_profile), admission=admit,
         )
 
     def prepare_and_load(self, identity: str, run_profile: str = "short", *,

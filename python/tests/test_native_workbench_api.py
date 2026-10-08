@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import threading
 from urllib.error import HTTPError
@@ -11,6 +12,8 @@ import pytest
 from test_local_models import runtime_http as runtime_http
 from test_native_workbench_access import paired_app
 
+from spireagent.json_boundary import BoundaryError
+from spireagent.workbench import local_models
 from spireagent.workbench.developer import atomic_json
 from spireagent.workbench.developer_server import create_server
 from spireagent.workbench.native_workbench_access import NativePair
@@ -339,3 +342,118 @@ def test_expired_recovery_rejects_newer_intent_wrong_pair_and_over_grace(
         release.set()
     finish_model(app)
     assert not any(path == "/v2/mode" and body == {"mode": "auto"} for path, body in requests)
+
+
+@pytest.mark.parametrize("recovery", ["models.human", "models.stop"])
+def test_expired_native_load_proof_cannot_cancel_new_ordinary_start(
+    native_http, runtime_http, monkeypatch, recovery
+):
+    from spireagent.workbench import native_workbench_access as access_module
+
+    app, call, pair, _root, _secret, _peer = native_http
+    monkeypatch.setattr(
+        app.models, "readiness", lambda _: {"checks": {"backend": {"status": "blocked"}}}
+    )
+    original_request = "9" * 32
+    call(*command("models.load", {
+        "selection_id": "s1-human-combat-v4", "run_profile": "short",
+    }, original_request))
+    finish_model(app)
+    assert app.models.state["error_code"] == "model_readiness_blocked"
+    original_generation = app.models.intent_generation
+    assert app.models.native_intent_context(original_request)["binding"] == pair.to_dict()
+
+    entered, release, state, requests = native_load(app, monkeypatch, runtime_http)
+    admitted = app.models.start("s1-human-combat-v4")
+    assert admitted["operation"]["action"] == "start"
+    assert entered.wait(3)
+    assert app.models.intent_generation == original_generation + 1
+    assert "_native_intent" not in app.models.state
+    assert app.models._native_authorizer is None
+    monkeypatch.setattr(access_module.time, "time", lambda: pair.expires_at + 1)
+    try:
+        refused = rejected(call, PREFIX + "/actions/" + recovery, 409,
+                           command(recovery, {"native_request_id": original_request})[1])
+        assert refused["error"] == "native_model_intent_superseded"
+        assert app.models.intent_generation == original_generation + 1
+        assert app.models.state["operation"]["status"] == "pending"
+    finally:
+        release.set()
+    finish_model(app)
+    assert app.models.state["operation"]["status"] == "completed"
+    assert app.models.state["loaded"] is True and state["mode"] == "human"
+    assert not any(path in {"/v2/mode", "/v2/stop"} for path, _ in requests)
+
+
+def test_ordinary_start_after_failed_native_load_ignores_revoked_native_authorizer(
+    native_http, monkeypatch
+):
+    app, call, _pair, root, _secret, _peer = native_http
+    monkeypatch.setattr(
+        app.models, "readiness", lambda _: {"checks": {"backend": {"status": "blocked"}}}
+    )
+    call(*command("models.load", {
+        "selection_id": "s1-human-combat-v4", "run_profile": "short",
+    }))
+    finish_model(app)
+    assert app.models.state["error_code"] == "model_readiness_blocked"
+    generation = app.models.intent_generation
+    bootstrap = json.loads((root / "native-access.json").read_bytes())
+    atomic_json(root / "native-access.json", {**bootstrap, "enabled": False})
+    spawned = []
+
+    class Process:
+        stdout = io.BytesIO(b'{"schema":"foreign"}\n')
+        stopped = False
+
+        def __init__(self, command, **kwargs):
+            spawned.append(command)
+
+        def terminate(self):
+            self.stopped = True
+
+        def wait(self, timeout):
+            return 0
+
+        def poll(self):
+            return 0 if self.stopped else None
+
+    monkeypatch.setattr(app.models, "readiness", lambda _: {"status": "ready_to_load"})
+    monkeypatch.setattr(app.models, "_runtime_package", lambda _: {
+        "version": "fixture", "code_sha256": "b" * 64,
+    })
+    monkeypatch.setattr(local_models, "_check_runtime_port", lambda _: None)
+    monkeypatch.setattr(local_models.subprocess, "Popen", Process)
+    app.models.start("s1-human-combat-v4")
+    finish_model(app)
+    assert app.models.intent_generation == generation + 1
+    assert "_native_intent" not in app.models.state and app.models._native_authorizer is None
+    assert len(spawned) == 1 and spawned[0][-2:] == ["--mode", "human"]
+    # The real ordinary load path reached its existing startup validation, not
+    # the revoked native authorizer. Its deliberately foreign fixture still fails.
+    assert app.models.state["error_code"] == "runtime_load_or_attestation_failed"
+    assert app.models.process.stopped
+
+
+def test_rejected_ordinary_start_preserves_pending_native_intent(native_http, runtime_http,
+                                                               monkeypatch):
+    app, call, _pair, _root, _secret, _peer = native_http
+    entered, release, _state, _requests = native_load(app, monkeypatch, runtime_http)
+    call(*command("models.load", {
+        "selection_id": "s1-human-combat-v4", "run_profile": "short",
+    }))
+    assert entered.wait(3)
+    context = app.models.native_intent_context("c" * 32)
+    authorizer = app.models._native_authorizer
+    generation = app.models.intent_generation
+    try:
+        with pytest.raises(BoundaryError, match="operation_in_progress"):
+            app.models.start("s1-human-combat-v4")
+        with pytest.raises(BoundaryError, match="unregistered_policy"):
+            app.models.start("unknown-selection")
+        assert app.models.intent_generation == generation
+        assert app.models.native_intent_context("c" * 32) == context
+        assert app.models._native_authorizer is authorizer
+    finally:
+        release.set()
+    finish_model(app)
